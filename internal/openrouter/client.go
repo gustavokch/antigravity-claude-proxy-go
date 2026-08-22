@@ -218,12 +218,19 @@ func (c *Client) ResolveModelPricing(ctx context.Context, modelID string, apiKey
 		c.flightMap[cleanBase] = gCall
 		c.flightMu.Unlock()
 
-		_, _ = c.FetchAvailableModels(ctx, apiKey, baseURL)
-		gCall.wg.Done()
+		func() {
+			defer func() {
+				c.flightMu.Lock()
+				delete(c.flightMap, cleanBase)
+				c.flightMu.Unlock()
+				gCall.wg.Done()
+			}()
 
-		c.flightMu.Lock()
-		delete(c.flightMap, cleanBase)
-		c.flightMu.Unlock()
+			// Decouple from caller context so single client abort does not cancel shared catalog fetch
+			fetchCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, _ = c.FetchAvailableModels(fetchCtx, apiKey, baseURL)
+		}()
 	} else {
 		c.flightMu.Unlock()
 		gCall.wg.Wait()

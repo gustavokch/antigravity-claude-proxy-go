@@ -513,3 +513,27 @@ func TestOpenRouterObservability_ColdCacheAutoPricing(t *testing.T) {
 		t.Errorf("expected total cost ~0.0478, got %f", sessionStats.TotalCost)
 	}
 }
+
+func TestResolveEffectivePricing(t *testing.T) {
+	// Case 1: Initial pricing already has non-zero values -> keep initial
+	p1 := openrouter.Pricing{Prompt: 0.00001, Completion: 0.00003}
+	res1 := resolveEffectivePricing(p1, "nonexistent-model")
+	if res1.Prompt != 0.00001 || res1.Completion != 0.00003 {
+		t.Errorf("expected original pricing to be preserved, got %+v", res1)
+	}
+
+	// Case 2: Initial pricing zero, but cache has pricing -> fallback to cache
+	openrouter.DefaultClient.SaveCache([]openrouter.ModelItem{
+		{
+			ID: "meta-llama/llama-3-70b",
+			Pricing: &openrouter.Pricing{
+				Prompt:     0.0000007,
+				Completion: 0.0000008,
+			},
+		},
+	})
+	res2 := resolveEffectivePricing(openrouter.Pricing{}, "meta-llama/llama-3-70b")
+	if res2.Prompt != 0.0000007 || res2.Completion != 0.0000008 {
+		t.Errorf("expected cached pricing to be resolved, got %+v", res2)
+	}
+}

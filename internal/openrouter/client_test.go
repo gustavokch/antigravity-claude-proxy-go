@@ -245,3 +245,52 @@ func TestResolveModelPricing_SingleflightConcurrency(t *testing.T) {
 		t.Errorf("expected singleflight to ensure exactly 1 fetch, got %d", fetchCount)
 	}
 }
+
+func TestResolveModelPricing_CallerContextCancellation(t *testing.T) {
+	fetchCount := 0
+	mockModels := []ModelItem{
+		{
+			ID: "anthropic/claude-3.7-sonnet",
+			Pricing: &Pricing{
+				Prompt:     0.000003,
+				Completion: 0.000015,
+			},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond) // simulate upstream network latency
+		fetchCount++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ModelsResponse{Data: mockModels})
+	}))
+	defer server.Close()
+
+	client := NewClient(5*time.Second, 10*time.Minute)
+
+	// Caller 1 starts fetch with a context that is cancelled quickly
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel1()
+
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_, _ = client.ResolveModelPricing(ctx1, "anthropic/claude-3.7-sonnet", "key", server.URL)
+	}()
+
+	<-started
+	// Allow small time for caller 1 to establish singleflight inFlight entry
+	time.Sleep(10 * time.Millisecond)
+
+	// Caller 2 joins the in-flight fetch with a valid context
+	p2, ok2 := client.ResolveModelPricing(context.Background(), "anthropic/claude-3.7-sonnet", "key", server.URL)
+	if !ok2 {
+		t.Fatalf("expected caller 2 to resolve pricing despite caller 1 context cancellation")
+	}
+	if p2.Prompt != 0.000003 {
+		t.Errorf("unexpected pricing for caller 2: %+v", p2)
+	}
+	if fetchCount != 1 {
+		t.Errorf("expected exactly 1 fetch, got %d", fetchCount)
+	}
+}

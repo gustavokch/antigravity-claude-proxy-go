@@ -666,12 +666,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return nil
 			}
 
-			finalPricing := pricing
-			if finalPricing.Prompt == 0 && finalPricing.Completion == 0 {
-				if p, ok := openrouter.DefaultClient.GetModelPricing(model); ok {
-					finalPricing = p
-				}
-			}
+			finalPricing := resolveEffectivePricing(pricing, model)
 
 			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 			if isStream {
@@ -730,6 +725,15 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	}
 
 	proxy.ServeHTTP(writer, request)
+}
+
+func resolveEffectivePricing(initial openrouter.Pricing, model string) openrouter.Pricing {
+	if initial.Prompt == 0 && initial.Completion == 0 {
+		if p, ok := openrouter.DefaultClient.GetModelPricing(model); ok {
+			return p
+		}
+	}
+	return initial
 }
 
 type streamSender func(context.Context, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
