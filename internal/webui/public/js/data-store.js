@@ -404,6 +404,22 @@ document.addEventListener('alpine:init', () => {
             return 'other';
         },
 
+        getModelColorClass(modelId) {
+            const family = this.getModelFamily(modelId);
+            switch (family) {
+                case 'claude':
+                    return 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]';
+                case 'gemini':
+                    return 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]';
+                case 'forwarded':
+                    return 'bg-neon-cyan shadow-[0_0_5px_rgba(6,182,212,0.5)]';
+                case 'openrouter':
+                    return 'bg-indigo-400 shadow-[0_0_5px_rgba(129,140,248,0.5)]';
+                default:
+                    return 'bg-gray-600';
+            }
+        },
+
         /**
          * Get quota data without filters applied (for Dashboard global charts)
          * Returns array of { modelId, family, quotaInfo: [{pct}] }

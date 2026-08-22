@@ -754,7 +754,7 @@ window.Components.models = () => ({
         const discovered = dataStore.models || [];
         if (discovered.includes(modelId)) return false;
         if (dataStore.customEndpoints && dataStore.customEndpoints[modelId]) return false;
-        if (dataStore.openrouter && dataStore.openrouter.allowlist && dataStore.openrouter.allowlist.some(m => (m.id === modelId || m.alias === modelId))) return false;
+        if (dataStore.openrouter && dataStore.openrouter.allowlist && dataStore.openrouter.allowlist.some(m => m.enabled !== false && (m.id === modelId || m.alias === modelId))) return false;
         return true;
     }
 });

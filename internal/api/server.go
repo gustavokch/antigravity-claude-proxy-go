@@ -29,7 +29,10 @@ import (
 	"antigravity-go-proxy/internal/stats"
 )
 
-const maxRequestBody = 50 << 20
+const (
+	maxRequestBody = 50 << 20
+	maxMappingHops = 5
+)
 
 var jsonBufferPool = sync.Pool{
 	New: func() any {
@@ -479,7 +482,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		reqModel := stringFrom(anthropicRequest["model"])
 		current := reqModel
 		visited := make(map[string]bool)
-		for i := 0; i < 5; i++ {
+		for i := 0; i < maxMappingHops; i++ {
 			if visited[current] {
 				break
 			}
