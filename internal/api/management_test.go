@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,11 +14,18 @@ import (
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/cloudcode"
+	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/stats"
 )
 
 func newTestServerWithManager(t *testing.T) (*Server, *accounts.Manager, *logger.Broadcaster) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	_, _ = config.Load()
+
 	acc := &accounts.Account{
 		Email:   "test@example.com",
 		Source:  "manual",
@@ -26,13 +34,15 @@ func newTestServerWithManager(t *testing.T) (*Server, *accounts.Manager, *logger
 	}
 	now := func() time.Time { return time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC) }
 	mgr, err := accounts.New(accounts.Options{
-		Accounts: []*accounts.Account{acc},
-		Strategy: accounts.StrategyHybrid,
-		Now:      now,
+		Accounts:   []*accounts.Account{acc},
+		ConfigPath: filepath.Join(tmpDir, "accounts.json"),
+		Strategy:   accounts.StrategyHybrid,
+		Now:        now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = mgr.SaveToDisk()
 
 	broadcaster := logger.NewBroadcaster(100)
 
@@ -322,6 +332,11 @@ func TestManagement_ConfigAndClaude(t *testing.T) {
 }
 
 func TestManagement_StatsHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	_, _ = config.Load()
+
 	tracker, err := stats.NewTracker("")
 	if err != nil {
 		t.Fatalf("NewTracker failed: %v", err)
@@ -336,13 +351,15 @@ func TestManagement_StatsHistory(t *testing.T) {
 	}
 	now := func() time.Time { return time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC) }
 	mgr, err := accounts.New(accounts.Options{
-		Accounts: []*accounts.Account{acc},
-		Strategy: accounts.StrategyHybrid,
-		Now:      now,
+		Accounts:   []*accounts.Account{acc},
+		ConfigPath: filepath.Join(tmpDir, "accounts.json"),
+		Strategy:   accounts.StrategyHybrid,
+		Now:        now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = mgr.SaveToDisk()
 
 	server, err := New(Options{
 		APIKey:      "test-api-key",

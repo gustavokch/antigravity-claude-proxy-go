@@ -269,3 +269,106 @@ func TestOpenRouterConfig(t *testing.T) {
 		t.Errorf("expected apiKey to be cleared, got %s", saved3.OpenRouter.APIKey)
 	}
 }
+
+func TestModelsSettingsPersistenceAcrossReboots(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	// Step 1: Save model mappings, custom endpoints, and openrouter allowlist (from /#settings/models)
+	initialUpdates := map[string]any{
+		"modelMapping": map[string]any{
+			"claude-opus-4-6": map[string]any{
+				"mapping": "claude-3-opus-20240229",
+				"pinned":  true,
+			},
+			"custom-alias-1": "gemini-3.7-flash-high",
+		},
+		"customEndpoints": map[string]any{
+			"custom-target-model": map[string]any{
+				"url":    "https://api.custom.com/v1",
+				"apiKey": "custom-secret-key",
+			},
+		},
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-secret-key-999",
+			"baseUrl": "https://openrouter.ai/api",
+			"allowlist": []map[string]any{
+				{
+					"id":              "anthropic/claude-3.7-sonnet",
+					"alias":           "claude-3-7-openrouter",
+					"displayName":     "Claude 3.7 Sonnet (OpenRouter)",
+					"contextLength":   200000,
+					"maxOutputTokens": 128000,
+					"enabled":         true,
+				},
+			},
+		},
+	}
+
+	if _, err := Save(initialUpdates); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Step 2: Simulate reboot / rebuild by calling Load()
+	loadedCfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed after restart: %v", err)
+	}
+
+	// Verify modelMapping
+	if len(loadedCfg.ModelMapping) != 2 {
+		t.Fatalf("expected 2 model mappings, got %d", len(loadedCfg.ModelMapping))
+	}
+	opusMap, ok := loadedCfg.ModelMapping["claude-opus-4-6"].(map[string]any)
+	if !ok || opusMap["mapping"] != "claude-3-opus-20240229" || opusMap["pinned"] != true {
+		t.Errorf("expected claude-opus-4-6 mapping object, got %#v", loadedCfg.ModelMapping["claude-opus-4-6"])
+	}
+	if loadedCfg.ModelMapping["custom-alias-1"] != "gemini-3.7-flash-high" {
+		t.Errorf("expected string mapping for custom-alias-1, got %#v", loadedCfg.ModelMapping["custom-alias-1"])
+	}
+
+	// Verify customEndpoints
+	ep, exists := loadedCfg.CustomEndpoints["custom-target-model"]
+	if !exists || ep.URL != "https://api.custom.com/v1" || ep.APIKey != "custom-secret-key" {
+		t.Errorf("expected custom endpoint preserved, got %#v", ep)
+	}
+
+	// Verify openrouter
+	if !loadedCfg.OpenRouter.Enabled {
+		t.Errorf("expected OpenRouter.Enabled true")
+	}
+	if loadedCfg.OpenRouter.APIKey != "sk-or-secret-key-999" {
+		t.Errorf("expected OpenRouter.APIKey sk-or-secret-key-999, got %s", loadedCfg.OpenRouter.APIKey)
+	}
+	if len(loadedCfg.OpenRouter.Allowlist) != 1 || loadedCfg.OpenRouter.Allowlist[0].Alias != "claude-3-7-openrouter" {
+		t.Errorf("expected OpenRouter.Allowlist preserved, got %#v", loadedCfg.OpenRouter.Allowlist)
+	}
+
+	// Step 3: Partial unrelated server config update (e.g. tuning maxRetries)
+	if _, err := Save(map[string]any{"maxRetries": 12, "logLevel": "debug"}); err != nil {
+		t.Fatalf("partial Save failed: %v", err)
+	}
+
+	// Step 4: Simulate second reboot / rebuild
+	loadedCfg2, err := Load()
+	if err != nil {
+		t.Fatalf("second Load failed: %v", err)
+	}
+
+	if loadedCfg2.MaxRetries != 12 || loadedCfg2.LogLevel != "debug" {
+		t.Errorf("expected updated server settings, got maxRetries=%d logLevel=%s", loadedCfg2.MaxRetries, loadedCfg2.LogLevel)
+	}
+
+	// Verify model settings still intact
+	if len(loadedCfg2.ModelMapping) != 2 {
+		t.Errorf("expected 2 model mappings after second reboot, got %d", len(loadedCfg2.ModelMapping))
+	}
+	if len(loadedCfg2.CustomEndpoints) != 1 {
+		t.Errorf("expected 1 custom endpoint after second reboot, got %d", len(loadedCfg2.CustomEndpoints))
+	}
+	if len(loadedCfg2.OpenRouter.Allowlist) != 1 {
+		t.Errorf("expected 1 OpenRouter allowlist model after second reboot, got %d", len(loadedCfg2.OpenRouter.Allowlist))
+	}
+}

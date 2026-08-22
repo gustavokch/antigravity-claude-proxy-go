@@ -181,11 +181,7 @@ func RestoreClaudeConfig() (map[string]any, error) {
 
 // ClaudePresetsFilePath returns path to ~/.config/antigravity-proxy/claude-presets.json.
 func ClaudePresetsFilePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "antigravity-proxy", "claude-presets.json"), nil
+	return filepath.Join(GetConfigDir(), "claude-presets.json"), nil
 }
 
 // ReadClaudePresets returns all Claude CLI presets (defaults + custom).
@@ -263,11 +259,7 @@ func DeleteClaudePreset(name string) ([]map[string]any, error) {
 
 // ServerPresetsFilePath returns path to ~/.config/antigravity-proxy/server-presets.json.
 func ServerPresetsFilePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "antigravity-proxy", "server-presets.json"), nil
+	return filepath.Join(GetConfigDir(), "server-presets.json"), nil
 }
 
 // ReadServerPresets returns all server configuration presets.

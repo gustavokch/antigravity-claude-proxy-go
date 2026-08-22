@@ -10,24 +10,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"antigravity-go-proxy/internal/config"
 )
 
 // PIDFilePath returns the path to ~/.config/antigravity-proxy/server.pid.
 func PIDFilePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "antigravity-proxy", "server.pid"), nil
+	return filepath.Join(config.GetConfigDir(), "server.pid"), nil
 }
 
 // LogFilePath returns the path to ~/.config/antigravity-proxy/server.log.
 func LogFilePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "antigravity-proxy", "server.log"), nil
+	return filepath.Join(config.GetConfigDir(), "server.log"), nil
 }
 
 // WritePIDFile writes the current PID to server.pid.

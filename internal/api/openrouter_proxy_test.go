@@ -29,6 +29,7 @@ func (m *mockCloudCodeBackend) StreamGenerateContent(ctx context.Context, req ma
 
 func TestOpenRouterForwarding_Unary(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
 	var receivedAuth, receivedKey, receivedVer, receivedBeta string
@@ -125,6 +126,7 @@ func TestOpenRouterForwarding_Unary(t *testing.T) {
 
 func TestOpenRouterForwarding_SSE(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
 	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,6 +190,7 @@ func TestOpenRouterForwarding_SSE(t *testing.T) {
 
 func TestMergedModelsEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
 	_, err := config.Save(map[string]any{
@@ -283,6 +286,7 @@ func TestMergedModelsEndpoint(t *testing.T) {
 
 func TestModelMappingToOpenRouterAndForwarded(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
 	var receivedORBody map[string]any
