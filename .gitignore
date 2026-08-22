@@ -6,4 +6,6 @@
 *.DS_Store
 benchmark_results.txt
 .claude/
+.impeccable/*.cache.json
+.impeccable/config.local.json
 
