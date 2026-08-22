@@ -88,8 +88,8 @@
                 </div>
 
                 <!-- Message: Clean & High Contrast -->
-                <span class="text-zinc-300 break-all group-hover:text-white flex-1"
-                    x-html="getRenderedMessage(log)"></span>
+                <span class="text-zinc-300 break-all whitespace-pre-wrap group-hover:text-white flex-1"
+                    x-text="getRenderedMessage(log)"></span>
             </div>
         </template>
         <!-- Static Terminal Cursor (No GPU-hogging animation loop) -->

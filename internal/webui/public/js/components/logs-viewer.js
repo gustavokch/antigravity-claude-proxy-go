@@ -48,11 +48,11 @@ window.Components.logsViewer = () => ({
     },
 
     getRenderedMessage(log) {
-        if (log._renderedHtml) return log._renderedHtml;
+        if (log._renderedText !== undefined && log._renderedText !== null) return log._renderedText;
         const shouldRedact = Alpine.store('settings')?.redactMode && window.Redact;
         const msg = shouldRedact ? window.Redact.logMessage(log.message) : log.message;
-        log._renderedHtml = msg.replace(/\n/g, '<br>');
-        return log._renderedHtml;
+        log._renderedText = msg;
+        return log._renderedText;
     },
 
     init() {
@@ -67,10 +67,13 @@ window.Components.logsViewer = () => ({
             });
         }
 
-        // Invalidate rendered HTML cache if redactMode changes
+        // Invalidate rendered text cache if redactMode changes
         this.$watch('$store.settings.redactMode', () => {
             for (let i = 0; i < this.logs.length; i++) {
-                this.logs[i]._renderedHtml = null;
+                this.logs[i]._renderedText = null;
+            }
+            for (let i = 0; i < this._queue.length; i++) {
+                this._queue[i]._renderedText = null;
             }
         });
 
@@ -86,10 +89,11 @@ window.Components.logsViewer = () => ({
     processIncomingLog(rawLog) {
         logIdCounter++;
         let formattedTime = '';
-        try {
-            formattedTime = new Date(rawLog.timestamp).toLocaleTimeString([], { hour12: false });
-        } catch (_) {
-            formattedTime = rawLog.timestamp || '';
+        if (rawLog.timestamp) {
+            const d = new Date(rawLog.timestamp);
+            formattedTime = !isNaN(d.getTime())
+                ? d.toLocaleTimeString([], { hour12: false })
+                : String(rawLog.timestamp);
         }
 
         return {
@@ -98,7 +102,7 @@ window.Components.logsViewer = () => ({
             formattedTime: formattedTime,
             level: rawLog.level || 'INFO',
             message: rawLog.message || '',
-            _renderedHtml: null
+            _renderedText: null
         };
     },
 
@@ -146,6 +150,13 @@ window.Components.logsViewer = () => ({
                 const rawLog = JSON.parse(event.data);
                 const log = this.processIncomingLog(rawLog);
                 this._queue.push(log);
+
+                // Cap pending queue to prevent memory leak when tab is backgrounded
+                const limit = Alpine.store('settings')?.logLimit || window.AppConstants?.LIMITS?.DEFAULT_LOG_LIMIT || 2000;
+                if (this._queue.length > limit * 2) {
+                    this._queue = this._queue.slice(-limit);
+                }
+
                 this.scheduleFlush();
             } catch (e) {
                 if (window.UILogger) window.UILogger.debug('Log parse error:', e.message);
