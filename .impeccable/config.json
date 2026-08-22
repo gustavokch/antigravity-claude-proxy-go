@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          "internal/webui/public/index.html"
+        ],
+        "createdAt": "2026-08-22T17:40:54.036Z",
+        "reason": "Shell layout file: views contain full heading hierarchy"
+      }
+    ]
+  }
+}
