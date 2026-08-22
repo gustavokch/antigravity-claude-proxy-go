@@ -3,6 +3,7 @@ package openrouter
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -64,6 +65,20 @@ func (st *SessionTracker) Record(sessionID string, inputTokens, outputTokens, ca
 		for id, s := range st.sessions {
 			if s.LastSeen.Before(cutoff) {
 				delete(st.sessions, id)
+			}
+		}
+		// If still at or over capacity after pruning, evict oldest session
+		if len(st.sessions) >= st.maxEntries {
+			var oldestID string
+			var oldestTime time.Time
+			for id, s := range st.sessions {
+				if oldestID == "" || s.LastSeen.Before(oldestTime) {
+					oldestID = id
+					oldestTime = s.LastSeen
+				}
+			}
+			if oldestID != "" {
+				delete(st.sessions, oldestID)
 			}
 		}
 	}
@@ -143,7 +158,11 @@ func ExtractSessionID(req *http.Request, reqBody map[string]any) string {
 
 	// Fallback to client address hash if available
 	if req != nil && req.RemoteAddr != "" {
-		h := sha256.Sum256([]byte(req.RemoteAddr + ":" + req.UserAgent()))
+		host := req.RemoteAddr
+		if h, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+			host = h
+		}
+		h := sha256.Sum256([]byte(host + ":" + req.UserAgent()))
 		return "session_" + hex.EncodeToString(h[:8])
 	}
 
