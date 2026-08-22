@@ -4,6 +4,8 @@
  */
 window.Components = window.Components || {};
 
+let logIdCounter = 0;
+
 window.Components.logsViewer = () => ({
     logs: [],
     isAutoScroll: true,
@@ -16,6 +18,8 @@ window.Components.logsViewer = () => ({
         SUCCESS: true,
         DEBUG: false
     },
+    _queue: [],
+    _flushScheduled: false,
 
     get filteredLogs() {
         const query = this.searchQuery.trim();
@@ -43,6 +47,14 @@ window.Components.logsViewer = () => ({
         });
     },
 
+    getRenderedMessage(log) {
+        if (log._renderedHtml) return log._renderedHtml;
+        const shouldRedact = Alpine.store('settings')?.redactMode && window.Redact;
+        const msg = shouldRedact ? window.Redact.logMessage(log.message) : log.message;
+        log._renderedHtml = msg.replace(/\n/g, '<br>');
+        return log._renderedHtml;
+    },
+
     init() {
         this.startLogStream();
 
@@ -55,19 +67,75 @@ window.Components.logsViewer = () => ({
             });
         }
 
+        // Invalidate rendered HTML cache if redactMode changes
+        this.$watch('$store.settings.redactMode', () => {
+            for (let i = 0; i < this.logs.length; i++) {
+                this.logs[i]._renderedHtml = null;
+            }
+        });
+
         this.$watch('isAutoScroll', (val) => {
             if (val) this.scrollToBottom();
         });
 
         // Watch filters to maintain auto-scroll if enabled
-        this.$watch('searchQuery', () => { if(this.isAutoScroll) this.$nextTick(() => this.scrollToBottom()) });
-        this.$watch('filters', () => { if(this.isAutoScroll) this.$nextTick(() => this.scrollToBottom()) });
+        this.$watch('searchQuery', () => { if (this.isAutoScroll) this.$nextTick(() => this.scrollToBottom()); });
+        this.$watch('filters', () => { if (this.isAutoScroll) this.$nextTick(() => this.scrollToBottom()); });
+    },
+
+    processIncomingLog(rawLog) {
+        logIdCounter++;
+        let formattedTime = '';
+        try {
+            formattedTime = new Date(rawLog.timestamp).toLocaleTimeString([], { hour12: false });
+        } catch (_) {
+            formattedTime = rawLog.timestamp || '';
+        }
+
+        return {
+            id: logIdCounter,
+            timestamp: rawLog.timestamp,
+            formattedTime: formattedTime,
+            level: rawLog.level || 'INFO',
+            message: rawLog.message || '',
+            _renderedHtml: null
+        };
+    },
+
+    scheduleFlush() {
+        if (this._flushScheduled) return;
+        this._flushScheduled = true;
+
+        requestAnimationFrame(() => {
+            this.flushQueue();
+        });
+    },
+
+    flushQueue() {
+        this._flushScheduled = false;
+        if (this._queue.length === 0) return;
+
+        const newItems = this._queue;
+        this._queue = [];
+
+        // Batch append
+        this.logs = this.logs.concat(newItems);
+
+        // Limit log buffer
+        const limit = Alpine.store('settings')?.logLimit || window.AppConstants?.LIMITS?.DEFAULT_LOG_LIMIT || 2000;
+        if (this.logs.length > limit) {
+            this.logs = this.logs.slice(-limit);
+        }
+
+        if (this.isAutoScroll) {
+            this.$nextTick(() => this.scrollToBottom());
+        }
     },
 
     startLogStream() {
         if (this.eventSource) this.eventSource.close();
 
-        const password = Alpine.store('global').webuiPassword;
+        const password = Alpine.store('global')?.webuiPassword;
         const url = password
             ? `/api/logs/stream?history=true&password=${encodeURIComponent(password)}`
             : '/api/logs/stream?history=true';
@@ -75,18 +143,10 @@ window.Components.logsViewer = () => ({
         this.eventSource = new EventSource(url);
         this.eventSource.onmessage = (event) => {
             try {
-                const log = JSON.parse(event.data);
-                this.logs.push(log);
-
-                // Limit log buffer
-                const limit = Alpine.store('settings')?.logLimit || window.AppConstants.LIMITS.DEFAULT_LOG_LIMIT;
-                if (this.logs.length > limit) {
-                    this.logs = this.logs.slice(-limit);
-                }
-
-                if (this.isAutoScroll) {
-                    this.$nextTick(() => this.scrollToBottom());
-                }
+                const rawLog = JSON.parse(event.data);
+                const log = this.processIncomingLog(rawLog);
+                this._queue.push(log);
+                this.scheduleFlush();
             } catch (e) {
                 if (window.UILogger) window.UILogger.debug('Log parse error:', e.message);
             }
@@ -104,6 +164,7 @@ window.Components.logsViewer = () => ({
     },
 
     clearLogs() {
+        this._queue = [];
         this.logs = [];
     },
 
