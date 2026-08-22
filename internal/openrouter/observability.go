@@ -91,6 +91,9 @@ func LogObservability(log *slog.Logger, m RequestMetrics) {
 }
 
 func formatInt(n int) string {
+	if n < 0 {
+		return "-" + formatInt(-n)
+	}
 	in := fmt.Sprintf("%d", n)
 	if len(in) <= 3 {
 		return in
@@ -124,11 +127,13 @@ func ParseUsageFromJSON(body []byte) (inputTokens, outputTokens, cacheRead, cach
 		return
 	}
 
+	isOpenAIFormat := false
 	// Anthropic format
 	if v, ok := usage["input_tokens"].(float64); ok {
 		inputTokens = int(v)
 	} else if v, ok := usage["prompt_tokens"].(float64); ok {
 		inputTokens = int(v)
+		isOpenAIFormat = true
 	}
 
 	if v, ok := usage["output_tokens"].(float64); ok {
@@ -148,6 +153,15 @@ func ParseUsageFromJSON(body []byte) (inputTokens, outputTokens, cacheRead, cach
 	if promptDetails, ok := usage["prompt_tokens_details"].(map[string]any); ok {
 		if v, ok := promptDetails["cached_tokens"].(float64); ok && cacheRead == 0 {
 			cacheRead = int(v)
+		}
+	}
+
+	// OpenAI prompt_tokens includes cached tokens; normalize inputTokens to uncached input tokens
+	if isOpenAIFormat && cacheRead > 0 {
+		if inputTokens >= cacheRead {
+			inputTokens -= cacheRead
+		} else {
+			inputTokens = 0
 		}
 	}
 
@@ -185,16 +199,42 @@ func ParseUsageFromSSELine(line string, inputTokens, outputTokens, cacheRead, ca
 		}
 	}
 
-	// 2. Anthropic message_delta event: usage.output_tokens
+	// 2. Anthropic message_delta / OpenAI usage event: usage
 	if usage, ok := event["usage"].(map[string]any); ok {
 		if v, ok := usage["output_tokens"].(float64); ok && int(v) > *outputTokens {
+			*outputTokens = int(v)
+		}
+		if v, ok := usage["completion_tokens"].(float64); ok && int(v) > *outputTokens {
 			*outputTokens = int(v)
 		}
 		if v, ok := usage["input_tokens"].(float64); ok && int(v) > *inputTokens {
 			*inputTokens = int(v)
 		}
-		if v, ok := usage["completion_tokens"].(float64); ok && int(v) > *outputTokens {
-			*outputTokens = int(v)
+		if v, ok := usage["cache_read_input_tokens"].(float64); ok && int(v) > *cacheRead {
+			*cacheRead = int(v)
+		}
+		if v, ok := usage["cache_creation_input_tokens"].(float64); ok && int(v) > *cacheWrite {
+			*cacheWrite = int(v)
+		}
+		if promptDetails, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+			if v, ok := promptDetails["cached_tokens"].(float64); ok && int(v) > *cacheRead {
+				*cacheRead = int(v)
+			}
+		}
+		// OpenAI prompt_tokens
+		if v, ok := usage["prompt_tokens"].(float64); ok {
+			totalPrompt := int(v)
+			uncached := totalPrompt
+			if *cacheRead > 0 {
+				if uncached >= *cacheRead {
+					uncached -= *cacheRead
+				} else {
+					uncached = 0
+				}
+			}
+			if uncached > *inputTokens {
+				*inputTokens = uncached
+			}
 		}
 	}
 }
