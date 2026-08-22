@@ -24,6 +24,7 @@ type ModelItem struct {
 	ContextLength       int          `json:"context_length"`
 	TopProvider         *TopProvider `json:"top_provider,omitempty"`
 	MaxCompletionTokens int          `json:"max_completion_tokens,omitempty"`
+	Pricing             *Pricing     `json:"pricing,omitempty"`
 }
 
 // GetMaxOutputTokens returns max completion tokens if available.
@@ -145,3 +146,16 @@ func (c *Client) IsCacheValid() bool {
 	defer c.mu.RUnlock()
 	return len(c.cache) > 0 && !c.cachedAt.IsZero() && time.Since(c.cachedAt) < c.cacheTTL
 }
+
+// GetModelPricing retrieves pricing for a specific model ID from cache.
+func (c *Client) GetModelPricing(modelID string) (Pricing, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, m := range c.cache {
+		if strings.EqualFold(m.ID, modelID) && m.Pricing != nil {
+			return *m.Pricing, true
+		}
+	}
+	return Pricing{}, false
+}
+

@@ -531,7 +531,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 					writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request: "+err.Error())
 					return
 				}
-				server.forwardToOpenRouter(writer, request, cfg.OpenRouter, reqBody)
+				server.forwardToOpenRouter(writer, request, cfg.OpenRouter, reqBody, anthropicRequest)
 				return
 			}
 		}
@@ -617,13 +617,18 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	proxy.ServeHTTP(writer, request)
 }
 
-func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *http.Request, openRouterCfg config.OpenRouterConfig, reqBody []byte) {
+func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *http.Request, openRouterCfg config.OpenRouterConfig, reqBody []byte, anthropicRequest map[string]any) {
 	baseURL := openrouter.NormalizeBaseURL(openRouterCfg.BaseURL)
 	targetURL, err := url.Parse(baseURL + "/v1/messages")
 	if err != nil {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid OpenRouter target URL: "+err.Error())
 		return
 	}
+
+	model := stringFrom(anthropicRequest["model"])
+	sessionID := openrouter.ExtractSessionID(request, anthropicRequest)
+	pricing, _ := openrouter.DefaultClient.GetModelPricing(model)
+	startTime := server.now()
 
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
@@ -648,6 +653,61 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			if anthropicBeta := request.Header.Get("anthropic-beta"); anthropicBeta != "" {
 				req.Header.Set("anthropic-beta", anthropicBeta)
 			}
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if resp.StatusCode != http.StatusOK {
+				return nil
+			}
+
+			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
+			if isStream {
+				resp.Body = openrouter.NewSSEInterceptor(resp.Body, func(inTokens, outTokens, cacheRead, cacheWrite int) {
+					latency := server.now().Sub(startTime)
+					metrics := openrouter.RequestMetrics{
+						Model:               model,
+						SessionID:           sessionID,
+						InputTokens:         inTokens,
+						OutputTokens:        outTokens,
+						CacheReadTokens:     cacheRead,
+						CacheCreationTokens: cacheWrite,
+						Latency:             latency,
+					}
+					metrics.ComputeFinalMetrics(pricing, openrouter.DefaultSessionTracker)
+					openrouter.LogObservability(server.logger, metrics)
+
+					if server.tracker != nil {
+						server.tracker.TrackRequest(model, latency, inTokens, outTokens, cacheRead)
+					}
+				})
+				return nil
+			}
+
+			// Unary JSON response
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+			inTokens, outTokens, cacheRead, cacheWrite := openrouter.ParseUsageFromJSON(bodyBytes)
+			latency := server.now().Sub(startTime)
+			metrics := openrouter.RequestMetrics{
+				Model:               model,
+				SessionID:           sessionID,
+				InputTokens:         inTokens,
+				OutputTokens:        outTokens,
+				CacheReadTokens:     cacheRead,
+				CacheCreationTokens: cacheWrite,
+				Latency:             latency,
+			}
+			metrics.ComputeFinalMetrics(pricing, openrouter.DefaultSessionTracker)
+			openrouter.LogObservability(server.logger, metrics)
+
+			if server.tracker != nil {
+				server.tracker.TrackRequest(model, latency, inTokens, outTokens, cacheRead)
+			}
+
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
 			server.logger.Error("OpenRouter proxy error", "error", proxyErr, "url", targetURL.String())
