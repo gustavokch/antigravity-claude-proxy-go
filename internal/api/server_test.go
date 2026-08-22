@@ -518,6 +518,10 @@ func TestServer_TrackMetrics(t *testing.T) {
 }
 
 func TestModelMappingRedirection(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
 	// Setup configuration with a mapping from custom-object-source (object) and gemini-custom-source (string)
 	cfg := config.DefaultConfig()
 	cfg.ModelMapping = map[string]any{
@@ -580,6 +584,7 @@ func TestModelMappingRedirection(t *testing.T) {
 
 func TestTransparentForwardingToCustomEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
 	var receivedPath string
