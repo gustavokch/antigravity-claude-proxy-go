@@ -386,3 +386,130 @@ func TestOpenRouterObservability_MultiCallSessionProgression(t *testing.T) {
 		t.Errorf("turn 2: expected total cost to double, got %f vs %f", s2.TotalCost, s1.TotalCost*2)
 	}
 }
+
+func TestOpenRouterObservability_ColdCacheAutoPricing(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/models" {
+			// Catalog discovery response
+			resp := openrouter.ModelsResponse{
+				Data: []openrouter.ModelItem{
+					{
+						ID:   "qwen/qwen3.8-max",
+						Name: "Qwen 3.8 Max",
+						Pricing: &openrouter.Pricing{
+							Prompt:          0.000002,
+							Completion:      0.000006,
+							InputCacheRead:  0.00000025,
+							InputCacheWrite: 0.0000025,
+						},
+					},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if r.URL.Path == "/v1/messages" {
+			// Messages API response matching user log: 18249 in, 35975 cache read, 383 out
+			resp := map[string]any{
+				"id":    "msg_qwen_test",
+				"type":  "message",
+				"role":  "assistant",
+				"model": "qwen/qwen3.8-max",
+				"content": []map[string]any{
+					{"type": "text", "text": "Qwen response"},
+				},
+				"usage": map[string]any{
+					"input_tokens":            18249,
+					"output_tokens":           383,
+					"cache_read_input_tokens": 35975,
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer mockOR.Close()
+
+	// Clear cache to simulate cold start
+	openrouter.DefaultClient.SaveCache(nil)
+
+	var logBuf bytes.Buffer
+	testLogger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	_, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-test-key",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{
+					"id":      "qwen/qwen3.8-max",
+					"enabled": true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	openrouter.DefaultSessionTracker.Reset()
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Logger:  testLogger,
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"qwen/qwen3.8-max","messages":[{"role":"user","content":"Hello Qwen"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	req.Header.Set("x-session-id", "session-qwen-1")
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "[OpenRouter]") {
+		t.Errorf("expected [OpenRouter] log tag, got: %s", logs)
+	}
+	if !strings.Contains(logs, "gateway=openrouter") {
+		t.Errorf("expected gateway=openrouter attribute, got: %s", logs)
+	}
+
+	// Verify cost is non-zero
+	// Expected cost: (18249 * 0.000002) + (383 * 0.000006) + (35975 * 0.00000025)
+	// = 0.036498 + 0.002298 + 0.00899375 = 0.04778975 => ~$0.0478
+	if strings.Contains(logs, "$0.0000 ($0.0000 session)") {
+		t.Errorf("expected non-zero cost calculation in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "$0.0478 ($0.0478 session)") {
+		t.Errorf("expected $0.0478 in log, got: %s", logs)
+	}
+
+	sessionStats, ok := openrouter.DefaultSessionTracker.Get("session-qwen-1")
+	if !ok {
+		t.Fatalf("expected session stats for session-qwen-1")
+	}
+	if sessionStats.TotalCost <= 0.04 {
+		t.Errorf("expected total cost ~0.0478, got %f", sessionStats.TotalCost)
+	}
+}

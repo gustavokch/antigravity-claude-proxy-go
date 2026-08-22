@@ -113,14 +113,21 @@ func New(options Options) (*Server, error) {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	return &Server{
+	srv := &Server{
 		apiKey: options.APIKey, projectID: options.ProjectID,
 		credentials: options.Credentials, newUpstream: options.NewUpstream, backend: options.Backend,
 		builder: options.Builder, now: options.Now, logger: options.Logger,
 		accountManager: options.AccountManager, broadcaster: options.Broadcaster,
 		webUI: options.WebUI, oauthHandler: options.OAuthHandler, tracker: options.Tracker,
 		projects: make(map[string]string),
-	}, nil
+	}
+
+	cfg := config.Get()
+	if cfg.OpenRouter.Enabled {
+		openrouter.DefaultClient.WarmupCacheAsync(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL)
+	}
+
+	return srv, nil
 }
 
 type responseWriterRecorder struct {
@@ -627,7 +634,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 
 	model := stringFrom(anthropicRequest["model"])
 	sessionID := openrouter.ExtractSessionID(request, anthropicRequest)
-	pricing, _ := openrouter.DefaultClient.GetModelPricing(model)
+	pricing, _ := openrouter.DefaultClient.ResolveModelPricing(request.Context(), model, openRouterCfg.APIKey, openRouterCfg.BaseURL)
 	startTime := server.now()
 
 	proxy := &httputil.ReverseProxy{
@@ -659,6 +666,13 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return nil
 			}
 
+			finalPricing := pricing
+			if finalPricing.Prompt == 0 && finalPricing.Completion == 0 {
+				if p, ok := openrouter.DefaultClient.GetModelPricing(model); ok {
+					finalPricing = p
+				}
+			}
+
 			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 			if isStream {
 				resp.Body = openrouter.NewSSEInterceptor(resp.Body, func(inTokens, outTokens, cacheRead, cacheWrite int) {
@@ -672,7 +686,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 						CacheCreationTokens: cacheWrite,
 						Latency:             latency,
 					}
-					metrics.ComputeFinalMetrics(pricing, openrouter.DefaultSessionTracker)
+					metrics.ComputeFinalMetrics(finalPricing, openrouter.DefaultSessionTracker)
 					openrouter.LogObservability(server.logger, metrics)
 
 					if server.tracker != nil {
@@ -700,7 +714,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				CacheCreationTokens: cacheWrite,
 				Latency:             latency,
 			}
-			metrics.ComputeFinalMetrics(pricing, openrouter.DefaultSessionTracker)
+			metrics.ComputeFinalMetrics(finalPricing, openrouter.DefaultSessionTracker)
 			openrouter.LogObservability(server.logger, metrics)
 
 			if server.tracker != nil {

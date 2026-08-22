@@ -1080,6 +1080,9 @@ func (server *Server) handleOpenRouterConfigSave(writer http.ResponseWriter, req
 	if updater, ok := server.backend.(ConfigUpdater); ok {
 		updater.UpdateConfig(saved)
 	}
+	if saved.OpenRouter.Enabled {
+		openrouter.DefaultClient.WarmupCacheAsync(saved.OpenRouter.APIKey, saved.OpenRouter.BaseURL)
+	}
 	pub := config.GetPublicConfig()
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",
