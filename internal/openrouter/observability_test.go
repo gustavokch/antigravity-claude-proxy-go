@@ -101,7 +101,7 @@ func TestParseUsageFromJSON(t *testing.T) {
 		t.Errorf("unexpected anthropic parse: in=%d, out=%d, cr=%d, cw=%d", in, out, cr, cw)
 	}
 
-	// OpenAI JSON
+	// OpenAI JSON (prompt_tokens 1000 with 500 cached -> 500 uncached input)
 	openaiJSON := []byte(`{
 		"usage": {
 			"prompt_tokens": 1000,
@@ -113,8 +113,50 @@ func TestParseUsageFromJSON(t *testing.T) {
 	}`)
 
 	in, out, cr, cw = ParseUsageFromJSON(openaiJSON)
-	if in != 1000 || out != 200 || cr != 500 || cw != 0 {
+	if in != 500 || out != 200 || cr != 500 || cw != 0 {
 		t.Errorf("unexpected openai parse: in=%d, out=%d, cr=%d, cw=%d", in, out, cr, cw)
+	}
+}
+
+func TestParseUsageFromSSELine_OpenAI(t *testing.T) {
+	var in, out, cr, cw int
+
+	// OpenAI streaming chunk usage format
+	line := `data: {"id":"chatcmpl-1","choices":[{"delta":{}}],"usage":{"prompt_tokens":800,"completion_tokens":150,"prompt_tokens_details":{"cached_tokens":300}}}`
+	ParseUsageFromSSELine(line, &in, &out, &cr, &cw)
+
+	if in != 500 { // 800 - 300 = 500
+		t.Errorf("expected 500 uncached input tokens, got %d", in)
+	}
+	if out != 150 {
+		t.Errorf("expected 150 output tokens, got %d", out)
+	}
+	if cr != 300 {
+		t.Errorf("expected 300 cache read tokens, got %d", cr)
+	}
+}
+
+func TestFormatInt(t *testing.T) {
+	tests := []struct {
+		input    int
+		expected string
+	}{
+		{0, "0"},
+		{50, "50"},
+		{999, "999"},
+		{1000, "1,000"},
+		{1234567, "1,234,567"},
+		{-50, "-50"},
+		{-500, "-500"},
+		{-1000, "-1,000"},
+		{-1234567, "-1,234,567"},
+	}
+
+	for _, tt := range tests {
+		got := formatInt(tt.input)
+		if got != tt.expected {
+			t.Errorf("formatInt(%d) = %q, expected %q", tt.input, got, tt.expected)
+		}
 	}
 }
 

@@ -119,11 +119,48 @@ func TestExtractSessionID(t *testing.T) {
 		t.Errorf("expected meta-session-456, got %s", id)
 	}
 
-	// 3. Fallback
-	req3 := httptest.NewRequest("POST", "/v1/messages", nil)
-	req3.RemoteAddr = "127.0.0.1:12345"
-	id := ExtractSessionID(req3, nil)
-	if !strings.HasPrefix(id, "session_") {
-		t.Errorf("expected fallback session prefix session_, got %s", id)
+	// 3. Fallback with port stripping (different ports from same client yield same session ID)
+	req3a := httptest.NewRequest("POST", "/v1/messages", nil)
+	req3a.RemoteAddr = "127.0.0.1:12345"
+	req3a.Header.Set("User-Agent", "TestClient/1.0")
+	idA := ExtractSessionID(req3a, nil)
+
+	req3b := httptest.NewRequest("POST", "/v1/messages", nil)
+	req3b.RemoteAddr = "127.0.0.1:54321"
+	req3b.Header.Set("User-Agent", "TestClient/1.0")
+	idB := ExtractSessionID(req3b, nil)
+
+	if !strings.HasPrefix(idA, "session_") {
+		t.Errorf("expected fallback session prefix session_, got %s", idA)
+	}
+	if idA != idB {
+		t.Errorf("expected same session ID despite different ephemeral ports, got %s vs %s", idA, idB)
+	}
+}
+
+func TestSessionTracker_CapacityEviction(t *testing.T) {
+	// Max capacity = 3, long TTL so nothing expires naturally
+	st := NewSessionTracker(24*time.Hour, 3)
+
+	st.Record("sess-1", 100, 50, 0, 0.01)
+	time.Sleep(5 * time.Millisecond)
+	st.Record("sess-2", 100, 50, 0, 0.01)
+	time.Sleep(5 * time.Millisecond)
+	st.Record("sess-3", 100, 50, 0, 0.01)
+
+	// Now add 4th session - sess-1 should be evicted as the oldest
+	st.Record("sess-4", 100, 50, 0, 0.01)
+
+	if _, ok := st.Get("sess-1"); ok {
+		t.Errorf("expected sess-1 to be evicted as oldest")
+	}
+	if _, ok := st.Get("sess-2"); !ok {
+		t.Errorf("expected sess-2 to exist")
+	}
+	if _, ok := st.Get("sess-3"); !ok {
+		t.Errorf("expected sess-3 to exist")
+	}
+	if _, ok := st.Get("sess-4"); !ok {
+		t.Errorf("expected sess-4 to exist")
 	}
 }
