@@ -15,11 +15,12 @@ type EndpointConfig struct {
 }
 
 type OpenRouterModelConfig struct {
-	ID          string `json:"id"`
-	Alias       string `json:"alias,omitempty"`
-	DisplayName string `json:"displayName,omitempty"`
-	ContextLen  int    `json:"contextLength,omitempty"`
-	Enabled     bool   `json:"enabled"`
+	ID              string `json:"id"`
+	Alias           string `json:"alias,omitempty"`
+	DisplayName     string `json:"displayName,omitempty"`
+	ContextLen      int    `json:"contextLength,omitempty"`
+	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
+	Enabled         bool   `json:"enabled"`
 }
 
 type OpenRouterConfig struct {

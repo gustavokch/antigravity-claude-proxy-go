@@ -467,11 +467,15 @@ window.Components.models = () => ({
 
     async addToAllowlist(discoveredModel, alias = '') {
         if (this.isAllowlisted(discoveredModel.id)) return;
+        const maxOutput = discoveredModel.max_completion_tokens ||
+            (discoveredModel.top_provider && discoveredModel.top_provider.max_completion_tokens) ||
+            0;
         const newItem = {
             id: discoveredModel.id,
             alias: (alias || '').trim(),
             displayName: discoveredModel.name || discoveredModel.id,
             contextLength: discoveredModel.context_length || 0,
+            maxOutputTokens: maxOutput,
             enabled: true
         };
         this.openRouterConfig.allowlist.push(newItem);

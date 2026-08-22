@@ -196,11 +196,12 @@ func TestMergedModelsEndpoint(t *testing.T) {
 			"apiKey":  "sk-or-v1-secret-123",
 			"allowlist": []map[string]any{
 				{
-					"id":            "anthropic/claude-3.7-sonnet",
-					"alias":         "claude-3-7-openrouter",
-					"displayName":   "Claude 3.7 Sonnet (OpenRouter)",
-					"contextLength": 200000,
-					"enabled":       true,
+					"id":              "anthropic/claude-3.7-sonnet",
+					"alias":           "claude-3-7-openrouter",
+					"displayName":     "Claude 3.7 Sonnet (OpenRouter)",
+					"contextLength":   200000,
+					"maxOutputTokens": 128000,
+					"enabled":         true,
 				},
 				{
 					"id":      "disabled/model",
@@ -253,6 +254,9 @@ func TestMergedModelsEndpoint(t *testing.T) {
 			foundORModel = true
 			if m["owned_by"] != "openrouter" {
 				t.Errorf("expected owned_by openrouter, got %v", m["owned_by"])
+			}
+			if m["max_output_tokens"] != float64(128000) {
+				t.Errorf("expected max_output_tokens 128000, got %v", m["max_output_tokens"])
 			}
 		}
 		if id == "claude-3-7-openrouter" {

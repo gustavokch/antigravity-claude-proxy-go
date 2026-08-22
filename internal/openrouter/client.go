@@ -11,12 +11,30 @@ import (
 	"time"
 )
 
+// TopProvider represents provider-specific limits in OpenRouter responses.
+type TopProvider struct {
+	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+}
+
 // ModelItem represents a single OpenRouter model in the catalog.
 type ModelItem struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	ContextLength int    `json:"context_length"`
+	ID                  string       `json:"id"`
+	Name                string       `json:"name"`
+	Description         string       `json:"description"`
+	ContextLength       int          `json:"context_length"`
+	TopProvider         *TopProvider `json:"top_provider,omitempty"`
+	MaxCompletionTokens int          `json:"max_completion_tokens,omitempty"`
+}
+
+// GetMaxOutputTokens returns max completion tokens if available.
+func (m *ModelItem) GetMaxOutputTokens() int {
+	if m.MaxCompletionTokens > 0 {
+		return m.MaxCompletionTokens
+	}
+	if m.TopProvider != nil && m.TopProvider.MaxCompletionTokens != nil && *m.TopProvider.MaxCompletionTokens > 0 {
+		return *m.TopProvider.MaxCompletionTokens
+	}
+	return 0
 }
 
 // ModelsResponse represents the response format of OpenRouter's GET /v1/models.

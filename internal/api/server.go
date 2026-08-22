@@ -305,6 +305,10 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			if contextLen <= 0 {
 				contextLen = 200000
 			}
+			maxOutput := item.MaxOutputTokens
+			if maxOutput <= 0 {
+				maxOutput = contextLen
+			}
 			models = append(models, map[string]any{
 				"id":                item.ID,
 				"object":            "model",
@@ -312,7 +316,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 				"owned_by":          "openrouter",
 				"description":       desc,
 				"context_window":    contextLen,
-				"max_output_tokens": 8192,
+				"max_output_tokens": maxOutput,
 				"supports_thinking": true,
 			})
 			if item.Alias != "" && item.Alias != item.ID {
@@ -323,7 +327,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 					"owned_by":          "openrouter",
 					"description":       desc + " (Alias)",
 					"context_window":    contextLen,
-					"max_output_tokens": 8192,
+					"max_output_tokens": maxOutput,
 					"supports_thinking": true,
 				})
 			}

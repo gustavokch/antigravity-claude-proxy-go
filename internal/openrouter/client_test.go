@@ -32,18 +32,21 @@ func TestNormalizeBaseURL(t *testing.T) {
 }
 
 func TestFetchAvailableModels_Success(t *testing.T) {
+	maxTokensVal := 128000
 	mockModels := []ModelItem{
 		{
 			ID:            "anthropic/claude-3.7-sonnet",
 			Name:          "Anthropic: Claude 3.7 Sonnet",
 			Description:   "Claude 3.7 Sonnet with hybrid reasoning",
 			ContextLength: 200000,
+			TopProvider:   &TopProvider{MaxCompletionTokens: &maxTokensVal},
 		},
 		{
-			ID:            "openai/gpt-4o",
-			Name:          "OpenAI: GPT-4o",
-			Description:   "Omni model by OpenAI",
-			ContextLength: 128000,
+			ID:                  "openai/gpt-4o",
+			Name:                "OpenAI: GPT-4o",
+			Description:         "Omni model by OpenAI",
+			ContextLength:       128000,
+			MaxCompletionTokens: 16384,
 		},
 	}
 
@@ -75,6 +78,12 @@ func TestFetchAvailableModels_Success(t *testing.T) {
 	}
 	if models[0].ID != "anthropic/claude-3.7-sonnet" {
 		t.Errorf("expected model ID anthropic/claude-3.7-sonnet, got %s", models[0].ID)
+	}
+	if models[0].GetMaxOutputTokens() != 128000 {
+		t.Errorf("expected max output tokens 128000, got %d", models[0].GetMaxOutputTokens())
+	}
+	if models[1].GetMaxOutputTokens() != 16384 {
+		t.Errorf("expected max output tokens 16384, got %d", models[1].GetMaxOutputTokens())
 	}
 
 	// Verify cached
