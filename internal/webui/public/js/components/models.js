@@ -708,11 +708,24 @@ window.Components.models = () => ({
     },
 
     /**
-     * Get list of all models (discovered + custom alias keys)
+     * Get list of all models (discovered + custom endpoints + openrouter allowlist + custom alias keys)
      */
     get allConfiguredModels() {
         const dataStore = Alpine.store('data');
         const modelSet = new Set(dataStore.models || []);
+
+        if (dataStore.customEndpoints) {
+            Object.keys(dataStore.customEndpoints).forEach(m => modelSet.add(m));
+        }
+
+        if (dataStore.openrouter && dataStore.openrouter.allowlist) {
+            dataStore.openrouter.allowlist.forEach(m => {
+                if (m.enabled !== false) {
+                    if (m.id) modelSet.add(m.id);
+                    if (m.alias) modelSet.add(m.alias);
+                }
+            });
+        }
 
         if (dataStore.modelConfig) {
             Object.keys(dataStore.modelConfig).forEach(m => modelSet.add(m));
@@ -734,11 +747,14 @@ window.Components.models = () => ({
     },
 
     /**
-     * Check if a model is a purely custom alias (not in discovered cloudcode models)
+     * Check if a model is a purely custom alias (not in discovered cloudcode models, custom endpoints, or openrouter allowlist)
      */
     isCustomAlias(modelId) {
         const dataStore = Alpine.store('data');
         const discovered = dataStore.models || [];
-        return !discovered.includes(modelId);
+        if (discovered.includes(modelId)) return false;
+        if (dataStore.customEndpoints && dataStore.customEndpoints[modelId]) return false;
+        if (dataStore.openrouter && dataStore.openrouter.allowlist && dataStore.openrouter.allowlist.some(m => (m.id === modelId || m.alias === modelId))) return false;
+        return true;
     }
 });

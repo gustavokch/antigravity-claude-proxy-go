@@ -1226,13 +1226,16 @@
                                         <td class="pl-4 font-mono text-xs text-gray-300">
                                             <div class="flex items-center gap-2">
                                                 <span class="w-1.5 h-1.5 rounded-full"
-                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]' : ($store.data.getModelFamily(modelId) === 'forwarded' ? 'bg-neon-cyan shadow-[0_0_5px_rgba(6,182,212,0.5)]' : 'bg-gray-600'))"></span>
+                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]' : ($store.data.getModelFamily(modelId) === 'forwarded' ? 'bg-neon-cyan shadow-[0_0_5px_rgba(6,182,212,0.5)]' : ($store.data.getModelFamily(modelId) === 'openrouter' ? 'bg-indigo-400 shadow-[0_0_5px_rgba(129,140,248,0.5)]' : 'bg-gray-600')))"></span>
                                                 <span x-text="modelId"></span>
                                                 <template x-if="isCustomAlias(modelId)">
                                                     <span class="badge badge-xs bg-neon-purple/10 text-neon-purple border-neon-purple/30 text-[9px] font-mono uppercase tracking-wider" x-text="$store.global.t('aliasBadge') || 'Alias'">Alias</span>
                                                 </template>
                                                 <template x-if="$store.data.customEndpoints && $store.data.customEndpoints[modelId]">
                                                     <span class="badge badge-xs bg-neon-cyan/10 text-neon-cyan border-neon-cyan/30 text-[9px] font-mono uppercase tracking-wider" x-text="$store.global.t('forwardedBadge') || 'Forwarded'">Forwarded</span>
+                                                </template>
+                                                <template x-if="$store.data.openrouter && $store.data.openrouter.allowlist && $store.data.openrouter.allowlist.some(m => m.id === modelId || m.alias === modelId)">
+                                                    <span class="badge badge-xs bg-indigo-500/10 text-indigo-400 border-indigo-500/30 text-[9px] font-mono uppercase tracking-wider" x-text="$store.global.t('openRouterBadge') || 'OpenRouter'">OpenRouter</span>
                                                 </template>
                                             </div>
                                         </td>
@@ -1501,7 +1504,7 @@
                                 <input type="text" x-model="aliasModal.targetModel"
                                     list="available-targets-list"
                                     class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-purple"
-                                    placeholder="e.g. claude-3-opus-20240229 or gemini-3.5-flash-low" />
+                                    placeholder="e.g. anthropic/claude-3.7-sonnet, or-sonnet, or gemini-2.5-pro" />
                             </div>
                         </div>
 
