@@ -13,6 +13,7 @@ import (
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 type mockCloudCodeBackend struct{}
@@ -36,6 +37,20 @@ func TestOpenRouterForwarding_Unary(t *testing.T) {
 	var receivedBody map[string]any
 
 	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
+				{
+					ID:   "anthropic/claude-3.7-sonnet",
+					Name: "Claude 3.7 Sonnet",
+					Pricing: &openrouter.Pricing{
+						Prompt:     0.000003,
+						Completion: 0.000015,
+					},
+				},
+			}})
+			return
+		}
 		if r.URL.Path != "/v1/messages" {
 			t.Errorf("expected path /v1/messages, got %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -49,7 +64,6 @@ func TestOpenRouterForwarding_Unary(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &receivedBody)
 
-		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"text","text":"Hello from OpenRouter!"}],"model":"anthropic/claude-3.7-sonnet"}`))
 	}))
 	defer mockOR.Close()
@@ -291,9 +305,22 @@ func TestModelMappingToOpenRouterAndForwarded(t *testing.T) {
 
 	var receivedORBody map[string]any
 	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
+				{
+					ID:   "anthropic/claude-3.7-sonnet",
+					Name: "Claude 3.7 Sonnet",
+					Pricing: &openrouter.Pricing{
+						Prompt:     0.000003,
+						Completion: 0.000015,
+					},
+				},
+			}})
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &receivedORBody)
-		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_or","type":"message","role":"assistant","content":[{"type":"text","text":"From OR"}],"model":"anthropic/claude-3.7-sonnet"}`))
 	}))
 	defer mockOR.Close()
