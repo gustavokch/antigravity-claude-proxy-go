@@ -1102,13 +1102,6 @@ func (server *Server) handleOpenRouterModelsFetch(writer http.ResponseWriter, re
 	if baseURL == "" {
 		baseURL = cfg.OpenRouter.BaseURL
 	}
-	if strings.TrimSpace(apiKey) == "" {
-		writeJSON(writer, http.StatusBadRequest, map[string]any{
-			"status": "error",
-			"error":  "OpenRouter API key is required to fetch models",
-		})
-		return
-	}
 	models, err := openrouter.DefaultClient.FetchAvailableModels(request.Context(), apiKey, baseURL)
 	if err != nil {
 		writeJSON(writer, http.StatusBadGateway, map[string]any{

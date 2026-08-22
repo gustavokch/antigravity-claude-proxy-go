@@ -253,4 +253,19 @@ func TestOpenRouterConfig(t *testing.T) {
 	if saved2.OpenRouter.APIKey != "sk-or-v1-secretkey123" {
 		t.Errorf("expected secret APIKey to be preserved when saving public config, got %s", saved2.OpenRouter.APIKey)
 	}
+
+	// Verify explicitly clearing API key (apiKey: "", hasApiKey: false) works
+	clearUpdates := map[string]any{
+		"openrouter": map[string]any{
+			"apiKey":    "",
+			"hasApiKey": false,
+		},
+	}
+	saved3, err := Save(clearUpdates)
+	if err != nil {
+		t.Fatalf("Save error clearing apiKey: %v", err)
+	}
+	if saved3.OpenRouter.APIKey != "" {
+		t.Errorf("expected apiKey to be cleared, got %s", saved3.OpenRouter.APIKey)
+	}
 }

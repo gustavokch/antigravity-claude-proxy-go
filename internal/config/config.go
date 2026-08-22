@@ -237,8 +237,8 @@ func Save(updates map[string]any) (Config, error) {
 				hasApiKey, _ := orCopy["hasApiKey"].(bool)
 				apiKey, _ := orCopy["apiKey"].(string)
 				existingOpenRouter, _ := currentMap["openrouter"].(map[string]any)
-				if (hasApiKey || apiKey == "") && existingOpenRouter != nil {
-					if existingKey, ok := existingOpenRouter["apiKey"].(string); ok && existingKey != "" && apiKey == "" {
+				if hasApiKey && apiKey == "" && existingOpenRouter != nil {
+					if existingKey, ok := existingOpenRouter["apiKey"].(string); ok && existingKey != "" {
 						orCopy["apiKey"] = existingKey
 					}
 				}

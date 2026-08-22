@@ -572,6 +572,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	}
 
 	proxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = targetURL.Scheme
 			req.URL.Host = targetURL.Host
@@ -604,6 +605,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	}
 
 	proxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = targetURL.Scheme
 			req.URL.Host = targetURL.Host

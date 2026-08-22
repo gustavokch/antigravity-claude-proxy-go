@@ -586,6 +586,28 @@ func TestManagement_OpenRouterEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("POST /api/openrouter/models/fetch without apiKey", func(t *testing.T) {
+		payload := fmt.Sprintf(`{"baseUrl":"%s"}`, mockOR.URL)
+		req := httptest.NewRequest(http.MethodPost, "/api/openrouter/models/fetch", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res struct {
+			Status string `json:"status"`
+			Total  int    `json:"total"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		if res.Total != 1 {
+			t.Errorf("expected total 1, got %d", res.Total)
+		}
+	})
+
 	t.Run("GET /api/openrouter/models/cached", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/openrouter/models/cached", nil)
 		rec := httptest.NewRecorder()
