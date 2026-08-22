@@ -280,3 +280,138 @@ func TestMergedModelsEndpoint(t *testing.T) {
 		t.Errorf("disabled model should not be in models list")
 	}
 }
+
+func TestModelMappingToOpenRouterAndForwarded(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedORBody map[string]any
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedORBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_or","type":"message","role":"assistant","content":[{"type":"text","text":"From OR"}],"model":"anthropic/claude-3.7-sonnet"}`))
+	}))
+	defer mockOR.Close()
+
+	var receivedCustomBody map[string]any
+	mockCustom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedCustomBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_custom","type":"message","role":"assistant","content":[{"type":"text","text":"From Custom"}],"model":"custom-forwarded-model"}`))
+	}))
+	defer mockCustom.Close()
+
+	_, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-test-key",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{
+					"id":          "anthropic/claude-3.7-sonnet",
+					"alias":       "or-sonnet",
+					"displayName": "Claude 3.7 Sonnet (OpenRouter)",
+					"enabled":     true,
+				},
+			},
+		},
+		"customEndpoints": map[string]any{
+			"custom-forwarded-model": map[string]any{
+				"url":    mockCustom.URL,
+				"apiKey": "custom-api-key",
+			},
+		},
+		"modelMapping": map[string]any{
+			// Map alias directly to OpenRouter Model ID
+			"alias-to-or-id": map[string]any{
+				"mapping": "anthropic/claude-3.7-sonnet",
+			},
+			// Map alias directly to OpenRouter Local Alias
+			"alias-to-or-alias": map[string]any{
+				"mapping": "or-sonnet",
+			},
+			// Map alias to Custom Forwarding Endpoint
+			"alias-to-custom": map[string]any{
+				"mapping": "custom-forwarded-model",
+			},
+			// Multi-hop mapping: hop1 -> hop2 -> or-sonnet
+			"hop-1": map[string]any{
+				"mapping": "hop-2",
+			},
+			"hop-2": map[string]any{
+				"mapping": "or-sonnet",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	server, err := New(Options{
+		APIKey:  "test-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	// 1. Test mapping to OpenRouter ID
+	reqPayload := `{"model":"alias-to-or-id","messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("alias-to-or-id expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedORBody["model"] != "anthropic/claude-3.7-sonnet" {
+		t.Errorf("expected OpenRouter target model anthropic/claude-3.7-sonnet, got %v", receivedORBody["model"])
+	}
+
+	// 2. Test mapping to OpenRouter Alias
+	reqPayload = `{"model":"alias-to-or-alias","messages":[{"role":"user","content":"Hi"}]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-key")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("alias-to-or-alias expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedORBody["model"] != "anthropic/claude-3.7-sonnet" {
+		t.Errorf("expected OpenRouter target model anthropic/claude-3.7-sonnet, got %v", receivedORBody["model"])
+	}
+
+	// 3. Test mapping to Custom Forwarding Endpoint
+	reqPayload = `{"model":"alias-to-custom","messages":[{"role":"user","content":"Hi"}]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-key")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("alias-to-custom expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedCustomBody["model"] != "custom-forwarded-model" {
+		t.Errorf("expected Custom Endpoint target model custom-forwarded-model, got %v", receivedCustomBody["model"])
+	}
+
+	// 4. Test multi-hop chained mapping
+	reqPayload = `{"model":"hop-1","messages":[{"role":"user","content":"Hi"}]}`
+	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-key")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hop-1 expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedORBody["model"] != "anthropic/claude-3.7-sonnet" {
+		t.Errorf("expected chained mapping to resolve to anthropic/claude-3.7-sonnet, got %v", receivedORBody["model"])
+	}
+}

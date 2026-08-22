@@ -29,7 +29,10 @@ import (
 	"antigravity-go-proxy/internal/stats"
 )
 
-const maxRequestBody = 50 << 20
+const (
+	maxRequestBody = 50 << 20
+	maxMappingHops = 5
+)
 
 var jsonBufferPool = sync.Pool{
 	New: func() any {
@@ -477,7 +480,17 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	cfg := config.Get()
 	if cfg.ModelMapping != nil {
 		reqModel := stringFrom(anthropicRequest["model"])
-		if mappingVal, exists := cfg.ModelMapping[reqModel]; exists {
+		current := reqModel
+		visited := make(map[string]bool)
+		for i := 0; i < maxMappingHops; i++ {
+			if visited[current] {
+				break
+			}
+			visited[current] = true
+			mappingVal, exists := cfg.ModelMapping[current]
+			if !exists {
+				break
+			}
 			var mappedModel string
 			switch v := mappingVal.(type) {
 			case string:
@@ -485,10 +498,14 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			case map[string]any:
 				mappedModel, _ = v["mapping"].(string)
 			}
-			if mappedModel != "" {
-				slog.Info(fmt.Sprintf("[Server] Mapping model %s -> %s", reqModel, mappedModel))
-				anthropicRequest["model"] = mappedModel
+			if mappedModel == "" || mappedModel == current {
+				break
 			}
+			current = mappedModel
+		}
+		if current != reqModel {
+			slog.Info(fmt.Sprintf("[Server] Mapping model %s -> %s", reqModel, current))
+			anthropicRequest["model"] = current
 		}
 	}
 	if _, exists := anthropicRequest["max_tokens"]; !exists {
