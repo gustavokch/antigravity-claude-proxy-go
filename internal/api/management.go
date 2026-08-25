@@ -1157,7 +1157,8 @@ func (server *Server) handleOpenRouterProvidersGet(writer http.ResponseWriter, r
 	if !ok {
 		fetched, err := openrouter.DefaultEndpointsClient.ResolveModelEndpoints(request.Context(), model, cfg.OpenRouter.APIKey, baseURL)
 		if err != nil {
-			server.logger.Warn("failed to fetch OpenRouter endpoints", "model", model, "error", err)
+			// Do not log the raw error: it embeds the upstream response body.
+			server.logger.Warn("failed to fetch OpenRouter endpoints", "model", model)
 			writeJSON(writer, http.StatusBadGateway, map[string]any{"status": "error", "error": "Failed to fetch provider endpoints from OpenRouter"})
 			return
 		}
