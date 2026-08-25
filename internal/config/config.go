@@ -15,12 +15,30 @@ type EndpointConfig struct {
 }
 
 type OpenRouterModelConfig struct {
-	ID              string `json:"id"`
-	Alias           string `json:"alias,omitempty"`
-	DisplayName     string `json:"displayName,omitempty"`
-	ContextLen      int    `json:"contextLength,omitempty"`
-	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
-	Enabled         bool   `json:"enabled"`
+	ID              string   `json:"id"`
+	Alias           string   `json:"alias,omitempty"`
+	DisplayName     string   `json:"displayName,omitempty"`
+	ContextLen      int      `json:"contextLength,omitempty"`
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	Enabled         bool     `json:"enabled"`
+	ProviderMode    string   `json:"providerMode,omitempty"`
+	PinnedProvider  string   `json:"pinnedProvider,omitempty"`
+	ProviderOrder   []string `json:"providerOrder,omitempty"`
+}
+
+// OpenRouterRoutingConfig holds routing strategy knobs.
+type OpenRouterRoutingConfig struct {
+	FailureThreshold int     `json:"failureThreshold,omitempty"`
+	Retry429Max      int     `json:"retry429Max,omitempty"`
+	BackoffBaseMs    int     `json:"backoffBaseMs,omitempty"`
+	BackoffCapMs     int     `json:"backoffCapMs,omitempty"`
+	RequestBudgetMs  int     `json:"requestBudgetMs,omitempty"`
+	RankWeights      struct {
+		Availability float64 `json:"availability,omitempty"`
+		Context      float64 `json:"context,omitempty"`
+		Latency      float64 `json:"latency,omitempty"`
+		Throughput   float64 `json:"throughput,omitempty"`
+	} `json:"rankWeights,omitempty"`
 }
 
 type OpenRouterConfig struct {
@@ -28,6 +46,7 @@ type OpenRouterConfig struct {
 	APIKey    string                  `json:"apiKey,omitempty"`
 	BaseURL   string                  `json:"baseUrl,omitempty"`
 	Allowlist []OpenRouterModelConfig `json:"allowlist,omitempty"`
+	Routing   OpenRouterRoutingConfig `json:"routing,omitempty"`
 }
 
 type AccountSelectionConfig struct {
@@ -95,6 +114,7 @@ func DefaultConfig() Config {
 			Enabled:   false,
 			BaseURL:   "https://openrouter.ai/api",
 			Allowlist: []OpenRouterModelConfig{},
+			Routing:   DefaultRoutingConfig(),
 		},
 		AccountSelection: AccountSelectionConfig{
 			Strategy: "hybrid",
@@ -128,6 +148,42 @@ func GetConfigDir() string {
 		return filepath.Join(".", ".config", "antigravity-proxy")
 	}
 	return filepath.Join(home, ".config", "antigravity-proxy")
+}
+
+// RankWeightsToOpenRouter returns the RankWeights as seen by the openrouter package, with defaults applied.
+func (c OpenRouterRoutingConfig) RankWeightsToOpenRouter() (w struct {
+	Availability float64
+	Context      float64
+	Latency      float64
+	Throughput   float64
+}) {
+	w.Availability = c.RankWeights.Availability
+	w.Context = c.RankWeights.Context
+	w.Latency = c.RankWeights.Latency
+	w.Throughput = c.RankWeights.Throughput
+	if w.Availability == 0 && w.Context == 0 && w.Latency == 0 && w.Throughput == 0 {
+		w.Availability = 0.4
+		w.Context = 0.15
+		w.Latency = 0.25
+		w.Throughput = 0.2
+	}
+	return
+}
+
+// DefaultRoutingConfig returns routing defaults used by config and tests.
+func DefaultRoutingConfig() OpenRouterRoutingConfig {
+	c := OpenRouterRoutingConfig{
+		FailureThreshold: 10,
+		Retry429Max:      10,
+		BackoffBaseMs:    500,
+		BackoffCapMs:     120000,
+		RequestBudgetMs:  120000,
+	}
+	c.RankWeights.Availability = 0.4
+	c.RankWeights.Context = 0.15
+	c.RankWeights.Latency = 0.25
+	c.RankWeights.Throughput = 0.2
+	return c
 }
 
 // ConfigFilePath returns path to ~/.config/antigravity-proxy/config.json.

@@ -51,6 +51,11 @@ func TestOpenRouterForwarding_Unary(t *testing.T) {
 			}})
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/endpoints") {
+			// Async provider-endpoints warmup — no providers in this fixture.
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
+			return
+		}
 		if r.URL.Path != "/v1/messages" {
 			t.Errorf("expected path /v1/messages, got %s", r.URL.Path)
 			http.NotFound(w, r)

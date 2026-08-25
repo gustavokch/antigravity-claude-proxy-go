@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,6 +127,9 @@ func New(options Options) (*Server, error) {
 	if cfg.OpenRouter.Enabled {
 		openrouter.DefaultClient.WarmupCacheAsync(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL)
 	}
+
+	// Router state (sticky assignments, EWMA stats) survives restarts.
+	openrouter.DefaultRouter.EnablePersistence(filepath.Join(config.GetConfigDir(), "openrouter-router.json"))
 
 	return srv, nil
 }
@@ -636,95 +640,389 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	sessionID := openrouter.ExtractSessionID(request, anthropicRequest)
 	pricing, _ := openrouter.DefaultClient.ResolveModelPricing(request.Context(), model, openRouterCfg.APIKey, openRouterCfg.BaseURL)
 	startTime := server.now()
-
-	proxy := &httputil.ReverseProxy{
-		FlushInterval: -1,
-		Director: func(req *http.Request) {
-			req.URL.Scheme = targetURL.Scheme
-			req.URL.Host = targetURL.Host
-			req.URL.Path = targetURL.Path
-			req.URL.RawQuery = targetURL.RawQuery
-			req.Host = targetURL.Host
-
-			req.Body = io.NopCloser(bytes.NewReader(reqBody))
-			req.ContentLength = int64(len(reqBody))
-
-			if openRouterCfg.APIKey != "" {
-				apiKey := strings.TrimSpace(openRouterCfg.APIKey)
-				req.Header.Set("Authorization", "Bearer "+apiKey)
-				req.Header.Set("x-api-key", apiKey)
-			}
-			if anthropicVer := request.Header.Get("anthropic-version"); anthropicVer != "" {
-				req.Header.Set("anthropic-version", anthropicVer)
-			}
-			if anthropicBeta := request.Header.Get("anthropic-beta"); anthropicBeta != "" {
-				req.Header.Set("anthropic-beta", anthropicBeta)
-			}
-		},
-		ModifyResponse: func(resp *http.Response) error {
-			if resp.StatusCode != http.StatusOK {
-				return nil
-			}
-
-			finalPricing := resolveEffectivePricing(pricing, model)
-
-			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
-			if isStream {
-				resp.Body = openrouter.NewSSEInterceptor(resp.Body, func(inTokens, outTokens, cacheRead, cacheWrite int) {
-					latency := server.now().Sub(startTime)
-					metrics := openrouter.RequestMetrics{
-						Model:               model,
-						SessionID:           sessionID,
-						InputTokens:         inTokens,
-						OutputTokens:        outTokens,
-						CacheReadTokens:     cacheRead,
-						CacheCreationTokens: cacheWrite,
-						Latency:             latency,
-					}
-					metrics.ComputeFinalMetrics(finalPricing, openrouter.DefaultSessionTracker)
-					openrouter.LogObservability(server.logger, metrics)
-
-					if server.tracker != nil {
-						server.tracker.TrackRequest(model, latency, inTokens, outTokens, cacheRead)
-					}
-				})
-				return nil
-			}
-
-			// Unary JSON response
-			bodyBytes, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return err
-			}
-			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-
-			inTokens, outTokens, cacheRead, cacheWrite := openrouter.ParseUsageFromJSON(bodyBytes)
-			latency := server.now().Sub(startTime)
-			metrics := openrouter.RequestMetrics{
-				Model:               model,
-				SessionID:           sessionID,
-				InputTokens:         inTokens,
-				OutputTokens:        outTokens,
-				CacheReadTokens:     cacheRead,
-				CacheCreationTokens: cacheWrite,
-				Latency:             latency,
-			}
-			metrics.ComputeFinalMetrics(finalPricing, openrouter.DefaultSessionTracker)
-			openrouter.LogObservability(server.logger, metrics)
-
-			if server.tracker != nil {
-				server.tracker.TrackRequest(model, latency, inTokens, outTokens, cacheRead)
-			}
-
-			return nil
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
-			server.logger.Error("OpenRouter proxy error", "error", proxyErr, "url", targetURL.String())
-			writeAPIError(w, http.StatusBadGateway, "api_error", "OpenRouter forwarding error: "+proxyErr.Error())
-		},
+	deadline := startTime.Add(2 * time.Minute)
+	if openRouterCfg.Routing.RequestBudgetMs > 0 {
+		deadline = startTime.Add(time.Duration(openRouterCfg.Routing.RequestBudgetMs) * time.Millisecond)
 	}
 
-	proxy.ServeHTTP(writer, request)
+	// Resolve per-model provider order from the allowlist item. Missing entry = auto.
+	var perModel config.OpenRouterModelConfig
+	for _, item := range openRouterCfg.Allowlist {
+		if item.ID == model {
+			perModel = item
+			break
+		}
+	}
+	order := openrouter.ProviderOrder{
+		Mode:  stringDefault(perModel.ProviderMode, "auto"),
+		Pin:   perModel.PinnedProvider,
+		Order: perModel.ProviderOrder,
+	}
+	// Sync router config if the cfg has it.
+	openrouter.DefaultRouter.SetConfig(openrouter.RoutingConfig{
+		FailureThreshold: openRouterCfg.Routing.FailureThreshold,
+		RankWeights:      openRouterCfg.Routing.RankWeightsToOpenRouter(),
+	})
+
+	// Build the ordered failover chain: a single provider for "pinned", the
+	// configured order for "custom", sticky-then-ranked for "auto".
+	candidates := openrouter.DefaultRouter.SelectChain(sessionID, model, order)
+
+	// Ensure endpoints are ranked. Cache hit refreshes ranks if missing; miss
+	// fires an async warmup (which refreshes ranks on success) and this request
+	// proceeds unpinned.
+	if endpoints, ok := openrouter.DefaultEndpointsClient.GetCachedEndpoints(model, baseURL); ok {
+		if ranks := openrouter.DefaultRouter.GetRanks(model); len(ranks) == 0 {
+			openrouter.DefaultRouter.RefreshRanks(model, endpoints)
+		}
+	} else {
+		openrouter.DefaultEndpointsClient.WarmupEndpointsAsync(model, openRouterCfg.APIKey, baseURL)
+	}
+
+	// Per-attempt classification: what should we do next on this provider?
+	const (
+		nextRetrySame    = iota // retry same provider
+		nextNextProvider        // advance to next provider
+		nextGiveUp              // return last error
+	)
+
+	classify := func(status int, networkErr error) (action int, backoff time.Duration) {
+		if networkErr != nil {
+			return nextNextProvider, 200 * time.Millisecond
+		}
+		switch {
+		case status == http.StatusTooManyRequests:
+			return nextRetrySame, 0 // backoff computed by caller using 429 settings
+		case status >= 500, status == http.StatusBadGateway, status == http.StatusServiceUnavailable:
+			return nextNextProvider, 200 * time.Millisecond
+		case status >= 400:
+			return nextNextProvider, 0 // immediate
+		default:
+			return nextGiveUp, 0
+		}
+	}
+
+	httpClient := &http.Client{Timeout: 60 * time.Second}
+
+	var (
+		lastStatus  int
+		lastBody    []byte
+		providerIdx = 0
+		consec429   int
+		tried       = make(map[string]bool)
+	)
+
+	// No ranked/pinned/custom provider available — single unpinned attempt
+	// (equivalent to the pre-routing passthrough behavior).
+	if len(candidates) == 0 {
+		candidates = []string{""}
+	}
+
+	for {
+		if time.Now().After(deadline) {
+			break
+		}
+		if request.Context().Err() != nil {
+			// Client disconnected — abort retry loop.
+			return
+		}
+		if providerIdx >= len(candidates) {
+			break
+		}
+		provider := candidates[providerIdx]
+		if tried[provider] {
+			providerIdx++
+			continue
+		}
+		tried[provider] = true
+
+		// Build body with provider injection.
+		body := injectProvider(reqBody, provider, order.Mode)
+		attemptStart := server.now()
+
+		// Per-endpoint pricing wins over model-level pricing when known.
+		attemptPricing := pricing
+		if provider != "" {
+			if ep := endpointPricing(model, provider); ep != nil {
+				attemptPricing = *ep
+			}
+		}
+
+		upReq, err := http.NewRequestWithContext(request.Context(), http.MethodPost, targetURL.String(), bytes.NewReader(body))
+		if err != nil {
+			writeAPIError(writer, http.StatusInternalServerError, "api_error", "Failed to build request: "+err.Error())
+			return
+		}
+		upReq.Header.Set("Content-Type", "application/json")
+		upReq.Header.Set("Accept", "application/json")
+		if openRouterCfg.APIKey != "" {
+			apiKey := strings.TrimSpace(openRouterCfg.APIKey)
+			upReq.Header.Set("Authorization", "Bearer "+apiKey)
+			upReq.Header.Set("x-api-key", apiKey)
+		}
+		if av := request.Header.Get("anthropic-version"); av != "" {
+			upReq.Header.Set("anthropic-version", av)
+		}
+		if ab := request.Header.Get("anthropic-beta"); ab != "" {
+			upReq.Header.Set("anthropic-beta", ab)
+		}
+
+		resp, err := httpClient.Do(upReq)
+		if err != nil {
+			if provider != "" {
+				openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
+			}
+			_, backoff := classify(0, err)
+			if backoff > 0 {
+				time.Sleep(backoff)
+			}
+			providerIdx++
+			lastStatus = 0
+			continue
+		}
+
+		// 2xx — handle success
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
+			if isStream {
+				server.proxyStreamResponse(writer, resp, model, sessionID, attemptPricing, startTime, attemptStart, provider)
+				return
+			}
+			// Buffer full body before writing — failover impossible after first byte.
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				if provider != "" {
+					openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
+				}
+				providerIdx++
+				continue
+			}
+			// Capture served provider from response if present
+			servedProvider := extractServedProviderJSON(bodyBytes)
+			if servedProvider != "" {
+				provider = servedProvider
+			}
+			// Write headers + status
+			for k, vs := range resp.Header {
+				if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
+					continue
+				}
+				for _, v := range vs {
+					writer.Header().Add(k, v)
+				}
+			}
+			writer.WriteHeader(resp.StatusCode)
+			_, _ = writer.Write(bodyBytes)
+
+			// Observability + record result
+			in, out, cr, cw := openrouter.ParseUsageFromJSON(bodyBytes)
+			if provider != "" {
+				openrouter.DefaultRouter.RecordResult(model, provider, true, server.now().Sub(attemptStart), in+out)
+			}
+			server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, in, out, cr, cw, provider)
+			return
+		}
+
+		// Non-2xx: buffer body, classify, decide next.
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		lastStatus = resp.StatusCode
+		lastBody = bodyBytes
+		action, backoff := classify(resp.StatusCode, nil)
+		if provider != "" {
+			openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
+		}
+
+		switch action {
+		case nextRetrySame:
+			consec429++
+			max429 := openRouterCfg.Routing.Retry429Max
+			if max429 <= 0 {
+				max429 = 10
+			}
+			if consec429 > max429 {
+				providerIdx++
+				consec429 = 0
+				continue
+			}
+			base := openRouterCfg.Routing.BackoffBaseMs
+			if base <= 0 {
+				base = 500
+			}
+			cap := openRouterCfg.Routing.BackoffCapMs
+			if cap <= 0 {
+				cap = 120000
+			}
+			d := computeBackoff(consec429, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+			if time.Now().Add(d).After(deadline) {
+				break
+			}
+			time.Sleep(d)
+			// Don't advance providerIdx; re-enter the loop with same provider.
+			tried[provider] = false
+			continue
+		case nextNextProvider:
+			consec429 = 0
+			if backoff > 0 {
+				time.Sleep(backoff)
+			}
+			providerIdx++
+			continue
+		default:
+			// nextGiveUp
+		}
+		break
+	}
+
+	// Out of candidates or budget exhausted — return last error.
+	status := lastStatus
+	if status == 0 {
+		status = http.StatusBadGateway
+	}
+	server.logger.Warn("OpenRouter forward exhausted",
+		"model", model, "status", status, "tried", len(tried))
+	writeAPIError(writer, status, "api_error", fmt.Sprintf("OpenRouter upstream failed after %d attempt(s): %s", len(tried), truncate(string(lastBody), 256)))
+}
+
+// injectProvider adds the OpenRouter "provider" routing key to the request body.
+// `mode` controls single vs full list:
+//   - "pinned" / "auto": single-entry order with allow_fallbacks=false
+//   - "custom": full order with allow_fallbacks=false
+func injectProvider(body []byte, provider string, mode string) []byte {
+	if provider == "" {
+		return body
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	switch mode {
+	case "custom":
+		// Failover walks the configured order one provider per attempt, so each
+		// request body pins the current candidate only.
+		payload["provider"] = map[string]any{
+			"order":           []string{provider},
+			"allow_fallbacks": false,
+		}
+	default:
+		payload["provider"] = map[string]any{
+			"order":           []string{provider},
+			"allow_fallbacks": false,
+		}
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// extractServedProviderJSON returns the top-level "provider" field if present.
+func extractServedProviderJSON(body []byte) string {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return ""
+	}
+	if s, ok := raw["provider"].(string); ok {
+		return s
+	}
+	return ""
+}
+
+func stringDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+func computeBackoff(attempt int, base, cap time.Duration) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	d := base
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if d > cap {
+			return cap
+		}
+	}
+	if d > cap {
+		return cap
+	}
+	return d
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// proxyStreamResponse streams a successful response to the client while
+// capturing usage and the served provider via SSE.
+func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http.Response, model, sessionID string, pricing openrouter.Pricing, startTime, attemptStart time.Time, provider string) {
+	for k, vs := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
+			continue
+		}
+		for _, v := range vs {
+			writer.Header().Add(k, v)
+		}
+	}
+	writer.WriteHeader(resp.StatusCode)
+	flusher, hasFlusher := writer.(http.Flusher)
+
+	finalPricing := resolveEffectivePricing(pricing, model)
+	var interceptor *openrouter.SSEInterceptor
+	interceptor = openrouter.NewSSEInterceptor(resp.Body, func(in, out, cr, cw int) {
+		// Prefer the provider reported by the stream over the requested one.
+		served := provider
+		if p := interceptor.Provider(); p != "" {
+			served = p
+		}
+		if served != "" {
+			openrouter.DefaultRouter.RecordResult(model, served, true, server.now().Sub(attemptStart), in+out)
+		}
+		server.recordOpenRouterMetrics(model, sessionID, finalPricing, startTime, in, out, cr, cw, served)
+	})
+	defer interceptor.Close()
+
+	buf := make([]byte, 4096)
+	for {
+		n, err := interceptor.Read(buf)
+		if n > 0 {
+			_, _ = writer.Write(buf[:n])
+			if hasFlusher {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// recordOpenRouterMetrics is shared between stream and unary paths.
+func (server *Server) recordOpenRouterMetrics(model, sessionID string, pricing openrouter.Pricing, startTime time.Time, in, out, cr, cw int, provider string) {
+	latency := server.now().Sub(startTime)
+	metrics := openrouter.RequestMetrics{
+		Model:               model,
+		SessionID:           sessionID,
+		Provider:            provider,
+		InputTokens:         in,
+		OutputTokens:        out,
+		CacheReadTokens:     cr,
+		CacheCreationTokens: cw,
+		Latency:             latency,
+	}
+	metrics.ComputeFinalMetrics(pricing, openrouter.DefaultSessionTracker)
+	openrouter.LogObservability(server.logger, metrics)
+	if server.tracker != nil {
+		server.tracker.TrackRequest(model, latency, in, out, cr)
+	}
 }
 
 func resolveEffectivePricing(initial openrouter.Pricing, model string) openrouter.Pricing {
@@ -734,6 +1032,17 @@ func resolveEffectivePricing(initial openrouter.Pricing, model string) openroute
 		}
 	}
 	return initial
+}
+
+// endpointPricing returns the per-endpoint pricing for a provider from the
+// router's current rank list, or nil when unknown.
+func endpointPricing(model, provider string) *openrouter.Pricing {
+	for _, r := range openrouter.DefaultRouter.GetRanks(model) {
+		if r.Provider == provider && r.Endpoint.Pricing != nil {
+			return r.Endpoint.Pricing
+		}
+	}
+	return nil
 }
 
 type streamSender func(context.Context, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)

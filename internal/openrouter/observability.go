@@ -15,6 +15,7 @@ import (
 type RequestMetrics struct {
 	Model               string        `json:"model"`
 	SessionID           string        `json:"session_id"`
+	Provider            string        `json:"provider,omitempty"`
 	InputTokens         int           `json:"input_tokens"`
 	OutputTokens        int           `json:"output_tokens"`
 	CacheReadTokens     int           `json:"cache_read_tokens"`
@@ -72,11 +73,15 @@ func LogObservability(log *slog.Logger, m RequestMetrics) {
 		m.CallCost,
 		m.SessionCost,
 	)
+	if m.Provider != "" {
+		msg += fmt.Sprintf(" | provider: %s", m.Provider)
+	}
 
 	log.Info(msg,
 		slog.String("gateway", "openrouter"),
 		slog.String("model", m.Model),
 		slog.String("session_id", m.SessionID),
+		slog.String("provider", m.Provider),
 		slog.Int("input_tokens", m.InputTokens),
 		slog.Int("output_tokens", m.OutputTokens),
 		slog.Int("cache_read_tokens", m.CacheReadTokens),
@@ -239,6 +244,27 @@ func ParseUsageFromSSELine(line string, inputTokens, outputTokens, cacheRead, ca
 	}
 }
 
+// ExtractProviderFromSSELine returns the top-level "provider" field of an SSE
+// data payload (OpenRouter reports the served provider there), or "".
+func ExtractProviderFromSSELine(line string) string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "data:") {
+		return ""
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if payload == "" || payload == "[DONE]" {
+		return ""
+	}
+	var event map[string]any
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return ""
+	}
+	if s, ok := event["provider"].(string); ok {
+		return s
+	}
+	return ""
+}
+
 // SSEInterceptor wraps an io.ReadCloser to parse SSE usage events while streaming.
 type SSEInterceptor struct {
 	reader     io.ReadCloser
@@ -249,6 +275,7 @@ type SSEInterceptor struct {
 	outTokens  int
 	cacheRead  int
 	cacheWrite int
+	provider   string
 	closed     bool
 	once       sync.Once
 }
@@ -284,7 +311,17 @@ func (s *SSEInterceptor) processLines() {
 			break
 		}
 		ParseUsageFromSSELine(line, &s.inTokens, &s.outTokens, &s.cacheRead, &s.cacheWrite)
+		if p := ExtractProviderFromSSELine(line); p != "" {
+			s.provider = p
+		}
 	}
+}
+
+// Provider returns the served provider captured from SSE events, if any.
+func (s *SSEInterceptor) Provider() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.provider
 }
 
 func (s *SSEInterceptor) finalize() {

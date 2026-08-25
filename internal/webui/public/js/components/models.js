@@ -305,7 +305,8 @@ window.Components.models = () => ({
         baseUrl: 'https://openrouter.ai/api',
         apiKey: '',
         hasApiKey: false,
-        allowlist: []
+        allowlist: [],
+        routing: null
     },
     openRouterSaving: false,
     openRouterError: '',
@@ -315,6 +316,85 @@ window.Components.models = () => ({
     discoverySearch: '',
     discoveryProvider: 'all',
     addAllowlistAliasMap: {},
+
+    // Per-model provider routing panel state
+    expandedRouting: new Set(),
+    routingPanels: {}, // modelId -> { loading, error, data }
+
+    isRoutingExpanded(modelId) {
+        return this.expandedRouting.has(modelId);
+    },
+
+    toggleRoutingExpanded(modelId) {
+        if (this.expandedRouting.has(modelId)) {
+            this.expandedRouting.delete(modelId);
+        } else {
+            this.expandedRouting.add(modelId);
+            this.fetchRoutingProviders(modelId);
+        }
+        this.expandedRouting = new Set(this.expandedRouting);
+    },
+
+    async fetchRoutingProviders(modelId) {
+        const password = Alpine.store('global').webuiPassword;
+        this.routingPanels = { ...this.routingPanels, [modelId]: { loading: true, error: '', data: null } };
+        try {
+            const { response, newPassword } = await window.utils.request('/api/openrouter/providers?model=' + encodeURIComponent(modelId), {}, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            this.routingPanels = { ...this.routingPanels, [modelId]: { loading: false, error: '', data } };
+        } catch (e) {
+            this.routingPanels = { ...this.routingPanels, [modelId]: { loading: false, error: e.message || 'Failed to load providers', data: null } };
+        }
+    },
+
+    getRoutingPanel(modelId) {
+        return this.routingPanels[modelId] || { loading: false, error: '', data: null };
+    },
+
+    // Set routing mode for an allowlist item: auto | pinned | custom
+    setProviderMode(item, mode) {
+        item.providerMode = mode;
+        if (mode === 'custom' && (!item.providerOrder || item.providerOrder.length === 0)) {
+            const panel = this.getRoutingPanel(item.id);
+            if (panel.data && panel.data.providers) {
+                item.providerOrder = panel.data.providers.map(p => p.provider);
+            }
+        }
+        this.saveOpenRouterConfig();
+    },
+
+    // Pin a provider (pinned mode)
+    pinProvider(item, provider) {
+        item.providerMode = 'pinned';
+        item.pinnedProvider = provider;
+        this.saveOpenRouterConfig();
+    },
+
+    // Reorder within custom mode; dir = -1 (up) or +1 (down)
+    moveProvider(item, index, dir) {
+        const order = item.providerOrder || [];
+        const target = index + dir;
+        if (target < 0 || target >= order.length) return;
+        const next = order.slice();
+        const tmp = next[index];
+        next[index] = next[target];
+        next[target] = tmp;
+        item.providerOrder = next;
+        this.saveOpenRouterConfig();
+    },
+
+    formatUptime(endpoint) {
+        if (!endpoint) return '-';
+        const u5 = endpoint.uptime_last_5m, u30 = endpoint.uptime_last_30m, u1d = endpoint.uptime_last_1d;
+        if (!u5 && !u30 && !u1d) return '-';
+        const blend = (u5 || 0) * 0.5 + (u30 || 0) * 0.3 + (u1d || 0) * 0.2;
+        return (blend * 100).toFixed(1) + '%';
+    },
 
     async fetchOpenRouterConfig() {
         const password = Alpine.store('global').webuiPassword;
@@ -329,7 +409,8 @@ window.Components.models = () => ({
                     baseUrl: data.config.baseUrl || 'https://openrouter.ai/api',
                     apiKey: '',
                     hasApiKey: !!data.config.hasApiKey,
-                    allowlist: data.config.allowlist || []
+                    allowlist: data.config.allowlist || [],
+                    routing: data.config.routing || null
                 };
                 Alpine.store('data').openrouter = this.openRouterConfig;
             }
@@ -350,6 +431,11 @@ window.Components.models = () => ({
                 hasApiKey: this.openRouterConfig.hasApiKey,
                 allowlist: this.openRouterConfig.allowlist || []
             };
+            // Routing section rides through the whole-object replace; omitting
+            // it would wipe the saved routing config.
+            if (this.openRouterConfig.routing) {
+                payload.routing = this.openRouterConfig.routing;
+            }
             if (this.openRouterConfig.apiKey && this.openRouterConfig.apiKey.trim()) {
                 payload.apiKey = this.openRouterConfig.apiKey.trim();
             }
