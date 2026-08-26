@@ -800,15 +800,15 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	// App identity for harness-gated models: OpenRouter 403s models restricted
 	// to agentic harnesses when the request carries no app attribution. On that
 	// error the attempt is retried once with spoofed attribution headers.
-	spoofTitle := openRouterCfg.AppSpoof.Title
+	spoofTitle := strings.TrimSpace(openRouterCfg.AppSpoof.Title)
 	if spoofTitle == "" {
 		spoofTitle = openrouter.DefaultSpoofAppTitle
 	}
-	spoofCategories := openRouterCfg.AppSpoof.Categories
+	spoofCategories := strings.TrimSpace(openRouterCfg.AppSpoof.Categories)
 	if spoofCategories == "" {
 		spoofCategories = openrouter.DefaultSpoofAppCategories
 	}
-	spoofReferer := openRouterCfg.AppSpoof.Referer
+	spoofReferer := strings.TrimSpace(openRouterCfg.AppSpoof.Referer)
 	if spoofReferer == "" {
 		spoofReferer = openrouter.DefaultSpoofAppReferer
 	}

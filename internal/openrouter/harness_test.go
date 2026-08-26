@@ -27,6 +27,27 @@ func TestApplySpoofHeaders(t *testing.T) {
 		}
 	})
 
+	t.Run("whitespace-only values fall back to defaults", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, "https://openrouter.ai/api/v1/chat/completions", nil)
+		ApplySpoofHeaders(req, "   ", " \t\n ", "  ")
+
+		if got := req.Header.Get(SpoofAppRefererHeader); got != DefaultSpoofAppReferer {
+			t.Errorf("HTTP-Referer = %q, want %q", got, DefaultSpoofAppReferer)
+		}
+		if got := req.Header.Get(SpoofAppRefererLegacyHeader); got != DefaultSpoofAppReferer {
+			t.Errorf("Referer = %q, want %q", got, DefaultSpoofAppReferer)
+		}
+		if got := req.Header.Get(SpoofAppTitleHeader); got != DefaultSpoofAppTitle {
+			t.Errorf("X-OpenRouter-Title = %q, want %q", got, DefaultSpoofAppTitle)
+		}
+		if got := req.Header.Get(SpoofAppTitleLegacyHeader); got != DefaultSpoofAppTitle {
+			t.Errorf("X-Title = %q, want %q", got, DefaultSpoofAppTitle)
+		}
+		if got := req.Header.Get(SpoofAppCategoriesHeader); got != DefaultSpoofAppCategories {
+			t.Errorf("X-OpenRouter-Categories = %q, want %q", got, DefaultSpoofAppCategories)
+		}
+	})
+
 	t.Run("custom values", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, "https://openrouter.ai/api/v1/chat/completions", nil)
 		ApplySpoofHeaders(req, "My App", "agentic-coding", "https://example.com/app")

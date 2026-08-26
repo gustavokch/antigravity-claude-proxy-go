@@ -29,17 +29,20 @@ const (
 )
 
 // ApplySpoofHeaders injects OpenRouter app attribution headers into an HTTP request.
-// If title, categories, or referer are empty, the corresponding default value is used.
+// If title, categories, or referer are empty or whitespace, the corresponding default value is used.
 func ApplySpoofHeaders(req *http.Request, title, categories, referer string) {
 	if req == nil {
 		return
 	}
+	title = strings.TrimSpace(title)
 	if title == "" {
 		title = DefaultSpoofAppTitle
 	}
+	categories = strings.TrimSpace(categories)
 	if categories == "" {
 		categories = DefaultSpoofAppCategories
 	}
+	referer = strings.TrimSpace(referer)
 	if referer == "" {
 		referer = DefaultSpoofAppReferer
 	}
