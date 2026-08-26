@@ -359,3 +359,36 @@ func TestProviderRouter_LoadDoesNotRestoreBreakerState(t *testing.T) {
 		t.Errorf("expected anthropic selectable after reload, got %q", got)
 	}
 }
+
+func TestProviderRouter_ConcurrentSaveToNoRace(t *testing.T) {
+	// FlushSave and the debounce timer can invoke SaveTo concurrently; both
+	// write path+".tmp" and an interleaved rename persists a torn file.
+	// Saves must be serialized so the final state file is always valid.
+	path := filepath.Join(t.TempDir(), "router-state.json")
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.EnablePersistence(path)
+	r.RefreshRanks("m1", mkEndpoints())
+	r.Select("s1", "m1", ProviderOrder{Mode: "auto"})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			r.RecordResult("m1", "anthropic", true, time.Millisecond, 1)
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		r.FlushSave()
+	}
+	<-done
+
+	// The final file must parse and carry the sticky entry: a torn write
+	// would silently drop state on the next load.
+	r2 := NewProviderRouter(DefaultRoutingConfig())
+	if err := r2.LoadFrom(path); err != nil {
+		t.Fatalf("LoadFrom after concurrent saves: %v", err)
+	}
+	if got, ok := r2.StickyProvider("s1", "m1"); !ok || got != "anthropic" {
+		t.Errorf("sticky lost through concurrent saves, got %q ok=%v", got, ok)
+	}
+}

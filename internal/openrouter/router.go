@@ -89,6 +89,10 @@ type ProviderRouter struct {
 	// Persistence (debounced, atomic).
 	savePath  string
 	saveTimer *time.Timer
+	// saveMu serializes SaveTo: the debounce timer and FlushSave can fire
+	// concurrently, and interleaved writes to path+".tmp" can persist a
+	// torn file whose rename silently drops state on the next load.
+	saveMu sync.Mutex
 }
 
 // routerStateVersion is the on-disk schema version for persisted router state.
@@ -647,6 +651,9 @@ func (r *ProviderRouter) LoadFrom(path string) error {
 
 // SaveTo writes the router state to path atomically (tmp + rename).
 func (r *ProviderRouter) SaveTo(path string) error {
+	r.saveMu.Lock()
+	defer r.saveMu.Unlock()
+
 	r.mu.RLock()
 	state := persistedRouterState{
 		Version:  routerStateVersion,
