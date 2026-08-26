@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -99,6 +100,59 @@ func TestServer_ForwardToKimi_AllowsAliasMatch(t *testing.T) {
 	}
 	if rec.Code != 200 {
 		t.Errorf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServer_KimiEndToEnd_StreamingResponse(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	kimid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer kimi-key" {
+			t.Errorf("auth header = %q", r.Header.Get("Authorization"))
+		}
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer kimid.Close()
+
+	_, err := config.Save(map[string]any{
+		"kimi": map[string]any{
+			"enabled": true,
+			"apiKey":  "kimi-key",
+			"baseUrl": kimid.URL,
+			"allowlist": []map[string]any{
+				{"id": "kimi-k2-thinking", "enabled": true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	server := newKimiTestServer(t)
+	body := []byte(`{"model":"kimi-k2-thinking","stream":true,"messages":[]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "message_start") {
+		t.Fatalf("missing message_start in stream: %s", rec.Body.String())
 	}
 }
 
