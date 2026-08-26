@@ -78,7 +78,8 @@ type ProviderRouter struct {
 	rankedAt map[string]time.Time
 
 	// Stickiness per (session, model) -> provider
-	sticky map[string]string
+	sticky   map[string]string
+	stickyAt map[string]time.Time // last-write time per sticky key, for eviction
 
 	// Stats per (model, provider)
 	stats map[string]map[string]*providerStats
@@ -89,7 +90,10 @@ type ProviderRouter struct {
 }
 
 // routerStateVersion is the on-disk schema version for persisted router state.
-const routerStateVersion = 1
+const routerStateVersion = 2
+
+// maxStickyEntries bounds the sticky map; oldest entries are evicted past it.
+const maxStickyEntries = 10000
 
 // persistedProviderStats is the serializable form of providerStats.
 type persistedProviderStats struct {
@@ -103,18 +107,14 @@ type persistedProviderStats struct {
 
 // persistedRouterState is the versioned JSON envelope for router persistence.
 type persistedRouterState struct {
-	Version int                                          `json:"version"`
-	Sticky  map[string]string                            `json:"sticky,omitempty"`
-	Stats   map[string]map[string]persistedProviderStats `json:"stats,omitempty"`
+	Version  int                                          `json:"version"`
+	Sticky   map[string]string                            `json:"sticky,omitempty"`
+	StickyAt map[string]time.Time                         `json:"stickyAt,omitempty"`
+	Stats    map[string]map[string]persistedProviderStats `json:"stats,omitempty"`
 }
 
 // saveDebounce is the minimum interval between automatic saves.
 const saveDebounce = 30 * time.Second
-
-// keyStats builds "model|provider" map key.
-func keyStats(model, provider string) string {
-	return model + "\x00" + provider
-}
 
 // keySticky builds "session|model" key.
 func keySticky(session, model string) string {
@@ -129,9 +129,6 @@ func NewProviderRouter(cfg RoutingConfig) *ProviderRouter {
 	if cfg.FailureThreshold <= 0 {
 		cfg.FailureThreshold = 10
 	}
-	if cfg.RankWeights == (RankWeights{}) {
-		cfg.RankWeights = DefaultRankWeights()
-	}
 	if cfg.RankWeights.Availability == 0 && cfg.RankWeights.Latency == 0 &&
 		cfg.RankWeights.Throughput == 0 && cfg.RankWeights.Context == 0 {
 		cfg.RankWeights = DefaultRankWeights()
@@ -141,6 +138,7 @@ func NewProviderRouter(cfg RoutingConfig) *ProviderRouter {
 		ranks:    map[string][]ranked{},
 		rankedAt: map[string]time.Time{},
 		sticky:   map[string]string{},
+		stickyAt: map[string]time.Time{},
 		stats:    map[string]map[string]*providerStats{},
 	}
 }
@@ -151,9 +149,6 @@ func (r *ProviderRouter) SetConfig(cfg RoutingConfig) {
 	defer r.mu.Unlock()
 	if cfg.FailureThreshold <= 0 {
 		cfg.FailureThreshold = 10
-	}
-	if cfg.RankWeights == (RankWeights{}) {
-		cfg.RankWeights = DefaultRankWeights()
 	}
 	if cfg.RankWeights.Availability == 0 && cfg.RankWeights.Latency == 0 &&
 		cfg.RankWeights.Throughput == 0 && cfg.RankWeights.Context == 0 {
@@ -210,6 +205,7 @@ func (r *ProviderRouter) refreshRanksLocked(model string, endpoints []ProviderEn
 		if strings.HasSuffix(k, "\x00"+model) {
 			if !present[v] {
 				delete(r.sticky, k)
+				delete(r.stickyAt, k)
 			}
 		}
 	}
@@ -353,10 +349,14 @@ func (r *ProviderRouter) SelectChain(session, model string, order ProviderOrder)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.scheduleSaveLocked()
+	r.pruneStickyLocked()
+	now := time.Now()
 
 	// Pinned mode ignores everything else.
 	if order.Mode == "pinned" && strings.TrimSpace(order.Pin) != "" {
-		r.sticky[keySticky(session, model)] = order.Pin
+		k := keySticky(session, model)
+		r.sticky[k] = order.Pin
+		r.stickyAt[k] = now
 		return []string{order.Pin}
 	}
 
@@ -369,7 +369,9 @@ func (r *ProviderRouter) SelectChain(session, model string, order ProviderOrder)
 			}
 		}
 		if len(out) > 0 {
-			r.sticky[keySticky(session, model)] = out[0]
+			k := keySticky(session, model)
+			r.sticky[k] = out[0]
+			r.stickyAt[k] = now
 			return out
 		}
 	}
@@ -389,7 +391,9 @@ func (r *ProviderRouter) SelectChain(session, model string, order ProviderOrder)
 		if r.providerHealthyUnderThresholdLocked(model, sticky) {
 			add(sticky)
 		} else {
-			delete(r.sticky, keySticky(session, model))
+			k := keySticky(session, model)
+			delete(r.sticky, k)
+			delete(r.stickyAt, k)
 		}
 	}
 
@@ -399,9 +403,33 @@ func (r *ProviderRouter) SelectChain(session, model string, order ProviderOrder)
 	}
 
 	if len(chain) > 0 {
-		r.sticky[keySticky(session, model)] = chain[0]
+		k := keySticky(session, model)
+		r.sticky[k] = chain[0]
+		r.stickyAt[k] = now
 	}
 	return chain
+}
+
+// pruneStickyLocked evicts the oldest sticky entries when the map grows past
+// maxStickyEntries. Entries without a timestamp sort oldest. Caller must hold
+// r.mu.
+func (r *ProviderRouter) pruneStickyLocked() {
+	if len(r.sticky) <= maxStickyEntries {
+		return
+	}
+	type entry struct {
+		key string
+		at  time.Time
+	}
+	entries := make([]entry, 0, len(r.sticky))
+	for k := range r.sticky {
+		entries = append(entries, entry{key: k, at: r.stickyAt[k]})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].at.Before(entries[j].at) })
+	for _, e := range entries[:len(entries)-maxStickyEntries] {
+		delete(r.sticky, e.key)
+		delete(r.stickyAt, e.key)
+	}
 }
 
 // providerInRanksLocked reports whether a provider name appears in the current ranks.
@@ -481,6 +509,7 @@ func (r *ProviderRouter) RecordResult(model, provider string, ok bool, latency t
 				// Sticky key format is "session\x00model" — match by suffix.
 				if strings.HasSuffix(k, "\x00"+model) && v == provider {
 					delete(r.sticky, k)
+					delete(r.stickyAt, k)
 				}
 			}
 		}
@@ -529,11 +558,15 @@ func (r *ProviderRouter) StickyProvider(session, model string) (string, bool) {
 func (r *ProviderRouter) SetSticky(session, model, provider string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	k := keySticky(session, model)
 	if provider == "" {
-		delete(r.sticky, keySticky(session, model))
+		delete(r.sticky, k)
+		delete(r.stickyAt, k)
 		return
 	}
-	r.sticky[keySticky(session, model)] = provider
+	r.pruneStickyLocked()
+	r.sticky[k] = provider
+	r.stickyAt[k] = time.Now()
 }
 
 func ewma(prev, sample, alpha float64) float64 {
@@ -576,6 +609,11 @@ func (r *ProviderRouter) LoadFrom(path string) error {
 	for k, v := range state.Sticky {
 		r.sticky[k] = v
 	}
+	for k, at := range state.StickyAt {
+		if _, ok := r.sticky[k]; ok {
+			r.stickyAt[k] = at
+		}
+	}
 	for model, providers := range state.Stats {
 		if _, ok := r.stats[model]; !ok {
 			r.stats[model] = map[string]*providerStats{}
@@ -599,12 +637,18 @@ func (r *ProviderRouter) LoadFrom(path string) error {
 func (r *ProviderRouter) SaveTo(path string) error {
 	r.mu.RLock()
 	state := persistedRouterState{
-		Version: routerStateVersion,
-		Sticky:  make(map[string]string, len(r.sticky)),
-		Stats:   make(map[string]map[string]persistedProviderStats, len(r.stats)),
+		Version:  routerStateVersion,
+		Sticky:   make(map[string]string, len(r.sticky)),
+		StickyAt: make(map[string]time.Time, len(r.stickyAt)),
+		Stats:    make(map[string]map[string]persistedProviderStats, len(r.stats)),
 	}
 	for k, v := range r.sticky {
 		state.Sticky[k] = v
+	}
+	for k, at := range r.stickyAt {
+		if _, ok := r.sticky[k]; ok {
+			state.StickyAt[k] = at
+		}
 	}
 	for model, providers := range r.stats {
 		out := make(map[string]persistedProviderStats, len(providers))

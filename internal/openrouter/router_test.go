@@ -3,6 +3,7 @@ package openrouter
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -245,5 +246,43 @@ func TestProviderRouter_EnablePersistenceDebouncedSave(t *testing.T) {
 	r.FlushSave()
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("expected file after FlushSave, got %v", err)
+	}
+}
+
+func TestProviderRouter_StickyMapEvictsOldest(t *testing.T) {
+	// Unbounded sticky growth leaks memory across long uptimes; past
+	// maxStickyEntries the oldest entries must be evicted first.
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", mkEndpoints())
+
+	old := time.Now().Add(-time.Hour)
+	recent := time.Now()
+	for i := 0; i < maxStickyEntries; i++ {
+		k := keySticky("old-session-"+strconv.Itoa(i), "m1")
+		r.sticky[k] = "anthropic"
+		r.stickyAt[k] = old
+	}
+	for i := 0; i < 5; i++ {
+		k := keySticky("new-session-"+strconv.Itoa(i), "m1")
+		r.sticky[k] = "azure"
+		r.stickyAt[k] = recent
+	}
+
+	r.mu.Lock()
+	r.pruneStickyLocked()
+	r.mu.Unlock()
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.sticky) != maxStickyEntries {
+		t.Errorf("expected sticky map capped at %d, got %d", maxStickyEntries, len(r.sticky))
+	}
+	if len(r.stickyAt) != len(r.sticky) {
+		t.Errorf("stickyAt must track sticky keys: %d vs %d", len(r.stickyAt), len(r.sticky))
+	}
+	for i := 0; i < 5; i++ {
+		if _, ok := r.sticky[keySticky("new-session-"+strconv.Itoa(i), "m1")]; !ok {
+			t.Errorf("recent entry new-session-%d evicted; oldest must go first", i)
+		}
 	}
 }
