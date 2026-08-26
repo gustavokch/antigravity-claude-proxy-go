@@ -391,3 +391,60 @@ func TestRankWeightsToOpenRouter_SingleSourceDefaults(t *testing.T) {
 		t.Errorf("partial weights = %+v, want availability-only 0.9", got)
 	}
 }
+
+func TestDefaultConfig_KimiBaseURL(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Kimi.BaseURL != "https://api.kimi.com/coding" {
+		t.Fatalf("default Kimi base URL = %q, want %q", cfg.Kimi.BaseURL, "https://api.kimi.com/coding")
+	}
+	if cfg.Kimi.Enabled {
+		t.Fatal("Kimi should be disabled by default")
+	}
+	if len(cfg.Kimi.Allowlist) != 0 {
+		t.Fatalf("Kimi allowlist should be empty by default, got %d", len(cfg.Kimi.Allowlist))
+	}
+}
+
+func TestGetPublicConfig_KimiRedactsAPIKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	updates := map[string]any{
+		"kimi": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-kimi-secret-123",
+			"baseUrl": "https://api.kimi.com/coding",
+			"allowlist": []map[string]any{
+				{"id": "kimi-k2-thinking", "alias": "k2", "enabled": true},
+			},
+		},
+	}
+	if _, err := Save(updates); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	pub := GetPublicConfig()
+	kimi, ok := pub["kimi"].(map[string]any)
+	if !ok {
+		t.Fatalf("public config missing kimi map: %v", pub["kimi"])
+	}
+	if _, leaked := kimi["apiKey"]; leaked {
+		t.Fatalf("apiKey must be redacted in public config, got %v", kimi["apiKey"])
+	}
+	if has, _ := kimi["hasApiKey"].(bool); !has {
+		t.Fatal("public config should expose hasApiKey=true")
+	}
+	if kimi["baseUrl"] != "https://api.kimi.com/coding" {
+		t.Fatalf("public config should preserve baseUrl, got %v", kimi["baseUrl"])
+	}
+
+	// Verify redacted public save preserves secret key
+	saved2, err := Save(pub)
+	if err != nil {
+		t.Fatalf("Save on public config: %v", err)
+	}
+	if saved2.Kimi.APIKey != "sk-kimi-secret-123" {
+		t.Fatalf("expected secret APIKey to be preserved, got %q", saved2.Kimi.APIKey)
+	}
+}
