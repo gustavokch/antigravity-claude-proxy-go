@@ -12,6 +12,7 @@ import (
 
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/openrouter"
 )
 
@@ -167,6 +168,15 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	case path == "/api/openrouter/providers" && method == http.MethodGet:
 		server.handleOpenRouterProvidersGet(writer, request)
+		return true
+	case path == "/api/kimi/config" && method == http.MethodGet:
+		server.handleKimiConfigGet(writer, request)
+		return true
+	case path == "/api/kimi/config" && method == http.MethodPost:
+		server.handleKimiConfigSave(writer, request)
+		return true
+	case path == "/api/kimi/models/fetch" && method == http.MethodPost:
+		server.handleKimiModelsFetch(writer, request)
 		return true
 	case path == "/api/auth/url" && method == http.MethodGet:
 		server.handleAuthURLGet(writer, request)
@@ -1219,5 +1229,89 @@ func (server *Server) handleOpenRouterProvidersGet(writer http.ResponseWriter, r
 		"pinnedProvider": pinnedProvider,
 		"providerOrder":  order,
 		"providers":      providers,
+	})
+}
+
+func (server *Server) handleKimiConfigGet(writer http.ResponseWriter, request *http.Request) {
+	pub := config.GetPublicConfig()
+	kimiMap, _ := pub["kimi"].(map[string]any)
+	if kimiMap == nil {
+		kimiMap = map[string]any{
+			"enabled":   false,
+			"baseUrl":   "https://api.kimi.com/coding",
+			"hasApiKey": false,
+			"allowlist": []any{},
+		}
+	}
+	activeCount := 0
+	cfg := config.Get()
+	if cfg.Kimi.Enabled {
+		for _, m := range cfg.Kimi.Allowlist {
+			if m.Enabled {
+				activeCount++
+			}
+		}
+	}
+	kimiMap["activeModelCount"] = activeCount
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status": "ok",
+		"config": kimiMap,
+	})
+}
+
+func (server *Server) handleKimiConfigSave(writer http.ResponseWriter, request *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid JSON: " + err.Error()})
+		return
+	}
+	saved, err := config.Save(map[string]any{"kimi": body})
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": "Failed to save config: " + err.Error()})
+		return
+	}
+	if updater, ok := server.backend.(ConfigUpdater); ok {
+		updater.UpdateConfig(saved)
+	}
+	pub := config.GetPublicConfig()
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status": "ok",
+		"config": pub["kimi"],
+	})
+}
+
+func (server *Server) handleKimiModelsFetch(writer http.ResponseWriter, request *http.Request) {
+	var req struct {
+		APIKey  string `json:"apiKey,omitempty"`
+		BaseURL string `json:"baseUrl,omitempty"`
+	}
+	_ = json.NewDecoder(request.Body).Decode(&req)
+	cfg := config.Get()
+	apiKey := req.APIKey
+	if apiKey == "" {
+		apiKey = cfg.Kimi.APIKey
+	}
+	baseURL := req.BaseURL
+	if baseURL == "" {
+		baseURL = cfg.Kimi.BaseURL
+	}
+	if baseURL == "" {
+		baseURL = "https://api.kimi.com/coding"
+	}
+	models, err := kimi.DefaultClient.FetchModels(request.Context(), apiKey, baseURL)
+	if err != nil {
+		writeJSON(writer, http.StatusBadGateway, map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+	if models == nil {
+		models = []kimi.ModelItem{}
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status": "ok",
+		"models": models,
+		"total":  len(models),
 	})
 }
