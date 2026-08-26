@@ -1007,15 +1007,15 @@
 
                     <!-- App Spoof (harness-gated model retry headers) -->
                     <div class="pt-2 border-t border-space-border/40">
-                        <details class="group" :open="(openRouterConfig.appSpoof.title || openRouterConfig.appSpoof.categories) || null">
+                        <details class="group" :open="(openRouterConfig.appSpoof?.title || openRouterConfig.appSpoof?.categories) || null">
                             <summary class="cursor-pointer flex items-center gap-2 select-none py-2">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 text-gray-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
                                 </svg>
                                 <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider" x-text="$store.global.t('appSpoofTitle') || 'Harness-Gate Spoof'">Harness-Gate Spoof</span>
                                 <span class="badge badge-xs font-mono text-[9px]"
-                                    :class="(openRouterConfig.appSpoof.title || openRouterConfig.appSpoof.categories) ? 'bg-neon-green/10 text-neon-green border-neon-green/30' : 'bg-space-800 text-gray-500 border-space-border'"
-                                    x-text="(openRouterConfig.appSpoof.title || openRouterConfig.appSpoof.categories) ? ($store.global.t('appSpoofCustom') || 'CUSTOM') : ($store.global.t('appSpoofDefault') || 'DEFAULT')">DEFAULT</span>
+                                    :class="(openRouterConfig.appSpoof?.title || openRouterConfig.appSpoof?.categories) ? 'bg-neon-green/10 text-neon-green border-neon-green/30' : 'bg-space-800 text-gray-500 border-space-border'"
+                                    x-text="(openRouterConfig.appSpoof?.title || openRouterConfig.appSpoof?.categories) ? ($store.global.t('appSpoofCustom') || 'CUSTOM') : ($store.global.t('appSpoofDefault') || 'DEFAULT')">DEFAULT</span>
                             </summary>
                             <div class="space-y-3 pb-2">
                                 <p class="text-[11px] text-gray-500 leading-relaxed" x-text="$store.global.t('appSpoofDesc') || 'Headers sent on the retry of harness-gated free models (X-OpenRouter-Title / X-OpenRouter-Categories). Leave both blank to use the built-in defaults.'">
