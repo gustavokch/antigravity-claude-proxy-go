@@ -25,6 +25,7 @@ func ForwardMessages(w http.ResponseWriter, r *http.Request, baseURL, apiKey str
 	}
 
 	proxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
