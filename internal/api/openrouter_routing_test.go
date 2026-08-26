@@ -760,3 +760,50 @@ func TestOpenRouterRouting_FailoverMovesSticky(t *testing.T) {
 		t.Errorf("sticky after failover = (%q, %v), want (p2, true)", got, ok)
 	}
 }
+
+func TestOpenRouterRouting_429DoesNotTripBreaker(t *testing.T) {
+	// A 429 is a transient rate limit, not provider death. Counting it toward
+	// the failure threshold lets a rate-limit storm evict a healthy provider
+	// from every auto-mode chain until the breaker cools down.
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		prov, _ := body["provider"].(map[string]any)
+		order, _ := prov["order"].([]any)
+		name, _ := order[0].(string)
+		if name == "p1" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_ok","provider":"p2","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer mockOR.Close()
+
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99},
+		{ProviderName: "p2", ContextLength: 100000, UptimeLast5m: 0.90, UptimeLast30m: 0.90, UptimeLast1d: 0.90},
+	}
+	env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+	// Threshold 2: three 429s on p1 would trip it if counted as failures.
+	env.saveConfig(t, nil, map[string]any{"failureThreshold": 2, "retry429Max": 2, "backoffBaseMs": 1, "backoffCapMs": 2})
+	server := env.newServer(t)
+
+	rec := env.doRequest(t, server, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 via failover, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	stats := openrouter.DefaultRouter.Stats("anthropic/claude-3.7-sonnet")
+	if got := stats["p1"].ConsecFails; got != 0 {
+		t.Errorf("429s must not count toward the breaker, p1 consecFails = %d", got)
+	}
+	if got := openrouter.DefaultRouter.Select("fresh-session", "anthropic/claude-3.7-sonnet", openrouter.ProviderOrder{Mode: "auto"}); got != "p1" {
+		t.Errorf("p1 must stay selectable after 429s, got %q", got)
+	}
+}

@@ -857,7 +857,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		lastStatus = resp.StatusCode
 		lastBody = bodyBytes
 		action, backoff := classify(resp.StatusCode, nil)
-		if provider != "" {
+		// 429 is a transient rate limit, not provider death: recording it as a
+		// failure would let a rate-limit storm trip the breaker on a healthy
+		// provider. All other non-2xx responses count toward the threshold.
+		if provider != "" && resp.StatusCode != http.StatusTooManyRequests {
 			openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 		}
 
