@@ -533,6 +533,10 @@ func TestManagement_OpenRouterEndpoints(t *testing.T) {
 			"enabled": true,
 			"apiKey": "sk-or-test-key",
 			"baseUrl": "%s",
+			"appSpoof": {
+				"title": "Custom App",
+				"categories": "cli-agent"
+			},
 			"allowlist": [
 				{
 					"id": "anthropic/claude-3.7-sonnet",
@@ -578,6 +582,16 @@ func TestManagement_OpenRouterEndpoints(t *testing.T) {
 		}
 		if cfg["activeModelCount"] != float64(1) {
 			t.Errorf("expected activeModelCount = 1, got %v", cfg["activeModelCount"])
+		}
+		appSpoof, ok := cfg["appSpoof"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected appSpoof map in config, got %v", cfg["appSpoof"])
+		}
+		if appSpoof["title"] != "Custom App" {
+			t.Errorf("expected appSpoof.title = 'Custom App', got %v", appSpoof["title"])
+		}
+		if appSpoof["categories"] != "cli-agent" {
+			t.Errorf("expected appSpoof.categories = 'cli-agent', got %v", appSpoof["categories"])
 		}
 	})
 
