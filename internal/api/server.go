@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -932,7 +933,21 @@ func openRouterUpstreamClient() *http.Client {
 
 // openRouterSharedClient is the package-level transport for upstream calls;
 // http.Client is safe for concurrent use and pools connections internally.
-var openRouterSharedClient = &http.Client{}
+// The transport is tuned for high concurrency against a single upstream host:
+// http.DefaultTransport caps idle connections per host at 2, which churns
+// connections under parallel streaming load.
+var openRouterSharedClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
 
 // hopByHopHeaders are connection-scoped and must not be forwarded from an
 // upstream response to the proxy client.
