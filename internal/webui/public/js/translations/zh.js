@@ -528,6 +528,13 @@ window.translations.zh = {
     familyOpenRouter: "OpenRouter 网关",
     gatewayDiscovery: "网关模型发现",
     gatewayDiscoveryDesc: "允许 Claude Code 动态检索并发现 OpenRouter 及代理白名单模型。",
+    // App Spoof (harness-gate retry headers)
+    appSpoofTitle: "Harness-Gate 欺骗",
+    appSpoofDefault: "默认",
+    appSpoofCustom: "自定义",
+    appSpoofDesc: "在触发 harness-gate 重试时发送给 OpenRouter 的归属头（X-OpenRouter-Title / X-OpenRouter-Categories）。两项留空则使用内置默认值。",
+    appSpoofFieldTitle: "应用标题",
+    appSpoofFieldCategories: "应用分类",
     skipFastModeOrgCheck: "跳过 Fast Mode 组织检查",
     skipFastModeOrgCheckDesc: "使用代理 fast mode 模型时跳过 Anthropic 组织权限验证。",
 

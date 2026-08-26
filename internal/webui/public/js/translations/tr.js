@@ -505,6 +505,13 @@ window.translations.tr = {
     familyOpenRouter: "OpenRouter Ağ Geçidi",
     gatewayDiscovery: "Ağ Geçidi Model Keşfi",
     gatewayDiscoveryDesc: "Claude Code'un OpenRouter ve proxy modellerini dinamik olarak keşfetmesine olanak tanır.",
+    // App Spoof (harness-gate retry headers)
+    appSpoofTitle: "Harness-Gate Spoof",
+    appSpoofDefault: "VARSAYILAN",
+    appSpoofCustom: "ÖZEL",
+    appSpoofDesc: "Harness-gate'lenen ücretsiz modellerin yeniden denemesinde gönderilen başlıklar (X-OpenRouter-Title / X-OpenRouter-Categories). Yerleşik varsayılanları kullanmak için her iki alanı da boş bırakın.",
+    appSpoofFieldTitle: "Uygulama Başlığı",
+    appSpoofFieldCategories: "Uygulama Kategorileri",
     skipFastModeOrgCheck: "Fast Mode Kuruluş Kontrolünü Atla",
     skipFastModeOrgCheckDesc: "Proxy üzerinden fast mode modellerini kullanırken Anthropic kuruluş doğrulamasını atlar.",
 
