@@ -17,6 +17,21 @@ func mkEndpoints() []ProviderEndpoint {
 	}
 }
 
+func TestProviderRouter_ConcurrentSelectNoRace(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", mkEndpoints())
+
+	for i := 0; i < 10; i++ {
+		t.Run("goroutine-"+strconv.Itoa(i), func(t *testing.T) {
+			t.Parallel()
+			for j := 0; j < 20; j++ {
+				_ = r.Select("session-"+strconv.Itoa(i)+"-"+strconv.Itoa(j), "m1", ProviderOrder{Mode: "auto"})
+				r.RecordResult("m1", "anthropic", true, 50*time.Millisecond, 10)
+			}
+		})
+	}
+}
+
 func TestProviderRouter_RefreshRanksOrdersByScore(t *testing.T) {
 	r := NewProviderRouter(DefaultRoutingConfig())
 	r.RefreshRanks("anthropic/claude", mkEndpoints())
