@@ -120,6 +120,7 @@ func TestTranslations_AppSpoofTemplateReferences(t *testing.T) {
 	appSpoofKeys := []string{
 		"appSpoofTitle", "appSpoofDefault", "appSpoofCustom",
 		"appSpoofDesc", "appSpoofFieldTitle", "appSpoofFieldCategories",
+		"appSpoofFieldReferer",
 	}
 	for _, key := range appSpoofKeys {
 		if !strings.Contains(src, fmt.Sprintf("t('%s')", key)) {
