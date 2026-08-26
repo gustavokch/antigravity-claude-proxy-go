@@ -287,7 +287,7 @@ func (e *EndpointsClient) ResolveModelEndpoints(ctx context.Context, modelID, ap
 				flight.wg.Done()
 			}()
 
-			fetchCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			fetchCtx, cancel := context.WithTimeout(context.Background(), e.httpClient.Timeout)
 			defer cancel()
 			endpoints, fetchErr := e.FetchModelEndpoints(fetchCtx, modelID, apiKey, cleanBase)
 			if fetchErr == nil {
