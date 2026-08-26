@@ -5,6 +5,18 @@ import (
 	"testing"
 )
 
+func TestDefaultSpoofConstants(t *testing.T) {
+	if DefaultSpoofAppReferer != "https://claude.ai/code" {
+		t.Errorf("DefaultSpoofAppReferer = %q, want %q", DefaultSpoofAppReferer, "https://claude.ai/code")
+	}
+	if DefaultSpoofAppTitle != "Claude Code" {
+		t.Errorf("DefaultSpoofAppTitle = %q, want %q", DefaultSpoofAppTitle, "Claude Code")
+	}
+	if DefaultSpoofAppCategories != "cli-agent" {
+		t.Errorf("DefaultSpoofAppCategories = %q, want %q", DefaultSpoofAppCategories, "cli-agent")
+	}
+}
+
 func TestApplySpoofHeaders(t *testing.T) {
 	t.Run("default values", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, "https://openrouter.ai/api/v1/chat/completions", nil)
