@@ -207,6 +207,71 @@ func TestSSEInterceptor(t *testing.T) {
 	}
 }
 
+func TestExtractProviderFromSSELine(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+	}{
+		{`data: {"type":"message_start","provider":"Anthropic","message":{"usage":{"input_tokens":1}}}`, "Anthropic"},
+		{`data: {"type":"content_block_delta"}`, ""},
+		{`data: [DONE]`, ""},
+		{`event: message_start`, ""},
+		{`data: {bad json`, ""},
+	}
+	for _, c := range cases {
+		if got := ExtractProviderFromSSELine(c.line); got != c.want {
+			t.Errorf("ExtractProviderFromSSELine(%q) = %q, want %q", c.line, got, c.want)
+		}
+	}
+}
+
+func TestSSEInterceptor_CapturesProvider(t *testing.T) {
+	sseData := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"provider\":\"Google\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n"
+
+	interceptor := NewSSEInterceptor(io.NopCloser(strings.NewReader(sseData)), func(in, out, cr, cw int) {})
+	buf := make([]byte, 32)
+	for {
+		_, err := interceptor.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+	_ = interceptor.Close()
+
+	if got := interceptor.Provider(); got != "Google" {
+		t.Errorf("expected provider Google, got %q", got)
+	}
+}
+
+func TestSSEInterceptor_TerminalErr(t *testing.T) {
+	// Normal EOF should result in nil TerminalErr.
+	interceptor := NewSSEInterceptor(io.NopCloser(strings.NewReader("")), func(in, out, cr, cw int) {})
+	_, err := interceptor.Read(make([]byte, 16))
+	if err == nil {
+		t.Fatal("expected EOF from empty reader")
+	}
+	if interceptor.TerminalErr() != nil {
+		t.Errorf("expected nil terminal err on clean EOF, got %v", interceptor.TerminalErr())
+	}
+}
+
+func TestSSEInterceptor_ConcurrentCloseNoRace(t *testing.T) {
+	sseData := "data: {\"type\":\"message_start\"}\n\n"
+	interceptor := NewSSEInterceptor(io.NopCloser(strings.NewReader(sseData)), func(in, out, cr, cw int) {})
+	go func() {
+		_ = interceptor.Close()
+	}()
+	buf := make([]byte, 16)
+	for {
+		_, err := interceptor.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+}
+
 func TestLogObservability(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))

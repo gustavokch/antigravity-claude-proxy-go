@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 type EndpointConfig struct {
@@ -15,12 +17,30 @@ type EndpointConfig struct {
 }
 
 type OpenRouterModelConfig struct {
-	ID              string `json:"id"`
-	Alias           string `json:"alias,omitempty"`
-	DisplayName     string `json:"displayName,omitempty"`
-	ContextLen      int    `json:"contextLength,omitempty"`
-	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
-	Enabled         bool   `json:"enabled"`
+	ID              string   `json:"id"`
+	Alias           string   `json:"alias,omitempty"`
+	DisplayName     string   `json:"displayName,omitempty"`
+	ContextLen      int      `json:"contextLength,omitempty"`
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	Enabled         bool     `json:"enabled"`
+	ProviderMode    string   `json:"providerMode,omitempty"`
+	PinnedProvider  string   `json:"pinnedProvider,omitempty"`
+	ProviderOrder   []string `json:"providerOrder,omitempty"`
+}
+
+// OpenRouterRoutingConfig holds routing strategy knobs.
+type OpenRouterRoutingConfig struct {
+	FailureThreshold int `json:"failureThreshold,omitempty"`
+	Retry429Max      int `json:"retry429Max,omitempty"`
+	BackoffBaseMs    int `json:"backoffBaseMs,omitempty"`
+	BackoffCapMs     int `json:"backoffCapMs,omitempty"`
+	RequestBudgetMs  int `json:"requestBudgetMs,omitempty"`
+	RankWeights      struct {
+		Availability float64 `json:"availability,omitempty"`
+		Context      float64 `json:"context,omitempty"`
+		Latency      float64 `json:"latency,omitempty"`
+		Throughput   float64 `json:"throughput,omitempty"`
+	} `json:"rankWeights,omitempty"`
 }
 
 type OpenRouterConfig struct {
@@ -28,6 +48,7 @@ type OpenRouterConfig struct {
 	APIKey    string                  `json:"apiKey,omitempty"`
 	BaseURL   string                  `json:"baseUrl,omitempty"`
 	Allowlist []OpenRouterModelConfig `json:"allowlist,omitempty"`
+	Routing   OpenRouterRoutingConfig `json:"routing,omitempty"`
 }
 
 type AccountSelectionConfig struct {
@@ -39,31 +60,31 @@ type AccountSelectionConfig struct {
 }
 
 type Config struct {
-	APIKey                   string                 `json:"apiKey,omitempty"`
-	WebUIPassword            string                 `json:"webuiPassword,omitempty"`
-	Debug                    bool                   `json:"debug,omitempty"`
-	DevMode                  bool                   `json:"devMode,omitempty"`
-	LogLevel                 string                 `json:"logLevel,omitempty"`
-	MaxRetries               int                    `json:"maxRetries,omitempty"`
-	RetryBaseMs              int                    `json:"retryBaseMs,omitempty"`
-	RetryMaxMs               int                    `json:"retryMaxMs,omitempty"`
-	PersistTokenCache        bool                   `json:"persistTokenCache,omitempty"`
-	DefaultCooldownMs        int                    `json:"defaultCooldownMs,omitempty"`
-	MaxWaitBeforeErrorMs     int                    `json:"maxWaitBeforeErrorMs,omitempty"`
-	MaxAccounts              int                    `json:"maxAccounts,omitempty"`
-	GlobalQuotaThreshold     float64                `json:"globalQuotaThreshold,omitempty"`
-	RequestThrottlingEnabled bool                   `json:"requestThrottlingEnabled,omitempty"`
-	RequestDelayMs           int                    `json:"requestDelayMs,omitempty"`
-	RateLimitDedupWindowMs   int                    `json:"rateLimitDedupWindowMs,omitempty"`
-	MaxConsecutiveFailures   int                    `json:"maxConsecutiveFailures,omitempty"`
-	ExtendedCooldownMs       int                    `json:"extendedCooldownMs,omitempty"`
-	MaxCapacityRetries       int                    `json:"maxCapacityRetries,omitempty"`
-	SwitchAccountDelayMs     int                    `json:"switchAccountDelayMs,omitempty"`
-	CapacityBackoffTiersMs   []int                  `json:"capacityBackoffTiersMs,omitempty"`
+	APIKey                   string                    `json:"apiKey,omitempty"`
+	WebUIPassword            string                    `json:"webuiPassword,omitempty"`
+	Debug                    bool                      `json:"debug,omitempty"`
+	DevMode                  bool                      `json:"devMode,omitempty"`
+	LogLevel                 string                    `json:"logLevel,omitempty"`
+	MaxRetries               int                       `json:"maxRetries,omitempty"`
+	RetryBaseMs              int                       `json:"retryBaseMs,omitempty"`
+	RetryMaxMs               int                       `json:"retryMaxMs,omitempty"`
+	PersistTokenCache        bool                      `json:"persistTokenCache,omitempty"`
+	DefaultCooldownMs        int                       `json:"defaultCooldownMs,omitempty"`
+	MaxWaitBeforeErrorMs     int                       `json:"maxWaitBeforeErrorMs,omitempty"`
+	MaxAccounts              int                       `json:"maxAccounts,omitempty"`
+	GlobalQuotaThreshold     float64                   `json:"globalQuotaThreshold,omitempty"`
+	RequestThrottlingEnabled bool                      `json:"requestThrottlingEnabled,omitempty"`
+	RequestDelayMs           int                       `json:"requestDelayMs,omitempty"`
+	RateLimitDedupWindowMs   int                       `json:"rateLimitDedupWindowMs,omitempty"`
+	MaxConsecutiveFailures   int                       `json:"maxConsecutiveFailures,omitempty"`
+	ExtendedCooldownMs       int                       `json:"extendedCooldownMs,omitempty"`
+	MaxCapacityRetries       int                       `json:"maxCapacityRetries,omitempty"`
+	SwitchAccountDelayMs     int                       `json:"switchAccountDelayMs,omitempty"`
+	CapacityBackoffTiersMs   []int                     `json:"capacityBackoffTiersMs,omitempty"`
 	CustomEndpoints          map[string]EndpointConfig `json:"customEndpoints,omitempty"`
-	ModelMapping             map[string]any         `json:"modelMapping,omitempty"`
-	OpenRouter               OpenRouterConfig       `json:"openrouter,omitempty"`
-	AccountSelection         AccountSelectionConfig `json:"accountSelection,omitempty"`
+	ModelMapping             map[string]any            `json:"modelMapping,omitempty"`
+	OpenRouter               OpenRouterConfig          `json:"openrouter,omitempty"`
+	AccountSelection         AccountSelectionConfig    `json:"accountSelection,omitempty"`
 }
 
 var (
@@ -95,6 +116,7 @@ func DefaultConfig() Config {
 			Enabled:   false,
 			BaseURL:   "https://openrouter.ai/api",
 			Allowlist: []OpenRouterModelConfig{},
+			Routing:   DefaultRoutingConfig(),
 		},
 		AccountSelection: AccountSelectionConfig{
 			Strategy: "hybrid",
@@ -128,6 +150,39 @@ func GetConfigDir() string {
 		return filepath.Join(".", ".config", "antigravity-proxy")
 	}
 	return filepath.Join(home, ".config", "antigravity-proxy")
+}
+
+// RankWeightsToOpenRouter returns the RankWeights as seen by the openrouter
+// package, falling back to the shared package defaults when unset.
+func (c OpenRouterRoutingConfig) RankWeightsToOpenRouter() openrouter.RankWeights {
+	w := openrouter.RankWeights{
+		Availability: c.RankWeights.Availability,
+		Context:      c.RankWeights.Context,
+		Latency:      c.RankWeights.Latency,
+		Throughput:   c.RankWeights.Throughput,
+	}
+	if w == (openrouter.RankWeights{}) {
+		w = openrouter.DefaultRankWeights()
+	}
+	return w
+}
+
+// DefaultRoutingConfig returns routing defaults used by config and tests.
+func DefaultRoutingConfig() OpenRouterRoutingConfig {
+	rw := openrouter.DefaultRankWeights()
+	return OpenRouterRoutingConfig{
+		FailureThreshold: 10,
+		Retry429Max:      10,
+		BackoffBaseMs:    500,
+		BackoffCapMs:     120000,
+		RequestBudgetMs:  120000,
+		RankWeights: struct {
+			Availability float64 `json:"availability,omitempty"`
+			Context      float64 `json:"context,omitempty"`
+			Latency      float64 `json:"latency,omitempty"`
+			Throughput   float64 `json:"throughput,omitempty"`
+		}{rw.Availability, rw.Context, rw.Latency, rw.Throughput},
+	}
 }
 
 // ConfigFilePath returns path to ~/.config/antigravity-proxy/config.json.

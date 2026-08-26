@@ -165,6 +165,9 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	case path == "/api/openrouter/models/cached" && method == http.MethodGet:
 		server.handleOpenRouterModelsCached(writer, request)
 		return true
+	case path == "/api/openrouter/providers" && method == http.MethodGet:
+		server.handleOpenRouterProvidersGet(writer, request)
+		return true
 	case path == "/api/auth/url" && method == http.MethodGet:
 		server.handleAuthURLGet(writer, request)
 		return true
@@ -1082,7 +1085,13 @@ func (server *Server) handleOpenRouterConfigSave(writer http.ResponseWriter, req
 	}
 	if saved.OpenRouter.Enabled {
 		openrouter.DefaultClient.WarmupCacheAsync(saved.OpenRouter.APIKey, saved.OpenRouter.BaseURL)
+		for _, item := range saved.OpenRouter.Allowlist {
+			if item.Enabled {
+				openrouter.DefaultEndpointsClient.WarmupEndpointsAsync(item.ID, saved.OpenRouter.APIKey, saved.OpenRouter.BaseURL)
+			}
+		}
 	}
+	applyRouterConfig(saved.OpenRouter)
 	pub := config.GetPublicConfig()
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",
@@ -1129,5 +1138,86 @@ func (server *Server) handleOpenRouterModelsCached(writer http.ResponseWriter, r
 		"status": "ok",
 		"models": models,
 		"total":  len(models),
+	})
+}
+
+// handleOpenRouterProvidersGet returns the ranked provider list for a model with
+// live EWMA stats from the router, plus the model's current routing config.
+func (server *Server) handleOpenRouterProvidersGet(writer http.ResponseWriter, request *http.Request) {
+	model := strings.TrimSpace(request.URL.Query().Get("model"))
+	if model == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "model query parameter is required"})
+		return
+	}
+
+	cfg := config.Get()
+	baseURL := cfg.OpenRouter.BaseURL
+
+	// Resolve endpoints: cache first, fetch on miss, refresh ranks.
+	endpoints, ok := openrouter.DefaultEndpointsClient.GetCachedEndpoints(model, baseURL)
+	if !ok {
+		fetched, err := openrouter.DefaultEndpointsClient.ResolveModelEndpoints(request.Context(), model, cfg.OpenRouter.APIKey, baseURL)
+		if err != nil {
+			// Do not log the raw error: it embeds the upstream response body.
+			server.logger.Warn("failed to fetch OpenRouter endpoints", "model", model)
+			writeJSON(writer, http.StatusBadGateway, map[string]any{"status": "error", "error": "Failed to fetch provider endpoints from OpenRouter"})
+			return
+		}
+		endpoints = fetched
+	}
+	if len(endpoints) > 0 {
+		openrouter.DefaultRouter.RefreshRanks(model, endpoints)
+	}
+
+	ranks := openrouter.DefaultRouter.GetRanks(model)
+	stats := openrouter.DefaultRouter.Stats(model)
+
+	type providerEntry struct {
+		Provider   string                           `json:"provider"`
+		Tag        string                           `json:"tag,omitempty"`
+		ContextLen int                              `json:"contextLength,omitempty"`
+		Uptime     float64                          `json:"uptime"`
+		Score      float64                          `json:"score"`
+		Endpoint   openrouter.ProviderEndpoint      `json:"endpoint"`
+		Stats      openrouter.ProviderStatsSnapshot `json:"stats"`
+	}
+	providers := make([]providerEntry, 0, len(ranks))
+	for _, rk := range ranks {
+		entry := providerEntry{
+			Provider:   rk.Provider,
+			Tag:        rk.Tag,
+			ContextLen: rk.ContextLen,
+			Uptime:     rk.Endpoint.BlendedUptime(),
+			Score:      rk.Score,
+			Endpoint:   rk.Endpoint,
+		}
+		if s, ok := stats[rk.Provider]; ok {
+			entry.Stats = s
+		}
+		providers = append(providers, entry)
+	}
+
+	// Per-model routing config from the allowlist item.
+	mode := "auto"
+	var pinnedProvider string
+	var order []string
+	for _, item := range cfg.OpenRouter.Allowlist {
+		if item.ID == model {
+			if item.ProviderMode != "" {
+				mode = item.ProviderMode
+			}
+			pinnedProvider = item.PinnedProvider
+			order = item.ProviderOrder
+			break
+		}
+	}
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status":         "ok",
+		"model":          model,
+		"mode":           mode,
+		"pinnedProvider": pinnedProvider,
+		"providerOrder":  order,
+		"providers":      providers,
 	})
 }

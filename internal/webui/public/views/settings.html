@@ -1048,13 +1048,97 @@
                                                 <span x-text="item.contextLength ? (Math.round(item.contextLength / 1000) + 'k tokens') : '-'"></span>
                                             </td>
                                             <td class="text-right pr-4">
-                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400"
-                                                    @click="removeFromAllowlist(item.id)"
-                                                    :title="$store.global.t('remove') || 'Remove'">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                    </svg>
-                                                </button>
+                                                <div class="flex items-center justify-end gap-1">
+                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-neon-purple"
+                                                        @click="toggleRoutingExpanded(item.id)"
+                                                        :title="$store.global.t('providerRouting') || 'Provider Routing'">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 transition-transform" :class="isRoutingExpanded(item.id) && 'rotate-90'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                                                        </svg>
+                                                    </button>
+                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400"
+                                                        @click="removeFromAllowlist(item.id)"
+                                                        :title="$store.global.t('remove') || 'Remove'">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <!-- Per-model provider routing panel -->
+                                        <tr x-show="isRoutingExpanded(item.id)" class="bg-space-900/40">
+                                            <td colspan="5" class="!p-0">
+                                                <div class="px-6 py-4 space-y-3 border-t border-space-border/40">
+                                                    <div class="flex items-center gap-3">
+                                                        <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider" x-text="$store.global.t('providerRouting') || 'Provider Routing'">Provider Routing</span>
+                                                        <div class="join">
+                                                            <template x-for="m in ['auto', 'pinned', 'custom']" :key="m">
+                                                                <button class="btn btn-xs join-item"
+                                                                    :class="(item.providerMode || 'auto') === m ? 'bg-neon-purple/30 text-neon-purple border-neon-purple/50' : 'bg-space-800 text-gray-400 border-space-border'"
+                                                                    @click="setProviderMode(item, m)"
+                                                                    x-text="m"></button>
+                                                            </template>
+                                                        </div>
+                                                        <span class="text-[10px] text-gray-500" x-show="(item.providerMode || 'auto') === 'pinned' && item.pinnedProvider">
+                                                            <span x-text="$store.global.t('pinnedTo') || 'Pinned to'"></span>: <span class="font-mono text-neon-purple" x-text="item.pinnedProvider"></span>
+                                                        </span>
+                                                    </div>
+
+                                                    <div x-show="getRoutingPanel(item.id).loading" class="text-xs text-gray-500 font-mono py-2">
+                                                        <span class="loading loading-spinner loading-xs"></span>
+                                                        <span x-text="$store.global.t('loading') || 'Loading...'">Loading...</span>
+                                                    </div>
+                                                    <div x-show="getRoutingPanel(item.id).error" class="text-xs text-red-400 font-mono py-2" x-text="getRoutingPanel(item.id).error"></div>
+
+                                                    <template x-if="getRoutingPanel(item.id).data">
+                                                        <table class="standard-table">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th class="pl-2" x-text="$store.global.t('provider') || 'Provider'">Provider</th>
+                                                                    <th x-text="$store.global.t('uptime') || 'Uptime'">Uptime</th>
+                                                                    <th x-text="$store.global.t('contextLength') || 'Context'">Context</th>
+                                                                    <th x-text="$store.global.t('latency') || 'Latency'">Latency</th>
+                                                                    <th x-text="$store.global.t('tps') || 'TPS'">TPS</th>
+                                                                    <th x-text="$store.global.t('score') || 'Score'">Score</th>
+                                                                    <th x-show="(item.providerMode || 'auto') === 'pinned'" x-text="$store.global.t('pin') || 'Pin'">Pin</th>
+                                                                    <th x-show="(item.providerMode || 'auto') === 'custom'" x-text="$store.global.t('order') || 'Order'">Order</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                <template x-for="p in getRoutingPanel(item.id).data.providers" :key="p.provider">
+                                                                    <tr class="hover:bg-white/5">
+                                                                        <td class="pl-2 font-mono text-xs text-white">
+                                                                            <span x-text="p.provider"></span>
+                                                                            <span class="text-gray-500" x-show="p.tag" x-text="p.tag ? '(' + p.tag + ')' : ''"></span>
+                                                                        </td>
+                                                                        <td class="font-mono text-xs text-gray-300" x-text="formatUptime(p)"></td>
+                                                                        <td class="font-mono text-xs text-gray-300" x-text="p.contextLength ? Math.round(p.contextLength / 1000) + 'k' : '-'"></td>
+                                                                        <td class="font-mono text-xs text-gray-300" x-text="p.stats && p.stats.latencyMsEWMA ? Math.round(p.stats.latencyMsEWMA) + 'ms' : '-'"></td>
+                                                                        <td class="font-mono text-xs text-gray-300" x-text="p.stats && p.stats.tpsEWMA ? p.stats.tpsEWMA.toFixed(1) : '-'"></td>
+                                                                        <td class="font-mono text-xs text-neon-purple" x-text="p.score != null ? p.score.toFixed(3) : '-'"></td>
+                                                                        <td x-show="(item.providerMode || 'auto') === 'pinned'">
+                                                                            <button class="btn btn-xs"
+                                                                                :class="item.pinnedProvider === p.provider ? 'bg-neon-purple/30 text-neon-purple border-neon-purple/50' : 'bg-space-800 text-gray-400 border-space-border'"
+                                                                                @click="pinProvider(item, p.provider)"
+                                                                                x-text="item.pinnedProvider === p.provider ? ($store.global.t('pinned') || 'Pinned') : ($store.global.t('pin') || 'Pin')"></button>
+                                                                        </td>
+                                                                        <td x-show="(item.providerMode || 'auto') === 'custom'">
+                                                                            <template x-if="(item.providerOrder || []).includes(p.provider)">
+                                                                                <div class="flex items-center gap-1">
+                                                                                    <button class="btn btn-xs btn-ghost text-gray-400" :disabled="(item.providerOrder || []).indexOf(p.provider) <= 0"
+                                                                                        @click="moveProvider(item, (item.providerOrder || []).indexOf(p.provider), -1)">↑</button>
+                                                                                    <button class="btn btn-xs btn-ghost text-gray-400" :disabled="(item.providerOrder || []).indexOf(p.provider) >= (item.providerOrder || []).length - 1"
+                                                                                        @click="moveProvider(item, (item.providerOrder || []).indexOf(p.provider), 1)">↓</button>
+                                                                                </div>
+                                                                            </template>
+                                                                        </td>
+                                                                    </tr>
+                                                                </template>
+                                                            </tbody>
+                                                        </table>
+                                                    </template>
+                                                </div>
                                             </td>
                                         </tr>
                                     </template>
