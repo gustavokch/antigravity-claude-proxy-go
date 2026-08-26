@@ -702,7 +702,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 	}
 
-	httpClient := &http.Client{Timeout: 60 * time.Second}
+	httpClient := openRouterUpstreamClient()
 
 	var (
 		lastStatus  int
@@ -883,6 +883,14 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	server.logger.Warn("OpenRouter forward exhausted",
 		"model", model, "status", status, "tried", len(tried))
 	writeAPIError(writer, status, "api_error", fmt.Sprintf("OpenRouter upstream failed after %d attempt(s): %s", len(tried), truncate(string(lastBody), 256)))
+}
+
+// openRouterUpstreamClient returns the HTTP client for OpenRouter upstream
+// calls. It intentionally has no total Timeout: a total timeout covers the
+// full body read and would kill long-running SSE streams mid-generation.
+// Cancellation comes from the inbound request context and the retry budget.
+func openRouterUpstreamClient() *http.Client {
+	return &http.Client{}
 }
 
 // injectProvider adds the OpenRouter "provider" routing key to the request body.

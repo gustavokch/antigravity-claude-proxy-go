@@ -467,3 +467,12 @@ func TestManagement_OpenRouterProvidersEndpoint(t *testing.T) {
 		t.Errorf("expected 400 without model param, got %d", rec2.Code)
 	}
 }
+
+func TestUpstreamClient_HasNoTotalTimeout(t *testing.T) {
+	// A total Client.Timeout covers the full body read and kills SSE streams
+	// mid-generation. The upstream client must rely on the request context.
+	c := openRouterUpstreamClient()
+	if c.Timeout != 0 {
+		t.Errorf("total Timeout kills long SSE streams, got %v", c.Timeout)
+	}
+}
