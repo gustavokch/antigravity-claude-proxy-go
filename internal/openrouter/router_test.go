@@ -86,6 +86,26 @@ func TestProviderRouter_SelectCustom(t *testing.T) {
 	}
 }
 
+func TestProviderRouter_UnknownStickyProviderDropped(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", []ProviderEndpoint{
+		{ProviderName: "p1", UptimeLast5m: 0.9},
+	})
+	// Sticky points at a provider that does not exist in the ranks.
+	r.SetSticky("s1", "m1", "ghost")
+
+	chain := r.SelectChain("s1", "m1", ProviderOrder{Mode: "auto"})
+	if len(chain) != 1 || chain[0] != "p1" {
+		t.Errorf("expected chain [p1] only, got %v", chain)
+	}
+	if _, ok := r.StickyProvider("s1", "m1"); ok {
+		// After selection the sticky is either dropped or moved to p1.
+		if got, _ := r.StickyProvider("s1", "m1"); got == "ghost" {
+			t.Errorf("expected ghost sticky dropped, still present")
+		}
+	}
+}
+
 func TestProviderRouter_RefreshDropsStaleSticky(t *testing.T) {
 	r := NewProviderRouter(DefaultRoutingConfig())
 	r.RefreshRanks("m1", mkEndpoints())

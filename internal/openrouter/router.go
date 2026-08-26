@@ -463,9 +463,19 @@ func (r *ProviderRouter) providerInRanksLocked(model, provider string) bool {
 // half-opens once BreakerCooldown has elapsed since the last recorded result:
 // the counter is NOT reset, so the next failure re-trips immediately.
 func (r *ProviderRouter) providerHealthyUnderThresholdLocked(model, provider string) bool {
-	// Check rank for unhealthy status.
-	for _, rk := range r.ranks[model] {
-		if rk.endpoint.ProviderName == provider && !rk.endpoint.Healthy() {
+	// Check rank for unhealthy status. A provider absent from an existing rank
+	// table is unknown and must not pass vacuously.
+	if ranks, ok := r.ranks[model]; ok {
+		found := false
+		for _, rk := range ranks {
+			if rk.endpoint.ProviderName == provider {
+				found = true
+				if !rk.endpoint.Healthy() {
+					return false
+				}
+			}
+		}
+		if !found {
 			return false
 		}
 	}
