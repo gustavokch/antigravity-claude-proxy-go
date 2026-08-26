@@ -311,7 +311,8 @@ window.Components.models = () => ({
         routing: null,
         appSpoof: {
             title: '',
-            categories: ''
+            categories: '',
+            referer: ''
         }
     },
     openRouterSaving: false,
@@ -451,7 +452,8 @@ window.Components.models = () => ({
                     routing: data.config.routing || null,
                     appSpoof: {
                         title: (data.config.appSpoof && data.config.appSpoof.title) || '',
-                        categories: (data.config.appSpoof && data.config.appSpoof.categories) || ''
+                        categories: (data.config.appSpoof && data.config.appSpoof.categories) || '',
+                        referer: (data.config.appSpoof && data.config.appSpoof.referer) || ''
                     }
                 };
                 Alpine.store('data').openrouter = this.openRouterConfig;
@@ -482,10 +484,11 @@ window.Components.models = () => ({
             // when at least one field is non-empty so the saved values aren't
             // clobbered by blanks from a never-touched panel.
             const spoof = this.openRouterConfig.appSpoof || {};
-            if ((spoof.title && spoof.title.trim()) || (spoof.categories && spoof.categories.trim())) {
+            if ((spoof.title && spoof.title.trim()) || (spoof.categories && spoof.categories.trim()) || (spoof.referer && spoof.referer.trim())) {
                 payload.appSpoof = {
                     title: (spoof.title || '').trim(),
-                    categories: (spoof.categories || '').trim()
+                    categories: (spoof.categories || '').trim(),
+                    referer: (spoof.referer || '').trim()
                 };
             }
             if (this.openRouterConfig.apiKey && this.openRouterConfig.apiKey.trim()) {

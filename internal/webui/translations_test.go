@@ -15,7 +15,7 @@ var openRouterPanelKeys = []string{
 	"providerRouting", "provider", "uptime", "latency", "tps", "score",
 	"order", "pin", "pinned", "pinnedTo", "openRouterBadge",
 	"appSpoofTitle", "appSpoofDefault", "appSpoofCustom", "appSpoofDesc",
-	"appSpoofFieldTitle", "appSpoofFieldCategories",
+	"appSpoofFieldTitle", "appSpoofFieldCategories", "appSpoofFieldReferer",
 }
 
 // kimiPanelKeys are the i18n keys referenced by the Kimi Code gateway section
@@ -120,6 +120,7 @@ func TestTranslations_AppSpoofTemplateReferences(t *testing.T) {
 	appSpoofKeys := []string{
 		"appSpoofTitle", "appSpoofDefault", "appSpoofCustom",
 		"appSpoofDesc", "appSpoofFieldTitle", "appSpoofFieldCategories",
+		"appSpoofFieldReferer",
 	}
 	for _, key := range appSpoofKeys {
 		if !strings.Contains(src, fmt.Sprintf("t('%s')", key)) {

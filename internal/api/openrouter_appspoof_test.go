@@ -79,13 +79,12 @@ func TestOpenRouterForwarding_HarnessGateRetriesWithSpoofedApp(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
-	var spoofTitle, spoofCategories string
+	var spoofTitle, spoofTitleLegacy, spoofCategories, spoofReferer, spoofRefererLegacy string
 	var calls int32
 
 	newSpoofTestServer(t, map[string]any{}, func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		title := r.Header.Get("X-OpenRouter-Title")
-		categories := r.Header.Get("X-OpenRouter-Categories")
 		if title == "" {
 			// Unattributed request — gate it.
 			w.Header().Set("Content-Type", "application/json")
@@ -94,7 +93,10 @@ func TestOpenRouterForwarding_HarnessGateRetriesWithSpoofedApp(t *testing.T) {
 			return
 		}
 		spoofTitle = title
-		spoofCategories = categories
+		spoofTitleLegacy = r.Header.Get("X-Title")
+		spoofCategories = r.Header.Get("X-OpenRouter-Categories")
+		spoofReferer = r.Header.Get("HTTP-Referer")
+		spoofRefererLegacy = r.Header.Get("Referer")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"thinkingmachines/inkling:free"}`))
 	})
@@ -110,8 +112,17 @@ func TestOpenRouterForwarding_HarnessGateRetriesWithSpoofedApp(t *testing.T) {
 	if spoofTitle != openrouter.DefaultSpoofAppTitle {
 		t.Errorf("expected default spoof title %q, got %q", openrouter.DefaultSpoofAppTitle, spoofTitle)
 	}
+	if spoofTitleLegacy != openrouter.DefaultSpoofAppTitle {
+		t.Errorf("expected default legacy spoof title %q, got %q", openrouter.DefaultSpoofAppTitle, spoofTitleLegacy)
+	}
 	if spoofCategories != openrouter.DefaultSpoofAppCategories {
 		t.Errorf("expected default spoof categories %q, got %q", openrouter.DefaultSpoofAppCategories, spoofCategories)
+	}
+	if spoofReferer != openrouter.DefaultSpoofAppReferer {
+		t.Errorf("expected default spoof referer %q, got %q", openrouter.DefaultSpoofAppReferer, spoofReferer)
+	}
+	if spoofRefererLegacy != openrouter.DefaultSpoofAppReferer {
+		t.Errorf("expected default legacy spoof referer %q, got %q", openrouter.DefaultSpoofAppReferer, spoofRefererLegacy)
 	}
 }
 
@@ -120,12 +131,13 @@ func TestOpenRouterForwarding_HarnessGateCustomSpoofConfig(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
-	var spoofTitle, spoofCategories string
+	var spoofTitle, spoofTitleLegacy, spoofCategories, spoofReferer, spoofRefererLegacy string
 
 	newSpoofTestServer(t, map[string]any{
 		"appSpoof": map[string]any{
 			"title":      "My Harness",
 			"categories": "cli-agent,cloud-agent",
+			"referer":    "https://myharness.ai",
 		},
 	}, func(w http.ResponseWriter, r *http.Request) {
 		title := r.Header.Get("X-OpenRouter-Title")
@@ -136,7 +148,10 @@ func TestOpenRouterForwarding_HarnessGateCustomSpoofConfig(t *testing.T) {
 			return
 		}
 		spoofTitle = title
+		spoofTitleLegacy = r.Header.Get("X-Title")
 		spoofCategories = r.Header.Get("X-OpenRouter-Categories")
+		spoofReferer = r.Header.Get("HTTP-Referer")
+		spoofRefererLegacy = r.Header.Get("Referer")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"thinkingmachines/inkling:free"}`))
 	})
@@ -149,8 +164,17 @@ func TestOpenRouterForwarding_HarnessGateCustomSpoofConfig(t *testing.T) {
 	if spoofTitle != "My Harness" {
 		t.Errorf("expected configured spoof title, got %q", spoofTitle)
 	}
+	if spoofTitleLegacy != "My Harness" {
+		t.Errorf("expected configured legacy spoof title, got %q", spoofTitleLegacy)
+	}
 	if spoofCategories != "cli-agent,cloud-agent" {
 		t.Errorf("expected configured spoof categories, got %q", spoofCategories)
+	}
+	if spoofReferer != "https://myharness.ai" {
+		t.Errorf("expected configured spoof referer, got %q", spoofReferer)
+	}
+	if spoofRefererLegacy != "https://myharness.ai" {
+		t.Errorf("expected configured legacy spoof referer, got %q", spoofRefererLegacy)
 	}
 }
 
@@ -179,5 +203,50 @@ func TestOpenRouterForwarding_HarnessGatePersistent403(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	if !strings.Contains(string(body), "only available on agentic harnesses") {
 		t.Errorf("expected upstream gate error surfaced to client, got %s", string(body))
+	}
+}
+
+func TestOpenRouterForwarding_AttributionHeadersPassThrough(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedReferer, receivedTitle string
+
+	newSpoofTestServer(t, map[string]any{}, func(w http.ResponseWriter, r *http.Request) {
+		receivedReferer = r.Header.Get("HTTP-Referer")
+		receivedTitle = r.Header.Get("X-OpenRouter-Title")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"thinkingmachines/inkling:free"}`))
+	})
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"thinkingmachines/inkling:free","messages":[{"role":"user","content":"Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	req.Header.Set("HTTP-Referer", "https://client-app.com")
+	req.Header.Set("X-OpenRouter-Title", "Client App")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedReferer != "https://client-app.com" {
+		t.Errorf("expected passthrough HTTP-Referer 'https://client-app.com', got %q", receivedReferer)
+	}
+	if receivedTitle != "Client App" {
+		t.Errorf("expected passthrough X-OpenRouter-Title 'Client App', got %q", receivedTitle)
 	}
 }

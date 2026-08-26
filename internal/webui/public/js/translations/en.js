@@ -527,9 +527,10 @@ window.translations.en = {
     appSpoofTitle: "Harness-Gate Spoof",
     appSpoofDefault: "DEFAULT",
     appSpoofCustom: "CUSTOM",
-    appSpoofDesc: "Headers sent on the retry of harness-gated free models (X-OpenRouter-Title / X-OpenRouter-Categories). Leave both blank to use the built-in defaults.",
+    appSpoofDesc: "Headers sent on the retry of harness-gated free models (HTTP-Referer / X-OpenRouter-Title / X-OpenRouter-Categories). Leave blank to use the built-in defaults.",
     appSpoofFieldTitle: "App Title",
     appSpoofFieldCategories: "App Categories",
+    appSpoofFieldReferer: "Referer",
     skipFastModeOrgCheck: "Skip Fast Mode Org Check",
     skipFastModeOrgCheckDesc: "Skips Anthropic organization validation when using fast mode models via proxy.",
 

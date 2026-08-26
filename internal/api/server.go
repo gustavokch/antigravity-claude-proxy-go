@@ -800,13 +800,17 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	// App identity for harness-gated models: OpenRouter 403s models restricted
 	// to agentic harnesses when the request carries no app attribution. On that
 	// error the attempt is retried once with spoofed attribution headers.
-	spoofTitle := openRouterCfg.AppSpoof.Title
+	spoofTitle := strings.TrimSpace(openRouterCfg.AppSpoof.Title)
 	if spoofTitle == "" {
 		spoofTitle = openrouter.DefaultSpoofAppTitle
 	}
-	spoofCategories := openRouterCfg.AppSpoof.Categories
+	spoofCategories := strings.TrimSpace(openRouterCfg.AppSpoof.Categories)
 	if spoofCategories == "" {
 		spoofCategories = openrouter.DefaultSpoofAppCategories
+	}
+	spoofReferer := strings.TrimSpace(openRouterCfg.AppSpoof.Referer)
+	if spoofReferer == "" {
+		spoofReferer = openrouter.DefaultSpoofAppReferer
 	}
 	appSpoofed := false
 
@@ -816,6 +820,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		providerIdx = 0
 		consec429   int
 		tried       = make(map[string]bool)
+		attempts    int
 	)
 
 	// No ranked/pinned/custom provider available — single unpinned attempt
@@ -892,11 +897,22 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		if ab := request.Header.Get("anthropic-beta"); ab != "" {
 			upReq.Header.Set("anthropic-beta", ab)
 		}
+		for _, h := range []string{
+			openrouter.SpoofAppRefererHeader,
+			openrouter.SpoofAppRefererLegacyHeader,
+			openrouter.SpoofAppTitleHeader,
+			openrouter.SpoofAppTitleLegacyHeader,
+			openrouter.SpoofAppCategoriesHeader,
+		} {
+			if v := request.Header.Get(h); v != "" {
+				upReq.Header.Set(h, v)
+			}
+		}
 		if appSpoofed {
-			upReq.Header.Set(openrouter.SpoofAppTitleHeader, spoofTitle)
-			upReq.Header.Set(openrouter.SpoofAppCategoriesHeader, spoofCategories)
+			openrouter.ApplySpoofHeaders(upReq, spoofTitle, spoofCategories, spoofReferer)
 		}
 
+		attempts++
 		resp, err := httpClient.Do(upReq)
 		if err != nil {
 			headersCutoff.Stop()
@@ -989,6 +1005,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			if !appSpoofed {
 				appSpoofed = true
 				tried[provider] = false
+				server.logger.Info("OpenRouter harness gate intercepted; retrying with spoofed attribution headers",
+					"model", model, "provider", provider)
 				continue
 			}
 			break
@@ -1051,8 +1069,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		status = http.StatusBadGateway
 	}
 	server.logger.Warn("OpenRouter forward exhausted",
-		"model", model, "status", status, "tried", len(tried))
-	writeAPIError(writer, status, "api_error", fmt.Sprintf("OpenRouter upstream failed after %d attempt(s): %s", len(tried), truncate(string(lastBody), 256)))
+		"model", model, "status", status, "attempts", attempts, "tried", len(tried))
+	writeAPIError(writer, status, "api_error", fmt.Sprintf("OpenRouter upstream failed after %d attempt(s): %s", attempts, truncate(string(lastBody), 256)))
 }
 
 // openRouterUpstreamClient returns the HTTP client for OpenRouter upstream

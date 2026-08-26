@@ -462,9 +462,10 @@ window.translations.pt = {
     appSpoofTitle: "Harness-Gate Spoof",
     appSpoofDefault: "PADRÃO",
     appSpoofCustom: "PERSONALIZADO",
-    appSpoofDesc: "Cabeçalhos enviados na retentativa de modelos gratuitos bloqueados por harness (X-OpenRouter-Title / X-OpenRouter-Categories). Deixe ambos em branco para usar os padrões internos.",
+    appSpoofDesc: "Cabeçalhos enviados na retentativa de modelos gratuitos bloqueados por harness (HTTP-Referer / X-OpenRouter-Title / X-OpenRouter-Categories). Deixe em branco para usar os padrões internos.",
     appSpoofFieldTitle: "Título do App",
     appSpoofFieldCategories: "Categorias do App",
+    appSpoofFieldReferer: "Referer",
     skipFastModeOrgCheck: "Ignorar Verificação de Organização do Fast Mode",
     skipFastModeOrgCheckDesc: "Ignora a validação de organização da Anthropic ao usar modelos fast mode pelo proxy.",
 
