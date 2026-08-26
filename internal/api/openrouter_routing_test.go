@@ -660,3 +660,31 @@ func TestOpenRouterRouting_BudgetExemptsActiveStream(t *testing.T) {
 		t.Errorf("expected completed stream to record one success, got %+v", stats["p1"])
 	}
 }
+
+func TestEffectiveAttemptPricing_FollowsServedProvider(t *testing.T) {
+	// Cost must use the SERVED provider's endpoint pricing, not the
+	// requested one — OpenRouter may serve a different endpoint than ordered.
+	prevRouter := openrouter.DefaultRouter
+	openrouter.DefaultRouter = openrouter.NewProviderRouter(openrouter.DefaultRoutingConfig())
+	t.Cleanup(func() { openrouter.DefaultRouter = prevRouter })
+	openrouter.DefaultRouter.RefreshRanks("m", []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", UptimeLast5m: 0.99, Pricing: &openrouter.Pricing{Prompt: 0.000001, Completion: 0.000002}},
+		{ProviderName: "p2", UptimeLast5m: 0.9, Pricing: &openrouter.Pricing{Prompt: 0.000003, Completion: 0.000015}},
+	})
+
+	requested := openrouter.Pricing{Prompt: 0.000001, Completion: 0.000002}
+
+	got := effectiveAttemptPricing(requested, "m", "p2")
+	if got.Prompt != 0.000003 || got.Completion != 0.000015 {
+		t.Errorf("served p2 pricing = %+v, want p2 endpoint pricing", got)
+	}
+	if got := effectiveAttemptPricing(requested, "m", "p1"); got != requested {
+		t.Errorf("served p1 pricing = %+v, want requested (identical)", got)
+	}
+	if got := effectiveAttemptPricing(requested, "m", ""); got != requested {
+		t.Errorf("no served provider must fall back to requested pricing, got %+v", got)
+	}
+	if got := effectiveAttemptPricing(requested, "m", "unknown"); got != requested {
+		t.Errorf("unknown served provider must fall back to requested pricing, got %+v", got)
+	}
+}

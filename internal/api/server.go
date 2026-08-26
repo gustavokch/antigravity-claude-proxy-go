@@ -740,14 +740,6 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		body := injectProvider(reqBody, provider)
 		attemptStart := server.now()
 
-		// Per-endpoint pricing wins over model-level pricing when known.
-		attemptPricing := pricing
-		if provider != "" {
-			if ep := endpointPricing(model, provider); ep != nil {
-				attemptPricing = *ep
-			}
-		}
-
 		// Derive per-attempt context. The budget bounds time-to-first-byte
 		// for streams and the whole body for unary responses; an active
 		// stream is exempt once headers arrive, so long generations are never
@@ -802,7 +794,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				// Headers arrived inside the budget: hand the attempt context
 				// to the stream proxy, which releases it at stream end.
 				headersCutoff.Stop()
-				server.proxyStreamResponse(writer, resp, model, sessionID, attemptPricing, startTime, attemptStart, provider, cancel)
+				server.proxyStreamResponse(writer, resp, model, sessionID, pricing, startTime, attemptStart, provider, cancel)
 				return
 			}
 			// Buffer full body before writing — failover impossible after first byte.
@@ -822,6 +814,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			if servedProvider != "" {
 				provider = servedProvider
 			}
+			// Cost follows the served endpoint, resolved after the override.
+			attemptPricing := effectiveAttemptPricing(pricing, model, provider)
 			// Write headers + status
 			for k, vs := range resp.Header {
 				if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
@@ -1021,7 +1015,8 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 			success := interceptor.TerminalErr() == nil
 			openrouter.DefaultRouter.RecordResult(model, served, success, server.now().Sub(attemptStart), in+out)
 		}
-		server.recordOpenRouterMetrics(model, sessionID, pricing, startTime, in, out, cr, cw, served)
+		// Cost follows the served endpoint (pricing is the model-level base here).
+		server.recordOpenRouterMetrics(model, sessionID, effectiveAttemptPricing(pricing, model, served), startTime, in, out, cr, cw, served)
 	})
 	defer interceptor.Close()
 
@@ -1080,6 +1075,18 @@ func endpointPricing(model, provider string) *openrouter.Pricing {
 		}
 	}
 	return nil
+}
+
+// effectiveAttemptPricing prefers the served provider's endpoint pricing over
+// the requested provider's or model-catalog price. OpenRouter may serve a
+// different endpoint than ordered, so cost must follow what actually served.
+func effectiveAttemptPricing(base openrouter.Pricing, model, servedProvider string) openrouter.Pricing {
+	if servedProvider != "" {
+		if ep := endpointPricing(model, servedProvider); ep != nil {
+			return *ep
+		}
+	}
+	return base
 }
 
 type streamSender func(context.Context, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
