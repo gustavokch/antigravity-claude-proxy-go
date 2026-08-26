@@ -306,7 +306,11 @@ window.Components.models = () => ({
         apiKey: '',
         hasApiKey: false,
         allowlist: [],
-        routing: null
+        routing: null,
+        appSpoof: {
+            title: '',
+            categories: ''
+        }
     },
     openRouterSaving: false,
     openRouterError: '',
@@ -427,7 +431,11 @@ window.Components.models = () => ({
                     apiKey: '',
                     hasApiKey: !!data.config.hasApiKey,
                     allowlist: data.config.allowlist || [],
-                    routing: data.config.routing || null
+                    routing: data.config.routing || null,
+                    appSpoof: {
+                        title: (data.config.appSpoof && data.config.appSpoof.title) || '',
+                        categories: (data.config.appSpoof && data.config.appSpoof.categories) || ''
+                    }
                 };
                 Alpine.store('data').openrouter = this.openRouterConfig;
             }
@@ -452,6 +460,16 @@ window.Components.models = () => ({
             // it would wipe the saved routing config.
             if (this.openRouterConfig.routing) {
                 payload.routing = this.openRouterConfig.routing;
+            }
+            // App Spoof rides through the whole-object replace too; only sent
+            // when at least one field is non-empty so the saved values aren't
+            // clobbered by blanks from a never-touched panel.
+            const spoof = this.openRouterConfig.appSpoof || {};
+            if ((spoof.title && spoof.title.trim()) || (spoof.categories && spoof.categories.trim())) {
+                payload.appSpoof = {
+                    title: (spoof.title || '').trim(),
+                    categories: (spoof.categories || '').trim()
+                };
             }
             if (this.openRouterConfig.apiKey && this.openRouterConfig.apiKey.trim()) {
                 payload.apiKey = this.openRouterConfig.apiKey.trim();
