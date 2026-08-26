@@ -400,8 +400,9 @@ window.Components.models = () => ({
 
     formatUptime(entry) {
         if (!entry) return '-';
-        // Prefer the server-computed blend (single source of weights).
-        if (typeof entry.uptime === 'number' && entry.uptime > 0) {
+        // Prefer the server-computed blend (single source of weights). Any
+        // numeric value is authoritative — 0 means measured-down, not unknown.
+        if (typeof entry.uptime === 'number') {
             return (entry.uptime * 100).toFixed(1) + '%';
         }
         const ep = entry.endpoint;
