@@ -1322,6 +1322,82 @@
                         </div>
                     </div>
 
+                    <!-- Section 0b: Kimi Code Gateway -->
+                    <div class="bg-gray-800/40 border border-gray-700/60 rounded-lg p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div>
+                                <h4 class="text-sm font-bold text-white uppercase tracking-wider" x-text="$store.global.t('kimiGateway') || 'Kimi Code Gateway'">Kimi Code Gateway</h4>
+                                <p class="text-xs text-gray-400 mt-1" x-text="$store.global.t('kimiDesc') || 'Forward allowlisted models transparently to api.kimi.com/coding using Bearer auth.'">Forward allowlisted models transparently to api.kimi.com/coding using Bearer auth.</p>
+                            </div>
+                            <label class="inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer"
+                                    x-model="kimiConfig.enabled"
+                                    @change="saveKimiConfig()"
+                                    aria-label="Kimi Gateway enabled toggle">
+                                <div class="relative w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                            </label>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                            <label class="block">
+                                <span class="text-[11px] uppercase text-gray-400" x-text="$store.global.t('kimiBaseUrl') || 'Base URL'">Base URL</span>
+                                <input type="text" class="input input-sm input-bordered w-full mt-1 bg-gray-900/60 font-mono text-xs"
+                                    x-model="kimiConfig.baseUrl"
+                                    placeholder="https://api.kimi.com/coding">
+                            </label>
+                            <label class="block">
+                                <span class="text-[11px] uppercase text-gray-400" x-text="$store.global.t('kimiApiKey') || 'API Key'">API Key</span>
+                                <input type="password" class="input input-sm input-bordered w-full mt-1 bg-gray-900/60 font-mono text-xs"
+                                    x-model="kimiConfig.apiKey"
+                                    :placeholder="kimiConfig.hasApiKey ? '••••••••' : 'sk-...'">
+                            </label>
+                        </div>
+
+                        <div class="flex items-center gap-2 mt-3">
+                            <button class="btn btn-xs btn-primary" @click="saveKimiConfig()" :disabled="kimiSaving">
+                                <span x-show="!kimiSaving" x-text="$store.global.t('save') || 'Save'">Save</span>
+                                <span x-show="kimiSaving" class="loading loading-spinner loading-xs"></span>
+                            </button>
+                            <button class="btn btn-xs btn-ghost" @click="openKimiDiscoverModal()">
+                                <span x-text="$store.global.t('kimiDiscover') || 'Discover Models'">Discover Models</span>
+                            </button>
+                            <span x-show="kimiError" class="text-xs text-rose-400" x-text="kimiError"></span>
+                        </div>
+
+                        <div class="mt-4">
+                            <h5 class="text-[11px] uppercase text-gray-400 mb-2" x-text="$store.global.t('kimiAllowlist') || 'Allowlist'">Allowlist</h5>
+                            <table class="table table-xs w-full">
+                                <thead>
+                                    <tr class="text-[10px] uppercase text-gray-500">
+                                        <th x-text="$store.global.t('kimiColEnabled') || 'On'">On</th>
+                                        <th x-text="$store.global.t('kimiColId') || 'Model ID'">Model ID</th>
+                                        <th x-text="$store.global.t('kimiColAlias') || 'Alias'">Alias</th>
+                                        <th x-text="$store.global.t('kimiColDisplay') || 'Display Name'">Display Name</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="(m, idx) in kimiConfig.allowlist" :key="m.id">
+                                        <tr>
+                                            <td><input type="checkbox" class="checkbox checkbox-xs" x-model="m.enabled" @change="saveKimiConfig()"></td>
+                                            <td><input class="input input-xs input-bordered w-full bg-gray-900/60 font-mono" x-model="m.id"></td>
+                                            <td><input class="input input-xs input-bordered w-full bg-gray-900/60 font-mono" x-model="m.alias"></td>
+                                            <td><input class="input input-xs input-bordered w-full bg-gray-900/60" x-model="m.displayName"></td>
+                                            <td><button class="btn btn-xs btn-ghost text-rose-400" @click="kimiConfig.allowlist.splice(idx,1); saveKimiConfig()">×</button></td>
+                                        </tr>
+                                    </template>
+                                    <tr>
+                                        <td></td>
+                                        <td><input class="input input-xs input-bordered w-full bg-gray-900/60 font-mono" x-model="kimiNewId" placeholder="kimi-k2-thinking"></td>
+                                        <td><input class="input input-xs input-bordered w-full bg-gray-900/60 font-mono" x-model="kimiNewAlias" placeholder="k2"></td>
+                                        <td><input class="input input-xs input-bordered w-full bg-gray-900/60" x-model="kimiNewDisplay" placeholder="Kimi K2"></td>
+                                        <td><button class="btn btn-xs btn-primary" @click="addKimiAllowlistRow()">+</button></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- Models List Table -->
                     <div class="view-card !p-0 overflow-hidden border border-space-border/60">
                         <table class="standard-table">
@@ -1359,6 +1435,9 @@
                                                 </template>
                                                 <template x-if="$store.data.openrouter && $store.data.openrouter.allowlist && $store.data.openrouter.allowlist.some(m => m.id === modelId || m.alias === modelId)">
                                                     <span class="badge badge-xs bg-indigo-500/10 text-indigo-400 border-indigo-500/30 text-[9px] font-mono uppercase tracking-wider" x-text="$store.global.t('openRouterBadge') || 'OpenRouter'">OpenRouter</span>
+                                                </template>
+                                                <template x-if="$store.data.kimi && $store.data.kimi.allowlist && $store.data.kimi.allowlist.some(m => m.id === modelId || m.alias === modelId)">
+                                                    <span class="badge badge-xs bg-cyan-500/10 text-cyan-400 border-cyan-500/30 text-[9px] font-mono uppercase tracking-wider" x-text="$store.global.t('kimiBadge') || 'Kimi'">Kimi</span>
                                                 </template>
                                             </div>
                                         </td>
@@ -1765,6 +1844,51 @@
                     <form method="dialog" class="modal-backdrop">
                         <button @click="closeDiscoverModal()">close</button>
                     </form>
+                </dialog>
+
+                <!-- Discover Kimi Models Modal -->
+                <dialog id="kimi_discover_modal" class="modal">
+                    <div class="modal-box bg-space-900 border-2 border-cyan-500/50 max-w-2xl max-h-[85vh] flex flex-col p-6">
+                        <div class="flex items-center justify-between pb-3 border-b border-space-border/60">
+                            <h3 class="font-bold text-lg text-cyan-400 flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                                <span x-text="$store.global.t('kimiDiscoverTitle') || 'Discover Kimi Models'">Discover Kimi Models</span>
+                            </h3>
+                            <button class="btn btn-xs btn-circle btn-ghost text-gray-400 hover:text-white" @click="document.getElementById('kimi_discover_modal').close()">✕</button>
+                        </div>
+                        <p class="text-xs text-gray-400 mt-2" x-text="$store.global.t('kimiDiscoverDesc') || 'Fetch the model catalog from the Kimi API. Pick which ones to allow.'">
+                            Fetch the model catalog from the Kimi API. Pick which ones to allow.
+                        </p>
+                        <div class="mt-3 flex-1 overflow-y-auto">
+                            <table class="table table-xs w-full">
+                                <thead>
+                                    <tr class="text-[10px] uppercase text-gray-500">
+                                        <th x-text="$store.global.t('kimiDiscoverImport') || 'Import'">Import</th>
+                                        <th x-text="$store.global.t('kimiColId') || 'Model ID'">Model ID</th>
+                                        <th x-text="$store.global.t('kimiColDisplay') || 'Display Name'">Display Name</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="m in kimiDiscovered" :key="m.id">
+                                        <tr>
+                                            <td><input type="checkbox" class="checkbox checkbox-xs" x-model="m.selected"></td>
+                                            <td class="font-mono" x-text="m.id"></td>
+                                            <td x-text="m.displayName"></td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="!kimiDiscovered || kimiDiscovered.length === 0">
+                                        <td colspan="3" class="text-xs text-gray-500 italic text-center py-3" x-text="$store.global.t('noModels') || 'No models discovered yet.'">No models discovered yet.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="modal-action">
+                            <button class="btn btn-sm btn-ghost" @click="document.getElementById('kimi_discover_modal').close()" x-text="$store.global.t('close') || 'Close'">Close</button>
+                            <button class="btn btn-sm btn-primary" @click="importKimiDiscovered()" x-text="$store.global.t('kimiDiscoverImport') || 'Import'">Import</button>
+                        </div>
+                    </div>
                 </dialog>
             </div>
 
