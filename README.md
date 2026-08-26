@@ -222,7 +222,7 @@ Additional environment controls:
     "appSpoof": {
       "title": "Claude Code",
       "categories": "cli-agent",
-      "referer": "https://claude.ai"
+      "referer": "https://claude.ai/code"
     }
   },
   "accountSelection": {
@@ -279,7 +279,7 @@ The OpenRouter Gateway allows querying OpenRouter's Anthropic-compatible message
 2. **Dynamic Discovery**: The Web UI includes a model discovery modal that queries `GET /v1/models` from OpenRouter with search, context window inspection, and provider filters.
 3. **Allowlist & Aliasing**: Add models from OpenRouter to your allowlist and define convenient aliases (e.g. `claude-3-7-openrouter` -> `anthropic/claude-3.7-sonnet`).
 4. **Metadata-Driven Token Limits**: Automatically calculates maximum output tokens based on provider metadata.
-5. **Harness-Gate Spoofing**: Some free models (e.g. `thinkingmachines/inkling:free`) reject unattributed requests with `403 permission_error ... only available on agentic harnesses`. When OpenRouter returns that error, the proxy retries the same request once with `HTTP-Referer`, `X-OpenRouter-Title`, and `X-OpenRouter-Categories` attribution headers (defaults: `https://claude.ai`, `Claude Code`, `cli-agent`). Override via the `openrouter.appSpoof` block in `config.json` or Web UI.
+5. **Harness-Gate Spoofing**: Some free models (e.g. `thinkingmachines/inkling:free`) reject unattributed requests with `403 permission_error ... only available on agentic harnesses`. When OpenRouter returns that error, the proxy retries the same request once with `HTTP-Referer`, `X-OpenRouter-Title`, and `X-OpenRouter-Categories` attribution headers (defaults: `https://claude.ai/code`, `Claude Code`, `cli-agent`). Override via the `openrouter.appSpoof` block in `config.json` or Web UI.
 
 ---
 
