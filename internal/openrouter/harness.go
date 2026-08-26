@@ -25,7 +25,7 @@ const (
 	// DefaultSpoofAppCategories self-identifies as a CLI coding agent.
 	DefaultSpoofAppCategories = "cli-agent"
 	// DefaultSpoofAppReferer is the attribution URL used when no config override exists.
-	DefaultSpoofAppReferer = "https://claude.ai"
+	DefaultSpoofAppReferer = "https://claude.ai/code"
 )
 
 // ApplySpoofHeaders injects OpenRouter app attribution headers into an HTTP request.
