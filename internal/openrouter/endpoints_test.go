@@ -204,3 +204,40 @@ func TestEndpointsClient_BadSlug(t *testing.T) {
 		t.Errorf("expected error for bad slug")
 	}
 }
+
+func TestResolveModelEndpoints_WaiterHonorsContext(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"endpoints":[{"provider_name":"p1"}]}}`))
+	}))
+	defer server.Close()
+
+	c := NewEndpointsClient(5*time.Second, time.Minute)
+
+	// Leader registers the flight and blocks in the upstream handler.
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		if _, err := c.ResolveModelEndpoints(context.Background(), "anthropic/m", "k", server.URL); err != nil {
+			t.Errorf("leader fetch failed: %v", err)
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// A follower whose own deadline passes must not block for the leader.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := c.ResolveModelEndpoints(ctx, "anthropic/m", "k", server.URL); err == nil {
+		t.Errorf("expected context error while waiting on a blocked flight")
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Errorf("waiter blocked %v past its own deadline", elapsed)
+	}
+
+	// Unblock the leader and let it complete successfully.
+	close(release)
+	<-leaderDone
+}

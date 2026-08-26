@@ -129,14 +129,12 @@ type EndpointsClient struct {
 type endpointsCacheEntry struct {
 	endpoints []ProviderEndpoint
 	cachedAt  time.Time
-	rawKey    string
 }
 
 type endpointsCall struct {
-	wg   sync.WaitGroup
-	val  []ProviderEndpoint
-	err  error
-	rawK string
+	wg  sync.WaitGroup
+	val []ProviderEndpoint
+	err error
 }
 
 // NewEndpointsClient creates an endpoints discovery client with its own TTL and HTTP client.
@@ -268,7 +266,7 @@ func (e *EndpointsClient) ResolveModelEndpoints(ctx context.Context, modelID, ap
 	}
 	flight, inFlight := e.flightMap[cacheKey]
 	if !inFlight {
-		flight = &endpointsCall{rawK: cleanBase}
+		flight = &endpointsCall{}
 		flight.wg.Add(1)
 		e.flightMap[cacheKey] = flight
 		e.flightMu.Unlock()
@@ -292,7 +290,19 @@ func (e *EndpointsClient) ResolveModelEndpoints(ctx context.Context, modelID, ap
 		}()
 	} else {
 		e.flightMu.Unlock()
-		flight.wg.Wait()
+		// The leader fetches on a detached context (singleflight, see the
+		// pricing client pattern), so a follower must not block past its own
+		// cancellation. The helper goroutine finishes once the flight lands.
+		flightDone := make(chan struct{})
+		go func() {
+			flight.wg.Wait()
+			close(flightDone)
+		}()
+		select {
+		case <-flightDone:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait for endpoints fetch: %w", ctx.Err())
+		}
 	}
 
 	if flight.err != nil {
