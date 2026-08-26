@@ -38,8 +38,9 @@ type ProviderOrder struct {
 
 // RoutingConfig is the runtime routing configuration injected by the server.
 type RoutingConfig struct {
-	FailureThreshold int         // consecutive failures before sticky is dropped
-	RankWeights      RankWeights // weight blend
+	FailureThreshold int           // consecutive failures before sticky is dropped
+	RankWeights      RankWeights   // weight blend
+	BreakerCooldown  time.Duration // half-open retry window after the breaker trips
 }
 
 // DefaultRoutingConfig returns sensible defaults.
@@ -47,6 +48,7 @@ func DefaultRoutingConfig() RoutingConfig {
 	return RoutingConfig{
 		FailureThreshold: 10,
 		RankWeights:      DefaultRankWeights(),
+		BreakerCooldown:  60 * time.Second,
 	}
 }
 
@@ -133,6 +135,9 @@ func NewProviderRouter(cfg RoutingConfig) *ProviderRouter {
 		cfg.RankWeights.Throughput == 0 && cfg.RankWeights.Context == 0 {
 		cfg.RankWeights = DefaultRankWeights()
 	}
+	if cfg.BreakerCooldown <= 0 {
+		cfg.BreakerCooldown = 60 * time.Second
+	}
 	return &ProviderRouter{
 		cfg:      cfg,
 		ranks:    map[string][]ranked{},
@@ -153,6 +158,9 @@ func (r *ProviderRouter) SetConfig(cfg RoutingConfig) {
 	if cfg.RankWeights.Availability == 0 && cfg.RankWeights.Latency == 0 &&
 		cfg.RankWeights.Throughput == 0 && cfg.RankWeights.Context == 0 {
 		cfg.RankWeights = DefaultRankWeights()
+	}
+	if cfg.BreakerCooldown <= 0 {
+		cfg.BreakerCooldown = 60 * time.Second
 	}
 	r.cfg = cfg
 }
@@ -447,7 +455,9 @@ func (r *ProviderRouter) providerInRanksLocked(model, provider string) bool {
 }
 
 // providerHealthyUnderThresholdLocked reports whether the provider is currently
-// usable (healthy status + failure count under threshold).
+// usable (healthy status + failure count under threshold). A tripped breaker
+// half-opens once BreakerCooldown has elapsed since the last recorded result:
+// the counter is NOT reset, so the next failure re-trips immediately.
 func (r *ProviderRouter) providerHealthyUnderThresholdLocked(model, provider string) bool {
 	// Check rank for unhealthy status.
 	for _, rk := range r.ranks[model] {
@@ -457,7 +467,8 @@ func (r *ProviderRouter) providerHealthyUnderThresholdLocked(model, provider str
 	}
 	if stats, ok := r.stats[model]; ok {
 		if s, ok := stats[provider]; ok {
-			if s.consecFails >= r.cfg.FailureThreshold {
+			if s.consecFails >= r.cfg.FailureThreshold &&
+				time.Since(s.lastUpdated) < r.cfg.BreakerCooldown {
 				return false
 			}
 		}
@@ -619,12 +630,13 @@ func (r *ProviderRouter) LoadFrom(path string) error {
 			r.stats[model] = map[string]*providerStats{}
 		}
 		for provider, ps := range providers {
+			// consecFails intentionally not restored: breaker state is
+			// ephemeral, a restart must not keep a provider blacklisted.
 			r.stats[model][provider] = &providerStats{
 				latencyMsEWMA: ps.LatencyMsEWMA,
 				tpsEWMA:       ps.TPSEWMA,
 				successCount:  ps.SuccessCount,
 				failureCount:  ps.FailureCount,
-				consecFails:   ps.ConsecFails,
 				alpha:         0.3,
 				lastUpdated:   ps.LastUpdated,
 			}

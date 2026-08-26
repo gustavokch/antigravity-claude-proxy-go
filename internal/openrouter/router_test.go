@@ -205,8 +205,8 @@ func TestProviderRouter_PersistenceRoundTrip(t *testing.T) {
 	if stats["anthropic"].LatencyMsEWMA != 150 {
 		t.Errorf("expected latency EWMA 150, got %v", stats["anthropic"].LatencyMsEWMA)
 	}
-	if stats["azure"].ConsecFails != 1 {
-		t.Errorf("expected 1 consec fail for azure, got %d", stats["azure"].ConsecFails)
+	if stats["azure"].ConsecFails != 0 {
+		t.Errorf("consec fails must not persist (breaker is ephemeral), got %d", stats["azure"].ConsecFails)
 	}
 }
 
@@ -299,5 +299,63 @@ func TestProviderRouter_StickyMapEvictsOldest(t *testing.T) {
 		if _, ok := r.sticky[keySticky("new-session-"+strconv.Itoa(i), "m1")]; !ok {
 			t.Errorf("recent entry new-session-%d evicted; oldest must go first", i)
 		}
+	}
+}
+
+func TestProviderRouter_BreakerHalfOpenAfterCooldown(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.FailureThreshold = 2
+	cfg.BreakerCooldown = 50 * time.Millisecond
+	r := NewProviderRouter(cfg)
+	r.RefreshRanks("m1", mkEndpoints())
+	r.Select("s1", "m1", ProviderOrder{Mode: "auto"})
+
+	// Trip the breaker on anthropic.
+	r.RecordResult("m1", "anthropic", false, 0, 0)
+	r.RecordResult("m1", "anthropic", false, 0, 0)
+
+	// Tripped: next select must skip anthropic.
+	if got := r.Select("s2", "m1", ProviderOrder{Mode: "auto"}); got == "anthropic" {
+		t.Fatalf("breaker tripped but anthropic still selected")
+	}
+
+	// Backdate the failure past the cooldown: half-open trial must allow it.
+	r.mu.Lock()
+	r.stats["m1"]["anthropic"].lastUpdated = time.Now().Add(-time.Hour)
+	r.mu.Unlock()
+
+	if got := r.Select("s3", "m1", ProviderOrder{Mode: "auto"}); got != "anthropic" {
+		t.Errorf("half-open: expected anthropic selectable after cooldown, got %q", got)
+	}
+
+	// A fresh failure re-trips immediately (lastUpdated refreshed).
+	r.RecordResult("m1", "anthropic", false, 0, 0)
+	if got := r.Select("s4", "m1", ProviderOrder{Mode: "auto"}); got == "anthropic" {
+		t.Errorf("expected re-trip after half-open failure, got %q", got)
+	}
+}
+
+func TestProviderRouter_LoadDoesNotRestoreBreakerState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "router-state.json")
+
+	cfg := DefaultRoutingConfig()
+	cfg.FailureThreshold = 2
+	r := NewProviderRouter(cfg)
+	r.RefreshRanks("m1", mkEndpoints())
+	r.RecordResult("m1", "anthropic", false, 0, 0)
+	r.RecordResult("m1", "anthropic", false, 0, 0)
+
+	if err := r.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	r2 := NewProviderRouter(cfg)
+	r2.RefreshRanks("m1", mkEndpoints())
+	if err := r2.LoadFrom(path); err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	// Breaker state is ephemeral: a restart must not keep the provider blacklisted.
+	if got := r2.Select("s1", "m1", ProviderOrder{Mode: "auto"}); got != "anthropic" {
+		t.Errorf("expected anthropic selectable after reload, got %q", got)
 	}
 }
