@@ -89,3 +89,21 @@ func TestTranslations_PinnedToTemplateAppendsColon(t *testing.T) {
 		t.Error("settings.html must append ':' after the pinnedTo span; value-level test depends on this")
 	}
 }
+
+func TestTranslations_AppSpoofTemplateReferences(t *testing.T) {
+	b, err := Assets.ReadFile("public/views/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	src := string(b)
+	appSpoofKeys := []string{
+		"appSpoofTitle", "appSpoofDefault", "appSpoofCustom",
+		"appSpoofDesc", "appSpoofFieldTitle", "appSpoofFieldCategories",
+	}
+	for _, key := range appSpoofKeys {
+		if !strings.Contains(src, fmt.Sprintf("t('%s')", key)) {
+			t.Errorf("settings.html does not reference translation key %q", key)
+		}
+	}
+}
+
