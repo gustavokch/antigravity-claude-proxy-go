@@ -16,6 +16,13 @@ var openRouterPanelKeys = []string{
 	"order", "pin", "pinned", "pinnedTo", "openRouterBadge",
 }
 
+var presetKeys = []string{
+	"configPresets", "saveAsPreset", "deletePreset", "presetHint",
+	"unsavedChangesTitle", "unsavedChangesMessage", "loadAnyway",
+	"savePresetTitle", "savePresetDesc", "presetName",
+	"presetNamePlaceholder", "savePreset",
+}
+
 var locales = []string{"en", "zh", "id", "pt", "tr"}
 
 func loadLocale(t *testing.T, locale string) string {
@@ -31,7 +38,19 @@ func TestTranslations_OpenRouterKeys(t *testing.T) {
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		for _, key := range openRouterPanelKeys {
-			re := regexp.MustCompile(`(?m)^\s{4}` + key + `:`)
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_PresetKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range presetKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
 			if !re.MatchString(src) {
 				t.Errorf("locale %s missing key %q", locale, key)
 			}
@@ -40,9 +59,7 @@ func TestTranslations_OpenRouterKeys(t *testing.T) {
 }
 
 func TestTranslations_PinnedToHasNoTrailingColon(t *testing.T) {
-	// settings.html appends ":" after t('pinnedTo'), so a colon inside the
-	// translated value renders doubled.
-	re := regexp.MustCompile(`(?m)^\s{4}pinnedTo:\s*"([^"]*)"`)
+	re := regexp.MustCompile(`(?m)^\s+pinnedTo:\s*"([^"]*)"`)
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		m := re.FindStringSubmatch(src)
@@ -53,5 +70,20 @@ func TestTranslations_PinnedToHasNoTrailingColon(t *testing.T) {
 		if strings.HasSuffix(m[1], ":") {
 			t.Errorf("locale %s pinnedTo value %q ends with colon; template adds one", locale, m[1])
 		}
+	}
+}
+
+func TestTranslations_PinnedToTemplateAppendsColon(t *testing.T) {
+	b, err := Assets.ReadFile("public/views/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	src := string(b)
+	if !strings.Contains(src, `t('pinnedTo')`) {
+		t.Fatal("settings.html does not reference t('pinnedTo')")
+	}
+	re := regexp.MustCompile(`t\('pinnedTo'\)[^<]*</span>\s*:`)
+	if !re.MatchString(src) {
+		t.Error("settings.html must append ':' after the pinnedTo span; value-level test depends on this")
 	}
 }

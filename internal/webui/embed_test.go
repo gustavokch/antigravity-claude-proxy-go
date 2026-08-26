@@ -34,15 +34,22 @@ func TestHandler(t *testing.T) {
 	})
 
 	t.Run("assets served with no-cache to prevent stale JS after upgrade", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/js/components/models.js", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected status 200, got %d", rec.Code)
+		paths := []string{
+			"/js/components/models.js",
+			"/css/style.css",
+			"/favicon.svg",
 		}
-		if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
-			t.Errorf("expected Cache-Control no-cache, got %q", cc)
+		for _, p := range paths {
+			req := httptest.NewRequest(http.MethodGet, p, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s: expected status 200, got %d", p, rec.Code)
+			}
+			if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+				t.Errorf("%s: expected Cache-Control no-cache, got %q", p, cc)
+			}
 		}
 	})
 
