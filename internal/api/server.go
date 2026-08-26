@@ -983,7 +983,6 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 	writer.WriteHeader(resp.StatusCode)
 	flusher, hasFlusher := writer.(http.Flusher)
 
-	finalPricing := resolveEffectivePricing(pricing, model)
 	var interceptor *openrouter.SSEInterceptor
 	interceptor = openrouter.NewSSEInterceptor(resp.Body, func(in, out, cr, cw int) {
 		// Prefer the provider reported by the stream over the requested one.
@@ -994,7 +993,7 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 		if served != "" {
 			openrouter.DefaultRouter.RecordResult(model, served, true, server.now().Sub(attemptStart), in+out)
 		}
-		server.recordOpenRouterMetrics(model, sessionID, finalPricing, startTime, in, out, cr, cw, served)
+		server.recordOpenRouterMetrics(model, sessionID, pricing, startTime, in, out, cr, cw, served)
 	})
 	defer interceptor.Close()
 
@@ -1013,8 +1012,9 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 	}
 }
 
-// recordOpenRouterMetrics is shared between stream and unary paths.
-func (server *Server) recordOpenRouterMetrics(model, sessionID string, pricing openrouter.Pricing, startTime time.Time, in, out, cr, cw int, provider string) {
+// recordOpenRouterMetrics is shared between stream and unary paths. Pricing is
+// resolved here so both paths apply the model-catalog fallback uniformly.
+func (server *Server) recordOpenRouterMetrics(model, sessionID string, pricing openrouter.Pricing, startTime time.Time, in, out, cr, cw int, provider string) openrouter.RequestMetrics {
 	latency := server.now().Sub(startTime)
 	metrics := openrouter.RequestMetrics{
 		Model:               model,
@@ -1026,11 +1026,12 @@ func (server *Server) recordOpenRouterMetrics(model, sessionID string, pricing o
 		CacheCreationTokens: cw,
 		Latency:             latency,
 	}
-	metrics.ComputeFinalMetrics(pricing, openrouter.DefaultSessionTracker)
+	metrics.ComputeFinalMetrics(resolveEffectivePricing(pricing, model), openrouter.DefaultSessionTracker)
 	openrouter.LogObservability(server.logger, metrics)
 	if server.tracker != nil {
 		server.tracker.TrackRequest(model, latency, in, out, cr)
 	}
+	return metrics
 }
 
 func resolveEffectivePricing(initial openrouter.Pricing, model string) openrouter.Pricing {

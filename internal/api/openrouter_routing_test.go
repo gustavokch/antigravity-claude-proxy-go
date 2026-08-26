@@ -476,3 +476,26 @@ func TestUpstreamClient_HasNoTotalTimeout(t *testing.T) {
 		t.Errorf("total Timeout kills long SSE streams, got %v", c.Timeout)
 	}
 }
+
+func TestRecordOpenRouterMetrics_ResolvesModelPricing(t *testing.T) {
+	// Unary path passed raw attempt pricing; when the endpoint price is
+	// unknown the model-catalog price must fill in, or cost is undercounted.
+	prevClient := openrouter.DefaultClient
+	openrouter.DefaultClient = openrouter.NewClient(2*time.Second, time.Hour)
+	t.Cleanup(func() { openrouter.DefaultClient = prevClient })
+	openrouter.DefaultClient.SaveCache([]openrouter.ModelItem{
+		{ID: "anthropic/claude-3.7-sonnet", Pricing: &openrouter.Pricing{Prompt: 0.000003, Completion: 0.000015}},
+	})
+
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	env := &routingTestEnv{}
+	server := env.newServer(t)
+
+	m := server.recordOpenRouterMetrics("anthropic/claude-3.7-sonnet", "sess", openrouter.Pricing{}, server.now(), 1000, 500, 0, 0, "p1")
+	want := 1000*0.000003 + 500*0.000015
+	if m.CallCost != want {
+		t.Errorf("CallCost = %v, want %v (model-catalog pricing must apply)", m.CallCost, want)
+	}
+}
