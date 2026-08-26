@@ -16,6 +16,15 @@ var openRouterPanelKeys = []string{
 	"order", "pin", "pinned", "pinnedTo", "openRouterBadge",
 }
 
+// kimiPanelKeys are the i18n keys referenced by the Kimi Code gateway section
+// and Discover modal in views/settings.html. Every locale must define them.
+var kimiPanelKeys = []string{
+	"kimiGateway", "kimiDesc", "kimiBaseUrl", "kimiApiKey", "kimiDiscover",
+	"kimiAllowlist", "kimiColEnabled", "kimiColId", "kimiColAlias",
+	"kimiColDisplay", "kimiBadge", "familyKimi", "kimiSavedSuccess",
+	"kimiDiscoverTitle", "kimiDiscoverDesc", "kimiDiscoverImport",
+}
+
 var presetKeys = []string{
 	"configPresets", "saveAsPreset", "deletePreset", "presetHint",
 	"unsavedChangesTitle", "unsavedChangesMessage", "loadAnyway",
@@ -38,6 +47,18 @@ func TestTranslations_OpenRouterKeys(t *testing.T) {
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		for _, key := range openRouterPanelKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_KimiKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range kimiPanelKeys {
 			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
 			if !re.MatchString(src) {
 				t.Errorf("locale %s missing key %q", locale, key)
