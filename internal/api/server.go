@@ -748,8 +748,15 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			}
 		}
 
-		upReq, err := http.NewRequestWithContext(request.Context(), http.MethodPost, targetURL.String(), bytes.NewReader(body))
+		// Derive per-attempt context bounded by the remaining request budget.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			remaining = 1 * time.Millisecond
+		}
+		attemptCtx, cancel := context.WithTimeout(request.Context(), remaining)
+		upReq, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, targetURL.String(), bytes.NewReader(body))
 		if err != nil {
+			cancel()
 			writeAPIError(writer, http.StatusInternalServerError, "api_error", "Failed to build request: "+err.Error())
 			return
 		}
@@ -768,6 +775,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 
 		resp, err := httpClient.Do(upReq)
+		cancel()
 		if err != nil {
 			if provider != "" {
 				openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)

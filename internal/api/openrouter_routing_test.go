@@ -540,6 +540,32 @@ func TestOpenRouterRouting_BudgetUsesServerClock(t *testing.T) {
 	}
 }
 
+func TestOpenRouterRouting_DeadlineEnforcedOnSlowUpstream(t *testing.T) {
+	// A very short budget must abort before a slow upstream response completes.
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_slow","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer mockOR.Close()
+
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99},
+	}
+	env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+	env.saveConfig(t, nil, map[string]any{"requestBudgetMs": 1})
+	server := env.newServer(t)
+
+	rec := env.doRequest(t, server, nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("expected budget to cut off before slow upstream responds (StatusBadGateway), got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestOpenRouterRouting_429BackoffAbortsOnDisconnect(t *testing.T) {
 	// The 429 backoff sleep must unblock on client disconnect instead of
 	// holding the handler for the full backoff duration.
