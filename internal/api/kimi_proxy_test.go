@@ -213,3 +213,30 @@ func TestServer_ModelsList_IncludesKimi(t *testing.T) {
 		t.Errorf("alias k2 not in /v1/models response: %+v", body.Data)
 	}
 }
+
+func TestMatchKimiModel_EdgeCases(t *testing.T) {
+	cfg := config.KimiConfig{
+		Enabled: true,
+		Allowlist: []config.KimiModelConfig{
+			{ID: "kimi-k2-thinking", Alias: "k2", Enabled: true},
+			{ID: "", Alias: "", Enabled: true},
+			{ID: "disabled-model", Alias: "dis", Enabled: false},
+		},
+	}
+
+	if got := matchKimiModel(cfg, ""); got != "" {
+		t.Errorf("matchKimiModel(empty) = %q, want empty", got)
+	}
+	if got := matchKimiModel(cfg, "dis"); got != "" {
+		t.Errorf("matchKimiModel(disabled) = %q, want empty", got)
+	}
+	if got := matchKimiModel(cfg, "k2"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(k2) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfg, "kimi-k2-thinking"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(id) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfg, "unknown"); got != "" {
+		t.Errorf("matchKimiModel(unknown) = %q, want empty", got)
+	}
+}

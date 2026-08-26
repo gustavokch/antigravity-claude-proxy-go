@@ -713,11 +713,14 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 // matchKimiModel returns the Kimi model ID if `model` matches an enabled
 // allowlist entry by either ID or alias. Returns "" if no match.
 func matchKimiModel(cfg config.KimiConfig, model string) string {
+	if model == "" {
+		return ""
+	}
 	for _, item := range cfg.Allowlist {
 		if !item.Enabled {
 			continue
 		}
-		if item.ID == model || (item.Alias != "" && item.Alias == model) {
+		if (item.ID != "" && item.ID == model) || (item.Alias != "" && item.Alias == model) {
 			return item.ID
 		}
 	}
