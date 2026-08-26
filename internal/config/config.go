@@ -45,10 +45,11 @@ type OpenRouterRoutingConfig struct {
 
 // OpenRouterAppSpoofConfig customizes the app identity used when OpenRouter
 // rejects a harness-gated model and the proxy retries with app attribution
-// headers (X-OpenRouter-Title / X-OpenRouter-Categories).
+// headers (HTTP-Referer / Referer / X-OpenRouter-Title / X-Title / X-OpenRouter-Categories).
 type OpenRouterAppSpoofConfig struct {
 	Title      string `json:"title,omitempty"`
 	Categories string `json:"categories,omitempty"`
+	Referer    string `json:"referer,omitempty"`
 }
 
 type OpenRouterConfig struct {

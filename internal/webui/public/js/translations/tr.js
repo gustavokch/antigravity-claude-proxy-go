@@ -509,9 +509,10 @@ window.translations.tr = {
     appSpoofTitle: "Harness-Gate Spoof",
     appSpoofDefault: "VARSAYILAN",
     appSpoofCustom: "ÖZEL",
-    appSpoofDesc: "Harness-gate'lenen ücretsiz modellerin yeniden denemesinde gönderilen başlıklar (X-OpenRouter-Title / X-OpenRouter-Categories). Yerleşik varsayılanları kullanmak için her iki alanı da boş bırakın.",
+    appSpoofDesc: "Harness-gate'lenen ücretsiz modellerin yeniden denemesinde gönderilen başlıklar (HTTP-Referer / X-OpenRouter-Title / X-OpenRouter-Categories). Yerleşik varsayılanları kullanmak için alanları boş bırakın.",
     appSpoofFieldTitle: "Uygulama Başlığı",
     appSpoofFieldCategories: "Uygulama Kategorileri",
+    appSpoofFieldReferer: "Referer",
     skipFastModeOrgCheck: "Fast Mode Kuruluş Kontrolünü Atla",
     skipFastModeOrgCheckDesc: "Proxy üzerinden fast mode modellerini kullanırken Anthropic kuruluş doğrulamasını atlar.",
 

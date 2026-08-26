@@ -563,9 +563,10 @@ window.translations.id = {
     appSpoofTitle: "Harness-Gate Spoof",
     appSpoofDefault: "DEFAULT",
     appSpoofCustom: "KUSTOM",
-    appSpoofDesc: "Header yang dikirim saat percobaan ulang model gratis yang di-gate harness (X-OpenRouter-Title / X-OpenRouter-Categories). Biarkan kosong untuk memakai bawaan.",
+    appSpoofDesc: "Header yang dikirim saat percobaan ulang model gratis yang di-gate harness (HTTP-Referer / X-OpenRouter-Title / X-OpenRouter-Categories). Biarkan kosong untuk memakai bawaan.",
     appSpoofFieldTitle: "Judul Aplikasi",
     appSpoofFieldCategories: "Kategori Aplikasi",
+    appSpoofFieldReferer: "Referer",
     skipFastModeOrgCheck: "Lewati Pemeriksaan Organisasi Fast Mode",
     skipFastModeOrgCheckDesc: "Lewati validasi organisasi Anthropic saat menggunakan model fast mode melalui proxy.",
 

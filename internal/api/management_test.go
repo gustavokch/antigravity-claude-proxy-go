@@ -535,7 +535,8 @@ func TestManagement_OpenRouterEndpoints(t *testing.T) {
 			"baseUrl": "%s",
 			"appSpoof": {
 				"title": "Custom App",
-				"categories": "cli-agent"
+				"categories": "cli-agent",
+				"referer": "https://custom.app.ai"
 			},
 			"allowlist": [
 				{
@@ -592,6 +593,9 @@ func TestManagement_OpenRouterEndpoints(t *testing.T) {
 		}
 		if appSpoof["categories"] != "cli-agent" {
 			t.Errorf("expected appSpoof.categories = 'cli-agent', got %v", appSpoof["categories"])
+		}
+		if appSpoof["referer"] != "https://custom.app.ai" {
+			t.Errorf("expected appSpoof.referer = 'https://custom.app.ai', got %v", appSpoof["referer"])
 		}
 	})
 
