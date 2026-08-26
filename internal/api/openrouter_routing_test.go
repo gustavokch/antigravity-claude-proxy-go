@@ -807,3 +807,29 @@ func TestOpenRouterRouting_429DoesNotTripBreaker(t *testing.T) {
 		t.Errorf("p1 must stay selectable after 429s, got %q", got)
 	}
 }
+
+func TestCanonicalServedProvider(t *testing.T) {
+	// Served-provider labels (SSE/JSON "provider" field) must map onto the
+	// canonical provider_name from the rank list; raw labels split stats and
+	// can inject a non-canonical provider on the next request.
+	prevRouter := openrouter.DefaultRouter
+	openrouter.DefaultRouter = openrouter.NewProviderRouter(openrouter.DefaultRoutingConfig())
+	t.Cleanup(func() { openrouter.DefaultRouter = prevRouter })
+	openrouter.DefaultRouter.RefreshRanks("m", []openrouter.ProviderEndpoint{
+		{ProviderName: "anthropic", UptimeLast5m: 0.99},
+		{ProviderName: "azure", UptimeLast5m: 0.9},
+	})
+
+	cases := []struct{ served, want string }{
+		{"Anthropic", "anthropic"},
+		{"AZURE", "azure"},
+		{"azure", "azure"},
+		{"unknown", "unknown"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := canonicalServedProvider("m", c.served); got != c.want {
+			t.Errorf("canonicalServedProvider(%q) = %q, want %q", c.served, got, c.want)
+		}
+	}
+}

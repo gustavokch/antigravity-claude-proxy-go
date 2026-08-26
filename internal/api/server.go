@@ -838,7 +838,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			// Capture served provider from response if present
 			servedProvider := extractServedProviderJSON(bodyBytes)
 			if servedProvider != "" {
-				provider = servedProvider
+				provider = canonicalServedProvider(model, servedProvider)
 			}
 			// Cost follows the served endpoint, resolved after the override.
 			attemptPricing := effectiveAttemptPricing(pricing, model, provider)
@@ -1012,6 +1012,21 @@ func extractServedProviderJSON(body []byte) string {
 	return ""
 }
 
+// canonicalServedProvider maps a served-provider label (SSE/JSON "provider"
+// field) onto the canonical provider_name from the rank list, matching
+// case-insensitively. Unknown labels pass through unchanged.
+func canonicalServedProvider(model, served string) string {
+	if served == "" {
+		return ""
+	}
+	for _, r := range openrouter.DefaultRouter.GetRanks(model) {
+		if strings.EqualFold(r.Provider, served) {
+			return r.Provider
+		}
+	}
+	return served
+}
+
 func stringDefault(s, def string) string {
 	if s == "" {
 		return def
@@ -1064,7 +1079,7 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 		// Prefer the provider reported by the stream over the requested one.
 		served := provider
 		if p := interceptor.Provider(); p != "" {
-			served = p
+			served = canonicalServedProvider(model, p)
 		}
 		if served != "" {
 			success := interceptor.TerminalErr() == nil
