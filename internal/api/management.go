@@ -1091,6 +1091,7 @@ func (server *Server) handleOpenRouterConfigSave(writer http.ResponseWriter, req
 			}
 		}
 	}
+	applyRouterConfig(saved.OpenRouter)
 	pub := config.GetPublicConfig()
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",

@@ -130,8 +130,19 @@ func New(options Options) (*Server, error) {
 
 	// Router state (sticky assignments, EWMA stats) survives restarts.
 	openrouter.DefaultRouter.EnablePersistence(filepath.Join(config.GetConfigDir(), "openrouter-router.json"))
+	applyRouterConfig(cfg.OpenRouter)
 
 	return srv, nil
+}
+
+// applyRouterConfig pushes the persisted routing knobs into the live router.
+// Called at startup and on config save — never per request (SetConfig takes
+// the router write-lock).
+func applyRouterConfig(openRouterCfg config.OpenRouterConfig) {
+	openrouter.DefaultRouter.SetConfig(openrouter.RoutingConfig{
+		FailureThreshold: openRouterCfg.Routing.FailureThreshold,
+		RankWeights:      openRouterCfg.Routing.RankWeightsToOpenRouter(),
+	})
 }
 
 type responseWriterRecorder struct {
@@ -658,12 +669,6 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		Pin:   perModel.PinnedProvider,
 		Order: perModel.ProviderOrder,
 	}
-	// Sync router config if the cfg has it.
-	openrouter.DefaultRouter.SetConfig(openrouter.RoutingConfig{
-		FailureThreshold: openRouterCfg.Routing.FailureThreshold,
-		RankWeights:      openRouterCfg.Routing.RankWeightsToOpenRouter(),
-	})
-
 	// Build the ordered failover chain: a single provider for "pinned", the
 	// configured order for "custom", sticky-then-ranked for "auto".
 	candidates := openrouter.DefaultRouter.SelectChain(sessionID, model, order)
