@@ -718,3 +718,45 @@ func TestCopyUpstreamHeaders_StripsHopByHop(t *testing.T) {
 		t.Errorf("custom headers must pass, got %q", dst.Get("X-Custom"))
 	}
 }
+
+func TestOpenRouterRouting_FailoverMovesSticky(t *testing.T) {
+	// A failover that succeeds on p2 must move the session's stickiness to
+	// p2 — otherwise every later request retries dead p1 first and pays one
+	// failed upstream call until the breaker trips.
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		prov, _ := body["provider"].(map[string]any)
+		order, _ := prov["order"].([]any)
+		if len(order) > 0 && order[0] == "p1" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"p1 rejects"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_ok","provider":"p2","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer mockOR.Close()
+
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99},
+		{ProviderName: "p2", ContextLength: 100000, UptimeLast5m: 0.90, UptimeLast30m: 0.90, UptimeLast1d: 0.90},
+	}
+	env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+	env.saveConfig(t, nil, nil)
+	server := env.newServer(t)
+
+	const sess = "sess-move"
+	rec := env.doRequestWithSession(t, server, nil, sess)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 via failover, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got, ok := openrouter.DefaultRouter.StickyProvider(sess, "anthropic/claude-3.7-sonnet"); !ok || got != "p2" {
+		t.Errorf("sticky after failover = (%q, %v), want (p2, true)", got, ok)
+	}
+}

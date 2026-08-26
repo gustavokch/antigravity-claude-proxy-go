@@ -841,6 +841,9 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			in, out, cr, cw := openrouter.ParseUsageFromJSON(bodyBytes)
 			if provider != "" {
 				openrouter.DefaultRouter.RecordResult(model, provider, true, server.now().Sub(attemptStart), in+out)
+				// Move stickiness to the provider that actually served: after a
+				// failover, later requests must not retry the dead provider first.
+				openrouter.DefaultRouter.SetSticky(sessionID, model, provider)
 			}
 			server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, in, out, cr, cw, provider)
 			return
@@ -1032,6 +1035,10 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 		if served != "" {
 			success := interceptor.TerminalErr() == nil
 			openrouter.DefaultRouter.RecordResult(model, served, success, server.now().Sub(attemptStart), in+out)
+			if success {
+				// Move stickiness to the provider that actually served.
+				openrouter.DefaultRouter.SetSticky(sessionID, model, served)
+			}
 		}
 		// Cost follows the served endpoint (pricing is the model-level base here).
 		server.recordOpenRouterMetrics(model, sessionID, effectiveAttemptPricing(pricing, model, served), startTime, in, out, cr, cw, served)
