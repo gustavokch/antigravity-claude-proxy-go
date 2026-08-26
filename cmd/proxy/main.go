@@ -21,6 +21,7 @@ import (
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/logger"
+	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
 	"antigravity-go-proxy/internal/webui"
 )
@@ -245,6 +246,8 @@ func runServer(args []string) {
 		if tracker != nil {
 			_ = tracker.Close()
 		}
+		// Persist routing state before shutdown so the debounced save is not lost.
+		openrouter.DefaultRouter.FlushSave()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(ctx); err != nil {
