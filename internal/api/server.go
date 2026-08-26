@@ -718,6 +718,12 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		candidates = []string{""}
 	}
 
+	// Parse the request body once; provider injection only re-marshals with
+	// the routing key set. MB-scale request bodies make per-attempt parsing
+	// wasteful, and failover walks several attempts per request.
+	var payload map[string]any
+	bodyParsed := json.Unmarshal(reqBody, &payload) == nil
+
 	for {
 		if server.now().After(deadline) {
 			break
@@ -736,8 +742,18 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 		tried[provider] = true
 
-		// Build body with provider injection.
-		body := injectProvider(reqBody, provider)
+		// Build body with provider injection (raw passthrough when the body
+		// is unpinned or unparseable).
+		body := reqBody
+		if bodyParsed && provider != "" {
+			payload["provider"] = map[string]any{
+				"order":           []string{provider},
+				"allow_fallbacks": false,
+			}
+			if out, err := json.Marshal(payload); err == nil {
+				body = out
+			}
+		}
 		attemptStart := server.now()
 
 		// Derive per-attempt context. The budget bounds time-to-first-byte
@@ -952,28 +968,6 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
-}
-
-// injectProvider adds the OpenRouter "provider" routing key to the request body.
-// Failover walks candidates one provider per attempt, so each request body pins
-// the current candidate only, with upstream fallbacks disabled.
-func injectProvider(body []byte, provider string) []byte {
-	if provider == "" {
-		return body
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return body
-	}
-	payload["provider"] = map[string]any{
-		"order":           []string{provider},
-		"allow_fallbacks": false,
-	}
-	out, err := json.Marshal(payload)
-	if err != nil {
-		return body
-	}
-	return out
 }
 
 // extractServedProviderJSON returns the top-level "provider" field if present.
