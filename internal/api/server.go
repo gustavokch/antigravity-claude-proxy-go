@@ -773,8 +773,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 			}
 			_, backoff := classify(0, err)
-			if backoff > 0 {
-				time.Sleep(backoff)
+			if backoff > 0 && !sleepOrDone(request.Context(), backoff) {
+				return
 			}
 			providerIdx++
 			lastStatus = 0
@@ -858,14 +858,16 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			if server.now().Add(d).After(deadline) {
 				break
 			}
-			time.Sleep(d)
+			if !sleepOrDone(request.Context(), d) {
+				return
+			}
 			// Don't advance providerIdx; re-enter the loop with same provider.
 			tried[provider] = false
 			continue
 		case nextNextProvider:
 			consec429 = 0
-			if backoff > 0 {
-				time.Sleep(backoff)
+			if backoff > 0 && !sleepOrDone(request.Context(), backoff) {
+				return
 			}
 			providerIdx++
 			continue
@@ -891,6 +893,19 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 // Cancellation comes from the inbound request context and the retry budget.
 func openRouterUpstreamClient() *http.Client {
 	return &http.Client{}
+}
+
+// sleepOrDone sleeps for d or until ctx is cancelled. Returns false when the
+// context finished first (client disconnect), true after a full sleep.
+func sleepOrDone(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // injectProvider adds the OpenRouter "provider" routing key to the request body.

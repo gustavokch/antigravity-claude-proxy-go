@@ -539,3 +539,53 @@ func TestOpenRouterRouting_BudgetUsesServerClock(t *testing.T) {
 		t.Errorf("expected loop to stop once budget exceeded (1 attempt), got %d", got)
 	}
 }
+
+func TestOpenRouterRouting_429BackoffAbortsOnDisconnect(t *testing.T) {
+	// The 429 backoff sleep must unblock on client disconnect instead of
+	// holding the handler for the full backoff duration.
+	var attempts int32
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer mockOR.Close()
+
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99},
+	}
+	env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+	env.saveConfig(t, nil, map[string]any{
+		"backoffBaseMs":   30000,
+		"backoffCapMs":    60000,
+		"retry429Max":     5,
+		"requestBudgetMs": 120000,
+	})
+	server := env.newServer(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		env.doRequest(t, server, ctx)
+	}()
+	for atomic.LoadInt32(&attempts) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not return promptly after disconnect during 429 backoff")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("handler blocked in backoff for %v after disconnect", elapsed)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("expected 1 attempt, got %d", got)
+	}
+}
