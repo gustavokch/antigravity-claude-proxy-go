@@ -711,6 +711,19 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 
 	httpClient := openRouterUpstreamClient()
 
+	// App identity for harness-gated models: OpenRouter 403s models restricted
+	// to agentic harnesses when the request carries no app attribution. On that
+	// error the attempt is retried once with spoofed attribution headers.
+	spoofTitle := openRouterCfg.AppSpoof.Title
+	if spoofTitle == "" {
+		spoofTitle = openrouter.DefaultSpoofAppTitle
+	}
+	spoofCategories := openRouterCfg.AppSpoof.Categories
+	if spoofCategories == "" {
+		spoofCategories = openrouter.DefaultSpoofAppCategories
+	}
+	appSpoofed := false
+
 	var (
 		lastStatus  int
 		lastBody    []byte
@@ -792,6 +805,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 		if ab := request.Header.Get("anthropic-beta"); ab != "" {
 			upReq.Header.Set("anthropic-beta", ab)
+		}
+		if appSpoofed {
+			upReq.Header.Set(openrouter.SpoofAppTitleHeader, spoofTitle)
+			upReq.Header.Set(openrouter.SpoofAppCategoriesHeader, spoofCategories)
 		}
 
 		resp, err := httpClient.Do(upReq)
@@ -878,6 +895,19 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		cancel()
 		lastStatus = resp.StatusCode
 		lastBody = bodyBytes
+
+		// Harness-gated model: attribution-level rejection, not a provider
+		// failure. Retry once with spoofed app headers; if the gate persists,
+		// further providers fail identically — surface the upstream error.
+		if resp.StatusCode == http.StatusForbidden && openrouter.IsHarnessGateError(bodyBytes) {
+			if !appSpoofed {
+				appSpoofed = true
+				tried[provider] = false
+				continue
+			}
+			break
+		}
+
 		action, backoff := classify(resp.StatusCode, nil)
 		// 429 is a transient rate limit, not provider death: recording it as a
 		// failure would let a rate-limit storm trip the breaker on a healthy

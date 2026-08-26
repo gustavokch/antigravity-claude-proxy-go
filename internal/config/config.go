@@ -43,12 +43,21 @@ type OpenRouterRoutingConfig struct {
 	} `json:"rankWeights,omitempty"`
 }
 
+// OpenRouterAppSpoofConfig customizes the app identity used when OpenRouter
+// rejects a harness-gated model and the proxy retries with app attribution
+// headers (X-OpenRouter-Title / X-OpenRouter-Categories).
+type OpenRouterAppSpoofConfig struct {
+	Title      string `json:"title,omitempty"`
+	Categories string `json:"categories,omitempty"`
+}
+
 type OpenRouterConfig struct {
-	Enabled   bool                    `json:"enabled"`
-	APIKey    string                  `json:"apiKey,omitempty"`
-	BaseURL   string                  `json:"baseUrl,omitempty"`
-	Allowlist []OpenRouterModelConfig `json:"allowlist,omitempty"`
-	Routing   OpenRouterRoutingConfig `json:"routing,omitempty"`
+	Enabled   bool                     `json:"enabled"`
+	APIKey    string                   `json:"apiKey,omitempty"`
+	BaseURL   string                   `json:"baseUrl,omitempty"`
+	Allowlist []OpenRouterModelConfig  `json:"allowlist,omitempty"`
+	Routing   OpenRouterRoutingConfig  `json:"routing,omitempty"`
+	AppSpoof  OpenRouterAppSpoofConfig `json:"appSpoof,omitempty"`
 }
 
 type AccountSelectionConfig struct {
