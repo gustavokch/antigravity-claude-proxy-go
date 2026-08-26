@@ -257,6 +257,21 @@ func TestSSEInterceptor_TerminalErr(t *testing.T) {
 	}
 }
 
+func TestSSEInterceptor_ConcurrentCloseNoRace(t *testing.T) {
+	sseData := "data: {\"type\":\"message_start\"}\n\n"
+	interceptor := NewSSEInterceptor(io.NopCloser(strings.NewReader(sseData)), func(in, out, cr, cw int) {})
+	go func() {
+		_ = interceptor.Close()
+	}()
+	buf := make([]byte, 16)
+	for {
+		_, err := interceptor.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+}
+
 func TestLogObservability(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
