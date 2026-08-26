@@ -6,9 +6,16 @@ package kimi
 
 import "strings"
 
-// NormalizeBaseURL returns the base URL with a single trailing slash trimmed.
-// Kimi's coding endpoint is configured without a trailing slash in
-// ANTHROPIC_BASE_URL; the proxy appends "/v1/messages" itself.
+// NormalizeBaseURL returns the base URL with whitespace trimmed, empty values
+// defaulted to https://api.kimi.com/coding, trailing slashes trimmed, and any
+// trailing "/v1" suffix removed (since endpoint paths like "/v1/messages" are
+// appended by caller).
 func NormalizeBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = "https://api.kimi.com/coding"
+	}
+	raw = strings.TrimRight(raw, "/")
+	raw = strings.TrimSuffix(raw, "/v1")
 	return strings.TrimRight(raw, "/")
 }
