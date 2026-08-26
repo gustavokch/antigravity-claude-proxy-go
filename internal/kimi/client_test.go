@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestClient_FetchModels_ParsesResponse(t *testing.T) {
@@ -51,5 +52,23 @@ func TestClient_GetCachedModels_AfterFetch(t *testing.T) {
 	c.cached = []ModelItem{{ID: "kimi-k2-thinking"}}
 	if got := c.GetCachedModels(); len(got) != 1 || got[0].ID != "kimi-k2-thinking" {
 		t.Fatalf("GetCachedModels returned %+v", got)
+	}
+}
+
+func TestClient_IsCacheValid(t *testing.T) {
+	c := NewClient(5*time.Second, 100*time.Millisecond)
+	if c.IsCacheValid() {
+		t.Fatal("empty cache should not be valid")
+	}
+
+	c.cached = []ModelItem{{ID: "kimi-k2-thinking"}}
+	c.fetched = time.Now()
+	if !c.IsCacheValid() {
+		t.Fatal("fresh cache should be valid")
+	}
+
+	c.fetched = time.Now().Add(-200 * time.Millisecond)
+	if c.IsCacheValid() {
+		t.Fatal("expired cache should not be valid")
 	}
 }

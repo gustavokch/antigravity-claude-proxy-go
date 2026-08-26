@@ -20,16 +20,31 @@ type ModelItem struct {
 
 // Client fetches and caches the Kimi model catalog. Safe for concurrent use.
 type Client struct {
-	mu      sync.RWMutex
-	cached  []ModelItem
-	fetched time.Time
-	ttl     time.Duration
+	httpClient *http.Client
+	mu         sync.RWMutex
+	cached     []ModelItem
+	fetched    time.Time
+	ttl        time.Duration
 }
 
 const defaultCatalogTTL = 5 * time.Minute
 
 // DefaultClient is the package-level client used by the proxy.
-var DefaultClient = &Client{ttl: defaultCatalogTTL}
+var DefaultClient = NewClient(15*time.Second, defaultCatalogTTL)
+
+// NewClient initializes a new Kimi client with configurable timeout and cache TTL.
+func NewClient(timeout, ttl time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	if ttl <= 0 {
+		ttl = defaultCatalogTTL
+	}
+	return &Client{
+		httpClient: &http.Client{Timeout: timeout},
+		ttl:        ttl,
+	}
+}
 
 type kimiModelsResponse struct {
 	Data []ModelItem `json:"data"`
@@ -46,7 +61,11 @@ func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string) ([]Mod
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := c.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("call Kimi /v1/models: %w", err)
 	}
@@ -76,4 +95,11 @@ func (c *Client) GetCachedModels() []ModelItem {
 	out := make([]ModelItem, len(c.cached))
 	copy(out, c.cached)
 	return out
+}
+
+// IsCacheValid reports whether the in-memory cache has valid non-expired models.
+func (c *Client) IsCacheValid() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.cached) > 0 && !c.fetched.IsZero() && time.Since(c.fetched) < c.ttl
 }
