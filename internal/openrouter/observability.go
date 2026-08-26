@@ -267,18 +267,18 @@ func ExtractProviderFromSSELine(line string) string {
 
 // SSEInterceptor wraps an io.ReadCloser to parse SSE usage events while streaming.
 type SSEInterceptor struct {
-	reader     io.ReadCloser
-	onComplete func(inputTokens, outputTokens, cacheRead, cacheWrite int)
-	mu         sync.Mutex
-	buf        bytes.Buffer
-	inTokens   int
-	outTokens  int
-	cacheRead  int
-	cacheWrite int
-	provider       string
-	terminalErr    error
-	closed         bool
-	once       sync.Once
+	reader      io.ReadCloser
+	onComplete  func(inputTokens, outputTokens, cacheRead, cacheWrite int)
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	inTokens    int
+	outTokens   int
+	cacheRead   int
+	cacheWrite  int
+	provider    string
+	terminalErr error
+	closed      bool
+	once        sync.Once
 }
 
 // NewSSEInterceptor creates an SSE stream interceptor.

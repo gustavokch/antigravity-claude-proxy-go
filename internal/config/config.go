@@ -30,11 +30,11 @@ type OpenRouterModelConfig struct {
 
 // OpenRouterRoutingConfig holds routing strategy knobs.
 type OpenRouterRoutingConfig struct {
-	FailureThreshold int     `json:"failureThreshold,omitempty"`
-	Retry429Max      int     `json:"retry429Max,omitempty"`
-	BackoffBaseMs    int     `json:"backoffBaseMs,omitempty"`
-	BackoffCapMs     int     `json:"backoffCapMs,omitempty"`
-	RequestBudgetMs  int     `json:"requestBudgetMs,omitempty"`
+	FailureThreshold int `json:"failureThreshold,omitempty"`
+	Retry429Max      int `json:"retry429Max,omitempty"`
+	BackoffBaseMs    int `json:"backoffBaseMs,omitempty"`
+	BackoffCapMs     int `json:"backoffCapMs,omitempty"`
+	RequestBudgetMs  int `json:"requestBudgetMs,omitempty"`
 	RankWeights      struct {
 		Availability float64 `json:"availability,omitempty"`
 		Context      float64 `json:"context,omitempty"`
@@ -60,31 +60,31 @@ type AccountSelectionConfig struct {
 }
 
 type Config struct {
-	APIKey                   string                 `json:"apiKey,omitempty"`
-	WebUIPassword            string                 `json:"webuiPassword,omitempty"`
-	Debug                    bool                   `json:"debug,omitempty"`
-	DevMode                  bool                   `json:"devMode,omitempty"`
-	LogLevel                 string                 `json:"logLevel,omitempty"`
-	MaxRetries               int                    `json:"maxRetries,omitempty"`
-	RetryBaseMs              int                    `json:"retryBaseMs,omitempty"`
-	RetryMaxMs               int                    `json:"retryMaxMs,omitempty"`
-	PersistTokenCache        bool                   `json:"persistTokenCache,omitempty"`
-	DefaultCooldownMs        int                    `json:"defaultCooldownMs,omitempty"`
-	MaxWaitBeforeErrorMs     int                    `json:"maxWaitBeforeErrorMs,omitempty"`
-	MaxAccounts              int                    `json:"maxAccounts,omitempty"`
-	GlobalQuotaThreshold     float64                `json:"globalQuotaThreshold,omitempty"`
-	RequestThrottlingEnabled bool                   `json:"requestThrottlingEnabled,omitempty"`
-	RequestDelayMs           int                    `json:"requestDelayMs,omitempty"`
-	RateLimitDedupWindowMs   int                    `json:"rateLimitDedupWindowMs,omitempty"`
-	MaxConsecutiveFailures   int                    `json:"maxConsecutiveFailures,omitempty"`
-	ExtendedCooldownMs       int                    `json:"extendedCooldownMs,omitempty"`
-	MaxCapacityRetries       int                    `json:"maxCapacityRetries,omitempty"`
-	SwitchAccountDelayMs     int                    `json:"switchAccountDelayMs,omitempty"`
-	CapacityBackoffTiersMs   []int                  `json:"capacityBackoffTiersMs,omitempty"`
+	APIKey                   string                    `json:"apiKey,omitempty"`
+	WebUIPassword            string                    `json:"webuiPassword,omitempty"`
+	Debug                    bool                      `json:"debug,omitempty"`
+	DevMode                  bool                      `json:"devMode,omitempty"`
+	LogLevel                 string                    `json:"logLevel,omitempty"`
+	MaxRetries               int                       `json:"maxRetries,omitempty"`
+	RetryBaseMs              int                       `json:"retryBaseMs,omitempty"`
+	RetryMaxMs               int                       `json:"retryMaxMs,omitempty"`
+	PersistTokenCache        bool                      `json:"persistTokenCache,omitempty"`
+	DefaultCooldownMs        int                       `json:"defaultCooldownMs,omitempty"`
+	MaxWaitBeforeErrorMs     int                       `json:"maxWaitBeforeErrorMs,omitempty"`
+	MaxAccounts              int                       `json:"maxAccounts,omitempty"`
+	GlobalQuotaThreshold     float64                   `json:"globalQuotaThreshold,omitempty"`
+	RequestThrottlingEnabled bool                      `json:"requestThrottlingEnabled,omitempty"`
+	RequestDelayMs           int                       `json:"requestDelayMs,omitempty"`
+	RateLimitDedupWindowMs   int                       `json:"rateLimitDedupWindowMs,omitempty"`
+	MaxConsecutiveFailures   int                       `json:"maxConsecutiveFailures,omitempty"`
+	ExtendedCooldownMs       int                       `json:"extendedCooldownMs,omitempty"`
+	MaxCapacityRetries       int                       `json:"maxCapacityRetries,omitempty"`
+	SwitchAccountDelayMs     int                       `json:"switchAccountDelayMs,omitempty"`
+	CapacityBackoffTiersMs   []int                     `json:"capacityBackoffTiersMs,omitempty"`
 	CustomEndpoints          map[string]EndpointConfig `json:"customEndpoints,omitempty"`
-	ModelMapping             map[string]any         `json:"modelMapping,omitempty"`
-	OpenRouter               OpenRouterConfig       `json:"openrouter,omitempty"`
-	AccountSelection         AccountSelectionConfig `json:"accountSelection,omitempty"`
+	ModelMapping             map[string]any            `json:"modelMapping,omitempty"`
+	OpenRouter               OpenRouterConfig          `json:"openrouter,omitempty"`
+	AccountSelection         AccountSelectionConfig    `json:"accountSelection,omitempty"`
 }
 
 var (
