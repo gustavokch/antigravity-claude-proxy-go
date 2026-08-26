@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 type EndpointConfig struct {
@@ -150,40 +152,37 @@ func GetConfigDir() string {
 	return filepath.Join(home, ".config", "antigravity-proxy")
 }
 
-// RankWeightsToOpenRouter returns the RankWeights as seen by the openrouter package, with defaults applied.
-func (c OpenRouterRoutingConfig) RankWeightsToOpenRouter() (w struct {
-	Availability float64
-	Context      float64
-	Latency      float64
-	Throughput   float64
-}) {
-	w.Availability = c.RankWeights.Availability
-	w.Context = c.RankWeights.Context
-	w.Latency = c.RankWeights.Latency
-	w.Throughput = c.RankWeights.Throughput
-	if w.Availability == 0 && w.Context == 0 && w.Latency == 0 && w.Throughput == 0 {
-		w.Availability = 0.4
-		w.Context = 0.15
-		w.Latency = 0.25
-		w.Throughput = 0.2
+// RankWeightsToOpenRouter returns the RankWeights as seen by the openrouter
+// package, falling back to the shared package defaults when unset.
+func (c OpenRouterRoutingConfig) RankWeightsToOpenRouter() openrouter.RankWeights {
+	w := openrouter.RankWeights{
+		Availability: c.RankWeights.Availability,
+		Context:      c.RankWeights.Context,
+		Latency:      c.RankWeights.Latency,
+		Throughput:   c.RankWeights.Throughput,
 	}
-	return
+	if w == (openrouter.RankWeights{}) {
+		w = openrouter.DefaultRankWeights()
+	}
+	return w
 }
 
 // DefaultRoutingConfig returns routing defaults used by config and tests.
 func DefaultRoutingConfig() OpenRouterRoutingConfig {
-	c := OpenRouterRoutingConfig{
+	rw := openrouter.DefaultRankWeights()
+	return OpenRouterRoutingConfig{
 		FailureThreshold: 10,
 		Retry429Max:      10,
 		BackoffBaseMs:    500,
 		BackoffCapMs:     120000,
 		RequestBudgetMs:  120000,
+		RankWeights: struct {
+			Availability float64 `json:"availability,omitempty"`
+			Context      float64 `json:"context,omitempty"`
+			Latency      float64 `json:"latency,omitempty"`
+			Throughput   float64 `json:"throughput,omitempty"`
+		}{rw.Availability, rw.Context, rw.Latency, rw.Throughput},
 	}
-	c.RankWeights.Availability = 0.4
-	c.RankWeights.Context = 0.15
-	c.RankWeights.Latency = 0.25
-	c.RankWeights.Throughput = 0.2
-	return c
 }
 
 // ConfigFilePath returns path to ~/.config/antigravity-proxy/config.json.

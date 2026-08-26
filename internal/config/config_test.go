@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -370,5 +372,22 @@ func TestModelsSettingsPersistenceAcrossReboots(t *testing.T) {
 	}
 	if len(loadedCfg2.OpenRouter.Allowlist) != 1 {
 		t.Errorf("expected 1 OpenRouter allowlist model after second reboot, got %d", len(loadedCfg2.OpenRouter.Allowlist))
+	}
+}
+
+func TestRankWeightsToOpenRouter_SingleSourceDefaults(t *testing.T) {
+	// Zero-value config must yield the openrouter package defaults so the
+	// weight blend has exactly one source of truth.
+	got := OpenRouterRoutingConfig{}.RankWeightsToOpenRouter()
+	want := openrouter.DefaultRankWeights()
+	if got != want {
+		t.Errorf("zero config weights = %+v, want package defaults %+v", got, want)
+	}
+
+	// A partial (non-zero) config is preserved as-is: the operator chose it.
+	partial := OpenRouterRoutingConfig{}
+	partial.RankWeights.Availability = 0.9
+	if got := partial.RankWeightsToOpenRouter(); got != (openrouter.RankWeights{Availability: 0.9}) {
+		t.Errorf("partial weights = %+v, want availability-only 0.9", got)
 	}
 }
