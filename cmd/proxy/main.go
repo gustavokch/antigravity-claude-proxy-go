@@ -247,6 +247,7 @@ func runServer(args []string) {
 			_ = tracker.Close()
 		}
 		// Persist routing state before shutdown so the debounced save is not lost.
+		defer openrouter.DefaultRouter.FlushSave()
 		openrouter.DefaultRouter.FlushSave()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
