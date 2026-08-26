@@ -1,6 +1,8 @@
 package openrouter
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -281,6 +283,23 @@ func TestProviderRouter_EnablePersistenceDebouncedSave(t *testing.T) {
 	r.FlushSave()
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("expected file after FlushSave, got %v", err)
+	}
+}
+
+func TestProviderRouter_SaveFailureLogged(t *testing.T) {
+	// A directory as the save target cannot be written: SaveTo must fail and
+	// the failure must reach the log instead of vanishing.
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	r.EnablePersistence(dir)
+	r.RefreshRanks("m1", mkEndpoints())
+	r.Select("s1", "m1", ProviderOrder{Mode: "auto"})
+
+	r.FlushSave()
+	if buf.Len() == 0 {
+		t.Errorf("expected save failure to be logged, got no log output")
 	}
 }
 

@@ -3,6 +3,7 @@ package openrouter
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -93,6 +94,8 @@ type ProviderRouter struct {
 	// concurrently, and interleaved writes to path+".tmp" can persist a
 	// torn file whose rename silently drops state on the next load.
 	saveMu sync.Mutex
+
+	logger *slog.Logger
 }
 
 // routerStateVersion is the on-disk schema version for persisted router state.
@@ -149,6 +152,7 @@ func NewProviderRouter(cfg RoutingConfig) *ProviderRouter {
 		sticky:   map[string]string{},
 		stickyAt: map[string]time.Time{},
 		stats:    map[string]map[string]*providerStats{},
+		logger:   slog.Default(),
 	}
 }
 
@@ -723,7 +727,9 @@ func (r *ProviderRouter) scheduleSaveLocked() {
 		r.mu.Lock()
 		r.saveTimer = nil
 		r.mu.Unlock()
-		_ = r.SaveTo(path)
+		if err := r.SaveTo(path); err != nil {
+			r.logger.Warn("router state save failed", "path", path, "error", err)
+		}
 	})
 }
 
@@ -737,6 +743,8 @@ func (r *ProviderRouter) FlushSave() {
 	path := r.savePath
 	r.mu.Unlock()
 	if path != "" {
-		_ = r.SaveTo(path)
+		if err := r.SaveTo(path); err != nil {
+			r.logger.Warn("router state save failed", "path", path, "error", err)
+		}
 	}
 }
