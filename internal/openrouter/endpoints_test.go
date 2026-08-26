@@ -92,6 +92,17 @@ func TestFlattenEndpointsResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("canonical-empty-list", func(t *testing.T) {
+		body := []byte(`{"data":{"name":"anthropic/claude","endpoints":[]}}`)
+		got, err := flattenEndpointsResponse(body)
+		if err != nil {
+			t.Fatalf("empty catalog is valid, got error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected 0 endpoints, got %d", len(got))
+		}
+	})
+
 	t.Run("garbage", func(t *testing.T) {
 		_, err := flattenEndpointsResponse([]byte("not json"))
 		if err == nil {

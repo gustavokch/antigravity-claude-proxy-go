@@ -84,9 +84,10 @@ func flattenEndpointsResponse(body []byte) ([]ProviderEndpoint, error) {
 		return nil, fmt.Errorf("empty body")
 	}
 
-	// Try the canonical `data.endpoints` shape first.
+	// Try the canonical `data.endpoints` shape first. An explicitly empty
+	// list is a valid catalog (model temporarily unserved), not an error.
 	var wrapped EndpointsResponse
-	if err := json.Unmarshal(body, &wrapped); err == nil && len(wrapped.Data.Endpoints) > 0 {
+	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.Data.Endpoints != nil {
 		return wrapped.Data.Endpoints, nil
 	}
 
