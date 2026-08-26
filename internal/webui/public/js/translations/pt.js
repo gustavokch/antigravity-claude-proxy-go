@@ -458,6 +458,13 @@ window.translations.pt = {
     familyOpenRouter: "OpenRouter Gateway",
     gatewayDiscovery: "Descoberta de Modelos do Gateway",
     gatewayDiscoveryDesc: "Permite ao Claude Code descobrir modelos do OpenRouter e do proxy dinamicamente.",
+    // App Spoof (harness-gate retry headers)
+    appSpoofTitle: "Harness-Gate Spoof",
+    appSpoofDefault: "PADRÃO",
+    appSpoofCustom: "PERSONALIZADO",
+    appSpoofDesc: "Cabeçalhos enviados na retentativa de modelos gratuitos bloqueados por harness (X-OpenRouter-Title / X-OpenRouter-Categories). Deixe ambos em branco para usar os padrões internos.",
+    appSpoofFieldTitle: "Título do App",
+    appSpoofFieldCategories: "Categorias do App",
     skipFastModeOrgCheck: "Ignorar Verificação de Organização do Fast Mode",
     skipFastModeOrgCheckDesc: "Ignora a validação de organização da Anthropic ao usar modelos fast mode pelo proxy.",
 

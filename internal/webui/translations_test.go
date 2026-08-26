@@ -14,6 +14,8 @@ var openRouterPanelKeys = []string{
 	"save", "remove", "alias", "localAlias", "loading", "contextLength",
 	"providerRouting", "provider", "uptime", "latency", "tps", "score",
 	"order", "pin", "pinned", "pinnedTo", "openRouterBadge",
+	"appSpoofTitle", "appSpoofDefault", "appSpoofCustom", "appSpoofDesc",
+	"appSpoofFieldTitle", "appSpoofFieldCategories",
 }
 
 var presetKeys = []string{

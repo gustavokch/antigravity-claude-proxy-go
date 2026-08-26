@@ -559,6 +559,13 @@ window.translations.id = {
     familyOpenRouter: "OpenRouter Gateway",
     gatewayDiscovery: "Penemuan Model Gateway",
     gatewayDiscoveryDesc: "Memungkinkan Claude Code menemukan model OpenRouter dan proxy secara dinamis.",
+    // App Spoof (harness-gate retry headers)
+    appSpoofTitle: "Harness-Gate Spoof",
+    appSpoofDefault: "DEFAULT",
+    appSpoofCustom: "KUSTOM",
+    appSpoofDesc: "Header yang dikirim saat percobaan ulang model gratis yang di-gate harness (X-OpenRouter-Title / X-OpenRouter-Categories). Biarkan kosong untuk memakai bawaan.",
+    appSpoofFieldTitle: "Judul Aplikasi",
+    appSpoofFieldCategories: "Kategori Aplikasi",
     skipFastModeOrgCheck: "Lewati Pemeriksaan Organisasi Fast Mode",
     skipFastModeOrgCheckDesc: "Lewati validasi organisasi Anthropic saat menggunakan model fast mode melalui proxy.",
 
