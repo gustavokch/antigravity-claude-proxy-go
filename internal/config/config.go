@@ -60,6 +60,24 @@ type OpenRouterConfig struct {
 	AppSpoof  OpenRouterAppSpoofConfig `json:"appSpoof,omitempty"`
 }
 
+// KimiModelConfig describes one Kimi Code model the proxy may forward to.
+type KimiModelConfig struct {
+	ID              string `json:"id"`
+	Alias           string `json:"alias,omitempty"`
+	DisplayName     string `json:"displayName,omitempty"`
+	ContextLen      int    `json:"contextLength,omitempty"`
+	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
+	Enabled         bool   `json:"enabled"`
+}
+
+// KimiConfig holds the Kimi Code gateway configuration.
+type KimiConfig struct {
+	Enabled   bool              `json:"enabled"`
+	BaseURL   string            `json:"baseUrl"`
+	APIKey    string            `json:"apiKey,omitempty"`
+	Allowlist []KimiModelConfig `json:"allowlist,omitempty"`
+}
+
 type AccountSelectionConfig struct {
 	Strategy    string         `json:"strategy,omitempty"`
 	HealthScore map[string]any `json:"healthScore,omitempty"`
@@ -93,6 +111,7 @@ type Config struct {
 	CustomEndpoints          map[string]EndpointConfig `json:"customEndpoints,omitempty"`
 	ModelMapping             map[string]any            `json:"modelMapping,omitempty"`
 	OpenRouter               OpenRouterConfig          `json:"openrouter,omitempty"`
+	Kimi                     KimiConfig                `json:"kimi,omitempty"`
 	AccountSelection         AccountSelectionConfig    `json:"accountSelection,omitempty"`
 }
 
@@ -126,6 +145,10 @@ func DefaultConfig() Config {
 			BaseURL:   "https://openrouter.ai/api",
 			Allowlist: []OpenRouterModelConfig{},
 			Routing:   DefaultRoutingConfig(),
+		},
+		Kimi: KimiConfig{
+			BaseURL:   "https://api.kimi.com/coding",
+			Allowlist: []KimiModelConfig{},
 		},
 		AccountSelection: AccountSelectionConfig{
 			Strategy: "hybrid",
@@ -314,6 +337,27 @@ func Save(updates map[string]any) (Config, error) {
 			}
 			continue
 		}
+		if k == "kimi" {
+			if vMap, ok := v.(map[string]any); ok {
+				kimiCopy := make(map[string]any)
+				for kk, vv := range vMap {
+					kimiCopy[kk] = vv
+				}
+				hasApiKey, _ := kimiCopy["hasApiKey"].(bool)
+				apiKey, _ := kimiCopy["apiKey"].(string)
+				existingKimi, _ := currentMap["kimi"].(map[string]any)
+				if hasApiKey && apiKey == "" && existingKimi != nil {
+					if existingKey, ok := existingKimi["apiKey"].(string); ok && existingKey != "" {
+						kimiCopy["apiKey"] = existingKey
+					}
+				}
+				delete(kimiCopy, "hasApiKey")
+				currentMap[k] = kimiCopy
+			} else {
+				currentMap[k] = v
+			}
+			continue
+		}
 		if k == "modelMapping" {
 			currentMap[k] = v
 			continue
@@ -402,6 +446,20 @@ func GetPublicConfig() map[string]any {
 			}
 		}
 		result["openrouter"] = orCopy
+	}
+
+	if kimiMap, ok := result["kimi"].(map[string]any); ok {
+		kimiCopy := make(map[string]any)
+		for kk, vv := range kimiMap {
+			if kk == "apiKey" {
+				if strKey, isStr := vv.(string); isStr && strKey != "" {
+					kimiCopy["hasApiKey"] = true
+				}
+			} else {
+				kimiCopy[kk] = vv
+			}
+		}
+		result["kimi"] = kimiCopy
 	}
 
 	return result

@@ -49,6 +49,14 @@ window.Components.modelDropdown = (field, labelKey, accentColor) => ({
                 }
             });
         }
+        if (this.$store.data.kimi && this.$store.data.kimi.allowlist) {
+            this.$store.data.kimi.allowlist.forEach(m => {
+                if (m.enabled) {
+                    modelSet.add(m.id);
+                    if (m.alias) modelSet.add(m.alias);
+                }
+            });
+        }
         return Array.from(modelSet);
     },
 
@@ -62,6 +70,7 @@ window.Components.modelDropdown = (field, labelKey, accentColor) => ({
     get groupedModels() {
         const groups = [
             { family: 'openrouter', label: this.$store.global.t('familyOpenRouter') || 'OpenRouter Gateway', items: [] },
+            { family: 'kimi', label: this.$store.global.t('familyKimi') || 'Kimi Code Gateway', items: [] },
             { family: 'forwarded', label: this.$store.global.t('familyForwarded') || 'Forwarded / Custom', items: [] },
             { family: 'claude', label: this.$store.global.t('familyClaude') || 'Claude', items: [] },
             { family: 'gemini', label: this.$store.global.t('familyGemini') || 'Gemini', items: [] },

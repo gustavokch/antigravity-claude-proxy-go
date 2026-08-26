@@ -285,6 +285,7 @@ window.Components.models = () => ({
         this.$watch('$store.global.settingsTab', (val) => {
             if (val === 'models') {
                 this.fetchOpenRouterConfig();
+                this.fetchKimiConfig();
             }
         });
 
@@ -296,6 +297,7 @@ window.Components.models = () => ({
         }
         if (this.$store.global.settingsTab === 'models') {
             this.fetchOpenRouterConfig();
+            this.fetchKimiConfig();
         }
     },
 
@@ -320,6 +322,21 @@ window.Components.models = () => ({
     discoverySearch: '',
     discoveryProvider: 'all',
     addAllowlistAliasMap: {},
+
+    // Kimi Code Gateway State & Methods
+    kimiConfig: {
+        enabled: false,
+        baseUrl: 'https://api.kimi.com/coding',
+        apiKey: '',
+        hasApiKey: false,
+        allowlist: []
+    },
+    kimiSaving: false,
+    kimiError: '',
+    kimiDiscovered: [],
+    kimiNewId: '',
+    kimiNewAlias: '',
+    kimiNewDisplay: '',
 
     // Per-model provider routing panel state
     expandedRouting: new Set(),
@@ -499,6 +516,141 @@ window.Components.models = () => ({
         } finally {
             this.openRouterSaving = false;
         }
+    },
+
+    async fetchKimiConfig() {
+        const password = Alpine.store('global').webuiPassword;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/kimi/config', {}, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            if (data.config) {
+                this.kimiConfig = {
+                    enabled: !!data.config.enabled,
+                    baseUrl: data.config.baseUrl || 'https://api.kimi.com/coding',
+                    apiKey: '',
+                    hasApiKey: !!data.config.hasApiKey,
+                    allowlist: data.config.allowlist || []
+                };
+                Alpine.store('data').kimi = this.kimiConfig;
+            }
+        } catch (e) {
+            console.error('Failed to fetch Kimi config:', e);
+        }
+    },
+
+    async saveKimiConfig() {
+        const store = Alpine.store('global');
+        const password = store.webuiPassword;
+        this.kimiSaving = true;
+        this.kimiError = '';
+        try {
+            const payload = {
+                enabled: this.kimiConfig.enabled,
+                baseUrl: this.kimiConfig.baseUrl || 'https://api.kimi.com/coding',
+                hasApiKey: this.kimiConfig.hasApiKey,
+                allowlist: this.kimiConfig.allowlist || []
+            };
+            if (this.kimiConfig.apiKey && this.kimiConfig.apiKey.trim()) {
+                payload.apiKey = this.kimiConfig.apiKey.trim();
+            }
+            const { response, newPassword } = await window.utils.request('/api/kimi/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }, password);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            if (data.config) {
+                this.kimiConfig.hasApiKey = !!data.config.hasApiKey;
+                if (payload.apiKey) {
+                    this.kimiConfig.apiKey = '';
+                }
+                Alpine.store('data').kimi = this.kimiConfig;
+            }
+            store.showToast(store.t('kimiSavedSuccess') || 'Kimi settings saved', 'success');
+        } catch (e) {
+            this.kimiError = e.message || 'Failed to save Kimi settings';
+            store.showToast(this.kimiError, 'error');
+        } finally {
+            this.kimiSaving = false;
+        }
+    },
+
+    async discoverKimiModels() {
+        const password = Alpine.store('global').webuiPassword;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/kimi/models/fetch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            }, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            this.kimiDiscovered = (data.models || []).map(m => ({
+                id: m.id,
+                displayName: m.display_name || m.id,
+                contextLength: m.context_length || 0,
+                maxOutputTokens: m.max_tokens || 0,
+                selected: true
+            }));
+        } catch (e) {
+            const store = Alpine.store('global');
+            store.showToast(e.message || 'Failed to fetch Kimi models', 'error');
+        }
+    },
+
+    async openKimiDiscoverModal() {
+        await this.discoverKimiModels();
+        const dialog = document.getElementById('kimi_discover_modal');
+        if (dialog && typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        }
+    },
+
+    importKimiDiscovered() {
+        const picked = this.kimiDiscovered.filter(m => m.selected);
+        const existing = new Set(this.kimiConfig.allowlist.map(m => m.id));
+        picked.forEach(p => {
+            if (!existing.has(p.id)) {
+                this.kimiConfig.allowlist.push({
+                    id: p.id,
+                    alias: '',
+                    displayName: p.displayName,
+                    contextLength: p.contextLength,
+                    maxOutputTokens: p.maxOutputTokens,
+                    enabled: true
+                });
+            }
+        });
+        this.saveKimiConfig();
+        const dialog = document.getElementById('kimi_discover_modal');
+        if (dialog) dialog.close();
+    },
+
+    addKimiAllowlistRow() {
+        if (!this.kimiNewId) return;
+        this.kimiConfig.allowlist.push({
+            id: this.kimiNewId,
+            alias: this.kimiNewAlias || '',
+            displayName: this.kimiNewDisplay || '',
+            contextLength: 0,
+            maxOutputTokens: 0,
+            enabled: true
+        });
+        this.kimiNewId = '';
+        this.kimiNewAlias = '';
+        this.kimiNewDisplay = '';
+        this.saveKimiConfig();
     },
 
     async openDiscoverModal() {

@@ -13,6 +13,7 @@ document.addEventListener('alpine:init', () => {
         modelConfig: {}, // Model metadata (hidden, pinned, alias)
         customEndpoints: {}, // Transparent forwarding custom endpoints
         openrouter: {}, // OpenRouter Gateway and allowlist configuration
+        kimi: {}, // Kimi Code gateway configuration
         quotaRows: [], // Filtered view
         usageHistory: {}, // Usage statistics history (from /account-limits?includeHistory=true)
         globalQuotaThreshold: 0, // Global minimum quota threshold (fraction 0-0.99)
@@ -84,6 +85,7 @@ document.addEventListener('alpine:init', () => {
                         this.modelConfig = data.modelConfig || {};
                         this.customEndpoints = data.customEndpoints || {};
                         this.openrouter = data.openrouter || {};
+                        this.kimi = data.kimi || {};
                         this.usageHistory = data.usageHistory || {};
 
                         // Don't show loading on initial load if we have cache
@@ -105,6 +107,7 @@ document.addEventListener('alpine:init', () => {
                     modelConfig: this.modelConfig,
                     customEndpoints: this.customEndpoints,
                     openrouter: this.openrouter,
+                    kimi: this.kimi,
                     usageHistory: this.usageHistory,
                     timestamp: Date.now()
                 };
@@ -139,6 +142,7 @@ document.addEventListener('alpine:init', () => {
                 this.modelConfig = data.modelConfig || {};
                 this.customEndpoints = data.customEndpoints || {};
                 this.openrouter = data.openrouter || {};
+                this.kimi = data.kimi || {};
                 this.globalQuotaThreshold = data.globalQuotaThreshold || 0;
 
                 // Store usage history if included (for dashboard)
@@ -398,6 +402,7 @@ document.addEventListener('alpine:init', () => {
             if (!modelId) return 'other';
             if (this.customEndpoints && this.customEndpoints[modelId]) return 'forwarded';
             if (this.openrouter && this.openrouter.allowlist && this.openrouter.allowlist.some(m => m.id === modelId || m.alias === modelId)) return 'openrouter';
+            if (this.kimi && this.kimi.allowlist && this.kimi.allowlist.some(m => m.id === modelId || m.alias === modelId)) return 'kimi';
             const lower = modelId.toLowerCase();
             if (lower.includes('claude')) return 'claude';
             if (lower.includes('gemini')) return 'gemini';
@@ -415,6 +420,8 @@ document.addEventListener('alpine:init', () => {
                     return 'bg-neon-cyan shadow-[0_0_5px_rgba(6,182,212,0.5)]';
                 case 'openrouter':
                     return 'bg-indigo-400 shadow-[0_0_5px_rgba(129,140,248,0.5)]';
+                case 'kimi':
+                    return 'bg-cyan-400 shadow-[0_0_5px_rgba(34,211,238,0.5)]';
                 default:
                     return 'bg-gray-600';
             }
