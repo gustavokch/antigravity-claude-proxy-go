@@ -615,3 +615,48 @@ func TestOpenRouterRouting_429BackoffAbortsOnDisconnect(t *testing.T) {
 		t.Errorf("expected 1 attempt, got %d", got)
 	}
 }
+
+func TestOpenRouterRouting_BudgetExemptsActiveStream(t *testing.T) {
+	// The request budget bounds time-to-first-byte; once a stream starts it
+	// must run to completion (client cancellation aside), or long generations
+	// get truncated mid-flight.
+	const events = 6
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+		for i := 1; i <= events; i++ {
+			time.Sleep(30 * time.Millisecond)
+			_, _ = fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"provider\":\"p1\",\"marker\":%d}\n\n", i)
+			flusher.Flush()
+		}
+	}))
+	defer mockOR.Close()
+
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99},
+	}
+	env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+	env.saveConfig(t, nil, map[string]any{"requestBudgetMs": 50})
+	server := env.newServer(t)
+
+	rec := env.doRequest(t, server, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for i := 1; i <= events; i++ {
+		if !strings.Contains(body, fmt.Sprintf("\"marker\":%d", i)) {
+			t.Errorf("stream truncated before event %d — budget must not cut active streams\ngot: %q", i, body)
+		}
+	}
+	stats := openrouter.DefaultRouter.Stats("anthropic/claude-3.7-sonnet")
+	if stats["p1"].SuccessCount != 1 {
+		t.Errorf("expected completed stream to record one success, got %+v", stats["p1"])
+	}
+}

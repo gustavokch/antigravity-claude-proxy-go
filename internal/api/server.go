@@ -748,14 +748,19 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			}
 		}
 
-		// Derive per-attempt context bounded by the remaining request budget.
+		// Derive per-attempt context. The budget bounds time-to-first-byte
+		// for streams and the whole body for unary responses; an active
+		// stream is exempt once headers arrive, so long generations are never
+		// truncated mid-flight (see TestOpenRouterRouting_BudgetExemptsActiveStream).
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			remaining = 1 * time.Millisecond
 		}
-		attemptCtx, cancel := context.WithTimeout(request.Context(), remaining)
+		attemptCtx, cancel := context.WithCancel(request.Context())
+		headersCutoff := time.AfterFunc(remaining, cancel)
 		upReq, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, targetURL.String(), bytes.NewReader(body))
 		if err != nil {
+			headersCutoff.Stop()
 			cancel()
 			writeAPIError(writer, http.StatusInternalServerError, "api_error", "Failed to build request: "+err.Error())
 			return
@@ -775,8 +780,9 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 
 		resp, err := httpClient.Do(upReq)
-		cancel()
 		if err != nil {
+			headersCutoff.Stop()
+			cancel()
 			if provider != "" {
 				openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 			}
@@ -793,12 +799,17 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 			if isStream {
-				server.proxyStreamResponse(writer, resp, model, sessionID, attemptPricing, startTime, attemptStart, provider)
+				// Headers arrived inside the budget: hand the attempt context
+				// to the stream proxy, which releases it at stream end.
+				headersCutoff.Stop()
+				server.proxyStreamResponse(writer, resp, model, sessionID, attemptPricing, startTime, attemptStart, provider, cancel)
 				return
 			}
 			// Buffer full body before writing — failover impossible after first byte.
 			bodyBytes, readErr := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
+			headersCutoff.Stop()
+			cancel()
 			if readErr != nil {
 				if provider != "" {
 					openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
@@ -835,6 +846,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		// Non-2xx: buffer body, classify, decide next.
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		headersCutoff.Stop()
+		cancel()
 		lastStatus = resp.StatusCode
 		lastBody = bodyBytes
 		action, backoff := classify(resp.StatusCode, nil)
@@ -982,8 +995,10 @@ func truncate(s string, n int) string {
 }
 
 // proxyStreamResponse streams a successful response to the client while
-// capturing usage and the served provider via SSE.
-func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http.Response, model, sessionID string, pricing openrouter.Pricing, startTime, attemptStart time.Time, provider string) {
+// capturing usage and the served provider via SSE. It owns cancel: the attempt
+// context lives until the stream ends (headers already arrived within budget).
+func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http.Response, model, sessionID string, pricing openrouter.Pricing, startTime, attemptStart time.Time, provider string, cancel context.CancelFunc) {
+	defer cancel()
 	for k, vs := range resp.Header {
 		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
 			continue
