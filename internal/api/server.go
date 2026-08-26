@@ -817,9 +817,21 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 			if isStream {
+				headersCutoff.Stop()
+				// The cutoff can fire in the window between header arrival and
+				// Stop(): the stream then holds a dead context and dies on the
+				// first read. Treat it like a failed attempt and fail over.
+				if attemptCtx.Err() != nil {
+					_ = resp.Body.Close()
+					cancel()
+					if provider != "" {
+						openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
+					}
+					providerIdx++
+					continue
+				}
 				// Headers arrived inside the budget: hand the attempt context
 				// to the stream proxy, which releases it at stream end.
-				headersCutoff.Stop()
 				server.proxyStreamResponse(writer, resp, model, sessionID, pricing, startTime, attemptStart, provider, cancel)
 				return
 			}
