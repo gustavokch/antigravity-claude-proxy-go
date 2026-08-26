@@ -245,6 +245,18 @@ func TestSSEInterceptor_CapturesProvider(t *testing.T) {
 	}
 }
 
+func TestSSEInterceptor_TerminalErr(t *testing.T) {
+	// Normal EOF should result in nil TerminalErr.
+	interceptor := NewSSEInterceptor(io.NopCloser(strings.NewReader("")), func(in, out, cr, cw int) {})
+	_, err := interceptor.Read(make([]byte, 16))
+	if err == nil {
+		t.Fatal("expected EOF from empty reader")
+	}
+	if interceptor.TerminalErr() != nil {
+		t.Errorf("expected nil terminal err on clean EOF, got %v", interceptor.TerminalErr())
+	}
+}
+
 func TestLogObservability(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))

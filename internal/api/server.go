@@ -1003,7 +1003,8 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 			served = p
 		}
 		if served != "" {
-			openrouter.DefaultRouter.RecordResult(model, served, true, server.now().Sub(attemptStart), in+out)
+			success := interceptor.TerminalErr() == nil
+			openrouter.DefaultRouter.RecordResult(model, served, success, server.now().Sub(attemptStart), in+out)
 		}
 		server.recordOpenRouterMetrics(model, sessionID, pricing, startTime, in, out, cr, cw, served)
 	})

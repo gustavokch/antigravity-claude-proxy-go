@@ -275,8 +275,9 @@ type SSEInterceptor struct {
 	outTokens  int
 	cacheRead  int
 	cacheWrite int
-	provider   string
-	closed     bool
+	provider       string
+	terminalErr    error
+	closed         bool
 	once       sync.Once
 }
 
@@ -297,6 +298,11 @@ func (s *SSEInterceptor) Read(p []byte) (n int, err error) {
 		s.mu.Unlock()
 	}
 	if err != nil {
+		s.mu.Lock()
+		if err != io.EOF {
+			s.terminalErr = err
+		}
+		s.mu.Unlock()
 		s.finalize()
 	}
 	return n, err
@@ -322,6 +328,16 @@ func (s *SSEInterceptor) Provider() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.provider
+}
+
+// TerminalErr returns the non-EOF terminal error if the stream ended prematurely.
+func (s *SSEInterceptor) TerminalErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminalErr == io.EOF {
+		return nil
+	}
+	return s.terminalErr
 }
 
 func (s *SSEInterceptor) finalize() {
