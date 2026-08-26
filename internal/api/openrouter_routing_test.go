@@ -499,3 +499,43 @@ func TestRecordOpenRouterMetrics_ResolvesModelPricing(t *testing.T) {
 		t.Errorf("CallCost = %v, want %v (model-catalog pricing must apply)", m.CallCost, want)
 	}
 }
+
+func TestOpenRouterRouting_BudgetUsesServerClock(t *testing.T) {
+	// Deadline checks must use server.now(), not time.Now(): a fake clock
+	// advanced past the budget must stop the failover loop after one attempt.
+	var attempts int32
+	var fakeNow atomic.Value
+	fakeNow.Store(time.Now())
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&attempts, 1)
+		// Jump the server clock far beyond the budget after the first attempt.
+		fakeNow.Store(time.Now().Add(2 * time.Minute))
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer mockOR.Close()
+
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99},
+		{ProviderName: "p2", ContextLength: 100000, UptimeLast5m: 0.90, UptimeLast30m: 0.90, UptimeLast1d: 0.90},
+	}
+	env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+	env.saveConfig(t, nil, map[string]any{"requestBudgetMs": 60000})
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     func() time.Time { return fakeNow.Load().(time.Time) },
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	env.doRequest(t, server, nil)
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("expected loop to stop once budget exceeded (1 attempt), got %d", got)
+	}
+}

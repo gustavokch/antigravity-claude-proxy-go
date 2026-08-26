@@ -719,7 +719,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	}
 
 	for {
-		if time.Now().After(deadline) {
+		if server.now().After(deadline) {
 			break
 		}
 		if request.Context().Err() != nil {
@@ -855,7 +855,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				cap = 120000
 			}
 			d := computeBackoff(consec429, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
-			if time.Now().Add(d).After(deadline) {
+			if server.now().Add(d).After(deadline) {
 				break
 			}
 			time.Sleep(d)
