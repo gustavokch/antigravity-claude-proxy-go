@@ -561,4 +561,23 @@ window.translations.id = {
     gatewayDiscoveryDesc: "Memungkinkan Claude Code menemukan model OpenRouter dan proxy secara dinamis.",
     skipFastModeOrgCheck: "Lewati Pemeriksaan Organisasi Fast Mode",
     skipFastModeOrgCheckDesc: "Lewati validasi organisasi Anthropic saat menggunakan model fast mode melalui proxy.",
+
+    // Tabel allowlist OpenRouter & panel perutean penyedia
+    save: "Simpan",
+    remove: "Hapus",
+    alias: "Alias",
+    localAlias: "Alias Lokal",
+    loading: "Memuat...",
+    contextLength: "Konteks",
+    providerRouting: "Perutean Penyedia",
+    provider: "Penyedia",
+    uptime: "Waktu Aktif",
+    latency: "Latensi",
+    tps: "TPS",
+    score: "Skor",
+    order: "Urutan",
+    pin: "Sematkan",
+    pinned: "Disematkan",
+    pinnedTo: "Disematkan ke",
+    openRouterBadge: "OpenRouter",
 };

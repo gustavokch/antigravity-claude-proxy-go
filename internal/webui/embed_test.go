@@ -33,6 +33,19 @@ func TestHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("assets served with no-cache to prevent stale JS after upgrade", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/js/components/models.js", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Errorf("expected Cache-Control no-cache, got %q", cc)
+		}
+	})
+
 	t.Run("fallback to index on unknown route", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/unknown/spa/path", nil)
 		rec := httptest.NewRecorder()

@@ -20,6 +20,12 @@ func Handler() http.Handler {
 	fileServer := http.FileServer(http.FS(sub))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Embedded assets carry no Last-Modified/ETag validators, so browsers
+		// would cache JS/CSS heuristically and could run stale scripts against
+		// new views after an upgrade. no-cache forces revalidation (a full
+		// refetch here), keeping HTML and JS in lockstep.
+		w.Header().Set("Cache-Control", "no-cache")
+
 		upath := r.URL.Path
 		if !strings.HasPrefix(upath, "/") {
 			upath = "/" + upath

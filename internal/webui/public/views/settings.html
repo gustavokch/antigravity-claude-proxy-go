@@ -1023,8 +1023,11 @@
                                         <th class="w-12 text-right pr-4" x-text="$store.global.t('actions') || 'Actions'">Actions</th>
                                     </tr>
                                 </thead>
-                                <tbody>
-                                    <template x-for="item in (openRouterConfig.allowlist || [])" :key="item.id">
+                                <!-- Alpine x-for renders only the first root element of its
+                                     template, so each iteration gets its own <tbody> (valid
+                                     HTML) to hold both the model row and the routing panel row. -->
+                                <template x-for="item in (openRouterConfig.allowlist || [])" :key="item.id">
+                                    <tbody>
                                         <tr class="hover:bg-white/5 transition-colors">
                                             <td class="pl-4 text-center">
                                                 <input type="checkbox" class="toggle toggle-xs toggle-primary"
@@ -1141,7 +1144,9 @@
                                                 </div>
                                             </td>
                                         </tr>
-                                    </template>
+                                    </tbody>
+                                </template>
+                                <tbody>
                                     <tr x-show="!openRouterConfig.allowlist || openRouterConfig.allowlist.length === 0">
                                         <td colspan="5" class="text-center py-6 text-gray-500 text-xs font-mono">
                                             NO OPENROUTER MODELS ALLOWLISTED. CLICK "DISCOVER MODELS" TO ADD.

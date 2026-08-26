@@ -530,4 +530,23 @@ window.translations.zh = {
     gatewayDiscoveryDesc: "允许 Claude Code 动态检索并发现 OpenRouter 及代理白名单模型。",
     skipFastModeOrgCheck: "跳过 Fast Mode 组织检查",
     skipFastModeOrgCheckDesc: "使用代理 fast mode 模型时跳过 Anthropic 组织权限验证。",
+
+    // OpenRouter 白名单表格与提供商路由面板
+    save: "保存",
+    remove: "移除",
+    alias: "别名",
+    localAlias: "本地别名",
+    loading: "加载中...",
+    contextLength: "上下文",
+    providerRouting: "提供商路由",
+    provider: "提供商",
+    uptime: "可用率",
+    latency: "延迟",
+    tps: "TPS",
+    score: "评分",
+    order: "顺序",
+    pin: "固定",
+    pinned: "已固定",
+    pinnedTo: "固定至",
+    openRouterBadge: "OpenRouter",
 };
