@@ -3,6 +3,8 @@ package openrouter
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -227,8 +229,12 @@ func TestResolveModelPricing_SingleflightConcurrency(t *testing.T) {
 	for i := 0; i < concurrency; i++ {
 		go func() {
 			p, ok := client.ResolveModelPricing(context.Background(), "anthropic/claude-3.7-sonnet", "key", server.URL)
-			if !ok || p.Prompt != 0.000003 {
-				errChan <- json.Unmarshal([]byte(""), nil)
+			if !ok {
+				errChan <- errors.New("pricing resolution returned not-ok")
+				return
+			}
+			if p.Prompt != 0.000003 {
+				errChan <- fmt.Errorf("prompt price = %v, want 0.000003", p.Prompt)
 				return
 			}
 			errChan <- nil

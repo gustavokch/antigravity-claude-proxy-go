@@ -693,7 +693,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		switch {
 		case status == http.StatusTooManyRequests:
 			return nextRetrySame, 0 // backoff computed by caller using 429 settings
-		case status >= 500, status == http.StatusBadGateway, status == http.StatusServiceUnavailable:
+		case status >= 500:
 			return nextNextProvider, 200 * time.Millisecond
 		case status >= 400:
 			return nextNextProvider, 0 // immediate
@@ -737,7 +737,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		tried[provider] = true
 
 		// Build body with provider injection.
-		body := injectProvider(reqBody, provider, order.Mode)
+		body := injectProvider(reqBody, provider)
 		attemptStart := server.now()
 
 		// Per-endpoint pricing wins over model-level pricing when known.
@@ -909,10 +909,9 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 }
 
 // injectProvider adds the OpenRouter "provider" routing key to the request body.
-// `mode` controls single vs full list:
-//   - "pinned" / "auto": single-entry order with allow_fallbacks=false
-//   - "custom": full order with allow_fallbacks=false
-func injectProvider(body []byte, provider string, mode string) []byte {
+// Failover walks candidates one provider per attempt, so each request body pins
+// the current candidate only, with upstream fallbacks disabled.
+func injectProvider(body []byte, provider string) []byte {
 	if provider == "" {
 		return body
 	}
@@ -920,19 +919,9 @@ func injectProvider(body []byte, provider string, mode string) []byte {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return body
 	}
-	switch mode {
-	case "custom":
-		// Failover walks the configured order one provider per attempt, so each
-		// request body pins the current candidate only.
-		payload["provider"] = map[string]any{
-			"order":           []string{provider},
-			"allow_fallbacks": false,
-		}
-	default:
-		payload["provider"] = map[string]any{
-			"order":           []string{provider},
-			"allow_fallbacks": false,
-		}
+	payload["provider"] = map[string]any{
+		"order":           []string{provider},
+		"allow_fallbacks": false,
 	}
 	out, err := json.Marshal(payload)
 	if err != nil {

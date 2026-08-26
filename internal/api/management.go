@@ -165,7 +165,7 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	case path == "/api/openrouter/models/cached" && method == http.MethodGet:
 		server.handleOpenRouterModelsCached(writer, request)
 		return true
-	case strings.HasPrefix(path, "/api/openrouter/providers") && method == http.MethodGet:
+	case path == "/api/openrouter/providers" && method == http.MethodGet:
 		server.handleOpenRouterProvidersGet(writer, request)
 		return true
 	case path == "/api/auth/url" && method == http.MethodGet:
