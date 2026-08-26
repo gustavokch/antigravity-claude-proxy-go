@@ -26,6 +26,7 @@ import (
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
+	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/openrouter"
@@ -360,6 +361,47 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 		}
 	}
+	if cfg.Kimi.Enabled {
+		for _, item := range cfg.Kimi.Allowlist {
+			if !item.Enabled {
+				continue
+			}
+			desc := item.DisplayName
+			if desc == "" {
+				desc = item.ID
+			}
+			contextLen := item.ContextLen
+			if contextLen <= 0 {
+				contextLen = 200000
+			}
+			maxOutput := item.MaxOutputTokens
+			if maxOutput <= 0 {
+				maxOutput = contextLen
+			}
+			models = append(models, map[string]any{
+				"id":                item.ID,
+				"object":            "model",
+				"created":           server.now().Unix(),
+				"owned_by":          "kimi",
+				"description":       desc,
+				"context_window":    contextLen,
+				"max_output_tokens": maxOutput,
+				"supports_thinking": true,
+			})
+			if item.Alias != "" && item.Alias != item.ID {
+				models = append(models, map[string]any{
+					"id":                item.Alias,
+					"object":            "model",
+					"created":           server.now().Unix(),
+					"owned_by":          "kimi",
+					"description":       desc + " (Alias)",
+					"context_window":    contextLen,
+					"max_output_tokens": maxOutput,
+					"supports_thinking": true,
+				})
+			}
+		}
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
@@ -543,6 +585,18 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 
 	model := stringFrom(anthropicRequest["model"])
+	if cfg.Kimi.Enabled {
+		if kimiMatch := matchKimiModel(cfg.Kimi, model); kimiMatch != "" {
+			anthropicRequest["model"] = kimiMatch
+			reqBody, err := json.Marshal(anthropicRequest)
+			if err != nil {
+				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Kimi request: "+err.Error())
+				return
+			}
+			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, kimiMatch)
+			return
+		}
+	}
 	if cfg.OpenRouter.Enabled {
 		for _, item := range cfg.OpenRouter.Allowlist {
 			if !item.Enabled {
@@ -639,6 +693,35 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	}
 
 	proxy.ServeHTTP(writer, request)
+}
+
+// forwardToKimi transparently forwards an /v1/messages request to the Kimi
+// Code gateway. The Kimi endpoint is Anthropic-compatible, so no translation
+// is needed: we rewrite Authorization, preserve the Anthropic version/beta
+// headers, and stream the response back.
+func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Request, kimiCfg config.KimiConfig, body []byte, model string) {
+	if kimiCfg.APIKey == "" {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Kimi gateway enabled but no API key configured")
+		return
+	}
+	if server.logger != nil {
+		server.logger.Info("kimi forward", "model", model)
+	}
+	kimi.ForwardMessages(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body)
+}
+
+// matchKimiModel returns the Kimi model ID if `model` matches an enabled
+// allowlist entry by either ID or alias. Returns "" if no match.
+func matchKimiModel(cfg config.KimiConfig, model string) string {
+	for _, item := range cfg.Allowlist {
+		if !item.Enabled {
+			continue
+		}
+		if item.ID == model || (item.Alias != "" && item.Alias == model) {
+			return item.ID
+		}
+	}
+	return ""
 }
 
 func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *http.Request, openRouterCfg config.OpenRouterConfig, reqBody []byte, anthropicRequest map[string]any) {
