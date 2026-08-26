@@ -524,7 +524,7 @@ window.translations.tr = {
     order: "Sıra",
     pin: "Sabitle",
     pinned: "Sabitlendi",
-    pinnedTo: "Sabitlendiği:",
+    pinnedTo: "Sabitlendiği",
     openRouterBadge: "OpenRouter",
 
     // Yapılandırma ön ayarları
