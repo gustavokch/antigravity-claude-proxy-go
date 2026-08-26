@@ -90,6 +90,16 @@ func TestIsHarnessGateError(t *testing.T) {
 			body: `{"error":{"message":"Requires an agentic harness. See openrouter.ai/apps"}}`,
 			want: true,
 		},
+		{
+			name: "phrasing without url",
+			body: `{"error":{"message":"This model requires an agentic harness."}}`,
+			want: true,
+		},
+		{
+			name: "only available to agentic harnesses",
+			body: `{"error":{"message":"Only available to agentic harnesses"}}`,
+			want: true,
+		},
 		{name: "generic 403", body: `{"type":"error","error":{"type":"permission_error","message":"insufficient credits"}}`, want: false},
 		{name: "not found", body: `{"type":"error","error":{"type":"not_found_error","message":"model not found"}}`, want: false},
 		{name: "empty", body: ``, want: false},

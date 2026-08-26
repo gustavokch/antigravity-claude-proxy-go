@@ -58,8 +58,5 @@ func ApplySpoofHeaders(req *http.Request, title, categories, referer string) {
 // "model is only available on agentic harnesses" permission error.
 func IsHarnessGateError(body []byte) bool {
 	lower := strings.ToLower(string(body))
-	if strings.Contains(lower, "only available on agentic harnesses") {
-		return true
-	}
-	return strings.Contains(lower, "agentic harness") && strings.Contains(lower, "openrouter.ai/apps")
+	return strings.Contains(lower, "agentic harness")
 }
