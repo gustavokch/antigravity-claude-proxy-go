@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -801,7 +802,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 			}
 			_, backoff := classify(0, err)
-			if backoff > 0 && !sleepOrDone(request.Context(), backoff) {
+			// Skip the backoff when the budget is already spent — the loop-top
+			// deadline check will break anyway, and sleeping only delays the
+			// client's error response.
+			if backoff > 0 && server.now().Before(deadline) && !sleepOrDone(request.Context(), backoff) {
 				return
 			}
 			providerIdx++
@@ -1023,11 +1027,18 @@ func computeBackoff(attempt int, base, cap time.Duration) time.Duration {
 	for i := 1; i < attempt; i++ {
 		d *= 2
 		if d > cap {
-			return cap
+			d = cap
+			break
 		}
 	}
 	if d > cap {
-		return cap
+		d = cap
+	}
+	// ±25% jitter so concurrent clients do not retry a throttled provider in
+	// lockstep. Stays within [0.75d, 1.25d]; never negative.
+	d += time.Duration(rand.Int63n(int64(d)/2 + 1)) - d/4
+	if d > cap {
+		d = cap
 	}
 	return d
 }
