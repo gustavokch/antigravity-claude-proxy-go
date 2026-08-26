@@ -525,4 +525,23 @@ window.translations.en = {
     gatewayDiscoveryDesc: "Allows Claude Code to discover allowlisted OpenRouter and proxy models dynamically.",
     skipFastModeOrgCheck: "Skip Fast Mode Org Check",
     skipFastModeOrgCheckDesc: "Skips Anthropic organization validation when using fast mode models via proxy.",
+
+    // OpenRouter allowlist table & provider routing panel
+    save: "Save",
+    remove: "Remove",
+    alias: "Alias",
+    localAlias: "Local Alias",
+    loading: "Loading...",
+    contextLength: "Context",
+    providerRouting: "Provider Routing",
+    provider: "Provider",
+    uptime: "Uptime",
+    latency: "Latency",
+    tps: "TPS",
+    score: "Score",
+    order: "Order",
+    pin: "Pin",
+    pinned: "Pinned",
+    pinnedTo: "Pinned to",
+    openRouterBadge: "OpenRouter",
 };
