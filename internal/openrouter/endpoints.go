@@ -140,9 +140,10 @@ type endpointsCacheEntry struct {
 }
 
 type endpointsCall struct {
-	wg  sync.WaitGroup
-	val []ProviderEndpoint
-	err error
+	wg   sync.WaitGroup
+	done chan struct{}
+	val  []ProviderEndpoint
+	err  error
 }
 
 // NewEndpointsClient creates an endpoints discovery client with its own TTL and HTTP client.
@@ -274,7 +275,7 @@ func (e *EndpointsClient) ResolveModelEndpoints(ctx context.Context, modelID, ap
 	}
 	flight, inFlight := e.flightMap[cacheKey]
 	if !inFlight {
-		flight = &endpointsCall{}
+		flight = &endpointsCall{done: make(chan struct{})}
 		flight.wg.Add(1)
 		e.flightMap[cacheKey] = flight
 		e.flightMu.Unlock()
@@ -284,6 +285,7 @@ func (e *EndpointsClient) ResolveModelEndpoints(ctx context.Context, modelID, ap
 				e.flightMu.Lock()
 				delete(e.flightMap, cacheKey)
 				e.flightMu.Unlock()
+				close(flight.done)
 				flight.wg.Done()
 			}()
 
@@ -300,14 +302,9 @@ func (e *EndpointsClient) ResolveModelEndpoints(ctx context.Context, modelID, ap
 		e.flightMu.Unlock()
 		// The leader fetches on a detached context (singleflight, see the
 		// pricing client pattern), so a follower must not block past its own
-		// cancellation. The helper goroutine finishes once the flight lands.
-		flightDone := make(chan struct{})
-		go func() {
-			flight.wg.Wait()
-			close(flightDone)
-		}()
+		// cancellation. done is closed by the leader when the flight lands.
 		select {
-		case <-flightDone:
+		case <-flight.done:
 		case <-ctx.Done():
 			return nil, fmt.Errorf("wait for endpoints fetch: %w", ctx.Err())
 		}
