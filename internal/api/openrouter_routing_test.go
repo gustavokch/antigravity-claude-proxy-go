@@ -688,3 +688,31 @@ func TestEffectiveAttemptPricing_FollowsServedProvider(t *testing.T) {
 		t.Errorf("unknown served provider must fall back to requested pricing, got %+v", got)
 	}
 }
+
+func TestCopyUpstreamHeaders_StripsHopByHop(t *testing.T) {
+	// Hop-by-hop headers are connection-scoped and must not reach the client;
+	// tokens named in Connection die with it. Everything else passes through.
+	src := http.Header{}
+	src.Set("Content-Type", "application/json")
+	src.Set("Connection", "keep-alive, X-Drop-Token")
+	src.Set("Keep-Alive", "timeout=5")
+	src.Set("Upgrade", "h2c")
+	src.Set("Transfer-Encoding", "chunked")
+	src.Set("X-Drop-Token", "bye")
+	src.Set("X-Custom", "yes")
+
+	dst := http.Header{}
+	copyUpstreamHeaders(dst, src)
+
+	for _, name := range []string{"Connection", "Keep-Alive", "Upgrade", "Transfer-Encoding", "X-Drop-Token"} {
+		if got := dst.Values(name); len(got) != 0 {
+			t.Errorf("%s must be stripped, got %v", name, got)
+		}
+	}
+	if dst.Get("Content-Type") != "application/json" {
+		t.Errorf("end-to-end headers must pass, got %q", dst.Get("Content-Type"))
+	}
+	if dst.Get("X-Custom") != "yes" {
+		t.Errorf("custom headers must pass, got %q", dst.Get("X-Custom"))
+	}
+}

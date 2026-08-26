@@ -817,14 +817,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			// Cost follows the served endpoint, resolved after the override.
 			attemptPricing := effectiveAttemptPricing(pricing, model, provider)
 			// Write headers + status
-			for k, vs := range resp.Header {
-				if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
-					continue
-				}
-				for _, v := range vs {
-					writer.Header().Add(k, v)
-				}
-			}
+			copyUpstreamHeaders(writer.Header(), resp.Header)
 			writer.WriteHeader(resp.StatusCode)
 			_, _ = writer.Write(bodyBytes)
 
@@ -907,7 +900,45 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 // full body read and would kill long-running SSE streams mid-generation.
 // Cancellation comes from the inbound request context and the retry budget.
 func openRouterUpstreamClient() *http.Client {
-	return &http.Client{}
+	return openRouterSharedClient
+}
+
+// openRouterSharedClient is the package-level transport for upstream calls;
+// http.Client is safe for concurrent use and pools connections internally.
+var openRouterSharedClient = &http.Client{}
+
+// hopByHopHeaders are connection-scoped and must not be forwarded from an
+// upstream response to the proxy client.
+var hopByHopHeaders = []string{
+	"Connection", "Proxy-Connection", "Keep-Alive",
+	"Proxy-Authenticate", "Proxy-Authorization",
+	"Te", "Trailer", "Transfer-Encoding", "Upgrade",
+}
+
+// copyUpstreamHeaders copies src into dst, skipping Content-Length and
+// hop-by-hop headers (including any tokens named in a Connection header).
+func copyUpstreamHeaders(dst, src http.Header) {
+	drop := append([]string{"Content-Length"}, hopByHopHeaders...)
+	for _, tok := range strings.Split(src.Get("Connection"), ",") {
+		if tok = strings.TrimSpace(tok); tok != "" {
+			drop = append(drop, tok)
+		}
+	}
+	for k, vs := range src {
+		skip := false
+		for _, d := range drop {
+			if strings.EqualFold(k, d) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		for _, v := range vs {
+			dst.Add(k, v)
+		}
+	}
 }
 
 // sleepOrDone sleeps for d or until ctx is cancelled. Returns false when the
@@ -993,14 +1024,7 @@ func truncate(s string, n int) string {
 // context lives until the stream ends (headers already arrived within budget).
 func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http.Response, model, sessionID string, pricing openrouter.Pricing, startTime, attemptStart time.Time, provider string, cancel context.CancelFunc) {
 	defer cancel()
-	for k, vs := range resp.Header {
-		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
-			continue
-		}
-		for _, v := range vs {
-			writer.Header().Add(k, v)
-		}
-	}
+	copyUpstreamHeaders(writer.Header(), resp.Header)
 	writer.WriteHeader(resp.StatusCode)
 	flusher, hasFlusher := writer.(http.Flusher)
 
