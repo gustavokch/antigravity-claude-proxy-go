@@ -1175,6 +1175,7 @@ func (server *Server) handleOpenRouterProvidersGet(writer http.ResponseWriter, r
 		Provider   string                           `json:"provider"`
 		Tag        string                           `json:"tag,omitempty"`
 		ContextLen int                              `json:"contextLength,omitempty"`
+		Uptime     float64                          `json:"uptime"`
 		Score      float64                          `json:"score"`
 		Endpoint   openrouter.ProviderEndpoint      `json:"endpoint"`
 		Stats      openrouter.ProviderStatsSnapshot `json:"stats"`
@@ -1185,6 +1186,7 @@ func (server *Server) handleOpenRouterProvidersGet(writer http.ResponseWriter, r
 			Provider:   rk.Provider,
 			Tag:        rk.Tag,
 			ContextLen: rk.ContextLen,
+			Uptime:     rk.Endpoint.BlendedUptime(),
 			Score:      rk.Score,
 			Endpoint:   rk.Endpoint,
 		}

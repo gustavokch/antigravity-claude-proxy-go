@@ -241,3 +241,17 @@ func TestResolveModelEndpoints_WaiterHonorsContext(t *testing.T) {
 	close(release)
 	<-leaderDone
 }
+
+func TestProviderEndpoint_BlendedUptime(t *testing.T) {
+	// Single source for the blend weights shared with the WebUI.
+	e := &ProviderEndpoint{UptimeLast5m: 1.0, UptimeLast30m: 1.0, UptimeLast1d: 1.0}
+	if got := e.BlendedUptime(); got != 1.0 {
+		t.Errorf("all-100%% uptime = %v, want 1", got)
+	}
+	if got := (&ProviderEndpoint{}).BlendedUptime(); got != 0 {
+		t.Errorf("no uptime data = %v, want 0", got)
+	}
+	if got := (&ProviderEndpoint{UptimeLast5m: 0.4, UptimeLast30m: 0.4, UptimeLast1d: 0.4}).BlendedUptime(); got != 0.4 {
+		t.Errorf("uniform 40%% = %v, want 0.4", got)
+	}
+}

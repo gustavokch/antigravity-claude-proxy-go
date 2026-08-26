@@ -96,6 +96,11 @@ func (e *routingTestEnv) newServer(t *testing.T) *Server {
 
 func (e *routingTestEnv) doRequest(t *testing.T, server *Server, ctx context.Context) *httptest.ResponseRecorder {
 	t.Helper()
+	return e.doRequestWithSession(t, server, ctx, "")
+}
+
+func (e *routingTestEnv) doRequestWithSession(t *testing.T, server *Server, ctx context.Context, session string) *httptest.ResponseRecorder {
+	t.Helper()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -103,13 +108,16 @@ func (e *routingTestEnv) doRequest(t *testing.T, server *Server, ctx context.Con
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")
+	if session != "" {
+		req.Header.Set("x-session-id", session)
+	}
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 	return rec
 }
 
 func TestOpenRouterRouting_FailoverOn400(t *testing.T) {
-	var mu = make(chan map[string]any, 8)
+	var bodies = make(chan map[string]any, 8)
 	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			http.NotFound(w, r)
@@ -118,7 +126,7 @@ func TestOpenRouterRouting_FailoverOn400(t *testing.T) {
 		var body map[string]any
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
-		mu <- body
+		bodies <- body
 		prov, _ := body["provider"].(map[string]any)
 		order, _ := prov["order"].([]any)
 		if len(order) > 0 && order[0] == "p1" {
@@ -145,8 +153,8 @@ func TestOpenRouterRouting_FailoverOn400(t *testing.T) {
 	}
 
 	// Two attempts: p1 (400) then p2 (200). Both must carry provider injection.
-	first := <-mu
-	second := <-mu
+	first := <-bodies
+	second := <-bodies
 	providerOf := func(b map[string]any) string {
 		prov, _ := b["provider"].(map[string]any)
 		order, _ := prov["order"].([]any)
@@ -193,7 +201,8 @@ func TestOpenRouterRouting_429BackoffSameProvider(t *testing.T) {
 	env.saveConfig(t, nil, nil)
 	server := env.newServer(t)
 
-	rec := env.doRequest(t, server, nil)
+	const sess = "sess-429"
+	rec := env.doRequestWithSession(t, server, nil, sess)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 after 429 backoff, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -201,9 +210,8 @@ func TestOpenRouterRouting_429BackoffSameProvider(t *testing.T) {
 		t.Errorf("expected 3 attempts (2x429 + success), got %d", got)
 	}
 	// Sticky provider must still be p1 (429 retries same provider).
-	if got, _ := openrouter.DefaultRouter.StickyProvider(
-		openrouter.ExtractSessionID(httptest.NewRequest(http.MethodPost, "/", nil), map[string]any{}), "anthropic/claude-3.7-sonnet"); got != "" && got != "p1" {
-		t.Errorf("unexpected sticky provider %q", got)
+	if got, ok := openrouter.DefaultRouter.StickyProvider(sess, "anthropic/claude-3.7-sonnet"); !ok || got != "p1" {
+		t.Errorf("sticky provider = (%q, %v), want (p1, true)", got, ok)
 	}
 }
 
@@ -278,12 +286,6 @@ func TestOpenRouterRouting_FailureThresholdMovesStickiness(t *testing.T) {
 	// Sticky on p1 (top ranked). Drive p1 over the failure threshold.
 	openrouter.DefaultRouter.RecordResult("anthropic/claude-3.7-sonnet", "p1", false, 0, 0)
 	openrouter.DefaultRouter.RecordResult("anthropic/claude-3.7-sonnet", "p1", false, 0, 0)
-
-	var lastProvider string
-	sessReq := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	sessionID := openrouter.ExtractSessionID(sessReq, map[string]any{})
-	_ = sessionID
-	_ = lastProvider
 
 	// Next select for any session must skip p1.
 	got := openrouter.DefaultRouter.Select("fresh-session", "anthropic/claude-3.7-sonnet", openrouter.ProviderOrder{Mode: "auto"})

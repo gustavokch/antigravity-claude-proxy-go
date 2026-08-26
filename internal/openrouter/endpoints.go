@@ -27,6 +27,15 @@ type ProviderEndpoint struct {
 	Pricing              *Pricing `json:"pricing,omitempty"`
 }
 
+// BlendedUptime returns the weighted uptime signal (5m 50%, 30m 30%, 1d 20%),
+// or 0 when no uptime data is reported.
+func (e *ProviderEndpoint) BlendedUptime() float64 {
+	if e == nil {
+		return 0
+	}
+	return clamp01(e.UptimeLast5m*0.5 + e.UptimeLast30m*0.3 + e.UptimeLast1d*0.2)
+}
+
 // Healthy reports whether the endpoint is considered healthy (uptime blend and explicit status).
 func (e *ProviderEndpoint) Healthy() bool {
 	if e == nil {
@@ -39,8 +48,7 @@ func (e *ProviderEndpoint) Healthy() bool {
 		// No uptime data — treat as unknown, not unhealthy
 		return true
 	}
-	blend := e.UptimeLast5m*0.5 + e.UptimeLast30m*0.3 + e.UptimeLast1d*0.2
-	return blend >= 0.4
+	return e.BlendedUptime() >= 0.4
 }
 
 // AvailabilityScore returns a 0..1 availability signal (0.5 when no data).
@@ -54,7 +62,7 @@ func (e *ProviderEndpoint) AvailabilityScore() float64 {
 	if e.UptimeLast5m == 0 && e.UptimeLast30m == 0 && e.UptimeLast1d == 0 {
 		return 0.5 // neutral
 	}
-	return clamp01(e.UptimeLast5m*0.5 + e.UptimeLast30m*0.3 + e.UptimeLast1d*0.2)
+	return e.BlendedUptime()
 }
 
 func clamp01(v float64) float64 {

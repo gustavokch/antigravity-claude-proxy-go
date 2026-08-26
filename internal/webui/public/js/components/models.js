@@ -365,14 +365,14 @@ window.Components.models = () => ({
                 item.providerOrder = panel.data.providers.map(p => p.provider);
             }
         }
-        this.saveOpenRouterConfig();
+        this.saveOpenRouterConfigDebounced();
     },
 
     // Pin a provider (pinned mode)
     pinProvider(item, provider) {
         item.providerMode = 'pinned';
         item.pinnedProvider = provider;
-        this.saveOpenRouterConfig();
+        this.saveOpenRouterConfigDebounced();
     },
 
     // Reorder within custom mode; dir = -1 (up) or +1 (down)
@@ -385,12 +385,28 @@ window.Components.models = () => ({
         next[index] = next[target];
         next[target] = tmp;
         item.providerOrder = next;
-        this.saveOpenRouterConfig();
+        this.saveOpenRouterConfigDebounced();
     },
 
-    formatUptime(endpoint) {
-        if (!endpoint) return '-';
-        const u5 = endpoint.uptime_last_5m, u30 = endpoint.uptime_last_30m, u1d = endpoint.uptime_last_1d;
+    // Trailing debounce: pin/reorder clicks fire in bursts; coalesce them
+    // into one config POST.
+    saveOpenRouterConfigDebounced() {
+        if (this._routingSaveTimer) clearTimeout(this._routingSaveTimer);
+        this._routingSaveTimer = setTimeout(() => {
+            this._routingSaveTimer = null;
+            this.saveOpenRouterConfig();
+        }, 500);
+    },
+
+    formatUptime(entry) {
+        if (!entry) return '-';
+        // Prefer the server-computed blend (single source of weights).
+        if (typeof entry.uptime === 'number' && entry.uptime > 0) {
+            return (entry.uptime * 100).toFixed(1) + '%';
+        }
+        const ep = entry.endpoint;
+        if (!ep) return '-';
+        const u5 = ep.uptime_last_5m, u30 = ep.uptime_last_30m, u1d = ep.uptime_last_1d;
         if (!u5 && !u30 && !u1d) return '-';
         const blend = (u5 || 0) * 0.5 + (u30 || 0) * 0.3 + (u1d || 0) * 0.2;
         return (blend * 100).toFixed(1) + '%';
