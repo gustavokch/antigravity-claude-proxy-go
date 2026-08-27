@@ -143,14 +143,14 @@ func (r *Router) ResolveModel(requested string) (string, bool) {
 		return canonical, true
 	}
 
-	// 3. Prefix matching against known canonical IDs or aliases
+	// 3. Prefix matching against known canonical IDs or aliases (e.g. model with suffix)
 	for id := range r.allowlist {
-		if strings.HasPrefix(req, id) || strings.HasPrefix(id, req) {
+		if strings.HasPrefix(req, id) {
 			return id, true
 		}
 	}
 	for alias, id := range r.aliases {
-		if strings.HasPrefix(req, alias) || strings.HasPrefix(alias, req) {
+		if strings.HasPrefix(req, alias) {
 			return id, true
 		}
 	}

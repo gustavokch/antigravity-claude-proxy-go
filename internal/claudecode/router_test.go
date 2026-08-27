@@ -17,6 +17,9 @@ func TestRouter_ResolveModel(t *testing.T) {
 		{"claude-3-7-sonnet", "claude-3-7-sonnet-20250219", true},
 		{"CLAUDE-FABLE-5", "claude-fable-5", true},
 		{"claude-3-5-haiku", "claude-3-5-haiku-20241022", true},
+		{"claude", "", false},
+		{"c", "", false},
+		{"claude-", "", false},
 		{"non-existent-model", "", false},
 		{"", "", false},
 	}
