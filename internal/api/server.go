@@ -715,6 +715,40 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		targetURL.Path = strings.TrimSuffix(targetURL.Path, "/") + "/v1/messages"
 	}
 
+	if server.isCCREnabled() {
+		var reqMap map[string]any
+		if err := json.Unmarshal(reqBody, &reqMap); err == nil {
+			sender := func(ctx context.Context, bodyBytes []byte) (*http.Response, error) {
+				httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL.String(), bytes.NewReader(bodyBytes))
+				if err != nil {
+					return nil, err
+				}
+				httpReq.Header.Set("Content-Type", "application/json")
+				if endpoint.APIKey != "" {
+					httpReq.Header.Set("x-api-key", endpoint.APIKey)
+				}
+				if v := request.Header.Get("anthropic-version"); v != "" {
+					httpReq.Header.Set("anthropic-version", v)
+				} else {
+					httpReq.Header.Set("anthropic-version", "2023-06-01")
+				}
+				if b := request.Header.Get("anthropic-beta"); b != "" {
+					httpReq.Header.Set("anthropic-beta", b)
+				}
+				return http.DefaultClient.Do(httpReq)
+			}
+
+			opts := server.defaultCCROptions(sender)
+			isStreaming, _ := reqMap["stream"].(bool)
+			if isStreaming {
+				_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
+			} else {
+				_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
+			}
+			return
+		}
+	}
+
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
 		Director: func(req *http.Request) {
@@ -743,7 +777,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 // forwardToKimi transparently forwards an /v1/messages request to the Kimi
 // Code gateway. The Kimi endpoint is Anthropic-compatible, so no translation
 // is needed: we rewrite Authorization, preserve the Anthropic version/beta
-// headers, and stream the response back.
+// headers, and stream the response back. When CCR is enabled, it hydrates headroom_retrieve calls.
 func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Request, kimiCfg config.KimiConfig, body []byte, model string) {
 	if kimiCfg.APIKey == "" {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Kimi gateway enabled but no API key configured")
@@ -752,7 +786,64 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 	if server.logger != nil {
 		server.logger.Info("kimi forward", "model", model)
 	}
-	kimi.ForwardMessages(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body)
+
+	if !server.isCCREnabled() {
+		kimi.ForwardMessages(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body)
+		return
+	}
+
+	var reqMap map[string]any
+	if err := json.Unmarshal(body, &reqMap); err != nil {
+		kimi.ForwardMessages(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body)
+		return
+	}
+
+	targetURL := kimi.NormalizeBaseURL(kimiCfg.BaseURL) + "/v1/messages"
+	sender := func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBytes))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+kimiCfg.APIKey)
+		if v := request.Header.Get("anthropic-version"); v != "" {
+			httpReq.Header.Set("anthropic-version", v)
+		} else {
+			httpReq.Header.Set("anthropic-version", "2023-06-01")
+		}
+		if b := request.Header.Get("anthropic-beta"); b != "" {
+			httpReq.Header.Set("anthropic-beta", b)
+		}
+		return http.DefaultClient.Do(httpReq)
+	}
+
+	opts := server.defaultCCROptions(sender)
+	isStreaming, _ := reqMap["stream"].(bool)
+	if isStreaming {
+		_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
+	} else {
+		_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
+	}
+}
+
+func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {
+	return CCRProxyOptions{
+		IsCCREnabled: func() bool {
+			return server.isCCREnabled()
+		},
+		GetChunk: func(chunkID string) (string, bool) {
+			return server.getCCRChunkPayload(chunkID)
+		},
+		RecordHeadroom: func(count int) {
+			if server.tracker != nil {
+				server.tracker.RecordHeadroom(stats.HeadroomSample{
+					CCRRetrievals: count,
+				})
+			}
+		},
+		Sender:        sender,
+		MaxHydrations: maxCCRHydrations,
+	}
 }
 
 // matchKimiModel returns the Kimi model ID if `model` matches an enabled

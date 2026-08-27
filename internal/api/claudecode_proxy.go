@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -63,6 +66,17 @@ func ccExtractSessionID(r *http.Request) string {
 	return ""
 }
 
+type poolReleasingBody struct {
+	io.ReadCloser
+	releaseOnce sync.Once
+	releaseFn   func()
+}
+
+func (b *poolReleasingBody) Close() error {
+	b.releaseOnce.Do(b.releaseFn)
+	return b.ReadCloser.Close()
+}
+
 // forwardToClaudeCode sends a /v1/messages request through the Claude Code
 // account pool with sticky-session affinity and 429-triggered failover.
 func (server *Server) forwardToClaudeCode(
@@ -73,8 +87,93 @@ func (server *Server) forwardToClaudeCode(
 	model string,
 ) {
 	pool, client := getOrCreateCCPool(ccCfg)
-
 	sessionKey := ccExtractSessionID(request)
+
+	if server.isCCREnabled() {
+		var reqMap map[string]any
+		if err := json.Unmarshal(reqBody, &reqMap); err == nil {
+			sender := func(ctx context.Context, bodyBytes []byte) (*http.Response, error) {
+				const maxAttempts = 3
+				excluded := make(map[string]bool)
+
+				for attempt := 0; attempt < maxAttempts; attempt++ {
+					acc, err := pool.SelectAccount(sessionKey, excluded)
+					if err != nil {
+						return nil, fmt.Errorf("no Claude Code accounts available: %w", err)
+					}
+
+					pool.Acquire(acc.ID)
+					startTime := time.Now()
+
+					resp, err := client.SendMessage(ctx, acc.Token, bodyBytes, request.Header)
+					if err != nil {
+						pool.Release(acc.ID)
+						pool.RecordFailure(acc.ID, false, 10*time.Second)
+						if server.logger != nil {
+							server.logger.Warn("claudecode request failed", "account", acc.ID, "err", err)
+						}
+						excluded[acc.ID] = true
+						continue
+					}
+
+					latency := time.Since(startTime)
+					rl := claudecode.ExtractRateLimits(resp.Header)
+
+					if resp.StatusCode == http.StatusTooManyRequests {
+						_, _ = io.Copy(io.Discard, resp.Body)
+						resp.Body.Close()
+						pool.Release(acc.ID)
+						pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+						if server.logger != nil {
+							server.logger.Warn("claudecode 429, failing over", "account", acc.ID)
+						}
+						excluded[acc.ID] = true
+						continue
+					}
+
+					if resp.StatusCode < 400 {
+						pool.RecordSuccess(acc.ID, 0, 0, rl)
+					} else if resp.StatusCode >= 500 {
+						pool.RecordFailure(acc.ID, true, 30*time.Second)
+					} else {
+						pool.RecordFailure(acc.ID, false, 0)
+					}
+
+					m := claudecode.RequestMetrics{
+						Model:     model,
+						SessionID: sessionKey,
+						Latency:   latency,
+					}
+					_ = ccParseRequestTokens(bodyBytes, &m)
+					m.ComputeFinalMetrics(claudecode.DefaultSessionTracker)
+					if server.logger != nil {
+						claudecode.LogObservability(server.logger, m)
+					}
+
+					accID := acc.ID
+					wrappedBody := &poolReleasingBody{
+						ReadCloser: resp.Body,
+						releaseFn: func() {
+							pool.Release(accID)
+						},
+					}
+					resp.Body = wrappedBody
+					return resp, nil
+				}
+
+				return nil, errors.New("all Claude Code accounts rate-limited or unavailable")
+			}
+
+			opts := server.defaultCCROptions(sender)
+			isStreaming, _ := reqMap["stream"].(bool)
+			if isStreaming {
+				_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
+			} else {
+				_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
+			}
+			return
+		}
+	}
 
 	const maxAttempts = 3
 	excluded := make(map[string]bool)
