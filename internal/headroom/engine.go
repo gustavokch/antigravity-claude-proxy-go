@@ -12,17 +12,26 @@ type Engine struct {
 	mu       sync.RWMutex
 	config   Config
 	pipeline *Pipeline
+	store    *CCRStore
 }
 
 func NewEngine(cfg Config) *Engine {
+	store := NewCCRStoreFromMB(cfg.CCR.MaxStoreMB)
 	return &Engine{
 		config: cfg,
+		store:  store,
 		pipeline: NewPipeline(
+			NewCCRStage(store),
 			&SmartCrusherStage{},
 			&CodeCompressorStage{},
 			&OutputShaperStage{},
 		),
 	}
+}
+
+// CCRStore returns the chunk store used by the Engine.
+func (e *Engine) CCRStore() *CCRStore {
+	return e.store
 }
 
 func (e *Engine) UpdateConfig(cfg Config) {
