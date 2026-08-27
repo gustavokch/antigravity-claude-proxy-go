@@ -1140,10 +1140,13 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				// Terminal events flush
 				for _, ev := range pendingTerminalEvents {
 					if ev["type"] == "message_delta" {
-						if usage, ok := ev["usage"].(map[string]any); ok {
-							usage["output_tokens"] = totalOutput
-							usage["cache_read_input_tokens"] = totalCacheRead
+						usage, ok := ev["usage"].(map[string]any)
+						if !ok || usage == nil {
+							usage = make(map[string]any)
+							ev["usage"] = usage
 						}
+						usage["output_tokens"] = totalOutput
+						usage["cache_read_input_tokens"] = totalCacheRead
 					}
 					_ = writeSSEEvent(bw, stringFrom(ev["type"]), ev, nil, hasFlusher, flusher)
 				}
@@ -1926,10 +1929,13 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 		if !needsHydration {
 			for _, ev := range pendingTerminalEvents {
 				if ev["type"] == "message_delta" {
-					if usage, ok := ev["usage"].(map[string]any); ok {
-						usage["output_tokens"] = totalOutput
-						usage["cache_read_input_tokens"] = totalCacheRead
+					usage, ok := ev["usage"].(map[string]any)
+					if !ok || usage == nil {
+						usage = make(map[string]any)
+						ev["usage"] = usage
 					}
+					usage["output_tokens"] = totalOutput
+					usage["cache_read_input_tokens"] = totalCacheRead
 				}
 			}
 			_ = writeEvents(pendingTerminalEvents)
