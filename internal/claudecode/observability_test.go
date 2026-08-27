@@ -19,6 +19,23 @@ func TestSessionTracker(t *testing.T) {
 	}
 }
 
+func TestSessionTracker_CapacityBounds(t *testing.T) {
+	tracker := NewSessionTracker()
+
+	for i := 0; i < maxSessionEntries+50; i++ {
+		sessionID := "session-" + string(rune('a'+(i%26))) + "-" + time.Now().Format(time.RFC3339Nano)
+		tracker.Record(sessionID, 10, 10, 0, 0.0001)
+	}
+
+	tracker.mu.RLock()
+	sessionsLen := len(tracker.sessions)
+	tracker.mu.RUnlock()
+
+	if sessionsLen > maxSessionEntries {
+		t.Errorf("expected sessions map size <= %d, got %d", maxSessionEntries, sessionsLen)
+	}
+}
+
 func TestRequestMetrics_ComputeFinalMetrics(t *testing.T) {
 	tracker := NewSessionTracker()
 	m := RequestMetrics{

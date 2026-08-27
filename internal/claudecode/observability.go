@@ -3,9 +3,13 @@ package claudecode
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 )
+
+// maxSessionEntries bounds the sessions map to prevent unbounded memory growth.
+const maxSessionEntries = 10000
 
 // SessionStats aggregates tokens and cost for a given session.
 type SessionStats struct {
@@ -44,6 +48,9 @@ func (st *SessionTracker) Record(sessionID string, inTokens, outTokens, cacheRea
 
 	stats, ok := st.sessions[sessionID]
 	if !ok {
+		if len(st.sessions) >= maxSessionEntries {
+			st.evictOldestSessions(maxSessionEntries / 10)
+		}
 		stats = &SessionStats{}
 		st.sessions[sessionID] = stats
 	}
@@ -56,6 +63,30 @@ func (st *SessionTracker) Record(sessionID string, inTokens, outTokens, cacheRea
 	stats.LastActive = time.Now()
 
 	return *stats
+}
+
+func (st *SessionTracker) evictOldestSessions(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	type entry struct {
+		id         string
+		lastActive time.Time
+	}
+	entries := make([]entry, 0, len(st.sessions))
+	for id, s := range st.sessions {
+		entries = append(entries, entry{id: id, lastActive: s.LastActive})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].lastActive.Before(entries[j].lastActive)
+	})
+	limit := count
+	if limit > len(entries) {
+		limit = len(entries)
+	}
+	for i := 0; i < limit; i++ {
+		delete(st.sessions, entries[i].id)
+	}
 }
 
 // RequestMetrics encapsulates observability data for a completed Claude Code gateway request.
