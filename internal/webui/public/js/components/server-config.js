@@ -453,6 +453,82 @@ window.Components.serverConfig = () => ({
     },
 
     // ==========================================
+    // Headroom Engine Configuration
+    // ==========================================
+
+    async saveHeadroom(patch) {
+        const store = Alpine.store('global');
+        if (!this.serverConfig.headroom) {
+            this.serverConfig.headroom = {
+                enabled: false,
+                smartCrusher: false,
+                codeCompressor: false,
+                liveTurns: 2,
+                ccr: { enabled: false, maxStoreMB: 64, minChunkBytes: 2048 },
+                outputShaper: { enabled: false, verbositySteering: true, effortRouting: true, mechanicalThinkingBudget: 1024 }
+            };
+        }
+        const previousHeadroom = JSON.parse(JSON.stringify(this.serverConfig.headroom));
+
+        // Deep merge
+        if (patch.ccr) {
+            this.serverConfig.headroom.ccr = { ...(this.serverConfig.headroom.ccr || {}), ...patch.ccr };
+            delete patch.ccr;
+        }
+        if (patch.outputShaper) {
+            this.serverConfig.headroom.outputShaper = { ...(this.serverConfig.headroom.outputShaper || {}), ...patch.outputShaper };
+            delete patch.outputShaper;
+        }
+        Object.assign(this.serverConfig.headroom, patch);
+
+        try {
+            const { response, newPassword } = await window.utils.request('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ headroom: this.serverConfig.headroom })
+            }, store.webuiPassword);
+
+            if (newPassword) store.webuiPassword = newPassword;
+
+            const data = await response.json();
+            if (data.status === 'ok') {
+                store.showToast(store.t('configSaved') || 'Configuration saved', 'success');
+                await this.fetchServerConfig();
+            } else {
+                throw new Error(data.error || 'Failed to update Headroom settings');
+            }
+        } catch (e) {
+            this.serverConfig.headroom = previousHeadroom;
+            store.showToast('Failed to save Headroom settings: ' + e.message, 'error');
+        }
+    },
+
+    toggleHeadroomMaster(enabled) {
+        this.saveHeadroom({ enabled });
+    },
+
+    toggleHeadroomSmartCrusher(enabled) {
+        this.saveHeadroom({ smartCrusher: enabled });
+    },
+
+    toggleHeadroomCodeCompressor(enabled) {
+        this.saveHeadroom({ codeCompressor: enabled });
+    },
+
+    toggleHeadroomLiveTurns(value) {
+        const parsed = parseInt(value) || 2;
+        this.saveHeadroom({ liveTurns: parsed });
+    },
+
+    toggleHeadroomOutputShaper(patch) {
+        this.saveHeadroom({ outputShaper: patch });
+    },
+
+    toggleHeadroomCCR(patch) {
+        this.saveHeadroom({ ccr: patch });
+    },
+
+    // ==========================================
     // Server Configuration Presets
     // ==========================================
 

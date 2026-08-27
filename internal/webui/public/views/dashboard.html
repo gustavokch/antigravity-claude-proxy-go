@@ -583,5 +583,52 @@
             </table>
         </div>
     </div>
+
+    <!-- Headroom Native Compression Analytics Card -->
+    <div class="view-card mt-6">
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
+            <div class="flex items-center gap-2.5">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-neon-purple" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                </svg>
+                <h3 class="text-xs font-mono text-gray-400 uppercase tracking-widest whitespace-nowrap"
+                    x-text="$store.global.t('headroomStatsTitle')">Headroom Compression</h3>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <!-- Bytes Saved -->
+            <div class="bg-space-850/60 p-3 rounded-lg border border-space-border/30">
+                <div class="text-[10px] font-mono text-gray-500 uppercase truncate" x-text="$store.global.t('headroomBytesSaved')">Bytes Saved</div>
+                <div class="text-lg lg:text-xl font-bold font-mono text-neon-cyan mt-1"
+                    x-text="($store.data.headroomStats?.bytesBefore && $store.data.headroomStats?.bytesAfter) ? (($store.data.headroomStats.bytesBefore - $store.data.headroomStats.bytesAfter) > 1024*1024 ? ((($store.data.headroomStats.bytesBefore - $store.data.headroomStats.bytesAfter)/(1024*1024)).toFixed(2) + ' MB') : (($store.data.headroomStats.bytesBefore - $store.data.headroomStats.bytesAfter) > 1024 ? ((($store.data.headroomStats.bytesBefore - $store.data.headroomStats.bytesAfter)/1024).toFixed(1) + ' KB') : (($store.data.headroomStats.bytesBefore - $store.data.headroomStats.bytesAfter) + ' B'))) : '0 B'">
+                </div>
+            </div>
+
+            <!-- Compression Ratio -->
+            <div class="bg-space-850/60 p-3 rounded-lg border border-space-border/30">
+                <div class="text-[10px] font-mono text-gray-500 uppercase truncate" x-text="$store.global.t('headroomCompressionRatio')">Compression Ratio</div>
+                <div class="text-lg lg:text-xl font-bold font-mono text-neon-green mt-1"
+                    x-text="($store.data.headroomStats?.bytesBefore > 0) ? (((1 - ($store.data.headroomStats.bytesAfter / $store.data.headroomStats.bytesBefore)) * 100).toFixed(1) + '%') : '0.0%'">
+                </div>
+            </div>
+
+            <!-- Requests Compressed -->
+            <div class="bg-space-850/60 p-3 rounded-lg border border-space-border/30">
+                <div class="text-[10px] font-mono text-gray-500 uppercase truncate" x-text="$store.global.t('headroomRequestsCompressed')">Requests Compressed</div>
+                <div class="text-lg lg:text-xl font-bold font-mono text-white mt-1"
+                    x-text="$store.data.headroomStats?.requestsCompressed || 0">
+                </div>
+            </div>
+
+            <!-- Thinking Tokens Clamped -->
+            <div class="bg-space-850/60 p-3 rounded-lg border border-space-border/30">
+                <div class="text-[10px] font-mono text-gray-500 uppercase truncate" x-text="$store.global.t('headroomThinkingClamped')">Thinking Tokens Clamped</div>
+                <div class="text-lg lg:text-xl font-bold font-mono text-neon-purple mt-1"
+                    x-text="$store.data.headroomStats?.thinkingTokensClamped || 0">
+                </div>
+            </div>
+        </div>
+    </div>
     </div> <!-- End of x-show="!$store.data.loading" -->
 </div>

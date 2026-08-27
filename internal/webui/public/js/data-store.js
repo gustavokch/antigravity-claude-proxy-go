@@ -14,6 +14,7 @@ document.addEventListener('alpine:init', () => {
         customEndpoints: {}, // Transparent forwarding custom endpoints
         openrouter: {}, // OpenRouter Gateway and allowlist configuration
         kimi: {}, // Kimi Code gateway configuration
+        headroomStats: {}, // Headroom compression & shaping metrics
         quotaRows: [], // Filtered view
         usageHistory: {}, // Usage statistics history (from /account-limits?includeHistory=true)
         globalQuotaThreshold: 0, // Global minimum quota threshold (fraction 0-0.99)
@@ -86,6 +87,7 @@ document.addEventListener('alpine:init', () => {
                         this.customEndpoints = data.customEndpoints || {};
                         this.openrouter = data.openrouter || {};
                         this.kimi = data.kimi || {};
+                        this.headroomStats = data.headroomStats || {};
                         this.usageHistory = data.usageHistory || {};
 
                         // Don't show loading on initial load if we have cache
@@ -108,6 +110,7 @@ document.addEventListener('alpine:init', () => {
                     customEndpoints: this.customEndpoints,
                     openrouter: this.openrouter,
                     kimi: this.kimi,
+                    headroomStats: this.headroomStats,
                     usageHistory: this.usageHistory,
                     timestamp: Date.now()
                 };
@@ -148,6 +151,16 @@ document.addEventListener('alpine:init', () => {
                 // Store usage history if included (for dashboard)
                 if (data.history) {
                     this.usageHistory = data.history;
+                }
+
+                // Fetch Headroom telemetry
+                try {
+                    const { response: hrRes } = await window.utils.request('/api/headroom/stats', {}, password);
+                    if (hrRes.ok) {
+                        this.headroomStats = await hrRes.json();
+                    }
+                } catch (e) {
+                    // non-fatal
                 }
 
                 this.saveToCache(); // Save fresh data
