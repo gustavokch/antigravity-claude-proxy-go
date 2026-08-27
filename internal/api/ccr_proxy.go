@@ -173,9 +173,11 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 
 				bType, _ := rawBlock["type"].(string)
 				bName, _ := rawBlock["name"].(string)
+				if bType == "tool_use" {
+					currentJSONBufs[idx] = &bytes.Buffer{}
+				}
 				if bType == "tool_use" && bName == "headroom_retrieve" {
 					suppressed[idx] = true
-					currentJSONBufs[idx] = &bytes.Buffer{}
 				} else {
 					downstreamIdx := baseBlockIndex + nextLocalDownstreamIdx
 					nextLocalDownstreamIdx++
@@ -188,17 +190,24 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 
 			case "content_block_delta":
 				idx := int(event["index"].(float64))
-				if suppressed[idx] {
-					if delta, ok := event["delta"].(map[string]any); ok {
-						if dType, _ := delta["type"].(string); dType == "input_json_delta" {
-							if pj, ok := delta["partial_json"].(string); ok {
-								if buf, exists := currentJSONBufs[idx]; exists {
-									buf.WriteString(pj)
-								}
+				if delta, ok := event["delta"].(map[string]any); ok {
+					dType, _ := delta["type"].(string)
+					if dType == "text_delta" {
+						if idx < len(currentBlocks) && currentBlocks[idx] != nil {
+							prevText, _ := currentBlocks[idx]["text"].(string)
+							newText, _ := delta["text"].(string)
+							currentBlocks[idx]["text"] = prevText + newText
+						}
+					} else if dType == "input_json_delta" {
+						if pj, ok := delta["partial_json"].(string); ok {
+							if buf, exists := currentJSONBufs[idx]; exists {
+								buf.WriteString(pj)
 							}
 						}
 					}
-				} else {
+				}
+
+				if !suppressed[idx] {
 					if dIdx, exists := upstreamToDownstreamIdx[idx]; exists {
 						event["index"] = dIdx
 					}

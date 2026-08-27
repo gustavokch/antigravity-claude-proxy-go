@@ -580,3 +580,273 @@ func TestCCRProxy_UpstreamError(t *testing.T) {
 		t.Fatalf("Expected error body forwarded, got: %s", rec.Body.String())
 	}
 }
+
+func TestCCRProxyStream_MonotonicIndicesWithLeadingText(t *testing.T) {
+	var callCount int32
+	upstreamHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		curr := atomic.AddInt32(&callCount, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		if curr == 1 {
+			// Turn 1: leading text block (index 0) + headroom_retrieve (index 1)
+			fmt.Fprintf(w, "event: message_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"test-model\",\"usage\":{\"output_tokens\":10}}}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Leading reasoning... \"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_chunk1\",\"name\":\"headroom_retrieve\",\"input\":{}}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"chunk_id\\\":\\\"chunk_100\\\"}\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n")
+
+			fmt.Fprintf(w, "event: message_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":15}}\n\n")
+			fmt.Fprintf(w, "event: message_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+		} else {
+			// Turn 2: final text block (upstream index 0)
+			body, _ := io.ReadAll(r.Body)
+			var reqMap map[string]any
+			_ = json.Unmarshal(body, &reqMap)
+			msgs, _ := reqMap["messages"].([]any)
+			if len(msgs) != 3 {
+				t.Errorf("Expected 3 messages in turn 2, got %d", len(msgs))
+			}
+			// Verify assistant message contains leading text block
+			asstMsg, _ := msgs[1].(map[string]any)
+			asstContent, _ := asstMsg["content"].([]any)
+			if len(asstContent) != 2 {
+				t.Errorf("Expected 2 content blocks in assistant turn, got %d", len(asstContent))
+			} else {
+				block0, _ := asstContent[0].(map[string]any)
+				if text, _ := block0["text"].(string); text != "Leading reasoning... " {
+					t.Errorf("Expected assistant block 0 text 'Leading reasoning... ', got %q", text)
+				}
+			}
+
+			fmt.Fprintf(w, "event: message_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"role\":\"assistant\",\"model\":\"test-model\",\"usage\":{\"output_tokens\":10}}}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer based on chunk 100.\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+
+			fmt.Fprintf(w, "event: message_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+			fmt.Fprintf(w, "event: message_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+		}
+	})
+
+	server := httptest.NewServer(upstreamHandler)
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{
+		"model": "test-model",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Question"},
+		},
+	}
+
+	opts := CCRProxyOptions{
+		IsCCREnabled: func() bool { return true },
+		GetChunk: func(chunkID string) (string, bool) {
+			return "Hydrated chunk 100 data", false
+		},
+		Sender: func(ctx context.Context, body []byte) (*http.Response, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			return http.DefaultClient.Do(req)
+		},
+	}
+
+	err := ProxyAnthropicStreamWithCCR(context.Background(), rec, reqMap, opts)
+	if err != nil {
+		t.Fatalf("ProxyAnthropicStreamWithCCR failed: %v", err)
+	}
+
+	clientResp := rec.Body.String()
+	// Check that block 0 has index 0
+	if !strings.Contains(clientResp, "{\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}") {
+		t.Fatalf("Missing content_block_start index 0 in client response: %s", clientResp)
+	}
+	// Check that block 1 has index 1
+	if !strings.Contains(clientResp, "{\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":1,\"type\":\"content_block_start\"}") {
+		t.Fatalf("Missing content_block_start index 1 in client response: %s", clientResp)
+	}
+	if !strings.Contains(clientResp, "Leading reasoning... ") {
+		t.Fatalf("Missing leading reasoning text in client response: %s", clientResp)
+	}
+	if !strings.Contains(clientResp, "Answer based on chunk 100.") {
+		t.Fatalf("Missing second text in client response: %s", clientResp)
+	}
+	if strings.Contains(clientResp, "headroom_retrieve") {
+		t.Fatalf("Client received leaked headroom_retrieve: %s", clientResp)
+	}
+}
+
+func TestCCRProxyStream_PreservesNonEndTurnStopReason(t *testing.T) {
+	var callCount int32
+	upstreamHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		curr := atomic.AddInt32(&callCount, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		if curr == 1 {
+			// Turn 1: tool_use headroom_retrieve
+			fmt.Fprintf(w, "event: message_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"test-model\",\"usage\":{\"output_tokens\":10}}}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_chunk1\",\"name\":\"headroom_retrieve\",\"input\":{}}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"chunk_id\\\":\\\"chunk_200\\\"}\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+
+			fmt.Fprintf(w, "event: message_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":10}}\n\n")
+			fmt.Fprintf(w, "event: message_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+		} else {
+			// Turn 2: regular tool_use (e.g. bash or read) with stop_reason: "tool_use"
+			fmt.Fprintf(w, "event: message_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"role\":\"assistant\",\"model\":\"test-model\",\"usage\":{\"output_tokens\":10}}}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_client_tool\",\"name\":\"bash\",\"input\":{}}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\\\"ls\\\"}\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+
+			fmt.Fprintf(w, "event: message_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":20}}\n\n")
+			fmt.Fprintf(w, "event: message_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+		}
+	})
+
+	server := httptest.NewServer(upstreamHandler)
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{
+		"model": "test-model",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Question"},
+		},
+	}
+
+	opts := CCRProxyOptions{
+		IsCCREnabled: func() bool { return true },
+		GetChunk: func(chunkID string) (string, bool) {
+			return "Chunk 200 data", false
+		},
+		Sender: func(ctx context.Context, body []byte) (*http.Response, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			return http.DefaultClient.Do(req)
+		},
+	}
+
+	err := ProxyAnthropicStreamWithCCR(context.Background(), rec, reqMap, opts)
+	if err != nil {
+		t.Fatalf("ProxyAnthropicStreamWithCCR failed: %v", err)
+	}
+
+	clientResp := rec.Body.String()
+	if !strings.Contains(clientResp, "\"stop_reason\":\"tool_use\"") {
+		t.Fatalf("Final message_delta did not preserve stop_reason: tool_use: %s", clientResp)
+	}
+	if !strings.Contains(clientResp, "bash") {
+		t.Fatalf("Client response missing bash tool call: %s", clientResp)
+	}
+}
+
+func TestCCRProxyStream_MidStreamUpstreamError(t *testing.T) {
+	var callCount int32
+	upstreamHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		curr := atomic.AddInt32(&callCount, 1)
+		if curr == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+
+			fmt.Fprintf(w, "event: message_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"test-model\",\"usage\":{\"output_tokens\":10}}}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_chunk1\",\"name\":\"headroom_retrieve\",\"input\":{}}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"chunk_id\\\":\\\"chunk_300\\\"}\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+
+			fmt.Fprintf(w, "event: message_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":10}}\n\n")
+			fmt.Fprintf(w, "event: message_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"internal server error"}}`))
+		}
+	})
+
+	server := httptest.NewServer(upstreamHandler)
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{
+		"model": "test-model",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Question"},
+		},
+	}
+
+	opts := CCRProxyOptions{
+		IsCCREnabled: func() bool { return true },
+		GetChunk: func(chunkID string) (string, bool) {
+			return "Chunk 300 data", false
+		},
+		Sender: func(ctx context.Context, body []byte) (*http.Response, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			return http.DefaultClient.Do(req)
+		},
+	}
+
+	err := ProxyAnthropicStreamWithCCR(context.Background(), rec, reqMap, opts)
+	if err != nil {
+		t.Fatalf("ProxyAnthropicStreamWithCCR returned error on mid-stream failure: %v", err)
+	}
+
+	clientResp := rec.Body.String()
+	if !strings.Contains(clientResp, "event: error") {
+		t.Fatalf("Expected client to receive SSE error event on mid-stream failure, got: %s", clientResp)
+	}
+	if !strings.Contains(clientResp, "internal server error") {
+		t.Fatalf("Expected error message in SSE event, got: %s", clientResp)
+	}
+}
