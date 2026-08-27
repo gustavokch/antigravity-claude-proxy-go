@@ -310,7 +310,48 @@ func (m *ClaudeCodeOAuthManager) StartAuthSession(mode string) (*ClaudeCodeAuthS
 func (m *ClaudeCodeOAuthManager) registerSession(session *ClaudeCodeAuthSession) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Prune stale sessions older than 15 minutes to prevent unbounded memory growth
+	now := time.Now()
+	for id, s := range m.sessions {
+		if s == nil {
+			delete(m.sessions, id)
+			continue
+		}
+		s.mu.Lock()
+		st := s.Status
+		ca := s.CreatedAt
+		s.mu.Unlock()
+		if now.Sub(ca) > 15*time.Minute || (st != "pending" && now.Sub(ca) > 10*time.Minute) {
+			m.closeSessionServer(s)
+			delete(m.sessions, id)
+		}
+	}
 	m.sessions[session.ID] = session
+}
+
+// PruneExpiredSessions removes sessions older than maxAge.
+func (m *ClaudeCodeOAuthManager) PruneExpiredSessions(maxAge time.Duration) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	pruned := 0
+	for id, s := range m.sessions {
+		if s == nil {
+			delete(m.sessions, id)
+			pruned++
+			continue
+		}
+		s.mu.Lock()
+		ca := s.CreatedAt
+		s.mu.Unlock()
+		if now.Sub(ca) > maxAge {
+			m.closeSessionServer(s)
+			delete(m.sessions, id)
+			pruned++
+		}
+	}
+	return pruned
 }
 
 // GetSession returns an active auth session by ID.

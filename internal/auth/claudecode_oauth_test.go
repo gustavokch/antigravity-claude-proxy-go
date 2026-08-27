@@ -343,3 +343,38 @@ func TestClaudeCodeAuthSession_Snapshot(t *testing.T) {
 		t.Fatalf("new snapshot should reflect latest state: %+v", snap2)
 	}
 }
+
+func TestPruneExpiredSessions(t *testing.T) {
+	mgr := NewClaudeCodeOAuthManager()
+
+	oldSession := &ClaudeCodeAuthSession{
+		ID:        "old-sess",
+		Status:    "expired",
+		CreatedAt: time.Now().Add(-30 * time.Minute),
+		doneChan:  make(chan struct{}),
+	}
+	newSession := &ClaudeCodeAuthSession{
+		ID:        "new-sess",
+		Status:    "pending",
+		CreatedAt: time.Now(),
+		doneChan:  make(chan struct{}),
+	}
+
+	mgr.mu.Lock()
+	mgr.sessions[oldSession.ID] = oldSession
+	mgr.sessions[newSession.ID] = newSession
+	mgr.mu.Unlock()
+
+	pruned := mgr.PruneExpiredSessions(15 * time.Minute)
+	if pruned != 1 {
+		t.Errorf("expected 1 session pruned, got %d", pruned)
+	}
+
+	if _, exists := mgr.GetSession("old-sess"); exists {
+		t.Error("expected old-sess to be pruned")
+	}
+
+	if _, exists := mgr.GetSession("new-sess"); !exists {
+		t.Error("expected new-sess to remain")
+	}
+}
