@@ -448,3 +448,37 @@ func TestGetPublicConfig_KimiRedactsAPIKey(t *testing.T) {
 		t.Fatalf("expected secret APIKey to be preserved, got %q", saved2.Kimi.APIKey)
 	}
 }
+
+func TestDefaultConfig_HeadroomDisabledByDefault(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Headroom.Enabled {
+		t.Error("headroom must default to disabled")
+	}
+	if cfg.Headroom.LiveTurns != 2 {
+		t.Errorf("expected LiveTurns default 2, got %d", cfg.Headroom.LiveTurns)
+	}
+	if cfg.Headroom.CCR.MaxStoreMB != 64 || cfg.Headroom.CCR.MinChunkBytes != 2048 {
+		t.Errorf("unexpected CCR defaults: %+v", cfg.Headroom.CCR)
+	}
+	if cfg.Headroom.OutputShaper.MechanicalThinkingBudget != 1024 {
+		t.Errorf("unexpected shaper default: %+v", cfg.Headroom.OutputShaper)
+	}
+}
+
+func TestSave_HeadroomRoundTrip(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	updated, err := Save(map[string]any{"headroom": map[string]any{
+		"enabled":        true,
+		"smartCrusher":   true,
+		"codeCompressor": false,
+	}})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !updated.Headroom.Enabled || !updated.Headroom.SmartCrusher || updated.Headroom.CodeCompressor {
+		t.Errorf("unexpected persisted headroom config: %+v", updated.Headroom)
+	}
+}
