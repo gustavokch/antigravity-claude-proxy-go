@@ -59,11 +59,16 @@ func ExtractRateLimits(h http.Header) RateLimits {
 	return rl
 }
 
-// parseTimestamp attempts multiple common time formats (RFC3339, RFC3339Nano, ISO8601).
+// parseTimestamp attempts multiple common time formats (RFC3339, RFC3339Nano, ISO8601, or relative seconds).
 func parseTimestamp(val string) time.Time {
 	val = strings.TrimSpace(val)
 	if val == "" {
 		return time.Time{}
+	}
+
+	// Try relative seconds duration
+	if sec, err := strconv.ParseFloat(val, 64); err == nil && sec >= 0 {
+		return time.Now().Add(time.Duration(sec * float64(time.Second)))
 	}
 
 	layouts := []string{
@@ -93,6 +98,11 @@ func parseRetryAfter(val string) int {
 	// First try as integer seconds
 	if sec, err := strconv.Atoi(val); err == nil && sec >= 0 {
 		return sec
+	}
+
+	// Try as float seconds
+	if fSec, err := strconv.ParseFloat(val, 64); err == nil && fSec >= 0 {
+		return int(fSec + 0.999) // Round up
 	}
 
 	// Try as HTTP-Date

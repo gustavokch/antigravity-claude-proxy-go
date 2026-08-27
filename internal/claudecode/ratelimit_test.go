@@ -72,3 +72,17 @@ func TestParseRetryAfter_HTTPDate(t *testing.T) {
 		t.Errorf("expected 0 for past HTTP Date, got %d", secPast)
 	}
 }
+
+func TestExtractRateLimits_FloatingPointSeconds(t *testing.T) {
+	h := make(http.Header)
+	h.Set(HeaderRetryAfter, "1.5")
+	h.Set(HeaderRequestsReset, "2.5")
+
+	rl := ExtractRateLimits(h)
+	if rl.RetryAfter != 2 {
+		t.Errorf("expected RetryAfter 2 (rounded up from 1.5), got %d", rl.RetryAfter)
+	}
+	if rl.RequestsReset.IsZero() {
+		t.Errorf("expected non-zero RequestsReset parsed from relative float seconds")
+	}
+}
