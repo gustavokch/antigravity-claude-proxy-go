@@ -565,11 +565,16 @@ func GetPublicConfig() map[string]any {
 											aCopy["maskedToken"] = "******"
 										}
 									}
+								} else if ak == "refreshToken" {
+									if strTok, isStr := av.(string); isStr && strTok != "" {
+										aCopy["hasRefreshToken"] = true
+									}
 								} else {
 									aCopy[ak] = av
 								}
 							}
 							delete(aCopy, "token")
+							delete(aCopy, "refreshToken")
 							redactedAccs = append(redactedAccs, aCopy)
 						} else {
 							redactedAccs = append(redactedAccs, a)
