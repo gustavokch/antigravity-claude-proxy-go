@@ -95,6 +95,45 @@ type ClaudeCodeAuthSession struct {
 	mu       sync.Mutex
 }
 
+// ClaudeCodeAuthSessionSnapshot represents a thread-safe snapshot of session state.
+type ClaudeCodeAuthSessionSnapshot struct {
+	ID            string
+	State         string
+	RedirectURI   string
+	Port          int
+	AuthURL       string
+	ManualAuthURL string
+	Status        string
+	Error         string
+	Account       *ClaudeCodeAccountResult
+	CreatedAt     time.Time
+}
+
+// Snapshot returns a thread-safe copy of the session's current state.
+func (s *ClaudeCodeAuthSession) Snapshot() ClaudeCodeAuthSessionSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var accCopy *ClaudeCodeAccountResult
+	if s.Account != nil {
+		acc := *s.Account
+		accCopy = &acc
+	}
+
+	return ClaudeCodeAuthSessionSnapshot{
+		ID:            s.ID,
+		State:         s.State,
+		RedirectURI:   s.RedirectURI,
+		Port:          s.Port,
+		AuthURL:       s.AuthURL,
+		ManualAuthURL: s.ManualAuthURL,
+		Status:        s.Status,
+		Error:         s.Error,
+		Account:       accCopy,
+		CreatedAt:     s.CreatedAt,
+	}
+}
+
 // ClaudeCodeOAuthManager manages OAuth authentication sessions and token requests.
 type ClaudeCodeOAuthManager struct {
 	sessions   map[string]*ClaudeCodeAuthSession

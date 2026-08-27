@@ -76,33 +76,35 @@ func (server *Server) handleClaudeCodeAuthStatusGet(writer http.ResponseWriter, 
 		return
 	}
 
-	if session.Status == "completed" && session.Account != nil {
-		server.registerAuthenticatedClaudeCodeAccount(session.Account)
+	snap := session.Snapshot()
+
+	if snap.Status == "completed" && snap.Account != nil {
+		server.registerAuthenticatedClaudeCodeAccount(snap.Account)
 
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status": "completed",
 			"account": map[string]any{
-				"id":           "cc-" + session.Account.Email,
-				"email":        session.Account.Email,
-				"account_uuid": session.Account.AccountUUID,
-				"expires_at":   session.Account.ExpiresAt,
+				"id":           "cc-" + snap.Account.Email,
+				"email":        snap.Account.Email,
+				"account_uuid": snap.Account.AccountUUID,
+				"expires_at":   snap.Account.ExpiresAt,
 			},
 		})
 		return
 	}
 
-	if session.Status == "failed" {
+	if snap.Status == "failed" {
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status": "failed",
-			"error":  session.Error,
+			"error":  snap.Error,
 		})
 		return
 	}
 
-	if session.Status == "expired" {
+	if snap.Status == "expired" {
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status": "expired",
-			"error":  session.Error,
+			"error":  snap.Error,
 		})
 		return
 	}

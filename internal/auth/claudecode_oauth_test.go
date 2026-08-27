@@ -306,3 +306,40 @@ func TestLoopbackCallback_InvalidState(t *testing.T) {
 		t.Errorf("expected state error, got %s", session.Error)
 	}
 }
+
+func TestClaudeCodeAuthSession_Snapshot(t *testing.T) {
+	session := &ClaudeCodeAuthSession{
+		ID:            "test-sess-1",
+		State:         "test-state",
+		RedirectURI:   "http://localhost:1234/callback",
+		Port:          1234,
+		AuthURL:       "https://claude.com/auth",
+		ManualAuthURL: "https://claude.com/manual",
+		Status:        "pending",
+		CreatedAt:     time.Now(),
+	}
+
+	snap := session.Snapshot()
+	if snap.ID != "test-sess-1" || snap.Status != "pending" || snap.Port != 1234 {
+		t.Fatalf("unexpected snapshot values: %+v", snap)
+	}
+
+	// Mutate session under lock
+	session.mu.Lock()
+	session.Status = "completed"
+	session.Account = &ClaudeCodeAccountResult{
+		Email:       "user@example.com",
+		AccessToken: "tok-123",
+	}
+	session.mu.Unlock()
+
+	// Previous snapshot unchanged
+	if snap.Status != "pending" || snap.Account != nil {
+		t.Fatalf("snapshot should be immutable snapshot of past state: %+v", snap)
+	}
+
+	snap2 := session.Snapshot()
+	if snap2.Status != "completed" || snap2.Account == nil || snap2.Account.Email != "user@example.com" {
+		t.Fatalf("new snapshot should reflect latest state: %+v", snap2)
+	}
+}
