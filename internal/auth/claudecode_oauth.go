@@ -277,14 +277,15 @@ func (m *ClaudeCodeOAuthManager) StartAuthSession(mode string) (*ClaudeCodeAuthS
 		m.handleLoopbackCallback(session, w, r)
 	})
 
-	session.server = &http.Server{
+	srv := &http.Server{
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
+	session.server = srv
 
 	go func() {
-		if err := session.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			session.mu.Lock()
 			if session.Status == "pending" {
 				session.Status = "failed"
