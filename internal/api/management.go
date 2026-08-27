@@ -670,6 +670,7 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 	if updater, ok := server.backend.(ConfigUpdater); ok {
 		updater.UpdateConfig(updated)
 	}
+	server.applyHeadroomConfig(updated.Headroom)
 
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":  "ok",
