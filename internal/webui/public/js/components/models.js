@@ -1003,6 +1003,15 @@ window.Components.models = () => ({
             });
         }
 
+        if (dataStore.kimi && dataStore.kimi.allowlist) {
+            dataStore.kimi.allowlist.forEach(m => {
+                if (m.enabled !== false) {
+                    if (m.id) modelSet.add(m.id);
+                    if (m.alias) modelSet.add(m.alias);
+                }
+            });
+        }
+
         if (dataStore.modelConfig) {
             Object.keys(dataStore.modelConfig).forEach(m => modelSet.add(m));
         }
