@@ -164,3 +164,45 @@ func TestSmartCrusher_TabularArraysFlag(t *testing.T) {
 		t.Errorf("expected tabular conversion when TabularArrays is true, got %s", got2)
 	}
 }
+
+func TestTabularConversion_NullAndEmptyValues(t *testing.T) {
+	jsonInput := `[
+		{"col_a": "value1", "col_b": null, "col_c": ""},
+		{"col_a": "value2", "col_b": "valid", "col_c": "present"},
+		{"col_a": null, "col_b": null, "col_c": ""},
+		{"col_a": "value4", "col_b": "another", "col_c": null}
+	]`
+	out, changed := TryTabularConversion(jsonInput, 0.10)
+	if !changed {
+		t.Fatalf("expected conversion with null/empty values to succeed")
+	}
+	if !strings.Contains(out, "| value1 | null |  |") {
+		t.Errorf("unexpected row format for null and empty string: %s", out)
+	}
+	if !strings.Contains(out, "| null | null |  |") {
+		t.Errorf("unexpected row format for double null: %s", out)
+	}
+}
+
+func TestTabularConversion_BackslashesAndSpecialChars(t *testing.T) {
+	jsonInput := `[
+		{"id": 1, "path": "C:\\Windows\\System32", "query": "field:value AND status:ok"},
+		{"id": 2, "path": "D:\\Data\\Exports", "query": "field:\"nested string\""},
+		{"id": 3, "path": "/usr/local/bin", "query": "count > 100 | grep 'ok'"},
+		{"id": 4, "path": "/var/log/syslog", "query": "line1\r\nline2"}
+	]`
+	out, changed := TryTabularConversion(jsonInput, 0.10)
+	if !changed {
+		t.Fatalf("expected conversion with special characters to succeed")
+	}
+	if !strings.Contains(out, "C:\\\\Windows\\\\System32") {
+		t.Errorf("backslash was not escaped properly: %s", out)
+	}
+	if !strings.Contains(out, "\\| grep 'ok'") {
+		t.Errorf("pipe was not escaped properly: %s", out)
+	}
+	if !strings.Contains(out, "line1\\nline2") {
+		t.Errorf("crlf newline was not normalized and escaped properly: %s", out)
+	}
+}
+
