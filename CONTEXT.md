@@ -85,3 +85,22 @@ _Avoid_: Usage limit, out of credits, quota burn.
 **Model Capacity Exhausted**:
 An upstream infrastructure overload condition (HTTP 503/529) that triggers exponential backoff and Account rotation.
 _Avoid_: Server overload, Google capacity issue, backend down.
+
+### Context Compression & Shaping (Headroom)
+
+**Headroom Engine**:
+The pre-dispatch request optimization pipeline applying deterministic compression, whitespace pruning, output shaping, and CCR.
+_Avoid_: Context trimmer, optimizer middleware, token stripper.
+
+**SmartCrusher**:
+The deterministic JSON compactor that strips insignificant whitespace from tool results while preserving key order and numeric precision.
+_Avoid_: JSON minifier, schema stripper.
+
+**CodeCompressor**:
+The deterministic whitespace and repetition pruning stage that collapses excessive newlines, trims line endings, and folds duplicate log runs.
+_Avoid_: Code cleaner, log summarizer.
+
+**OutputShaper**:
+The stage that appends verbosity steering instructions to the system prompt and limits thinking budgets on mechanical continuation turns.
+_Avoid_: Prompt injector, reasoning clamper.
+
