@@ -472,11 +472,14 @@ func (m *ClaudeCodeOAuthManager) CompleteManualAuth(sessionID, rawCode string) (
 	}
 
 	session.mu.Lock()
-	defer session.mu.Unlock()
-
 	if session.Status == "completed" && session.Account != nil {
-		return session.Account, nil
+		acc := session.Account
+		session.mu.Unlock()
+		return acc, nil
 	}
+	verifier := session.CodeVerifier
+	state := session.State
+	session.mu.Unlock()
 
 	code := strings.TrimSpace(rawCode)
 	// Claude.ai callback URL format might be code#state or URL-encoded
@@ -495,10 +498,12 @@ func (m *ClaudeCodeOAuthManager) CompleteManualAuth(sessionID, rawCode string) (
 		return nil, errors.New("authorization code cannot be empty")
 	}
 
-	tokenResp, profile, err := m.ExchangeToken(code, session.CodeVerifier, ClaudeCodeManualCallbackURL, session.State)
+	tokenResp, profile, err := m.ExchangeToken(code, verifier, ClaudeCodeManualCallbackURL, state)
 	if err != nil {
+		session.mu.Lock()
 		session.Status = "failed"
 		session.Error = fmt.Sprintf("token exchange failed: %v", err)
+		session.mu.Unlock()
 		return nil, err
 	}
 
@@ -516,9 +521,12 @@ func (m *ClaudeCodeOAuthManager) CompleteManualAuth(sessionID, rawCode string) (
 		ExpiresAt:        expiresAt,
 	}
 
+	session.mu.Lock()
 	session.Status = "completed"
 	session.Account = accountResult
 	session.Error = ""
+	session.mu.Unlock()
+
 	m.closeSessionServer(session)
 
 	return accountResult, nil
