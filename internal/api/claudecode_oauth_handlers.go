@@ -302,9 +302,4 @@ func (server *Server) registerAuthenticatedClaudeCodeAccount(accResult *auth.Cla
 		})
 		_ = pool.SaveStoredAccounts()
 	}
-
-	// 3. Register in accounts.Manager for unified Accounts UI view
-	if server.accountManager != nil && accResult.Email != "" {
-		_ = server.accountManager.SaveOAuthAccount(accResult.Email, accResult.RefreshToken)
-	}
 }
