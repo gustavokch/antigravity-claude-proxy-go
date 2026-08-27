@@ -581,6 +581,8 @@ window.translations.zh = {
     headroomCacheNotice: "注意：修改 Headroom 设置将使当前活跃对话的 Prompt 缓存失效一次。",
     headroomSmartCrusher: "SmartCrusher (JSON 压缩器)",
     headroomSmartCrusherDesc: "去除工具返回结果中 JSON 的无关空白符，同时保留键序和数字精度。",
+    headroomTabularArrays: "表格数组转换",
+    headroomTabularArraysDesc: "当字节节省超过 30% 时，将规则 JSON 对象数组转换为 Markdown 表格。",
     headroomCodeCompressor: "CodeCompressor (空白与重复行修剪)",
     headroomCodeCompressorDesc: "去除行尾空白，折叠连续空行，并合并重复日志行。",
     headroomLiveTurns: "CCR 活跃轮次 (保留在上下文中)",

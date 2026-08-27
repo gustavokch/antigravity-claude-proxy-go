@@ -525,6 +525,8 @@ window.translations.pt = {
     headroomCacheNotice: "Aviso: Alterar as configurações do Headroom invalida o cache de prompt uma vez para conversas ativas.",
     headroomSmartCrusher: "SmartCrusher (Compactador JSON)",
     headroomSmartCrusherDesc: "Remove espaços em branco insignificantes de resultados de ferramentas em JSON mantendo a ordem das chaves e a precisão numérica.",
+    headroomTabularArrays: "Conversão Tabular de Arrays",
+    headroomTabularArraysDesc: "Converte arrays de objetos JSON uniformes em tabelas Markdown quando a economia exceder 30%.",
     headroomCodeCompressor: "CodeCompressor (Poda de Espaços e Repetições)",
     headroomCodeCompressorDesc: "Remove espaços à direita, recolhe linhas em branco consecutivas e agrupa linhas de log repetidas.",
     headroomLiveTurns: "Turnos Ativos CCR (Mantidos em Linha)",

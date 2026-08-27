@@ -576,6 +576,8 @@ window.translations.en = {
     headroomCacheNotice: "Notice: Changing Headroom settings invalidates the prompt cache once for active conversations.",
     headroomSmartCrusher: "SmartCrusher (JSON Compactor)",
     headroomSmartCrusherDesc: "Strips insignificant whitespace from JSON payloads in tool results while preserving key order and numeric precision.",
+    headroomTabularArrays: "Tabular Array Conversion",
+    headroomTabularArraysDesc: "Converts uniform JSON object arrays into Markdown pipe tables when savings exceed 30%.",
     headroomCodeCompressor: "CodeCompressor (Whitespace & Repetition Pruning)",
     headroomCodeCompressorDesc: "Removes trailing whitespace, collapses multiple blank lines, and folds repetitive log lines.",
     headroomLiveTurns: "CCR Live Turns (Preserved Inline)",

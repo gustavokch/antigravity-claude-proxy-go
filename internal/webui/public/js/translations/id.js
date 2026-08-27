@@ -612,6 +612,8 @@ window.translations.id = {
     headroomCacheNotice: "Pemberitahuan: Mengubah pengaturan Headroom akan membatalkan cache prompt sekali untuk percakapan aktif.",
     headroomSmartCrusher: "SmartCrusher (Pemadat JSON)",
     headroomSmartCrusherDesc: "Menghapus spasi tidak signifikan dari hasil alat JSON sambil mempertahankan urutan kunci dan presisi angka.",
+    headroomTabularArrays: "Konversi Array Tabular",
+    headroomTabularArraysDesc: "Mengonversi array objek JSON seragam menjadi tabel Markdown saat penghematan melebihi 30%.",
     headroomCodeCompressor: "CodeCompressor (Pemangkasan Spasi & Pengulangan)",
     headroomCodeCompressorDesc: "Menghapus spasi di akhir baris, merapatkan baris kosong, dan melipat baris log berulang.",
     headroomLiveTurns: "Giliran Langsung CCR (Disimpan Sejajar)",

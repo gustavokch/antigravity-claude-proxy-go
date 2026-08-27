@@ -572,6 +572,8 @@ window.translations.tr = {
     headroomCacheNotice: "Bildirim: Headroom ayarlarını değiştirmek, etkin konuşmalar için istem önbelleğini bir kez geçersiz kılar.",
     headroomSmartCrusher: "SmartCrusher (JSON Sıkıştırıcı)",
     headroomSmartCrusherDesc: "Anahtar sırasını ve sayısal hassasiyeti korurken JSON araç çıktılarındaki anlamsız boşlukları temizler.",
+    headroomTabularArrays: "Tablo Dizi Dönüşümü",
+    headroomTabularArraysDesc: "Kazanç %30'u aştığında düzenli JSON nesne dizilerini Markdown tablolarına dönüştürür.",
     headroomCodeCompressor: "CodeCompressor (Boşluk ve Tekrar Budama)",
     headroomCodeCompressorDesc: "Satır sonu boşluklarını kaldırır, ardışık boş satırları birleştirir ve tekrarlanan günlük satırlarını katlar.",
     headroomLiveTurns: "CCR Canlı Turları (Satır İçi Tutulan)",

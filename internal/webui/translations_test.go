@@ -37,6 +37,7 @@ var presetKeys = []string{
 var headroomKeys = []string{
 	"headroomSettings", "headroomDesc", "headroomEnabled", "headroomCacheNotice",
 	"headroomSmartCrusher", "headroomSmartCrusherDesc",
+	"headroomTabularArrays", "headroomTabularArraysDesc",
 	"headroomCodeCompressor", "headroomCodeCompressorDesc",
 	"headroomLiveTurns", "headroomLiveTurnsDesc",
 	"headroomOutputShaper", "headroomOutputShaperDesc",

@@ -511,6 +511,10 @@ window.Components.serverConfig = () => ({
         this.saveHeadroom({ smartCrusher: enabled });
     },
 
+    toggleHeadroomTabularArrays(enabled) {
+        this.saveHeadroom({ tabularArrays: enabled });
+    },
+
     toggleHeadroomCodeCompressor(enabled) {
         this.saveHeadroom({ codeCompressor: enabled });
     },
