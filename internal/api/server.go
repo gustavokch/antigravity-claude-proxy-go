@@ -850,7 +850,15 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		attempts           int
 		ccrHydrations      int
 		totalCCRRetrievals int
+		streamStarted      bool
+		baseBlockIndex     int
+		totalInput         int
+		totalOutput        int
+		totalCacheRead     int
 	)
+
+	bw := bufio.NewWriterSize(writer, 4096)
+	flusher, hasFlusher := writer.(http.Flusher)
 
 	// No ranked/pinned/custom provider available — single unpinned attempt
 	// (equivalent to the pre-routing passthrough behavior).
@@ -978,9 +986,177 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					providerIdx++
 					continue
 				}
-				// Headers arrived inside the budget: hand the attempt context
-				// to the stream proxy, which releases it at stream end.
-				server.proxyStreamResponse(writer, resp, model, sessionID, pricing, startTime, attemptStart, provider, cancel)
+
+				if !server.isCCREnabled() {
+					server.proxyStreamResponse(writer, resp, model, sessionID, pricing, startTime, attemptStart, provider, cancel)
+					return
+				}
+
+				// Stream with CCR interception and potential re-entry
+				var currentBlocks []map[string]any
+				currentJSONBufs := make(map[int]*strings.Builder)
+				var pendingTerminalEvents []map[string]any
+				var attemptIn, attemptOut, attemptCr, attemptCw int
+
+				parseErr := parseSSEStream(resp.Body, func(eventType string, dataObj map[string]any, rawData []byte) error {
+					openrouter.ParseUsageFromSSELine(string(rawData), &attemptIn, &attemptOut, &attemptCr, &attemptCw)
+					if p := openrouter.ExtractProviderFromSSELine(string(rawData)); p != "" {
+						provider = canonicalServedProvider(model, p)
+					}
+
+					switch eventType {
+					case "message_start":
+						if ccrHydrations == 0 {
+							if !streamStarted {
+								copyUpstreamHeaders(writer.Header(), resp.Header)
+								writer.WriteHeader(resp.StatusCode)
+								streamStarted = true
+							}
+							return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+						}
+						return nil
+
+					case "content_block_start":
+						if !streamStarted {
+							copyUpstreamHeaders(writer.Header(), resp.Header)
+							writer.WriteHeader(resp.StatusCode)
+							streamStarted = true
+						}
+						idx := intValue(dataObj["index"], 0)
+						dataObj["index"] = baseBlockIndex + idx
+						block := mapOrEmpty(dataObj["content_block"])
+						for len(currentBlocks) <= idx {
+							currentBlocks = append(currentBlocks, nil)
+						}
+						currentBlocks[idx] = block
+						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+
+					case "content_block_delta":
+						idx := intValue(dataObj["index"], 0)
+						dataObj["index"] = baseBlockIndex + idx
+						delta := mapOrEmpty(dataObj["delta"])
+						if deltaType, _ := delta["type"].(string); deltaType == "input_json_delta" {
+							partial, _ := delta["partial_json"].(string)
+							if currentJSONBufs[idx] == nil {
+								currentJSONBufs[idx] = &strings.Builder{}
+							}
+							currentJSONBufs[idx].WriteString(partial)
+						}
+						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+
+					case "content_block_stop":
+						idx := intValue(dataObj["index"], 0)
+						dataObj["index"] = baseBlockIndex + idx
+						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+
+					case "message_delta", "message_stop":
+						pendingTerminalEvents = append(pendingTerminalEvents, dataObj)
+						return nil
+
+					default:
+						if !streamStarted {
+							copyUpstreamHeaders(writer.Header(), resp.Header)
+							writer.WriteHeader(resp.StatusCode)
+							streamStarted = true
+						}
+						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+					}
+				})
+				_ = resp.Body.Close()
+				cancel()
+
+				if parseErr != nil {
+					if !streamStarted {
+						if provider != "" {
+							openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
+						}
+						providerIdx++
+						continue
+					}
+					return
+				}
+
+				totalInput += attemptIn
+				totalOutput += attemptOut
+				totalCacheRead += attemptCr
+
+				// Check for headroom_retrieve calls
+				var retrieveCalls []map[string]any
+				for idx, block := range currentBlocks {
+					if block == nil {
+						continue
+					}
+					if block["type"] == "tool_use" {
+						if buf := currentJSONBufs[idx]; buf != nil && buf.Len() > 0 {
+							var parsedInput map[string]any
+							if err := json.Unmarshal([]byte(buf.String()), &parsedInput); err == nil {
+								block["input"] = parsedInput
+							}
+						}
+						if block["name"] == "headroom_retrieve" {
+							retrieveCalls = append(retrieveCalls, block)
+						}
+					}
+				}
+
+				if len(retrieveCalls) > 0 && ccrHydrations < maxCCRHydrations {
+					ccrHydrations++
+					totalCCRRetrievals += len(retrieveCalls)
+					baseBlockIndex += len(currentBlocks)
+
+					contentBlocks := make([]any, len(currentBlocks))
+					for i, b := range currentBlocks {
+						contentBlocks[i] = b
+					}
+					assistantMsg := map[string]any{
+						"role":    "assistant",
+						"content": contentBlocks,
+					}
+					var toolResults []any
+					for _, call := range retrieveCalls {
+						toolID, _ := call["id"].(string)
+						inputMap, _ := call["input"].(map[string]any)
+						chunkID, _ := inputMap["chunk_id"].(string)
+						payload, isErr := server.getCCRChunkPayload(chunkID)
+						toolResults = append(toolResults, map[string]any{
+							"type":        "tool_result",
+							"tool_use_id": toolID,
+							"content":     payload,
+							"is_error":    isErr,
+						})
+					}
+					userMsg := map[string]any{
+						"role":    "user",
+						"content": toolResults,
+					}
+					existingMsgs, _ := anthropicRequest["messages"].([]any)
+					anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
+					reqBody, _ = json.Marshal(anthropicRequest)
+					bodyParsed = json.Unmarshal(reqBody, &payload) == nil
+					tried[provider] = false
+					continue
+				}
+
+				// Terminal events flush
+				for _, ev := range pendingTerminalEvents {
+					if ev["type"] == "message_delta" {
+						if usage, ok := ev["usage"].(map[string]any); ok {
+							usage["output_tokens"] = totalOutput
+							usage["cache_read_input_tokens"] = totalCacheRead
+						}
+					}
+					_ = writeSSEEvent(bw, stringFrom(ev["type"]), ev, nil, hasFlusher, flusher)
+				}
+
+				attemptPricing := effectiveAttemptPricing(pricing, model, provider)
+				if provider != "" {
+					openrouter.DefaultRouter.RecordResult(model, provider, true, server.now().Sub(attemptStart), totalInput+totalOutput)
+					openrouter.DefaultRouter.SetSticky(sessionID, model, provider)
+				}
+				server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, totalInput, totalOutput, totalCacheRead, attemptCw, provider)
+				if totalCCRRetrievals > 0 && server.tracker != nil {
+					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
+				}
 				return
 			}
 			// Buffer full body before writing — failover impossible after first byte.
@@ -1325,6 +1501,90 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 			return
 		}
 	}
+}
+
+func parseSSEStream(reader io.Reader, handleEvent func(eventType string, dataObj map[string]any, rawData []byte) error) error {
+	br := bufio.NewReaderSize(reader, 64*1024)
+	var currentEvent string
+	var currentData bytes.Buffer
+
+	dispatch := func() error {
+		if currentData.Len() == 0 && currentEvent == "" {
+			return nil
+		}
+		raw := currentData.Bytes()
+		var dataObj map[string]any
+		_ = json.Unmarshal(raw, &dataObj)
+		evType := currentEvent
+		if evType == "" && dataObj != nil {
+			if t, ok := dataObj["type"].(string); ok {
+				evType = t
+			}
+		}
+		err := handleEvent(evType, dataObj, raw)
+		currentEvent = ""
+		currentData.Reset()
+		return err
+	}
+
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			lineStr := strings.TrimRight(string(line), "\r\n")
+			if lineStr == "" {
+				if err := dispatch(); err != nil {
+					return err
+				}
+			} else if strings.HasPrefix(lineStr, "event: ") {
+				currentEvent = strings.TrimPrefix(lineStr, "event: ")
+			} else if strings.HasPrefix(lineStr, "data: ") {
+				if currentData.Len() > 0 {
+					currentData.WriteByte('\n')
+				}
+				currentData.WriteString(strings.TrimPrefix(lineStr, "data: "))
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return dispatch()
+			}
+			return err
+		}
+	}
+}
+
+func writeSSEEvent(bw *bufio.Writer, eventType string, dataObj map[string]any, rawData []byte, hasFlusher bool, flusher http.Flusher) error {
+	var payload []byte
+	if dataObj != nil {
+		var err error
+		payload, err = json.Marshal(dataObj)
+		if err != nil {
+			payload = rawData
+		}
+	} else {
+		payload = rawData
+	}
+	if eventType != "" {
+		if _, err := bw.WriteString("event: " + eventType + "\n"); err != nil {
+			return err
+		}
+	}
+	if _, err := bw.WriteString("data: "); err != nil {
+		return err
+	}
+	if _, err := bw.Write(payload); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\n\n"); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	if hasFlusher && flusher != nil {
+		flusher.Flush()
+	}
+	return nil
 }
 
 // recordOpenRouterMetrics is shared between stream and unary paths. Pricing is

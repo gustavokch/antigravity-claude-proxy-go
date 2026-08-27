@@ -39,6 +39,13 @@ func (s *SmartCrusherStage) Execute(ctx context.Context, reqCtx *RequestContext,
 	// provider prompt cache warm across turns (invariant I1).
 	walkToolResultText(reqCtx.Request, 0, func(_ int, get func() string, set func(string)) {
 		before := get()
+		if cfg.TabularArrays {
+			if table, converted := TryTabularConversion(before, DefaultMinTabularSavings); converted {
+				set(table)
+				reqCtx.RecordRewrite(before, table)
+				return
+			}
+		}
 		if after, changed := CompactJSON(before); changed {
 			set(after)
 			reqCtx.RecordRewrite(before, after)

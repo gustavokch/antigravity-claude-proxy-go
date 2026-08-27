@@ -582,3 +582,240 @@ func TestHeadroomCCR_OpenRouterUnaryHydration(t *testing.T) {
 	}
 }
 
+func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
+	chunkPayload := "openrouter streamed chunk payload from store"
+	chunkID := headroom.ChunkID(chunkPayload)
+
+	var callsMu sync.Mutex
+	var calls []map[string]any
+
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
+				{
+					ID:   "anthropic/claude-3.7-sonnet",
+					Name: "Claude 3.7 Sonnet",
+					Pricing: &openrouter.Pricing{
+						Prompt:     0.000003,
+						Completion: 0.000015,
+					},
+				},
+			}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/endpoints") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
+			return
+		}
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			return
+		}
+
+		bodyBytes, _ := io.ReadAll(r.Body)
+		var reqMap map[string]any
+		_ = json.Unmarshal(bodyBytes, &reqMap)
+
+		callsMu.Lock()
+		callNum := len(calls)
+		calls = append(calls, reqMap)
+		callsMu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		flusher, _ := w.(http.Flusher)
+
+		writeSSE := func(eventType string, data map[string]any) {
+			b, _ := json.Marshal(data)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, string(b))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+
+		if callNum == 0 {
+			// First stream call: returns headroom_retrieve
+			writeSSE("message_start", map[string]any{
+				"type": "message_start",
+				"message": map[string]any{
+					"id":      "msg_ors_1",
+					"type":    "message",
+					"role":    "assistant",
+					"content": []any{},
+					"usage": map[string]any{
+						"input_tokens":  100,
+						"output_tokens": 5,
+					},
+				},
+			})
+			writeSSE("content_block_start", map[string]any{
+				"type":  "content_block_start",
+				"index": 0,
+				"content_block": map[string]any{
+					"type":  "tool_use",
+					"id":    "tu_ors_ret",
+					"name":  "headroom_retrieve",
+					"input": map[string]any{},
+				},
+			})
+			writeSSE("content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": 0,
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": fmt.Sprintf(`{"chunk_id":%q}`, chunkID),
+				},
+			})
+			writeSSE("content_block_stop", map[string]any{
+				"type":  "content_block_stop",
+				"index": 0,
+			})
+			writeSSE("message_delta", map[string]any{
+				"type": "message_delta",
+				"delta": map[string]any{
+					"stop_reason": "tool_use",
+				},
+				"usage": map[string]any{
+					"output_tokens": 20,
+				},
+			})
+			writeSSE("message_stop", map[string]any{
+				"type": "message_stop",
+			})
+			return
+		}
+
+		// Second stream call: returns final text
+		writeSSE("message_start", map[string]any{
+			"type": "message_start",
+			"message": map[string]any{
+				"id":      "msg_ors_2",
+				"type":    "message",
+				"role":    "assistant",
+				"content": []any{},
+				"usage": map[string]any{
+					"input_tokens":  150,
+					"output_tokens": 5,
+				},
+			},
+		})
+		writeSSE("content_block_start", map[string]any{
+			"type":  "content_block_start",
+			"index": 0,
+			"content_block": map[string]any{
+				"type": "text",
+				"text": "Streamed OpenRouter retrieved answer.",
+			},
+		})
+		writeSSE("content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": 0,
+		})
+		writeSSE("message_delta", map[string]any{
+			"type": "message_delta",
+			"delta": map[string]any{
+				"stop_reason": "end_turn",
+			},
+			"usage": map[string]any{
+				"output_tokens": 30,
+			},
+		})
+		writeSSE("message_stop", map[string]any{
+			"type": "message_stop",
+		})
+	}))
+	defer mockOR.Close()
+
+	tmp := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmp)
+	t.Setenv("HOME", tmp)
+	_, _ = config.Load()
+	_, _ = config.Save(map[string]any{
+		"headroom": map[string]any{
+			"enabled": true,
+			"ccr":     map[string]any{"enabled": true},
+		},
+		"openrouter": map[string]any{
+			"enabled": true,
+			"baseURL": mockOR.URL,
+			"apiKey":  "sk-or-test",
+			"allowlist": []any{
+				map[string]any{
+					"id":      "anthropic/claude-3.7-sonnet",
+					"enabled": true,
+				},
+			},
+		},
+	})
+
+	tracker, _ := stats.NewTracker("")
+	srv, err := New(Options{APIKey: "test-key", Backend: &mockCloudCodeBackend{}, Tracker: tracker})
+	if err != nil {
+		t.Fatalf("New server: %v", err)
+	}
+	srv.headroom.CCRStore().Put(chunkPayload)
+
+	reqBody := map[string]any{
+		"model":  "anthropic/claude-3.7-sonnet",
+		"stream": true,
+		"tools":  []any{map[string]any{"name": "t"}},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "or stream retrieve test"},
+		},
+	}
+
+	rec := postMessages(t, srv, reqBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	callsMu.Lock()
+	totalCalls := len(calls)
+	callsMu.Unlock()
+
+	if totalCalls != 2 {
+		t.Fatalf("expected 2 OpenRouter calls, got %d", totalCalls)
+	}
+
+	// Verify client received stitched stream
+	lines := strings.Split(rec.Body.String(), "\n")
+	var messageStarts, messageStops int
+	var blockStarts []int
+	for _, line := range lines {
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			var ev map[string]any
+			if err := json.Unmarshal([]byte(data), &ev); err == nil {
+				switch ev["type"] {
+				case "message_start":
+					messageStarts++
+				case "message_stop":
+					messageStops++
+				case "content_block_start":
+					if idx, ok := ev["index"].(float64); ok {
+						blockStarts = append(blockStarts, int(idx))
+					}
+				}
+			}
+		}
+	}
+
+	if messageStarts != 1 {
+		t.Errorf("expected 1 message_start event, got %d", messageStarts)
+	}
+	if messageStops != 1 {
+		t.Errorf("expected 1 message_stop event, got %d", messageStops)
+	}
+	if len(blockStarts) != 2 || blockStarts[0] != 0 || blockStarts[1] != 1 {
+		t.Errorf("expected sequential block starts [0, 1], got %v", blockStarts)
+	}
+
+	if srv.tracker.GetHeadroomStats().CCRRetrievals != 1 {
+		t.Errorf("expected 1 CCRRetrieval in tracker, got %d", srv.tracker.GetHeadroomStats().CCRRetrievals)
+	}
+}
+

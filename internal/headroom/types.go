@@ -21,6 +21,7 @@ type OutputShaperConfig struct {
 type Config struct {
 	Enabled        bool               `json:"enabled"`
 	SmartCrusher   bool               `json:"smartCrusher,omitempty"`
+	TabularArrays  bool               `json:"tabularArrays,omitempty"`
 	CodeCompressor bool               `json:"codeCompressor,omitempty"`
 	// LiveTurns is the number of trailing messages CCR leaves untouched.
 	// It has no effect on SmartCrusher/CodeCompressor, which are position
