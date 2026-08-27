@@ -15,6 +15,9 @@ var (
 	ErrAccountNotFound = errors.New("claude code account not found")
 )
 
+// maxStickyEntries bounds the sticky session map to prevent unbounded memory growth.
+const maxStickyEntries = 10000
+
 // AccountPool manages a collection of Claude Code accounts with sticky routing,
 // health tracking, and load balancing.
 type AccountPool struct {
@@ -199,11 +202,39 @@ func (p *AccountPool) SelectAccount(sessionKey string, excludedIDs map[string]bo
 
 	// Update sticky mapping if sessionKey provided
 	if sessionKey != "" {
+		if len(p.sticky) >= maxStickyEntries {
+			p.evictOldestSticky(maxStickyEntries / 10)
+		}
 		p.sticky[sessionKey] = selected.ID
 		p.stickyAt[sessionKey] = now
 	}
 
 	return selected, nil
+}
+
+func (p *AccountPool) evictOldestSticky(count int) {
+	if count <= 0 {
+		count = 1
+	}
+	type entry struct {
+		key string
+		at  time.Time
+	}
+	entries := make([]entry, 0, len(p.stickyAt))
+	for k, at := range p.stickyAt {
+		entries = append(entries, entry{key: k, at: at})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].at.Before(entries[j].at)
+	})
+	limit := count
+	if limit > len(entries) {
+		limit = len(entries)
+	}
+	for i := 0; i < limit; i++ {
+		delete(p.sticky, entries[i].key)
+		delete(p.stickyAt, entries[i].key)
+	}
 }
 
 func isAccountHealthy(acc *Account, now time.Time) bool {

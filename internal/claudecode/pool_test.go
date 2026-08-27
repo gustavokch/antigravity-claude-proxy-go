@@ -161,3 +161,32 @@ func TestAccountPool_AcquireReleaseSuccess(t *testing.T) {
 		t.Errorf("expected tokens 1500 and cost 0.005, got tokens %d cost %f", acc.TotalTokens, acc.TotalCost)
 	}
 }
+
+func TestAccountPool_StickyCapacityBounds(t *testing.T) {
+	pool := NewAccountPool([]AccountConfig{
+		{
+			ID:       "acc-1",
+			Name:     "Account 1",
+			Token:    "token-1",
+			Priority: 1,
+			Enabled:  true,
+		},
+	})
+
+	// Fill sticky sessions past maxStickyEntries
+	for i := 0; i < maxStickyEntries+50; i++ {
+		sessionID := "session-" + string(rune('a'+(i%26))) + "-" + time.Now().Format(time.RFC3339Nano)
+		_, err := pool.SelectAccount(sessionID, nil)
+		if err != nil {
+			t.Fatalf("unexpected select error: %v", err)
+		}
+	}
+
+	pool.mu.RLock()
+	stickyLen := len(pool.sticky)
+	pool.mu.RUnlock()
+
+	if stickyLen > maxStickyEntries {
+		t.Errorf("expected sticky map size <= %d, got %d", maxStickyEntries, stickyLen)
+	}
+}
