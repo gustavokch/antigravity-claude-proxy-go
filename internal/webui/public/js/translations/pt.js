@@ -548,4 +548,5 @@ window.translations.pt = {
     headroomCompressionRatio: "Taxa de Compressão",
     headroomRequestsCompressed: "Requisições Comprimidas",
     headroomThinkingClamped: "Tokens de Pensamento Limitados",
+    headroomCcrRetrievals: "Recuperações CCR",
 };

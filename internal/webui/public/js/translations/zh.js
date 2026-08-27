@@ -604,4 +604,5 @@ window.translations.zh = {
     headroomCompressionRatio: "压缩率",
     headroomRequestsCompressed: "已压缩请求数",
     headroomThinkingClamped: "已削减思考 Token 数",
+    headroomCcrRetrievals: "CCR 检索次数",
 };

@@ -599,4 +599,5 @@ window.translations.en = {
     headroomCompressionRatio: "Compression Ratio",
     headroomRequestsCompressed: "Requests Compressed",
     headroomThinkingClamped: "Thinking Tokens Clamped",
+    headroomCcrRetrievals: "CCR Retrievals",
 };

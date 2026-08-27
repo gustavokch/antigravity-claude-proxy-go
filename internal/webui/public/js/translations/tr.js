@@ -595,4 +595,5 @@ window.translations.tr = {
     headroomCompressionRatio: "Sıkıştırma Oranı",
     headroomRequestsCompressed: "Sıkıştırılan İstekler",
     headroomThinkingClamped: "Sınırlandırılan Düşünme Belirteçleri",
+    headroomCcrRetrievals: "CCR Erişimleri",
 };

@@ -47,7 +47,7 @@ var headroomKeys = []string{
 	"headroomCcr", "headroomCcrDesc", "headroomCcrEnabled",
 	"headroomMaxStoreMB", "headroomMinChunkBytes",
 	"headroomStatsTitle", "headroomBytesSaved", "headroomCompressionRatio",
-	"headroomRequestsCompressed", "headroomThinkingClamped",
+	"headroomRequestsCompressed", "headroomThinkingClamped", "headroomCcrRetrievals",
 }
 
 var locales = []string{"en", "zh", "id", "pt", "tr"}

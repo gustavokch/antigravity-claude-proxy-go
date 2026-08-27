@@ -635,4 +635,5 @@ window.translations.id = {
     headroomCompressionRatio: "Rasio Kompresi",
     headroomRequestsCompressed: "Permintaan Dikompresi",
     headroomThinkingClamped: "Token Berpikir Dibatasi",
+    headroomCcrRetrievals: "Pengambilan CCR",
 };
