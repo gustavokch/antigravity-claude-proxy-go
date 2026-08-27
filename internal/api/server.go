@@ -78,23 +78,25 @@ type Options struct {
 	WebUI          http.Handler
 	OAuthHandler   http.Handler
 	Tracker        *stats.Tracker
+	ClaudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 }
 
 type Server struct {
-	apiKey         string
-	projectID      string
-	credentials    func(context.Context) (auth.Credentials, error)
-	newUpstream    func(string) Upstream
-	backend        Backend
-	builder        *proxyformat.Builder
-	now            func() time.Time
-	logger         *slog.Logger
-	accountManager *accounts.Manager
-	broadcaster    *logger.Broadcaster
-	webUI          http.Handler
-	oauthHandler   http.Handler
-	tracker        *stats.Tracker
-	headroom       *headroom.Engine
+	apiKey             string
+	projectID          string
+	credentials        func(context.Context) (auth.Credentials, error)
+	newUpstream        func(string) Upstream
+	backend            Backend
+	builder            *proxyformat.Builder
+	now                func() time.Time
+	logger             *slog.Logger
+	accountManager     *accounts.Manager
+	broadcaster        *logger.Broadcaster
+	webUI              http.Handler
+	oauthHandler       http.Handler
+	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
+	tracker            *stats.Tracker
+	headroom           *headroom.Engine
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -119,13 +121,17 @@ func New(options Options) (*Server, error) {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
+	if options.ClaudeCodeOAuthMgr == nil {
+		options.ClaudeCodeOAuthMgr = auth.NewClaudeCodeOAuthManager()
+	}
 	srv := &Server{
 		apiKey: options.APIKey, projectID: options.ProjectID,
 		credentials: options.Credentials, newUpstream: options.NewUpstream, backend: options.Backend,
 		builder: options.Builder, now: options.Now, logger: options.Logger,
 		accountManager: options.AccountManager, broadcaster: options.Broadcaster,
 		webUI: options.WebUI, oauthHandler: options.OAuthHandler, tracker: options.Tracker,
-		projects: make(map[string]string),
+		claudeCodeOAuthMgr: options.ClaudeCodeOAuthMgr,
+		projects:           make(map[string]string),
 	}
 
 	cfg := config.Get()

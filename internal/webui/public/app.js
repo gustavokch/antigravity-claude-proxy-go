@@ -222,6 +222,100 @@ document.addEventListener('alpine:init', () => {
             } catch (e) {
                 Alpine.store('global').showToast(Alpine.store('global').t('failedToStartOAuth') + ': ' + e.message, 'error');
             }
+        },
+
+        async addClaudeCodeAccountWeb(mode = 'loopback') {
+            try {
+                const res = await fetch('/api/claudecode/auth/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: mode })
+                });
+                const data = await res.json();
+
+                if (data.status === 'ok' && data.auth_url) {
+                    const sessionId = data.session_id;
+
+                    if (mode === 'manual') {
+                        return data;
+                    }
+
+                    const width = 600, height = 700;
+                    const left = (window.innerWidth - width) / 2;
+                    const top = (window.innerHeight - height) / 2;
+                    const oauthWindow = window.open(
+                        data.auth_url,
+                        'claudecode_oauth',
+                        `width=${width},height=${height},top=${top},left=${left},scrollbars=yes`
+                    );
+
+                    Alpine.store('global').oauthProgress = {
+                        active: true,
+                        email: 'Claude.ai Account',
+                        mode: 'add',
+                        source: 'claudecode',
+                        sessionId: sessionId,
+                        step: 1,
+                        totalSteps: 2,
+                        status: Alpine.store('global').t('oauthInProgress')
+                    };
+
+                    let pollCount = 0;
+                    const maxPolls = 150;
+                    const pollInterval = setInterval(async () => {
+                        pollCount++;
+                        if (!Alpine.store('global').oauthProgress.active) {
+                            clearInterval(pollInterval);
+                            try {
+                                await fetch('/api/claudecode/auth/cancel', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ session_id: sessionId })
+                                });
+                            } catch (err) {}
+                            return;
+                        }
+
+                        try {
+                            const statusRes = await fetch(`/api/claudecode/auth/status?session_id=${sessionId}`);
+                            const statusData = await statusRes.json();
+
+                            if (statusData.status === 'completed') {
+                                clearInterval(pollInterval);
+                                Alpine.store('global').oauthProgress.active = false;
+                                await Alpine.store('data').fetchData();
+                                Alpine.store('global').showToast(
+                                    (Alpine.store('global').t('claudeCodeAccountAddedSuccess') || 'Claude Code account added successfully') + (statusData.account?.email ? ': ' + statusData.account.email : ''),
+                                    'success'
+                                );
+                                document.getElementById('add_account_modal')?.close();
+                                if (oauthWindow && !oauthWindow.closed) {
+                                    oauthWindow.close();
+                                }
+                            } else if (statusData.status === 'failed' || statusData.status === 'expired') {
+                                clearInterval(pollInterval);
+                                Alpine.store('global').oauthProgress.active = false;
+                                Alpine.store('global').showToast(statusData.error || 'Claude Code OAuth failed', 'error');
+                            }
+                        } catch (err) {
+                            console.error('Claude Code OAuth status poll error:', err);
+                        }
+
+                        if (pollCount >= maxPolls) {
+                            clearInterval(pollInterval);
+                            Alpine.store('global').oauthProgress.active = false;
+                            Alpine.store('global').showToast(
+                                Alpine.store('global').t('oauthTimeout'),
+                                'warning'
+                            );
+                        }
+                    }, 2000);
+                } else {
+                    Alpine.store('global').showToast(data.error || Alpine.store('global').t('failedToGetAuthUrl'), 'error');
+                }
+            } catch (e) {
+                Alpine.store('global').showToast(Alpine.store('global').t('failedToStartOAuth') + ': ' + e.message, 'error');
+            }
         }
     }));
 });

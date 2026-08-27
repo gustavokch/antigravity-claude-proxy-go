@@ -18,13 +18,18 @@ var (
 // maxStickyEntries bounds the sticky session map to prevent unbounded memory growth.
 const maxStickyEntries = 10000
 
+// TokenRefresher is a callback function to refresh an OAuth access token using a refresh token.
+type TokenRefresher func(refreshToken string) (accessToken string, newRefreshToken string, expiresIn int, err error)
+
 // AccountPool manages a collection of Claude Code accounts with sticky routing,
 // health tracking, and load balancing.
 type AccountPool struct {
-	mu       sync.RWMutex
-	accounts map[string]*Account
-	sticky   map[string]string // sessionKey -> accountID
-	stickyAt map[string]time.Time
+	mu             sync.RWMutex
+	accounts       map[string]*Account
+	sticky         map[string]string // sessionKey -> accountID
+	stickyAt       map[string]time.Time
+	storagePath    string
+	tokenRefresher TokenRefresher
 }
 
 // NewAccountPool creates a new AccountPool initialized with the provided accounts.
@@ -42,6 +47,72 @@ func NewAccountPool(configs []AccountConfig) *AccountPool {
 	return p
 }
 
+// SetStoragePath configures the file path used to persist dynamic accounts.
+func (p *AccountPool) SetStoragePath(path string) {
+	p.mu.Lock()
+	p.storagePath = path
+	p.mu.Unlock()
+}
+
+// SetTokenRefresher configures the callback function used to refresh access tokens.
+func (p *AccountPool) SetTokenRefresher(refresher TokenRefresher) {
+	p.mu.Lock()
+	p.tokenRefresher = refresher
+	p.mu.Unlock()
+}
+
+// LoadStoredAccounts loads and merges persistent accounts from storage.
+func (p *AccountPool) LoadStoredAccounts() error {
+	p.mu.RLock()
+	path := p.storagePath
+	p.mu.RUnlock()
+
+	stored, err := LoadStoredAccounts(path)
+	if err != nil {
+		return err
+	}
+
+	for _, cfg := range stored {
+		p.AddOrUpdateAccount(cfg)
+	}
+	return nil
+}
+
+// SaveStoredAccounts persists all accounts marked as persistent (source "oauth" or "manual") to disk.
+func (p *AccountPool) SaveStoredAccounts() error {
+	p.mu.RLock()
+	path := p.storagePath
+	if path == "" {
+		path = DefaultStoragePath()
+	}
+
+	var toSave []AccountConfig
+	for _, acc := range p.accounts {
+		acc.mu.RLock()
+		// Only persist dynamic accounts (e.g. oauth, manual)
+		if acc.Source == "oauth" || acc.Source == "manual" {
+			toSave = append(toSave, AccountConfig{
+				ID:               acc.ID,
+				Name:             acc.Name,
+				Token:            acc.Token,
+				RefreshToken:     acc.RefreshToken,
+				ExpiresAt:        acc.ExpiresAt,
+				Email:            acc.Email,
+				AccountUUID:      acc.AccountUUID,
+				OrganizationUUID: acc.OrganizationUUID,
+				Type:             acc.Type,
+				Priority:         acc.Priority,
+				Enabled:          acc.Enabled,
+				Source:           acc.Source,
+			})
+		}
+		acc.mu.RUnlock()
+	}
+	p.mu.RUnlock()
+
+	return SaveStoredAccounts(path, toSave)
+}
+
 // AddOrUpdateAccount adds a new account or updates an existing account by ID.
 func (p *AccountPool) AddOrUpdateAccount(cfg AccountConfig) *Account {
 	p.mu.Lock()
@@ -49,17 +120,46 @@ func (p *AccountPool) AddOrUpdateAccount(cfg AccountConfig) *Account {
 
 	id := cfg.ID
 	if id == "" {
-		id = fmt.Sprintf("cc-acc-%d", time.Now().UnixNano())
+		if cfg.Email != "" {
+			id = "cc-" + cfg.Email
+		} else if cfg.AccountUUID != "" {
+			id = "cc-" + cfg.AccountUUID
+		} else {
+			id = fmt.Sprintf("cc-acc-%d", time.Now().UnixNano())
+		}
 		cfg.ID = id
 	}
 
 	existing, ok := p.accounts[id]
 	if ok {
 		existing.mu.Lock()
-		existing.Name = cfg.Name
-		existing.Token = cfg.Token
-		existing.Type = cfg.Type
-		existing.Priority = cfg.Priority
+		if cfg.Name != "" {
+			existing.Name = cfg.Name
+		}
+		if cfg.Token != "" {
+			existing.Token = cfg.Token
+		}
+		if cfg.RefreshToken != "" {
+			existing.RefreshToken = cfg.RefreshToken
+		}
+		if cfg.ExpiresAt != nil {
+			existing.ExpiresAt = cfg.ExpiresAt
+		}
+		if cfg.Email != "" {
+			existing.Email = cfg.Email
+		}
+		if cfg.AccountUUID != "" {
+			existing.AccountUUID = cfg.AccountUUID
+		}
+		if cfg.OrganizationUUID != "" {
+			existing.OrganizationUUID = cfg.OrganizationUUID
+		}
+		if cfg.Type != "" {
+			existing.Type = cfg.Type
+		}
+		if cfg.Priority > 0 {
+			existing.Priority = cfg.Priority
+		}
 		existing.Enabled = cfg.Enabled
 		if cfg.Source != "" {
 			existing.Source = cfg.Source
@@ -69,14 +169,19 @@ func (p *AccountPool) AddOrUpdateAccount(cfg AccountConfig) *Account {
 	}
 
 	acc := &Account{
-		ID:        id,
-		Name:      cfg.Name,
-		Token:     cfg.Token,
-		Type:      cfg.Type,
-		Priority:  cfg.Priority,
-		Enabled:   cfg.Enabled,
-		Source:    cfg.Source,
-		CreatedAt: time.Now(),
+		ID:               id,
+		Name:             cfg.Name,
+		Token:            cfg.Token,
+		RefreshToken:     cfg.RefreshToken,
+		ExpiresAt:        cfg.ExpiresAt,
+		Email:            cfg.Email,
+		AccountUUID:      cfg.AccountUUID,
+		OrganizationUUID: cfg.OrganizationUUID,
+		Type:             cfg.Type,
+		Priority:         cfg.Priority,
+		Enabled:          cfg.Enabled,
+		Source:           cfg.Source,
+		CreatedAt:        time.Now(),
 	}
 	p.accounts[id] = acc
 	return acc
@@ -98,7 +203,51 @@ func (p *AccountPool) DeleteAccount(id string) bool {
 			delete(p.stickyAt, k)
 		}
 	}
+
 	return true
+}
+
+// RefreshTokenIfNeeded checks if an account's token is close to expiry and refreshes it if a refresher is configured.
+func (p *AccountPool) RefreshTokenIfNeeded(acc *Account) error {
+	acc.mu.Lock()
+	refreshToken := acc.RefreshToken
+	expiresAt := acc.ExpiresAt
+	p.mu.RLock()
+	refresher := p.tokenRefresher
+	p.mu.RUnlock()
+
+	if refreshToken == "" || refresher == nil {
+		acc.mu.Unlock()
+		return nil
+	}
+
+	// Refresh if within 5 minutes of expiration
+	needsRefresh := expiresAt != nil && time.Until(*expiresAt) < 5*time.Minute
+	if !needsRefresh {
+		acc.mu.Unlock()
+		return nil
+	}
+
+	acc.mu.Unlock()
+
+	newToken, newRefreshToken, expiresIn, err := refresher(refreshToken)
+	if err != nil {
+		return fmt.Errorf("refresh token for %s: %w", acc.ID, err)
+	}
+
+	acc.mu.Lock()
+	acc.Token = newToken
+	if newRefreshToken != "" {
+		acc.RefreshToken = newRefreshToken
+	}
+	if expiresIn > 0 {
+		newExp := time.Now().Add(time.Duration(expiresIn) * time.Second)
+		acc.ExpiresAt = &newExp
+	}
+	acc.mu.Unlock()
+
+	_ = p.SaveStoredAccounts()
+	return nil
 }
 
 // GetAccount retrieves a single account by ID.

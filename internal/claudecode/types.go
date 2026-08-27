@@ -11,13 +11,18 @@ const DefaultBaseURL = "https://api.anthropic.com"
 
 // AccountConfig defines the persistent configuration for a Claude Code account.
 type AccountConfig struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Token    string `json:"token"`
-	Type     string `json:"type"`     // "setup_token" or "api_key"
-	Priority int    `json:"priority"` // Lower number = higher priority
-	Enabled  bool   `json:"enabled"`
-	Source   string `json:"source,omitempty"` // "manual", "auto_import", "cli"
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	Token            string     `json:"token"`
+	RefreshToken     string     `json:"refreshToken,omitempty"`
+	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
+	Email            string     `json:"email,omitempty"`
+	AccountUUID      string     `json:"accountUuid,omitempty"`
+	OrganizationUUID string     `json:"organizationUuid,omitempty"`
+	Type             string     `json:"type"`     // "oauth", "setup_token", or "api_key"
+	Priority         int        `json:"priority"` // Lower number = higher priority
+	Enabled          bool       `json:"enabled"`
+	Source           string     `json:"source,omitempty"` // "oauth", "manual", "auto_import", "cli"
 }
 
 // ModelConfig defines a supported Claude model and its routing attributes.
@@ -77,13 +82,18 @@ type RateLimits struct {
 type Account struct {
 	mu sync.RWMutex
 
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Token    string `json:"token"`
-	Type     string `json:"type"`
-	Priority int    `json:"priority"`
-	Enabled  bool   `json:"enabled"`
-	Source   string `json:"source"`
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	Token            string     `json:"token"`
+	RefreshToken     string     `json:"refreshToken,omitempty"`
+	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
+	Email            string     `json:"email,omitempty"`
+	AccountUUID      string     `json:"accountUuid,omitempty"`
+	OrganizationUUID string     `json:"organizationUuid,omitempty"`
+	Type             string     `json:"type"`
+	Priority         int        `json:"priority"`
+	Enabled          bool       `json:"enabled"`
+	Source           string     `json:"source"`
 
 	RateLimits RateLimits `json:"rateLimits"`
 
@@ -103,6 +113,9 @@ type Account struct {
 type AccountSnapshot struct {
 	ID                  string     `json:"id"`
 	Name                string     `json:"name"`
+	Email               string     `json:"email,omitempty"`
+	AccountUUID         string     `json:"accountUuid,omitempty"`
+	OrganizationUUID    string     `json:"organizationUuid,omitempty"`
 	Type                string     `json:"type"`
 	Priority            int        `json:"priority"`
 	Enabled             bool       `json:"enabled"`
@@ -118,6 +131,7 @@ type AccountSnapshot struct {
 	TotalCost           float64    `json:"totalCost"`
 	LastUsed            time.Time  `json:"lastUsed,omitempty"`
 	CreatedAt           time.Time  `json:"createdAt"`
+	ExpiresAt           *time.Time `json:"expiresAt,omitempty"`
 }
 
 // Snapshot returns a thread-safe snapshot of the account.
@@ -139,6 +153,9 @@ func (a *Account) Snapshot() AccountSnapshot {
 	return AccountSnapshot{
 		ID:                  a.ID,
 		Name:                a.Name,
+		Email:               a.Email,
+		AccountUUID:         a.AccountUUID,
+		OrganizationUUID:    a.OrganizationUUID,
 		Type:                a.Type,
 		Priority:            a.Priority,
 		Enabled:             a.Enabled,
@@ -154,6 +171,7 @@ func (a *Account) Snapshot() AccountSnapshot {
 		TotalCost:           a.TotalCost,
 		LastUsed:            a.LastUsed,
 		CreatedAt:           a.CreatedAt,
+		ExpiresAt:           a.ExpiresAt,
 	}
 }
 

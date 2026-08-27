@@ -281,6 +281,18 @@ func (server *Server) routeClaudeCodeManagement(writer http.ResponseWriter, requ
 	case path == "/api/claudecode/import" && method == http.MethodPost:
 		server.handleClaudeCodeAutoImport(writer, request)
 		return true
+	case path == "/api/claudecode/auth/start" && method == http.MethodPost:
+		server.handleClaudeCodeAuthStartPost(writer, request)
+		return true
+	case path == "/api/claudecode/auth/status" && method == http.MethodGet:
+		server.handleClaudeCodeAuthStatusGet(writer, request)
+		return true
+	case path == "/api/claudecode/auth/complete" && method == http.MethodPost:
+		server.handleClaudeCodeAuthCompletePost(writer, request)
+		return true
+	case path == "/api/claudecode/auth/cancel" && method == http.MethodPost:
+		server.handleClaudeCodeAuthCancelPost(writer, request)
+		return true
 	}
 	return false
 }
