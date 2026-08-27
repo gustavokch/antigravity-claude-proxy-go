@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -39,6 +40,14 @@ func TestStorage_SaveAndLoad(t *testing.T) {
 
 	if err := SaveStoredAccounts(path, accounts); err != nil {
 		t.Fatalf("unexpected error saving accounts: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat saved file: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("expected file mode 0600, got %v", info.Mode().Perm())
 	}
 
 	loaded, err := LoadStoredAccounts(path)
