@@ -233,6 +233,30 @@ func TestCompleteManualAuth(t *testing.T) {
 	if account.RefreshToken != "manual-refresh-token" {
 		t.Errorf("expected refresh token manual-refresh-token, got %s", account.RefreshToken)
 	}
+
+	// Test URL format and whitespace trimming
+	session2, err := mgr.StartAuthSession("manual")
+	if err != nil {
+		t.Fatalf("unexpected error starting session2: %v", err)
+	}
+	urlCode := "  http://localhost:54321/callback?code=my-auth-code&state=some-state  "
+	account2, err := mgr.CompleteManualAuth(session2.ID, urlCode)
+	if err != nil {
+		t.Fatalf("unexpected error on manual auth with url: %v", err)
+	}
+	if account2.Email != "manual@claude.ai" {
+		t.Errorf("expected email manual@claude.ai, got %s", account2.Email)
+	}
+
+	// Test empty code
+	session3, err := mgr.StartAuthSession("manual")
+	if err != nil {
+		t.Fatalf("unexpected error starting session3: %v", err)
+	}
+	_, err = mgr.CompleteManualAuth(session3.ID, "   ")
+	if err == nil {
+		t.Error("expected error for empty auth code")
+	}
 }
 
 func TestRefreshToken(t *testing.T) {
