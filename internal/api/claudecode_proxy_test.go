@@ -152,3 +152,49 @@ func TestClaudeCodeConfigInDefaultConfig(t *testing.T) {
 		t.Error("default allowlist should be non-empty")
 	}
 }
+
+func TestForwardToClaudeCode_Non2xxStatusRecording(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"type":"api_error","message":"internal error"}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := claudecode.Config{
+		Enabled: true,
+		BaseURL: upstream.URL,
+		Mode:    "pool",
+		Accounts: []claudecode.AccountConfig{
+			{ID: "acc-err", Token: "sk-ant-err", Enabled: true},
+		},
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	pool, _ := getOrCreateCCPool(cfg)
+
+	reqBody := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	srv := &Server{}
+	srv.forwardToClaudeCode(w, req, cfg, []byte(reqBody), "claude-sonnet-5")
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 status forwarded, got %d", w.Code)
+	}
+
+	acc, ok := pool.GetAccount("acc-err")
+	if !ok {
+		t.Fatalf("account not found in pool")
+	}
+	if acc.ConsecutiveFailures == 0 || acc.TotalErrors == 0 {
+		t.Errorf("expected account failures/errors incremented on 500 upstream response, got failures=%d errors=%d", acc.ConsecutiveFailures, acc.TotalErrors)
+	}
+}

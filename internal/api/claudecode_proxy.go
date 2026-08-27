@@ -127,8 +127,14 @@ func (server *Server) forwardToClaudeCode(
 			f.Flush()
 		}
 
-		// Record success with cost=0 (streaming, tokens not yet parsed).
-		pool.RecordSuccess(acc.ID, 0, 0, rl)
+		if resp.StatusCode < 400 {
+			// Record success with cost=0 (streaming, tokens not yet parsed).
+			pool.RecordSuccess(acc.ID, 0, 0, rl)
+		} else if resp.StatusCode >= 500 {
+			pool.RecordFailure(acc.ID, true, 30*time.Second)
+		} else {
+			pool.RecordFailure(acc.ID, false, 0)
+		}
 
 		m := claudecode.RequestMetrics{
 			Model:     model,
