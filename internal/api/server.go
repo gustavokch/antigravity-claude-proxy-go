@@ -623,6 +623,18 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			return
 		}
 	}
+	if cfg.ClaudeCode.Enabled {
+		if ccMatch := matchClaudeCodeModel(cfg.ClaudeCode, model); ccMatch != "" {
+			anthropicRequest["model"] = ccMatch
+			ccBody, err := json.Marshal(anthropicRequest)
+			if err != nil {
+				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal ClaudeCode request: "+err.Error())
+				return
+			}
+			server.forwardToClaudeCode(writer, request, cfg.ClaudeCode, ccBody, ccMatch)
+			return
+		}
+	}
 	if cfg.OpenRouter.Enabled {
 		for _, item := range cfg.OpenRouter.Allowlist {
 			if !item.Enabled {
