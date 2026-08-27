@@ -22,7 +22,10 @@ func TestGetModelPricing(t *testing.T) {
 		// Prefix/alias matching
 		{"claude-3.7-sonnet", 3.0 / 1e6, 15.0 / 1e6},
 		{"claude-sonnet-5-latest", 2.0 / 1e6, 10.0 / 1e6},
-		{"unknown-model", 3.0 / 1e6, 15.0 / 1e6}, // default fallback
+		{"claude-haiku", 1.0 / 1e6, 5.0 / 1e6},
+		{"claude-3-haiku-20240307", 1.0 / 1e6, 5.0 / 1e6},
+		{"claude-opus", 5.0 / 1e6, 25.0 / 1e6},
+		{"unknown-model", 2.0 / 1e6, 10.0 / 1e6}, // default fallback
 	}
 
 	for _, tt := range tests {

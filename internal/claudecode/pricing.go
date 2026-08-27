@@ -38,6 +38,12 @@ var defaultPricingTable = map[string]ModelPricing{
 		CacheWrite: 1.25 / 1e6,
 		CacheRead:  0.10 / 1e6,
 	},
+	"claude-haiku-4-5": {
+		Prompt:     1.0 / 1e6,
+		Completion: 5.0 / 1e6,
+		CacheWrite: 1.25 / 1e6,
+		CacheRead:  0.10 / 1e6,
+	},
 	"claude-3-7-sonnet-20250219": {
 		Prompt:     3.0 / 1e6,
 		Completion: 15.0 / 1e6,
@@ -89,9 +95,17 @@ func GetModelPricing(modelID string) ModelPricing {
 		return defaultPricingTable["claude-3-5-haiku-20241022"]
 	case strings.Contains(modelID, "3-opus") || strings.Contains(modelID, "3.0-opus"):
 		return defaultPricingTable["claude-3-opus-20240229"]
+	case strings.Contains(modelID, "haiku"):
+		return defaultPricingTable["claude-haiku-4-5-20251001"]
+	case strings.Contains(modelID, "opus"):
+		return defaultPricingTable["claude-opus-5"]
+	case strings.Contains(modelID, "fable"):
+		return defaultPricingTable["claude-fable-5"]
+	case strings.Contains(modelID, "sonnet"):
+		return defaultPricingTable["claude-sonnet-5"]
 	default:
-		// Default fallback to Sonnet 3.5 pricing
-		return defaultPricingTable["claude-3-5-sonnet-20241022"]
+		// Default fallback to Sonnet 5 pricing
+		return defaultPricingTable["claude-sonnet-5"]
 	}
 }
 
