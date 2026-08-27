@@ -14,6 +14,7 @@ import (
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/openrouter"
+	"antigravity-go-proxy/internal/stats"
 )
 
 func (server *Server) checkWebUIPassword(request *http.Request) bool {
@@ -147,6 +148,9 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	case path == "/api/stats/history" && method == http.MethodGet:
 		server.handleStatsHistory(writer, request)
+		return true
+	case path == "/api/headroom/stats" && method == http.MethodGet:
+		server.handleHeadroomStats(writer, request)
 		return true
 	case path == "/api/logs" && method == http.MethodGet:
 		server.handleLogsGet(writer, request)
@@ -670,6 +674,7 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 	if updater, ok := server.backend.(ConfigUpdater); ok {
 		updater.UpdateConfig(updated)
 	}
+	server.applyHeadroomConfig(updated.Headroom)
 
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":  "ok",
@@ -1050,6 +1055,14 @@ func (server *Server) handleStatsHistory(writer http.ResponseWriter, request *ht
 		"status":  "ok",
 		"history": server.tracker.GetHistory(),
 	})
+}
+
+func (server *Server) handleHeadroomStats(writer http.ResponseWriter, request *http.Request) {
+	if server.tracker == nil {
+		writeJSON(writer, http.StatusOK, stats.HeadroomStats{})
+		return
+	}
+	writeJSON(writer, http.StatusOK, server.tracker.GetHeadroomStats())
 }
 
 func (server *Server) handleOpenRouterConfigGet(writer http.ResponseWriter, request *http.Request) {

@@ -18,11 +18,27 @@ type ModelMetrics struct {
 	CacheReadTokens int   `json:"cache_read_tokens"`
 }
 
+type HeadroomSample struct {
+	BytesBefore           int
+	BytesAfter            int
+	ThinkingTokensClamped int
+	CCRRetrievals         int
+}
+
+type HeadroomStats struct {
+	BytesBefore           int `json:"bytesBefore"`
+	BytesAfter            int `json:"bytesAfter"`
+	ThinkingTokensClamped int `json:"thinkingTokensClamped"`
+	CCRRetrievals         int `json:"ccrRetrievals"`
+	RequestsCompressed    int `json:"requestsCompressed"`
+}
+
 // Tracker manages hourly request volume statistics by model and family with disk persistence.
 type Tracker struct {
 	mu           sync.RWMutex
 	filePath     string
 	history      map[string]map[string]any
+	headroom     HeadroomStats
 	dirty        bool
 	stopAutoSave func()
 	wg           sync.WaitGroup
@@ -65,11 +81,44 @@ func NewTracker(filePath string) (*Tracker, error) {
 			var raw map[string]any
 			if jsonErr := json.Unmarshal(data, &raw); jsonErr == nil {
 				t.history = normalizeHistory(raw)
+				if hrRaw, ok := raw["headroom"].(map[string]any); ok {
+					t.headroom = parseHeadroomStats(hrRaw)
+				}
 			}
 		}
 	}
 
 	return t, nil
+}
+
+func parseHeadroomStats(m map[string]any) HeadroomStats {
+	var s HeadroomStats
+	if bb, ok := m["bytesBefore"].(float64); ok {
+		s.BytesBefore = int(bb)
+	} else if bb, ok := m["bytesBefore"].(int); ok {
+		s.BytesBefore = bb
+	}
+	if ba, ok := m["bytesAfter"].(float64); ok {
+		s.BytesAfter = int(ba)
+	} else if ba, ok := m["bytesAfter"].(int); ok {
+		s.BytesAfter = ba
+	}
+	if tc, ok := m["thinkingTokensClamped"].(float64); ok {
+		s.ThinkingTokensClamped = int(tc)
+	} else if tc, ok := m["thinkingTokensClamped"].(int); ok {
+		s.ThinkingTokensClamped = tc
+	}
+	if ccr, ok := m["ccrRetrievals"].(float64); ok {
+		s.CCRRetrievals = int(ccr)
+	} else if ccr, ok := m["ccrRetrievals"].(int); ok {
+		s.CCRRetrievals = ccr
+	}
+	if rc, ok := m["requestsCompressed"].(float64); ok {
+		s.RequestsCompressed = int(rc)
+	} else if rc, ok := m["requestsCompressed"].(int); ok {
+		s.RequestsCompressed = rc
+	}
+	return s
 }
 
 func parseModelMetrics(m map[string]any) ModelMetrics {
@@ -111,6 +160,9 @@ func parseModelMetrics(m map[string]any) ModelMetrics {
 func normalizeHistory(raw map[string]any) map[string]map[string]any {
 	result := make(map[string]map[string]any)
 	for hourKey, hourVal := range raw {
+		if hourKey == "headroom" {
+			continue
+		}
 		hourMap, ok := hourVal.(map[string]any)
 		if !ok {
 			continue
@@ -275,6 +327,26 @@ func (t *Tracker) Prune(retention time.Duration) {
 	}
 }
 
+// RecordHeadroom records compression and shaping telemetry from a Headroom run.
+func (t *Tracker) RecordHeadroom(sample HeadroomSample) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.headroom.BytesBefore += sample.BytesBefore
+	t.headroom.BytesAfter += sample.BytesAfter
+	t.headroom.ThinkingTokensClamped += sample.ThinkingTokensClamped
+	t.headroom.CCRRetrievals += sample.CCRRetrievals
+	t.headroom.RequestsCompressed++
+	t.dirty = true
+}
+
+// GetHeadroomStats returns a copy of current cumulative Headroom metrics.
+func (t *Tracker) GetHeadroomStats() HeadroomStats {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.headroom
+}
+
 // Save writes the usage history to disk atomically if changes were made.
 func (t *Tracker) Save() error {
 	t.mu.Lock()
@@ -288,6 +360,7 @@ func (t *Tracker) Save() error {
 	}
 
 	data := t.getHistoryLocked()
+	data["headroom"] = t.headroom
 	t.dirty = false
 	t.mu.Unlock()
 

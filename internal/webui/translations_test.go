@@ -34,6 +34,23 @@ var presetKeys = []string{
 	"presetNamePlaceholder", "savePreset",
 }
 
+var headroomKeys = []string{
+	"headroomSettings", "headroomDesc", "headroomEnabled", "headroomCacheNotice",
+	"headroomSmartCrusher", "headroomSmartCrusherDesc",
+	"headroomTabularArrays", "headroomTabularArraysDesc",
+	"headroomCodeCompressor", "headroomCodeCompressorDesc",
+	"headroomLiveTurns", "headroomLiveTurnsDesc",
+	"headroomOutputShaper", "headroomOutputShaperDesc",
+	"headroomVerbositySteering", "headroomVerbositySteeringDesc",
+	"headroomSteeringText", "headroomSteeringTextPlaceholder",
+	"headroomEffortRouting", "headroomEffortRoutingDesc",
+	"headroomThinkingBudget",
+	"headroomCcr", "headroomCcrDesc", "headroomCcrEnabled",
+	"headroomMaxStoreMB", "headroomMinChunkBytes",
+	"headroomStatsTitle", "headroomBytesSaved", "headroomCompressionRatio",
+	"headroomRequestsCompressed", "headroomThinkingClamped", "headroomCcrRetrievals",
+}
+
 var locales = []string{"en", "zh", "id", "pt", "tr"}
 
 func loadLocale(t *testing.T, locale string) string {
@@ -73,6 +90,18 @@ func TestTranslations_PresetKeys(t *testing.T) {
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		for _, key := range presetKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_HeadroomKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range headroomKeys {
 			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
 			if !re.MatchString(src) {
 				t.Errorf("locale %s missing key %q", locale, key)

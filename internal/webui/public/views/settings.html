@@ -2397,6 +2397,223 @@
                     </div>
                 </div>
 
+                <!-- 🚀 Headroom Native Compression & Shaping Engine -->
+                <div class="space-y-3">
+                    <div class="flex items-center gap-2 mb-1 px-1">
+                        <span class="text-[10px] uppercase text-gray-500 font-bold tracking-widest"
+                            x-text="$store.global.t('headroomSettings')">Headroom Context Optimization</span>
+                        <div class="h-px flex-1 bg-space-border/30"></div>
+                    </div>
+
+                    <div class="form-control view-card border-space-border/50 hover:border-neon-purple/50"
+                        :class="serverConfig.headroom?.enabled ? 'border-neon-purple/50 bg-neon-purple/5' : ''">
+                        <!-- Master Toggle -->
+                        <div class="flex items-center justify-between">
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm font-medium text-gray-200"
+                                        :class="serverConfig.headroom?.enabled ? 'text-neon-purple' : ''"
+                                        x-text="$store.global.t('headroomEnabled')">Enable Headroom Engine</span>
+                                </div>
+                                <span class="text-[11px] text-gray-500" x-text="$store.global.t('headroomDesc')">Native context compression, whitespace pruning, output shaping, and CCR.</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer" :checked="serverConfig.headroom?.enabled === true"
+                                    @change="toggleHeadroomMaster($el.checked)" aria-label="Headroom engine master toggle">
+                                <div
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- Cache Notice -->
+                        <div class="mt-3 p-2.5 rounded bg-space-800/60 border border-space-border/40 flex items-start gap-2 text-[11px] text-amber-300/80">
+                            <svg class="w-4 h-4 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span x-text="$store.global.t('headroomCacheNotice')">Notice: Changing Headroom settings invalidates the prompt cache once for active conversations.</span>
+                        </div>
+
+                        <!-- Sub-options -->
+                        <div x-show="serverConfig.headroom?.enabled" x-transition class="mt-4 pt-4 border-t border-neon-purple/20 space-y-4">
+                            <!-- SmartCrusher Toggle -->
+                            <div class="flex items-center justify-between">
+                                <div class="flex flex-col gap-1 pr-4">
+                                    <span class="text-xs font-medium transition-colors"
+                                        :class="serverConfig.headroom?.smartCrusher ? 'text-neon-purple' : 'text-gray-300'"
+                                        x-text="$store.global.t('headroomSmartCrusher')">SmartCrusher (JSON Compactor)</span>
+                                    <span class="text-[11px] text-gray-500"
+                                        x-text="$store.global.t('headroomSmartCrusherDesc')">Strips insignificant whitespace from JSON tool results while preserving key order and numeric precision.</span>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                    <input type="checkbox" class="sr-only peer"
+                                        :checked="serverConfig.headroom?.smartCrusher === true"
+                                        @change="toggleHeadroomSmartCrusher($el.checked)"
+                                        aria-label="SmartCrusher toggle">
+                                    <div
+                                        class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                    </div>
+                                </label>
+                            </div>
+
+                            <!-- Tabular Arrays Toggle -->
+                            <div class="flex items-center justify-between pl-3 border-l-2 border-neon-purple/30" x-show="serverConfig.headroom?.smartCrusher">
+                                <div class="flex flex-col gap-0.5 pr-4">
+                                    <span class="text-xs font-medium text-gray-300"
+                                        x-text="$store.global.t('headroomTabularArrays')">Tabular Array Conversion</span>
+                                    <span class="text-[10px] text-gray-500"
+                                        x-text="$store.global.t('headroomTabularArraysDesc')">Converts uniform JSON object arrays into Markdown pipe tables when savings exceed 30%.</span>
+                                </div>
+                                <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
+                                    :checked="serverConfig.headroom?.tabularArrays === true"
+                                    @change="toggleHeadroomTabularArrays($el.checked)">
+                            </div>
+
+                            <!-- CodeCompressor Toggle -->
+                            <div class="flex items-center justify-between">
+                                <div class="flex flex-col gap-1 pr-4">
+                                    <span class="text-xs font-medium transition-colors"
+                                        :class="serverConfig.headroom?.codeCompressor ? 'text-neon-purple' : 'text-gray-300'"
+                                        x-text="$store.global.t('headroomCodeCompressor')">CodeCompressor (Whitespace & Repetition Pruning)</span>
+                                    <span class="text-[11px] text-gray-500"
+                                        x-text="$store.global.t('headroomCodeCompressorDesc')">Removes trailing whitespace, collapses multiple blank lines, and folds repetitive log lines.</span>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                    <input type="checkbox" class="sr-only peer"
+                                        :checked="serverConfig.headroom?.codeCompressor === true"
+                                        @change="toggleHeadroomCodeCompressor($el.checked)"
+                                        aria-label="CodeCompressor toggle">
+                                    <div
+                                        class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                    </div>
+                                </label>
+                            </div>
+
+                            <!-- OutputShaper Section -->
+                            <div class="p-3 bg-space-850/60 rounded-lg border border-space-border/30 space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex flex-col gap-0.5">
+                                        <span class="text-xs font-medium text-gray-200" x-text="$store.global.t('headroomOutputShaper')">Output Shaper</span>
+                                        <span class="text-[10px] text-gray-500" x-text="$store.global.t('headroomOutputShaperDesc')">Steers verbosity and manages mechanical-turn thinking budget.</span>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" class="sr-only peer"
+                                            :checked="serverConfig.headroom?.outputShaper?.enabled === true"
+                                            @change="toggleHeadroomOutputShaper({ enabled: $el.checked })"
+                                            aria-label="OutputShaper toggle">
+                                        <div
+                                            class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                        </div>
+                                    </label>
+                                </div>
+
+                                <div x-show="serverConfig.headroom?.outputShaper?.enabled" x-transition class="space-y-3 pt-2 border-t border-space-border/20">
+                                    <!-- Verbosity Steering -->
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex flex-col gap-0.5">
+                                            <span class="text-xs text-gray-300" x-text="$store.global.t('headroomVerbositySteering')">Verbosity Steering</span>
+                                            <span class="text-[10px] text-gray-500" x-text="$store.global.t('headroomVerbositySteeringDesc')">Appends concise technical steering prompt.</span>
+                                        </div>
+                                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
+                                            :checked="serverConfig.headroom?.outputShaper?.verbositySteering !== false"
+                                            @change="toggleHeadroomOutputShaper({ verbositySteering: $el.checked })">
+                                    </div>
+
+                                    <!-- Custom Steering Text -->
+                                    <div class="form-control" x-show="serverConfig.headroom?.outputShaper?.verbositySteering !== false">
+                                        <label class="label pt-0 pb-1">
+                                            <span class="label-text text-[11px] text-gray-400" x-text="$store.global.t('headroomSteeringText')">Custom Steering Prompt</span>
+                                        </label>
+                                        <input type="text" class="input input-xs bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            :value="serverConfig.headroom?.outputShaper?.steeringText || ''"
+                                            :placeholder="$store.global.t('headroomSteeringTextPlaceholder')"
+                                            @change="toggleHeadroomOutputShaper({ steeringText: $el.value })">
+                                    </div>
+
+                                    <!-- Effort Routing -->
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex flex-col gap-0.5">
+                                            <span class="text-xs text-gray-300" x-text="$store.global.t('headroomEffortRouting')">Effort Routing</span>
+                                            <span class="text-[10px] text-gray-500" x-text="$store.global.t('headroomEffortRoutingDesc')">Clamps thinking budget during mechanical tool turns.</span>
+                                        </div>
+                                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
+                                            :checked="serverConfig.headroom?.outputShaper?.effortRouting !== false"
+                                            @change="toggleHeadroomOutputShaper({ effortRouting: $el.checked })">
+                                    </div>
+
+                                    <!-- Mechanical Thinking Budget -->
+                                    <div class="form-control" x-show="serverConfig.headroom?.outputShaper?.effortRouting !== false">
+                                        <label class="label pt-0 pb-1">
+                                            <span class="label-text text-[11px] text-gray-400" x-text="$store.global.t('headroomThinkingBudget')">Mechanical Thinking Budget</span>
+                                            <span class="label-text-alt font-mono text-neon-purple text-xs" x-text="serverConfig.headroom?.outputShaper?.mechanicalThinkingBudget || 1024"></span>
+                                        </label>
+                                        <input type="number" min="1024" max="64000" step="512"
+                                            class="input input-xs bg-space-800 border-space-border text-white font-mono text-xs w-32"
+                                            :value="serverConfig.headroom?.outputShaper?.mechanicalThinkingBudget || 1024"
+                                            @change="toggleHeadroomOutputShaper({ mechanicalThinkingBudget: parseInt($el.value) || 1024 })">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Live Turns -->
+                            <div class="form-control">
+                                <label class="label pt-0 pb-1">
+                                    <span class="label-text text-gray-300 text-xs" x-text="$store.global.t('headroomLiveTurns')">CCR Live Turns (Preserved Inline)</span>
+                                    <span class="label-text-alt font-mono text-neon-cyan text-xs" x-text="serverConfig.headroom?.liveTurns || 2"></span>
+                                </label>
+                                <div class="flex gap-3 items-center">
+                                    <input type="number" min="1" max="10"
+                                        class="input input-xs input-bordered w-20 bg-space-800 border-space-border text-white font-mono text-center"
+                                        :value="serverConfig.headroom?.liveTurns || 2"
+                                        @change="toggleHeadroomLiveTurns($el.value)"
+                                        aria-label="CCR Live Turns value">
+                                </div>
+                                <span class="text-[11px] text-gray-500 mt-1" x-text="$store.global.t('headroomLiveTurnsDesc')">Number of trailing messages kept inline without retrieval chunking.</span>
+                            </div>
+
+                            <!-- CCR Section (Phase 2 preview) -->
+                            <div class="p-3 bg-space-850/60 rounded-lg border border-space-border/30 space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex flex-col gap-0.5">
+                                        <span class="text-xs font-medium text-gray-200" x-text="$store.global.t('headroomCcr')">Content-Conditioned Retrieval (CCR)</span>
+                                        <span class="text-[10px] text-gray-500" x-text="$store.global.t('headroomCcrDesc')">Offload large tool outputs to chunk storage and retrieve dynamically (Cloud Code & OpenRouter only).</span>
+                                    </div>
+                                    <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input type="checkbox" class="sr-only peer"
+                                            :checked="serverConfig.headroom?.ccr?.enabled === true"
+                                            @change="toggleHeadroomCCR({ enabled: $el.checked })"
+                                            aria-label="CCR toggle">
+                                        <div
+                                            class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                        </div>
+                                    </label>
+                                </div>
+
+                                <div x-show="serverConfig.headroom?.ccr?.enabled" x-transition class="grid grid-cols-2 gap-4 pt-2 border-t border-space-border/20">
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1">
+                                            <span class="label-text text-[11px] text-gray-400" x-text="$store.global.t('headroomMaxStoreMB')">Max Store Size (MB)</span>
+                                        </label>
+                                        <input type="number" min="8" max="512"
+                                            class="input input-xs bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            :value="serverConfig.headroom?.ccr?.maxStoreMB || 64"
+                                            @change="toggleHeadroomCCR({ maxStoreMB: parseInt($el.value) || 64 })">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1">
+                                            <span class="label-text text-[11px] text-gray-400" x-text="$store.global.t('headroomMinChunkBytes')">Min Chunk Size (Bytes)</span>
+                                        </label>
+                                        <input type="number" min="512" max="65536" step="512"
+                                            class="input input-xs bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            :value="serverConfig.headroom?.ccr?.minChunkBytes || 2048"
+                                            @change="toggleHeadroomCCR({ minChunkBytes: parseInt($el.value) || 2048 })">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ▼ Advanced Tuning (Fixed Logic) -->
                 <div class="view-card !p-0 border-space-border/50">
                     <div class="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5 transition-colors"

@@ -225,11 +225,44 @@ Additional environment controls:
       "referer": "https://claude.ai/code"
     }
   },
+  "headroom": {
+    "enabled": false,
+    "smartCrusher": true,
+    "codeCompressor": true,
+    "liveTurns": 2,
+    "ccr": {
+      "enabled": false,
+      "maxStoreMB": 64,
+      "minChunkBytes": 2048
+    },
+    "outputShaper": {
+      "enabled": false,
+      "verbositySteering": true,
+      "steeringText": "",
+      "effortRouting": true,
+      "mechanicalThinkingBudget": 1024
+    }
+  },
   "accountSelection": {
     "strategy": "hybrid"
   }
 }
 ```
+
+---
+
+## Headroom Native Context Compression & Output Shaping
+
+The proxy integrates native, provider-agnostic **Headroom** optimizations (`internal/headroom`) executed before provider dispatch across Cloud Code, OpenRouter, Kimi, and Custom Endpoints:
+
+### Components & Invariants
+- **Cache-Stable Determinism**: `SmartCrusher` and `CodeCompressor` apply purely deterministic transforms across all `tool_result` blocks in the request (history included). This preserves byte-identical prefixes across conversation turns so provider KV/prompt caches stay warm.
+- **SmartCrusher**: Compacts formatted JSON payloads inside `tool_result` blocks, removing insignificant indentation while preserving key order and numeric precision.
+- **CodeCompressor**: Prunes trailing whitespace, collapses multiple blank lines, and folds recurring identical log lines (`[... repeated N times ...]`).
+- **OutputShaper**: Appends concise technical steering instructions to the tail of the system prompt and automatically clamps thinking budgets (`thinking.budget_tokens` or `reasoning.effort`) on mechanical tool continuation turns.
+- **Content-Conditioned Retrieval (CCR)**: Reversible chunk storage and transparent dynamic retrieval for large tool payloads outside the `liveTurns` window. When the model invokes the injected `headroom_retrieve` tool, the proxy transparently intercepts the call, hydrates the chunk from its LRU store, and re-issues upstream continuations without client interruption (supported on Cloud Code and OpenRouter paths; Kimi and custom reverse-proxy endpoints bypass CCR hydration).
+- **Cache Notice**: Enabling, disabling, or retuning Headroom mid-conversation causes exactly one prompt-cache miss for in-flight conversations. Configure settings in the Web UI Server tab or `config.json`.
+- **Metrics**: Track input bytes saved, compression ratios, requests compressed, clamped thinking tokens, and CCR dynamic retrievals via the Web UI Dashboard or `GET /api/headroom/stats`.
 
 ---
 

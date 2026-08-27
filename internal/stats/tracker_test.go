@@ -238,3 +238,60 @@ func TestTracker_TrackRequest(t *testing.T) {
 		t.Errorf("unexpected metrics values: %+v", metrics)
 	}
 }
+
+func TestTracker_RecordHeadroom(t *testing.T) {
+	tracker, err := NewTracker("")
+	if err != nil {
+		t.Fatalf("NewTracker: %v", err)
+	}
+	tracker.RecordHeadroom(HeadroomSample{BytesBefore: 1000, BytesAfter: 700, ThinkingTokensClamped: 50})
+	tracker.RecordHeadroom(HeadroomSample{BytesBefore: 500, BytesAfter: 500})
+
+	got := tracker.GetHeadroomStats()
+	if got.BytesBefore != 1500 || got.BytesAfter != 1200 {
+		t.Errorf("unexpected byte totals: %+v", got)
+	}
+	if got.ThinkingTokensClamped != 50 {
+		t.Errorf("unexpected clamp total: %+v", got)
+	}
+	if got.RequestsCompressed != 2 {
+		t.Errorf("unexpected request count: %+v", got)
+	}
+}
+
+func TestTracker_HeadroomStatsPersistAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.json")
+	tracker, err := NewTracker(path)
+	if err != nil {
+		t.Fatalf("NewTracker: %v", err)
+	}
+	tracker.RecordHeadroom(HeadroomSample{BytesBefore: 100, BytesAfter: 60})
+	if err := tracker.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	reloaded, err := NewTracker(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.GetHeadroomStats(); got.BytesBefore != 100 || got.BytesAfter != 60 {
+		t.Errorf("headroom stats did not survive reload: %+v", got)
+	}
+}
+
+func TestTracker_ConcurrentRecordHeadroom(t *testing.T) {
+	tracker, _ := NewTracker("")
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tracker.RecordHeadroom(HeadroomSample{BytesBefore: 10, BytesAfter: 5})
+		}()
+	}
+	wg.Wait()
+	if got := tracker.GetHeadroomStats(); got.BytesBefore != 1000 {
+		t.Errorf("lost updates under concurrency: %+v", got)
+	}
+}
+

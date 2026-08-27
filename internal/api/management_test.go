@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,6 +46,7 @@ func newTestServerWithManager(t *testing.T) (*Server, *accounts.Manager, *logger
 	_ = mgr.SaveToDisk()
 
 	broadcaster := logger.NewBroadcaster(100)
+	tracker, _ := stats.NewTracker("")
 
 	server, err := New(Options{
 		APIKey:      "test-api-key",
@@ -53,6 +55,7 @@ func newTestServerWithManager(t *testing.T) (*Server, *accounts.Manager, *logger
 		Now:         now,
 		AccountManager: mgr,
 		Broadcaster: broadcaster,
+		Tracker:     tracker,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -663,3 +666,65 @@ func TestManagement_OpenRouterEndpoints(t *testing.T) {
 		}
 	})
 }
+
+func TestManagement_SaveHeadroomConfig(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+
+	body, _ := json.Marshal(map[string]any{"headroom": map[string]any{
+		"enabled": true, "smartCrusher": true, "codeCompressor": true, "liveTurns": 3,
+		"ccr":          map[string]any{"enabled": false, "maxStoreMB": 32, "minChunkBytes": 4096},
+		"outputShaper": map[string]any{"enabled": true, "verbositySteering": true, "effortRouting": false, "mechanicalThinkingBudget": 2048},
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	got := config.Get().Headroom
+	if !got.Enabled || got.LiveTurns != 3 || got.CCR.MaxStoreMB != 32 || got.OutputShaper.MechanicalThinkingBudget != 2048 {
+		t.Errorf("headroom config not persisted: %+v", got)
+	}
+	if srv.headroom.GetConfig().LiveTurns != 3 {
+		t.Error("live engine was not updated after config save")
+	}
+}
+
+func TestManagement_ConfigGetExposesHeadroom(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	var payload struct {
+		Config map[string]any `json:"config"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := payload.Config["headroom"]; !ok {
+		t.Error("GET /api/config must expose the headroom subtree for the settings view")
+	}
+}
+
+func TestManagement_HeadroomStatsEndpoint(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/headroom/stats", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, key := range []string{"bytesBefore", "bytesAfter", "requestsCompressed"} {
+		if _, ok := payload[key]; !ok {
+			t.Errorf("missing %q in headroom stats payload", key)
+		}
+	}
+}
+

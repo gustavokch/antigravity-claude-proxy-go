@@ -57,12 +57,12 @@ func BenchmarkStreamMessage(b *testing.B) {
 	}
 	
 	req := httptest.NewRequest("POST", "/v1/messages", nil)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		w := httptest.NewRecorder()
-		server.streamMessage(w, req, func(ctx context.Context, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+		server.streamMessage(w, req, func(ctx context.Context, _ map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
 			return sender.StreamGenerateContent(ctx, nil, cloudcode.RequestOptions{}, consume)
-		}, "claude-sonnet-4-6-thinking")
+		}, map[string]any{"messages": []any{}}, "claude-sonnet-4-6-thinking")
 	}
 }

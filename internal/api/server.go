@@ -26,6 +26,7 @@ import (
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
+	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/modelcatalog"
@@ -93,6 +94,7 @@ type Server struct {
 	webUI          http.Handler
 	oauthHandler   http.Handler
 	tracker        *stats.Tracker
+	headroom       *headroom.Engine
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -127,6 +129,7 @@ func New(options Options) (*Server, error) {
 	}
 
 	cfg := config.Get()
+	srv.headroom = headroom.NewEngine(cfg.Headroom)
 	if cfg.OpenRouter.Enabled {
 		openrouter.DefaultClient.WarmupCacheAsync(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL)
 	}
@@ -146,6 +149,12 @@ func applyRouterConfig(openRouterCfg config.OpenRouterConfig) {
 		FailureThreshold: openRouterCfg.Routing.FailureThreshold,
 		RankWeights:      openRouterCfg.Routing.RankWeightsToOpenRouter(),
 	})
+}
+
+func (server *Server) applyHeadroomConfig(cfg config.HeadroomConfig) {
+	if server.headroom != nil {
+		server.headroom.UpdateConfig(cfg)
+	}
 }
 
 type responseWriterRecorder struct {
@@ -584,6 +593,23 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		}
 	}
 
+	if server.headroom != nil {
+		if hrCtx, err := server.headroom.Process(request.Context(), anthropicRequest); err != nil {
+			server.logger.Warn("headroom pipeline failed; forwarding request unmodified", "error", err)
+		} else if hrCtx.BytesBefore > 0 || hrCtx.EffortClamped {
+			server.logger.Debug("headroom compressed request",
+				"bytesBefore", hrCtx.BytesBefore, "bytesAfter", hrCtx.BytesAfter,
+				"effortClamped", hrCtx.EffortClamped)
+			if server.tracker != nil {
+				server.tracker.RecordHeadroom(stats.HeadroomSample{
+					BytesBefore:           hrCtx.BytesBefore,
+					BytesAfter:            hrCtx.BytesAfter,
+					ThinkingTokensClamped: hrCtx.OriginalThinking - hrCtx.ClampedThinking,
+				})
+			}
+		}
+	}
+
 	model := stringFrom(anthropicRequest["model"])
 	if cfg.Kimi.Enabled {
 		if kimiMatch := matchKimiModel(cfg.Kimi, model); kimiMatch != "" {
@@ -627,8 +653,8 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 
 	var send streamSender
 	if server.backend != nil {
-		send = func(ctx context.Context, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
-			return server.backend.StreamGenerateContent(ctx, anthropicRequest, consume)
+		send = func(ctx context.Context, req map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+			return server.backend.StreamGenerateContent(ctx, req, consume)
 		}
 	} else {
 		credentials, upstream, err := server.client(request.Context())
@@ -648,16 +674,17 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			options.Headers = make(http.Header)
 			options.Headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
 		}
-		send = func(ctx context.Context, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
-			return upstream.StreamGenerateContent(ctx, payload, options, consume)
+		send = func(ctx context.Context, req map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+			dynPayload := server.builder.BuildCloudCodeRequest(req, projectID, credentials.Email)
+			return upstream.StreamGenerateContent(ctx, dynPayload, options, consume)
 		}
 	}
 
 	if stream, _ := anthropicRequest["stream"].(bool); stream {
-		server.streamMessage(writer, request, send, model)
+		server.streamMessage(writer, request, send, anthropicRequest, model)
 		return
 	}
-	server.unaryMessage(writer, request, send, model)
+	server.unaryMessage(writer, request, send, anthropicRequest, model)
 }
 
 func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, reqBody []byte) {
@@ -815,13 +842,23 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	appSpoofed := false
 
 	var (
-		lastStatus  int
-		lastBody    []byte
-		providerIdx = 0
-		consec429   int
-		tried       = make(map[string]bool)
-		attempts    int
+		lastStatus         int
+		lastBody           []byte
+		providerIdx        = 0
+		consec429          int
+		tried              = make(map[string]bool)
+		attempts           int
+		ccrHydrations      int
+		totalCCRRetrievals int
+		streamStarted      bool
+		baseBlockIndex     int
+		totalInput         int
+		totalOutput        int
+		totalCacheRead     int
 	)
+
+	bw := bufio.NewWriterSize(writer, 4096)
+	flusher, hasFlusher := writer.(http.Flusher)
 
 	// No ranked/pinned/custom provider available — single unpinned attempt
 	// (equivalent to the pre-routing passthrough behavior).
@@ -949,9 +986,180 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					providerIdx++
 					continue
 				}
-				// Headers arrived inside the budget: hand the attempt context
-				// to the stream proxy, which releases it at stream end.
-				server.proxyStreamResponse(writer, resp, model, sessionID, pricing, startTime, attemptStart, provider, cancel)
+
+				if !server.isCCREnabled() {
+					server.proxyStreamResponse(writer, resp, model, sessionID, pricing, startTime, attemptStart, provider, cancel)
+					return
+				}
+
+				// Stream with CCR interception and potential re-entry
+				var currentBlocks []map[string]any
+				currentJSONBufs := make(map[int]*strings.Builder)
+				var pendingTerminalEvents []map[string]any
+				var attemptIn, attemptOut, attemptCr, attemptCw int
+
+				parseErr := parseSSEStream(resp.Body, func(eventType string, dataObj map[string]any, rawData []byte) error {
+					openrouter.ParseUsageFromSSELine(string(rawData), &attemptIn, &attemptOut, &attemptCr, &attemptCw)
+					if p := openrouter.ExtractProviderFromSSELine(string(rawData)); p != "" {
+						provider = canonicalServedProvider(model, p)
+					}
+
+					switch eventType {
+					case "message_start":
+						if ccrHydrations == 0 {
+							if !streamStarted {
+								copyUpstreamHeaders(writer.Header(), resp.Header)
+								writer.WriteHeader(resp.StatusCode)
+								streamStarted = true
+							}
+							return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+						}
+						return nil
+
+					case "content_block_start":
+						if !streamStarted {
+							copyUpstreamHeaders(writer.Header(), resp.Header)
+							writer.WriteHeader(resp.StatusCode)
+							streamStarted = true
+						}
+						idx := intValue(dataObj["index"], 0)
+						dataObj["index"] = baseBlockIndex + idx
+						block := mapOrEmpty(dataObj["content_block"])
+						for len(currentBlocks) <= idx {
+							currentBlocks = append(currentBlocks, nil)
+						}
+						currentBlocks[idx] = block
+						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+
+					case "content_block_delta":
+						idx := intValue(dataObj["index"], 0)
+						dataObj["index"] = baseBlockIndex + idx
+						delta := mapOrEmpty(dataObj["delta"])
+						if deltaType, _ := delta["type"].(string); deltaType == "input_json_delta" {
+							partial, _ := delta["partial_json"].(string)
+							if currentJSONBufs[idx] == nil {
+								currentJSONBufs[idx] = &strings.Builder{}
+							}
+							currentJSONBufs[idx].WriteString(partial)
+						}
+						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+
+					case "content_block_stop":
+						idx := intValue(dataObj["index"], 0)
+						dataObj["index"] = baseBlockIndex + idx
+						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+
+					case "message_delta", "message_stop":
+						pendingTerminalEvents = append(pendingTerminalEvents, dataObj)
+						return nil
+
+					default:
+						if !streamStarted {
+							copyUpstreamHeaders(writer.Header(), resp.Header)
+							writer.WriteHeader(resp.StatusCode)
+							streamStarted = true
+						}
+						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+					}
+				})
+				_ = resp.Body.Close()
+				cancel()
+
+				if parseErr != nil {
+					if !streamStarted {
+						if provider != "" {
+							openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
+						}
+						providerIdx++
+						continue
+					}
+					return
+				}
+
+				totalInput += attemptIn
+				totalOutput += attemptOut
+				totalCacheRead += attemptCr
+
+				// Check for headroom_retrieve calls
+				var retrieveCalls []map[string]any
+				for idx, block := range currentBlocks {
+					if block == nil {
+						continue
+					}
+					if block["type"] == "tool_use" {
+						if buf := currentJSONBufs[idx]; buf != nil && buf.Len() > 0 {
+							var parsedInput map[string]any
+							if err := json.Unmarshal([]byte(buf.String()), &parsedInput); err == nil {
+								block["input"] = parsedInput
+							}
+						}
+						if block["name"] == "headroom_retrieve" {
+							retrieveCalls = append(retrieveCalls, block)
+						}
+					}
+				}
+
+				if len(retrieveCalls) > 0 && ccrHydrations < maxCCRHydrations {
+					ccrHydrations++
+					totalCCRRetrievals += len(retrieveCalls)
+					baseBlockIndex += len(currentBlocks)
+
+					contentBlocks := make([]any, len(currentBlocks))
+					for i, b := range currentBlocks {
+						contentBlocks[i] = b
+					}
+					assistantMsg := map[string]any{
+						"role":    "assistant",
+						"content": contentBlocks,
+					}
+					var toolResults []any
+					for _, call := range retrieveCalls {
+						toolID, _ := call["id"].(string)
+						inputMap, _ := call["input"].(map[string]any)
+						chunkID, _ := inputMap["chunk_id"].(string)
+						payload, isErr := server.getCCRChunkPayload(chunkID)
+						toolResults = append(toolResults, map[string]any{
+							"type":        "tool_result",
+							"tool_use_id": toolID,
+							"content":     payload,
+							"is_error":    isErr,
+						})
+					}
+					userMsg := map[string]any{
+						"role":    "user",
+						"content": toolResults,
+					}
+					existingMsgs, _ := anthropicRequest["messages"].([]any)
+					anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
+					reqBody, _ = json.Marshal(anthropicRequest)
+					bodyParsed = json.Unmarshal(reqBody, &payload) == nil
+					tried[provider] = false
+					continue
+				}
+
+				// Terminal events flush
+				for _, ev := range pendingTerminalEvents {
+					if ev["type"] == "message_delta" {
+						usage, ok := ev["usage"].(map[string]any)
+						if !ok || usage == nil {
+							usage = make(map[string]any)
+							ev["usage"] = usage
+						}
+						usage["output_tokens"] = totalOutput
+						usage["cache_read_input_tokens"] = totalCacheRead
+					}
+					_ = writeSSEEvent(bw, stringFrom(ev["type"]), ev, nil, hasFlusher, flusher)
+				}
+
+				attemptPricing := effectiveAttemptPricing(pricing, model, provider)
+				if provider != "" {
+					openrouter.DefaultRouter.RecordResult(model, provider, true, server.now().Sub(attemptStart), totalInput+totalOutput)
+					openrouter.DefaultRouter.SetSticky(sessionID, model, provider)
+				}
+				server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, totalInput, totalOutput, totalCacheRead, attemptCw, provider)
+				if totalCCRRetrievals > 0 && server.tracker != nil {
+					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
+				}
 				return
 			}
 			// Buffer full body before writing — failover impossible after first byte.
@@ -973,6 +1181,46 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			}
 			// Cost follows the served endpoint, resolved after the override.
 			attemptPricing := effectiveAttemptPricing(pricing, model, provider)
+
+			// CCR Hydration for OpenRouter Unary
+			if server.isCCREnabled() && ccrHydrations < maxCCRHydrations {
+				var respObj map[string]any
+				if json.Unmarshal(bodyBytes, &respObj) == nil {
+					retrieveCalls := findRetrieveToolUsesFromResponse(respObj)
+					if len(retrieveCalls) > 0 {
+						ccrHydrations++
+						totalCCRRetrievals += len(retrieveCalls)
+						assistantMsg := map[string]any{
+							"role":    "assistant",
+							"content": respObj["content"],
+						}
+						var toolResults []any
+						for _, call := range retrieveCalls {
+							toolID, _ := call["id"].(string)
+							inputMap, _ := call["input"].(map[string]any)
+							chunkID, _ := inputMap["chunk_id"].(string)
+							payload, isErr := server.getCCRChunkPayload(chunkID)
+							toolResults = append(toolResults, map[string]any{
+								"type":        "tool_result",
+								"tool_use_id": toolID,
+								"content":     payload,
+								"is_error":    isErr,
+							})
+						}
+						userMsg := map[string]any{
+							"role":    "user",
+							"content": toolResults,
+						}
+						existingMsgs, _ := anthropicRequest["messages"].([]any)
+						anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
+						reqBody, _ = json.Marshal(anthropicRequest)
+						bodyParsed = json.Unmarshal(reqBody, &payload) == nil
+						tried[provider] = false
+						continue
+					}
+				}
+			}
+
 			// Write headers + status
 			copyUpstreamHeaders(writer.Header(), resp.Header)
 			writer.WriteHeader(resp.StatusCode)
@@ -987,6 +1235,9 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				openrouter.DefaultRouter.SetSticky(sessionID, model, provider)
 			}
 			server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, in, out, cr, cw, provider)
+			if totalCCRRetrievals > 0 && server.tracker != nil {
+				server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
+			}
 			return
 		}
 
@@ -1255,6 +1506,90 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 	}
 }
 
+func parseSSEStream(reader io.Reader, handleEvent func(eventType string, dataObj map[string]any, rawData []byte) error) error {
+	br := bufio.NewReaderSize(reader, 64*1024)
+	var currentEvent string
+	var currentData bytes.Buffer
+
+	dispatch := func() error {
+		if currentData.Len() == 0 && currentEvent == "" {
+			return nil
+		}
+		raw := currentData.Bytes()
+		var dataObj map[string]any
+		_ = json.Unmarshal(raw, &dataObj)
+		evType := currentEvent
+		if evType == "" && dataObj != nil {
+			if t, ok := dataObj["type"].(string); ok {
+				evType = t
+			}
+		}
+		err := handleEvent(evType, dataObj, raw)
+		currentEvent = ""
+		currentData.Reset()
+		return err
+	}
+
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			lineStr := strings.TrimRight(string(line), "\r\n")
+			if lineStr == "" {
+				if err := dispatch(); err != nil {
+					return err
+				}
+			} else if strings.HasPrefix(lineStr, "event: ") {
+				currentEvent = strings.TrimPrefix(lineStr, "event: ")
+			} else if strings.HasPrefix(lineStr, "data: ") {
+				if currentData.Len() > 0 {
+					currentData.WriteByte('\n')
+				}
+				currentData.WriteString(strings.TrimPrefix(lineStr, "data: "))
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return dispatch()
+			}
+			return err
+		}
+	}
+}
+
+func writeSSEEvent(bw *bufio.Writer, eventType string, dataObj map[string]any, rawData []byte, hasFlusher bool, flusher http.Flusher) error {
+	var payload []byte
+	if dataObj != nil {
+		var err error
+		payload, err = json.Marshal(dataObj)
+		if err != nil {
+			payload = rawData
+		}
+	} else {
+		payload = rawData
+	}
+	if eventType != "" {
+		if _, err := bw.WriteString("event: " + eventType + "\n"); err != nil {
+			return err
+		}
+	}
+	if _, err := bw.WriteString("data: "); err != nil {
+		return err
+	}
+	if _, err := bw.Write(payload); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\n\n"); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	if hasFlusher && flusher != nil {
+		flusher.Flush()
+	}
+	return nil
+}
+
 // recordOpenRouterMetrics is shared between stream and unary paths. Pricing is
 // resolved here so both paths apply the model-catalog fallback uniformly.
 func (server *Server) recordOpenRouterMetrics(model, sessionID string, pricing openrouter.Pricing, startTime time.Time, in, out, cr, cw int, provider string) openrouter.RequestMetrics {
@@ -1309,32 +1644,140 @@ func effectiveAttemptPricing(base openrouter.Pricing, model, servedProvider stri
 	return base
 }
 
-type streamSender func(context.Context, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
+type streamSender func(context.Context, map[string]any, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
 
-func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Request, send streamSender, model string) {
-	startTime := server.now()
-	accumulator := proxyformat.NewThinkingAccumulator()
-	_, err := send(request.Context(), func(event cloudcode.SSEEvent) error {
-		return accumulator.Consume(event.Data)
-	})
-	if err != nil {
-		server.writeError(writer, err)
-		return
+const maxCCRHydrations = 3
+
+func (server *Server) isCCREnabled() bool {
+	if server.headroom == nil {
+		return false
 	}
-	latency := server.now().Sub(startTime)
-	if server.tracker != nil {
-		server.tracker.TrackRequest(model, latency, accumulator.InputTokens(), accumulator.OutputTokens(), accumulator.CacheReadTokens())
-	}
-	response := accumulator.Response(model, server.builder.Cache, "")
-	writeJSON(writer, http.StatusOK, response)
+	cfg := server.headroom.GetConfig()
+	return cfg.Enabled && cfg.CCR.Enabled && server.headroom.CCRStore() != nil
 }
 
-func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Request, send streamSender, model string) {
+func (server *Server) getCCRChunkPayload(chunkID string) (string, bool) {
+	if server.headroom == nil || server.headroom.CCRStore() == nil {
+		return fmt.Sprintf("Error: CCR store unavailable (chunk %s)", chunkID), true
+	}
+	payload, found := server.headroom.CCRStore().Get(chunkID)
+	if !found {
+		return fmt.Sprintf("Error: Chunk %s not found or evicted from CCR store", chunkID), true
+	}
+	return payload, false
+}
+
+func findRetrieveToolUsesFromResponse(resp map[string]any) []map[string]any {
+	content, ok := resp["content"].([]any)
+	if !ok {
+		return nil
+	}
+	var calls []map[string]any
+	for _, raw := range content {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if block["type"] == "tool_use" && block["name"] == "headroom_retrieve" {
+			calls = append(calls, block)
+		}
+	}
+	return calls
+}
+
+func intValue(v any, defaultVal int) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case float32:
+		return int(n)
+	}
+	return defaultVal
+}
+
+func mapOrEmpty(v any) map[string]any {
+	if m, ok := v.(map[string]any); ok && m != nil {
+		return m
+	}
+	return make(map[string]any)
+}
+
+func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Request, send streamSender, anthropicRequest map[string]any, model string) {
 	startTime := server.now()
-	converter := proxyformat.NewStreamConverter(model, server.builder.Cache, "")
+	totalCCRRetrievals := 0
+	var totalInput, totalOutput, totalCacheRead int
+
+	for iter := 0; iter <= maxCCRHydrations; iter++ {
+		accumulator := proxyformat.NewThinkingAccumulator()
+		_, err := send(request.Context(), anthropicRequest, func(event cloudcode.SSEEvent) error {
+			return accumulator.Consume(event.Data)
+		})
+		if err != nil {
+			server.writeError(writer, err)
+			return
+		}
+
+		totalInput += accumulator.InputTokens()
+		totalOutput += accumulator.OutputTokens()
+		totalCacheRead += accumulator.CacheReadTokens()
+
+		response := accumulator.Response(model, server.builder.Cache, "")
+		retrieveCalls := findRetrieveToolUsesFromResponse(response)
+
+		if len(retrieveCalls) == 0 || iter == maxCCRHydrations || !server.isCCREnabled() {
+			if usage, ok := response["usage"].(map[string]any); ok {
+				usage["input_tokens"] = totalInput
+				usage["output_tokens"] = totalOutput
+				usage["cache_read_input_tokens"] = totalCacheRead
+			}
+			latency := server.now().Sub(startTime)
+			if server.tracker != nil {
+				server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
+				if totalCCRRetrievals > 0 {
+					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
+				}
+			}
+			writeJSON(writer, http.StatusOK, response)
+			return
+		}
+
+		totalCCRRetrievals += len(retrieveCalls)
+		assistantMsg := map[string]any{
+			"role":    "assistant",
+			"content": response["content"],
+		}
+		var toolResults []any
+		for _, call := range retrieveCalls {
+			toolID, _ := call["id"].(string)
+			inputMap, _ := call["input"].(map[string]any)
+			chunkID, _ := inputMap["chunk_id"].(string)
+			payload, isErr := server.getCCRChunkPayload(chunkID)
+			toolResults = append(toolResults, map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": toolID,
+				"content":     payload,
+				"is_error":    isErr,
+			})
+		}
+		userMsg := map[string]any{
+			"role":    "user",
+			"content": toolResults,
+		}
+		existingMsgs, _ := anthropicRequest["messages"].([]any)
+		anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
+	}
+}
+
+func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Request, send streamSender, anthropicRequest map[string]any, model string) {
+	startTime := server.now()
 	started := false
 	flusher, hasFlusher := writer.(http.Flusher)
 	bw := bufio.NewWriterSize(writer, 4096)
+
 	writeEvents := func(events []map[string]any) error {
 		if len(events) == 0 {
 			return nil
@@ -1356,7 +1799,6 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 				bw.WriteString("event: ")
 				bw.WriteString(eventType)
 				bw.WriteString("\ndata: ")
-				// json.Encoder adds a trailing newline, so we only need one more
 				bw.Write(buf.Bytes())
 				bw.WriteString("\n")
 			}
@@ -1371,33 +1813,175 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 		}
 		return nil
 	}
-	_, err := send(request.Context(), func(event cloudcode.SSEEvent) error {
-		events, err := converter.Consume(event.Data)
-		if err != nil {
-			return err
+
+	baseBlockIndex := 0
+	totalCCRRetrievals := 0
+	var totalInput, totalOutput, totalCacheRead int
+
+	for iter := 0; iter <= maxCCRHydrations; iter++ {
+		converter := proxyformat.NewStreamConverter(model, server.builder.Cache, "")
+		var currentBlocks []map[string]any
+		currentJSONBufs := make(map[int]*strings.Builder)
+		var pendingTerminalEvents []map[string]any
+
+		handleEvent := func(event map[string]any) error {
+			eventType, _ := event["type"].(string)
+			switch eventType {
+			case "message_start":
+				if iter == 0 {
+					return writeEvents([]map[string]any{event})
+				}
+				return nil
+
+			case "content_block_start":
+				idx := intValue(event["index"], 0)
+				event["index"] = baseBlockIndex + idx
+				block := mapOrEmpty(event["content_block"])
+				for len(currentBlocks) <= idx {
+					currentBlocks = append(currentBlocks, nil)
+				}
+				currentBlocks[idx] = block
+				return writeEvents([]map[string]any{event})
+
+			case "content_block_delta":
+				idx := intValue(event["index"], 0)
+				event["index"] = baseBlockIndex + idx
+				delta := mapOrEmpty(event["delta"])
+				if deltaType, _ := delta["type"].(string); deltaType == "input_json_delta" {
+					partial, _ := delta["partial_json"].(string)
+					if currentJSONBufs[idx] == nil {
+						currentJSONBufs[idx] = &strings.Builder{}
+					}
+					currentJSONBufs[idx].WriteString(partial)
+				}
+				return writeEvents([]map[string]any{event})
+
+			case "content_block_stop":
+				idx := intValue(event["index"], 0)
+				event["index"] = baseBlockIndex + idx
+				return writeEvents([]map[string]any{event})
+
+			case "message_delta", "message_stop":
+				pendingTerminalEvents = append(pendingTerminalEvents, event)
+				return nil
+
+			default:
+				return writeEvents([]map[string]any{event})
+			}
 		}
-		return writeEvents(events)
-	})
-	if err == nil {
-		var events []map[string]any
-		events, err = converter.Finish()
+
+		_, err := send(request.Context(), anthropicRequest, func(event cloudcode.SSEEvent) error {
+			events, err := converter.Consume(event.Data)
+			if err != nil {
+				return err
+			}
+			for _, ev := range events {
+				if err := handleEvent(ev); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 		if err == nil {
-			err = writeEvents(events)
+			finishEvents, fErr := converter.Finish()
+			if fErr == nil {
+				for _, ev := range finishEvents {
+					if err := handleEvent(ev); err != nil {
+						break
+					}
+				}
+			}
 		}
-	}
-	if err == nil {
-		if server.tracker != nil {
-			latency := server.now().Sub(startTime)
-			server.tracker.TrackRequest(model, latency, converter.InputTokens(), converter.OutputTokens(), converter.CacheReadTokens())
+		if err != nil {
+			if !started {
+				server.writeError(writer, err)
+				return
+			}
+			errorEvent := map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": err.Error()}}
+			_ = writeEvents([]map[string]any{errorEvent})
+			return
 		}
-		return
+
+		totalInput += converter.InputTokens()
+		totalOutput += converter.OutputTokens()
+		totalCacheRead += converter.CacheReadTokens()
+
+		var retrieveCalls []map[string]any
+		for idx, block := range currentBlocks {
+			if block == nil {
+				continue
+			}
+			if block["type"] == "tool_use" {
+				if buf := currentJSONBufs[idx]; buf != nil && buf.Len() > 0 {
+					var parsedInput map[string]any
+					if err := json.Unmarshal([]byte(buf.String()), &parsedInput); err == nil {
+						block["input"] = parsedInput
+					}
+				}
+				if block["name"] == "headroom_retrieve" {
+					retrieveCalls = append(retrieveCalls, block)
+				}
+			}
+		}
+
+		needsHydration := len(retrieveCalls) > 0 && iter < maxCCRHydrations && server.isCCREnabled()
+
+		if !needsHydration {
+			for _, ev := range pendingTerminalEvents {
+				if ev["type"] == "message_delta" {
+					usage, ok := ev["usage"].(map[string]any)
+					if !ok || usage == nil {
+						usage = make(map[string]any)
+						ev["usage"] = usage
+					}
+					usage["output_tokens"] = totalOutput
+					usage["cache_read_input_tokens"] = totalCacheRead
+				}
+			}
+			_ = writeEvents(pendingTerminalEvents)
+
+			if server.tracker != nil {
+				latency := server.now().Sub(startTime)
+				server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
+				if totalCCRRetrievals > 0 {
+					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
+				}
+			}
+			return
+		}
+
+		totalCCRRetrievals += len(retrieveCalls)
+		baseBlockIndex += len(currentBlocks)
+
+		contentBlocks := make([]any, len(currentBlocks))
+		for i, b := range currentBlocks {
+			contentBlocks[i] = b
+		}
+		assistantMsg := map[string]any{
+			"role":    "assistant",
+			"content": contentBlocks,
+		}
+
+		var toolResults []any
+		for _, call := range retrieveCalls {
+			toolID, _ := call["id"].(string)
+			inputMap, _ := call["input"].(map[string]any)
+			chunkID, _ := inputMap["chunk_id"].(string)
+			payload, isErr := server.getCCRChunkPayload(chunkID)
+			toolResults = append(toolResults, map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": toolID,
+				"content":     payload,
+				"is_error":    isErr,
+			})
+		}
+		userMsg := map[string]any{
+			"role":    "user",
+			"content": toolResults,
+		}
+		existingMsgs, _ := anthropicRequest["messages"].([]any)
+		anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
 	}
-	if !started {
-		server.writeError(writer, err)
-		return
-	}
-	errorEvent := map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": err.Error()}}
-	_ = writeEvents([]map[string]any{errorEvent})
 }
 
 func (server *Server) client(ctx context.Context) (auth.Credentials, Upstream, error) {

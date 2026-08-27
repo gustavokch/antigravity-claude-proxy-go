@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"sync"
 
+	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/openrouter"
 )
+
+type HeadroomConfig = headroom.Config
 
 type EndpointConfig struct {
 	URL    string `json:"url"`
@@ -114,6 +117,7 @@ type Config struct {
 	OpenRouter               OpenRouterConfig          `json:"openrouter,omitempty"`
 	Kimi                     KimiConfig                `json:"kimi,omitempty"`
 	AccountSelection         AccountSelectionConfig    `json:"accountSelection,omitempty"`
+	Headroom                 HeadroomConfig            `json:"headroom,omitempty"`
 }
 
 var (
@@ -165,6 +169,21 @@ func DefaultConfig() Config {
 			},
 			Weights: map[string]any{
 				"health": 2, "tokens": 5, "quota": 3, "lru": 0.1,
+			},
+		},
+		Headroom: HeadroomConfig{
+			Enabled:   false,
+			LiveTurns: 2,
+			CCR: headroom.CCRConfig{
+				Enabled:       false,
+				MaxStoreMB:    64,
+				MinChunkBytes: 2048,
+			},
+			OutputShaper: headroom.OutputShaperConfig{
+				Enabled:                  false,
+				VerbositySteering:        true,
+				EffortRouting:            true,
+				MechanicalThinkingBudget: 1024,
 			},
 		},
 	}
