@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/openrouter"
 )
@@ -118,6 +119,7 @@ type Config struct {
 	Kimi                     KimiConfig                `json:"kimi,omitempty"`
 	AccountSelection         AccountSelectionConfig    `json:"accountSelection,omitempty"`
 	Headroom                 HeadroomConfig            `json:"headroom,omitempty"`
+	ClaudeCode               claudecode.Config         `json:"claudecode,omitempty"`
 }
 
 var (
@@ -185,6 +187,15 @@ func DefaultConfig() Config {
 				EffortRouting:            true,
 				MechanicalThinkingBudget: 1024,
 			},
+		},
+		ClaudeCode: claudecode.Config{
+			Enabled:    false,
+			BaseURL:    claudecode.DefaultBaseURL,
+			Mode:       "pool",
+			AutoImport: false,
+			Accounts:   []claudecode.AccountConfig{},
+			Allowlist:  claudecode.DefaultAllowlist(),
+			Routing:    claudecode.DefaultRoutingConfig(),
 		},
 	}
 }
@@ -378,7 +389,60 @@ func Save(updates map[string]any) (Config, error) {
 			}
 			continue
 		}
-		if k == "modelMapping" {
+		if k == "claudecode" {
+				if vMap, ok := v.(map[string]any); ok {
+					ccCopy := make(map[string]any)
+					for ck, cv := range vMap {
+						if ck == "accounts" {
+							newAccs, okNew := cv.([]any)
+							var existingAccs []any
+							if exMap, ok := currentMap["claudecode"].(map[string]any); ok {
+								existingAccs, _ = exMap["accounts"].([]any)
+							}
+							if okNew {
+								mergedAccs := make([]any, 0, len(newAccs))
+								for _, a := range newAccs {
+									if aMap, ok := a.(map[string]any); ok {
+										aCopy := make(map[string]any)
+										for ak, av := range aMap {
+											aCopy[ak] = av
+										}
+										hasToken, _ := aCopy["hasToken"].(bool)
+										token, _ := aCopy["token"].(string)
+										if hasToken && token == "" {
+											id, _ := aCopy["id"].(string)
+											for _, ea := range existingAccs {
+												if eaMap, ok := ea.(map[string]any); ok {
+													if existingID, ok := eaMap["id"].(string); ok && existingID == id {
+														if existingTok, ok := eaMap["token"].(string); ok && existingTok != "" {
+															aCopy["token"] = existingTok
+														}
+													}
+												}
+											}
+										}
+										delete(aCopy, "hasToken")
+										delete(aCopy, "maskedToken")
+										mergedAccs = append(mergedAccs, aCopy)
+									} else {
+										mergedAccs = append(mergedAccs, a)
+									}
+								}
+								ccCopy["accounts"] = mergedAccs
+							} else {
+								ccCopy[ck] = cv
+							}
+						} else {
+							ccCopy[ck] = cv
+						}
+					}
+					currentMap[k] = ccCopy
+				} else {
+					currentMap[k] = v
+				}
+				continue
+			}
+			if k == "modelMapping" {
 			currentMap[k] = v
 			continue
 		}
@@ -480,6 +544,46 @@ func GetPublicConfig() map[string]any {
 			}
 		}
 		result["kimi"] = kimiCopy
+	}
+
+	if ccMap, ok := result["claudecode"].(map[string]any); ok {
+		ccCopy := make(map[string]any)
+		for ck, cv := range ccMap {
+			if ck == "accounts" {
+				if accs, ok := cv.([]any); ok {
+					redactedAccs := make([]any, 0, len(accs))
+					for _, a := range accs {
+						if aMap, ok := a.(map[string]any); ok {
+							aCopy := make(map[string]any)
+							for ak, av := range aMap {
+								if ak == "token" {
+									if strTok, isStr := av.(string); isStr && strTok != "" {
+										aCopy["hasToken"] = true
+										if len(strTok) > 10 {
+											aCopy["maskedToken"] = strTok[:6] + "..." + strTok[len(strTok)-4:]
+										} else {
+											aCopy["maskedToken"] = "******"
+										}
+									}
+								} else {
+									aCopy[ak] = av
+								}
+							}
+							delete(aCopy, "token")
+							redactedAccs = append(redactedAccs, aCopy)
+						} else {
+							redactedAccs = append(redactedAccs, a)
+						}
+					}
+					ccCopy[ck] = redactedAccs
+				} else {
+					ccCopy[ck] = cv
+				}
+			} else {
+				ccCopy[ck] = cv
+			}
+		}
+		result["claudecode"] = ccCopy
 	}
 
 	return result

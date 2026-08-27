@@ -1198,7 +1198,96 @@
                     </div>
                 </div>
 
-                <!-- Section 1: Transparent Forwarding (Custom Endpoints) -->
+                <!-- Section 0c: Claude Code Official API Gateway -->
+                <div class="bg-gray-800/40 border border-gray-700/60 rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <div>
+                            <h4 class="text-sm font-bold text-white uppercase tracking-wider">Claude Code Gateway</h4>
+                            <p class="text-xs text-gray-400 mt-1">Forward allowlisted Claude models via personal API tokens. Multi-account pool with sticky sessions and 429 failover.</p>
+                        </div>
+                        <label class="inline-flex items-center cursor-pointer">
+                            <input type="checkbox" class="sr-only peer"
+                                x-model="ccConfig.enabled"
+                                @change="saveCCConfig()"
+                                aria-label="Claude Code Gateway enabled toggle">
+                            <div class="relative w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-full after:content-[\'\'] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                        </label>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                        <label class="block">
+                            <span class="text-[11px] uppercase text-gray-400">Base URL</span>
+                            <input type="text" class="input input-sm input-bordered w-full mt-1 bg-gray-900/60 font-mono text-xs"
+                                x-model="ccConfig.baseUrl"
+                                placeholder="https://api.anthropic.com">
+                        </label>
+                        <label class="block">
+                            <span class="text-[11px] uppercase text-gray-400">Mode</span>
+                            <select class="select select-sm select-bordered w-full mt-1 bg-gray-900/60 text-xs" x-model="ccConfig.mode">
+                                <option value="pool">Pool (multi-account failover)</option>
+                                <option value="single">Single (exponential backoff)</option>
+                            </select>
+                        </label>
+                    </div>
+
+                    <div class="flex items-center gap-2 mt-3">
+                        <button class="btn btn-xs btn-primary" @click="saveCCConfig()" :disabled="ccSaving">
+                            <span x-show="!ccSaving">Save</span>
+                            <span x-show="ccSaving" class="loading loading-spinner loading-xs"></span>
+                        </button>
+                        <button class="btn btn-xs btn-ghost" @click="ccAutoImport()" :disabled="ccImporting">
+                            <span x-show="!ccImporting">Import from ~/.claude</span>
+                            <span x-show="ccImporting" class="loading loading-spinner loading-xs"></span>
+                        </button>
+                        <span x-show="ccError" class="text-xs text-rose-400" x-text="ccError"></span>
+                        <span x-show="ccSuccess" class="text-xs text-emerald-400" x-text="ccSuccess"></span>
+                    </div>
+
+                    <!-- Accounts Table -->
+                    <div class="mt-4">
+                        <h5 class="text-[11px] uppercase text-gray-400 mb-2">Accounts</h5>
+                        <table class="table table-xs w-full">
+                            <thead>
+                                <tr class="text-[10px] uppercase text-gray-500">
+                                    <th>On</th>
+                                    <th>ID</th>
+                                    <th>Name</th>
+                                    <th>Type</th>
+                                    <th>Token</th>
+                                    <th>Status</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="(acc, idx) in ccAccounts" :key="acc.id">
+                                    <tr>
+                                        <td><input type="checkbox" class="checkbox checkbox-xs" x-model="acc.enabled" @change="saveCCAccount(acc)"></td>
+                                        <td><span class="font-mono text-[10px] text-gray-400" x-text="acc.id?.slice(0,8) + '...'"></span></td>
+                                        <td><input class="input input-xs input-bordered w-full bg-gray-900/60" x-model="acc.name" @change="saveCCAccount(acc)"></td>
+                                        <td><span class="badge badge-xs" :class="acc.type === 'api_key' ? 'badge-info' : 'badge-warning'" x-text="acc.type || 'api_key'"></span></td>
+                                        <td><span class="font-mono text-[10px] text-gray-400" x-text="acc.maskedToken || (acc.hasToken ? '••••••••' : '—')"></span></td>
+                                        <td>
+                                            <span class="badge badge-xs" :class="acc.cooldownUntil ? 'badge-error' : 'badge-success'"
+                                                x-text="acc.cooldownUntil ? 'cooldown' : 'ok'"></span>
+                                        </td>
+                                        <td class="flex gap-1">
+                                            <button class="btn btn-xs btn-ghost text-sky-400" @click="testCCAccount(acc)">Test</button>
+                                            <button class="btn btn-xs btn-ghost text-rose-400" @click="deleteCCAccount(acc.id)">×</button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                        <!-- Add new account -->
+                        <div class="flex gap-2 mt-2">
+                            <input class="input input-xs input-bordered bg-gray-900/60 flex-1 font-mono" x-model="ccNewToken" placeholder="sk-ant-..." type="password">
+                            <input class="input input-xs input-bordered bg-gray-900/60 w-32" x-model="ccNewName" placeholder="Name">
+                            <button class="btn btn-xs btn-primary" @click="addCCAccount()">Add</button>
+                        </div>
+                    </div>
+                </div>
+
+                                <!-- Section 1: Transparent Forwarding (Custom Endpoints) -->
                 <div class="card bg-space-900/30 border border-neon-cyan/30 p-6 space-y-4">
                     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                         <div class="space-y-1">

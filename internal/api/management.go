@@ -190,6 +190,10 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	}
 
+	if server.routeClaudeCodeManagement(writer, request, path, method) {
+		return true
+	}
+
 	return false
 }
 
