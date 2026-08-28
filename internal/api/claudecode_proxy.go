@@ -31,6 +31,7 @@ func getOrCreateCCPool(cfg claudecode.Config) (*claudecode.AccountPool, *claudec
 	key := cfg.BaseURL
 	if ccPoolInst == nil || ccPoolKey != key || len(ccPoolCfg.Accounts) != len(cfg.Accounts) {
 		ccPoolInst = claudecode.NewAccountPool(cfg.Accounts)
+		ccHTTPClient = claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.BaseURL), nil)
 		ccPoolKey = key
 		ccPoolCfg = cfg
 	}
@@ -84,6 +85,9 @@ func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 		}
 		if s, ok := reqBody["session_id"].(string); ok && strings.TrimSpace(s) != "" {
 			return strings.TrimSpace(s)
+		}
+		if u, ok := reqBody["user_id"].(string); ok && strings.TrimSpace(u) != "" {
+			return strings.TrimSpace(u)
 		}
 	}
 	return ""

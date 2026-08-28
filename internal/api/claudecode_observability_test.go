@@ -451,3 +451,75 @@ func TestClaudeCodeObservability_CCRUnaryUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestGetOrCreateCCPool_BaseURLUpdate(t *testing.T) {
+	ccResetPool()
+	cfg1 := ccTestConfig("https://api.anthropic.com")
+	_, client1 := getOrCreateCCPool(cfg1)
+	if client1 == nil {
+		t.Fatal("expected non-nil client")
+	}
+
+	cfg2 := ccTestConfig("https://custom.anthropic.internal")
+	_, client2 := getOrCreateCCPool(cfg2)
+	if client2 == nil {
+		t.Fatal("expected non-nil client")
+	}
+	if client1 == client2 {
+		t.Errorf("expected new client instance when BaseURL changes")
+	}
+}
+
+func TestExtractSessionID_TopLevelUserID(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		body   map[string]any
+		want   string
+	}{
+		{
+			name:   "header takes precedence",
+			header: "sess-header",
+			body:   map[string]any{"user_id": "usr-body", "metadata": map[string]any{"user_id": "meta-usr"}},
+			want:   "sess-header",
+		},
+		{
+			name: "metadata session_id",
+			body: map[string]any{"metadata": map[string]any{"session_id": "meta-sess", "user_id": "meta-usr"}},
+			want: "meta-sess",
+		},
+		{
+			name: "metadata user_id",
+			body: map[string]any{"metadata": map[string]any{"user_id": "meta-usr"}},
+			want: "meta-usr",
+		},
+		{
+			name: "top-level session_id",
+			body: map[string]any{"session_id": "top-sess", "user_id": "top-usr"},
+			want: "top-sess",
+		},
+		{
+			name: "top-level user_id",
+			body: map[string]any{"user_id": "top-usr"},
+			want: "top-usr",
+		},
+		{
+			name: "empty body and header",
+			body: map[string]any{},
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			if tc.header != "" {
+				req.Header.Set("x-session-id", tc.header)
+			}
+			got := ccExtractSessionID(req, tc.body)
+			if got != tc.want {
+				t.Errorf("ccExtractSessionID() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
