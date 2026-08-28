@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 var (
@@ -58,14 +60,45 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 	return ""
 }
 
-// ccExtractSessionID extracts a stable session key from request headers.
-func ccExtractSessionID(r *http.Request) string {
-	for _, h := range []string{"x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
-		if v := r.Header.Get(h); v != "" {
-			return v
+// ccExtractSessionID extracts a stable session key from request headers, then
+// from the request body. Claude Code does not send a session header: it carries
+// the identifier in metadata.user_id, so the body must be inspected. Mirrors
+// openrouter.ExtractSessionID minus the remote-address fallback, which would
+// change account stickiness for anonymous clients.
+func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
+	if r != nil {
+		for _, h := range []string{"x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
+			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+				return v
+			}
+		}
+	}
+	if reqBody != nil {
+		if meta, ok := reqBody["metadata"].(map[string]any); ok {
+			if s, ok := meta["session_id"].(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+			if u, ok := meta["user_id"].(string); ok && strings.TrimSpace(u) != "" {
+				return strings.TrimSpace(u)
+			}
+		}
+		if s, ok := reqBody["session_id"].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
 		}
 	}
 	return ""
+}
+
+// ccParseBodyMap unmarshals a request body, returning nil on malformed JSON.
+func ccParseBodyMap(body []byte) map[string]any {
+	if len(body) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil
+	}
+	return m
 }
 
 type poolReleasingBody struct {
@@ -79,6 +112,105 @@ func (b *poolReleasingBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
+// ccAttempt carries the identity of a single upstream call so usage captured
+// later — possibly after the response body has finished streaming — can still
+// be attributed to the right model, session and account.
+type ccAttempt struct {
+	model       string
+	sessionID   string
+	accountID   string
+	accountName string
+	startTime   time.Time
+	pool        *claudecode.AccountPool
+	rateLimits  claudecode.RateLimits
+}
+
+// recordClaudeCodeMetrics is the single place a completed Claude Code call
+// becomes metrics, logs, pool accounting and dashboard stats. Mirrors
+// recordOpenRouterMetrics.
+func (server *Server) recordClaudeCodeMetrics(a ccAttempt, in, out, cr, cw int) claudecode.RequestMetrics {
+	latency := time.Since(a.startTime)
+	metrics := claudecode.RequestMetrics{
+		Model:               a.model,
+		AccountID:           a.accountID,
+		AccountName:         a.accountName,
+		SessionID:           a.sessionID,
+		InputTokens:         in,
+		OutputTokens:        out,
+		CacheReadTokens:     cr,
+		CacheCreationTokens: cw,
+		Latency:             latency,
+	}
+	metrics.ComputeFinalMetrics(claudecode.DefaultSessionTracker)
+	if server.logger != nil {
+		claudecode.LogObservability(server.logger, metrics)
+	}
+	if a.pool != nil {
+		a.pool.RecordSuccess(a.accountID, int64(in+out), metrics.CallCost, a.rateLimits)
+	}
+	if server.tracker != nil {
+		server.tracker.TrackRequest(a.model, latency, in, out, cr)
+	}
+	return metrics
+}
+
+// ccIsSSEResponse reports whether the upstream answered with an event stream.
+func ccIsSSEResponse(h http.Header) bool {
+	return strings.Contains(strings.ToLower(h.Get("Content-Type")), "text/event-stream")
+}
+
+// ccInstrumentResponse attaches usage capture to a successful upstream
+// response and replaces resp.Body with the instrumented reader. Usage lives in
+// the RESPONSE, never in the request, so metrics are emitted once the body is
+// consumed. SSE bodies are intercepted line by line, JSON bodies are buffered
+// and parsed — the same split the OpenRouter gateway makes between its stream
+// and unary paths.
+//
+// The usage parsers are shared with the OpenRouter gateway because they are
+// wire-format generic (they read Anthropic and OpenAI shapes alike).
+func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
+	if ccIsSSEResponse(resp.Header) {
+		resp.Body = openrouter.NewSSEInterceptor(resp.Body, func(in, out, cr, cw int) {
+			server.recordClaudeCodeMetrics(a, in, out, cr, cw)
+		})
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		if server.logger != nil {
+			server.logger.Warn("claudecode response read failed", "account", a.accountID, "err", err)
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return
+	}
+	in, out, cr, cw := openrouter.ParseUsageFromJSON(body)
+	server.recordClaudeCodeMetrics(a, in, out, cr, cw)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+}
+
+// ccCopyStream forwards the upstream body, flushing per chunk so SSE events
+// reach the client as they arrive instead of at end of stream.
+func ccCopyStream(writer http.ResponseWriter, body io.Reader) {
+	flusher, hasFlusher := writer.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := body.Read(buf)
+		if n > 0 {
+			if _, werr := writer.Write(buf[:n]); werr != nil {
+				return
+			}
+			if hasFlusher {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 // forwardToClaudeCode sends a /v1/messages request through the Claude Code
 // account pool with sticky-session affinity and 429-triggered failover.
 func (server *Server) forwardToClaudeCode(
@@ -89,7 +221,7 @@ func (server *Server) forwardToClaudeCode(
 	model string,
 ) {
 	pool, client := getOrCreateCCPool(ccCfg)
-	sessionKey := ccExtractSessionID(request)
+	sessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
 
 	if server.isCCREnabled() {
 		var reqMap map[string]any
@@ -118,7 +250,6 @@ func (server *Server) forwardToClaudeCode(
 						continue
 					}
 
-					latency := time.Since(startTime)
 					rl := claudecode.ExtractRateLimits(resp.Header)
 
 					if resp.StatusCode == http.StatusTooManyRequests {
@@ -134,22 +265,19 @@ func (server *Server) forwardToClaudeCode(
 					}
 
 					if resp.StatusCode < 400 {
-						pool.RecordSuccess(acc.ID, 0, 0, rl)
+						server.ccInstrumentResponse(resp, ccAttempt{
+							model:       model,
+							sessionID:   sessionKey,
+							accountID:   acc.ID,
+							accountName: acc.Name,
+							startTime:   startTime,
+							pool:        pool,
+							rateLimits:  rl,
+						})
 					} else if resp.StatusCode >= 500 {
 						pool.RecordFailure(acc.ID, true, 30*time.Second)
 					} else {
 						pool.RecordFailure(acc.ID, false, 0)
-					}
-
-					m := claudecode.RequestMetrics{
-						Model:     model,
-						SessionID: sessionKey,
-						Latency:   latency,
-					}
-					_ = ccParseRequestTokens(bodyBytes, &m)
-					m.ComputeFinalMetrics(claudecode.DefaultSessionTracker)
-					if server.logger != nil {
-						claudecode.LogObservability(server.logger, m)
 					}
 
 					accID := acc.ID
@@ -201,7 +329,6 @@ func (server *Server) forwardToClaudeCode(
 			continue
 		}
 
-		latency := time.Since(startTime)
 		rl := claudecode.ExtractRateLimits(resp.Header)
 
 		if resp.StatusCode == http.StatusTooManyRequests {
@@ -216,37 +343,30 @@ func (server *Server) forwardToClaudeCode(
 			continue
 		}
 
-		// Success — stream response back.
-		defer resp.Body.Close()
-		defer pool.Release(acc.ID)
-
-		ccCopyResponseHeaders(writer.Header(), resp.Header)
-		writer.WriteHeader(resp.StatusCode)
-
-		_, _ = io.Copy(writer, resp.Body)
-		if f, ok := writer.(http.Flusher); ok {
-			f.Flush()
-		}
-
+		// Success — instrument usage capture before the body is consumed.
 		if resp.StatusCode < 400 {
-			// Record success with cost=0 (streaming, tokens not yet parsed).
-			pool.RecordSuccess(acc.ID, 0, 0, rl)
+			server.ccInstrumentResponse(resp, ccAttempt{
+				model:       model,
+				sessionID:   sessionKey,
+				accountID:   acc.ID,
+				accountName: acc.Name,
+				startTime:   startTime,
+				pool:        pool,
+				rateLimits:  rl,
+			})
 		} else if resp.StatusCode >= 500 {
 			pool.RecordFailure(acc.ID, true, 30*time.Second)
 		} else {
 			pool.RecordFailure(acc.ID, false, 0)
 		}
 
-		m := claudecode.RequestMetrics{
-			Model:     model,
-			SessionID: sessionKey,
-			Latency:   latency,
-		}
-		_ = ccParseRequestTokens(reqBody, &m)
-		m.ComputeFinalMetrics(claudecode.DefaultSessionTracker)
-		if server.logger != nil {
-			claudecode.LogObservability(server.logger, m)
-		}
+		defer resp.Body.Close()
+		defer pool.Release(acc.ID)
+
+		ccCopyResponseHeaders(writer.Header(), resp.Header)
+		writer.WriteHeader(resp.StatusCode)
+
+		ccCopyStream(writer, resp.Body)
 
 		return
 	}
@@ -274,31 +394,4 @@ func ccCopyResponseHeaders(dst, src http.Header) {
 			dst.Set(k, v)
 		}
 	}
-}
-
-// ccParseRequestTokens extracts token usage from request body for observability.
-// The request body usually does not include usage; this is a best-effort probe.
-func ccParseRequestTokens(body []byte, m *claudecode.RequestMetrics) error {
-	if len(body) == 0 {
-		return nil
-	}
-	var req map[string]any
-	if err := json.Unmarshal(body, &req); err != nil {
-		return err
-	}
-	if usage, ok := req["usage"].(map[string]any); ok {
-		if v, ok := usage["input_tokens"].(float64); ok {
-			m.InputTokens = int(v)
-		}
-		if v, ok := usage["output_tokens"].(float64); ok {
-			m.OutputTokens = int(v)
-		}
-		if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-			m.CacheReadTokens = int(v)
-		}
-		if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
-			m.CacheCreationTokens = int(v)
-		}
-	}
-	return nil
 }
