@@ -70,12 +70,9 @@
                             <span class="label-text text-gray-300" x-text="$store.global.t('language')">Language</span>
                         </label>
                         <select
-                            class="select select-bordered select-sm w-full bg-space-800 border-space-border/50 text-gray-300 focus:border-neon-purple focus:ring-1 focus:ring-neon-purple/50 font-medium transition-all !py-0 leading-tight"
+                            class="select select-bordered select-sm w-full bg-space-800 border-space-border/50 text-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 font-medium transition-all !py-0 leading-tight"
                             :value="$store.global.lang" @change="$store.global.setLang($event.target.value)">
                             <option value="en">English</option>
-                            <option value="zh">中文</option>
-                            <option value="tr">Türkçe</option>
-                            <option value="id">Bahasa Indonesia</option>
                             <option value="pt">Português (BR)</option>
                         </select>
                     </div>
@@ -85,7 +82,7 @@
                         <label class="label">
                             <span class="label-text text-gray-300" x-text="$store.global.t('pollingInterval')">Polling
                                 Interval</span>
-                            <span class="label-text-alt font-mono text-neon-purple"
+                            <span class="label-text-alt font-mono text-blue-400"
                                 x-text="$store.settings.refreshInterval + 's'"></span>
                         </label>
                         <div class="flex gap-3 items-center">
@@ -109,7 +106,7 @@
                         <label class="label">
                             <span class="label-text text-gray-300" x-text="$store.global.t('maxDisplayLogs')">Log Buffer
                                 Size</span>
-                            <span class="label-text-alt font-mono text-neon-purple"
+                            <span class="label-text-alt font-mono text-blue-400"
                                 x-text="$store.settings.logLimit + ' ' + $store.global.t('lines')"></span>
                         </label>
                         <div class="flex gap-3 items-center">
@@ -133,12 +130,12 @@
                 <div class="divider border-space-border/50"></div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div class="form-control bg-space-900/50 p-4 rounded-lg border transition-all duration-300 hover:border-neon-purple/50"
-                        :class="$store.settings.showExhausted ? 'border-neon-purple/50 bg-neon-purple/5 shadow-[0_0_15px_rgba(168,85,247,0.1)]' : 'border-space-border/50'">
+                    <div class="form-control bg-space-900/50 p-4 rounded-lg border transition-all duration-200 hover:border-space-border-hover"
+                        :class="$store.settings.showExhausted ? 'border-blue-500/30 bg-blue-500/5' : 'border-space-border/50'">
                         <div class="flex items-center justify-between">
                             <div class="flex flex-col gap-1">
                                 <span class="label-text font-medium transition-colors"
-                                    :class="$store.settings.showExhausted ? 'text-neon-purple' : 'text-gray-300'"
+                                    :class="$store.settings.showExhausted ? 'text-blue-400' : 'text-gray-300'"
                                     x-text="$store.global.t('showExhausted')">Show Exhausted Models</span>
                                 <span class="text-xs text-gray-500"
                                     x-text="$store.global.t('showExhaustedDesc')">Display models even if they have 0%
@@ -150,18 +147,18 @@
                                     @change="$store.settings.showExhausted = $event.target.checked; $store.settings.saveSettings(true)"
                                     aria-label="Show exhausted models toggle">
                                 <div
-                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-checked:after:bg-white">
                                 </div>
                             </label>
                         </div>
                     </div>
 
-                    <div class="form-control bg-space-900/50 p-4 rounded-lg border transition-all duration-300 hover:border-neon-green/50"
-                        :class="$store.settings.compact ? 'border-neon-green/50 bg-neon-green/5 shadow-[0_0_15px_rgba(34,197,94,0.1)]' : 'border-space-border/50'">
+                    <div class="form-control bg-space-900/50 p-4 rounded-lg border transition-all duration-200 hover:border-space-border-hover"
+                        :class="$store.settings.compact ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-space-border/50'">
                         <div class="flex items-center justify-between">
                             <div class="flex flex-col gap-1">
                                 <span class="label-text font-medium transition-colors"
-                                    :class="$store.settings.compact ? 'text-neon-green' : 'text-gray-300'"
+                                    :class="$store.settings.compact ? 'text-emerald-400' : 'text-gray-300'"
                                     x-text="$store.global.t('compactMode')">Compact Mode</span>
                                 <span class="text-xs text-gray-500" x-text="$store.global.t('compactModeDesc')">Reduce
                                     padding in tables for higher information density.</span>
@@ -171,14 +168,14 @@
                                     @change="$store.settings.compact = $event.target.checked; $store.settings.saveSettings(true)"
                                     aria-label="Compact mode toggle">
                                 <div
-                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-checked:after:bg-white">
                                 </div>
                             </label>
                         </div>
                     </div>
 
-                    <div class="form-control bg-space-900/50 p-4 rounded-lg border transition-all duration-300 hover:border-amber-500/50"
-                        :class="$store.settings.showConfigWarning ? 'border-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.1)]' : 'border-space-border/50'">
+                    <div class="form-control bg-space-900/50 p-4 rounded-lg border transition-all duration-200 hover:border-space-border-hover"
+                        :class="$store.settings.showConfigWarning ? 'border-amber-500/30 bg-amber-500/5' : 'border-space-border/50'">
                         <div class="flex items-center justify-between">
                             <div class="flex flex-col gap-1">
                                 <span class="label-text font-medium transition-colors"
@@ -399,11 +396,11 @@
                                                             :data-highlight="highlightIndex === getFlatIndex(modelId)">
                                                             <div class="flex items-center gap-2">
                                                                 <span class="w-1.5 h-1.5 rounded-full"
-                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]' : 'bg-gray-600')"></span>
+                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
                                                             <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-neon-green/10 text-neon-green px-1.5 py-0.5 rounded border border-neon-green/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -472,11 +469,11 @@
                                                             :data-highlight="highlightIndex === getFlatIndex(modelId)">
                                                             <div class="flex items-center gap-2">
                                                                 <span class="w-1.5 h-1.5 rounded-full"
-                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]' : 'bg-gray-600')"></span>
+                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
                                                             <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-neon-green/10 text-neon-green px-1.5 py-0.5 rounded border border-neon-green/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -550,11 +547,11 @@
                                                             :data-highlight="highlightIndex === getFlatIndex(modelId)">
                                                             <div class="flex items-center gap-2">
                                                                 <span class="w-1.5 h-1.5 rounded-full"
-                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]' : 'bg-gray-600')"></span>
+                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
                                                             <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-neon-green/10 text-neon-green px-1.5 py-0.5 rounded border border-neon-green/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -620,11 +617,11 @@
                                                             :data-highlight="highlightIndex === getFlatIndex(modelId)">
                                                             <div class="flex items-center gap-2">
                                                                 <span class="w-1.5 h-1.5 rounded-full"
-                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]' : 'bg-gray-600')"></span>
+                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
                                                             <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-neon-green/10 text-neon-green px-1.5 py-0.5 rounded border border-neon-green/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -690,11 +687,11 @@
                                                             :data-highlight="highlightIndex === getFlatIndex(modelId)">
                                                             <div class="flex items-center gap-2">
                                                                 <span class="w-1.5 h-1.5 rounded-full"
-                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]' : 'bg-gray-600')"></span>
+                                                                    :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
                                                             <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-neon-green/10 text-neon-green px-1.5 py-0.5 rounded border border-neon-green/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -1072,19 +1069,21 @@
                                             <td class="pl-4 text-center">
                                                 <input type="checkbox" class="toggle toggle-xs toggle-primary"
                                                     :checked="item.enabled"
+                                                    :aria-label="'Toggle ' + item.id + ' allowlist status'"
                                                     @change="toggleAllowlistModel(item.id)">
                                             </td>
                                             <td class="font-mono text-xs text-gray-200">
                                                 <div class="flex items-center gap-2">
-                                                    <span class="w-2 h-2 rounded-full bg-neon-purple shadow-[0_0_6px_rgba(168,85,247,0.6)]"></span>
+                                                    <span class="w-2 h-2 rounded-full bg-blue-400"></span>
                                                     <span class="font-semibold text-white" x-text="item.id"></span>
                                                 </div>
-                                                <div class="text-[10px] text-gray-500 font-sans mt-0.5" x-text="item.displayName || ''" x-show="item.displayName && item.displayName !== item.id"></div>
+                                                <div class="text-[10px] text-gray-400 font-sans mt-0.5" x-text="item.displayName || ''" x-show="item.displayName && item.displayName !== item.id"></div>
                                             </td>
-                                            <td class="font-mono text-xs text-neon-purple">
+                                            <td class="font-mono text-xs text-blue-400">
                                                 <input type="text" :value="item.alias || ''"
                                                     @change="updateAllowlistAlias(item.id, $event.target.value)"
-                                                    class="input input-xs bg-space-800 border-space-border text-neon-purple font-mono text-xs w-full focus:border-neon-purple"
+                                                    :aria-label="'Local alias for ' + item.id"
+                                                    class="input input-xs bg-space-800 border-space-border text-blue-400 font-mono text-xs w-full focus:border-blue-500"
                                                     placeholder="e.g. claude-3-7-openrouter">
                                             </td>
                                             <td class="font-mono text-xs text-gray-400">
@@ -1092,15 +1091,18 @@
                                             </td>
                                             <td class="text-right pr-4">
                                                 <div class="flex items-center justify-end gap-1">
-                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-neon-purple"
+                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-white min-h-[28px] min-w-[28px]"
                                                         @click="toggleRoutingExpanded(item.id)"
+                                                        :aria-expanded="isRoutingExpanded(item.id)"
+                                                        :aria-label="(isRoutingExpanded(item.id) ? 'Collapse' : 'Expand') + ' provider routing for ' + item.id"
                                                         :title="$store.global.t('providerRouting') || 'Provider Routing'">
                                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 transition-transform" :class="isRoutingExpanded(item.id) && 'rotate-90'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
                                                         </svg>
                                                     </button>
-                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400"
+                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400 min-h-[28px] min-w-[28px]"
                                                         @click="removeFromAllowlist(item.id)"
+                                                        :aria-label="'Remove ' + item.id + ' from allowlist'"
                                                         :title="$store.global.t('remove') || 'Remove'">
                                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -1120,15 +1122,16 @@
                                                                 <button class="btn btn-xs join-item"
                                                                     :class="(item.providerMode || 'auto') === m ? 'bg-neon-purple/30 text-neon-purple border-neon-purple/50' : 'bg-space-800 text-gray-400 border-space-border'"
                                                                     @click="setProviderMode(item, m)"
+                                                                    :aria-label="'Set routing mode to ' + m"
                                                                     x-text="m"></button>
                                                             </template>
                                                         </div>
-                                                        <span class="text-[10px] text-gray-500" x-show="(item.providerMode || 'auto') === 'pinned' && item.pinnedProvider">
+                                                        <span class="text-[10px] text-gray-400" x-show="(item.providerMode || 'auto') === 'pinned' && item.pinnedProvider">
                                                             <span x-text="$store.global.t('pinnedTo') || 'Pinned to'"></span>: <span class="font-mono text-neon-purple" x-text="item.pinnedProvider"></span>
                                                         </span>
                                                     </div>
 
-                                                    <div x-show="getRoutingPanel(item.id).loading" class="text-xs text-gray-500 font-mono py-2">
+                                                    <div x-show="getRoutingPanel(item.id).loading" class="text-xs text-gray-400 font-mono py-2">
                                                         <span class="loading loading-spinner loading-xs"></span>
                                                         <span x-text="$store.global.t('loading') || 'Loading...'">Loading...</span>
                                                     </div>
@@ -1153,7 +1156,7 @@
                                                                     <tr class="hover:bg-white/5">
                                                                         <td class="pl-2 font-mono text-xs text-white">
                                                                             <span x-text="p.provider"></span>
-                                                                            <span class="text-gray-500" x-show="p.tag" x-text="p.tag ? '(' + p.tag + ')' : ''"></span>
+                                                                            <span class="text-gray-400" x-show="p.tag" x-text="p.tag ? '(' + p.tag + ')' : ''"></span>
                                                                         </td>
                                                                         <td class="font-mono text-xs text-gray-300" x-text="formatUptime(p)"></td>
                                                                         <td class="font-mono text-xs text-gray-300" x-text="p.contextLength ? Math.round(p.contextLength / 1000) + 'k' : '-'"></td>
@@ -1164,14 +1167,17 @@
                                                                             <button class="btn btn-xs"
                                                                                 :class="item.pinnedProvider === p.provider ? 'bg-neon-purple/30 text-neon-purple border-neon-purple/50' : 'bg-space-800 text-gray-400 border-space-border'"
                                                                                 @click="pinProvider(item, p.provider)"
+                                                                                :aria-label="'Pin provider ' + p.provider"
                                                                                 x-text="item.pinnedProvider === p.provider ? ($store.global.t('pinned') || 'Pinned') : ($store.global.t('pin') || 'Pin')"></button>
                                                                         </td>
                                                                         <td x-show="(item.providerMode || 'auto') === 'custom'">
                                                                             <template x-if="(item.providerOrder || []).includes(p.provider)">
                                                                                 <div class="flex items-center gap-1">
                                                                                     <button class="btn btn-xs btn-ghost text-gray-400" :disabled="(item.providerOrder || []).indexOf(p.provider) <= 0"
+                                                                                        :aria-label="'Move provider ' + p.provider + ' up'"
                                                                                         @click="moveProvider(item, (item.providerOrder || []).indexOf(p.provider), -1)">↑</button>
                                                                                     <button class="btn btn-xs btn-ghost text-gray-400" :disabled="(item.providerOrder || []).indexOf(p.provider) >= (item.providerOrder || []).length - 1"
+                                                                                        :aria-label="'Move provider ' + p.provider + ' down'"
                                                                                         @click="moveProvider(item, (item.providerOrder || []).indexOf(p.provider), 1)">↓</button>
                                                                                 </div>
                                                                             </template>
@@ -1198,146 +1204,377 @@
                     </div>
                 </div>
 
+                <!-- Section 0b: Kimi Code Gateway -->
+                <div class="card bg-space-900/30 border border-cyan-500/30 p-6 space-y-4">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div class="space-y-1">
+                            <div class="flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                                </svg>
+                                <h4 class="text-sm font-bold text-white uppercase tracking-wider" x-text="$store.global.t('kimiGateway') || 'Kimi Code Gateway'">Kimi Code Gateway</h4>
+                            </div>
+                            <p class="text-xs text-gray-400" x-text="$store.global.t('kimiDesc') || 'Forward allowlisted models transparently to api.kimi.com/coding using Bearer auth.'">
+                                Forward allowlisted models transparently to api.kimi.com/coding using Bearer auth.
+                            </p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" class="sr-only peer"
+                                x-model="kimiConfig.enabled"
+                                @change="saveKimiConfig()"
+                                aria-label="Kimi Gateway enabled toggle">
+                            <div class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-500 peer-checked:after:bg-white"></div>
+                        </label>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-space-border/40">
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('kimiBaseUrl') || 'Base URL'">Base URL</label>
+                            <input type="text" class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                x-model="kimiConfig.baseUrl"
+                                aria-label="Kimi Base URL"
+                                placeholder="https://api.kimi.com/coding">
+                        </div>
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('kimiApiKey') || 'API Key'">API Key</label>
+                            <input type="password" class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                x-model="kimiConfig.apiKey"
+                                aria-label="Kimi API Key"
+                                :placeholder="kimiConfig.hasApiKey ? '•••••••• (Leave blank to keep)' : 'sk-...'">
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 pt-1">
+                        <button class="btn btn-sm bg-cyan-600 hover:bg-cyan-500 border-none text-white text-xs px-4"
+                            @click="saveKimiConfig()" :disabled="kimiSaving"
+                            aria-label="Save Kimi settings">
+                            <span x-show="!kimiSaving" x-text="$store.global.t('save') || 'Save'">Save</span>
+                            <span x-show="kimiSaving" class="loading loading-spinner loading-xs"></span>
+                        </button>
+                        <button class="btn btn-sm bg-space-800 hover:bg-space-700 border border-space-border text-gray-300 text-xs px-4"
+                            @click="openKimiDiscoverModal()"
+                            aria-label="Discover Kimi models">
+                            <span x-text="$store.global.t('kimiDiscover') || 'Discover Models'">Discover Models</span>
+                        </button>
+                        <span x-show="kimiError" class="text-xs text-rose-400 font-mono" x-text="kimiError"></span>
+                    </div>
+
+                    <div class="space-y-2 pt-2">
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs font-semibold text-gray-300 uppercase tracking-wider" x-text="$store.global.t('kimiAllowlist') || 'Allowlisted Models & Aliases'">Allowlisted Models & Aliases</label>
+                            <span class="text-xs font-mono text-gray-400" x-text="(kimiConfig.allowlist || []).length + ' models'"></span>
+                        </div>
+                        <div class="view-card !p-0 overflow-hidden border border-space-border/60">
+                            <table class="standard-table">
+                                <thead>
+                                    <tr>
+                                        <th class="pl-4 w-12 text-center" x-text="$store.global.t('kimiColEnabled') || 'Status'">Status</th>
+                                        <th class="w-4/12" x-text="$store.global.t('kimiColId') || 'Model ID'">Model ID</th>
+                                        <th class="w-3/12" x-text="$store.global.t('kimiColAlias') || 'Local Alias'">Local Alias</th>
+                                        <th class="w-4/12" x-text="$store.global.t('kimiColDisplay') || 'Display Name'">Display Name</th>
+                                        <th class="w-12 text-right pr-4" x-text="$store.global.t('actions') || 'Actions'">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="(m, idx) in (kimiConfig.allowlist || [])" :key="m.id">
+                                        <tr class="hover:bg-white/5 transition-colors">
+                                            <td class="pl-4 text-center">
+                                                <input type="checkbox" class="toggle toggle-xs toggle-primary"
+                                                    x-model="m.enabled"
+                                                    @change="saveKimiConfig()"
+                                                    :aria-label="'Toggle ' + m.id + ' allowlist status'">
+                                            </td>
+                                            <td class="font-mono text-xs text-white" x-text="m.id"></td>
+                                            <td>
+                                                <input class="input input-xs bg-space-800 border-space-border text-cyan-400 font-mono text-xs w-full focus:border-cyan-400"
+                                                    x-model="m.alias"
+                                                    @change="saveKimiConfig()"
+                                                    :aria-label="'Alias for ' + m.id"
+                                                    placeholder="Optional alias...">
+                                            </td>
+                                            <td>
+                                                <input class="input input-xs bg-space-800 border-space-border text-white text-xs w-full"
+                                                    x-model="m.displayName"
+                                                    @change="saveKimiConfig()"
+                                                    :aria-label="'Display name for ' + m.id"
+                                                    placeholder="Display name...">
+                                            </td>
+                                            <td class="text-right pr-4">
+                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400 min-h-[28px] min-w-[28px]"
+                                                    @click="kimiConfig.allowlist.splice(idx, 1); saveKimiConfig()"
+                                                    :aria-label="'Remove ' + m.id + ' from allowlist'"
+                                                    title="Remove">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                    </svg>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="!kimiConfig.allowlist || kimiConfig.allowlist.length === 0">
+                                        <td colspan="5" class="text-center py-6 text-gray-400 text-xs font-mono">
+                                            NO KIMI MODELS ALLOWLISTED. CLICK "DISCOVER MODELS" TO ADD.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <!-- Add new Kimi allowlist entry -->
+                            <div class="flex flex-col sm:flex-row gap-2 p-3 bg-space-950/40 border-t border-space-border/40">
+                                <input class="input input-xs input-bordered bg-space-800 border-space-border font-mono text-white flex-1 text-xs"
+                                    x-model="kimiNewId"
+                                    aria-label="New Kimi Model ID"
+                                    placeholder="Model ID (e.g. kimi-k2-thinking)">
+                                <input class="input input-xs input-bordered bg-space-800 border-space-border font-mono text-cyan-400 w-full sm:w-36 text-xs"
+                                    x-model="kimiNewAlias"
+                                    aria-label="New Kimi Local Alias"
+                                    placeholder="Alias (e.g. k2)">
+                                <input class="input input-xs input-bordered bg-space-800 border-space-border text-white w-full sm:w-44 text-xs"
+                                    x-model="kimiNewDisplay"
+                                    aria-label="New Kimi Display Name"
+                                    placeholder="Display Name (e.g. Kimi K2)">
+                                <button class="btn btn-xs bg-cyan-600 hover:bg-cyan-500 border-none text-white text-xs px-3 min-h-[28px]"
+                                    @click="addKimiAllowlistRow()"
+                                    aria-label="Add Kimi model to allowlist">Add</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Section 0c: Claude Code Official API Gateway -->
-                <div class="bg-gray-800/40 border border-gray-700/60 rounded-lg p-4">
-                    <div class="flex items-center justify-between mb-3">
-                        <div>
-                            <h4 class="text-sm font-bold text-white uppercase tracking-wider">Claude Code Gateway</h4>
+                <div class="card bg-space-900/30 border border-purple-500/30 p-6 space-y-4">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div class="space-y-1">
+                            <div class="flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                                </svg>
+                                <h4 class="text-sm font-bold text-white uppercase tracking-wider">Claude Code Gateway</h4>
+                            </div>
                             <p class="text-xs text-gray-400 mt-1">Forward allowlisted Claude models via personal API tokens. Multi-account pool with sticky sessions and 429 failover.</p>
                         </div>
-                        <label class="inline-flex items-center cursor-pointer">
+                        <label class="relative inline-flex items-center cursor-pointer">
                             <input type="checkbox" class="sr-only peer"
                                 x-model="ccConfig.enabled"
                                 @change="saveCCConfig()"
                                 aria-label="Claude Code Gateway enabled toggle">
-                            <div class="relative w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-full after:content-[\'\'] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                            <div class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-500 peer-checked:after:bg-white"></div>
                         </label>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                        <label class="block">
-                            <span class="text-[11px] uppercase text-gray-400">Base URL</span>
-                            <input type="text" class="input input-sm input-bordered w-full mt-1 bg-gray-900/60 font-mono text-xs"
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-space-border/40">
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold">Base URL</label>
+                            <input type="text" class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
                                 x-model="ccConfig.baseUrl"
+                                aria-label="Claude Code Base URL"
                                 placeholder="https://api.anthropic.com">
-                        </label>
-                        <label class="block">
-                            <span class="text-[11px] uppercase text-gray-400">Mode</span>
-                            <select class="select select-sm select-bordered w-full mt-1 bg-gray-900/60 text-xs" x-model="ccConfig.mode">
+                        </div>
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold">Mode</label>
+                            <select class="select select-sm select-bordered bg-space-800 border-space-border text-white text-xs w-full"
+                                x-model="ccConfig.mode"
+                                aria-label="Claude Code Routing Mode">
                                 <option value="pool">Pool (multi-account failover)</option>
                                 <option value="single">Single (exponential backoff)</option>
                             </select>
-                        </label>
+                        </div>
                     </div>
 
-                    <div class="flex items-center gap-2 mt-3">
-                        <button class="btn btn-xs btn-primary" @click="saveCCConfig()" :disabled="ccSaving">
+                    <div class="flex items-center gap-2 pt-1">
+                        <button class="btn btn-sm bg-purple-600 hover:bg-purple-500 border-none text-white text-xs px-4"
+                            @click="saveCCConfig()" :disabled="ccSaving"
+                            aria-label="Save Claude Code settings">
                             <span x-show="!ccSaving">Save</span>
                             <span x-show="ccSaving" class="loading loading-spinner loading-xs"></span>
                         </button>
-                        <button class="btn btn-xs btn-ghost" @click="ccAutoImport()" :disabled="ccImporting">
+                        <button class="btn btn-sm bg-space-800 hover:bg-space-700 border border-space-border text-gray-300 text-xs px-4"
+                            @click="ccAutoImport()" :disabled="ccImporting"
+                            aria-label="Import accounts from Claude CLI">
                             <span x-show="!ccImporting">Import from ~/.claude</span>
                             <span x-show="ccImporting" class="loading loading-spinner loading-xs"></span>
                         </button>
-                        <span x-show="ccError" class="text-xs text-rose-400" x-text="ccError"></span>
-                        <span x-show="ccSuccess" class="text-xs text-emerald-400" x-text="ccSuccess"></span>
+                        <span x-show="ccError" class="text-xs text-rose-400 font-mono" x-text="ccError"></span>
+                        <span x-show="ccSuccess" class="text-xs text-emerald-400 font-mono" x-text="ccSuccess"></span>
                     </div>
 
                     <!-- Accounts Table -->
-                    <div class="mt-4">
-                        <h5 class="text-[11px] uppercase text-gray-400 mb-2">Accounts</h5>
-                        <table class="table table-xs w-full">
-                            <thead>
-                                <tr class="text-[10px] uppercase text-gray-500">
-                                    <th>On</th>
-                                    <th>ID</th>
-                                    <th>Name</th>
-                                    <th>Type</th>
-                                    <th>Token</th>
-                                    <th>Status</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <template x-for="(acc, idx) in ccAccounts" :key="acc.id">
+                    <div class="space-y-2 pt-2">
+                        <div class="flex items-center justify-between">
+                            <h5 class="text-xs font-semibold text-gray-300 uppercase tracking-wider">Configured Accounts</h5>
+                            <span class="text-xs font-mono text-gray-400" x-text="(ccAccounts || []).length + ' accounts'"></span>
+                        </div>
+                        <div class="view-card !p-0 overflow-hidden border border-space-border/60">
+                            <table class="standard-table">
+                                <thead>
                                     <tr>
-                                        <td><input type="checkbox" class="checkbox checkbox-xs" x-model="acc.enabled" @change="saveCCAccount(acc)"></td>
-                                        <td><span class="font-mono text-[10px] text-gray-400" x-text="acc.id?.slice(0,8) + '...'"></span></td>
-                                        <td><input class="input input-xs input-bordered w-full bg-gray-900/60" x-model="acc.name" @change="saveCCAccount(acc)"></td>
-                                        <td><span class="badge badge-xs" :class="acc.type === 'api_key' ? 'badge-info' : 'badge-warning'" x-text="acc.type || 'api_key'"></span></td>
-                                        <td><span class="font-mono text-[10px] text-gray-400" x-text="acc.maskedToken || (acc.hasToken ? '••••••••' : '—')"></span></td>
-                                        <td>
-                                            <span class="badge badge-xs" :class="acc.cooldownUntil ? 'badge-error' : 'badge-success'"
-                                                x-text="acc.cooldownUntil ? 'cooldown' : 'ok'"></span>
-                                        </td>
-                                        <td class="flex gap-1">
-                                            <button class="btn btn-xs btn-ghost text-sky-400" @click="testCCAccount(acc)">Test</button>
-                                            <button class="btn btn-xs btn-ghost text-rose-400" @click="deleteCCAccount(acc.id)">×</button>
+                                        <th class="pl-4 w-12 text-center">Status</th>
+                                        <th class="w-24">ID</th>
+                                        <th class="w-4/12">Name</th>
+                                        <th class="w-24">Type</th>
+                                        <th class="w-3/12">Token</th>
+                                        <th class="w-24 text-center">Health</th>
+                                        <th class="w-24 text-right pr-4">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="(acc, idx) in ccAccounts" :key="acc.id">
+                                        <tr class="hover:bg-white/5 transition-colors">
+                                            <td class="pl-4 text-center">
+                                                <input type="checkbox" class="toggle toggle-xs toggle-primary"
+                                                    x-model="acc.enabled"
+                                                    @change="saveCCAccount(acc)"
+                                                    :aria-label="'Toggle account ' + (acc.name || acc.id)">
+                                            </td>
+                                            <td><span class="font-mono text-xs text-gray-400" x-text="acc.id?.slice(0,8) + '...'"></span></td>
+                                            <td>
+                                                <input class="input input-xs bg-space-800 border-space-border text-white text-xs w-full"
+                                                    x-model="acc.name"
+                                                    @change="saveCCAccount(acc)"
+                                                    :aria-label="'Account name for ' + acc.id">
+                                            </td>
+                                            <td><span class="badge badge-xs" :class="acc.type === 'api_key' ? 'bg-sky-500/10 text-sky-400 border-sky-500/30' : 'bg-amber-500/10 text-amber-300 border-amber-500/30'" x-text="acc.type || 'api_key'"></span></td>
+                                            <td><span class="font-mono text-xs text-gray-400" x-text="acc.maskedToken || (acc.hasToken ? '••••••••' : '—')"></span></td>
+                                            <td class="text-center">
+                                                <span class="badge badge-xs" :class="acc.cooldownUntil ? 'bg-red-500/10 text-red-400 border-red-500/30' : 'bg-neon-green/10 text-neon-green border-neon-green/30'"
+                                                    x-text="acc.cooldownUntil ? 'cooldown' : 'ok'"></span>
+                                            </td>
+                                            <td class="text-right pr-4">
+                                                <div class="flex items-center justify-end gap-1">
+                                                    <button class="btn btn-xs btn-ghost text-sky-400 hover:bg-sky-500/10 min-h-[28px] px-2"
+                                                        @click="testCCAccount(acc)"
+                                                        :aria-label="'Test account ' + (acc.name || acc.id)">Test</button>
+                                                    <button class="btn btn-xs btn-ghost text-red-400 hover:bg-red-500/10 min-h-[28px] min-w-[28px]"
+                                                        @click="deleteCCAccount(acc.id)"
+                                                        :aria-label="'Delete account ' + (acc.name || acc.id)"
+                                                        title="Delete account">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="!ccAccounts || ccAccounts.length === 0">
+                                        <td colspan="7" class="text-center py-6 text-gray-400 text-xs font-mono">
+                                            NO CLAUDE CODE ACCOUNTS CONFIGURED. CLICK "IMPORT" OR ADD BELOW.
                                         </td>
                                     </tr>
-                                </template>
-                            </tbody>
-                        </table>
-                        <!-- Add new account -->
-                        <div class="flex gap-2 mt-2">
-                            <input class="input input-xs input-bordered bg-gray-900/60 flex-1 font-mono" x-model="ccNewToken" placeholder="sk-ant-..." type="password">
-                            <input class="input input-xs input-bordered bg-gray-900/60 w-32" x-model="ccNewName" placeholder="Name">
-                            <button class="btn btn-xs btn-primary" @click="addCCAccount()">Add</button>
+                                </tbody>
+                            </table>
+                            <!-- Add new account row -->
+                            <div class="flex flex-col sm:flex-row gap-2 p-3 bg-space-950/40 border-t border-space-border/40">
+                                <input class="input input-xs input-bordered bg-space-800 border-space-border font-mono text-white flex-1 text-xs"
+                                    x-model="ccNewToken"
+                                    aria-label="New Claude Code token or API key"
+                                    placeholder="sk-ant-... (API key or OAuth token)"
+                                    type="password">
+                                <input class="input input-xs input-bordered bg-space-800 border-space-border text-white w-full sm:w-44 text-xs"
+                                    x-model="ccNewName"
+                                    aria-label="New Claude Code account name"
+                                    placeholder="Account Name (e.g. Work)">
+                                <button class="btn btn-xs bg-purple-600 hover:bg-purple-500 border-none text-white text-xs px-3 min-h-[28px]"
+                                    @click="addCCAccount()"
+                                    aria-label="Add Claude Code account">Add</button>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Claude Code Model Allowlist & Aliasing -->
-                    <div class="pt-4 border-t border-purple-500/20 space-y-3">
+                    <div class="space-y-3 pt-4 border-t border-space-border/40">
                         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                             <div>
                                 <h5 class="text-xs font-bold text-gray-200 uppercase tracking-wider">Model Allowlist & Aliasing</h5>
                                 <p class="text-[11px] text-gray-400">Configure allowed Claude models and optional short aliases exposed to clients.</p>
                             </div>
                             <div class="flex items-center gap-2">
-                                <button class="btn btn-xs btn-ghost text-purple-400 hover:text-purple-300 hover:bg-purple-950/40 gap-1.5 border border-purple-500/20"
-                                        @click="openClaudeCodeDiscoverModal()">
+                                <button class="btn btn-xs bg-space-800 hover:bg-space-700 border border-purple-500/40 text-purple-300 gap-1.5 px-3 min-h-[28px]"
+                                        @click="openClaudeCodeDiscoverModal()"
+                                        aria-label="Discover Claude Code models">
                                     <svg class="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
                                     </svg>
-                                    <span x-text="$store.global.t('ccDiscoverModels') || 'Discover Models'"></span>
+                                    <span x-text="$store.global.t('ccDiscoverModels') || 'Discover Models'">Discover Models</span>
                                 </button>
-                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-gray-200 gap-1 border border-gray-700"
-                                        @click="importCCDefaults()">
-                                    <span x-text="$store.global.t('importDefaults') || 'Import Defaults'"></span>
+                                <button class="btn btn-xs bg-space-800 hover:bg-space-700 border border-space-border text-gray-300 gap-1 px-3 min-h-[28px]"
+                                        @click="importCCDefaults()"
+                                        aria-label="Import Claude Code default models">
+                                    <span x-text="$store.global.t('importDefaults') || 'Import Defaults'">Import Defaults</span>
                                 </button>
                             </div>
                         </div>
 
                         <!-- Allowlist Table -->
-                        <div class="overflow-x-auto">
-                            <table class="table table-xs w-full">
+                        <div class="view-card !p-0 overflow-hidden border border-space-border/60">
+                            <table class="standard-table">
                                 <thead>
-                                    <tr class="text-gray-400">
-                                        <th class="w-8"></th>
-                                        <th>Model ID</th>
-                                        <th>Display Name</th>
-                                        <th>Aliases (comma-separated)</th>
-                                        <th class="w-8"></th>
+                                    <tr>
+                                        <th class="pl-4 w-12 text-center">Status</th>
+                                        <th class="w-4/12">Model ID</th>
+                                        <th class="w-3/12">Display Name</th>
+                                        <th class="w-4/12">Aliases (comma-separated)</th>
+                                        <th class="w-12 text-right pr-4">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <template x-for="(m, idx) in (ccConfig.allowlist || [])" :key="m.id">
-                                        <tr>
-                                            <td><input type="checkbox" class="checkbox checkbox-xs" x-model="m.enabled" @change="saveCCConfig()"></td>
+                                        <tr class="hover:bg-white/5 transition-colors">
+                                            <td class="pl-4 text-center">
+                                                <input type="checkbox" class="toggle toggle-xs toggle-primary"
+                                                    x-model="m.enabled"
+                                                    @change="saveCCConfig()"
+                                                    :aria-label="'Toggle ' + m.id + ' allowlist status'">
+                                            </td>
                                             <td><span class="font-mono text-xs text-purple-300" x-text="m.id"></span></td>
-                                            <td><input class="input input-xs input-bordered bg-gray-900/60 w-full" x-model="m.displayName" @change="saveCCConfig()"></td>
-                                            <td><input class="input input-xs input-bordered bg-gray-900/60 w-full font-mono text-[11px]" x-model="m.alias" @change="saveCCConfig()" placeholder="e.g. sonnet, claude-3.7-sonnet"></td>
-                                            <td><button class="btn btn-xs btn-ghost text-rose-400" @click="ccConfig.allowlist.splice(idx,1); saveCCConfig()">×</button></td>
+                                            <td>
+                                                <input class="input input-xs bg-space-800 border-space-border text-white text-xs w-full"
+                                                    x-model="m.displayName"
+                                                    @change="saveCCConfig()"
+                                                    :aria-label="'Display name for ' + m.id">
+                                            </td>
+                                            <td>
+                                                <input class="input input-xs bg-space-800 border-space-border text-purple-300 font-mono text-[11px] w-full focus:border-purple-400"
+                                                    x-model="m.alias"
+                                                    @change="saveCCConfig()"
+                                                    :aria-label="'Aliases for ' + m.id"
+                                                    placeholder="e.g. sonnet, claude-3.7-sonnet">
+                                            </td>
+                                            <td class="text-right pr-4">
+                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400 min-h-[28px] min-w-[28px]"
+                                                    @click="ccConfig.allowlist.splice(idx,1); saveCCConfig()"
+                                                    :aria-label="'Remove ' + m.id + ' from allowlist'"
+                                                    title="Remove">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                    </svg>
+                                                </button>
+                                            </td>
                                         </tr>
                                     </template>
+                                    <tr x-show="!ccConfig.allowlist || ccConfig.allowlist.length === 0">
+                                        <td colspan="5" class="text-center py-6 text-gray-400 text-xs font-mono">
+                                            NO CLAUDE CODE MODELS ALLOWLISTED. CLICK "DISCOVER MODELS" OR "IMPORT DEFAULTS".
+                                        </td>
+                                    </tr>
                                 </tbody>
                             </table>
                             <!-- Add new allowlist entry -->
-                            <div class="flex gap-2 mt-2">
-                                <input class="input input-xs input-bordered bg-gray-900/60 font-mono flex-1 text-xs" x-model="ccNewModelId" placeholder="Model ID (e.g. claude-sonnet-5)">
-                                <input class="input input-xs input-bordered bg-gray-900/60 w-44 text-xs" x-model="ccNewModelDisplay" placeholder="Display Name">
-                                <input class="input input-xs input-bordered bg-gray-900/60 font-mono w-48 text-[11px]" x-model="ccNewModelAlias" placeholder="Aliases (comma-separated)">
-                                <button class="btn btn-xs btn-primary" @click="addCCAllowlistRow()">Add</button>
+                            <div class="flex flex-col sm:flex-row gap-2 p-3 bg-space-950/40 border-t border-space-border/40">
+                                <input class="input input-xs input-bordered bg-space-800 border-space-border font-mono text-white flex-1 text-xs"
+                                    x-model="ccNewModelId"
+                                    aria-label="New Claude Code Model ID"
+                                    placeholder="Model ID (e.g. claude-sonnet-5)">
+                                <input class="input input-xs input-bordered bg-space-800 border-space-border text-white w-full sm:w-44 text-xs"
+                                    x-model="ccNewModelDisplay"
+                                    aria-label="New Claude Code Display Name"
+                                    placeholder="Display Name">
+                                <input class="input input-xs input-bordered bg-space-800 border-space-border font-mono text-purple-300 w-full sm:w-48 text-[11px]"
+                                    x-model="ccNewModelAlias"
+                                    aria-label="New Claude Code Aliases"
+                                    placeholder="Aliases (comma-separated)">
+                                <button class="btn btn-xs bg-purple-600 hover:bg-purple-500 border-none text-white text-xs px-3 min-h-[28px]"
+                                    @click="addCCAllowlistRow()"
+                                    aria-label="Add Claude Code model to allowlist">Add</button>
                             </div>
                         </div>
                     </div>
@@ -1382,7 +1619,7 @@
                                     <tr class="hover:bg-white/5 transition-colors">
                                         <td class="pl-4 font-mono text-xs text-gray-200">
                                             <div class="flex items-center gap-2">
-                                                <span class="w-2 h-2 rounded-full bg-neon-cyan shadow-[0_0_6px_rgba(6,182,212,0.6)]"></span>
+                                                <span class="w-2 h-2 rounded-full bg-sky-400"></span>
                                                 <span class="font-semibold text-white" x-text="ep.modelId"></span>
                                             </div>
                                         </td>
@@ -1391,7 +1628,7 @@
                                         </td>
                                         <td>
                                             <template x-if="ep.hasApiKey || ep.apiKey">
-                                                <span class="badge badge-sm bg-neon-green/10 text-neon-green border-neon-green/30 text-[10px] font-mono gap-1">
+                                                <span class="badge badge-sm bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px] font-mono gap-1">
                                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                                                     </svg>
@@ -1406,15 +1643,17 @@
                                         </td>
                                         <td class="text-right pr-4">
                                             <div class="flex items-center justify-end gap-1">
-                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-neon-cyan"
+                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-neon-cyan min-h-[28px] min-w-[28px]"
                                                     @click="openEditEndpointModal(ep.modelId, ep)"
+                                                    :aria-label="'Edit endpoint for ' + ep.modelId"
                                                     :title="$store.global.t('editEndpoint') || 'Edit Endpoint'">
                                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                                                     </svg>
                                                 </button>
-                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400"
+                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400 min-h-[28px] min-w-[28px]"
                                                     @click="deleteEndpoint(ep.modelId)"
+                                                    :aria-label="'Delete endpoint for ' + ep.modelId"
                                                     :title="$store.global.t('deleteEndpoint') || 'Delete Endpoint'">
                                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -1425,7 +1664,7 @@
                                     </tr>
                                 </template>
                                 <tr x-show="customEndpointsList.length === 0">
-                                    <td colspan="4" class="text-center py-6 text-gray-500 text-xs font-mono"
+                                    <td colspan="4" class="text-center py-6 text-gray-400 text-xs font-mono"
                                         x-text="$store.global.t('noEndpointsConfigured') || 'NO CUSTOM FORWARDING ENDPOINTS CONFIGURED'">
                                         NO CUSTOM FORWARDING ENDPOINTS CONFIGURED
                                     </td>
@@ -1451,7 +1690,8 @@
                         </div>
                         <div class="flex items-center gap-3">
                             <button class="btn btn-sm bg-neon-purple hover:bg-purple-600 border-none text-white font-semibold px-4 gap-2"
-                                @click="openAddAliasModal()">
+                                @click="openAddAliasModal()"
+                                aria-label="Add Model Alias">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
                                 </svg>
@@ -1459,7 +1699,7 @@
                             </button>
 
                             <div class="flex items-center gap-2 pl-3 border-l border-space-border/50">
-                                <span class="text-xs text-gray-500" x-text="$store.global.t('showHidden')">Show Hidden</span>
+                                <span class="text-xs text-gray-400" x-text="$store.global.t('showHidden')">Show Hidden</span>
                                 <label class="relative inline-flex items-center cursor-pointer">
                                     <input type="checkbox" class="sr-only peer"
                                         :checked="$store.settings.showHiddenModels === true"
@@ -1470,82 +1710,6 @@
                                     </div>
                                 </label>
                             </div>
-                        </div>
-                    </div>
-
-                    <!-- Section 0b: Kimi Code Gateway -->
-                    <div class="bg-gray-800/40 border border-gray-700/60 rounded-lg p-4">
-                        <div class="flex items-center justify-between mb-3">
-                            <div>
-                                <h4 class="text-sm font-bold text-white uppercase tracking-wider" x-text="$store.global.t('kimiGateway') || 'Kimi Code Gateway'">Kimi Code Gateway</h4>
-                                <p class="text-xs text-gray-400 mt-1" x-text="$store.global.t('kimiDesc') || 'Forward allowlisted models transparently to api.kimi.com/coding using Bearer auth.'">Forward allowlisted models transparently to api.kimi.com/coding using Bearer auth.</p>
-                            </div>
-                            <label class="inline-flex items-center cursor-pointer">
-                                <input type="checkbox" class="sr-only peer"
-                                    x-model="kimiConfig.enabled"
-                                    @change="saveKimiConfig()"
-                                    aria-label="Kimi Gateway enabled toggle">
-                                <div class="relative w-11 h-6 bg-gray-700 rounded-full peer peer-checked:bg-emerald-500/80 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
-                            </label>
-                        </div>
-
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                            <label class="block">
-                                <span class="text-[11px] uppercase text-gray-400" x-text="$store.global.t('kimiBaseUrl') || 'Base URL'">Base URL</span>
-                                <input type="text" class="input input-sm input-bordered w-full mt-1 bg-gray-900/60 font-mono text-xs"
-                                    x-model="kimiConfig.baseUrl"
-                                    placeholder="https://api.kimi.com/coding">
-                            </label>
-                            <label class="block">
-                                <span class="text-[11px] uppercase text-gray-400" x-text="$store.global.t('kimiApiKey') || 'API Key'">API Key</span>
-                                <input type="password" class="input input-sm input-bordered w-full mt-1 bg-gray-900/60 font-mono text-xs"
-                                    x-model="kimiConfig.apiKey"
-                                    :placeholder="kimiConfig.hasApiKey ? '••••••••' : 'sk-...'">
-                            </label>
-                        </div>
-
-                        <div class="flex items-center gap-2 mt-3">
-                            <button class="btn btn-xs btn-primary" @click="saveKimiConfig()" :disabled="kimiSaving">
-                                <span x-show="!kimiSaving" x-text="$store.global.t('save') || 'Save'">Save</span>
-                                <span x-show="kimiSaving" class="loading loading-spinner loading-xs"></span>
-                            </button>
-                            <button class="btn btn-xs btn-ghost" @click="openKimiDiscoverModal()">
-                                <span x-text="$store.global.t('kimiDiscover') || 'Discover Models'">Discover Models</span>
-                            </button>
-                            <span x-show="kimiError" class="text-xs text-rose-400" x-text="kimiError"></span>
-                        </div>
-
-                        <div class="mt-4">
-                            <h5 class="text-[11px] uppercase text-gray-400 mb-2" x-text="$store.global.t('kimiAllowlist') || 'Allowlist'">Allowlist</h5>
-                            <table class="table table-xs w-full">
-                                <thead>
-                                    <tr class="text-[10px] uppercase text-gray-500">
-                                        <th x-text="$store.global.t('kimiColEnabled') || 'On'">On</th>
-                                        <th x-text="$store.global.t('kimiColId') || 'Model ID'">Model ID</th>
-                                        <th x-text="$store.global.t('kimiColAlias') || 'Alias'">Alias</th>
-                                        <th x-text="$store.global.t('kimiColDisplay') || 'Display Name'">Display Name</th>
-                                        <th></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <template x-for="(m, idx) in kimiConfig.allowlist" :key="m.id">
-                                        <tr>
-                                            <td><input type="checkbox" class="checkbox checkbox-xs" x-model="m.enabled" @change="saveKimiConfig()"></td>
-                                            <td><input class="input input-xs input-bordered w-full bg-gray-900/60 font-mono" x-model="m.id"></td>
-                                            <td><input class="input input-xs input-bordered w-full bg-gray-900/60 font-mono" x-model="m.alias"></td>
-                                            <td><input class="input input-xs input-bordered w-full bg-gray-900/60" x-model="m.displayName"></td>
-                                            <td><button class="btn btn-xs btn-ghost text-rose-400" @click="kimiConfig.allowlist.splice(idx,1); saveKimiConfig()">×</button></td>
-                                        </tr>
-                                    </template>
-                                    <tr>
-                                        <td></td>
-                                        <td><input class="input input-xs input-bordered w-full bg-gray-900/60 font-mono" x-model="kimiNewId" placeholder="kimi-k2-thinking"></td>
-                                        <td><input class="input input-xs input-bordered w-full bg-gray-900/60 font-mono" x-model="kimiNewAlias" placeholder="k2"></td>
-                                        <td><input class="input input-xs input-bordered w-full bg-gray-900/60" x-model="kimiNewDisplay" placeholder="Kimi K2"></td>
-                                        <td><button class="btn btn-xs btn-primary" @click="addKimiAllowlistRow()">+</button></td>
-                                    </tr>
-                                </tbody>
-                            </table>
                         </div>
                     </div>
 
@@ -1597,9 +1761,9 @@
                                                 class="flex items-center gap-2 group-hover:text-white transition-colors cursor-pointer py-2"
                                                 @click="startEditing(modelId); newMapping = config.mapping || ''; $nextTick(() => $refs['input-' + modelId]?.focus())">
                                                 <span x-text="config.mapping || $store.global.t('clickToSet')"
-                                                    :class="{'text-gray-600 italic': !config.mapping, 'text-gray-300': config.mapping}"
+                                                    :class="{'text-gray-400 italic': !config.mapping, 'text-gray-200': config.mapping}"
                                                     class="text-xs font-mono"></span>
-                                                <svg class="w-3 h-3 text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                <svg class="w-3 h-3 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
                                                     fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                         d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
@@ -1608,12 +1772,14 @@
                                             <div x-show="isEditing(modelId)" class="flex items-center gap-1">
                                                 <input type="text" x-model="newMapping" :x-ref="'input-' + modelId"
                                                     list="available-targets-list"
+                                                    :aria-label="'Target model mapping for ' + modelId"
                                                     placeholder="Target model ID..."
                                                     class="input input-sm bg-space-800 border-space-border text-white focus:outline-none focus:border-neon-cyan flex-1 font-mono text-xs !h-8 min-h-0"
                                                     @keydown.enter="await updateModelConfig(modelId, { mapping: newMapping }); stopEditing()"
                                                     @keydown.escape="newMapping = config.mapping || ''; stopEditing()" />
-                                                <button class="btn-action-success"
+                                                <button class="btn-action-success min-h-[28px] min-w-[28px]"
                                                     @click="await updateModelConfig(modelId, { mapping: newMapping }); stopEditing()"
+                                                    :aria-label="'Save mapping for ' + modelId"
                                                     :title="$store.global.t('saveChanges')">
                                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none"
                                                         viewBox="0 0 24 24" stroke="currentColor">
@@ -1621,8 +1787,9 @@
                                                             stroke-width="2" d="M5 13l4 4L19 7" />
                                                     </svg>
                                                 </button>
-                                                <button class="btn-action-neutral"
+                                                <button class="btn-action-neutral min-h-[28px] min-w-[28px]"
                                                     @click="newMapping = config.mapping || ''; stopEditing()"
+                                                    :aria-label="'Cancel editing mapping for ' + modelId"
                                                     :title="$store.global.t('cancel')">
                                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none"
                                                         viewBox="0 0 24 24" stroke="currentColor">
@@ -1630,8 +1797,9 @@
                                                             stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                                                     </svg>
                                                 </button>
-                                                <button x-show="config.mapping" class="btn-action-danger"
+                                                <button x-show="config.mapping" class="btn-action-danger min-h-[28px] min-w-[28px]"
                                                     @click="await updateModelConfig(modelId, { mapping: '' }); stopEditing()"
+                                                    :aria-label="'Clear mapping for ' + modelId"
                                                     :title="$store.global.t('delete')">
                                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none"
                                                         viewBox="0 0 24 24" stroke="currentColor">
@@ -1646,8 +1814,9 @@
                                             <div class="flex items-center justify-end gap-2">
                                                 <!-- Custom Alias Delete -->
                                                 <template x-if="isCustomAlias(modelId)">
-                                                    <button class="btn btn-xs btn-ghost text-red-400 hover:bg-red-500/10"
+                                                    <button class="btn btn-xs btn-ghost text-red-400 hover:bg-red-500/10 min-h-[28px] min-w-[28px]"
                                                         @click="deleteModelAlias(modelId)"
+                                                        :aria-label="'Delete custom alias ' + modelId"
                                                         :title="$store.global.t('deleteAlias') || 'Delete Alias'">
                                                         <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -1656,9 +1825,10 @@
                                                 </template>
 
                                                 <!-- Pin Toggle -->
-                                                <button class="btn btn-xs btn-circle transition-colors"
-                                                    :class="isPinned ? 'bg-neon-purple/20 text-neon-purple border-neon-purple/50 hover:bg-neon-purple/30' : 'btn-ghost text-gray-600 hover:text-gray-300'"
+                                                <button class="btn btn-xs btn-circle transition-colors min-h-[28px] min-w-[28px]"
+                                                    :class="isPinned ? 'bg-neon-purple/20 text-neon-purple border-neon-purple/50 hover:bg-neon-purple/30' : 'btn-ghost text-gray-400 hover:text-white'"
                                                     @click="await updateModelConfig(modelId, { pinned: !isPinned })"
+                                                    :aria-label="(isPinned ? 'Unpin ' : 'Pin ') + modelId"
                                                     :title="$store.global.t('pinToTop')">
                                                     <svg x-show="isPinned" xmlns="http://www.w3.org/2000/svg"
                                                         class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
@@ -1674,9 +1844,10 @@
                                                 </button>
 
                                                 <!-- Hide Toggle -->
-                                                <button class="btn btn-xs btn-circle transition-colors"
+                                                <button class="btn btn-xs btn-circle transition-colors min-h-[28px] min-w-[28px]"
                                                     :class="isHidden ? 'bg-red-500/20 text-red-400 border-red-500/50 hover:bg-red-500/30' : 'btn-ghost text-gray-400 hover:text-white'"
                                                     @click="await updateModelConfig(modelId, { hidden: !isHidden })"
+                                                    :aria-label="(isHidden ? 'Show ' : 'Hide ') + modelId"
                                                     :title="$store.global.t('toggleVisibility')">
                                                     <svg x-show="!isHidden" xmlns="http://www.w3.org/2000/svg"
                                                         class="h-4 w-4" fill="none" viewBox="0 0 24 24"
@@ -1700,7 +1871,7 @@
                                     </tr>
                                 </template>
                                 <tr x-show="!allConfiguredModels.length">
-                                    <td colspan="3" class="text-center py-8 text-gray-600 text-xs font-mono"
+                                    <td colspan="3" class="text-center py-8 text-gray-400 text-xs font-mono"
                                         x-text="$store.global.t('noModels')">
                                         NO MODELS DETECTED
                                     </td>
@@ -1718,9 +1889,9 @@
                 </div>
 
                 <!-- Custom Endpoint Modal -->
-                <dialog id="custom_endpoint_modal" class="modal">
+                <dialog id="custom_endpoint_modal" class="modal" aria-labelledby="custom-endpoint-modal-title">
                     <div class="modal-box bg-space-900 border-2 border-neon-cyan/50 max-w-lg">
-                        <h3 class="font-bold text-lg text-neon-cyan flex items-center gap-2">
+                        <h3 id="custom-endpoint-modal-title" class="font-bold text-lg text-neon-cyan flex items-center gap-2">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
                             </svg>
@@ -1732,7 +1903,7 @@
                         </p>
 
                         <!-- Error display -->
-                        <div x-show="endpointModal.error" class="alert alert-error bg-red-900/30 border border-red-500/50 text-xs text-red-300 py-2 mt-2">
+                        <div x-show="endpointModal.error" class="alert alert-error bg-red-900/30 border border-red-500/50 text-xs text-red-300 py-2 mt-2" role="alert">
                             <span x-text="endpointModal.error"></span>
                         </div>
 
@@ -1744,16 +1915,20 @@
                                 </label>
                                 <input type="text" x-model="endpointModal.modelId"
                                     :disabled="endpointModal.isEdit"
+                                    aria-label="Target Model ID"
                                     class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-cyan"
                                     placeholder="e.g. claude-3-opus-20240229" />
                                 <div class="flex flex-wrap gap-1.5 mt-2" x-show="!endpointModal.isEdit">
-                                    <span class="text-[10px] text-gray-500 self-center mr-1">Suggestions:</span>
+                                    <span class="text-[10px] text-gray-400 self-center mr-1">Suggestions:</span>
                                     <button type="button" class="badge badge-sm bg-space-800 hover:bg-space-700 text-neon-cyan border-space-border cursor-pointer text-[10px] font-mono"
-                                        @click="endpointModal.modelId = 'claude-3-opus-20240229'">claude-3-opus</button>
+                                        @click="endpointModal.modelId = 'claude-3-opus-20240229'"
+                                        aria-label="Set model ID to claude-3-opus">claude-3-opus</button>
                                     <button type="button" class="badge badge-sm bg-space-800 hover:bg-space-700 text-neon-cyan border-space-border cursor-pointer text-[10px] font-mono"
-                                        @click="endpointModal.modelId = 'claude-3-5-sonnet-20241022'">claude-3.5-sonnet</button>
+                                        @click="endpointModal.modelId = 'claude-3-5-sonnet-20241022'"
+                                        aria-label="Set model ID to claude-3.5-sonnet">claude-3.5-sonnet</button>
                                     <button type="button" class="badge badge-sm bg-space-800 hover:bg-space-700 text-neon-cyan border-space-border cursor-pointer text-[10px] font-mono"
-                                        @click="endpointModal.modelId = 'gpt-4o'">gpt-4o</button>
+                                        @click="endpointModal.modelId = 'gpt-4o'"
+                                        aria-label="Set model ID to gpt-4o">gpt-4o</button>
                                 </div>
                             </div>
 
@@ -1763,16 +1938,20 @@
                                     <span class="label-text text-gray-300 font-semibold text-xs" x-text="$store.global.t('endpointUrl') || 'Target Endpoint URL'">Target Endpoint URL</span>
                                 </label>
                                 <input type="text" x-model="endpointModal.url"
+                                    aria-label="Target Endpoint URL"
                                     class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-cyan"
                                     placeholder="https://api.anthropic.com" />
                                 <div class="flex flex-wrap gap-1.5 mt-2">
-                                    <span class="text-[10px] text-gray-500 self-center mr-1">Presets:</span>
+                                    <span class="text-[10px] text-gray-400 self-center mr-1">Presets:</span>
                                     <button type="button" class="badge badge-sm bg-space-800 hover:bg-space-700 text-gray-300 border-space-border cursor-pointer text-[10px] font-mono"
-                                        @click="endpointModal.url = 'https://api.anthropic.com'">Anthropic</button>
+                                        @click="endpointModal.url = 'https://api.anthropic.com'"
+                                        aria-label="Set preset to Anthropic">Anthropic</button>
                                     <button type="button" class="badge badge-sm bg-space-800 hover:bg-space-700 text-gray-300 border-space-border cursor-pointer text-[10px] font-mono"
-                                        @click="endpointModal.url = 'http://localhost:11434/v1/messages'">Ollama (Local)</button>
+                                        @click="endpointModal.url = 'http://localhost:11434/v1/messages'"
+                                        aria-label="Set preset to Ollama Local">Ollama (Local)</button>
                                     <button type="button" class="badge badge-sm bg-space-800 hover:bg-space-700 text-gray-300 border-space-border cursor-pointer text-[10px] font-mono"
-                                        @click="endpointModal.url = 'https://openrouter.ai/api/v1/messages'">OpenRouter</button>
+                                        @click="endpointModal.url = 'https://openrouter.ai/api/v1/messages'"
+                                        aria-label="Set preset to OpenRouter">OpenRouter</button>
                                 </div>
                             </div>
 
@@ -1786,9 +1965,11 @@
                                 </label>
                                 <div class="relative">
                                     <input :type="showKey ? 'text' : 'password'" x-model="endpointModal.apiKey"
+                                        aria-label="Endpoint API Key"
                                         class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-cyan pr-10"
                                         :placeholder="endpointModal.isEdit && endpointModal.hasApiKey ? '•••••••••••••••• (Leave blank to keep)' : 'sk-ant-... or token'" />
-                                    <button type="button" class="absolute right-2 top-2 text-gray-500 hover:text-white"
+                                    <button type="button" class="absolute right-2 top-2 text-gray-400 hover:text-white"
+                                        aria-label="Toggle password visibility"
                                         @click="showKey = !showKey">
                                         <svg x-show="!showKey" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -1805,9 +1986,11 @@
                         <div class="modal-action">
                             <button type="button" class="btn btn-ghost text-gray-400"
                                 @click="closeEndpointModal()"
+                                aria-label="Cancel custom endpoint edit"
                                 x-text="$store.global.t('cancel')">Cancel</button>
                             <button type="button" class="btn bg-neon-cyan hover:bg-cyan-600 border-none text-black font-semibold"
                                 @click="saveEndpoint()"
+                                aria-label="Save endpoint"
                                 :disabled="endpointModal.saving">
                                 <span x-show="!endpointModal.saving" x-text="$store.global.t('saveChanges') || 'Save Endpoint'">Save Endpoint</span>
                                 <span x-show="endpointModal.saving" class="loading loading-spinner loading-xs"></span>
@@ -1815,14 +1998,14 @@
                         </div>
                     </div>
                     <form method="dialog" class="modal-backdrop">
-                        <button @click="closeEndpointModal()">close</button>
+                        <button @click="closeEndpointModal()" aria-label="Close modal">close</button>
                     </form>
                 </dialog>
 
                 <!-- Add Model Alias Modal -->
-                <dialog id="add_model_alias_modal" class="modal">
+                <dialog id="add_model_alias_modal" class="modal" aria-labelledby="add-model-alias-modal-title">
                     <div class="modal-box bg-space-900 border-2 border-neon-purple/50 max-w-md">
-                        <h3 class="font-bold text-lg text-neon-purple flex items-center gap-2">
+                        <h3 id="add-model-alias-modal-title" class="font-bold text-lg text-neon-purple flex items-center gap-2">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                             </svg>
@@ -1834,7 +2017,7 @@
                         </p>
 
                         <!-- Error display -->
-                        <div x-show="aliasModal.error" class="alert alert-error bg-red-900/30 border border-red-500/50 text-xs text-red-300 py-2 mt-2">
+                        <div x-show="aliasModal.error" class="alert alert-error bg-red-900/30 border border-red-500/50 text-xs text-red-300 py-2 mt-2" role="alert">
                             <span x-text="aliasModal.error"></span>
                         </div>
 
@@ -1845,6 +2028,7 @@
                                     <span class="label-text text-gray-300 font-semibold text-xs" x-text="$store.global.t('sourceModel') || 'Source Model ID (Incoming)'">Source Model ID (Incoming)</span>
                                 </label>
                                 <input type="text" x-model="aliasModal.sourceModel"
+                                    aria-label="Source Model ID"
                                     class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-purple"
                                     placeholder="e.g. claude-opus-4-6" />
                             </div>
@@ -1856,6 +2040,7 @@
                                 </label>
                                 <input type="text" x-model="aliasModal.targetModel"
                                     list="available-targets-list"
+                                    aria-label="Target Model ID"
                                     class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-purple"
                                     placeholder="e.g. anthropic/claude-3.7-sonnet, or-sonnet, or gemini-2.5-pro" />
                             </div>
@@ -1864,9 +2049,11 @@
                         <div class="modal-action">
                             <button type="button" class="btn btn-ghost text-gray-400"
                                 @click="closeAliasModal()"
+                                aria-label="Cancel alias modal"
                                 x-text="$store.global.t('cancel')">Cancel</button>
                             <button type="button" class="btn bg-neon-purple hover:bg-purple-600 border-none text-white font-semibold"
                                 @click="saveAlias()"
+                                aria-label="Save model alias"
                                 :disabled="aliasModal.saving">
                                 <span x-show="!aliasModal.saving" x-text="$store.global.t('saveChanges') || 'Save Alias'">Save Alias</span>
                                 <span x-show="aliasModal.saving" class="loading loading-spinner loading-xs"></span>
@@ -1874,7 +2061,7 @@
                         </div>
                     </div>
                     <form method="dialog" class="modal-backdrop">
-                        <button @click="closeAliasModal()">close</button>
+                        <button @click="closeAliasModal()" aria-label="Close modal">close</button>
                     </form>
                 </dialog>
 
@@ -3126,8 +3313,8 @@
                             </div>
 
                             <!-- Request Throttling Card -->
-                            <div class="form-control bg-space-900/50 rounded-lg border transition-all duration-300 hover:border-amber-500/50"
-                                :class="serverConfig.requestThrottlingEnabled ? 'border-amber-500 bg-amber-500/10 shadow-[0_0_25px_rgba(245,158,11,0.2)] ring-1 ring-amber-500/30' : 'border-space-border/50'">
+                            <div class="form-control bg-space-900/50 rounded-lg border transition-all duration-200 hover:border-space-border-hover"
+                                :class="serverConfig.requestThrottlingEnabled ? 'border-amber-500/40 bg-amber-500/10' : 'border-space-border/50'">
 
                                 <!-- Toggle Row -->
                                 <div class="flex items-center justify-between p-4">
@@ -3143,7 +3330,7 @@
                                             @change="toggleRequestThrottling($event.target.checked)"
                                             aria-label="Request throttling toggle">
                                         <div
-                                            class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-green peer-checked:after:bg-white">
+                                            class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500 peer-checked:after:bg-white">
                                         </div>
                                     </label>
                                 </div>
