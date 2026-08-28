@@ -53,7 +53,8 @@ var headroomKeys = []string{
 
 var commandCrusherKeys = []string{
 	"commandCrusherSettings", "commandCrusherDesc", "commandCrusherEnabled",
-	"commandCrusherToolsTitle", "commandCrusherSafetyTitle", "commandCrusherSafetyDesc",
+	"commandCrusherRequiresEngine", "commandCrusherToolsTitle",
+	"commandCrusherSafetyTitle", "commandCrusherSafetyDesc",
 	"commandCrusherRunners", "commandCrusherLinters", "commandCrusherCompilers",
 	"commandCrusherVCS",
 }
