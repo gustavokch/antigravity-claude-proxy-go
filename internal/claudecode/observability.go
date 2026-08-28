@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -180,12 +181,14 @@ func LogObservability(log *slog.Logger, m RequestMetrics) {
 // formatInt renders n with thousands separators, matching the OpenRouter
 // gateway's log formatting.
 func formatInt(n int) string {
-	if n < 0 {
-		return "-" + formatInt(-n)
-	}
 	in := fmt.Sprintf("%d", n)
+	sign := ""
+	if strings.HasPrefix(in, "-") {
+		sign = "-"
+		in = in[1:]
+	}
 	if len(in) <= 3 {
-		return in
+		return sign + in
 	}
 	var out []byte
 	rem := len(in) % 3
@@ -199,5 +202,5 @@ func formatInt(n int) string {
 			out = append(out, ',')
 		}
 	}
-	return string(out)
+	return sign + string(out)
 }

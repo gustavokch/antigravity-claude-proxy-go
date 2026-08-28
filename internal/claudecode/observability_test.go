@@ -67,3 +67,32 @@ func TestRequestMetrics_ComputeFinalMetrics(t *testing.T) {
 		t.Errorf("expected SessionCost == CallCost for first call, got %f vs %f", m.SessionCost, m.CallCost)
 	}
 }
+
+func TestFormatInt(t *testing.T) {
+	tests := []struct {
+		input int
+		want  string
+	}{
+		{0, "0"},
+		{5, "5"},
+		{99, "99"},
+		{999, "999"},
+		{1000, "1,000"},
+		{1234, "1,234"},
+		{12345, "12,345"},
+		{123456, "123,456"},
+		{1234567, "1,234,567"},
+		{-1, "-1"},
+		{-999, "-999"},
+		{-1000, "-1,000"},
+		{-1234567, "-1,234,567"},
+		{-1 << 63, "-9,223,372,036,854,775,808"},
+	}
+
+	for _, tc := range tests {
+		got := formatInt(tc.input)
+		if got != tc.want {
+			t.Errorf("formatInt(%d) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
