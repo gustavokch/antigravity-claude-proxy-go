@@ -363,3 +363,45 @@ func TestOutputShaper_RecordsContinuationKind(t *testing.T) {
 		t.Errorf("expected reqCtx.ContinuationKind == %q, got %q", "coding", reqCtx.ContinuationKind)
 	}
 }
+
+func TestLooksLikeTestOutput_ProseIsNotTestOutput(t *testing.T) {
+	// Case-insensitive \bPASS\b, \berror:, and \bwarning: matched ordinary
+	// prose, so almost every tool result classified as coding and effort
+	// routing never clamped anything.
+	//
+	// The discriminator is position, not wording: a diagnostic prefix opens a
+	// line, while prose mentions it mid-sentence. A line that genuinely starts
+	// "warning:" is treated as a diagnostic even if what follows is short.
+	prose := []string{
+		"Please pass the auth token to the handler.",
+		"The user does not have an error: field here",
+		"Applied 1 edit to main.go",
+		"Deleted 3 files.",
+		"The first pass over the data is complete.",
+	}
+	for _, text := range prose {
+		if looksLikeTestOutput(text) {
+			t.Errorf("prose classified as test output: %q", text)
+		}
+	}
+}
+
+func TestLooksLikeTestOutput_RealRunnerOutput(t *testing.T) {
+	outputs := []string{
+		"--- FAIL: TestFoo (0.01s)",
+		"ok  \tantigravity-go-proxy/internal/headroom\t0.007s",
+		"PASS\nok  \texample/pkg\t0.2s",
+		"panic: runtime error: index out of range",
+		"Traceback (most recent call last):\n  File \"a.py\", line 1",
+		"main.go:12:2: error: undefined: foo",
+		"  warning: unused variable 'x'",
+		"AssertionError: expected 1, got 2",
+		"3 passed, 1 failed",
+		"build failed",
+	}
+	for _, text := range outputs {
+		if !looksLikeTestOutput(text) {
+			t.Errorf("real runner output not detected: %q", text)
+		}
+	}
+}

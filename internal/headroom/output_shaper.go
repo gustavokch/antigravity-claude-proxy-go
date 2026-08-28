@@ -60,20 +60,30 @@ func isCodingToolName(name string) bool {
 	return codingToolNames[normalizeToolName(name)]
 }
 
+// testOutputPatterns are tuned for precision, not recall. A false positive
+// classifies the turn as coding and skips the clamp, so a loose pattern does
+// not merely add noise: it disables effort routing for every turn that happens
+// to contain the word.
+//
+// PASS and FAIL stay case sensitive, because every runner emits them uppercase
+// while "pass" and "fail" are common English. The diagnostic prefixes are
+// anchored to the start of a line, so "an error: field" inside a sentence no
+// longer matches. The "---\s*FAIL" and "ok\s+\t" entries were dropped as
+// duplicates of the two patterns above them.
 var testOutputPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\bFAIL\b`),
-	regexp.MustCompile(`(?i)---\s*FAIL`),
-	regexp.MustCompile(`(?i)\bPASS\b`),
-	regexp.MustCompile(`(?i)ok\s+\t`),
-	regexp.MustCompile(`(?i)panic:`),
-	regexp.MustCompile(`(?i)Traceback \(most recent call last\)`),
-	regexp.MustCompile(`(?i)\berror:`),
-	regexp.MustCompile(`(?i)\bwarning:`),
-	regexp.MustCompile(`(?i)AssertionError`),
+	regexp.MustCompile(`\bFAIL\b`),
+	regexp.MustCompile(`\bPASS\b`),
+	regexp.MustCompile(`(?m)^ok\s`),
+	regexp.MustCompile(`(?m)^panic:`),
+	regexp.MustCompile(`Traceback \(most recent call last\)`),
+	regexp.MustCompile(`(?mi)^\s*(error|warning):`),
+	// Compiler diagnostics: file:line[:col]: error|warning|note:
+	regexp.MustCompile(`(?mi)^.+:\d+:(\d+:)?\s*(error|warning|note):`),
+	regexp.MustCompile(`AssertionError`),
 	regexp.MustCompile(`(?i)expected.*got`),
-	regexp.MustCompile(`(?i)\d+\s+passed`),
-	regexp.MustCompile(`(?i)\d+\s+failed`),
-	regexp.MustCompile(`(?i)build failed`),
+	regexp.MustCompile(`(?i)\d+\s+(passed|failed|errors?)\b`),
+	regexp.MustCompile(`(?i)\bbuild failed\b`),
+	regexp.MustCompile(`(?i)\bcompilation (failed|error)\b`),
 }
 
 // looksLikeTestOutput reports whether text carries a compiler or test-runner
