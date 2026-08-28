@@ -175,6 +175,7 @@ func detectSignature(text string) signature {
 	case ruffLineRe.MatchString(head):
 		return sigRuff
 	case strings.HasPrefix(head, "   Compiling ") || strings.Contains(head, "\n   Compiling ") ||
+		strings.HasPrefix(head, "   Checking ") || strings.Contains(head, "\n   Checking ") ||
 		strings.HasPrefix(head, "    Updating ") || strings.Contains(head, "\n    Updating "):
 		return sigCargoBuild
 	}

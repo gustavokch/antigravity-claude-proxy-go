@@ -303,6 +303,27 @@ func TestCargoTestFilter(t *testing.T) {
 	}
 }
 
+func TestCargoTestFilter_CRLF(t *testing.T) {
+	input := "running 2 tests\r\ntest tests::test_pass ... ok\r\ntest tests::test_fail ... FAILED\r\n\r\ntest result: FAILED. 1 failed; 1 passed"
+	got, changed := crushCargoTest(input)
+	if !changed {
+		t.Fatal("expected change on CRLF")
+	}
+	if strings.Contains(got, "... ok") {
+		t.Errorf("passing tests survive with CRLF:\n%q", got)
+	}
+	if !strings.Contains(got, "test tests::test_fail ... FAILED") {
+		t.Errorf("failure line lost with CRLF:\n%q", got)
+	}
+}
+
+func TestDetectSignature_CargoCheck(t *testing.T) {
+	input := "   Checking calc v0.1.0\nwarning: unused variable: `x`\n --> src/lib.rs:2:9"
+	if sig := detectSignature(input); sig != sigCargoBuild {
+		t.Errorf("expected sigCargoBuild for cargo check, got %v", sig)
+	}
+}
+
 func TestCargoBuildFilter(t *testing.T) {
 	input := "   Compiling libc v0.2.1\n   Compiling serde v1.0.0\n    Updating crates.io index\nwarning: unused variable: `x`\n --> src/main.rs:2:9\n  |\n2 |     let x = 1;\n  |         ^\nerror[E0308]: mismatched types\n --> src/main.rs:4:5\n    Finished dev [unoptimized + debuginfo] target(s) in 1.2s"
 	got, changed := crushCargoBuild(input)

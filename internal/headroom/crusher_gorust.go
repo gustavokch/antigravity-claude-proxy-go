@@ -27,7 +27,8 @@ func crushGolangci(text string) (string, bool) {
 // failures: list, and the test result: footer stay.
 func crushCargoTest(text string) (string, bool) {
 	return filterLines(text, func(line string) bool {
-		return !(strings.HasPrefix(line, "test ") && strings.HasSuffix(line, " ... ok"))
+		trimmed := strings.TrimRight(line, "\r")
+		return !(strings.HasPrefix(trimmed, "test ") && strings.HasSuffix(trimmed, " ... ok"))
 	})
 }
 
@@ -36,8 +37,9 @@ func crushCargoTest(text string) (string, bool) {
 // Compiling/Checking/Updating line shapes.
 func crushCargoBuild(text string) (string, bool) {
 	return filterLines(text, func(line string) bool {
-		for _, prefix := range []string{"   Compiling ", "   Downloaded ", "  Downloading ", "    Updating ", "   Checking ", "     Locking "} {
-			if strings.HasPrefix(line, prefix) {
+		trimmed := strings.TrimLeft(strings.TrimRight(line, "\r"), " ")
+		for _, prefix := range []string{"Compiling ", "Downloaded ", "Downloading ", "Updating ", "Checking ", "Locking ", "Fresh "} {
+			if strings.HasPrefix(trimmed, prefix) {
 				return false
 			}
 		}
