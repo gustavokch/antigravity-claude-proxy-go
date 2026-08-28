@@ -51,7 +51,11 @@ func (s *CodeCompressorStage) Execute(ctx context.Context, reqCtx *RequestContex
 	if !cfg.CodeCompressor {
 		return nil
 	}
-	walkToolResultText(reqCtx.Request, 0, func(_ int, get func() string, set func(string)) {
+	walkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
+		if skipVerbatim(reqCtx, cfg, ord) {
+			return // pruning trailing whitespace or folding repeated lines breaks
+			// the byte-exact old_string a later Edit draws from this payload
+		}
 		before := get()
 		after := PruneText(before)
 		if after != before {

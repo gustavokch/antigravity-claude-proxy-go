@@ -55,6 +55,9 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 		Request:           req,
 		FrozenPrefixIndex: frozenPrefixIndex(req, cfg.LiveTurns),
 	}
+	if cfg.PreserveVerbatimReads {
+		reqCtx.Verbatim = NewToolInspector(req)
+	}
 	if err := e.pipeline.Run(ctx, reqCtx, &cfg); err != nil {
 		return nil, err
 	}

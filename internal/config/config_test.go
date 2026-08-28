@@ -463,6 +463,15 @@ func TestDefaultConfig_HeadroomDisabledByDefault(t *testing.T) {
 	if cfg.Headroom.OutputShaper.MechanicalThinkingBudget != 1024 {
 		t.Errorf("unexpected shaper default: %+v", cfg.Headroom.OutputShaper)
 	}
+	if cfg.Headroom.OutputShaper.ClampCodingContinuations {
+		t.Error("ClampCodingContinuations must default to false")
+	}
+	if cfg.Headroom.OutputShaper.MechanicalMaxBytes != 0 {
+		t.Errorf("MechanicalMaxBytes must default to 0, got %d", cfg.Headroom.OutputShaper.MechanicalMaxBytes)
+	}
+	if !cfg.Headroom.PreserveVerbatimReads {
+		t.Error("PreserveVerbatimReads must default to true: off re-breaks Edit old_string matching")
+	}
 }
 
 func TestSave_HeadroomRoundTrip(t *testing.T) {
@@ -471,14 +480,28 @@ func TestSave_HeadroomRoundTrip(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	updated, err := Save(map[string]any{"headroom": map[string]any{
-		"enabled":        true,
-		"smartCrusher":   true,
-		"codeCompressor": false,
+		"enabled":               true,
+		"smartCrusher":          true,
+		"codeCompressor":        false,
+		"preserveVerbatimReads": false,
 	}})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	if !updated.Headroom.Enabled || !updated.Headroom.SmartCrusher || updated.Headroom.CodeCompressor {
 		t.Errorf("unexpected persisted headroom config: %+v", updated.Headroom)
+	}
+	if updated.Headroom.PreserveVerbatimReads {
+		t.Error("preserveVerbatimReads: false must survive save")
+	}
+
+	// Reload over defaults: an explicit false must not be swallowed by the
+	// true default (this is why the field has no `,omitempty`).
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Headroom.PreserveVerbatimReads {
+		t.Error("preserveVerbatimReads: false must survive a save/load cycle over the true default")
 	}
 }

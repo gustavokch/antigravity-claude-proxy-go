@@ -174,8 +174,9 @@ func DefaultConfig() Config {
 			},
 		},
 		Headroom: HeadroomConfig{
-			Enabled:   false,
-			LiveTurns: 2,
+			Enabled:               false,
+			LiveTurns:             2,
+			PreserveVerbatimReads: true,
 			CCR: headroom.CCRConfig{
 				Enabled:       false,
 				MaxStoreMB:    64,
