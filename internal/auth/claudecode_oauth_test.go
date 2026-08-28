@@ -31,6 +31,15 @@ func TestGenerateClaudeCodePKCE(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeConstants(t *testing.T) {
+	if ClaudeCodeTokenURL != "https://api.anthropic.com/v1/oauth/token" {
+		t.Errorf("expected ClaudeCodeTokenURL to be https://api.anthropic.com/v1/oauth/token, got %s", ClaudeCodeTokenURL)
+	}
+	if ClaudeCodeProfileURL != "https://api.anthropic.com/api/oauth/profile" {
+		t.Errorf("expected ClaudeCodeProfileURL to be https://api.anthropic.com/api/oauth/profile, got %s", ClaudeCodeProfileURL)
+	}
+}
+
 func TestBuildAuthorizeURL(t *testing.T) {
 	mgr := NewClaudeCodeOAuthManager()
 	redirectURI := "http://localhost:54321/callback"
@@ -181,9 +190,14 @@ func TestStartAuthSession_Loopback(t *testing.T) {
 }
 
 func TestCompleteManualAuth(t *testing.T) {
+	tokenReqs := make(chan map[string]any, 4)
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/oauth/token":
+			var reqBody map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&reqBody)
+			tokenReqs <- reqBody
+
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(ClaudeCodeTokenResponse{
 				AccessToken:  "manual-access-token",
@@ -234,6 +248,14 @@ func TestCompleteManualAuth(t *testing.T) {
 		t.Errorf("expected refresh token manual-refresh-token, got %s", account.RefreshToken)
 	}
 
+	tokenReq := <-tokenReqs
+	if got := tokenReq["code"]; got != "my-auth-code" {
+		t.Errorf("expected token request code my-auth-code, got %v", got)
+	}
+	if got := tokenReq["state"]; got != "my-state" {
+		t.Errorf("expected token request state my-state, got %v", got)
+	}
+
 	// Test URL format and whitespace trimming
 	session2, err := mgr.StartAuthSession("manual")
 	if err != nil {
@@ -246,6 +268,35 @@ func TestCompleteManualAuth(t *testing.T) {
 	}
 	if account2.Email != "manual@claude.ai" {
 		t.Errorf("expected email manual@claude.ai, got %s", account2.Email)
+	}
+
+	tokenReq2 := <-tokenReqs
+	if got := tokenReq2["code"]; got != "my-auth-code" {
+		t.Errorf("expected token request code my-auth-code, got %v", got)
+	}
+	if got := tokenReq2["state"]; got != "some-state" {
+		t.Errorf("expected token request state some-state, got %v", got)
+	}
+
+	// Test URL format containing both query params and a hash fragment
+	sessionFrag, err := mgr.StartAuthSession("manual")
+	if err != nil {
+		t.Fatalf("unexpected error starting sessionFrag: %v", err)
+	}
+	fragURLCode := "http://localhost:54321/callback?code=frag-url-code&state=frag-url-state#trailing"
+	accountFrag, err := mgr.CompleteManualAuth(sessionFrag.ID, fragURLCode)
+	if err != nil {
+		t.Fatalf("unexpected error on manual auth with fragment url: %v", err)
+	}
+	if accountFrag.Email != "manual@claude.ai" {
+		t.Errorf("expected email manual@claude.ai, got %s", accountFrag.Email)
+	}
+	tokenReq3 := <-tokenReqs
+	if got := tokenReq3["code"]; got != "frag-url-code" {
+		t.Errorf("expected token request code frag-url-code, got %v", got)
+	}
+	if got := tokenReq3["state"]; got != "frag-url-state" {
+		t.Errorf("expected token request state frag-url-state, got %v", got)
 	}
 
 	// Test empty code

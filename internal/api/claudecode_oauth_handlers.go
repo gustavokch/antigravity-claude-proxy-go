@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 // handleClaudeCodeAuthStartPost starts a new Claude Code OAuth authorization session.
 func (server *Server) handleClaudeCodeAuthStartPost(writer http.ResponseWriter, request *http.Request) {
 	if server.claudeCodeOAuthMgr == nil {
+		slog.Error("Claude Code auth start called but OAuth manager not initialized")
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{
 			"status": "error",
 			"error":  "Claude Code OAuth manager not initialized",
@@ -31,12 +33,15 @@ func (server *Server) handleClaudeCodeAuthStartPost(writer http.ResponseWriter, 
 
 	session, err := server.claudeCodeOAuthMgr.StartAuthSession(mode)
 	if err != nil {
+		slog.Error("failed to start Claude Code auth session", "mode", mode, "error", err)
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{
 			"status": "error",
 			"error":  err.Error(),
 		})
 		return
 	}
+
+	slog.Info("Claude Code auth session created via API", "session_id", session.ID, "mode", mode)
 
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":          "ok",
@@ -147,6 +152,7 @@ func (server *Server) handleClaudeCodeAuthCompletePost(writer http.ResponseWrite
 
 	account, err := server.claudeCodeOAuthMgr.CompleteManualAuth(body.SessionID, body.Code)
 	if err != nil {
+		slog.Error("Claude Code manual auth completion failed", "session_id", body.SessionID, "error", err)
 		writeJSON(writer, http.StatusBadRequest, map[string]any{
 			"status": "error",
 			"error":  err.Error(),
@@ -155,6 +161,7 @@ func (server *Server) handleClaudeCodeAuthCompletePost(writer http.ResponseWrite
 	}
 
 	server.registerAuthenticatedClaudeCodeAccount(account)
+	slog.Info("Claude Code account registered successfully", "email", account.Email, "account_uuid", account.AccountUUID)
 
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",
@@ -183,6 +190,7 @@ func (server *Server) handleClaudeCodeAuthCancelPost(writer http.ResponseWriter,
 	_ = json.NewDecoder(request.Body).Decode(&body)
 
 	if body.SessionID != "" {
+		slog.Info("canceling Claude Code auth session", "session_id", body.SessionID)
 		server.claudeCodeOAuthMgr.CancelSession(body.SessionID)
 	}
 
