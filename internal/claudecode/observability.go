@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -145,13 +146,13 @@ func LogObservability(log *slog.Logger, m RequestMetrics) {
 		accLabel = "default"
 	}
 
-	msg := fmt.Sprintf("[ClaudeCode] %s (%s) | tokens: %d in (%d cached, %.1f%% hit), %d out | %.1f TPS | %s | $%.4f ($%.4f session)",
+	msg := fmt.Sprintf("[ClaudeCode] %s (%s) | tokens: %s in (%s cached, %.1f%% hit), %s out | %.1f TPS | %s | $%.4f ($%.4f session)",
 		m.Model,
 		accLabel,
-		m.InputTokens,
-		m.CacheReadTokens,
+		formatInt(m.InputTokens),
+		formatInt(m.CacheReadTokens),
 		m.CacheHitRate,
-		m.OutputTokens,
+		formatInt(m.OutputTokens),
 		m.ThroughputTPS,
 		m.Latency.Round(10*time.Millisecond),
 		m.CallCost,
@@ -159,15 +160,47 @@ func LogObservability(log *slog.Logger, m RequestMetrics) {
 	)
 
 	log.Info(msg,
-		"model", m.Model,
-		"account_id", m.AccountID,
-		"session_id", m.SessionID,
-		"input_tokens", m.InputTokens,
-		"output_tokens", m.OutputTokens,
-		"cache_read_tokens", m.CacheReadTokens,
-		"cache_creation_tokens", m.CacheCreationTokens,
-		"latency_ms", m.Latency.Milliseconds(),
-		"call_cost", m.CallCost,
-		"session_cost", m.SessionCost,
+		slog.String("gateway", "claudecode"),
+		slog.String("model", m.Model),
+		slog.String("account_id", m.AccountID),
+		slog.String("account_name", m.AccountName),
+		slog.String("session_id", m.SessionID),
+		slog.Int("input_tokens", m.InputTokens),
+		slog.Int("output_tokens", m.OutputTokens),
+		slog.Int("cache_read_tokens", m.CacheReadTokens),
+		slog.Int("cache_creation_tokens", m.CacheCreationTokens),
+		slog.Float64("cache_hit_rate_pct", m.CacheHitRate),
+		slog.Float64("tps", m.ThroughputTPS),
+		slog.Duration("latency", m.Latency),
+		slog.Float64("call_cost_usd", m.CallCost),
+		slog.Float64("session_cost_usd", m.SessionCost),
+		slog.String("level_tag", "SUCCESS"),
 	)
+}
+
+// formatInt renders n with thousands separators, matching the OpenRouter
+// gateway's log formatting.
+func formatInt(n int) string {
+	in := fmt.Sprintf("%d", n)
+	sign := ""
+	if strings.HasPrefix(in, "-") {
+		sign = "-"
+		in = in[1:]
+	}
+	if len(in) <= 3 {
+		return sign + in
+	}
+	var out []byte
+	rem := len(in) % 3
+	if rem > 0 {
+		out = append(out, in[:rem]...)
+		out = append(out, ',')
+	}
+	for i := rem; i < len(in); i += 3 {
+		out = append(out, in[i:i+3]...)
+		if i+3 < len(in) {
+			out = append(out, ',')
+		}
+	}
+	return sign + string(out)
 }
