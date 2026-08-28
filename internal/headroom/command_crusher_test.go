@@ -153,7 +153,7 @@ func TestPytestFilter_FailedSummaryLinesSurvive(t *testing.T) {
 		}
 	}
 	// A bare failure-progress run is still progress and must be stripped.
-	for _, line := range []string{"FF..", "F", "..F.. [ 50%]"} {
+	for _, line := range []string{"FF..", "F", "..F.. [ 50%]", "..E.. [ 50%]", "EE..", "..x.. [ 10%]", "..X.. [ 20%]"} {
 		if !isPytestProgress(line) {
 			t.Errorf("isPytestProgress(%q) = false, want true", line)
 		}
