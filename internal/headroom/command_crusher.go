@@ -183,7 +183,16 @@ func detectSignature(text string) signature {
 
 // hasCommitLine reports whether head contains a `commit <40-hex>` line.
 func hasCommitLine(head string) bool {
-	for _, line := range strings.Split(head, "\n") {
+	for len(head) > 0 {
+		idx := strings.IndexByte(head, '\n')
+		var line string
+		if idx >= 0 {
+			line = head[:idx]
+			head = head[idx+1:]
+		} else {
+			line = head
+			head = ""
+		}
 		if !strings.HasPrefix(line, "commit ") {
 			continue
 		}
@@ -204,7 +213,16 @@ var cargoVerbs = []string{"Compiling ", "Checking ", "Updating "}
 // line. The leading space is required: Cargo always indents these lines, and
 // demanding the indent keeps unindented prose from matching.
 func hasCargoVerbLine(head string) bool {
-	for _, line := range strings.Split(head, "\n") {
+	for len(head) > 0 {
+		idx := strings.IndexByte(head, '\n')
+		var line string
+		if idx >= 0 {
+			line = head[:idx]
+			head = head[idx+1:]
+		} else {
+			line = head
+			head = ""
+		}
 		if len(line) == 0 || (line[0] != ' ' && line[0] != '\t') {
 			continue
 		}
