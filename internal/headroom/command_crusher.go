@@ -154,7 +154,8 @@ func detectSignature(text string) signature {
 	case strings.Contains(tail, "test result:"):
 		return sigCargoTest
 	case strings.Contains(head, "=== RUN") || strings.Contains(head, "--- FAIL:") ||
-		strings.Contains(head, "--- PASS:") || strings.Contains(tail, "\nok  \t") || strings.Contains(tail, "\nFAIL\t"):
+		strings.Contains(head, "--- PASS:") || strings.HasPrefix(head, "ok  \t") || strings.HasPrefix(head, "FAIL\t") ||
+		strings.Contains(tail, "\nok  \t") || strings.Contains(tail, "\nFAIL\t"):
 		return sigGoTest
 	case golangciLineRe.MatchString(head):
 		return sigGolangci

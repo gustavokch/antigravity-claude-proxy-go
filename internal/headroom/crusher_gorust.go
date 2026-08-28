@@ -2,15 +2,19 @@ package headroom
 
 import "strings"
 
-// crushGoTest strips verbose-run scaffolding: "=== RUN" and "--- PASS:" /
-// "    --- PASS:" lines. Failures, panics, and package summaries stay.
+// crushGoTest strips verbose-run scaffolding: "=== RUN", "=== PAUSE",
+// "=== CONT", and "--- PASS:" / "    --- PASS:" lines. Failures, panics, and
+// package summaries stay.
 func crushGoTest(text string) (string, bool) {
 	return filterLines(text, func(line string) bool {
-		if strings.HasPrefix(line, "=== RUN") {
+		trimmed := strings.TrimLeft(line, " \t\r")
+		if strings.HasPrefix(trimmed, "=== RUN") ||
+			strings.HasPrefix(trimmed, "=== PAUSE") ||
+			strings.HasPrefix(trimmed, "=== CONT") ||
+			strings.HasPrefix(trimmed, "--- PASS:") {
 			return false
 		}
-		trimmed := strings.TrimLeft(line, " \t")
-		return !strings.HasPrefix(trimmed, "--- PASS:")
+		return true
 	})
 }
 

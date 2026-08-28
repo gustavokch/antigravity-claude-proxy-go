@@ -251,6 +251,31 @@ func TestGoTestFilter_PanicSurvives(t *testing.T) {
 	}
 }
 
+func TestGoTestFilter_SubtestsAndParallel(t *testing.T) {
+	input := "=== RUN   TestParallel\n=== PAUSE TestParallel\n=== CONT  TestParallel\n    === RUN   TestParallel/Sub_1\n    === PAUSE TestParallel/Sub_1\n    === CONT  TestParallel/Sub_1\n    --- PASS: TestParallel/Sub_1 (0.01s)\n--- PASS: TestParallel (0.02s)\nPASS\nok  \texample.com/parallel\t0.05s"
+	got, changed := crushGoTest(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	for _, noise := range []string{"=== RUN", "=== PAUSE", "=== CONT", "--- PASS:"} {
+		if strings.Contains(got, noise) {
+			t.Errorf("runner noise %q survives in:\n%s", noise, got)
+		}
+	}
+	if !strings.Contains(got, "ok  \texample.com/parallel\t0.05s") {
+		t.Errorf("package summary lost:\n%s", got)
+	}
+}
+
+func TestDetectSignature_GoTestSingleLine(t *testing.T) {
+	if sig := detectSignature("ok  \texample.com/pkg\t0.05s"); sig != sigGoTest {
+		t.Errorf("expected sigGoTest for ok line, got %v", sig)
+	}
+	if sig := detectSignature("FAIL\texample.com/pkg\t0.05s"); sig != sigGoTest {
+		t.Errorf("expected sigGoTest for FAIL line, got %v", sig)
+	}
+}
+
 func TestGolangciFilter(t *testing.T) {
 	input := "main.go:12:3: printf: fmt.Println arg list ends with redundant newline (govet)\nmain.go:12:3: printf: fmt.Println arg list ends with redundant newline (govet)\nutil.go:40:1: exported function Main should have comment (revive)"
 	got, changed := crushGolangci(input)
