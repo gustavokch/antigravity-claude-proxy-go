@@ -535,14 +535,10 @@ func (m *ClaudeCodeOAuthManager) CompleteManualAuth(sessionID, rawCode string) (
 	session.mu.Unlock()
 
 	code := strings.TrimSpace(rawCode)
-	// Claude.ai callback URL format might be code#state or URL-encoded
-	if strings.Contains(code, "#") {
-		parts := strings.SplitN(code, "#", 2)
-		code = parts[0]
-		if len(parts) > 1 && parts[1] != "" {
-			state = parts[1]
-		}
-	} else if strings.Contains(code, "code=") {
+	// Claude.ai callback URL format might be code#state or a full URL with
+	// code/state query params. Extract from the URL query first so a full URL
+	// containing a hash fragment still gets its code extracted.
+	if strings.Contains(code, "code=") {
 		if parsedURL, err := url.Parse(code); err == nil {
 			if extractedCode := parsedURL.Query().Get("code"); extractedCode != "" {
 				code = extractedCode
@@ -550,6 +546,13 @@ func (m *ClaudeCodeOAuthManager) CompleteManualAuth(sessionID, rawCode string) (
 			if extractedState := parsedURL.Query().Get("state"); extractedState != "" {
 				state = extractedState
 			}
+		}
+	}
+	if strings.Contains(code, "#") {
+		parts := strings.SplitN(code, "#", 2)
+		code = parts[0]
+		if len(parts) > 1 && parts[1] != "" {
+			state = parts[1]
 		}
 	}
 

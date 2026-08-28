@@ -278,6 +278,27 @@ func TestCompleteManualAuth(t *testing.T) {
 		t.Errorf("expected token request state some-state, got %v", got)
 	}
 
+	// Test URL format containing both query params and a hash fragment
+	sessionFrag, err := mgr.StartAuthSession("manual")
+	if err != nil {
+		t.Fatalf("unexpected error starting sessionFrag: %v", err)
+	}
+	fragURLCode := "http://localhost:54321/callback?code=frag-url-code&state=frag-url-state#trailing"
+	accountFrag, err := mgr.CompleteManualAuth(sessionFrag.ID, fragURLCode)
+	if err != nil {
+		t.Fatalf("unexpected error on manual auth with fragment url: %v", err)
+	}
+	if accountFrag.Email != "manual@claude.ai" {
+		t.Errorf("expected email manual@claude.ai, got %s", accountFrag.Email)
+	}
+	tokenReq3 := <-tokenReqs
+	if got := tokenReq3["code"]; got != "frag-url-code" {
+		t.Errorf("expected token request code frag-url-code, got %v", got)
+	}
+	if got := tokenReq3["state"]; got != "frag-url-state" {
+		t.Errorf("expected token request state frag-url-state, got %v", got)
+	}
+
 	// Test empty code
 	session3, err := mgr.StartAuthSession("manual")
 	if err != nil {
