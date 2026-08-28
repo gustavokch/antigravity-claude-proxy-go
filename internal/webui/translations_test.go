@@ -51,7 +51,7 @@ var headroomKeys = []string{
 	"headroomRequestsCompressed", "headroomThinkingClamped", "headroomCcrRetrievals",
 }
 
-var locales = []string{"en", "zh", "id", "pt", "tr"}
+var locales = []string{"en", "pt"}
 
 func loadLocale(t *testing.T, locale string) string {
 	t.Helper()

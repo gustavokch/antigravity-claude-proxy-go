@@ -426,17 +426,17 @@ document.addEventListener('alpine:init', () => {
             const family = this.getModelFamily(modelId);
             switch (family) {
                 case 'claude':
-                    return 'bg-neon-purple shadow-[0_0_5px_rgba(168,85,247,0.5)]';
+                    return 'bg-blue-400';
                 case 'gemini':
-                    return 'bg-neon-green shadow-[0_0_5px_rgba(34,197,94,0.5)]';
+                    return 'bg-emerald-400';
                 case 'forwarded':
-                    return 'bg-neon-cyan shadow-[0_0_5px_rgba(6,182,212,0.5)]';
+                    return 'bg-sky-400';
                 case 'openrouter':
-                    return 'bg-indigo-400 shadow-[0_0_5px_rgba(129,140,248,0.5)]';
+                    return 'bg-indigo-400';
                 case 'kimi':
-                    return 'bg-cyan-400 shadow-[0_0_5px_rgba(34,211,238,0.5)]';
+                    return 'bg-cyan-400';
                 default:
-                    return 'bg-gray-600';
+                    return 'bg-zinc-600';
             }
         },
 
