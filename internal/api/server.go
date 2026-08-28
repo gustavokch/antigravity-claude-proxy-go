@@ -364,8 +364,17 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 				maxOutput = 8192
 			}
 			aliases := item.Aliases
-			if len(aliases) == 0 && item.Alias != "" {
-				aliases = []string{item.Alias}
+			if item.Alias != "" {
+				hasAlias := false
+				for _, a := range aliases {
+					if a == item.Alias {
+						hasAlias = true
+						break
+					}
+				}
+				if !hasAlias {
+					aliases = append(aliases, item.Alias)
+				}
 			}
 
 			if !seen[item.ID] {
@@ -387,19 +396,21 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 				seen[item.ID] = true
 			}
 
-			if item.Alias != "" && item.Alias != item.ID && !seen[item.Alias] {
-				models = append(models, map[string]any{
-					"id":                item.Alias,
-					"object":            "model",
-					"created":           server.now().Unix(),
-					"owned_by":          "anthropic",
-					"description":       desc + " (Alias)",
-					"display_name":      desc + " (Alias)",
-					"context_window":    contextLen,
-					"max_output_tokens": maxOutput,
-					"supports_thinking": item.Thinking,
-				})
-				seen[item.Alias] = true
+			for _, alias := range aliases {
+				if alias != "" && alias != item.ID && !seen[alias] {
+					models = append(models, map[string]any{
+						"id":                alias,
+						"object":            "model",
+						"created":           server.now().Unix(),
+						"owned_by":          "anthropic",
+						"description":       desc + " (Alias)",
+						"display_name":      desc + " (Alias)",
+						"context_window":    contextLen,
+						"max_output_tokens": maxOutput,
+						"supports_thinking": item.Thinking,
+					})
+					seen[alias] = true
+				}
 			}
 		}
 	}
