@@ -222,3 +222,73 @@ func TestESLintFilter(t *testing.T) {
 		t.Errorf("unique lines lost:\n%q", got)
 	}
 }
+
+func TestGoTestFilter(t *testing.T) {
+	input := "=== RUN   TestAdd\n--- PASS: TestAdd (0.00s)\n=== RUN   TestDiv\n--- FAIL: TestDiv (0.00s)\n    div_test.go:10: got NaN, want Inf\n=== RUN   TestMul/Sub\n    --- PASS: TestMul/Sub (0.00s)\nFAIL\nFAIL\texample.com/calc\t0.123s\nok  \texample.com/util\t0.05s"
+	got, changed := crushGoTest(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if strings.Contains(got, "=== RUN") || strings.Contains(got, "--- PASS:") {
+		t.Errorf("pass noise survives:\n%s", got)
+	}
+	for _, want := range []string{"--- FAIL: TestDiv", "div_test.go:10: got NaN", "FAIL\texample.com/calc\t0.123s", "ok  \texample.com/util\t0.05s"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestGoTestFilter_PanicSurvives(t *testing.T) {
+	input := "=== RUN   TestBoom\n--- FAIL: TestBoom (0.00s)\npanic: runtime error: index out of range [3] with length 3\n\ngoroutine 6 [running]:\nexample.com/calc.Boom(...)\nFAIL\texample.com/calc\t0.01s"
+	got, changed := crushGoTest(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if !strings.Contains(got, "panic: runtime error") || !strings.Contains(got, "goroutine 6") {
+		t.Errorf("panic trace lost:\n%s", got)
+	}
+}
+
+func TestGolangciFilter(t *testing.T) {
+	input := "main.go:12:3: printf: fmt.Println arg list ends with redundant newline (govet)\nmain.go:12:3: printf: fmt.Println arg list ends with redundant newline (govet)\nutil.go:40:1: exported function Main should have comment (revive)"
+	got, changed := crushGolangci(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if strings.Count(got, "govet") != 1 || !strings.Contains(got, "revive") {
+		t.Errorf("bad golangci output:\n%q", got)
+	}
+}
+
+func TestCargoTestFilter(t *testing.T) {
+	input := "   Compiling calc v0.1.0\n    Finished test [unoptimized + debuginfo] target(s) in 0.5s\n     Running unittests src/lib.rs\n\nrunning 3 tests\ntest tests::test_add ... ok\ntest tests::test_sub ... ok\ntest tests::test_div ... FAILED\n\nfailures:\n\n---- tests::test_div stdout ----\nthread 'tests::test_div' panicked at 'division by zero', src/lib.rs:10:5\n\nfailures:\n    tests::test_div\n\ntest result: FAILED. 1 failed; 2 passed; 0 ignored; finished in 0.00s"
+	got, changed := crushCargoTest(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if strings.Contains(got, "... ok") {
+		t.Errorf("passing tests survive:\n%s", got)
+	}
+	for _, want := range []string{"test tests::test_div ... FAILED", "panicked at 'division by zero'", "test result: FAILED. 1 failed; 2 passed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestCargoBuildFilter(t *testing.T) {
+	input := "   Compiling libc v0.2.1\n   Compiling serde v1.0.0\n    Updating crates.io index\nwarning: unused variable: `x`\n --> src/main.rs:2:9\n  |\n2 |     let x = 1;\n  |         ^\nerror[E0308]: mismatched types\n --> src/main.rs:4:5\n    Finished dev [unoptimized + debuginfo] target(s) in 1.2s"
+	got, changed := crushCargoBuild(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if strings.Contains(got, "Compiling") || strings.Contains(got, "Updating crates.io") {
+		t.Errorf("build noise survives:\n%s", got)
+	}
+	for _, want := range []string{"warning: unused variable", "error[E0308]: mismatched types", "--> src/main.rs:2:9", "Finished dev"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+}
