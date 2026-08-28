@@ -158,3 +158,15 @@ func TestTranslations_AppSpoofTemplateReferences(t *testing.T) {
 	}
 }
 
+func TestTranslations_StoreFallbackSafety(t *testing.T) {
+	b, err := Assets.ReadFile("public/js/store.js")
+	if err != nil {
+		t.Fatalf("read store.js: %v", err)
+	}
+	src := string(b)
+	// store.js must guard against missing locales when calling t()
+	if strings.Contains(src, "this.translations[this.lang][key]") {
+		t.Errorf("store.js unconditionally indexes this.translations[this.lang][key]; must provide safe fallback")
+	}
+}
+
