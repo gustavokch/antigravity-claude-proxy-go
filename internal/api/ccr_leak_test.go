@@ -227,3 +227,189 @@ func TestCCRLeak_Unary_TerminalStrip(t *testing.T) {
 		t.Fatalf("expected Bash tool_use in unary response: %s", rec.Body.String())
 	}
 }
+
+// stopReasonFromSSE returns the stop_reason carried by the message_delta event
+// in an SSE body, or "" when there is none.
+func stopReasonFromSSE(t *testing.T, body string) string {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev); err != nil {
+			continue
+		}
+		if ev["type"] != "message_delta" {
+			continue
+		}
+		delta, _ := ev["delta"].(map[string]any)
+		reason, _ := delta["stop_reason"].(string)
+		return reason
+	}
+	return ""
+}
+
+// retrieveOnlyStreamHandler emits a turn whose only tool_use is the internal
+// headroom_retrieve call, ending in stop_reason "tool_use".
+func retrieveOnlyStreamHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_ccr_1\",\"name\":\"headroom_retrieve\",\"input\":{}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"chunk_id\\\":\\\"c1\\\"}\"}}\n\n")
+		fmt.Fprintf(w, "event: content_block_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		fmt.Fprintf(w, "event: message_delta\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}
+}
+
+func senderTo(url string) func(context.Context, []byte) (*http.Response, error) {
+	return func(ctx context.Context, body []byte) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return http.DefaultClient.Do(req)
+	}
+}
+
+// A turn whose only tool_use was the suppressed retrieve call must not reach the
+// client as stop_reason "tool_use": the client would block forever waiting to
+// answer a tool call it never received.
+func TestCCRLeak_Stream_StopReasonReconciledAtCap(t *testing.T) {
+	server := httptest.NewServer(retrieveOnlyStreamHandler())
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{"model": "test", "messages": []any{
+		map[string]any{"role": "user", "content": "hi"},
+	}}
+
+	// MaxHydrations 0: terminal on the first iteration with the retrieve call
+	// still outstanding.
+	opts := CCRProxyOptions{
+		IsCCREnabled:  func() bool { return true },
+		MaxHydrations: 0,
+		Sender:        senderTo(server.URL),
+	}
+	if err := ProxyAnthropicStreamWithCCR(context.Background(), rec, reqMap, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "headroom_retrieve") {
+		t.Fatalf("leak detected:\n%s", body)
+	}
+	if got := stopReasonFromSSE(t, body); got != "end_turn" {
+		t.Fatalf("stop_reason = %q; want \"end_turn\" (no tool_use block survived)\n%s", got, body)
+	}
+}
+
+// A surviving real tool_use must keep stop_reason "tool_use" untouched.
+func TestCCRLeak_Stream_StopReasonPreservedWithVisibleToolUse(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_read_1\",\"name\":\"Read\",\"input\":{}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		fmt.Fprintf(w, "event: message_delta\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+	})
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{"model": "test", "messages": []any{
+		map[string]any{"role": "user", "content": "hi"},
+	}}
+	opts := CCRProxyOptions{
+		IsCCREnabled:  func() bool { return true },
+		MaxHydrations: 0,
+		Sender:        senderTo(server.URL),
+	}
+	if err := ProxyAnthropicStreamWithCCR(context.Background(), rec, reqMap, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := stopReasonFromSSE(t, rec.Body.String()); got != "tool_use" {
+		t.Fatalf("stop_reason = %q; want \"tool_use\" (Read block survived)", got)
+	}
+}
+
+func TestCCRLeak_Unary_StopReasonReconciledAtCap(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id": "msg_1", "role": "assistant", "stop_reason": "tool_use",
+			"content": []any{
+				map[string]any{"type": "tool_use", "id": "call_ccr_1", "name": "headroom_retrieve", "input": map[string]any{"chunk_id": "c1"}},
+			},
+			"usage": map[string]any{"input_tokens": 5, "output_tokens": 4},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{"model": "test", "messages": []any{
+		map[string]any{"role": "user", "content": "hi"},
+	}}
+	opts := CCRProxyOptions{
+		IsCCREnabled:  func() bool { return true },
+		MaxHydrations: 0,
+		Sender:        senderTo(server.URL),
+	}
+	if err := ProxyAnthropicJSONWithCCR(context.Background(), rec, reqMap, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got, _ := resp["stop_reason"].(string); got != "end_turn" {
+		t.Fatalf("stop_reason = %q; want \"end_turn\": %s", got, rec.Body.String())
+	}
+}
+
+// stripRetrieveBlocks must repair stop_reason on the map it filters.
+func TestStripRetrieveBlocks_ReconcilesStopReason(t *testing.T) {
+	resp := map[string]any{
+		"stop_reason": "tool_use",
+		"content": []any{
+			map[string]any{"type": "text", "text": "hi"},
+			map[string]any{"type": "tool_use", "id": "c1", "name": "headroom_retrieve"},
+		},
+	}
+	stripRetrieveBlocks(resp)
+	if got, _ := resp["stop_reason"].(string); got != "end_turn" {
+		t.Fatalf("stop_reason = %q; want \"end_turn\"", got)
+	}
+
+	kept := map[string]any{
+		"stop_reason": "tool_use",
+		"content": []any{
+			map[string]any{"type": "tool_use", "id": "b1", "name": "Bash"},
+			map[string]any{"type": "tool_use", "id": "c1", "name": "headroom_retrieve"},
+		},
+	}
+	stripRetrieveBlocks(kept)
+	if got, _ := kept["stop_reason"].(string); got != "tool_use" {
+		t.Fatalf("stop_reason = %q; want \"tool_use\" (Bash survived)", got)
+	}
+}

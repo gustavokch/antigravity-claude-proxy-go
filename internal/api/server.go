@@ -2120,6 +2120,7 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 		if !needsHydration {
 			for _, ev := range pendingTerminalEvents {
 				if ev["type"] == "message_delta" {
+					reconcileStopReasonEvent(ev, state.HasVisibleToolUse())
 					usage, ok := ev["usage"].(map[string]any)
 					if !ok || usage == nil {
 						usage = make(map[string]any)

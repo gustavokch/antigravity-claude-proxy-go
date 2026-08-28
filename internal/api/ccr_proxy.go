@@ -265,6 +265,9 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 			var parsed map[string]any
 			if err := json.Unmarshal([]byte(evData), &parsed); err == nil {
 				if pType, _ := parsed["type"].(string); pType == "message_delta" {
+					// Suppressing the retrieve call can leave the turn with no
+					// tool_use block at all; stop_reason must follow.
+					reconcileStopReasonEvent(parsed, state.HasVisibleToolUse())
 					usage, ok := parsed["usage"].(map[string]any)
 					if !ok {
 						usage = make(map[string]any)

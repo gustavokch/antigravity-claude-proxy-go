@@ -26,6 +26,10 @@ type ccrStreamState struct {
 	downstream map[int]int  // upstream index -> downstream index
 	nextLocal  int          // downstream slots consumed by this iteration
 
+	// visibleToolUse records whether any tool_use block survived suppression.
+	// When none did, a stop_reason of "tool_use" must not reach the client.
+	visibleToolUse bool
+
 	// orphanEvents counts delta/stop events for an index that never had a
 	// content_block_start. They are dropped: emitting them under an unmapped
 	// upstream index would collide with the downstream numbering.
@@ -57,12 +61,21 @@ func (s *ccrStreamState) StartBlock(upstreamIdx int, block map[string]any) (int,
 			s.suppressed[upstreamIdx] = true
 			return 0, false
 		}
+		s.visibleToolUse = true
 	}
 
 	idx := s.baseIndex + s.nextLocal
 	s.nextLocal++
 	s.downstream[upstreamIdx] = idx
 	return idx, true
+}
+
+// HasVisibleToolUse reports whether any tool_use block of this iteration was
+// emitted downstream. False means the client saw no tool call at all, so a
+// stop_reason of "tool_use" would leave it waiting on a result it cannot
+// produce.
+func (s *ccrStreamState) HasVisibleToolUse() bool {
+	return s.visibleToolUse
 }
 
 // MapIndex resolves the downstream index for a content_block_delta or
@@ -168,6 +181,43 @@ func stripRetrieveBlocks(resp map[string]any) {
 		filtered = append(filtered, item)
 	}
 	resp["content"] = filtered
+
+	hasToolUse := false
+	for _, item := range filtered {
+		if m, ok := item.(map[string]any); ok {
+			if bType, _ := m["type"].(string); bType == "tool_use" {
+				hasToolUse = true
+				break
+			}
+		}
+	}
+	reconcileStopReason(resp, hasToolUse)
+}
+
+// reconcileStopReason downgrades a "tool_use" stop reason to "end_turn" when no
+// tool_use block survived suppression. holder is either a response map or a
+// message_delta's delta map — both carry stop_reason under the same key.
+//
+// Without this the client is told the turn ended to call a tool, sees no tool
+// call, and blocks forever waiting to answer one.
+func reconcileStopReason(holder map[string]any, hasVisibleToolUse bool) {
+	if holder == nil || hasVisibleToolUse {
+		return
+	}
+	if reason, _ := holder["stop_reason"].(string); reason == "tool_use" {
+		holder["stop_reason"] = "end_turn"
+	}
+}
+
+// reconcileStopReasonEvent applies reconcileStopReason to a message_delta SSE
+// event, whose stop_reason lives one level down under "delta".
+func reconcileStopReasonEvent(event map[string]any, hasVisibleToolUse bool) {
+	if event == nil || hasVisibleToolUse {
+		return
+	}
+	if delta, ok := event["delta"].(map[string]any); ok {
+		reconcileStopReason(delta, hasVisibleToolUse)
+	}
 }
 
 // stripRetrieveBlocksJSON does the same over a raw JSON body, returning the
