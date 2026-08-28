@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -29,7 +30,7 @@ const (
 	ClaudeCodeConsoleAuthorizeURL = "https://platform.claude.com/oauth/authorize"
 
 	// ClaudeCodeTokenURL is the OAuth token endpoint.
-	ClaudeCodeTokenURL = "https://platform.claude.com/v1/oauth/token"
+	ClaudeCodeTokenURL = "https://api.anthropic.com/v1/oauth/token"
 
 	// ClaudeCodeProfileURL is the endpoint to fetch user profile information.
 	ClaudeCodeProfileURL = "https://api.anthropic.com/api/oauth/profile"
@@ -250,6 +251,7 @@ func (m *ClaudeCodeOAuthManager) StartAuthSession(mode string) (*ClaudeCodeAuthS
 		session.RedirectURI = ClaudeCodeManualCallbackURL
 		session.AuthURL = manualAuthURL
 		m.registerSession(session)
+		slog.Info("Claude Code OAuth manual auth session started", "session_id", sessionID, "redirect_uri", session.RedirectURI)
 		return session, nil
 	}
 
@@ -257,6 +259,7 @@ func (m *ClaudeCodeOAuthManager) StartAuthSession(mode string) (*ClaudeCodeAuthS
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		// Fallback to manual if port bind fails
+		slog.Warn("failed to bind loopback listener for Claude Code OAuth, falling back to manual", "error", err)
 		session.RedirectURI = ClaudeCodeManualCallbackURL
 		session.AuthURL = manualAuthURL
 		m.registerSession(session)
@@ -286,6 +289,7 @@ func (m *ClaudeCodeOAuthManager) StartAuthSession(mode string) (*ClaudeCodeAuthS
 
 	go func() {
 		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("Claude Code OAuth loopback server error", "session_id", sessionID, "error", err)
 			session.mu.Lock()
 			if session.Status == "pending" {
 				session.Status = "failed"
@@ -294,6 +298,8 @@ func (m *ClaudeCodeOAuthManager) StartAuthSession(mode string) (*ClaudeCodeAuthS
 			session.mu.Unlock()
 		}
 	}()
+
+	slog.Info("Claude Code OAuth loopback auth session started", "session_id", sessionID, "port", port, "redirect_uri", redirectURI)
 
 	// Auto-expire session after timeout
 	go func() {
@@ -463,9 +469,12 @@ func (m *ClaudeCodeOAuthManager) handleLoopbackCallback(session *ClaudeCodeAuthS
 		return
 	}
 
+	slog.Info("Claude Code OAuth loopback callback received", "session_id", session.ID, "has_code", code != "", "has_state", state != "")
+
 	// Perform token exchange
 	tokenResp, profile, err := m.ExchangeToken(code, session.CodeVerifier, session.RedirectURI, session.State)
 	if err != nil {
+		slog.Error("Claude Code OAuth loopback token exchange failed", "session_id", session.ID, "error", err)
 		session.mu.Lock()
 		session.Status = "failed"
 		session.Error = fmt.Sprintf("token exchange failed: %v", err)
@@ -496,6 +505,8 @@ func (m *ClaudeCodeOAuthManager) handleLoopbackCallback(session *ClaudeCodeAuthS
 	session.Account = accountResult
 	session.Error = ""
 	session.mu.Unlock()
+
+	slog.Info("Claude Code OAuth loopback authentication successful", "session_id", session.ID, "email", profile.Account.Email)
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Authentication Successful</title><style>body{font-family:sans-serif;text-align:center;padding:40px;background:#18181b;color:#f4f4f5;}.success{color:#22c55e;font-size:24px;margin-bottom:12px;}.email{font-weight:bold;color:#60a5fa;}</style></head><body><div class="success">&#10004; Login Successful</div><p>Authenticated as <span class="email">` + profile.Account.Email + `</span></p><p>You can close this tab and return to Antigravity Proxy.</p></body></html>`))
@@ -528,10 +539,16 @@ func (m *ClaudeCodeOAuthManager) CompleteManualAuth(sessionID, rawCode string) (
 	if strings.Contains(code, "#") {
 		parts := strings.SplitN(code, "#", 2)
 		code = parts[0]
+		if len(parts) > 1 && parts[1] != "" {
+			state = parts[1]
+		}
 	} else if strings.Contains(code, "code=") {
 		if parsedURL, err := url.Parse(code); err == nil {
 			if extractedCode := parsedURL.Query().Get("code"); extractedCode != "" {
 				code = extractedCode
+			}
+			if extractedState := parsedURL.Query().Get("state"); extractedState != "" {
+				state = extractedState
 			}
 		}
 	}
@@ -540,8 +557,11 @@ func (m *ClaudeCodeOAuthManager) CompleteManualAuth(sessionID, rawCode string) (
 		return nil, errors.New("authorization code cannot be empty")
 	}
 
+	slog.Info("Claude Code OAuth completing manual auth", "session_id", sessionID, "redirect_uri", ClaudeCodeManualCallbackURL)
+
 	tokenResp, profile, err := m.ExchangeToken(code, verifier, ClaudeCodeManualCallbackURL, state)
 	if err != nil {
+		slog.Error("Claude Code OAuth manual token exchange failed", "session_id", sessionID, "error", err)
 		session.mu.Lock()
 		session.Status = "failed"
 		session.Error = fmt.Sprintf("token exchange failed: %v", err)
@@ -569,6 +589,8 @@ func (m *ClaudeCodeOAuthManager) CompleteManualAuth(sessionID, rawCode string) (
 	session.Error = ""
 	session.mu.Unlock()
 
+	slog.Info("Claude Code OAuth manual auth successful", "session_id", sessionID, "email", profile.Account.Email)
+
 	m.closeSessionServer(session)
 
 	return accountResult, nil
@@ -592,6 +614,8 @@ func (m *ClaudeCodeOAuthManager) ExchangeToken(code, codeVerifier, redirectURI, 
 		return nil, nil, fmt.Errorf("marshal token request: %w", err)
 	}
 
+	slog.Info("executing Claude Code OAuth token exchange request", "token_url", m.tokenURL, "client_id", m.clientID, "redirect_uri", redirectURI)
+
 	req, err := http.NewRequest(http.MethodPost, m.tokenURL, strings.NewReader(string(jsonBytes)))
 	if err != nil {
 		return nil, nil, fmt.Errorf("create token request: %w", err)
@@ -601,6 +625,7 @@ func (m *ClaudeCodeOAuthManager) ExchangeToken(code, codeVerifier, redirectURI, 
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
+		slog.Error("failed to execute token request", "token_url", m.tokenURL, "error", err)
 		return nil, nil, fmt.Errorf("execute token request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -611,6 +636,7 @@ func (m *ClaudeCodeOAuthManager) ExchangeToken(code, codeVerifier, redirectURI, 
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		slog.Error("Claude Code OAuth token endpoint returned error status", "token_url", m.tokenURL, "status", resp.StatusCode, "body", string(respBody))
 		return nil, nil, fmt.Errorf("token exchange failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
@@ -623,9 +649,12 @@ func (m *ClaudeCodeOAuthManager) ExchangeToken(code, codeVerifier, redirectURI, 
 		return nil, nil, errors.New("empty access token in token response")
 	}
 
+	slog.Info("Claude Code OAuth token exchange succeeded, fetching profile")
+
 	// Fetch user profile
 	profile, err := m.FetchProfile(tokenResp.AccessToken)
 	if err != nil {
+		slog.Warn("failed to fetch user profile, using fallback placeholder", "error", err)
 		// If profile fetch fails, generate a fallback placeholder
 		profile = &ClaudeCodeProfile{}
 		profile.Account.Email = "claude-user@claude.ai"
@@ -642,7 +671,10 @@ func (m *ClaudeCodeOAuthManager) FetchProfile(accessToken string) (*ClaudeCodePr
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("User-Agent", "claude-code/2.1.246")
+
+	slog.Info("fetching Claude Code user profile", "profile_url", m.profileURL)
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
@@ -650,19 +682,22 @@ func (m *ClaudeCodeOAuthManager) FetchProfile(accessToken string) (*ClaudeCodePr
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read profile response: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("profile fetch failed (status %d): %s", resp.StatusCode, string(respBody))
+		body, _ := io.ReadAll(resp.Body)
+		slog.Warn("profile endpoint returned non-OK status", "profile_url", m.profileURL, "status", resp.StatusCode, "body", string(body))
+		return nil, fmt.Errorf("fetch profile failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	var profile ClaudeCodeProfile
-	if err := json.Unmarshal(respBody, &profile); err != nil {
-		return nil, fmt.Errorf("parse profile response: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+		return nil, fmt.Errorf("decode profile response: %w", err)
 	}
+
+	if profile.Account.Email == "" {
+		profile.Account.Email = "claude-user@claude.ai"
+	}
+
+	slog.Info("fetched Claude Code profile successfully", "email", profile.Account.Email, "account_uuid", profile.Account.UUID)
 
 	return &profile, nil
 }

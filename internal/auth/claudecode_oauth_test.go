@@ -31,6 +31,15 @@ func TestGenerateClaudeCodePKCE(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeConstants(t *testing.T) {
+	if ClaudeCodeTokenURL != "https://api.anthropic.com/v1/oauth/token" {
+		t.Errorf("expected ClaudeCodeTokenURL to be https://api.anthropic.com/v1/oauth/token, got %s", ClaudeCodeTokenURL)
+	}
+	if ClaudeCodeProfileURL != "https://api.anthropic.com/api/oauth/profile" {
+		t.Errorf("expected ClaudeCodeProfileURL to be https://api.anthropic.com/api/oauth/profile, got %s", ClaudeCodeProfileURL)
+	}
+}
+
 func TestBuildAuthorizeURL(t *testing.T) {
 	mgr := NewClaudeCodeOAuthManager()
 	redirectURI := "http://localhost:54321/callback"
