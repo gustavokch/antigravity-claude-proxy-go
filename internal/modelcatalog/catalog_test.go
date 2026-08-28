@@ -208,3 +208,87 @@ func TestGemini37UsesTieredUpstreamWhenPresent(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeRoutingAliases(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"claude-sonnet-agent",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"claude-sonnet-agent","claude-opus-agent"
+		]}]}],
+		"models":{
+			"claude-sonnet-agent":{"displayName":"Claude Sonnet 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":4000,"maxTokens":200000,"maxOutputTokens":8192},
+			"claude-opus-agent":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":4000,"maxTokens":200000,"maxOutputTokens":8192}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sonnetAliases := []string{
+		"claude-sonnet-5", "sonnet-5", "sonnet",
+		"claude-fable-5", "fable-5", "fable",
+		"claude-haiku-4-5-20251001", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4-5", "haiku-4.5", "haiku",
+		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet", "claude-3.7-sonnet", "sonnet-3-7", "sonnet-3.7",
+		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet", "claude-3.5-sonnet", "sonnet-3-5", "sonnet-3.5",
+		"claude-3-5-haiku-20241022", "claude-3-5-haiku", "claude-3.5-haiku", "haiku-3-5", "haiku-3.5",
+		"claude-sonnet-4-6-thinking", "claude-sonnet-4-6",
+	}
+
+	for _, alias := range sonnetAliases {
+		resolved, err := catalog.Resolve(alias)
+		if err != nil {
+			t.Errorf("Resolve(%q) unexpected error: %v", alias, err)
+			continue
+		}
+		if resolved.ID != "claude-sonnet-agent" {
+			t.Errorf("Resolve(%q): expected ID claude-sonnet-agent, got %q", alias, resolved.ID)
+		}
+	}
+
+	opusAliases := []string{
+		"claude-opus-5", "opus-5", "opus",
+		"claude-3-opus-20240229", "claude-3-opus", "claude-3.0-opus", "opus-3",
+		"claude-opus-4-6-thinking", "claude-opus-4-6",
+	}
+
+	for _, alias := range opusAliases {
+		resolved, err := catalog.Resolve(alias)
+		if err != nil {
+			t.Errorf("Resolve(%q) unexpected error: %v", alias, err)
+			continue
+		}
+		if resolved.ID != "claude-opus-agent" {
+			t.Errorf("Resolve(%q): expected ID claude-opus-agent, got %q", alias, resolved.ID)
+		}
+	}
+}
+
+func TestSelectionErrorSuggestions(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.5-flash",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.5-flash","claude-sonnet-agent"
+		]}]}],
+		"models":{
+			"gemini-3.5-flash":{"displayName":"Gemini 3.5 Flash (High)","supportsThinking":true},
+			"claude-sonnet-agent":{"displayName":"Claude Sonnet 4.6 (Thinking)","supportsThinking":true}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = catalog.Resolve("unknown-fake-model")
+	if err == nil {
+		t.Fatal("expected error resolving unknown model, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "unknown-fake-model") {
+		t.Fatalf("expected error to mention model name, got: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Available models: gemini-3.5-flash, claude-sonnet-agent") {
+		t.Fatalf("expected error to list available models, got: %s", err.Error())
+	}
+}

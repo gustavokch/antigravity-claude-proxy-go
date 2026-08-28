@@ -13,10 +13,32 @@ func TestRouter_ResolveModel(t *testing.T) {
 		expectFound bool
 	}{
 		{"claude-sonnet-5", "claude-sonnet-5", true},
+		{"sonnet-5", "claude-sonnet-5", true},
+		{"claude-opus-5", "claude-opus-5", true},
+		{"opus-5", "claude-opus-5", true},
+		{"claude-fable-5", "claude-fable-5", true},
+		{"fable-5", "claude-fable-5", true},
+		{"claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", true},
+		{"claude-haiku-4-5", "claude-haiku-4-5-20251001", true},
+		{"haiku-4-5", "claude-haiku-4-5-20251001", true},
+		{"claude-haiku-4.5", "claude-haiku-4-5-20251001", true},
+		{"haiku-4.5", "claude-haiku-4-5-20251001", true},
 		{"claude-3-7-sonnet-20250219", "claude-3-7-sonnet-20250219", true},
 		{"claude-3-7-sonnet", "claude-3-7-sonnet-20250219", true},
+		{"claude-3.7-sonnet", "claude-3-7-sonnet-20250219", true},
+		{"sonnet-3-7", "claude-3-7-sonnet-20250219", true},
+		{"sonnet-3.7", "claude-3-7-sonnet-20250219", true},
+		{"claude-3-5-sonnet", "claude-3-5-sonnet-20241022", true},
+		{"claude-3.5-sonnet", "claude-3-5-sonnet-20241022", true},
+		{"sonnet-3-5", "claude-3-5-sonnet-20241022", true},
+		{"sonnet-3.5", "claude-3-5-sonnet-20241022", true},
 		{"CLAUDE-FABLE-5", "claude-fable-5", true},
 		{"claude-3-5-haiku", "claude-3-5-haiku-20241022", true},
+		{"claude-3.5-haiku", "claude-3-5-haiku-20241022", true},
+		{"haiku-3-5", "claude-3-5-haiku-20241022", true},
+		{"haiku-3.5", "claude-3-5-haiku-20241022", true},
+		{"claude-3-opus", "claude-3-opus-20240229", true},
+		{"opus-3", "claude-3-opus-20240229", true},
 		{"claude", "", false},
 		{"c", "", false},
 		{"claude-", "", false},
@@ -43,6 +65,7 @@ func TestRouter_UpdateAllowlist(t *testing.T) {
 		{
 			ID:          "custom-claude-model",
 			Alias:       "custom-alias",
+			Aliases:     []string{"custom-alias-2"},
 			DisplayName: "Custom",
 			Enabled:     true,
 		},
@@ -58,6 +81,9 @@ func TestRouter_UpdateAllowlist(t *testing.T) {
 	}
 	if !r.IsModelAllowed("custom-alias") {
 		t.Errorf("expected custom-alias to be allowed")
+	}
+	if !r.IsModelAllowed("custom-alias-2") {
+		t.Errorf("expected custom-alias-2 to be allowed")
 	}
 	if r.IsModelAllowed("disabled-model") {
 		t.Errorf("expected disabled-model to NOT be allowed")
