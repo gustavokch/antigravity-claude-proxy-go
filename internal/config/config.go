@@ -14,6 +14,7 @@ import (
 )
 
 type HeadroomConfig = headroom.Config
+type OpenRouterResponseCacheConfig = openrouter.ResponseCacheConfig
 
 type EndpointConfig struct {
 	URL    string `json:"url"`
@@ -21,15 +22,16 @@ type EndpointConfig struct {
 }
 
 type OpenRouterModelConfig struct {
-	ID              string   `json:"id"`
-	Alias           string   `json:"alias,omitempty"`
-	DisplayName     string   `json:"displayName,omitempty"`
-	ContextLen      int      `json:"contextLength,omitempty"`
-	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
-	Enabled         bool     `json:"enabled"`
-	ProviderMode    string   `json:"providerMode,omitempty"`
-	PinnedProvider  string   `json:"pinnedProvider,omitempty"`
-	ProviderOrder   []string `json:"providerOrder,omitempty"`
+	ID              string                         `json:"id"`
+	Alias           string                         `json:"alias,omitempty"`
+	DisplayName     string                         `json:"displayName,omitempty"`
+	ContextLen      int                            `json:"contextLength,omitempty"`
+	MaxOutputTokens int                            `json:"maxOutputTokens,omitempty"`
+	Enabled         bool                           `json:"enabled"`
+	ProviderMode    string                         `json:"providerMode,omitempty"`
+	PinnedProvider  string                         `json:"pinnedProvider,omitempty"`
+	ProviderOrder   []string                       `json:"providerOrder,omitempty"`
+	ResponseCache   *OpenRouterResponseCacheConfig `json:"responseCache,omitempty"`
 }
 
 // OpenRouterRoutingConfig holds routing strategy knobs.
@@ -57,12 +59,13 @@ type OpenRouterAppSpoofConfig struct {
 }
 
 type OpenRouterConfig struct {
-	Enabled   bool                     `json:"enabled"`
-	APIKey    string                   `json:"apiKey,omitempty"`
-	BaseURL   string                   `json:"baseUrl,omitempty"`
-	Allowlist []OpenRouterModelConfig  `json:"allowlist,omitempty"`
-	Routing   OpenRouterRoutingConfig  `json:"routing,omitempty"`
-	AppSpoof  OpenRouterAppSpoofConfig `json:"appSpoof,omitempty"`
+	Enabled       bool                          `json:"enabled"`
+	APIKey        string                        `json:"apiKey,omitempty"`
+	BaseURL       string                        `json:"baseUrl,omitempty"`
+	Allowlist     []OpenRouterModelConfig       `json:"allowlist,omitempty"`
+	Routing       OpenRouterRoutingConfig       `json:"routing,omitempty"`
+	AppSpoof      OpenRouterAppSpoofConfig      `json:"appSpoof,omitempty"`
+	ResponseCache OpenRouterResponseCacheConfig `json:"responseCache,omitempty"`
 }
 
 // KimiModelConfig describes one Kimi Code model the proxy may forward to.

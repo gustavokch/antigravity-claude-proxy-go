@@ -541,13 +541,22 @@ func TestManagement_OpenRouterEndpoints(t *testing.T) {
 				"categories": "cli-agent",
 				"referer": "https://custom.app.ai"
 			},
+			"responseCache": {
+				"enabled": true,
+				"ttlSeconds": 600,
+				"allowClientOverride": false
+			},
 			"allowlist": [
 				{
 					"id": "anthropic/claude-3.7-sonnet",
 					"alias": "claude-3-7-openrouter",
 					"displayName": "Claude 3.7 Sonnet",
 					"contextLength": 200000,
-					"enabled": true
+					"enabled": true,
+					"responseCache": {
+						"enabled": false,
+						"ttlSeconds": 120
+					}
 				}
 			]
 		}`, mockOR.URL)
@@ -599,6 +608,37 @@ func TestManagement_OpenRouterEndpoints(t *testing.T) {
 		}
 		if appSpoof["referer"] != "https://custom.app.ai" {
 			t.Errorf("expected appSpoof.referer = 'https://custom.app.ai', got %v", appSpoof["referer"])
+		}
+		respCache, ok := cfg["responseCache"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected responseCache map in config, got %v", cfg["responseCache"])
+		}
+		if respCache["enabled"] != true {
+			t.Errorf("expected responseCache.enabled = true, got %v", respCache["enabled"])
+		}
+		if respCache["ttlSeconds"] != float64(600) {
+			t.Errorf("expected responseCache.ttlSeconds = 600, got %v", respCache["ttlSeconds"])
+		}
+		if respCache["allowClientOverride"] != false {
+			t.Errorf("expected responseCache.allowClientOverride = false, got %v", respCache["allowClientOverride"])
+		}
+		allowlist, ok := cfg["allowlist"].([]any)
+		if !ok || len(allowlist) == 0 {
+			t.Fatalf("expected allowlist in config, got %v", cfg["allowlist"])
+		}
+		m0, ok := allowlist[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected allowlist[0] map, got %v", allowlist[0])
+		}
+		m0Cache, ok := m0["responseCache"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected model responseCache map, got %v", m0["responseCache"])
+		}
+		if m0Cache["enabled"] != false {
+			t.Errorf("expected model responseCache.enabled = false, got %v", m0Cache["enabled"])
+		}
+		if m0Cache["ttlSeconds"] != float64(120) {
+			t.Errorf("expected model responseCache.ttlSeconds = 120, got %v", m0Cache["ttlSeconds"])
 		}
 	})
 
