@@ -213,6 +213,107 @@ func TestApplyResponseCacheHeaders(t *testing.T) {
 	})
 }
 
+func TestApplyResponseCacheHeaders_ClientOverrideNormalization(t *testing.T) {
+	apply := func(t *testing.T, in http.Header, cfg ResolvedResponseCacheConfig) *http.Request {
+		t.Helper()
+		upReq := httptest.NewRequest("POST", "https://openrouter.ai/api/v1/messages", nil)
+		ApplyResponseCacheHeaders(upReq, in, cfg)
+		return upReq
+	}
+
+	t.Run("client TTL clamped to max", func(t *testing.T) {
+		in := http.Header{}
+		in.Set(HeaderCache, "true")
+		in.Set(HeaderCacheTTL, "999999")
+
+		upReq := apply(t, in, ResolvedResponseCacheConfig{TTLSeconds: 300, AllowClientOverride: true})
+
+		if got := upReq.Header.Get(HeaderCacheTTL); got != "86400" {
+			t.Errorf("expected %s='86400' (clamped), got %q", HeaderCacheTTL, got)
+		}
+	})
+
+	t.Run("unparseable client TTL falls back to config TTL", func(t *testing.T) {
+		in := http.Header{}
+		in.Set(HeaderCache, "true")
+		in.Set(HeaderCacheTTL, "not-a-number")
+
+		upReq := apply(t, in, ResolvedResponseCacheConfig{TTLSeconds: 300, AllowClientOverride: true})
+
+		if got := upReq.Header.Get(HeaderCacheTTL); got != "300" {
+			t.Errorf("expected %s='300' (config fallback), got %q", HeaderCacheTTL, got)
+		}
+	})
+
+	t.Run("client cache flag is case-insensitive", func(t *testing.T) {
+		in := http.Header{}
+		in.Set(HeaderCache, "TRUE")
+		in.Set(HeaderCacheClear, "True")
+
+		upReq := apply(t, in, ResolvedResponseCacheConfig{TTLSeconds: 300, AllowClientOverride: true})
+
+		if got := upReq.Header.Get(HeaderCache); got != "true" {
+			t.Errorf("expected %s='true' (normalized), got %q", HeaderCache, got)
+		}
+		if got := upReq.Header.Get(HeaderCacheClear); got != "true" {
+			t.Errorf("expected %s='true' (normalized), got %q", HeaderCacheClear, got)
+		}
+	})
+
+	t.Run("unrecognized client cache value falls back to proxy config", func(t *testing.T) {
+		in := http.Header{}
+		in.Set(HeaderCache, "maybe")
+
+		upReq := apply(t, in, ResolvedResponseCacheConfig{Enabled: true, TTLSeconds: 600, AllowClientOverride: true})
+
+		if got := upReq.Header.Get(HeaderCache); got != "true" {
+			t.Errorf("expected %s='true' (config), got %q", HeaderCache, got)
+		}
+		if got := upReq.Header.Get(HeaderCacheTTL); got != "600" {
+			t.Errorf("expected %s='600' (config), got %q", HeaderCacheTTL, got)
+		}
+	})
+
+	t.Run("client TTL alone is honored when caching is on", func(t *testing.T) {
+		in := http.Header{}
+		in.Set(HeaderCacheTTL, "120")
+
+		upReq := apply(t, in, ResolvedResponseCacheConfig{Enabled: true, TTLSeconds: 600, AllowClientOverride: true})
+
+		if got := upReq.Header.Get(HeaderCache); got != "true" {
+			t.Errorf("expected %s='true', got %q", HeaderCache, got)
+		}
+		if got := upReq.Header.Get(HeaderCacheTTL); got != "120" {
+			t.Errorf("expected %s='120' (client TTL), got %q", HeaderCacheTTL, got)
+		}
+	})
+
+	t.Run("client TTL alone ignored when override denied", func(t *testing.T) {
+		in := http.Header{}
+		in.Set(HeaderCacheTTL, "120")
+
+		upReq := apply(t, in, ResolvedResponseCacheConfig{Enabled: true, TTLSeconds: 600, AllowClientOverride: false})
+
+		if got := upReq.Header.Get(HeaderCacheTTL); got != "600" {
+			t.Errorf("expected %s='600' (config wins), got %q", HeaderCacheTTL, got)
+		}
+	})
+
+	t.Run("client TTL alone does not enable caching on its own", func(t *testing.T) {
+		in := http.Header{}
+		in.Set(HeaderCacheTTL, "120")
+
+		upReq := apply(t, in, ResolvedResponseCacheConfig{Enabled: false, TTLSeconds: 300, AllowClientOverride: true})
+
+		if got := upReq.Header.Get(HeaderCache); got != "" {
+			t.Errorf("expected %s to be empty, got %q", HeaderCache, got)
+		}
+		if got := upReq.Header.Get(HeaderCacheTTL); got != "" {
+			t.Errorf("expected %s to be empty, got %q", HeaderCacheTTL, got)
+		}
+	})
+}
+
 func TestExtractResponseCacheHeaders(t *testing.T) {
 	t.Run("extracts hit headers", func(t *testing.T) {
 		h := http.Header{}

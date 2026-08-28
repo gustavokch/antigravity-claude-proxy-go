@@ -37,13 +37,11 @@ type ResponseCacheInfo struct {
 	SourceID string // Original generation ID
 }
 
-// ClampCacheTTL clamps TTL seconds to [1, 86400]. Returns 300 if ttl <= 0.
+// ClampCacheTTL clamps TTL seconds to [MinCacheTTLSeconds, MaxCacheTTLSeconds].
+// A non-positive TTL means "unset" and yields the default.
 func ClampCacheTTL(ttl int) int {
 	if ttl <= 0 {
 		return DefaultCacheTTLSeconds
-	}
-	if ttl < MinCacheTTLSeconds {
-		return MinCacheTTLSeconds
 	}
 	if ttl > MaxCacheTTLSeconds {
 		return MaxCacheTTLSeconds
@@ -82,35 +80,73 @@ func ResolveResponseCacheConfig(global ResponseCacheConfig, model *ResponseCache
 	return eff
 }
 
+// parseCacheFlag reads a boolean cache header. Only "true" and "false" are
+// recognized, case-insensitively; anything else reports ok=false so the caller
+// falls back to proxy configuration instead of forwarding a value upstream
+// cannot be assumed to understand.
+func parseCacheFlag(raw string) (value, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
+}
+
+// parseCacheTTL reads a TTL header and clamps it to the supported range.
+// An unparseable or empty value reports ok=false.
+func parseCacheTTL(raw string) (value int, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	ttl, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return ClampCacheTTL(ttl), true
+}
+
 // ApplyResponseCacheHeaders sets upstream cache request headers from the
 // resolved config and any allowed client overrides.
+//
+// Client headers are never merely passed along: values are parsed here and
+// re-emitted in canonical form, and every TTL is clamped locally rather than
+// trusting upstream to reject an out-of-range one. The upstream request is
+// built fresh by the caller, so a client header that is not re-emitted here
+// simply never reaches OpenRouter.
 func ApplyResponseCacheHeaders(upReq *http.Request, incomingHeader http.Header, cfg ResolvedResponseCacheConfig) {
-	clientCache := incomingHeader.Get(HeaderCache)
-	clientTTL := incomingHeader.Get(HeaderCacheTTL)
-	clientClear := incomingHeader.Get(HeaderCacheClear)
+	clientCache, clientCacheOK := parseCacheFlag(incomingHeader.Get(HeaderCache))
+	clientTTL, clientTTLOK := parseCacheTTL(incomingHeader.Get(HeaderCacheTTL))
+	clientClear, _ := parseCacheFlag(incomingHeader.Get(HeaderCacheClear))
 
-	cacheEnabled := false
-	switch {
-	case clientCache != "" && cfg.AllowClientOverride:
-		// 1. Client override. TTL passed verbatim: upstream clamps
-		// out-of-range values and ignores unparseable ones.
-		upReq.Header.Set(HeaderCache, clientCache)
-		if clientTTL != "" {
-			upReq.Header.Set(HeaderCacheTTL, clientTTL)
+	cacheEnabled := cfg.Enabled
+	ttl := cfg.TTLSeconds
+	if cfg.AllowClientOverride {
+		if clientCacheOK {
+			cacheEnabled = clientCache
 		}
-		cacheEnabled = clientCache == "true"
-	case cfg.Enabled:
-		// 2. Proxy configuration (client headers stripped when override denied)
-		upReq.Header.Set(HeaderCache, "true")
-		upReq.Header.Set(HeaderCacheTTL, strconv.Itoa(cfg.TTLSeconds))
-		cacheEnabled = true
+		// A TTL on its own tunes caching that is already on; it never turns
+		// caching on by itself.
+		if clientTTLOK {
+			ttl = clientTTL
+		}
 	}
 
-	// 3. Clear is forwarded only when this request actually carries caching.
-	//    Upstream treats Clear as a no-op when caching is disabled, so
-	//    forwarding it then would be misleading.
-	if clientClear == "true" && cacheEnabled {
-		upReq.Header.Set(HeaderCacheClear, "true")
+	switch {
+	case cacheEnabled:
+		upReq.Header.Set(HeaderCache, "true")
+		upReq.Header.Set(HeaderCacheTTL, strconv.Itoa(ttl))
+		// Clear only rides along with a request that actually carries caching:
+		// upstream treats it as a no-op otherwise, so forwarding it would be
+		// misleading.
+		if clientClear {
+			upReq.Header.Set(HeaderCacheClear, "true")
+		}
+	case cfg.AllowClientOverride && clientCacheOK:
+		// The client explicitly opted out of caching this request.
+		upReq.Header.Set(HeaderCache, "false")
 	}
 }
 
