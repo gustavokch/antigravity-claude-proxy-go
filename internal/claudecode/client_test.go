@@ -130,3 +130,109 @@ func TestClient_ValidateAccount(t *testing.T) {
 		t.Errorf("expected invalid-token to fail validation")
 	}
 }
+
+func TestIsOAuthToken(t *testing.T) {
+	cases := []struct {
+		token string
+		want  bool
+	}{
+		{"sk-ant-oat01-abc", true},
+		{"Bearer sk-ant-oat01-abc", true},
+		{"bearer sk-ant-oat01-abc", true},
+		{"BEARER sk-ant-oat01-abc", true},
+		{"  sk-ant-oat01-abc  ", true},
+		{"sk-ant-api01-abc", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsOAuthToken(c.token); got != c.want {
+			t.Errorf("IsOAuthToken(%q) = %v, want %v", c.token, got, c.want)
+		}
+	}
+}
+
+func TestApplyAuthHeaders(t *testing.T) {
+	cases := []struct {
+		name           string
+		token          string
+		existing       map[string]string
+		wantHeaders    map[string]string
+		missingHeaders []string
+	}{
+		{
+			name:  "oauth token sets bearer and beta",
+			token: "sk-ant-oat01-token",
+			wantHeaders: map[string]string{
+				"Authorization":  "Bearer sk-ant-oat01-token",
+				"anthropic-beta": OAuthBetaHeader,
+			},
+			missingHeaders: []string{"x-api-key"},
+		},
+		{
+			name:  "lowercase bearer prefix treated as OAuth",
+			token: "bearer oat-token-lower",
+			wantHeaders: map[string]string{
+				"Authorization":  "Bearer oat-token-lower",
+				"anthropic-beta": OAuthBetaHeader,
+			},
+			missingHeaders: []string{"x-api-key"},
+		},
+		{
+			name:  "bearer prefix stripped and normalized",
+			token: "Bearer oat-token-123",
+			wantHeaders: map[string]string{
+				"Authorization": "Bearer oat-token-123",
+			},
+		},
+		{
+			name:  "api key uses x-api-key",
+			token: "sk-ant-api01-key",
+			wantHeaders: map[string]string{
+				"x-api-key": "sk-ant-api01-key",
+			},
+			missingHeaders: []string{"Authorization", "anthropic-beta"},
+		},
+		{
+			name:  "oauth beta merges with existing",
+			token: "sk-ant-oat01-token",
+			existing: map[string]string{
+				"anthropic-beta": "claude-code-20250219",
+			},
+			wantHeaders: map[string]string{
+				"anthropic-beta": "claude-code-20250219," + OAuthBetaHeader,
+			},
+		},
+		{
+			name:  "oauth beta not duplicated when already present",
+			token: "sk-ant-oat01-token",
+			existing: map[string]string{
+				"anthropic-beta": "claude-code-20250219," + OAuthBetaHeader,
+			},
+			wantHeaders: map[string]string{
+				"anthropic-beta": "claude-code-20250219," + OAuthBetaHeader,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest("POST", "https://example.com", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			for k, v := range tc.existing {
+				req.Header.Set(k, v)
+			}
+			ApplyAuthHeaders(req, tc.token)
+			for k, want := range tc.wantHeaders {
+				if got := req.Header.Get(k); got != want {
+					t.Errorf("header %s = %q, want %q", k, got, want)
+				}
+			}
+			for _, k := range tc.missingHeaders {
+				if got := req.Header.Get(k); got != "" {
+					t.Errorf("header %s = %q, want empty", k, got)
+				}
+			}
+		})
+	}
+}

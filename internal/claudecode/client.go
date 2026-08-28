@@ -17,9 +17,12 @@ const (
 )
 
 // IsOAuthToken reports whether a token string is an Anthropic / Claude Code OAuth access token.
+// It matches the sk-ant-oat prefix, the unprefixed ant-oat form (defends against
+// tokens persisted without the sk- prefix), and a Bearer scheme prefix of any
+// case, since the RFC 7235 auth scheme is case-insensitive.
 func IsOAuthToken(token string) bool {
 	trimmed := strings.TrimSpace(token)
-	if strings.HasPrefix(trimmed, "Bearer ") {
+	if len(trimmed) > len("bearer ") && strings.EqualFold(trimmed[:len("bearer ")], "bearer ") {
 		return true
 	}
 	if strings.HasPrefix(trimmed, "sk-ant-oat") || strings.HasPrefix(trimmed, "ant-oat") {
@@ -32,7 +35,10 @@ func IsOAuthToken(token string) bool {
 func ApplyAuthHeaders(req *http.Request, token string) {
 	trimmed := strings.TrimSpace(token)
 	if IsOAuthToken(trimmed) {
-		cleanToken := strings.TrimPrefix(trimmed, "Bearer ")
+		cleanToken := trimmed
+		if len(cleanToken) > len("bearer ") && strings.EqualFold(cleanToken[:len("bearer ")], "bearer ") {
+			cleanToken = cleanToken[len("bearer "):]
+		}
 		cleanToken = strings.TrimSpace(cleanToken)
 		req.Header.Set("Authorization", "Bearer "+cleanToken)
 		req.Header.Del("x-api-key")
