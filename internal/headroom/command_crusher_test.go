@@ -565,3 +565,28 @@ func BenchmarkCommandCrusher_Fallback100KB(b *testing.B) {
 		}
 	}
 }
+
+// Words made only of pytest glyph characters are prose, not progress. pytest
+// emits uppercase E for an error; lowercase e is not an outcome glyph, so
+// accepting it swallows ordinary words printed by a test.
+func TestPytestFilter_LowercaseWordsAreNotProgress(t *testing.T) {
+	for _, line := range []string{"see", "sees", "Fee", "essex"} {
+		if isPytestProgress(line) {
+			t.Errorf("isPytestProgress(%q) = true, want false", line)
+		}
+	}
+}
+
+// pytest renders a blank line inside a multi-line exception message as "E   ",
+// which trims to a bare "E". That is traceback text and must survive, while a
+// genuine error-progress run still gets stripped.
+func TestPytestFilter_BareErrorLineSurvives(t *testing.T) {
+	if isPytestProgress("E") {
+		t.Error(`isPytestProgress("E") = true, want false (traceback continuation)`)
+	}
+	for _, line := range []string{"EE..", "..E.. [ 50%]", "E [100%]"} {
+		if !isPytestProgress(line) {
+			t.Errorf("isPytestProgress(%q) = false, want true", line)
+		}
+	}
+}

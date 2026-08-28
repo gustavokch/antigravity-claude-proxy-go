@@ -8,7 +8,7 @@ import (
 // pytestProgressRe matches bare progress runs such as "..........",
 // "....  [ 50%]", or "FF..". Progress lines with file names (e.g.
 // "test_a.py ..F [100%]") are caught by the fast-path prefix/suffix checks.
-var pytestProgressRe = regexp.MustCompile(`^[.sFxXeE]+\s*(\[\s*\d+%\])?$`)
+var pytestProgressRe = regexp.MustCompile(`^[.sFxXE]+\s*(\[\s*\d+%\])?$`)
 
 func isPytestProgress(line string) bool {
 	trimmed := strings.TrimSpace(line)
@@ -23,7 +23,12 @@ func isPytestProgress(line string) bool {
 	if strings.HasPrefix(trimmed, "FAILED ") || strings.HasPrefix(trimmed, "ERROR ") {
 		return false
 	}
-	if strings.HasSuffix(trimmed, "]") || strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "s") || strings.HasPrefix(trimmed, "F") || strings.HasPrefix(trimmed, "x") || strings.HasPrefix(trimmed, "X") || strings.HasPrefix(trimmed, "E") || strings.HasPrefix(trimmed, "e") {
+	// A bare "E" is a traceback continuation line (e.g., blank line inside an
+	// exception message prefixed by "E   "), not progress.
+	if trimmed == "E" {
+		return false
+	}
+	if strings.HasSuffix(trimmed, "]") || strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "s") || strings.HasPrefix(trimmed, "F") || strings.HasPrefix(trimmed, "x") || strings.HasPrefix(trimmed, "X") || strings.HasPrefix(trimmed, "E") {
 		return pytestProgressRe.MatchString(trimmed)
 	}
 	return false
