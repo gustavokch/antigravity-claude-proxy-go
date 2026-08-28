@@ -1187,9 +1187,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					return
 				}
 
-				// Stream with CCR interception and potential re-entry
-				var currentBlocks []map[string]any
-				currentJSONBufs := make(map[int]*strings.Builder)
+				// Stream with CCR interception and potential re-entry.
+				// ccrStreamState owns the upstream-to-downstream index mapping
+				// and the headroom_retrieve suppression, shared with the
+				// CloudCode and Kimi paths.
+				state := newCCRStreamState(baseBlockIndex)
 				var pendingTerminalEvents []map[string]any
 				var attemptIn, attemptOut, attemptCr, attemptCw int
 
@@ -1212,37 +1214,46 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 						return nil
 
 					case "content_block_start":
+						idx := intValue(dataObj["index"], 0)
+						downstream, emit := state.StartBlock(idx, mapOrEmpty(dataObj["content_block"]))
+						if !emit {
+							return nil
+						}
 						if !streamStarted {
 							copyUpstreamHeaders(writer.Header(), resp.Header)
 							writer.WriteHeader(resp.StatusCode)
 							streamStarted = true
 						}
-						idx := intValue(dataObj["index"], 0)
-						dataObj["index"] = baseBlockIndex + idx
-						block := mapOrEmpty(dataObj["content_block"])
-						for len(currentBlocks) <= idx {
-							currentBlocks = append(currentBlocks, nil)
-						}
-						currentBlocks[idx] = block
-						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+						dataObj["index"] = downstream
+						// rawData still carries the upstream index; re-marshal.
+						return writeSSEEvent(bw, eventType, dataObj, nil, hasFlusher, flusher)
 
 					case "content_block_delta":
 						idx := intValue(dataObj["index"], 0)
-						dataObj["index"] = baseBlockIndex + idx
 						delta := mapOrEmpty(dataObj["delta"])
-						if deltaType, _ := delta["type"].(string); deltaType == "input_json_delta" {
+						switch deltaType, _ := delta["type"].(string); deltaType {
+						case "input_json_delta":
 							partial, _ := delta["partial_json"].(string)
-							if currentJSONBufs[idx] == nil {
-								currentJSONBufs[idx] = &strings.Builder{}
-							}
-							currentJSONBufs[idx].WriteString(partial)
+							state.AppendJSON(idx, partial)
+						case "text_delta":
+							text, _ := delta["text"].(string)
+							state.AppendText(idx, text)
 						}
-						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+						downstream, emit := state.MapIndex(idx)
+						if !emit {
+							return nil
+						}
+						dataObj["index"] = downstream
+						return writeSSEEvent(bw, eventType, dataObj, nil, hasFlusher, flusher)
 
 					case "content_block_stop":
 						idx := intValue(dataObj["index"], 0)
-						dataObj["index"] = baseBlockIndex + idx
-						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
+						downstream, emit := state.MapIndex(idx)
+						if !emit {
+							return nil
+						}
+						dataObj["index"] = downstream
+						return writeSSEEvent(bw, eventType, dataObj, nil, hasFlusher, flusher)
 
 					case "message_delta", "message_stop":
 						pendingTerminalEvents = append(pendingTerminalEvents, dataObj)
@@ -1276,36 +1287,18 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				totalCacheRead += attemptCr
 
 				// Check for headroom_retrieve calls
-				var retrieveCalls []map[string]any
-				for idx, block := range currentBlocks {
-					if block == nil {
-						continue
-					}
-					if block["type"] == "tool_use" {
-						if buf := currentJSONBufs[idx]; buf != nil && buf.Len() > 0 {
-							var parsedInput map[string]any
-							if err := json.Unmarshal([]byte(buf.String()), &parsedInput); err == nil {
-								block["input"] = parsedInput
-							}
-						}
-						if block["name"] == "headroom_retrieve" {
-							retrieveCalls = append(retrieveCalls, block)
-						}
-					}
-				}
+				retrieveCalls := state.Finalize()
 
 				if len(retrieveCalls) > 0 && ccrHydrations < maxCCRHydrations {
 					ccrHydrations++
 					totalCCRRetrievals += len(retrieveCalls)
-					baseBlockIndex += len(currentBlocks)
+					// Suppressed blocks consumed no downstream index, so
+					// advancing by VisibleCount keeps the sequence gapless.
+					baseBlockIndex += state.VisibleCount()
 
-					contentBlocks := make([]any, len(currentBlocks))
-					for i, b := range currentBlocks {
-						contentBlocks[i] = b
-					}
 					assistantMsg := map[string]any{
 						"role":    "assistant",
-						"content": contentBlocks,
+						"content": state.AssistantBlocks(),
 					}
 					var toolResults []any
 					for _, call := range retrieveCalls {
@@ -1335,6 +1328,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				// Terminal events flush
 				for _, ev := range pendingTerminalEvents {
 					if ev["type"] == "message_delta" {
+						reconcileStopReasonEvent(ev, state.HasVisibleToolUse())
 						usage, ok := ev["usage"].(map[string]any)
 						if !ok || usage == nil {
 							usage = make(map[string]any)
