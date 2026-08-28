@@ -228,6 +228,25 @@ func TestMochaFilter(t *testing.T) {
 	}
 }
 
+func TestDetectSignature_MochaSqrtCheckmark(t *testing.T) {
+	// Windows consoles render Mocha's pass marker as √. Detection must match
+	// the checkmark set crushMocha already strips.
+	input := "  Calculator\n    √ adds\n    √ multiplies\n    1) divides by zero\n\n  2 passing (5ms)\n  1 failing\n"
+	if sig := detectSignature(input); sig != sigMocha {
+		t.Errorf("detectSignature = %v, want sigMocha", sig)
+	}
+	got, changed := CrushCommandOutput(input)
+	if !changed {
+		t.Fatal("expected sqrt-checkmark mocha output to be crushed")
+	}
+	if strings.Contains(got, "√") {
+		t.Errorf("checkmarks survive:\n%q", got)
+	}
+	if !strings.Contains(got, "1) divides by zero") || !strings.Contains(got, "2 passing (5ms)") {
+		t.Errorf("failure evidence lost:\n%q", got)
+	}
+}
+
 func TestTypeScriptCompilerFilter(t *testing.T) {
 	input := "src/a.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.\nsrc/a.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.\nsrc/b.ts(3,1): error TS2304: Cannot find name 'foo'."
 	got, changed := crushTSC(input)

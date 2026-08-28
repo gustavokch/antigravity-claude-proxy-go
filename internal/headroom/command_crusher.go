@@ -166,7 +166,8 @@ func detectSignature(text string) signature {
 		return sigUnittest
 	case strings.Contains(head, "PASS ") || strings.Contains(head, "FAIL ") || strings.Contains(tail, "Tests: "):
 		return sigJest
-	case strings.Contains(tail, " passing") && (strings.Contains(head, "✓") || strings.Contains(head, "✔")):
+	case strings.Contains(tail, " passing") &&
+		(strings.Contains(head, "✓") || strings.Contains(head, "✔") || strings.Contains(head, "√")):
 		return sigMocha
 	case strings.Contains(head, "error TS"):
 		return sigTSC
