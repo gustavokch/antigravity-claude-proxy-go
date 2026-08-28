@@ -105,3 +105,63 @@ func TestSmartCrusher_DisabledIsNoOp(t *testing.T) {
 		t.Errorf("expected no-op when disabled, got %q", got)
 	}
 }
+
+func TestSmartCrusher_SkipsVerbatimJSONFileRead(t *testing.T) {
+	prettyJSON := "{\n  \"key\": \"value\",\n  \"list\": [\n    1,\n    2\n  ]\n}"
+	req := map[string]any{"messages": []any{
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Read",
+				"input": map[string]any{"file_path": "/tmp/config.json"}},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": prettyJSON},
+		}},
+	}}
+	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	cfg := &Config{Enabled: true, SmartCrusher: true, PreserveVerbatimReads: true}
+
+	stage := &SmartCrusherStage{}
+	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := toolResultText(t, req, 1)
+	if got != prettyJSON {
+		t.Errorf("verbatim JSON file read must not be compacted, got %q", got)
+	}
+}
+
+func TestSmartCrusher_SkipsTabularOnVerbatim(t *testing.T) {
+	// Uniform object array with long keys: TryTabularConversion would convert.
+	payload := `[
+  {"a_very_long_column_name": 1, "another_long_column_name": "alpha"},
+  {"a_very_long_column_name": 2, "another_long_column_name": "beta"},
+  {"a_very_long_column_name": 3, "another_long_column_name": "gamma"},
+  {"a_very_long_column_name": 4, "another_long_column_name": "delta"}
+]`
+	if _, converted := TryTabularConversion(payload, DefaultMinTabularSavings); !converted {
+		t.Fatal("fixture must be tabular-convertible, or the test proves nothing")
+	}
+
+	req := map[string]any{"messages": []any{
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Read",
+				"input": map[string]any{"file_path": "/tmp/data.json"}},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": payload},
+		}},
+	}}
+	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	cfg := &Config{Enabled: true, SmartCrusher: true, TabularArrays: true, PreserveVerbatimReads: true}
+
+	stage := &SmartCrusherStage{}
+	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := toolResultText(t, req, 1)
+	if got != payload {
+		t.Errorf("tabular conversion must not fire on verbatim payload, got %q", got)
+	}
+}

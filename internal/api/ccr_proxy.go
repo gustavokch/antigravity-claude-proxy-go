@@ -2,7 +2,6 @@ package api
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -107,15 +106,8 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 			writer.Header().Set("Connection", "keep-alive")
 		}
 
-		var (
-			currentBlocks           []map[string]any
-			currentJSONBufs         = make(map[int]*bytes.Buffer)
-			suppressed              = make(map[int]bool)
-			upstreamToDownstreamIdx = make(map[int]int)
-			nextLocalDownstreamIdx  = 0
-			retrieveCalls           []map[string]any
-			pendingTerminalEvents   [][2]string // pairs of [eventName, dataStr]
-		)
+		state := newCCRStreamState(baseBlockIndex)
+		var pendingTerminalEvents [][2]string // pairs of [eventName, dataStr]
 
 		scanner := bufio.NewScanner(resp.Body)
 		// Support large lines in SSE
@@ -166,23 +158,7 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 			case "content_block_start":
 				idx := int(event["index"].(float64))
 				rawBlock, _ := event["content_block"].(map[string]any)
-				for len(currentBlocks) <= idx {
-					currentBlocks = append(currentBlocks, nil)
-				}
-				currentBlocks[idx] = rawBlock
-
-				bType, _ := rawBlock["type"].(string)
-				bName, _ := rawBlock["name"].(string)
-				if bType == "tool_use" {
-					currentJSONBufs[idx] = &bytes.Buffer{}
-				}
-				if bType == "tool_use" && bName == "headroom_retrieve" {
-					suppressed[idx] = true
-				} else {
-					downstreamIdx := baseBlockIndex + nextLocalDownstreamIdx
-					nextLocalDownstreamIdx++
-					upstreamToDownstreamIdx[idx] = downstreamIdx
-
+				if downstreamIdx, emit := state.StartBlock(idx, rawBlock); emit {
 					event["index"] = downstreamIdx
 					modData, _ := json.Marshal(event)
 					writeSSEEvent(curEvent, modData)
@@ -193,34 +169,24 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 				if delta, ok := event["delta"].(map[string]any); ok {
 					dType, _ := delta["type"].(string)
 					if dType == "text_delta" {
-						if idx < len(currentBlocks) && currentBlocks[idx] != nil {
-							prevText, _ := currentBlocks[idx]["text"].(string)
-							newText, _ := delta["text"].(string)
-							currentBlocks[idx]["text"] = prevText + newText
-						}
+						newText, _ := delta["text"].(string)
+						state.AppendText(idx, newText)
 					} else if dType == "input_json_delta" {
 						if pj, ok := delta["partial_json"].(string); ok {
-							if buf, exists := currentJSONBufs[idx]; exists {
-								buf.WriteString(pj)
-							}
+							state.AppendJSON(idx, pj)
 						}
 					}
 				}
-
-				if !suppressed[idx] {
-					if dIdx, exists := upstreamToDownstreamIdx[idx]; exists {
-						event["index"] = dIdx
-					}
+				if downstreamIdx, emit := state.MapIndex(idx); emit {
+					event["index"] = downstreamIdx
 					modData, _ := json.Marshal(event)
 					writeSSEEvent(curEvent, modData)
 				}
 
 			case "content_block_stop":
 				idx := int(event["index"].(float64))
-				if !suppressed[idx] {
-					if dIdx, exists := upstreamToDownstreamIdx[idx]; exists {
-						event["index"] = dIdx
-					}
+				if downstreamIdx, emit := state.MapIndex(idx); emit {
+					event["index"] = downstreamIdx
 					modData, _ := json.Marshal(event)
 					writeSSEEvent(curEvent, modData)
 				}
@@ -244,22 +210,7 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 		_ = resp.Body.Close()
 
 		// Finalize blocks and identify retrieveCalls
-		for idx, block := range currentBlocks {
-			if block == nil {
-				continue
-			}
-			if buf, exists := currentJSONBufs[idx]; exists && buf.Len() > 0 {
-				var inputMap map[string]any
-				if err := json.Unmarshal(buf.Bytes(), &inputMap); err == nil {
-					block["input"] = inputMap
-				}
-			}
-			if bType, _ := block["type"].(string); bType == "tool_use" {
-				if bName, _ := block["name"].(string); bName == "headroom_retrieve" {
-					retrieveCalls = append(retrieveCalls, block)
-				}
-			}
-		}
+		retrieveCalls := state.Finalize()
 
 		ccrEnabled := opts.IsCCREnabled == nil || opts.IsCCREnabled()
 		needsHydration := len(retrieveCalls) > 0 && iter < maxHydrations && ccrEnabled
@@ -293,18 +244,12 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 
 			// Reconstruct messages array
 			existingMsgs, _ := reqMap["messages"].([]any)
-			var validBlocks []any
-			for _, b := range currentBlocks {
-				if b != nil {
-					validBlocks = append(validBlocks, b)
-				}
-			}
 			existingMsgs = append(existingMsgs,
-				map[string]any{"role": "assistant", "content": validBlocks},
+				map[string]any{"role": "assistant", "content": state.AssistantBlocks()},
 				map[string]any{"role": "user", "content": toolResults},
 			)
 			reqMap["messages"] = existingMsgs
-			baseBlockIndex += nextLocalDownstreamIdx
+			baseBlockIndex += state.VisibleCount()
 			continue
 		}
 
@@ -320,6 +265,9 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 			var parsed map[string]any
 			if err := json.Unmarshal([]byte(evData), &parsed); err == nil {
 				if pType, _ := parsed["type"].(string); pType == "message_delta" {
+					// Suppressing the retrieve call can leave the turn with no
+					// tool_use block at all; stop_reason must follow.
+					reconcileStopReasonEvent(parsed, state.HasVisibleToolUse())
 					usage, ok := parsed["usage"].(map[string]any)
 					if !ok {
 						usage = make(map[string]any)
@@ -463,21 +411,7 @@ func ProxyAnthropicJSONWithCCR(ctx context.Context, writer http.ResponseWriter, 
 		}
 
 		// Final response: filter out any headroom_retrieve blocks from final content
-		if content, ok := respMap["content"].([]any); ok {
-			var filteredContent []any
-			for _, raw := range content {
-				block, ok := raw.(map[string]any)
-				if !ok {
-					filteredContent = append(filteredContent, raw)
-					continue
-				}
-				if block["type"] == "tool_use" && block["name"] == "headroom_retrieve" {
-					continue
-				}
-				filteredContent = append(filteredContent, raw)
-			}
-			respMap["content"] = filteredContent
-		}
+		stripRetrieveBlocks(respMap)
 
 		// Patch usage
 		usage, ok := respMap["usage"].(map[string]any)

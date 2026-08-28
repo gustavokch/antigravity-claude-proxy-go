@@ -19,7 +19,7 @@ func TestWalkToolResults_VisitsStringAndArrayForms(t *testing.T) {
 	}}
 
 	var seen []string
-	walkToolResultText(req, 0, func(idx int, get func() string, set func(string)) {
+	walkToolResultText(req, 0, func(_, _ int, get func() string, set func(string)) {
 		seen = append(seen, get())
 		set(get() + "!")
 	})
@@ -61,10 +61,41 @@ func TestWalkToolResults_RespectsFromIndex(t *testing.T) {
 	req := map[string]any{"messages": []any{mk("a"), mk("b"), mk("c")}}
 
 	var seen []string
-	walkToolResultText(req, 2, func(idx int, get func() string, set func(string)) {
+	walkToolResultText(req, 2, func(_, _ int, get func() string, set func(string)) {
 		seen = append(seen, get())
 	})
 	if len(seen) != 1 || seen[0] != "c" {
 		t.Fatalf("expected only index 2, got %#v", seen)
+	}
+}
+
+func TestWalkToolResults_OrdinalMonotonic(t *testing.T) {
+	mk := func(s string) any {
+		return map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "content": s},
+			map[string]any{"type": "tool_result", "content": []any{
+				map[string]any{"type": "text", "text": s + "-inner"},
+			}},
+		}}
+	}
+	req := map[string]any{"messages": []any{mk("a"), mk("b")}}
+
+	var ords []int
+	var payloads []string
+	walkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
+		ords = append(ords, ord)
+		payloads = append(payloads, get())
+	})
+
+	wantOrds := []int{0, 1, 2, 3}
+	wantPayloads := []string{"a", "a-inner", "b", "b-inner"}
+	if len(ords) != len(wantOrds) {
+		t.Fatalf("expected %d payloads, got %d", len(wantOrds), len(ords))
+	}
+	for i := range wantOrds {
+		if ords[i] != wantOrds[i] || payloads[i] != wantPayloads[i] {
+			t.Errorf("position %d: got (ord=%d, %q), want (ord=%d, %q)",
+				i, ords[i], payloads[i], wantOrds[i], wantPayloads[i])
+		}
 	}
 }

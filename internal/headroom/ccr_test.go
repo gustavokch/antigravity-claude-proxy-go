@@ -229,3 +229,73 @@ func TestEngine_CCRStoresOriginalBeforeCompression(t *testing.T) {
 	}
 }
 
+
+func TestCCRStage_SkipsVerbatimReadResult(t *testing.T) {
+	store := NewCCRStore(1024 * 1024)
+	stage := NewCCRStage(store)
+
+	payload := realisticReadPayload()
+	req := readEditRequest(payload)
+
+	reqCtx := &RequestContext{
+		Request:           req,
+		FrozenPrefixIndex: 2, // the tool_result message
+		Verbatim:          NewToolInspector(req),
+	}
+	cfg := &Config{
+		Enabled:               true,
+		PreserveVerbatimReads: true,
+		CCR:                   CCRConfig{Enabled: true, MinChunkBytes: 2048},
+	}
+
+	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := toolResultText(t, req, 2)
+	if got != payload {
+		t.Errorf("verbatim Read result must stay inline byte-for-byte, got prefix: %.80q", got)
+	}
+	if reqCtx.ChunksStored != 0 {
+		t.Errorf("expected 0 chunks stored, got %d", reqCtx.ChunksStored)
+	}
+	if reqCtx.VerbatimSkipped != 1 {
+		t.Errorf("expected VerbatimSkipped 1, got %d", reqCtx.VerbatimSkipped)
+	}
+}
+
+func TestCCRStage_StillDemotesNonVerbatim(t *testing.T) {
+	store := NewCCRStore(1024 * 1024)
+	stage := NewCCRStage(store)
+
+	largeLog := "grep output\n" + strings.Repeat("match line\n", 300)
+	req := map[string]any{
+		"tools": []any{map[string]any{"name": "Bash"}},
+		"messages": []any{
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": "toolu_b", "name": "Bash",
+					"input": map[string]any{"command": "grep -r foo ."}},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "toolu_b", "content": largeLog},
+			}},
+		},
+	}
+	reqCtx := &RequestContext{
+		Request:           req,
+		FrozenPrefixIndex: 1,
+		Verbatim:          NewToolInspector(req),
+	}
+	cfg := &Config{
+		Enabled:               true,
+		PreserveVerbatimReads: true,
+		CCR:                   CCRConfig{Enabled: true, MinChunkBytes: 1000},
+	}
+
+	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reqCtx.ChunksStored != 1 {
+		t.Errorf("non-verbatim payload must still demote, ChunksStored=%d", reqCtx.ChunksStored)
+	}
+}

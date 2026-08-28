@@ -92,3 +92,59 @@ func TestCodeCompressor_LargeLogCollapses(t *testing.T) {
 		t.Errorf("expected large collapse, got %d bytes", len(got))
 	}
 }
+
+func TestCodeCompressor_SkipsVerbatimReadResult(t *testing.T) {
+	// Trailing spaces and a 5x repeated line: exactly what PruneText destroys.
+	payload := "     1\tpackage main  \n" +
+		"     2\t\n" +
+		"     3\tline\n     4\tline\n     5\tline\n     6\tline\n     7\tline\n"
+	req := map[string]any{"messages": []any{
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Read",
+				"input": map[string]any{"file_path": "/tmp/x.go"}},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": payload},
+		}},
+	}}
+	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	cfg := &Config{Enabled: true, CodeCompressor: true, PreserveVerbatimReads: true}
+
+	stage := &CodeCompressorStage{}
+	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := toolResultText(t, req, 1)
+	if got != payload {
+		t.Errorf("verbatim payload must survive byte-identical, got %q", got)
+	}
+	if reqCtx.VerbatimSkipped != 1 {
+		t.Errorf("expected VerbatimSkipped 1, got %d", reqCtx.VerbatimSkipped)
+	}
+}
+
+func TestCodeCompressor_StillPrunesNonVerbatim(t *testing.T) {
+	payload := "log line one   \nlog line two\n"
+	req := map[string]any{"messages": []any{
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Bash",
+				"input": map[string]any{"command": "make test"}},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": payload},
+		}},
+	}}
+	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	cfg := &Config{Enabled: true, CodeCompressor: true, PreserveVerbatimReads: true}
+
+	stage := &CodeCompressorStage{}
+	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := toolResultText(t, req, 1)
+	if got != "log line one\nlog line two\n" {
+		t.Errorf("non-verbatim payload must still prune, got %q", got)
+	}
+}

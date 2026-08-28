@@ -55,6 +55,14 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 		Request:           req,
 		FrozenPrefixIndex: frozenPrefixIndex(req, cfg.LiveTurns),
 	}
+	// The inspector has two consumers: the verbatim skip guards, and the
+	// continuation classifier's tool-name lookup. Build it when either needs
+	// it — gating it on PreserveVerbatimReads alone made turning that flag off
+	// silently demote coding continuations to mechanical. skipVerbatim still
+	// checks PreserveVerbatimReads, so the skip guards stay off.
+	if cfg.PreserveVerbatimReads || (cfg.OutputShaper.Enabled && cfg.OutputShaper.EffortRouting) {
+		reqCtx.Verbatim = NewToolInspector(req)
+	}
 	if err := e.pipeline.Run(ctx, reqCtx, &cfg); err != nil {
 		return nil, err
 	}

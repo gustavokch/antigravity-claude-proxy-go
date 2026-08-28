@@ -77,9 +77,13 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Con
 
 	// Only demote if FrozenPrefixIndex >= 0 (there is at least one message outside the live window)
 	if reqCtx.FrozenPrefixIndex >= 0 {
-		walkToolResultText(reqCtx.Request, 0, func(idx int, get func() string, set func(string)) {
+		walkToolResultText(reqCtx.Request, 0, func(idx, ord int, get func() string, set func(string)) {
 			if idx > reqCtx.FrozenPrefixIndex {
 				return // live turn; keep inline
+			}
+			if skipVerbatim(reqCtx, cfg, ord) {
+				return // file content the model will quote back; demotion would
+				// force a retrieve round trip before any Edit could match
 			}
 			before := get()
 			if len(before) < minBytes {

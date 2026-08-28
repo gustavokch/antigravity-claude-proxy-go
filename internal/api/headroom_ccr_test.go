@@ -295,9 +295,9 @@ func TestHeadroomCCR_CloudCodeStreamHydration(t *testing.T) {
 		t.Errorf("expected exactly 1 message_stop event, got %d", messageStops)
 	}
 
-	// Block indices should be sequential: [0, 1] (0 for tool_use in turn 1, 1 for text in turn 2)
-	if len(blockStarts) != 2 || blockStarts[0] != 0 || blockStarts[1] != 1 {
-		t.Errorf("expected block start indices [0, 1], got %v", blockStarts)
+	// Block indices should be sequential: [0] (headroom_retrieve in turn 1 is suppressed, 0 for text in turn 2)
+	if len(blockStarts) != 1 || blockStarts[0] != 0 {
+		t.Errorf("expected block start indices [0], got %v", blockStarts)
 	}
 
 	if srv.tracker.GetHeadroomStats().CCRRetrievals != 1 {
@@ -810,8 +810,14 @@ func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
 	if messageStops != 1 {
 		t.Errorf("expected 1 message_stop event, got %d", messageStops)
 	}
-	if len(blockStarts) != 2 || blockStarts[0] != 0 || blockStarts[1] != 1 {
-		t.Errorf("expected sequential block starts [0, 1], got %v", blockStarts)
+	// The first iteration's only block was the headroom_retrieve call, which is
+	// suppressed and consumes no downstream index. The client therefore sees a
+	// single block: the final text from the second iteration, at index 0.
+	if len(blockStarts) != 1 || blockStarts[0] != 0 {
+		t.Errorf("expected block starts [0], got %v", blockStarts)
+	}
+	if strings.Contains(rec.Body.String(), "headroom_retrieve") {
+		t.Errorf("leak detected: retrieve call reached the client:\n%s", rec.Body.String())
 	}
 
 	if srv.tracker.GetHeadroomStats().CCRRetrievals != 1 {
@@ -819,3 +825,149 @@ func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
 	}
 }
 
+
+// The OpenRouter streaming path must suppress headroom_retrieve exactly as the
+// shared CCR proxy does: the retrieve call is proxy-internal, and a client that
+// sees it will try to answer a tool it does not implement.
+func TestHeadroomCCR_OpenRouterStream_NoRetrieveLeak(t *testing.T) {
+	chunkPayload := "openrouter leak-check chunk payload"
+	chunkID := headroom.ChunkID(chunkPayload)
+
+	var callsMu sync.Mutex
+	callNum := 0
+
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
+				{ID: "anthropic/claude-3.7-sonnet", Name: "Claude 3.7 Sonnet",
+					Pricing: &openrouter.Pricing{Prompt: 0.000003, Completion: 0.000015}},
+			}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/endpoints") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
+			return
+		}
+
+		callsMu.Lock()
+		n := callNum
+		callNum++
+		callsMu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		writeSSE := func(eventType string, data map[string]any) {
+			b, _ := json.Marshal(data)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, string(b))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+
+		writeSSE("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+			"id": fmt.Sprintf("msg_%d", n), "type": "message", "role": "assistant",
+			"content": []any{}, "usage": map[string]any{"input_tokens": 100, "output_tokens": 5},
+		}})
+
+		if n == 0 {
+			// Block 0 text, block 1 headroom_retrieve (suppressed), block 2 Read.
+			writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+				"content_block": map[string]any{"type": "text", "text": ""}})
+			writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+				"delta": map[string]any{"type": "text_delta", "text": "Looking..."}})
+			writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+
+			writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 1,
+				"content_block": map[string]any{"type": "tool_use", "id": "tu_ret", "name": "headroom_retrieve", "input": map[string]any{}}})
+			writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 1,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": fmt.Sprintf(`{"chunk_id":%q}`, chunkID)}})
+			writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 1})
+
+			writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 2,
+				"content_block": map[string]any{"type": "tool_use", "id": "tu_read", "name": "Read", "input": map[string]any{}}})
+			writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 2,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": `{"file_path":"foo.go"}`}})
+			writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 2})
+
+			writeSSE("message_delta", map[string]any{"type": "message_delta",
+				"delta": map[string]any{"stop_reason": "tool_use"}, "usage": map[string]any{"output_tokens": 20}})
+			writeSSE("message_stop", map[string]any{"type": "message_stop"})
+			return
+		}
+
+		writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "text", "text": "Done."}})
+		writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		writeSSE("message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn"}, "usage": map[string]any{"output_tokens": 30}})
+		writeSSE("message_stop", map[string]any{"type": "message_stop"})
+	}))
+	defer mockOR.Close()
+
+	tmp := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmp)
+	t.Setenv("HOME", tmp)
+	_, _ = config.Load()
+	_, _ = config.Save(map[string]any{
+		"headroom": map[string]any{"enabled": true, "ccr": map[string]any{"enabled": true}},
+		"openrouter": map[string]any{
+			"enabled": true, "baseURL": mockOR.URL, "apiKey": "sk-or-test",
+			"allowlist": []any{map[string]any{"id": "anthropic/claude-3.7-sonnet", "enabled": true}},
+		},
+	})
+
+	tracker, _ := stats.NewTracker("")
+	srv, err := New(Options{APIKey: "test-key", Backend: &mockCloudCodeBackend{}, Tracker: tracker})
+	if err != nil {
+		t.Fatalf("New server: %v", err)
+	}
+	srv.headroom.CCRStore().Put(chunkPayload)
+
+	rec := postMessages(t, srv, map[string]any{
+		"model": "anthropic/claude-3.7-sonnet", "stream": true,
+		"tools":    []any{map[string]any{"name": "t"}},
+		"messages": []any{map[string]any{"role": "user", "content": "leak check"}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "headroom_retrieve") {
+		t.Fatalf("leak detected: OpenRouter stream emitted headroom_retrieve:\n%s", body)
+	}
+	if strings.Contains(body, "tu_ret") {
+		t.Fatalf("leak detected: OpenRouter stream emitted the retrieve tool_use id:\n%s", body)
+	}
+	if !strings.Contains(body, "tu_read") {
+		t.Fatalf("expected the Read tool_use to survive:\n%s", body)
+	}
+
+	var blockStarts []int
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			continue
+		}
+		if ev["type"] == "content_block_start" {
+			if idx, ok := ev["index"].(float64); ok {
+				blockStarts = append(blockStarts, int(idx))
+			}
+		}
+	}
+	// text(0), Read(1) from iteration 1; final text(2) from iteration 2.
+	want := []int{0, 1, 2}
+	if len(blockStarts) != len(want) {
+		t.Fatalf("block start indexes = %v; want %v", blockStarts, want)
+	}
+	for i := range want {
+		if blockStarts[i] != want[i] {
+			t.Fatalf("block start indexes = %v; want %v", blockStarts, want)
+		}
+	}
+}
