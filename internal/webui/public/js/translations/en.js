@@ -609,6 +609,18 @@ window.translations.en = {
     headroomThinkingClamped: "Thinking Tokens Clamped",
     headroomCcrRetrievals: "CCR Retrievals",
 
+    // CommandCrusher (RTK Suite)
+    commandCrusherSettings: "CommandCrusher (CLI Tool Output Optimization)",
+    commandCrusherDesc: "Signature-based pattern compression for test runners, linters, compilers, and git commands (40–80% savings).",
+    commandCrusherEnabled: "Enable CommandCrusher",
+    commandCrusherToolsTitle: "Supported Tools & Runners",
+    commandCrusherSafetyTitle: "Safety Invariants",
+    commandCrusherSafetyDesc: "Tool errors (is_error: true), failures, tracebacks, and verbatim file reads are strictly preserved untouched.",
+    commandCrusherRunners: "Test Runners",
+    commandCrusherLinters: "Linters & Analysis",
+    commandCrusherCompilers: "Compilers & Build",
+    commandCrusherVCS: "Version Control",
+
     // Claude Code Model Discovery
     ccDiscoverModels: "Discover Models",
     ccDiscoverTitle: "Discover Claude Code Models",

@@ -598,4 +598,16 @@ window.translations.tr = {
     headroomRequestsCompressed: "Sıkıştırılan İstekler",
     headroomThinkingClamped: "Sınırlandırılan Düşünme Belirteçleri",
     headroomCcrRetrievals: "CCR Erişimleri",
+
+    // CommandCrusher (RTK Paketi)
+    commandCrusherSettings: "CommandCrusher (CLI Araç Çıktı Optimizasyonu)",
+    commandCrusherDesc: "Test çalıştırıcıları, linterlar, derleyiciler ve git komutları için imza tabanlı model sıkıştırması (%40–80 tasarruf).",
+    commandCrusherEnabled: "CommandCrusher'ı Etkinleştir",
+    commandCrusherToolsTitle: "Desteklenen Araçlar ve Çalıştırıcılar",
+    commandCrusherSafetyTitle: "Güvenlik Garantileri",
+    commandCrusherSafetyDesc: "Araç hataları (is_error: true), test başarısızlıkları, yığın izleri ve tam dosya okumaları kesinlikle korunur.",
+    commandCrusherRunners: "Test Çalıştırıcıları",
+    commandCrusherLinters: "Linterlar ve Analiz",
+    commandCrusherCompilers: "Derleyiciler ve Derleme",
+    commandCrusherVCS: "Sürüm Kontrolü",
 };

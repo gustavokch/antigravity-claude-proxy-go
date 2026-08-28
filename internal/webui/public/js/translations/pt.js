@@ -552,6 +552,18 @@ window.translations.pt = {
     headroomThinkingClamped: "Tokens de Pensamento Limitados",
     headroomCcrRetrievals: "Recuperações CCR",
 
+    // CommandCrusher (Suite RTK)
+    commandCrusherSettings: "CommandCrusher (Otimização de Saída CLI)",
+    commandCrusherDesc: "Compressão baseada em assinaturas para executores de testes, linters, compiladores e comandos git (economia de 40–80%).",
+    commandCrusherEnabled: "Ativar CommandCrusher",
+    commandCrusherToolsTitle: "Ferramentas e Executores Suportados",
+    commandCrusherSafetyTitle: "Garantias de Segurança",
+    commandCrusherSafetyDesc: "Erros de ferramentas (is_error: true), falhas, rastreamentos de pilha e leituras de arquivos são estritamente preservados.",
+    commandCrusherRunners: "Executores de Testes",
+    commandCrusherLinters: "Linters e Análise",
+    commandCrusherCompilers: "Compiladores e Build",
+    commandCrusherVCS: "Controle de Versão",
+
     // Claude Code Model Discovery
     ccDiscoverModels: "Descobrir Modelos",
     ccDiscoverTitle: "Descobrir Modelos Claude Code",

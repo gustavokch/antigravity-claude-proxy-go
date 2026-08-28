@@ -638,4 +638,16 @@ window.translations.id = {
     headroomRequestsCompressed: "Permintaan Dikompresi",
     headroomThinkingClamped: "Token Berpikir Dibatasi",
     headroomCcrRetrievals: "Pengambilan CCR",
+
+    // CommandCrusher (Paket RTK)
+    commandCrusherSettings: "CommandCrusher (Optimasi Output Alat CLI)",
+    commandCrusherDesc: "Kompresi pola berbasis tanda tangan untuk pelari pengujian, linter, kompilator, dan perintah git (hemat 40–80%).",
+    commandCrusherEnabled: "Aktifkan CommandCrusher",
+    commandCrusherToolsTitle: "Alat & Pelari yang Didukung",
+    commandCrusherSafetyTitle: "Jaminan Keamanan",
+    commandCrusherSafetyDesc: "Kesalahan alat (is_error: true), kegagalan uji, traceback, dan pembacaan file verbatim dipertahankan utuh.",
+    commandCrusherRunners: "Pelari Pengujian",
+    commandCrusherLinters: "Linter & Analisis",
+    commandCrusherCompilers: "Kompilator & Build",
+    commandCrusherVCS: "Kontrol Versi",
 };

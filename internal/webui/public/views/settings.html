@@ -2926,6 +2926,115 @@
                     </div>
                 </div>
 
+                <!-- ⚡ CommandCrusher (CLI Tool Output Optimization) -->
+                <div class="space-y-3">
+                    <div class="flex items-center gap-2 mb-1 px-1">
+                        <span class="text-[10px] uppercase text-gray-500 font-bold tracking-widest"
+                            x-text="$store.global.t('commandCrusherSettings')">CommandCrusher (CLI Tool Output Optimization)</span>
+                        <div class="h-px flex-1 bg-space-border/30"></div>
+                    </div>
+
+                    <div class="form-control view-card border-space-border/50 hover:border-neon-cyan/50"
+                        :class="serverConfig.headroom?.commandCrusher ? 'border-neon-cyan/50 bg-neon-cyan/5' : ''">
+                        <!-- Master Toggle -->
+                        <div class="flex items-center justify-between">
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm font-medium text-gray-200"
+                                        :class="serverConfig.headroom?.commandCrusher ? 'text-neon-cyan' : ''"
+                                        x-text="$store.global.t('commandCrusherEnabled')">Enable CommandCrusher</span>
+                                    <span class="badge badge-xs bg-neon-cyan/10 text-neon-cyan border-neon-cyan/30 text-[9px] font-mono uppercase tracking-wider">RTK Suite</span>
+                                </div>
+                                <span class="text-[11px] text-gray-500" x-text="$store.global.t('commandCrusherDesc')">Signature-based pattern compression for test runners, linters, compilers, and git commands (40–80% savings).</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer" :checked="serverConfig.headroom?.commandCrusher === true"
+                                    @change="toggleCommandCrusher($el.checked)" aria-label="CommandCrusher toggle">
+                                <div
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black">
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- Details & Tool Matrix -->
+                        <div class="mt-4 pt-4 border-t border-space-border/30 space-y-4">
+                            <!-- Supported tools grid -->
+                            <div>
+                                <div class="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-2 flex items-center justify-between">
+                                    <span x-text="$store.global.t('commandCrusherToolsTitle')">Supported Tools & Runners</span>
+                                    <span class="text-[10px] font-mono text-neon-cyan">Native Go Engine (Zero Subprocess)</span>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                    <!-- Test Runners -->
+                                    <div class="bg-space-800/60 border border-space-border/40 rounded-lg p-2.5">
+                                        <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-neon-green"></span>
+                                            <span x-text="$store.global.t('commandCrusherRunners')">Test Runners</span>
+                                        </div>
+                                        <div class="flex flex-wrap gap-1">
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">pytest</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">unittest</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">go test</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">cargo test</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">jest / vitest</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">mocha</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Linters & Analysis -->
+                                    <div class="bg-space-800/60 border border-space-border/40 rounded-lg p-2.5">
+                                        <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-neon-purple"></span>
+                                            <span x-text="$store.global.t('commandCrusherLinters')">Linters & Analysis</span>
+                                        </div>
+                                        <div class="flex flex-wrap gap-1">
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">eslint</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">ruff</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">golangci-lint</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Compilers -->
+                                    <div class="bg-space-800/60 border border-space-border/40 rounded-lg p-2.5">
+                                        <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                                            <span x-text="$store.global.t('commandCrusherCompilers')">Compilers & Build</span>
+                                        </div>
+                                        <div class="flex flex-wrap gap-1">
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">tsc (TypeScript)</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">cargo build</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">cargo clippy</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- VCS -->
+                                    <div class="bg-space-800/60 border border-space-border/40 rounded-lg p-2.5">
+                                        <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-neon-cyan"></span>
+                                            <span x-text="$store.global.t('commandCrusherVCS')">Version Control</span>
+                                        </div>
+                                        <div class="flex flex-wrap gap-1">
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">git status</span>
+                                            <span class="badge badge-xs bg-space-900 border-space-border text-gray-300 font-mono text-[10px]">git log</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Safety guarantee note -->
+                            <div class="p-2.5 rounded bg-space-800/60 border border-space-border/40 flex items-start gap-2 text-[11px] text-gray-400">
+                                <svg class="w-4 h-4 text-neon-cyan shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                </svg>
+                                <span>
+                                    <strong class="text-gray-300" x-text="$store.global.t('commandCrusherSafetyTitle')">Safety Invariants:</strong>
+                                    <span x-text="$store.global.t('commandCrusherSafetyDesc')">Tool errors (is_error: true), failures, tracebacks, and verbatim file reads are strictly preserved untouched.</span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ▼ Advanced Tuning (Fixed Logic) -->
                 <div class="view-card !p-0 border-space-border/50">
                     <div class="flex items-center justify-between p-4 cursor-pointer hover:bg-white/5 transition-colors"

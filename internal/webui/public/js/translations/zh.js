@@ -607,4 +607,16 @@ window.translations.zh = {
     headroomRequestsCompressed: "已压缩请求数",
     headroomThinkingClamped: "已削减思考 Token 数",
     headroomCcrRetrievals: "CCR 检索次数",
+
+    // CommandCrusher (RTK 套件)
+    commandCrusherSettings: "CommandCrusher (CLI 工具输出优化)",
+    commandCrusherDesc: "针对测试运行器、代码检查器、编译器和 Git 命令的特征模式压缩 (节省 40–80% Token)。",
+    commandCrusherEnabled: "启用 CommandCrusher",
+    commandCrusherToolsTitle: "支持的工具与运行器",
+    commandCrusherSafetyTitle: "安全保障",
+    commandCrusherSafetyDesc: "工具错误 (is_error: true)、测试失败、堆栈追踪及文件原样读取严格保持不变。",
+    commandCrusherRunners: "测试运行器",
+    commandCrusherLinters: "代码检查与分析",
+    commandCrusherCompilers: "编译器与构建",
+    commandCrusherVCS: "版本控制",
 };
