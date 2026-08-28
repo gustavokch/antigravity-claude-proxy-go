@@ -126,6 +126,20 @@ func TestPytestFilter_AllPass(t *testing.T) {
 	}
 }
 
+func TestPytestFilter_CRLF(t *testing.T) {
+	input := "collected 2 items\r\n\r\ntest_a.py .F [100%]\r\n\r\nFAILED test_a.py::test_fail\r\n=== 1 failed, 1 passed in 0.1s ==="
+	got, changed := crushPytest(input)
+	if !changed {
+		t.Fatal("expected change on CRLF")
+	}
+	if strings.Contains(got, "[100%]") {
+		t.Errorf("progress line survives with CRLF:\n%q", got)
+	}
+	if !strings.Contains(got, "FAILED test_a.py::test_fail") {
+		t.Errorf("failure line lost with CRLF:\n%q", got)
+	}
+}
+
 func TestUnittestFilter(t *testing.T) {
 	input := "...\n...\nF..\n======================================================================\nFAIL: test_add (test_calc.TestCalc)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"test_calc.py\", line 10, in test_add\n    self.assertEqual(add(1, 1), 3)\nAssertionError: 2 != 3\n\n----------------------------------------------------------------------\nRan 9 tests in 0.002s\n\nFAILED (failures=1)\n"
 	got, changed := crushUnittest(input)
@@ -137,6 +151,20 @@ func TestUnittestFilter(t *testing.T) {
 	}
 	if !strings.Contains(got, "F..") || !strings.Contains(got, "FAILED (failures=1)") || !strings.Contains(got, "Traceback") {
 		t.Errorf("failure evidence lost:\n%q", got)
+	}
+}
+
+func TestUnittestFilter_CRLF(t *testing.T) {
+	input := "...\r\nF..\r\nFAILED (failures=1)\r\n"
+	got, changed := crushUnittest(input)
+	if !changed {
+		t.Fatal("expected change on CRLF")
+	}
+	if strings.Contains(got, "...\r") || strings.Contains(got, "...") {
+		t.Errorf("dot-only lines survive with CRLF:\n%q", got)
+	}
+	if !strings.Contains(got, "F..") || !strings.Contains(got, "FAILED (failures=1)") {
+		t.Errorf("failure signal lost with CRLF:\n%q", got)
 	}
 }
 

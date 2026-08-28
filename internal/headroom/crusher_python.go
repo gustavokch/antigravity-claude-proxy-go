@@ -18,7 +18,7 @@ func isPytestProgress(line string) bool {
 		return true
 	}
 	if strings.HasSuffix(trimmed, "]") || strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "s") || strings.HasPrefix(trimmed, "F") || strings.HasPrefix(trimmed, "x") || strings.HasPrefix(trimmed, "X") {
-		return pytestProgressRe.MatchString(line)
+		return pytestProgressRe.MatchString(trimmed)
 	}
 	return false
 }
@@ -31,7 +31,8 @@ func crushPytest(text string) (string, bool) {
 		if isPytestProgress(line) {
 			return false
 		}
-		if strings.HasPrefix(line, "PASSED ") {
+		trimmed := strings.TrimLeft(line, " \t\r")
+		if strings.HasPrefix(trimmed, "PASSED ") {
 			return false
 		}
 		return true
@@ -45,7 +46,8 @@ var unittestDotRe = regexp.MustCompile(`^[.s]+$`)
 // failure signal and stay, as do tracebacks and the FAILED/OK footer.
 func crushUnittest(text string) (string, bool) {
 	return filterLines(text, func(line string) bool {
-		return !unittestDotRe.MatchString(line)
+		trimmed := strings.TrimSpace(line)
+		return !unittestDotRe.MatchString(trimmed)
 	})
 }
 
