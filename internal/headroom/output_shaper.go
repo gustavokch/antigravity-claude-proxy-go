@@ -142,8 +142,9 @@ func (s *OutputShaperStage) applySteering(req map[string]any, cfg *Config) {
 
 // classifyContinuation inspects the final message. inspector may be nil, in
 // which case the verbatim signal is skipped and the text heuristics carry the
-// classification on their own.
-func classifyContinuation(req map[string]any, inspector *ToolInspector, mechanicalMaxBytes ...int) continuationKind {
+// classification on their own. A mechanicalMaxBytes of 0 selects
+// defaultMechanicalMaxBytes.
+func classifyContinuation(req map[string]any, inspector *ToolInspector, mechanicalMaxBytes int) continuationKind {
 	messages, ok := req["messages"].([]any)
 	if !ok || len(messages) == 0 {
 		return kindInteractive
@@ -167,8 +168,8 @@ func classifyContinuation(req map[string]any, inspector *ToolInspector, mechanic
 	}
 
 	maxBytes := defaultMechanicalMaxBytes
-	if len(mechanicalMaxBytes) > 0 && mechanicalMaxBytes[0] > 0 {
-		maxBytes = mechanicalMaxBytes[0]
+	if mechanicalMaxBytes > 0 {
+		maxBytes = mechanicalMaxBytes
 	}
 
 	// Calculate the starting ordinal for tool_result payloads in the last message.
@@ -250,7 +251,7 @@ func classifyContinuation(req map[string]any, inspector *ToolInspector, mechanic
 // isMechanicalContinuation reports whether the final turn is a mechanical
 // continuation. Retained as the narrow predicate over classifyContinuation.
 func isMechanicalContinuation(req map[string]any) bool {
-	return classifyContinuation(req, nil) == kindMechanical
+	return classifyContinuation(req, nil, 0) == kindMechanical
 }
 
 func (s *OutputShaperStage) clampEffort(reqCtx *RequestContext, cfg *Config) {

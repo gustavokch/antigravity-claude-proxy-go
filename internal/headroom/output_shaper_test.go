@@ -405,3 +405,27 @@ func TestLooksLikeTestOutput_RealRunnerOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyContinuation_ZeroMaxBytesUsesDefault(t *testing.T) {
+	// A zero ceiling means "unset", not "clamp everything". This pins that
+	// meaning across the signature change from a variadic to a plain
+	// parameter, where an omitted argument becomes an explicit 0.
+	small := map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "done"},
+		}},
+	}}
+	if got := classifyContinuation(small, nil, 0); got != kindMechanical {
+		t.Errorf("small payload with zero ceiling = %s, want mechanical", got)
+	}
+
+	large := map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "t1",
+				"content": strings.Repeat("x", defaultMechanicalMaxBytes+1)},
+		}},
+	}}
+	if got := classifyContinuation(large, nil, 0); got == kindMechanical {
+		t.Error("payload over the default ceiling with zero ceiling = mechanical, want the ceiling applied")
+	}
+}
