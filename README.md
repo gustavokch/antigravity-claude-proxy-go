@@ -12,12 +12,23 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
 ## Key Features
 
 - **Exact `agy` Transport & Fingerprint Matching**: Matches the JA4 fingerprint (`t13d131100_f57a46bbacb6_f50d94e863eb`), cipher suite order, ALPN state, and header behavior of the official `agy` CLI.
-- **Embedded Web UI Dashboard**: Manage accounts, monitor rate limits, inspect request volume history, stream live logs via SSE, configure server/Claude CLI presets, manage model mappings, and discover OpenRouter models.
+- **Embedded Web UI Dashboard**: Manage accounts, monitor rate limits, inspect request volume history, stream live logs via SSE, configure server/Claude CLI presets, manage model mappings, discover OpenRouter models, and manage Claude Code OAuth credentials.
 - **Multi-Account Pool & Selection Strategies**:
   - Auto-discovers local `agy` login credentials at `~/.gemini/antigravity-cli/antigravity-oauth-token`.
   - Built-in Google OAuth 2.0 PKCE sign-in flow for adding accounts (`antigravity-proxy accounts add` or Web UI).
   - Selection strategies: `hybrid` (health score, token bucket rate, quota remaining, and least-recently-used scoring), `sticky`, and `round-robin`.
   - Tracks subscription tiers (`PRO`, `FREE`, etc.), per-account rate limits, and model cooldowns in memory.
+- **Claude Code Native OAuth Pool & Gateway**:
+  - Direct reverse-proxy gateway to official Anthropic API (`api.anthropic.com`) using Claude Code OAuth tokens (`ant-oat-*`).
+  - Native multi-account OAuth login flow in GUI and CLI (`antigravity-proxy accounts add --provider claudecode`) with localhost callback listener and manual URL extraction fallback.
+  - Multi-account rotation pool for official Claude Code accounts with 0600 file permission token storage and session TTL management.
+  - Automatic `Authorization: Bearer` handling and beta header injection.
+- **Headroom Native Context Compression & Output Shaping**:
+  - Provider-agnostic middleware pipeline (`internal/headroom`) executing across Cloud Code, OpenRouter, Kimi, Claude Code, and Custom Endpoints.
+  - **CCR (Content-Conditioned Retrieval)**: Reversible chunk storage with SHA-256 hashing, LRU eviction, dynamic `headroom_retrieve` tool injection, and transparent hydration passthrough loop across all upstreams.
+  - **SmartCrusher**: Exact byte-for-byte JSON minification (`CompactJSON`) and automatic Markdown/TSV table conversion (`TabularArray`) for homogeneous object arrays with 30%+ savings.
+  - **CodeCompressor**: Prunes trailing whitespace, collapses multi-line blank gaps, strips full-line comments, and deduplicates recurring logs.
+  - **Output Shaper**: Verbosity steering via system prompt injection to suppress conversational filler, plus effort routing (thinking budget clamping on mechanical tool continuations).
 - **OpenRouter Gateway & Transparent Proxying**:
   - Direct reverse proxying to OpenRouter's Anthropic Skin (`https://openrouter.ai/api/v1/messages`) with zero payload translation overhead.
   - On-demand gateway model discovery (`GET /v1/models`) with local search, provider filtering, and one-click allowlisting.
@@ -42,16 +53,22 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ Proxy Router (internal/api/server.go)                                       │
 │                                                                             │
+│ 0. Headroom Pipeline (CCR, SmartCrusher, CodeCompressor, OutputShaper)      │
+│                                                                             │
 │ 1. Model Mapping Resolution (Resolves aliases & chained mappings <= 5 hops) │
 │                                                                             │
-│ 2. Match OpenRouter Allowlist / Alias?                                      │
+│ 2. Match Claude Code OAuth Token (ant-oat-*) or Claude Code Pool?           │
+│    └─► Transparent ReverseProxy to https://api.anthropic.com/v1/messages   │
+│    └─► Inject Bearer token, merge beta headers, handle CCR hydration loop   │
+│                                                                             │
+│ 3. Match OpenRouter Allowlist / Alias?                                      │
 │    └─► Rewrite model to upstream OpenRouter ID                              │
 │    └─► Transparent ReverseProxy to OpenRouter (/v1/messages)                │
 │                                                                             │
-│ 3. Match Custom Endpoints Map?                                              │
+│ 4. Match Custom Endpoints Map?                                              │
 │    └─► Transparent ReverseProxy to Custom Endpoint URL                      │
 │                                                                             │
-│ 4. Match Google Cloud Code Catalog?                                         │
+│ 5. Match Google Cloud Code Catalog?                                         │
 │    └─► Select Account via Strategy (hybrid / sticky / round-robin)          │
 │    └─► Translate to Cloud Code format + Stream SSE + Adaptive Thinking      │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -154,6 +171,7 @@ The `antigravity-proxy` CLI provides built-in daemon and account management comm
 | `antigravity-proxy web` | Launch Web UI dashboard in default browser |
 | `antigravity-proxy accounts list` | Display configured accounts, sources, status, and subscription tiers |
 | `antigravity-proxy accounts add` | Start interactive Google OAuth flow in browser to add a new account |
+| `antigravity-proxy accounts add --provider claudecode` | Start interactive Claude Code OAuth flow to add an official Anthropic account |
 | `antigravity-proxy accounts remove <email>` | Remove an account from pool |
 | `antigravity-proxy accounts verify` | Test access token validity across all accounts |
 
@@ -186,7 +204,7 @@ Additional environment controls:
 
 ### Configuration File (`config.json`)
 
-`~/.config/antigravity-proxy/config.json` holds proxy settings, custom endpoints, OpenRouter integration, and model mapping rules:
+`~/.config/antigravity-proxy/config.json` holds proxy settings, custom endpoints, OpenRouter integration, Claude Code settings, and model mapping rules:
 
 ```json
 {
@@ -203,6 +221,14 @@ Additional environment controls:
     "my-custom-model": {
       "url": "https://api.example.com/v1/messages",
       "apiKey": "sk-example-key"
+    }
+  },
+  "claudeCode": {
+    "enabled": true,
+    "accountStrategy": "hybrid",
+    "modelAliases": {
+      "claude-3-7-sonnet-20250219": "claude-3-7-sonnet-20250219",
+      "claude-3-5-sonnet-20241022": "claude-3-7-sonnet-20250219"
     }
   },
   "openrouter": {
@@ -228,6 +254,7 @@ Additional environment controls:
   "headroom": {
     "enabled": false,
     "smartCrusher": true,
+    "tabularArrays": true,
     "codeCompressor": true,
     "liveTurns": 2,
     "ccr": {
@@ -253,16 +280,68 @@ Additional environment controls:
 
 ## Headroom Native Context Compression & Output Shaping
 
-The proxy integrates native, provider-agnostic **Headroom** optimizations (`internal/headroom`) executed before provider dispatch across Cloud Code, OpenRouter, Kimi, and Custom Endpoints:
+The proxy integrates native, provider-agnostic **Headroom** optimizations (`internal/headroom`) executed before provider dispatch across Cloud Code, OpenRouter, Kimi, Claude Code, and Custom Endpoints.
 
-### Components & Invariants
-- **Cache-Stable Determinism**: `SmartCrusher` and `CodeCompressor` apply purely deterministic transforms across all `tool_result` blocks in the request (history included). This preserves byte-identical prefixes across conversation turns so provider KV/prompt caches stay warm.
-- **SmartCrusher**: Compacts formatted JSON payloads inside `tool_result` blocks, removing insignificant indentation while preserving key order and numeric precision.
-- **CodeCompressor**: Prunes trailing whitespace, collapses multiple blank lines, and folds recurring identical log lines (`[... repeated N times ...]`).
-- **OutputShaper**: Appends concise technical steering instructions to the tail of the system prompt and automatically clamps thinking budgets (`thinking.budget_tokens` or `reasoning.effort`) on mechanical tool continuation turns.
-- **Content-Conditioned Retrieval (CCR)**: Reversible chunk storage and transparent dynamic retrieval for large tool payloads outside the `liveTurns` window. When the model invokes the injected `headroom_retrieve` tool, the proxy transparently intercepts the call, hydrates the chunk from its LRU store, and re-issues upstream continuations without client interruption (supported on Cloud Code and OpenRouter paths; Kimi and custom reverse-proxy endpoints bypass CCR hydration).
-- **Cache Notice**: Enabling, disabling, or retuning Headroom mid-conversation causes exactly one prompt-cache miss for in-flight conversations. Configure settings in the Web UI Server tab or `config.json`.
-- **Metrics**: Track input bytes saved, compression ratios, requests compressed, clamped thinking tokens, and CCR dynamic retrievals via the Web UI Dashboard or `GET /api/headroom/stats`.
+### Pipeline Architecture & Core Invariants
+
+The Headroom Engine executes 4 stages in strict sequence, mutating the Anthropic request map in place:
+
+```
+Request ──► [ 1. CCR Stage ] ──► [ 2. SmartCrusher ] ──► [ 3. CodeCompressor ] ──► [ 4. OutputShaper ] ──► Provider Dispatch
+```
+
+- **Invariant I1 (Cache-Stable Determinism)**: Transformations applied to historical messages (beyond the live window) are 100% deterministic and position-independent. This preserves byte-identical prefixes across conversation turns, keeping upstream provider KV/prompt caches warm.
+- **Invariant I3 (Target Isolation)**: Headroom only inspects and rewrites `tool_result` payload text blocks (via `walkToolResultText`). It **never** mutates user prompt text, assistant text, thinking blocks, signatures, tool use inputs, or images.
+- **Live Turns Window (`liveTurns`)**: Retains the trailing $N$ messages (default `2`) inline and unmodified. Only messages outside the live window (`FrozenPrefixIndex`) are eligible for chunking/demotion by CCR.
+
+---
+
+### Headroom Features & Functionality
+
+#### 1. Content-Conditioned Retrieval (CCR)
+- **Prefix Demotion**: Scans historical `tool_result` blocks in the frozen prefix.
+- **SHA-256 Chunk Storage**: Large payloads exceeding `minChunkBytes` (default 512B) are SHA-256 hashed (`chunk_<hex[:12]>`) and stored in a thread-safe, in-memory LRU `CCRStore` bounded by `maxStoreMB` (default 50MB).
+- **Stub Replacement**: Replaces the full payload in context with a compact retrieval stub:
+  ```text
+  [HEADROOM_CHUNK id="chunk_abc123456789" lines=42 preview="<first lines>"]
+  ```
+- **Dynamic Tool Injection**: Automatically injects a `headroom_retrieve` tool definition into the request's `tools` array.
+- **Transparent Dynamic Hydration Loop**: When the model calls `headroom_retrieve`, the proxy intercepts the call, fetches the raw chunk from `CCRStore`, updates context, and resumes execution transparently without client interruption. Supported across **all upstreams**: Google Cloud Code, OpenRouter, Kimi, Claude Code (`api.anthropic.com`), and Custom Endpoints.
+
+#### 2. SmartCrusher
+- **Exact JSON Minification (`CompactJSON`)**:
+  - Strips insignificant whitespace, indentation, and newlines via `json.Compact`.
+  - Byte-for-byte exact: preserves key order and numeric literals without unmarshal/marshal round-trips, ensuring prompt cache stability and zero corruption of large 64-bit integer IDs.
+- **Tabular Array Transformation (`tabular.go`)**:
+  - Automatically identifies JSON arrays of homogeneous objects or uniform 2D arrays.
+  - Converts verbose repeated JSON key structures into compact Markdown / TSV tables (headers + pipe-delimited rows) when savings exceed the threshold (`DefaultMinTabularSavings` = 30%).
+  - Yields 40–70% token reductions on database queries, log dumps, and REST array outputs.
+
+#### 3. CodeCompressor
+- **Whitespace Pruning**: Trims trailing spaces, tabs, and carriage returns per line.
+- **Blank Line Collapsing**: Collapses multi-line empty gaps down to a single blank line.
+- **Comment Stripping**: Removes full-line comments (`//`, `#`, `/* ... */`) while strictly preserving code syntax, indentation, and structure.
+- **Log Folding**: Deduplicates consecutive repeated log lines into compact indicators (`[... repeated N times ...]`).
+
+#### 4. Output Shaper (Detailed Description)
+The Output Shaper optimizes downstream model responses to minimize output token consumption and round-trip latency:
+
+- **Verbosity Steering**:
+  - Injects behavioral steering instructions into the request's `system` prompt (supports both string and structured system message blocks).
+  - Uses `DefaultVerbosityPrompt` or custom `steeringText`.
+  - Forces the model to emit terse, direct technical answers, eliminating conversational fluff, greetings, repetitive confirmation clauses, and hedging.
+- **Effort Routing (Mechanical Thinking Budget Clamping)**:
+  - Analyzes user prompt intent and tool continuation messages to classify task complexity.
+  - Detects mechanical actions (file reads, direct edits, path lookups, git status, routine CLI operations).
+  - Automatically clamps `thinking.budget_tokens` down to `mechanicalThinkingBudget` (e.g. 1024 tokens) on mechanical turns to avoid deep, expensive reasoning chains on deterministic operations.
+- **Telemetry & Stats**: Records `originalThinking`, `clampedThinking`, and sets `effortClamped` for observability.
+
+---
+
+### Headroom Telemetry & Management
+- Track input bytes saved, compression ratios, requests compressed, clamped thinking tokens, and CCR dynamic retrievals in the Web UI or via:
+  - `GET /api/headroom/stats`: Real-time compression telemetry and hit rates.
+  - `POST /api/headroom/config`: Dynamic configuration updates without restarting the proxy.
 
 ---
 
@@ -300,6 +379,33 @@ To manage multiple accounts, create `~/.config/antigravity-proxy/accounts.json` 
 - `round-robin`: Cycles sequentially through usable accounts for every request.
 
 On `429` rate limits, cooldowns are scoped to the specific model and account so other models on that account remain usable. Stream responses that have already begun emitting data are never replayed to prevent output duplication.
+
+---
+
+## Claude Code Gateway & Multi-Account OAuth Pool
+
+The proxy provides native support for official Anthropic Claude Code accounts, including an interactive OAuth 2.0 PKCE sign-in flow, multi-account token management, secure file storage, and a direct gateway to `api.anthropic.com`.
+
+### Features & Capabilities
+
+- **Direct Anthropic Skin Gateway**:
+  - Automatically identifies incoming Claude Code OAuth tokens (e.g. `ant-oat-*`) or routes configured Claude Code accounts.
+  - Reverse-proxies requests directly to `https://api.anthropic.com/v1/messages` with native SSE streaming and low latency.
+  - Automatically handles `Authorization: Bearer` formatting and injects required `anthropic-beta` headers.
+- **Native Multi-Account OAuth Login**:
+  - Add official Anthropic accounts directly via the Web UI (Claude tab) or CLI:
+    ```bash
+    antigravity-proxy accounts add --provider claudecode
+    ```
+  - Automatically launches a local loopback listener on `localhost:54545` (or fallback ports) to capture OAuth callbacks.
+  - **Manual Code Submission Fallback**: If the loopback redirect is blocked (e.g., remote server, headless session, or firewall), users can paste the redirect URL or authorization code directly. The proxy extracts authorization codes from full URLs, query parameters, and hash fragments (`/callback#code=...` or `/callback?code=...`).
+- **Secure Token Storage & Lifecycle**:
+  - Claude Code credentials are saved to `~/.config/antigravity-proxy/claudecode_accounts.json` with strict `0600` file permissions.
+  - Session TTL cleanup prevents unbounded memory growth from abandoned or expired OAuth login sessions.
+  - Multi-account rotation with configurable selection strategies (`hybrid`, `sticky`, `round-robin`).
+- **Claude Code Model Aliasing & Discovery**:
+  - Exposes official Anthropic Claude models (`claude-3-7-sonnet-20250219`, `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`, etc.) through the catalog and allows custom model aliasing.
+  - Includes multi-hop loop protection to prevent recursive model mapping chains.
 
 ---
 
@@ -446,7 +552,15 @@ All `/v1/*` routes accept authentication via `x-api-key` or `Authorization: Bear
 | `/api/server/presets` | `GET`/`POST` | Manage server configuration presets (Conservative, Balanced, High Throughput) |
 | `/api/server/presets/{name}` | `PATCH`/`DELETE` | Update or delete server preset |
 | `/api/auth/url` | `GET` | Generate Google OAuth PKCE sign-in URL |
-| `/api/auth/complete` | `POST` | Complete OAuth callback with authorization code |
+| `/api/auth/complete` | `POST` | Complete Google OAuth callback with authorization code |
+| `/api/claudecode/auth/url` | `GET` | Generate Claude Code OAuth sign-in URL and start callback listener |
+| `/api/claudecode/auth/complete` | `POST` | Complete Claude Code OAuth flow with code or full callback URL |
+| `/api/claudecode/auth/cancel` | `POST` | Cancel in-progress Claude Code OAuth login session |
+| `/api/claudecode/accounts` | `GET` | List configured Claude Code accounts and status |
+| `/api/claudecode/accounts/{email}` | `DELETE` | Remove a Claude Code account from pool |
+| `/api/claudecode/status` | `GET` | Retrieve Claude Code gateway and pool health status |
+| `/api/headroom/stats` | `GET` | Real-time Headroom compression and CCR dynamic retrieval statistics |
+| `/api/headroom/config` | `GET`/`POST` | Read or dynamically update Headroom compression and Output Shaper settings |
 
 ---
 
