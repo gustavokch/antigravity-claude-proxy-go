@@ -41,6 +41,23 @@ var verbatimToolNames = map[string]bool{
 	"str_replace_editor": true, "text_editor": true,
 }
 
+// nonVerbatimToolNames are tools that name a file but do not return its
+// contents. Their results are confirmations, search hits, or diffs the model
+// never quotes back, so the inputLooksLikeFileRead over-match must not reach
+// them. Names only: a payload that genuinely carries numbered source or a patch
+// is still caught by the shape pass.
+var nonVerbatimToolNames = map[string]bool{
+	"edit": true, "multiedit": true, "write": true, "create_file": true,
+	"str_replace": true, "apply_patch": true, "patch": true,
+	"notebookedit": true, "notebook_edit": true,
+	"glob": true, "grep": true, "search": true, "search_files": true,
+	"delete_file": true, "remove_file": true, "move_file": true,
+}
+
+func isNonVerbatimToolName(name string) bool {
+	return nonVerbatimToolNames[normalizeToolName(name)]
+}
+
 // strongPathKeys name a file by contract; any non-empty string value counts.
 var strongPathKeys = map[string]bool{
 	"file_path": true, "filepath": true, "absolute_path": true,
@@ -80,10 +97,14 @@ func NewToolInspector(req map[string]any) *ToolInspector {
 		}
 		name, _ := block["name"].(string)
 		info := ToolUseInfo{ID: id, Name: name}
+		// Name match first: str_replace_editor and text_editor are dual mode and
+		// belong to both sets, and their read command is what must survive.
 		if isVerbatimToolName(name) {
 			info.Verbatim = true
-		} else if input, ok := block["input"].(map[string]any); ok && inputLooksLikeFileRead(input) {
-			info.Verbatim = true
+		} else if !isNonVerbatimToolName(name) {
+			if input, ok := block["input"].(map[string]any); ok && inputLooksLikeFileRead(input) {
+				info.Verbatim = true
+			}
 		}
 		t.byID[id] = info
 	})

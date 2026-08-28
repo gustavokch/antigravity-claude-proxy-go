@@ -317,3 +317,45 @@ func firstDiff(want, got string) string {
 	}
 	return ""
 }
+
+func TestToolInspector_MutatingToolsAreNotVerbatim(t *testing.T) {
+	// inputLooksLikeFileRead over-matches on purpose, but every mutating tool
+	// also names a file_path. Marking their confirmations verbatim pinned
+	// unbounded text the model will never quote back, and made those turns
+	// classify as coding.
+	names := []string{"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch", "str_replace", "Glob", "Grep"}
+	var messages []any
+	for i, name := range names {
+		id := "toolu_m" + itoa(i)
+		messages = append(messages,
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "tool_use", "id": id, "name": name,
+					"input": map[string]any{"file_path": "/a/b.go"}},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": id, "content": "The file /a/b.go has been updated."},
+			}},
+		)
+	}
+	req := map[string]any{"messages": messages}
+
+	insp := NewToolInspector(req)
+	if insp.VerbatimCount() != 0 {
+		t.Errorf("mutating tool results must not classify verbatim, got %d", insp.VerbatimCount())
+	}
+
+	// str_replace_editor is dual mode: its "view" command returns file content,
+	// so the name match must still win over the mutating-tool guard.
+	viewReq := map[string]any{"messages": []any{
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "toolu_v", "name": "str_replace_editor",
+				"input": map[string]any{"path": "/a/b.go"}},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_v", "content": "x"},
+		}},
+	}}
+	if !NewToolInspector(viewReq).IsVerbatimOrdinal(0) {
+		t.Error("str_replace_editor must stay verbatim by name")
+	}
+}
