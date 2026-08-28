@@ -79,7 +79,11 @@ document.addEventListener('alpine:init', () => {
         webuiPassword: localStorage.getItem('antigravity_webui_password') || '',
 
         // i18n
-        lang: localStorage.getItem('app_lang') || 'en',
+        lang: (() => {
+            const saved = localStorage.getItem('app_lang');
+            const available = window.translations ? Object.keys(window.translations) : ['en', 'pt'];
+            return (saved && available.includes(saved)) ? saved : 'en';
+        })(),
         translations: window.translations || {},
 
         // Toast Messages
@@ -94,7 +98,8 @@ document.addEventListener('alpine:init', () => {
         },
 
         t(key, params = {}) {
-            let str = this.translations[this.lang][key] || key;
+            const dict = (this.translations && this.translations[this.lang]) || (this.translations && this.translations.en) || {};
+            let str = dict[key] || key;
             if (typeof str === 'string') {
                 Object.keys(params).forEach(p => {
                     str = str.replace(`{${p}}`, params[p]);

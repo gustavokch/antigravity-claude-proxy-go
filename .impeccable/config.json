@@ -11,6 +11,15 @@
         ],
         "createdAt": "2026-08-22T17:40:54.036Z",
         "reason": "Shell layout file: views contain full heading hierarchy"
+      },
+      {
+        "rule": "gray-on-color",
+        "value": "*",
+        "files": [
+          "internal/webui/public/views/models.html"
+        ],
+        "createdAt": "2026-08-28T20:58:26.532Z",
+        "reason": "Alpine.js ternary branch separates text-blue-300 on bg-blue-500 from text-zinc-400 on btn-ghost"
       }
     ]
   }

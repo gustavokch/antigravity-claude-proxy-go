@@ -59,7 +59,7 @@ var commandCrusherKeys = []string{
 	"commandCrusherVCS",
 }
 
-var locales = []string{"en", "zh", "id", "pt", "tr"}
+var locales = []string{"en", "pt"}
 
 func loadLocale(t *testing.T, locale string) string {
 	t.Helper()
@@ -175,6 +175,18 @@ func TestTranslations_AppSpoofTemplateReferences(t *testing.T) {
 		if !strings.Contains(src, fmt.Sprintf("t('%s')", key)) {
 			t.Errorf("settings.html does not reference translation key %q", key)
 		}
+	}
+}
+
+func TestTranslations_StoreFallbackSafety(t *testing.T) {
+	b, err := Assets.ReadFile("public/js/store.js")
+	if err != nil {
+		t.Fatalf("read store.js: %v", err)
+	}
+	src := string(b)
+	// store.js must guard against missing locales when calling t()
+	if strings.Contains(src, "this.translations[this.lang][key]") {
+		t.Errorf("store.js unconditionally indexes this.translations[this.lang][key]; must provide safe fallback")
 	}
 }
 

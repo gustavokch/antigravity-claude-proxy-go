@@ -99,8 +99,8 @@ window.Components.modelDropdown = (field, labelKey, accentColor) => ({
 
     get focusBorderClass() {
         return this.accentColor === 'purple'
-            ? 'focus:!border-neon-purple'
-            : 'focus:!border-neon-cyan';
+            ? 'focus:!border-blue-500'
+            : 'focus:!border-sky-500';
     },
 
     openDropdown() {
