@@ -23,6 +23,7 @@ import (
 
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
+	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
@@ -315,6 +316,8 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	}
 	selectable := catalog.PublicModels()
 	models := make([]any, 0, len(selectable))
+	seen := make(map[string]bool)
+
 	for _, details := range selectable {
 		description := details.DisplayName
 		if description == "" {
@@ -330,11 +333,88 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 		models = append(models, map[string]any{
 			"id": details.ID, "object": "model", "created": server.now().Unix(),
 			"owned_by": ownedBy, "description": description,
+			"display_name": details.DisplayName,
 			"context_window": details.MaxTokens, "max_output_tokens": details.MaxOutputTokens,
 			"supports_thinking": details.SupportsThinking,
 		})
+		seen[details.ID] = true
 	}
 	cfg := config.Get()
+
+	// Claude Code allowlist models and aliases
+	if cfg.ClaudeCode.Enabled || len(cfg.ClaudeCode.Accounts) > 0 {
+		allowlist := cfg.ClaudeCode.Allowlist
+		if len(allowlist) == 0 {
+			allowlist = claudecode.DefaultAllowlist()
+		}
+		for _, item := range allowlist {
+			if !item.Enabled {
+				continue
+			}
+			desc := item.DisplayName
+			if desc == "" {
+				desc = item.ID
+			}
+			contextLen := item.ContextLen
+			if contextLen <= 0 {
+				contextLen = 200000
+			}
+			maxOutput := item.MaxOutputTokens
+			if maxOutput <= 0 {
+				maxOutput = 8192
+			}
+			aliases := item.Aliases
+			if item.Alias != "" {
+				hasAlias := false
+				for _, a := range aliases {
+					if a == item.Alias {
+						hasAlias = true
+						break
+					}
+				}
+				if !hasAlias {
+					aliases = append(aliases, item.Alias)
+				}
+			}
+
+			if !seen[item.ID] {
+				entry := map[string]any{
+					"id":                item.ID,
+					"object":            "model",
+					"created":           server.now().Unix(),
+					"owned_by":          "anthropic",
+					"description":       desc,
+					"display_name":      desc,
+					"context_window":    contextLen,
+					"max_output_tokens": maxOutput,
+					"supports_thinking": item.Thinking,
+				}
+				if len(aliases) > 0 {
+					entry["aliases"] = aliases
+				}
+				models = append(models, entry)
+				seen[item.ID] = true
+			}
+
+			for _, alias := range aliases {
+				if alias != "" && alias != item.ID && !seen[alias] {
+					models = append(models, map[string]any{
+						"id":                alias,
+						"object":            "model",
+						"created":           server.now().Unix(),
+						"owned_by":          "anthropic",
+						"description":       desc + " (Alias)",
+						"display_name":      desc + " (Alias)",
+						"context_window":    contextLen,
+						"max_output_tokens": maxOutput,
+						"supports_thinking": item.Thinking,
+					})
+					seen[alias] = true
+				}
+			}
+		}
+	}
+
 	if cfg.OpenRouter.Enabled {
 		for _, item := range cfg.OpenRouter.Allowlist {
 			if !item.Enabled {
@@ -358,6 +438,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 				"created":           server.now().Unix(),
 				"owned_by":          "openrouter",
 				"description":       desc,
+				"display_name":      desc,
 				"context_window":    contextLen,
 				"max_output_tokens": maxOutput,
 				"supports_thinking": true,
@@ -369,6 +450,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 					"created":           server.now().Unix(),
 					"owned_by":          "openrouter",
 					"description":       desc + " (Alias)",
+					"display_name":      desc + " (Alias)",
 					"context_window":    contextLen,
 					"max_output_tokens": maxOutput,
 					"supports_thinking": true,
@@ -399,6 +481,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 				"created":           server.now().Unix(),
 				"owned_by":          "kimi",
 				"description":       desc,
+				"display_name":      desc,
 				"context_window":    contextLen,
 				"max_output_tokens": maxOutput,
 				"supports_thinking": true,
@@ -410,6 +493,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 					"created":           server.now().Unix(),
 					"owned_by":          "kimi",
 					"description":       desc + " (Alias)",
+					"display_name":      desc + " (Alias)",
 					"context_window":    contextLen,
 					"max_output_tokens": maxOutput,
 					"supports_thinking": true,

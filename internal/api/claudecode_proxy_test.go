@@ -130,8 +130,29 @@ func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {
 		want  string // empty = no match
 	}{
 		{"claude-sonnet-5", "claude-sonnet-5"},
-		{"claude-haiku-4-5", "claude-haiku-4-5-20251001"}, // alias
-		{"gpt-4o", ""},                                     // not in allowlist
+		{"sonnet-5", "claude-sonnet-5"},
+		{"claude-opus-5", "claude-opus-5"},
+		{"opus-5", "claude-opus-5"},
+		{"claude-fable-5", "claude-fable-5"},
+		{"fable-5", "claude-fable-5"},
+		{"claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001"},
+		{"claude-haiku-4-5", "claude-haiku-4-5-20251001"},
+		{"haiku-4-5", "claude-haiku-4-5-20251001"},
+		{"claude-haiku-4.5", "claude-haiku-4-5-20251001"},
+		{"haiku-4.5", "claude-haiku-4-5-20251001"},
+		{"claude-3-7-sonnet-20250219", "claude-3-7-sonnet-20250219"},
+		{"claude-3-7-sonnet", "claude-3-7-sonnet-20250219"},
+		{"claude-3.7-sonnet", "claude-3-7-sonnet-20250219"},
+		{"sonnet-3-7", "claude-3-7-sonnet-20250219"},
+		{"sonnet-3.7", "claude-3-7-sonnet-20250219"},
+		{"claude-3-5-sonnet", "claude-3-5-sonnet-20241022"},
+		{"claude-3.5-sonnet", "claude-3-5-sonnet-20241022"},
+		{"sonnet-3-5", "claude-3-5-sonnet-20241022"},
+		{"claude-3-5-haiku", "claude-3-5-haiku-20241022"},
+		{"haiku-3-5", "claude-3-5-haiku-20241022"},
+		{"claude-3-opus", "claude-3-opus-20240229"},
+		{"opus-3", "claude-3-opus-20240229"},
+		{"gpt-4o", ""}, // not in allowlist
 		{"", ""},
 	}
 
@@ -140,6 +161,15 @@ func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("matchClaudeCodeModel(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+
+	// Test fallback when allowlist is empty in config (defaults to DefaultAllowlist)
+	emptyCfg := claudecode.Config{}
+	if got := matchClaudeCodeModel(emptyCfg, "claude-sonnet-5"); got != "claude-sonnet-5" {
+		t.Errorf("expected empty cfg to match default allowlist, got %q", got)
+	}
+	if got := matchClaudeCodeModel(emptyCfg, "sonnet-5"); got != "claude-sonnet-5" {
+		t.Errorf("expected empty cfg to match alias on default allowlist, got %q", got)
 	}
 }
 

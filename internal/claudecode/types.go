@@ -27,12 +27,14 @@ type AccountConfig struct {
 
 // ModelConfig defines a supported Claude model and its routing attributes.
 type ModelConfig struct {
-	ID              string `json:"id"`
-	Alias           string `json:"alias,omitempty"`
-	DisplayName     string `json:"displayName,omitempty"`
-	ContextLen      int    `json:"contextLength,omitempty"`
-	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
-	Enabled         bool   `json:"enabled"`
+	ID              string   `json:"id"`
+	Alias           string   `json:"alias,omitempty"`
+	Aliases         []string `json:"aliases,omitempty"`
+	DisplayName     string   `json:"displayName,omitempty"`
+	ContextLen      int      `json:"contextLength,omitempty"`
+	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	Thinking        bool     `json:"thinking,omitempty"`
+	Enabled         bool     `json:"enabled"`
 }
 
 // RoutingConfig holds resilience, backoff, and retry parameters.

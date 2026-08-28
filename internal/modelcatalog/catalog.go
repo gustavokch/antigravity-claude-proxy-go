@@ -43,10 +43,14 @@ type Catalog struct {
 }
 
 type SelectionError struct {
-	Model string
+	Model      string
+	Selectable []string
 }
 
 func (err *SelectionError) Error() string {
+	if len(err.Selectable) > 0 {
+		return fmt.Sprintf("model %q is not in agy's selectable agent model list. Available models: %s", err.Model, strings.Join(err.Selectable, ", "))
+	}
 	return fmt.Sprintf("model %q is not in agy's selectable agent model list", err.Model)
 }
 
@@ -94,12 +98,50 @@ var routingAliases = map[string]string{
 	"gemini-3.5-flash-medium":    "Gemini 3.5 Flash (Medium)",
 	"gemini-3.6-flash":           "Gemini 3.6 Flash (High)",
 	"gemini-3.7-flash":           "Gemini 3.7 Flash (High)",
-	"claude-sonnet-4-6-thinking": "Claude Sonnet 4.6 (Thinking)",
-	"claude-opus-4-6":            "Claude Opus 4.6 (Thinking)",
 	"gpt-oss-120b":               "GPT-OSS 120B (Medium)",
 	"gemini-3.7-flash-high":      "Gemini 3.7 Flash (High)",
 	"gemini-3.7-flash-medium":    "Gemini 3.7 Flash (Medium)",
 	"gemini-3.7-flash-low":       "Gemini 3.7 Flash (Low)",
+
+	// Claude Models & Aliases mapped to Cloud Code display names
+	"claude-sonnet-4-6-thinking": "Claude Sonnet 4.6 (Thinking)",
+	"claude-sonnet-4-6":          "Claude Sonnet 4.6 (Thinking)",
+	"claude-opus-4-6":            "Claude Opus 4.6 (Thinking)",
+	"claude-opus-4-6-thinking":   "Claude Opus 4.6 (Thinking)",
+	"claude-sonnet-5":            "Claude Sonnet 4.6 (Thinking)",
+	"sonnet-5":                   "Claude Sonnet 4.6 (Thinking)",
+	"sonnet":                     "Claude Sonnet 4.6 (Thinking)",
+	"claude-opus-5":              "Claude Opus 4.6 (Thinking)",
+	"opus-5":                     "Claude Opus 4.6 (Thinking)",
+	"opus":                       "Claude Opus 4.6 (Thinking)",
+	"claude-fable-5":             "Claude Sonnet 4.6 (Thinking)",
+	"fable-5":                    "Claude Sonnet 4.6 (Thinking)",
+	"fable":                      "Claude Sonnet 4.6 (Thinking)",
+	"claude-haiku-4-5-20251001":  "Claude Sonnet 4.6 (Thinking)",
+	"claude-haiku-4-5":           "Claude Sonnet 4.6 (Thinking)",
+	"claude-haiku-4.5":           "Claude Sonnet 4.6 (Thinking)",
+	"haiku-4-5":                  "Claude Sonnet 4.6 (Thinking)",
+	"haiku-4.5":                  "Claude Sonnet 4.6 (Thinking)",
+	"haiku":                      "Claude Sonnet 4.6 (Thinking)",
+	"claude-3-7-sonnet-20250219": "Claude Sonnet 4.6 (Thinking)",
+	"claude-3-7-sonnet":          "Claude Sonnet 4.6 (Thinking)",
+	"claude-3.7-sonnet":          "Claude Sonnet 4.6 (Thinking)",
+	"sonnet-3-7":                 "Claude Sonnet 4.6 (Thinking)",
+	"sonnet-3.7":                 "Claude Sonnet 4.6 (Thinking)",
+	"claude-3-5-sonnet-20241022": "Claude Sonnet 4.6 (Thinking)",
+	"claude-3-5-sonnet":          "Claude Sonnet 4.6 (Thinking)",
+	"claude-3.5-sonnet":          "Claude Sonnet 4.6 (Thinking)",
+	"sonnet-3-5":                 "Claude Sonnet 4.6 (Thinking)",
+	"sonnet-3.5":                 "Claude Sonnet 4.6 (Thinking)",
+	"claude-3-5-haiku-20241022":  "Claude Sonnet 4.6 (Thinking)",
+	"claude-3-5-haiku":           "Claude Sonnet 4.6 (Thinking)",
+	"claude-3.5-haiku":           "Claude Sonnet 4.6 (Thinking)",
+	"haiku-3-5":                  "Claude Sonnet 4.6 (Thinking)",
+	"haiku-3.5":                  "Claude Sonnet 4.6 (Thinking)",
+	"claude-3-opus-20240229":     "Claude Opus 4.6 (Thinking)",
+	"claude-3-opus":              "Claude Opus 4.6 (Thinking)",
+	"claude-3.0-opus":            "Claude Opus 4.6 (Thinking)",
+	"opus-3":                     "Claude Opus 4.6 (Thinking)",
 }
 
 const gemini37TieredID = "gemini-3.7-flash-tiered"
@@ -214,7 +256,18 @@ func (catalog *Catalog) Resolve(requested string) (Model, error) {
 			return model, nil
 		}
 	}
-	return Model{}, &SelectionError{Model: requested}
+	normalized := strings.ReplaceAll(key, ".", "-")
+	if displayName := routingAliases[normalized]; displayName != "" {
+		if model, exists := catalog.byDisplay[strings.ToLower(displayName)]; exists {
+			return model, nil
+		}
+	}
+
+	available := make([]string, 0, len(catalog.selectable))
+	for _, m := range catalog.selectable {
+		available = append(available, m.ID)
+	}
+	return Model{}, &SelectionError{Model: requested, Selectable: available}
 }
 
 func ExtractReasoningParams(request map[string]any) (effort string, budget int, hasBudget bool, disabled bool) {

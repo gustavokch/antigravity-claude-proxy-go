@@ -289,6 +289,13 @@ func Get() Config {
 	return currentConfig
 }
 
+// SetForTest overrides currentConfig in tests.
+func SetForTest(cfg Config) {
+	mu.Lock()
+	defer mu.Unlock()
+	currentConfig = cfg
+}
+
 // Save writes config to ~/.config/antigravity-proxy/config.json.
 func Save(updates map[string]any) (Config, error) {
 	mu.Lock()

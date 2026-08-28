@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"sort"
 	"strings"
 	"sync"
 )
@@ -10,69 +11,110 @@ func DefaultAllowlist() []ModelConfig {
 	return []ModelConfig{
 		{
 			ID:              "claude-fable-5",
-			Alias:           "claude-fable-5",
+			Alias:           "fable-5",
+			Aliases:         []string{"fable-5", "claude-fable-5"},
 			DisplayName:     "Claude Fable 5",
 			ContextLen:      200000,
 			MaxOutputTokens: 8192,
+			Thinking:        true,
 			Enabled:         true,
 		},
 		{
 			ID:              "claude-opus-5",
-			Alias:           "claude-opus-5",
+			Alias:           "opus-5",
+			Aliases:         []string{"opus-5", "claude-opus-5"},
 			DisplayName:     "Claude Opus 5",
 			ContextLen:      200000,
 			MaxOutputTokens: 8192,
+			Thinking:        true,
 			Enabled:         true,
 		},
 		{
 			ID:              "claude-sonnet-5",
-			Alias:           "claude-sonnet-5",
+			Alias:           "sonnet-5",
+			Aliases:         []string{"sonnet-5", "claude-sonnet-5"},
 			DisplayName:     "Claude Sonnet 5",
 			ContextLen:      200000,
 			MaxOutputTokens: 8192,
+			Thinking:        true,
 			Enabled:         true,
 		},
 		{
 			ID:              "claude-haiku-4-5-20251001",
-			Alias:           "claude-haiku-4-5",
+			Alias:           "haiku-4-5",
+			Aliases:         []string{"haiku-4-5", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4.5"},
 			DisplayName:     "Claude Haiku 4.5",
 			ContextLen:      200000,
 			MaxOutputTokens: 8192,
+			Thinking:        true,
 			Enabled:         true,
 		},
 		{
 			ID:              "claude-3-7-sonnet-20250219",
 			Alias:           "claude-3-7-sonnet",
+			Aliases:         []string{"claude-3-7-sonnet", "sonnet-3-7", "claude-3.7-sonnet", "sonnet-3.7"},
 			DisplayName:     "Claude 3.7 Sonnet",
 			ContextLen:      200000,
 			MaxOutputTokens: 8192,
+			Thinking:        true,
 			Enabled:         true,
 		},
 		{
 			ID:              "claude-3-5-sonnet-20241022",
 			Alias:           "claude-3-5-sonnet",
+			Aliases:         []string{"claude-3-5-sonnet", "sonnet-3-5", "claude-3.5-sonnet", "sonnet-3.5"},
 			DisplayName:     "Claude 3.5 Sonnet",
 			ContextLen:      200000,
 			MaxOutputTokens: 8192,
+			Thinking:        true,
 			Enabled:         true,
 		},
 		{
 			ID:              "claude-3-5-haiku-20241022",
 			Alias:           "claude-3-5-haiku",
+			Aliases:         []string{"claude-3-5-haiku", "haiku-3-5", "claude-3.5-haiku", "haiku-3.5"},
 			DisplayName:     "Claude 3.5 Haiku",
 			ContextLen:      200000,
 			MaxOutputTokens: 8192,
+			Thinking:        false,
 			Enabled:         true,
 		},
 		{
 			ID:              "claude-3-opus-20240229",
 			Alias:           "claude-3-opus",
+			Aliases:         []string{"claude-3-opus", "opus-3", "claude-3.0-opus"},
 			DisplayName:     "Claude 3 Opus",
 			ContextLen:      200000,
 			MaxOutputTokens: 4096,
+			Thinking:        false,
+			Enabled:         true,
+		},
+		{
+			ID:              "claude-3-haiku-20240307",
+			Alias:           "claude-3-haiku",
+			Aliases:         []string{"claude-3-haiku", "haiku-3", "claude-3.0-haiku"},
+			DisplayName:     "Claude 3 Haiku",
+			ContextLen:      200000,
+			MaxOutputTokens: 4096,
+			Thinking:        false,
+			Enabled:         true,
+		},
+		{
+			ID:              "claude-3-sonnet-20240229",
+			Alias:           "claude-3-sonnet",
+			Aliases:         []string{"claude-3-sonnet", "sonnet-3", "claude-3.0-sonnet"},
+			DisplayName:     "Claude 3 Sonnet",
+			ContextLen:      200000,
+			MaxOutputTokens: 4096,
+			Thinking:        false,
 			Enabled:         true,
 		},
 	}
+}
+
+type prefixMapping struct {
+	prefix      string
+	canonicalID string
 }
 
 // Router provides thread-safe model matching, alias resolution, and allowlist checks.
@@ -80,6 +122,7 @@ type Router struct {
 	mu        sync.RWMutex
 	allowlist map[string]ModelConfig
 	aliases   map[string]string
+	prefixes  []prefixMapping
 }
 
 // NewRouter initializes a Router with the provided allowlist or defaults.
@@ -102,6 +145,8 @@ func (r *Router) UpdateAllowlist(models []ModelConfig) {
 
 	r.allowlist = make(map[string]ModelConfig)
 	r.aliases = make(map[string]string)
+	var prefixes []prefixMapping
+	seenPrefix := make(map[string]bool)
 
 	for _, m := range models {
 		if !m.Enabled {
@@ -109,12 +154,38 @@ func (r *Router) UpdateAllowlist(models []ModelConfig) {
 		}
 		id := strings.ToLower(strings.TrimSpace(m.ID))
 		r.allowlist[id] = m
+		if !seenPrefix[id] {
+			prefixes = append(prefixes, prefixMapping{prefix: id, canonicalID: id})
+			seenPrefix[id] = true
+		}
 
 		if m.Alias != "" {
 			alias := strings.ToLower(strings.TrimSpace(m.Alias))
 			r.aliases[alias] = id
+			if !seenPrefix[alias] {
+				prefixes = append(prefixes, prefixMapping{prefix: alias, canonicalID: id})
+				seenPrefix[alias] = true
+			}
+		}
+		for _, a := range m.Aliases {
+			alias := strings.ToLower(strings.TrimSpace(a))
+			if alias != "" {
+				r.aliases[alias] = id
+				if !seenPrefix[alias] {
+					prefixes = append(prefixes, prefixMapping{prefix: alias, canonicalID: id})
+					seenPrefix[alias] = true
+				}
+			}
 		}
 	}
+
+	sort.Slice(prefixes, func(i, j int) bool {
+		if len(prefixes[i].prefix) != len(prefixes[j].prefix) {
+			return len(prefixes[i].prefix) > len(prefixes[j].prefix)
+		}
+		return prefixes[i].prefix < prefixes[j].prefix
+	})
+	r.prefixes = prefixes
 }
 
 // IsModelAllowed checks if the requested model name (or alias) is enabled in the allowlist.
@@ -143,15 +214,19 @@ func (r *Router) ResolveModel(requested string) (string, bool) {
 		return canonical, true
 	}
 
-	// 3. Prefix matching against known canonical IDs or aliases (e.g. model with suffix)
-	for id := range r.allowlist {
-		if strings.HasPrefix(req, id) {
-			return id, true
-		}
+	// 3. Normalized dot/hyphen match
+	normalized := strings.ReplaceAll(req, ".", "-")
+	if _, ok := r.allowlist[normalized]; ok {
+		return normalized, true
 	}
-	for alias, id := range r.aliases {
-		if strings.HasPrefix(req, alias) {
-			return id, true
+	if canonical, ok := r.aliases[normalized]; ok {
+		return canonical, true
+	}
+
+	// 4. Prefix matching against known canonical IDs or aliases (longest prefix first)
+	for _, pm := range r.prefixes {
+		if strings.HasPrefix(req, pm.prefix) {
+			return pm.canonicalID, true
 		}
 	}
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,16 +43,17 @@ var ccPoolCfg claudecode.Config
 // matchClaudeCodeModel returns the canonical model ID if the request model
 // matches an enabled allowlist entry by ID or alias. Returns "" on no match.
 func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
-	if model == "" {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
 		return ""
 	}
-	for _, item := range cfg.Allowlist {
-		if !item.Enabled {
-			continue
-		}
-		if (item.ID != "" && item.ID == model) || (item.Alias != "" && item.Alias == model) {
-			return item.ID
-		}
+	allowlist := cfg.Allowlist
+	if len(allowlist) == 0 {
+		allowlist = claudecode.DefaultAllowlist()
+	}
+	router := claudecode.NewRouter(allowlist)
+	if canonical, found := router.ResolveModel(m); found {
+		return canonical
 	}
 	return ""
 }
