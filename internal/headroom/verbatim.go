@@ -2,6 +2,7 @@ package headroom
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -234,7 +235,15 @@ func looksLikeNumberedSource(text string) bool {
 			prev = -1
 			continue
 		}
-		n := atoi(m[1])
+		// A counter too large for int is not a line number. Treat the parse
+		// failure as a non-match so the run restarts, rather than comparing a
+		// wrapped value.
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			run = 0
+			prev = -1
+			continue
+		}
 		if run > 0 && n < prev {
 			run = 0
 		}
@@ -290,13 +299,3 @@ func countTextPayloads(toolResultBlock map[string]any) int {
 	return 0
 }
 
-func atoi(s string) int {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return -1
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
-}

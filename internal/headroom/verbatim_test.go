@@ -359,3 +359,20 @@ func TestToolInspector_MutatingToolsAreNotVerbatim(t *testing.T) {
 		t.Error("str_replace_editor must stay verbatim by name")
 	}
 }
+
+func TestLooksLikeNumberedSource_HugeCountersDoNotMatch(t *testing.T) {
+	// numberedLineRe's \d+ is unbounded, so the hand-rolled parser silently
+	// wrapped past the int range. These counters are just over 2^64 and wrap to
+	// 0, 1, 2, which reads as a clean ascending run of line numbers.
+	text := "18446744073709551616\tstart\n" +
+		"18446744073709551617\tstep\n" +
+		"18446744073709551618\tdone\n"
+	if looksLikeNumberedSource(text) {
+		t.Error("counters that overflow int must not read as numbered source")
+	}
+
+	// Ordinary numbered source keeps matching.
+	if !looksLikeNumberedSource("   1\tpackage main\n   2\t\n   3\tfunc main() {}\n") {
+		t.Error("cat -n output must still classify as numbered source")
+	}
+}
