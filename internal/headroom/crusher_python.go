@@ -9,12 +9,26 @@ import (
 // dot runs "..........", "....  [ 50%]", and "test_b.py  [100%]".
 var pytestProgressRe = regexp.MustCompile(`^\S*\.py\s+[.sFxXeE]*\s*\[\s*\d+%\]$|^[.sFxX]+\s*(\[\s*\d+%\])?$`)
 
+func isPytestProgress(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if strings.HasSuffix(trimmed, "%]") && strings.Contains(trimmed, ".py") {
+		return true
+	}
+	if strings.HasSuffix(trimmed, "]") || strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "s") || strings.HasPrefix(trimmed, "F") || strings.HasPrefix(trimmed, "x") || strings.HasPrefix(trimmed, "X") {
+		return pytestProgressRe.MatchString(line)
+	}
+	return false
+}
+
 // crushPytest strips progress/dot lines and PASSED short-summary lines.
 // FAILURES/ERRORS sections, tracebacks, E-lines, and banner lines survive
 // untouched.
 func crushPytest(text string) (string, bool) {
 	return filterLines(text, func(line string) bool {
-		if pytestProgressRe.MatchString(line) {
+		if isPytestProgress(line) {
 			return false
 		}
 		if strings.HasPrefix(line, "PASSED ") {

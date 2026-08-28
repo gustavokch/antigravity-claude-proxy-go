@@ -142,26 +142,30 @@ func detectSignature(text string) signature {
 	if len(head) > signatureScanCap {
 		head = head[:signatureScanCap]
 	}
+	tail := text
+	if len(tail) > signatureScanCap {
+		tail = tail[len(tail)-signatureScanCap:]
+	}
 	switch {
 	case strings.HasPrefix(head, "On branch ") || strings.Contains(head, "\nOn branch "):
 		return sigGitStatus
 	case hasCommitLine(head):
 		return sigGitLog
-	case strings.Contains(text, "test result:"):
+	case strings.Contains(tail, "test result:"):
 		return sigCargoTest
 	case strings.Contains(head, "=== RUN") || strings.Contains(head, "--- FAIL:") ||
-		strings.Contains(head, "--- PASS:") || strings.Contains(text, "\nok  \t") || strings.Contains(text, "\nFAIL\t"):
+		strings.Contains(head, "--- PASS:") || strings.Contains(tail, "\nok  \t") || strings.Contains(tail, "\nFAIL\t"):
 		return sigGoTest
 	case golangciLineRe.MatchString(head):
 		return sigGolangci
-	case strings.Contains(head, "collected ") && strings.Contains(head, " items") ||
-		pytestFooterRe.MatchString(text) || strings.Contains(text, "short test summary info"):
+	case (strings.Contains(head, "collected ") && strings.Contains(head, " items")) ||
+		pytestFooterRe.MatchString(tail) || strings.Contains(tail, "short test summary info") || strings.Contains(head, "short test summary info"):
 		return sigPytest
-	case strings.Contains(text, "FAILED (") || strings.Contains(text, "\nRan ") && strings.Contains(text, " tests"):
+	case strings.Contains(tail, "FAILED (") || (strings.Contains(tail, "\nRan ") && strings.Contains(tail, " tests")):
 		return sigUnittest
-	case strings.Contains(head, "PASS ") || strings.Contains(head, "FAIL ") || strings.Contains(text, "Tests: "):
+	case strings.Contains(head, "PASS ") || strings.Contains(head, "FAIL ") || strings.Contains(tail, "Tests: "):
 		return sigJest
-	case strings.Contains(text, " passing") && (strings.Contains(head, "✓") || strings.Contains(head, "✔")):
+	case strings.Contains(tail, " passing") && (strings.Contains(head, "✓") || strings.Contains(head, "✔")):
 		return sigMocha
 	case strings.Contains(head, "error TS"):
 		return sigTSC
