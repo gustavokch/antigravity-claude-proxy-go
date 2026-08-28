@@ -51,7 +51,9 @@ func (m *RequestMetrics) ComputeFinalMetrics(pricing Pricing, sessionTracker *Se
 		m.ThroughputTPS = 0.0
 	}
 
-	// Cost per API call: 100% free if response cache HIT
+	// Cost per API call. A response cache HIT is served free, so it bills
+	// nothing — but any usage the upstream still reports is left intact and
+	// recorded below, because it describes context the request consumed.
 	if m.CacheStatus == "HIT" {
 		m.CallCost = 0.0
 	} else {

@@ -352,6 +352,55 @@ func TestRequestMetrics_ComputeFinalMetrics_ResponseCacheHit(t *testing.T) {
 	}
 }
 
+// TestRequestMetrics_ComputeFinalMetrics_CacheHitWithNonZeroUsage pins the
+// accounting contract for a HIT that reports real usage: the call is free, but
+// the tokens still land in the session tracker because they describe context
+// that was actually consumed.
+func TestRequestMetrics_ComputeFinalMetrics_CacheHitWithNonZeroUsage(t *testing.T) {
+	st := NewSessionTracker(1*time.Hour, 100)
+	pricing := Pricing{
+		Prompt:     0.000003,
+		Completion: 0.000015,
+	}
+
+	m := RequestMetrics{
+		Model:         "anthropic/claude-3.7-sonnet",
+		SessionID:     "session-hit-usage",
+		CacheStatus:   "HIT",
+		CacheAge:      30,
+		CacheTTL:      270,
+		CacheSourceID: "gen-src-789",
+		InputTokens:   1200,
+		OutputTokens:  350,
+		Latency:       100 * time.Millisecond,
+	}
+	m.ComputeFinalMetrics(pricing, st)
+
+	if m.CallCost != 0.0 {
+		t.Errorf("expected $0.00 call cost on HIT with reported usage, got %f", m.CallCost)
+	}
+	if m.SessionCost != 0.0 {
+		t.Errorf("expected session cost to stay at $0.00, got %f", m.SessionCost)
+	}
+	if m.ThroughputTPS <= 0 {
+		t.Errorf("expected TPS to be computed from reported output tokens, got %f", m.ThroughputTPS)
+	}
+
+	stats, ok := st.Get("session-hit-usage")
+	if !ok {
+		t.Fatalf("expected session to be tracked on HIT")
+	}
+	if stats.InputTokens != 1200 {
+		t.Errorf("expected 1200 input tokens recorded on HIT, got %d", stats.InputTokens)
+	}
+	if stats.OutputTokens != 350 {
+		t.Errorf("expected 350 output tokens recorded on HIT, got %d", stats.OutputTokens)
+	}
+	if stats.TotalCost != 0.0 {
+		t.Errorf("expected $0.00 session total on a HIT-only session, got %f", stats.TotalCost)
+	}
+}
+
 func TestLogObservability_ResponseCacheFormatting(t *testing.T) {
 	t.Run("HIT log formatting", func(t *testing.T) {
 		var buf bytes.Buffer
