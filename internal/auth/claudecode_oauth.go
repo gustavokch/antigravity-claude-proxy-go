@@ -446,6 +446,7 @@ func (m *ClaudeCodeOAuthManager) handleLoopbackCallback(session *ClaudeCodeAuthS
 	}
 
 	if code == "" || state == "" {
+		slog.Warn("Claude Code OAuth loopback callback rejected: missing code or state", "session_id", session.ID, "has_code", code != "", "has_state", state != "")
 		session.mu.Lock()
 		session.Status = "failed"
 		session.Error = "missing code or state parameter"
@@ -458,6 +459,7 @@ func (m *ClaudeCodeOAuthManager) handleLoopbackCallback(session *ClaudeCodeAuthS
 	}
 
 	if state != session.State {
+		slog.Warn("Claude Code OAuth loopback callback rejected: state mismatch", "session_id", session.ID)
 		session.mu.Lock()
 		session.Status = "failed"
 		session.Error = "invalid state parameter (CSRF protection)"
