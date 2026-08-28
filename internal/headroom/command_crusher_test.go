@@ -185,7 +185,8 @@ func TestRuffFilter_Dedupes(t *testing.T) {
 func TestJestFilter(t *testing.T) {
 	input := `PASS src/add.test.ts (12ms)
 ✓ adds numbers (2ms)
-✓ subtracts numbers (1ms)
+✔ multiplies numbers (1ms)
+√ subtracts numbers (1ms)
 FAIL src/div.test.ts
 ✕ divides by zero (3ms)
 
@@ -203,7 +204,7 @@ Time:        1.234s`
 	if !changed {
 		t.Fatal("expected change")
 	}
-	if strings.Contains(got, "✓") || strings.Contains(got, "PASS ") {
+	if strings.Contains(got, "✓") || strings.Contains(got, "✔") || strings.Contains(got, "√") || strings.Contains(got, "PASS ") {
 		t.Errorf("passing lines survive:\n%s", got)
 	}
 	for _, want := range []string{"✕ divides by zero", "FAIL src/div.test.ts", "Expected: Infinity", "Received: NaN", "Tests:       1 failed, 45 passed, 46 total"} {
@@ -214,15 +215,15 @@ Time:        1.234s`
 }
 
 func TestMochaFilter(t *testing.T) {
-	input := "  Calculator\n    ✓ adds\n    ✓ subtracts\n    1) divides by zero\n\n\n  2 passing (5ms)\n  1 failing\n\n  1) Calculator\n       divides by zero:\n     Error: boom\n      at Context.<anonymous> (test.js:10:5)\n"
+	input := "  Calculator\n    ✓ adds\n    ✔ multiplies\n    √ subtracts\n    1) divides by zero\n\n\n  3 passing (5ms)\n  1 failing\n\n  1) Calculator\n       divides by zero:\n     Error: boom\n      at Context.<anonymous> (test.js:10:5)\n"
 	got, changed := crushMocha(input)
 	if !changed {
 		t.Fatal("expected change")
 	}
-	if strings.Contains(got, "✓") {
+	if strings.Contains(got, "✓") || strings.Contains(got, "✔") || strings.Contains(got, "√") {
 		t.Errorf("checkmarks survive:\n%q", got)
 	}
-	if !strings.Contains(got, "2 passing (5ms)") || !strings.Contains(got, "Error: boom") {
+	if !strings.Contains(got, "3 passing (5ms)") || !strings.Contains(got, "Error: boom") {
 		t.Errorf("failure evidence lost:\n%q", got)
 	}
 }
@@ -381,6 +382,17 @@ func TestGitStatusFilter(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestGitStatusFilter_UntrackedHint(t *testing.T) {
+	input := "On branch main\nUntracked files:\n  (use \"git add <file>...\" to include in what will be committed)\n\tfile.txt\n\nnothing added to commit but untracked files present (use \"git add\" to track)"
+	got, changed := crushGitStatus(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if strings.Contains(got, "nothing added to commit but untracked files present") {
+		t.Errorf("untracked hint survives:\n%s", got)
 	}
 }
 

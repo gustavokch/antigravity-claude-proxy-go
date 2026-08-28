@@ -10,8 +10,10 @@ func crushGitStatus(text string) (string, bool) {
 		if strings.HasPrefix(trimmed, "(use \"") {
 			return false
 		}
-		// The trailing "no changes added to commit" line is also pure hint.
-		if strings.HasPrefix(trimmed, "no changes added to commit") {
+		// The trailing "no changes added to commit" and "nothing added to commit"
+		// lines are pure hints.
+		if strings.HasPrefix(trimmed, "no changes added to commit") ||
+			strings.HasPrefix(trimmed, "nothing added to commit but untracked files present") {
 			return false
 		}
 		return true

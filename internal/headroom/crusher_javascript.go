@@ -2,12 +2,17 @@ package headroom
 
 import "strings"
 
+// isCheckmarkLine reports whether line starts with a pass checkmark (✓, ✔, or √).
+func isCheckmarkLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "✓") || strings.HasPrefix(trimmed, "✔") || strings.HasPrefix(trimmed, "√")
+}
+
 // crushJest strips passing suites ("PASS ") and green checkmark lines. It
 // covers vitest, which emits the same ✓/✕ and Tests: summary shapes.
 func crushJest(text string) (string, bool) {
 	return filterLines(text, func(line string) bool {
-		trimmed := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(trimmed, "✓") || strings.HasPrefix(trimmed, "√") {
+		trimmed := strings.TrimLeft(line, " \t\r")
+		if isCheckmarkLine(trimmed) {
 			return false
 		}
 		if strings.HasPrefix(trimmed, "PASS ") {
@@ -21,8 +26,8 @@ func crushJest(text string) (string, bool) {
 // items, error frames, and the passing/failing footer.
 func crushMocha(text string) (string, bool) {
 	return filterLines(text, func(line string) bool {
-		trimmed := strings.TrimLeft(line, " \t")
-		return !strings.HasPrefix(trimmed, "✓") && !strings.HasPrefix(trimmed, "✔")
+		trimmed := strings.TrimLeft(line, " \t\r")
+		return !isCheckmarkLine(trimmed)
 	})
 }
 
