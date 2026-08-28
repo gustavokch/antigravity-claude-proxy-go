@@ -52,6 +52,9 @@ func (server *Server) handleClaudeCodeAccountsList(writer http.ResponseWriter, _
 	cfg := config.Get()
 	pool, _ := getOrCreateCCPool(cfg.ClaudeCode)
 	snapshots := pool.Snapshots()
+	if snapshots == nil {
+		snapshots = make([]claudecode.AccountSnapshot, 0)
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":   "ok",
 		"accounts": snapshots,
@@ -122,7 +125,14 @@ func (server *Server) handleClaudeCodeAccountsPost(writer http.ResponseWriter, r
 }
 
 // handleClaudeCodeAccountDelete removes an account by ID.
-func (server *Server) handleClaudeCodeAccountDelete(writer http.ResponseWriter, _ *http.Request, accountID string) {
+func (server *Server) handleClaudeCodeAccountDelete(writer http.ResponseWriter, request *http.Request, accountID string) {
+	if accountID == "" && request != nil {
+		accountID = request.URL.Query().Get("id")
+	}
+	if accountID == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Missing account ID"})
+		return
+	}
 	cfg := config.Get()
 	accounts := make([]any, 0, len(cfg.ClaudeCode.Accounts))
 	for _, a := range cfg.ClaudeCode.Accounts {
@@ -269,6 +279,10 @@ func (server *Server) routeClaudeCodeManagement(writer http.ResponseWriter, requ
 		return true
 	case path == "/api/claudecode/accounts" && method == http.MethodPost:
 		server.handleClaudeCodeAccountsPost(writer, request)
+		return true
+	case path == "/api/claudecode/accounts" && method == http.MethodDelete:
+		id := request.URL.Query().Get("id")
+		server.handleClaudeCodeAccountDelete(writer, request, id)
 		return true
 	case strings.HasPrefix(path, "/api/claudecode/accounts/") && strings.HasSuffix(path, "/test") && method == http.MethodPost:
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/claudecode/accounts/"), "/test")

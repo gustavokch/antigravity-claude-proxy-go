@@ -115,3 +115,62 @@ func TestClaudeCodeManagement_ModelsFetch(t *testing.T) {
 		}
 	})
 }
+
+func TestClaudeCodeManagement_Accounts_RoutingAndSerialization(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	handler := srv.Handler()
+
+	t.Run("empty accounts returns JSON array not null", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/claudecode/accounts", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		if !bytes.Contains(rec.Body.Bytes(), []byte(`"accounts":[]`)) {
+			t.Errorf("expected empty JSON array in accounts field, got: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("delete account with query param", func(t *testing.T) {
+		// First add an account
+		addBody := `{"id":"acc-query-del","name":"Query Del","token":"sk-ant-test","type":"apikey"}`
+		addReq := httptest.NewRequest(http.MethodPost, "/api/claudecode/accounts", bytes.NewReader([]byte(addBody)))
+		addReq.Header.Set("Content-Type", "application/json")
+		addRec := httptest.NewRecorder()
+		handler.ServeHTTP(addRec, addReq)
+		if addRec.Code != http.StatusOK {
+			t.Fatalf("failed to add account: %s", addRec.Body.String())
+		}
+
+		// Delete via query param
+		delReq := httptest.NewRequest(http.MethodDelete, "/api/claudecode/accounts?id=acc-query-del", nil)
+		delRec := httptest.NewRecorder()
+		handler.ServeHTTP(delRec, delReq)
+		if delRec.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on delete with query param, got %d: %s", delRec.Code, delRec.Body.String())
+		}
+	})
+
+	t.Run("delete account with path param", func(t *testing.T) {
+		// First add an account
+		addBody := `{"id":"acc-path-del","name":"Path Del","token":"sk-ant-test","type":"apikey"}`
+		addReq := httptest.NewRequest(http.MethodPost, "/api/claudecode/accounts", bytes.NewReader([]byte(addBody)))
+		addReq.Header.Set("Content-Type", "application/json")
+		addRec := httptest.NewRecorder()
+		handler.ServeHTTP(addRec, addReq)
+		if addRec.Code != http.StatusOK {
+			t.Fatalf("failed to add account: %s", addRec.Body.String())
+		}
+
+		// Delete via path param
+		delReq := httptest.NewRequest(http.MethodDelete, "/api/claudecode/accounts/acc-path-del", nil)
+		delRec := httptest.NewRecorder()
+		handler.ServeHTTP(delRec, delReq)
+		if delRec.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on delete with path param, got %d: %s", delRec.Code, delRec.Body.String())
+		}
+	})
+}

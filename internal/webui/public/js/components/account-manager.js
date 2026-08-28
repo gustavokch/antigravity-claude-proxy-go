@@ -648,7 +648,7 @@ window.Components.accountManager = () => ({
         const store = Alpine.store('global');
         if (!confirm('Are you sure you want to delete this Claude Code account?')) return;
         try {
-            const { response, newPassword } = await window.utils.request(`/api/claudecode/accounts?id=${encodeURIComponent(accountId)}`, {
+            const { response, newPassword } = await window.utils.request(`/api/claudecode/accounts/${encodeURIComponent(accountId)}`, {
                 method: 'DELETE'
             }, store.webuiPassword);
             if (newPassword) store.webuiPassword = newPassword;
