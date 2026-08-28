@@ -175,9 +175,7 @@ func detectSignature(text string) signature {
 		return sigESLint
 	case ruffLineRe.MatchString(head):
 		return sigRuff
-	case strings.HasPrefix(head, "   Compiling ") || strings.Contains(head, "\n   Compiling ") ||
-		strings.HasPrefix(head, "   Checking ") || strings.Contains(head, "\n   Checking ") ||
-		strings.HasPrefix(head, "    Updating ") || strings.Contains(head, "\n    Updating "):
+	case hasCargoVerbLine(head):
 		return sigCargoBuild
 	}
 	return sigNone
@@ -192,6 +190,29 @@ func hasCommitLine(head string) bool {
 		hash := strings.TrimSpace(strings.TrimPrefix(line, "commit "))
 		if len(hash) == 40 && isLowerHex(hash) {
 			return true
+		}
+	}
+	return false
+}
+
+// cargoVerbs are the Cargo status-line verbs that crushCargoBuild strips.
+// Only the subset distinctive enough to identify Cargo output is listed;
+// crushCargoBuild strips a wider set once this signature is chosen.
+var cargoVerbs = []string{"Compiling ", "Checking ", "Updating "}
+
+// hasCargoVerbLine reports whether head contains an indented Cargo status
+// line. The leading space is required: Cargo always indents these lines, and
+// demanding the indent keeps unindented prose from matching.
+func hasCargoVerbLine(head string) bool {
+	for _, line := range strings.Split(head, "\n") {
+		if len(line) == 0 || (line[0] != ' ' && line[0] != '\t') {
+			continue
+		}
+		trimmed := strings.TrimLeft(line, " \t")
+		for _, verb := range cargoVerbs {
+			if strings.HasPrefix(trimmed, verb) {
+				return true
+			}
 		}
 	}
 	return false

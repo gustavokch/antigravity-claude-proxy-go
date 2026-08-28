@@ -372,6 +372,29 @@ func TestDetectSignature_CargoCheck(t *testing.T) {
 	}
 }
 
+func TestDetectSignature_CargoIndentVariance(t *testing.T) {
+	// crushCargoBuild trims all leading spaces before matching the verb, so
+	// detection must not depend on Cargo's exact column alignment.
+	for _, input := range []string{
+		"  Compiling serde v1.0.0\n    Finished dev [unoptimized] target(s) in 3.1s\n",
+		"     Checking serde v1.0.0\n    Finished dev [unoptimized] target(s) in 3.1s\n",
+		" Updating crates.io index\n    Finished dev [unoptimized] target(s) in 3.1s\n",
+	} {
+		if sig := detectSignature(input); sig != sigCargoBuild {
+			t.Errorf("detectSignature(%q) = %v, want sigCargoBuild", input, sig)
+		}
+	}
+}
+
+func TestDetectSignature_UnindentedCargoVerbIsNotCargo(t *testing.T) {
+	// Prose and source text starting at column zero must not match. The
+	// required leading indent is what keeps this case narrow.
+	input := "Checking the inventory for missing parts\nUpdating the manifest\n"
+	if sig := detectSignature(input); sig == sigCargoBuild {
+		t.Error("unindented prose matched sigCargoBuild")
+	}
+}
+
 func TestCargoBuildFilter(t *testing.T) {
 	input := "   Compiling libc v0.2.1\n   Compiling serde v1.0.0\n    Updating crates.io index\nwarning: unused variable: `x`\n --> src/main.rs:2:9\n  |\n2 |     let x = 1;\n  |         ^\nerror[E0308]: mismatched types\n --> src/main.rs:4:5\n    Finished dev [unoptimized + debuginfo] target(s) in 1.2s"
 	got, changed := crushCargoBuild(input)
