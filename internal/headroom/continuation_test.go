@@ -215,7 +215,9 @@ func TestClassifyContinuation(t *testing.T) {
 				},
 			},
 			inspector: nil,
-			want:      kindCoding,
+			// Over the ceiling with no code signal: large, not coding. Both
+			// kinds skip the clamp; the distinction is for telemetry.
+			want: kindLarge,
 		},
 		{
 			name: "tool_result containing unified diff",

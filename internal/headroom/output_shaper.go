@@ -30,6 +30,12 @@ const (
 	// kindMechanical is a small, non-code tool-result continuation: the model is
 	// resuming work and does not need a large thinking budget.
 	kindMechanical
+
+	// kindLarge is a tool-result continuation over the byte ceiling that carries
+	// no code signal: a long log, a directory listing, a fetched page. Not
+	// clamped, since the model still has to read it, but kept distinct from
+	// kindCoding so the telemetry says which signal decided the turn.
+	kindLarge
 )
 
 func (k continuationKind) String() string {
@@ -40,6 +46,8 @@ func (k continuationKind) String() string {
 		return "coding"
 	case kindMechanical:
 		return "mechanical"
+	case kindLarge:
+		return "large"
 	default:
 		return "unknown"
 	}
@@ -240,9 +248,10 @@ func classifyContinuation(req map[string]any, inspector *ToolInspector, mechanic
 		}
 	}
 
-	// 3. Check byte ceiling.
+	// 3. Check byte ceiling. Size alone is not evidence of code, so this is the
+	// one exit that does not claim the turn is a coding continuation.
 	if totalBytes >= maxBytes {
-		return kindCoding
+		return kindLarge
 	}
 
 	return kindMechanical

@@ -429,3 +429,47 @@ func TestClassifyContinuation_ZeroMaxBytesUsesDefault(t *testing.T) {
 		t.Error("payload over the default ceiling with zero ceiling = mechanical, want the ceiling applied")
 	}
 }
+
+func TestClassifyContinuation_LargeNonCodeIsLarge(t *testing.T) {
+	// A payload over the ceiling with no code signal is not coding; it is only
+	// big. Labelling it "coding" made the telemetry unreadable, since a real
+	// edit loop and a long log line looked identical.
+	req := map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "t1",
+				"content": strings.Repeat("lorem ipsum dolor sit amet ", 200)},
+		}},
+	}}
+	got := classifyContinuation(req, nil, 0)
+	if got != kindLarge {
+		t.Errorf("large non-code continuation = %s, want large", got)
+	}
+	if got.String() != "large" {
+		t.Errorf("String() = %q, want %q", got.String(), "large")
+	}
+}
+
+func TestOutputShaper_LargeContinuationIsNotClamped(t *testing.T) {
+	req := map[string]any{
+		"model":      "claude-opus-4",
+		"max_tokens": float64(8192),
+		"thinking":   map[string]any{"type": "enabled", "budget_tokens": float64(4096)},
+		"messages": []any{
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "t1",
+					"content": strings.Repeat("lorem ipsum dolor sit amet ", 200)},
+			}},
+		},
+	}
+	reqCtx := &RequestContext{Request: req}
+	stage := &OutputShaperStage{}
+	if err := stage.Execute(context.Background(), reqCtx, shaperCfg()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reqCtx.ContinuationKind != "large" {
+		t.Errorf("ContinuationKind = %q, want %q", reqCtx.ContinuationKind, "large")
+	}
+	if reqCtx.EffortClamped {
+		t.Error("large continuation must not be clamped")
+	}
+}
