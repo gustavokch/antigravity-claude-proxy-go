@@ -397,7 +397,7 @@ func (c *Client) FetchModels(ctx context.Context, token string, baseURL string) 
 		} `json:"data"`
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return DefaultClaudeCatalogue(), fmt.Errorf("failed to read response body: %w", err)
 	}

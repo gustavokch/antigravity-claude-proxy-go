@@ -322,6 +322,33 @@ func TestFetchModels(t *testing.T) {
 			t.Fatalf("expected fallback catalogue returned alongside error")
 		}
 	})
+
+	t.Run("token trimmed and oauth token detected correctly", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if auth := r.Header.Get("Authorization"); auth != "Bearer sk-ant-oat01-test-token" {
+				t.Errorf("unexpected Authorization header: %s", auth)
+			}
+			if key := r.Header.Get("x-api-key"); key != "" {
+				t.Errorf("unexpected x-api-key header: %s", key)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+				},
+			})
+		}))
+		defer ts.Close()
+
+		client := NewClient(ts.URL, ts.Client())
+		models, err := client.FetchModels(context.Background(), "   sk-ant-oat01-test-token   ", ts.URL)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(models) != 1 || models[0].ID != "claude-sonnet-5" {
+			t.Fatalf("unexpected models: %+v", models)
+		}
+	})
 }
 
 func TestEnrichModel(t *testing.T) {
