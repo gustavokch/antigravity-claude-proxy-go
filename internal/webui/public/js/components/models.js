@@ -311,6 +311,7 @@ window.Components.models = () => ({
         hasApiKey: false,
         allowlist: [],
         routing: null,
+        responseCache: null,
         appSpoof: {
             title: '',
             categories: '',
@@ -452,6 +453,7 @@ window.Components.models = () => ({
                     hasApiKey: !!data.config.hasApiKey,
                     allowlist: data.config.allowlist || [],
                     routing: data.config.routing || null,
+                    responseCache: data.config.responseCache || null,
                     appSpoof: {
                         title: (data.config.appSpoof && data.config.appSpoof.title) || '',
                         categories: (data.config.appSpoof && data.config.appSpoof.categories) || '',
@@ -481,6 +483,12 @@ window.Components.models = () => ({
             // it would wipe the saved routing config.
             if (this.openRouterConfig.routing) {
                 payload.routing = this.openRouterConfig.routing;
+            }
+            // Response cache config has no panel yet, so it only ever arrives
+            // from the GET. It still has to ride through the whole-object
+            // replace or saving any other field would wipe it.
+            if (this.openRouterConfig.responseCache) {
+                payload.responseCache = this.openRouterConfig.responseCache;
             }
             // App Spoof rides through the whole-object replace too; only sent
             // when at least one field is non-empty so the saved values aren't

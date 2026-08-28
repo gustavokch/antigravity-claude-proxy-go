@@ -768,3 +768,63 @@ func TestManagement_HeadroomStatsEndpoint(t *testing.T) {
 	}
 }
 
+
+// TestManagement_OpenRouterResponseCacheReplaceSemantics pins the whole-object
+// replace contract of POST /api/openrouter/config: a payload that omits
+// responseCache erases the stored block. The WebUI panel therefore has to send
+// the field back on every save (see saveOpenRouterConfig in models.js).
+func TestManagement_OpenRouterResponseCacheReplaceSemantics(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+
+	post := func(t *testing.T, payload string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/openrouter/config", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		cfg, ok := res["config"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected config map, got %v", res["config"])
+		}
+		return cfg
+	}
+
+	cfg := post(t, `{
+		"enabled": true,
+		"apiKey": "sk-or-test-key",
+		"responseCache": {"enabled": true, "ttlSeconds": 600, "allowClientOverride": false}
+	}`)
+	rc, ok := cfg["responseCache"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected responseCache after save, got %v", cfg["responseCache"])
+	}
+	if rc["ttlSeconds"] != float64(600) {
+		t.Errorf("expected ttlSeconds = 600, got %v", rc["ttlSeconds"])
+	}
+
+	// Re-sending the block preserves it.
+	cfg = post(t, `{
+		"enabled": true,
+		"hasApiKey": true,
+		"responseCache": {"enabled": true, "ttlSeconds": 600, "allowClientOverride": false}
+	}`)
+	if rc, ok := cfg["responseCache"].(map[string]any); !ok || rc["ttlSeconds"] != float64(600) {
+		t.Errorf("expected responseCache to survive a save that re-sends it, got %v", cfg["responseCache"])
+	}
+
+	// Omitting it erases it — this is why the WebUI must ride the field through.
+	cfg = post(t, `{"enabled": true, "hasApiKey": true}`)
+	if raw, present := cfg["responseCache"]; present {
+		if rc, ok := raw.(map[string]any); !ok || len(rc) != 0 {
+			t.Errorf("expected responseCache to be cleared by an omitting save, got %v", raw)
+		}
+	}
+}
