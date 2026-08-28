@@ -1,4 +1,30 @@
 <div x-data="accountManager" class="view-container">
+    <!-- Provider Tabs -->
+    <div class="flex items-center gap-2 mb-4 border-b border-space-border/50 pb-2">
+        <button class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                :class="accountTab === 'google' ? 'bg-blue-600 text-white shadow-sm' : 'text-white/80 hover:text-white hover:bg-space-800'"
+                @click="accountTab = 'google'">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"/>
+            </svg>
+            <span>Google Cloud Code</span>
+            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono"
+                  :class="accountTab === 'google' ? 'bg-blue-700 text-blue-100' : 'bg-space-800 text-white/70 border border-space-border/60'"
+                  x-text="$store.data.accounts.length + '/' + $store.data.maxAccounts"></span>
+        </button>
+        <button class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                :class="accountTab === 'claudecode' ? 'bg-purple-600 text-white shadow-sm' : 'text-white/80 hover:text-white hover:bg-space-800'"
+                @click="accountTab = 'claudecode'">
+            <svg class="w-3.5 h-3.5" :class="accountTab === 'claudecode' ? 'text-white' : 'text-purple-400'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+            </svg>
+            <span>Claude Code</span>
+            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono"
+                  :class="accountTab === 'claudecode' ? 'bg-purple-700 text-purple-100' : 'bg-space-800 text-purple-300 border border-space-border/60'"
+                  x-text="ccAccounts.length"></span>
+        </button>
+    </div>
+
     <!-- Compact Header -->
     <div class="flex items-center justify-between gap-4 mb-6">
         <!-- Title with inline subtitle -->
@@ -8,14 +34,14 @@
             </h1>
             <div class="flex items-center h-6 px-3 rounded-full bg-space-800/80 border border-space-border/50 shadow-sm backdrop-blur-sm">
                 <span class="text-[10px] font-mono text-gray-400 uppercase tracking-wider"
-                      x-text="$store.global.t('manageTokens')">
-                    Manage Google Account tokens and authorization states
+                      x-text="accountTab === 'google' ? ($store.global.t('manageTokens') || 'Manage Google Account tokens and authorization states') : ($store.global.t('manageCCTokens') || 'Manage Claude Code OAuth pool & API key credentials')">
+                    Manage Account tokens and authorization states
                 </span>
             </div>
         </div>
 
-        <!-- Action Buttons -->
-        <div class="flex items-center gap-2">
+        <!-- Action Buttons (Google Tab) -->
+        <div class="flex items-center gap-2" x-show="accountTab === 'google'">
             <!-- Search -->
             <div class="relative" x-show="$store.data.accounts.length > 0">
                 <input type="text"
@@ -78,11 +104,66 @@
                 <span x-text="$store.global.t('addAccount')">Add Account</span>
             </button>
         </div>
+
+        <!-- Action Buttons (Claude Code Tab) -->
+        <div class="flex items-center gap-2" x-show="accountTab === 'claudecode'">
+            <!-- Search -->
+            <div class="relative" x-show="ccAccounts.length > 0">
+                <input type="text"
+                       x-model="searchQuery"
+                       :placeholder="$store.global.t('searchAccounts') || 'Search accounts...'"
+                       class="input-search-sm w-48 pl-9 h-8"
+                       @keydown.escape="searchQuery = ''">
+                <svg class="w-4 h-4 absolute left-3 top-2 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+            </div>
+
+            <!-- Auto Import Button -->
+            <button class="btn btn-xs btn-outline border-purple-500/30 text-purple-400 hover:bg-purple-950/40 hover:text-purple-300 transition-all gap-1.5 h-8"
+                @click="autoImportCC()"
+                :disabled="ccImporting"
+                :title="$store.global.t('ccAutoImport') || 'Import from ~/.claude'">
+                <svg class="w-3.5 h-3.5" :class="{ 'animate-spin': ccImporting }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                <span x-text="$store.global.t('ccAutoImport') || 'Auto Import'">Auto Import</span>
+            </button>
+
+            <!-- Reload Button -->
+            <button class="btn btn-xs btn-outline border-space-border text-gray-400 hover:text-white transition-all gap-2 h-8"
+                @click="loadCCAccounts()"
+                :disabled="ccLoading">
+                <svg xmlns="http://www.w3.org/2000/svg"
+                     class="w-3.5 h-3.5 transition-transform"
+                     :class="{ 'animate-spin': ccLoading }"
+                     fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                <span x-text="$store.global.t('reload') || 'Reload'">Reload</span>
+            </button>
+
+            <!-- Account Count Indicator -->
+            <div class="flex items-center h-6 px-2 rounded bg-space-800/80 border border-space-border/50">
+                <span class="text-[11px] font-mono text-purple-300" x-text="ccAccounts.length + ' accounts'"></span>
+            </div>
+
+            <!-- Add Account Button -->
+            <button class="btn bg-purple-600 hover:bg-purple-700 border-none text-white btn-xs gap-2 h-8"
+                @click="document.getElementById('add_account_modal').showModal()">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                <span x-text="$store.global.t('addAccount') || 'Add Account'">Add Account</span>
+            </button>
+        </div>
     </div>
 
     <!-- Table Card -->
     <div class="view-card !p-0">
-        <table class="w-full">
+        <!-- Google Cloud Code Accounts Table -->
+        <div x-show="accountTab === 'google'">
+            <table class="w-full">
             <thead x-show="$store.data.accounts.length > 0">
                 <tr class="bg-space-900/50 border-b border-space-border/50">
                     <th class="pl-6 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-16" x-text="$store.global.t('enabled')">Enabled</th>
@@ -274,6 +355,138 @@
                 </template>
             </tbody>
         </table>
+        </div>
+
+        <!-- Claude Code Accounts Table -->
+        <div x-show="accountTab === 'claudecode'">
+            <table class="w-full">
+                <thead x-show="ccAccounts.length > 0">
+                    <tr class="bg-space-900/50 border-b border-space-border/50">
+                        <th class="pl-6 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-16" x-text="$store.global.t('enabled')">Enabled</th>
+                        <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider flex-1 min-w-[200px]" x-text="$store.global.t('ccAccountName') || 'Account Name / ID'">Account Name / ID</th>
+                        <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-24" x-text="$store.global.t('type') || 'Type'">Type</th>
+                        <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-20" x-text="$store.global.t('priority') || 'Priority'">Priority</th>
+                        <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-32" x-text="$store.global.t('status') || 'Status'">Status</th>
+                        <th class="py-3 pr-6 text-right text-[10px] font-bold text-gray-500 uppercase tracking-wider w-32" x-text="$store.global.t('operations')">Operations</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Empty State -->
+                    <template x-if="ccAccounts.length === 0">
+                        <tr>
+                            <td colspan="6" class="py-16 text-center">
+                                <div class="flex flex-col items-center gap-4 max-w-lg mx-auto">
+                                    <div class="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center">
+                                        <svg class="w-8 h-8 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-base font-semibold text-white mb-1" x-text="$store.global.t('ccNoAccounts') || 'No Claude Code Accounts'">No Claude Code Accounts</h3>
+                                        <p class="text-xs text-gray-400" x-text="$store.global.t('ccNoAccountsDesc') || 'Add an Anthropic API key or OAuth token, or auto-import existing credentials from ~/.claude.json.'">
+                                            Add an Anthropic API key or OAuth token, or auto-import existing credentials from ~/.claude.json.
+                                        </p>
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <button class="btn btn-sm btn-outline border-purple-500/40 text-purple-300 hover:bg-purple-950/40 gap-2"
+                                                @click="autoImportCC()">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                                            </svg>
+                                            <span x-text="$store.global.t('ccAutoImport') || 'Auto Import'">Auto Import</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+
+                    <!-- Account Rows -->
+                    <template x-for="acc in filteredCCAccounts" :key="acc.id">
+                        <tr class="table-row-hover group" :class="{ 'opacity-50': !acc.enabled }">
+                            <!-- Enabled Toggle -->
+                            <td class="pl-6 py-4">
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox"
+                                           class="sr-only peer"
+                                           :checked="acc.enabled !== false"
+                                           @change="toggleCCAccount(acc)">
+                                    <div class="w-8 h-4 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-purple-600"></div>
+                                </label>
+                            </td>
+
+                            <!-- Name & ID -->
+                            <td class="py-4">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm font-medium text-white" x-text="acc.name || acc.id"></span>
+                                    <span class="text-[10px] font-mono text-gray-500" x-text="'(' + acc.id + ')'"></span>
+                                </div>
+                            </td>
+
+                            <!-- Type -->
+                            <td class="py-4">
+                                <span class="badge badge-xs"
+                                      :class="acc.type === 'oauth' ? 'badge-primary' : (acc.type === 'api_key' ? 'badge-accent' : 'badge-ghost')"
+                                      x-text="acc.type || 'token'"></span>
+                            </td>
+
+                            <!-- Priority -->
+                            <td class="py-4">
+                                <span class="text-xs font-mono text-gray-300" x-text="acc.priority || 1"></span>
+                            </td>
+
+                            <!-- Status / Cooldown -->
+                            <td class="py-4">
+                                <template x-if="acc.cooldownUntil">
+                                    <span class="badge badge-xs badge-error gap-1">
+                                        <span>cooldown</span>
+                                    </span>
+                                </template>
+                                <template x-if="!acc.cooldownUntil">
+                                    <span class="badge badge-xs badge-success">ready</span>
+                                </template>
+                            </td>
+
+                            <!-- Operations -->
+                            <td class="py-4 pr-6 text-right">
+                                <div class="flex items-center justify-end gap-1.5">
+                                    <button class="btn btn-xs btn-ghost text-sky-400 hover:text-sky-300"
+                                            @click="testCCAccount(acc)"
+                                            :disabled="ccTesting[acc.id]">
+                                        <svg class="w-3.5 h-3.5" :class="{ 'animate-spin': ccTesting[acc.id] }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                        </svg>
+                                        <span x-text="ccTesting[acc.id] ? 'Testing...' : 'Test'"></span>
+                                    </button>
+                                    <button class="btn btn-xs btn-ghost text-rose-400 hover:text-rose-300"
+                                            @click="deleteCCAccount(acc.id)"
+                                            title="Delete Account">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+
+            <!-- Inline Add Account Bar (Claude Code) -->
+            <div class="p-4 border-t border-space-border/40 bg-space-950/20 flex flex-col sm:flex-row items-center gap-2">
+                <input class="input input-xs input-bordered bg-gray-900/60 font-mono text-xs flex-1 w-full"
+                       x-model="ccNewToken"
+                       type="password"
+                       placeholder="sk-ant-... or Bearer oat-...">
+                <input class="input input-xs input-bordered bg-gray-900/60 text-xs w-full sm:w-44"
+                       x-model="ccNewName"
+                       placeholder="Account Name (optional)">
+                <button class="btn btn-xs btn-primary w-full sm:w-auto"
+                        @click="addCCAccount()">
+                    <span>Add Account</span>
+                </button>
+            </div>
+        </div>
     </div>
 
     <!-- Account Status Info -->

@@ -52,6 +52,9 @@ func (server *Server) handleClaudeCodeAccountsList(writer http.ResponseWriter, _
 	cfg := config.Get()
 	pool, _ := getOrCreateCCPool(cfg.ClaudeCode)
 	snapshots := pool.Snapshots()
+	if snapshots == nil {
+		snapshots = make([]claudecode.AccountSnapshot, 0)
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":   "ok",
 		"accounts": snapshots,
@@ -122,7 +125,14 @@ func (server *Server) handleClaudeCodeAccountsPost(writer http.ResponseWriter, r
 }
 
 // handleClaudeCodeAccountDelete removes an account by ID.
-func (server *Server) handleClaudeCodeAccountDelete(writer http.ResponseWriter, _ *http.Request, accountID string) {
+func (server *Server) handleClaudeCodeAccountDelete(writer http.ResponseWriter, request *http.Request, accountID string) {
+	if accountID == "" && request != nil {
+		accountID = request.URL.Query().Get("id")
+	}
+	if accountID == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Missing account ID"})
+		return
+	}
 	cfg := config.Get()
 	accounts := make([]any, 0, len(cfg.ClaudeCode.Accounts))
 	for _, a := range cfg.ClaudeCode.Accounts {
@@ -270,6 +280,10 @@ func (server *Server) routeClaudeCodeManagement(writer http.ResponseWriter, requ
 	case path == "/api/claudecode/accounts" && method == http.MethodPost:
 		server.handleClaudeCodeAccountsPost(writer, request)
 		return true
+	case path == "/api/claudecode/accounts" && method == http.MethodDelete:
+		id := request.URL.Query().Get("id")
+		server.handleClaudeCodeAccountDelete(writer, request, id)
+		return true
 	case strings.HasPrefix(path, "/api/claudecode/accounts/") && strings.HasSuffix(path, "/test") && method == http.MethodPost:
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/claudecode/accounts/"), "/test")
 		server.handleClaudeCodeAccountTest(writer, request, id)
@@ -293,6 +307,57 @@ func (server *Server) routeClaudeCodeManagement(writer http.ResponseWriter, requ
 	case path == "/api/claudecode/auth/cancel" && method == http.MethodPost:
 		server.handleClaudeCodeAuthCancelPost(writer, request)
 		return true
+	case (path == "/api/claudecode/models" || path == "/api/claudecode/models/fetch") && method == http.MethodPost:
+		server.handleClaudeCodeModelsFetch(writer, request)
+		return true
 	}
 	return false
+}
+
+// handleClaudeCodeModelsFetch fetches available Claude Code models via upstream API or fallback catalogue.
+func (server *Server) handleClaudeCodeModelsFetch(writer http.ResponseWriter, request *http.Request) {
+	var body struct {
+		Token   string `json:"token"`
+		BaseURL string `json:"baseUrl"`
+	}
+	if request.Body != nil {
+		_ = json.NewDecoder(request.Body).Decode(&body)
+	}
+
+	token := strings.TrimSpace(body.Token)
+	baseURL := strings.TrimSpace(body.BaseURL)
+
+	cfg := config.Get()
+	if baseURL == "" && cfg.ClaudeCode.BaseURL != "" {
+		baseURL = cfg.ClaudeCode.BaseURL
+	}
+
+	// If token not provided in request payload, attempt to resolve from active accounts in pool or config
+	if token == "" {
+		for _, a := range cfg.ClaudeCode.Accounts {
+			if a.Enabled && strings.TrimSpace(a.Token) != "" {
+				token = strings.TrimSpace(a.Token)
+				break
+			}
+		}
+	}
+
+	models, err := claudecode.DefaultClient.FetchModels(request.Context(), token, baseURL)
+	if err != nil && len(models) == 0 {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	if models == nil {
+		models = []claudecode.DiscoveredModel{}
+	}
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status": "ok",
+		"models": models,
+		"total":  len(models),
+	})
 }

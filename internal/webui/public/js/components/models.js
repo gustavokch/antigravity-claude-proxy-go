@@ -675,6 +675,189 @@ window.Components.models = () => ({
     ccSuccess: '',
     ccNewToken: '',
     ccNewName: '',
+    ccNewModelId: '',
+    ccNewModelAlias: '',
+    ccNewModelDisplay: '',
+
+    // Claude Code Model Discovery State
+    ccDiscoverLoading: false,
+    ccDiscoverError: '',
+    ccDiscoveredModels: [],
+    ccDiscoverSearch: '',
+    ccDiscoverFamilyFilter: 'all',
+    ccSelectedModels: [],
+
+    get filteredClaudeCodeModels() {
+        let list = this.ccDiscoveredModels || [];
+        const search = (this.ccDiscoverSearch || '').trim().toLowerCase();
+        if (search) {
+            list = list.filter(m => {
+                const id = (m.id || '').toLowerCase();
+                const name = (m.display_name || '').toLowerCase();
+                const aliases = (m.aliases || []).join(' ').toLowerCase();
+                return id.includes(search) || name.includes(search) || aliases.includes(search);
+            });
+        }
+        if (this.ccDiscoverFamilyFilter && this.ccDiscoverFamilyFilter !== 'all') {
+            list = list.filter(m => (m.family || '').toLowerCase() === this.ccDiscoverFamilyFilter.toLowerCase());
+        }
+        return list;
+    },
+
+    isClaudeCodeModelImported(modelId) {
+        if (!this.ccConfig || !this.ccConfig.allowlist) return false;
+        return this.ccConfig.allowlist.some(m => m.id === modelId);
+    },
+
+    isClaudeCodeModelSelected(modelId) {
+        return this.ccSelectedModels.includes(modelId);
+    },
+
+    toggleClaudeCodeModelSelection(modelId) {
+        const idx = this.ccSelectedModels.indexOf(modelId);
+        if (idx > -1) {
+            this.ccSelectedModels.splice(idx, 1);
+        } else {
+            this.ccSelectedModels.push(modelId);
+        }
+    },
+
+    toggleSelectAllClaudeCodeModels() {
+        const visible = this.filteredClaudeCodeModels;
+        const allSelected = visible.length > 0 && visible.every(m => this.isClaudeCodeModelSelected(m.id));
+        if (allSelected) {
+            const visibleIds = new Set(visible.map(m => m.id));
+            this.ccSelectedModels = this.ccSelectedModels.filter(id => !visibleIds.has(id));
+        } else {
+            const set = new Set(this.ccSelectedModels);
+            visible.forEach(m => set.add(m.id));
+            this.ccSelectedModels = Array.from(set);
+        }
+    },
+
+    async openClaudeCodeDiscoverModal() {
+        this.ccDiscoverError = '';
+        this.ccDiscoverSearch = '';
+        this.ccDiscoverFamilyFilter = 'all';
+        this.ccSelectedModels = [];
+        const dialog = document.getElementById('claudecode_discover_modal');
+        if (dialog && typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        }
+        if (!this.ccDiscoveredModels || this.ccDiscoveredModels.length === 0) {
+            await this.fetchDiscoveredClaudeCodeModels();
+        }
+    },
+
+    closeClaudeCodeDiscoverModal() {
+        const dialog = document.getElementById('claudecode_discover_modal');
+        if (dialog && typeof dialog.close === 'function') {
+            dialog.close();
+        }
+    },
+
+    async fetchDiscoveredClaudeCodeModels() {
+        this.ccDiscoverLoading = true;
+        this.ccDiscoverError = '';
+        const password = Alpine.store('global').webuiPassword;
+
+        try {
+            const payload = {
+                baseUrl: this.ccConfig.baseUrl || ''
+            };
+            const { response, newPassword } = await window.utils.request('/api/claudecode/models', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            this.ccDiscoveredModels = data.models || [];
+        } catch (e) {
+            this.ccDiscoverError = e.message || 'Failed to fetch models from Anthropic API';
+        } finally {
+            this.ccDiscoverLoading = false;
+        }
+    },
+
+    importSelectedClaudeCodeModels() {
+        if (!this.ccConfig.allowlist) {
+            this.ccConfig.allowlist = [];
+        }
+        const existing = new Set(this.ccConfig.allowlist.map(m => m.id));
+        const selected = this.ccDiscoveredModels.filter(m => this.ccSelectedModels.includes(m.id));
+        let addedCount = 0;
+
+        selected.forEach(m => {
+            if (!existing.has(m.id)) {
+                this.ccConfig.allowlist.push({
+                    id: m.id,
+                    alias: (m.aliases && m.aliases.length > 0) ? m.aliases.join(', ') : '',
+                    displayName: m.display_name || '',
+                    enabled: true,
+                    aliases: m.aliases || []
+                });
+                existing.add(m.id);
+                addedCount++;
+            }
+        });
+
+        if (addedCount > 0) {
+            this.saveCCConfig();
+            const store = Alpine.store('global');
+            store.showToast(`Imported ${addedCount} model(s) to allowlist`, 'success');
+        }
+
+        this.closeClaudeCodeDiscoverModal();
+    },
+
+    addCCAllowlistRow() {
+        if (!this.ccNewModelId) return;
+        if (!this.ccConfig.allowlist) this.ccConfig.allowlist = [];
+        this.ccConfig.allowlist.push({
+            id: this.ccNewModelId,
+            alias: this.ccNewModelAlias || '',
+            displayName: this.ccNewModelDisplay || '',
+            enabled: true
+        });
+        this.ccNewModelId = '';
+        this.ccNewModelAlias = '';
+        this.ccNewModelDisplay = '';
+        this.saveCCConfig();
+    },
+
+    importCCDefaults() {
+        const defaults = [
+            { id: 'claude-fable-5', displayName: 'Claude Fable 5', alias: 'claude-fable-5, fable, claude-fable', enabled: true },
+            { id: 'claude-opus-5', displayName: 'Claude Opus 5', alias: 'claude-opus-5, opus, claude-5-opus', enabled: true },
+            { id: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', alias: 'claude-sonnet-5, sonnet, claude-5-sonnet', enabled: true },
+            { id: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', alias: 'claude-haiku-4-5, claude-haiku-4.5, haiku', enabled: true },
+            { id: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', alias: 'claude-opus-4.8', enabled: true },
+            { id: 'claude-opus-4-7', displayName: 'Claude Opus 4.7', alias: 'claude-opus-4.7', enabled: true },
+            { id: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', alias: 'claude-sonnet-4.6', enabled: true },
+            { id: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', alias: 'claude-opus-4.6', enabled: true },
+            { id: 'claude-3-7-sonnet-20250219', displayName: 'Claude 3.7 Sonnet', alias: 'claude-3.7-sonnet, claude-3-7-sonnet, claude-3-7-sonnet-thinking', enabled: true },
+            { id: 'claude-3-5-sonnet-20241022', displayName: 'Claude 3.5 Sonnet v2', alias: 'claude-3.5-sonnet, claude-3-5-sonnet', enabled: true },
+            { id: 'claude-3-5-haiku-20241022', displayName: 'Claude 3.5 Haiku', alias: 'claude-3.5-haiku, claude-3-5-haiku', enabled: true },
+            { id: 'claude-3-opus-20240229', displayName: 'Claude 3 Opus', alias: 'claude-3-opus', enabled: true }
+        ];
+        if (!this.ccConfig.allowlist) this.ccConfig.allowlist = [];
+        const existing = new Set(this.ccConfig.allowlist.map(m => m.id));
+        defaults.forEach(d => {
+            if (!existing.has(d.id)) {
+                this.ccConfig.allowlist.push(d);
+                existing.add(d.id);
+            }
+        });
+        this.saveCCConfig();
+        Alpine.store('global').showToast('Claude Code default models imported', 'success');
+    },
 
     async loadCCConfig() {
         const password = Alpine.store('global').webuiPassword;

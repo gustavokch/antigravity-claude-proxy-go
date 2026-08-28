@@ -5,6 +5,7 @@
 window.Components = window.Components || {};
 
 window.Components.accountManager = () => ({
+    accountTab: 'google', // 'google' | 'claudecode'
     searchQuery: '',
     deleteTarget: '',
     refreshing: false,
@@ -14,6 +15,24 @@ window.Components.accountManager = () => ({
     selectedAccountEmail: '',
     selectedAccountLimits: {},
 
+    // Claude Code Accounts & Gateway State
+    ccAccounts: [],
+    ccConfig: {
+        enabled: false,
+        baseUrl: 'https://api.anthropic.com',
+        mode: 'pool',
+        autoImport: false,
+        accounts: []
+    },
+    ccLoading: false,
+    ccSaving: false,
+    ccImporting: false,
+    ccError: '',
+    ccSuccess: '',
+    ccNewToken: '',
+    ccNewName: '',
+    ccTesting: {},
+
     // Health Inspector (Developer Mode)
     healthData: {},
     healthLoading: false,
@@ -22,6 +41,8 @@ window.Components.accountManager = () => ({
         if (Alpine.store('data').devMode && Alpine.store('settings').healthInspectorOpen) {
             this.fetchHealthData();
         }
+        this.loadCCAccounts();
+        this.loadCCConfig();
     },
 
     get filteredAccounts() {
@@ -35,6 +56,20 @@ window.Components.accountManager = () => ({
             return acc.email.toLowerCase().includes(query) ||
                    (acc.projectId && acc.projectId.toLowerCase().includes(query)) ||
                    (acc.source && acc.source.toLowerCase().includes(query));
+        });
+    },
+
+    get filteredCCAccounts() {
+        const accounts = this.ccAccounts || [];
+        if (!this.searchQuery || this.searchQuery.trim() === '') {
+            return accounts;
+        }
+
+        const query = this.searchQuery.toLowerCase().trim();
+        return accounts.filter(acc => {
+            return (acc.name && acc.name.toLowerCase().includes(query)) ||
+                   (acc.id && acc.id.toLowerCase().includes(query)) ||
+                   (acc.type && acc.type.toLowerCase().includes(query));
         });
     },
 
@@ -497,6 +532,183 @@ window.Components.accountManager = () => ({
         } finally {
             // Reset file input
             event.target.value = '';
+        }
+    },
+
+    // ==========================================
+    // Claude Code Accounts & Gateway Operations
+    // ==========================================
+
+    async loadCCAccounts() {
+        const password = Alpine.store('global').webuiPassword;
+        this.ccLoading = true;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/claudecode/accounts', {}, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) return;
+            const data = await response.json();
+            this.ccAccounts = data.accounts || [];
+        } catch (e) {
+            console.error('Failed to load Claude Code accounts:', e);
+        } finally {
+            this.ccLoading = false;
+        }
+    },
+
+    async loadCCConfig() {
+        const password = Alpine.store('global').webuiPassword;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/claudecode/config', {}, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) return;
+            const data = await response.json();
+            if (data.config) {
+                this.ccConfig = { ...this.ccConfig, ...data.config };
+            }
+        } catch (e) {
+            console.error('Failed to load Claude Code config:', e);
+        }
+    },
+
+    async saveCCConfig() {
+        const store = Alpine.store('global');
+        this.ccSaving = true;
+        this.ccError = '';
+        this.ccSuccess = '';
+        try {
+            const { response, newPassword } = await window.utils.request('/api/claudecode/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.ccConfig)
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${response.status}`);
+            }
+            this.ccSuccess = 'Settings saved';
+            setTimeout(() => { this.ccSuccess = ''; }, 3000);
+            store.showToast('Claude Code configuration saved', 'success');
+        } catch (e) {
+            this.ccError = e.message || 'Save failed';
+            store.showToast(this.ccError, 'error');
+        } finally {
+            this.ccSaving = false;
+        }
+    },
+
+    async toggleCCAccount(acc) {
+        const store = Alpine.store('global');
+        acc.enabled = !acc.enabled;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/claudecode/accounts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: acc.id, enabled: acc.enabled })
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                acc.enabled = !acc.enabled;
+                throw new Error('Failed to update account status');
+            }
+            store.showToast(`Account ${acc.enabled ? 'enabled' : 'disabled'}`, 'success');
+            await this.loadCCAccounts();
+        } catch (e) {
+            store.showToast(e.message, 'error');
+        }
+    },
+
+    async testCCAccount(acc) {
+        const store = Alpine.store('global');
+        this.ccTesting[acc.id] = true;
+        this.ccTesting = { ...this.ccTesting };
+        try {
+            const { response, newPassword } = await window.utils.request('/api/claudecode/accounts/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: acc.id })
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json();
+            if (data.valid) {
+                store.showToast(`Account "${acc.name || acc.id}" is valid and ready!`, 'success');
+            } else {
+                store.showToast(`Account test failed: ${data.error || 'Invalid token'}`, 'error');
+            }
+            await this.loadCCAccounts();
+        } catch (e) {
+            store.showToast(`Test error: ${e.message}`, 'error');
+        } finally {
+            delete this.ccTesting[acc.id];
+            this.ccTesting = { ...this.ccTesting };
+        }
+    },
+
+    async deleteCCAccount(accountId) {
+        const store = Alpine.store('global');
+        if (!confirm('Are you sure you want to delete this Claude Code account?')) return;
+        try {
+            const { response, newPassword } = await window.utils.request(`/api/claudecode/accounts/${encodeURIComponent(accountId)}`, {
+                method: 'DELETE'
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error || 'Failed to delete account');
+            }
+            store.showToast('Claude Code account deleted', 'success');
+            await this.loadCCAccounts();
+        } catch (e) {
+            store.showToast(e.message, 'error');
+        }
+    },
+
+    async addCCAccount() {
+        const store = Alpine.store('global');
+        if (!this.ccNewToken) {
+            store.showToast('Please provide a token', 'error');
+            return;
+        }
+        try {
+            const { response, newPassword } = await window.utils.request('/api/claudecode/accounts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    token: this.ccNewToken,
+                    name: this.ccNewName || 'Claude Code Account',
+                    enabled: true
+                })
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error || 'Failed to add account');
+            }
+            this.ccNewToken = '';
+            this.ccNewName = '';
+            store.showToast('Claude Code account added', 'success');
+            await this.loadCCAccounts();
+        } catch (e) {
+            store.showToast(e.message, 'error');
+        }
+    },
+
+    async autoImportCC() {
+        const store = Alpine.store('global');
+        this.ccImporting = true;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/claudecode/import', {
+                method: 'POST'
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            store.showToast(`Imported ${data.imported} Claude Code account(s)`, 'success');
+            await this.loadCCAccounts();
+        } catch (e) {
+            store.showToast(e.message || 'Import failed', 'error');
+        } finally {
+            this.ccImporting = false;
         }
     }
 });
