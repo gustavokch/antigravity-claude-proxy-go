@@ -51,6 +51,14 @@ var headroomKeys = []string{
 	"headroomRequestsCompressed", "headroomThinkingClamped", "headroomCcrRetrievals",
 }
 
+var commandCrusherKeys = []string{
+	"commandCrusherSettings", "commandCrusherDesc", "commandCrusherEnabled",
+	"commandCrusherRequiresEngine", "commandCrusherToolsTitle",
+	"commandCrusherSafetyTitle", "commandCrusherSafetyDesc",
+	"commandCrusherRunners", "commandCrusherLinters", "commandCrusherCompilers",
+	"commandCrusherVCS",
+}
+
 var locales = []string{"en", "pt"}
 
 func loadLocale(t *testing.T, locale string) string {
@@ -102,6 +110,18 @@ func TestTranslations_HeadroomKeys(t *testing.T) {
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		for _, key := range headroomKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_CommandCrusherKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range commandCrusherKeys {
 			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
 			if !re.MatchString(src) {
 				t.Errorf("locale %s missing key %q", locale, key)

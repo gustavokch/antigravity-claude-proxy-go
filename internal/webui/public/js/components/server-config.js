@@ -453,7 +453,7 @@ window.Components.serverConfig = () => ({
     },
 
     // ==========================================
-    // Headroom Engine Configuration
+    // Headroom Engine & CommandCrusher Configuration
     // ==========================================
 
     async saveHeadroom(patch) {
@@ -461,6 +461,7 @@ window.Components.serverConfig = () => ({
         if (!this.serverConfig.headroom) {
             this.serverConfig.headroom = {
                 enabled: false,
+                commandCrusher: false,
                 smartCrusher: false,
                 codeCompressor: false,
                 liveTurns: 2,
@@ -501,6 +502,10 @@ window.Components.serverConfig = () => ({
             this.serverConfig.headroom = previousHeadroom;
             store.showToast('Failed to save Headroom settings: ' + e.message, 'error');
         }
+    },
+
+    toggleCommandCrusher(enabled) {
+        this.saveHeadroom({ commandCrusher: enabled });
     },
 
     toggleHeadroomMaster(enabled) {
