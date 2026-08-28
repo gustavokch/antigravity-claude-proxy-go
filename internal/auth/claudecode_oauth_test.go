@@ -190,9 +190,14 @@ func TestStartAuthSession_Loopback(t *testing.T) {
 }
 
 func TestCompleteManualAuth(t *testing.T) {
+	tokenReqs := make(chan map[string]any, 4)
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/oauth/token":
+			var reqBody map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&reqBody)
+			tokenReqs <- reqBody
+
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(ClaudeCodeTokenResponse{
 				AccessToken:  "manual-access-token",
@@ -243,6 +248,14 @@ func TestCompleteManualAuth(t *testing.T) {
 		t.Errorf("expected refresh token manual-refresh-token, got %s", account.RefreshToken)
 	}
 
+	tokenReq := <-tokenReqs
+	if got := tokenReq["code"]; got != "my-auth-code" {
+		t.Errorf("expected token request code my-auth-code, got %v", got)
+	}
+	if got := tokenReq["state"]; got != "my-state" {
+		t.Errorf("expected token request state my-state, got %v", got)
+	}
+
 	// Test URL format and whitespace trimming
 	session2, err := mgr.StartAuthSession("manual")
 	if err != nil {
@@ -255,6 +268,14 @@ func TestCompleteManualAuth(t *testing.T) {
 	}
 	if account2.Email != "manual@claude.ai" {
 		t.Errorf("expected email manual@claude.ai, got %s", account2.Email)
+	}
+
+	tokenReq2 := <-tokenReqs
+	if got := tokenReq2["code"]; got != "my-auth-code" {
+		t.Errorf("expected token request code my-auth-code, got %v", got)
+	}
+	if got := tokenReq2["state"]; got != "some-state" {
+		t.Errorf("expected token request state some-state, got %v", got)
 	}
 
 	// Test empty code
