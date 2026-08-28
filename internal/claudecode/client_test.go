@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -232,6 +233,125 @@ func TestApplyAuthHeaders(t *testing.T) {
 				if got := req.Header.Get(k); got != "" {
 					t.Errorf("header %s = %q, want empty", k, got)
 				}
+			}
+		})
+	}
+}
+
+func TestFetchModels(t *testing.T) {
+	t.Run("empty token returns default catalogue", func(t *testing.T) {
+		client := NewClient("https://api.anthropic.com", nil)
+		models, err := client.FetchModels(context.Background(), "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(models) == 0 {
+			t.Fatalf("expected non-empty default catalogue")
+		}
+		var foundFable, foundSonnet bool
+		for _, m := range models {
+			if m.ID == "claude-fable-5" {
+				foundFable = true
+			}
+			if m.ID == "claude-sonnet-5" {
+				foundSonnet = true
+			}
+		}
+		if !foundFable || !foundSonnet {
+			t.Errorf("expected claude-fable-5 and claude-sonnet-5 in default catalogue")
+		}
+	})
+
+	t.Run("upstream mock success", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				t.Errorf("unexpected path: %s", r.URL.Path)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer oat-token-123" {
+				t.Errorf("unexpected Authorization header: %s", auth)
+			}
+			if v := r.Header.Get("anthropic-version"); v != DefaultAnthropicVersion {
+				t.Errorf("unexpected version: %s", v)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{
+						"id":           "claude-opus-5",
+						"display_name": "Claude Opus 5",
+						"created_at":   "2026-05-01T00:00:00Z",
+					},
+					{
+						"id":           "custom-fable-model-20260601",
+						"display_name": "Custom Fable Experimental",
+						"created_at":   "2026-06-01T00:00:00Z",
+					},
+				},
+			})
+		}))
+		defer ts.Close()
+
+		client := NewClient(ts.URL, ts.Client())
+		models, err := client.FetchModels(context.Background(), "Bearer oat-token-123", ts.URL)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(models) != 2 {
+			t.Fatalf("expected 2 models, got %d", len(models))
+		}
+		if models[0].ID != "claude-opus-5" || models[0].Family != "opus" {
+			t.Errorf("unexpected model 0: %+v", models[0])
+		}
+		if models[1].Family != "fable" {
+			t.Errorf("expected fable family for custom model, got %s", models[1].Family)
+		}
+	})
+
+	t.Run("upstream error falls back to default catalogue", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":{"message":"unauthorized"}}`, http.StatusUnauthorized)
+		}))
+		defer ts.Close()
+
+		client := NewClient(ts.URL, ts.Client())
+		models, err := client.FetchModels(context.Background(), "invalid-token", ts.URL)
+		if err == nil {
+			t.Fatalf("expected error on 401")
+		}
+		if len(models) == 0 {
+			t.Fatalf("expected fallback catalogue returned alongside error")
+		}
+	})
+}
+
+func TestEnrichModel(t *testing.T) {
+	cases := []struct {
+		id          string
+		name        string
+		wantFamily  string
+		hasThinking bool
+	}{
+		{"claude-fable-5", "Claude Fable 5", "fable", true},
+		{"claude-opus-5", "Claude Opus 5", "opus", true},
+		{"claude-sonnet-5", "Claude Sonnet 5", "sonnet", true},
+		{"claude-haiku-4-5-20251001", "Claude Haiku 4.5", "haiku", true},
+		{"claude-3-5-haiku-20241022", "Claude 3.5 Haiku", "haiku", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			m := EnrichModel(tc.id, tc.name, "2026-01-01T00:00:00Z")
+			if m.Family != tc.wantFamily {
+				t.Errorf("family = %q, want %q", m.Family, tc.wantFamily)
+			}
+			foundThinking := false
+			for _, cap := range m.Capabilities {
+				if cap == "thinking" {
+					foundThinking = true
+					break
+				}
+			}
+			if foundThinking != tc.hasThinking {
+				t.Errorf("thinking capability = %v, want %v", foundThinking, tc.hasThinking)
 			}
 		})
 	}

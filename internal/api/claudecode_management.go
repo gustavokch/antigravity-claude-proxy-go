@@ -293,6 +293,57 @@ func (server *Server) routeClaudeCodeManagement(writer http.ResponseWriter, requ
 	case path == "/api/claudecode/auth/cancel" && method == http.MethodPost:
 		server.handleClaudeCodeAuthCancelPost(writer, request)
 		return true
+	case (path == "/api/claudecode/models" || path == "/api/claudecode/models/fetch") && method == http.MethodPost:
+		server.handleClaudeCodeModelsFetch(writer, request)
+		return true
 	}
 	return false
+}
+
+// handleClaudeCodeModelsFetch fetches available Claude Code models via upstream API or fallback catalogue.
+func (server *Server) handleClaudeCodeModelsFetch(writer http.ResponseWriter, request *http.Request) {
+	var body struct {
+		Token   string `json:"token"`
+		BaseURL string `json:"baseUrl"`
+	}
+	if request.Body != nil {
+		_ = json.NewDecoder(request.Body).Decode(&body)
+	}
+
+	token := strings.TrimSpace(body.Token)
+	baseURL := strings.TrimSpace(body.BaseURL)
+
+	cfg := config.Get()
+	if baseURL == "" && cfg.ClaudeCode.BaseURL != "" {
+		baseURL = cfg.ClaudeCode.BaseURL
+	}
+
+	// If token not provided in request payload, attempt to resolve from active accounts in pool or config
+	if token == "" {
+		for _, a := range cfg.ClaudeCode.Accounts {
+			if a.Enabled && strings.TrimSpace(a.Token) != "" {
+				token = strings.TrimSpace(a.Token)
+				break
+			}
+		}
+	}
+
+	models, err := claudecode.DefaultClient.FetchModels(request.Context(), token, baseURL)
+	if err != nil && len(models) == 0 {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	if models == nil {
+		models = []claudecode.DiscoveredModel{}
+	}
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status": "ok",
+		"models": models,
+		"total":  len(models),
+	})
 }
