@@ -292,3 +292,35 @@ func TestCargoBuildFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestGitStatusFilter(t *testing.T) {
+	input := "On branch main\nYour branch is up to date with 'origin/main'.\n\nChanges not staged for commit:\n  (use \"git add <file>...\" to update what will be committed)\n  (use \"git restore <file>...\" to discard changes in working directory)\n\tmodified:   engine.go\n\nUntracked files:\n  (use \"git add <file>...\" to include in what will be committed)\n\tcommand_crusher.go\n\nno changes added to commit (use \"git add\" and/or \"git commit -a\")"
+	got, changed := crushGitStatus(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if strings.Contains(got, "(use \"") {
+		t.Errorf("hint lines survive:\n%s", got)
+	}
+	for _, want := range []string{"On branch main", "Your branch is up to date", "modified:   engine.go", "command_crusher.go"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestGitLogFilter(t *testing.T) {
+	input := "commit 545eec4f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d\nAuthor: Gus <g@example.com>\nDate:   Thu Aug 28 10:00:00 2026 -0300\n\n    fix(headroom): safe formatInt\n\ncommit e04c77b0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6\nAuthor: Gus <g@example.com>\nDate:   Thu Aug 28 09:00:00 2026 -0300\n\n    fix(headroom): recreate HTTP client"
+	got, changed := crushGitLog(input)
+	if !changed {
+		t.Fatal("expected change")
+	}
+	if strings.Contains(got, "Date:") {
+		t.Errorf("date boilerplate survives:\n%s", got)
+	}
+	for _, want := range []string{"commit 545eec4", "Author: Gus <g@example.com>", "fix(headroom): safe formatInt"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+}
