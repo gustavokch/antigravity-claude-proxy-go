@@ -13,7 +13,58 @@ import (
 
 const (
 	DefaultAnthropicVersion = "2023-06-01"
+	OAuthBetaHeader         = "oauth-2025-04-20"
 )
+
+// IsOAuthToken reports whether a token string is an Anthropic / Claude Code OAuth access token.
+// It matches the sk-ant-oat prefix, the unprefixed ant-oat form (defends against
+// tokens persisted without the sk- prefix), and a Bearer scheme prefix of any
+// case, since the RFC 7235 auth scheme is case-insensitive.
+func IsOAuthToken(token string) bool {
+	trimmed := strings.TrimSpace(token)
+	if len(trimmed) > len("bearer ") && strings.EqualFold(trimmed[:len("bearer ")], "bearer ") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "sk-ant-oat") || strings.HasPrefix(trimmed, "ant-oat") {
+		return true
+	}
+	return false
+}
+
+// ApplyAuthHeaders applies appropriate headers for OAuth vs API Key authentication.
+func ApplyAuthHeaders(req *http.Request, token string) {
+	trimmed := strings.TrimSpace(token)
+	if IsOAuthToken(trimmed) {
+		cleanToken := trimmed
+		if len(cleanToken) > len("bearer ") && strings.EqualFold(cleanToken[:len("bearer ")], "bearer ") {
+			cleanToken = cleanToken[len("bearer "):]
+		}
+		cleanToken = strings.TrimSpace(cleanToken)
+		req.Header.Set("Authorization", "Bearer "+cleanToken)
+		req.Header.Del("x-api-key")
+
+		// Ensure anthropic-beta includes oauth-2025-04-20
+		existingBeta := req.Header.Get("anthropic-beta")
+		if existingBeta == "" {
+			req.Header.Set("anthropic-beta", OAuthBetaHeader)
+		} else {
+			parts := strings.Split(existingBeta, ",")
+			found := false
+			for _, p := range parts {
+				if strings.TrimSpace(p) == OAuthBetaHeader {
+					found = true
+					break
+				}
+			}
+			if !found {
+				req.Header.Set("anthropic-beta", existingBeta+","+OAuthBetaHeader)
+			}
+		}
+	} else {
+		req.Header.Set("x-api-key", trimmed)
+		req.Header.Del("Authorization")
+	}
+}
 
 // Client handles HTTP transport to official Anthropic API endpoints.
 type Client struct {
@@ -43,8 +94,6 @@ func (c *Client) SendMessage(ctx context.Context, token string, reqBody []byte, 
 		return nil, fmt.Errorf("failed to create upstream request: %w", err)
 	}
 
-	// Always authenticate using x-api-key
-	httpReq.Header.Set("x-api-key", strings.TrimSpace(token))
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	// Set or forward anthropic-version
@@ -72,6 +121,9 @@ func (c *Client) SendMessage(ctx context.Context, token string, reqBody []byte, 
 		}
 	}
 
+	// Apply authentication headers (x-api-key vs Authorization: Bearer + anthropic-beta)
+	ApplyAuthHeaders(httpReq, token)
+
 	return c.httpClient.Do(httpReq)
 }
 
@@ -84,8 +136,8 @@ func (c *Client) ValidateAccount(ctx context.Context, token string) error {
 		return fmt.Errorf("failed to create validation request: %w", err)
 	}
 
-	req.Header.Set("x-api-key", strings.TrimSpace(token))
 	req.Header.Set("anthropic-version", DefaultAnthropicVersion)
+	ApplyAuthHeaders(req, token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
