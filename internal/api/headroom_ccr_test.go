@@ -295,9 +295,9 @@ func TestHeadroomCCR_CloudCodeStreamHydration(t *testing.T) {
 		t.Errorf("expected exactly 1 message_stop event, got %d", messageStops)
 	}
 
-	// Block indices should be sequential: [0, 1] (0 for tool_use in turn 1, 1 for text in turn 2)
-	if len(blockStarts) != 2 || blockStarts[0] != 0 || blockStarts[1] != 1 {
-		t.Errorf("expected block start indices [0, 1], got %v", blockStarts)
+	// Block indices should be sequential: [0] (headroom_retrieve in turn 1 is suppressed, 0 for text in turn 2)
+	if len(blockStarts) != 1 || blockStarts[0] != 0 {
+		t.Errorf("expected block start indices [0], got %v", blockStarts)
 	}
 
 	if srv.tracker.GetHeadroomStats().CCRRetrievals != 1 {
