@@ -302,3 +302,160 @@ func TestLogObservability(t *testing.T) {
 		t.Errorf("expected SUCCESS tag in log, got: %s", out)
 	}
 }
+
+func TestRequestMetrics_ComputeFinalMetrics_ResponseCacheHit(t *testing.T) {
+	st := NewSessionTracker(1*time.Hour, 100)
+	pricing := Pricing{
+		Prompt:     0.000003,
+		Completion: 0.000015,
+	}
+
+	// Normal call first
+	m1 := RequestMetrics{
+		Model:        "anthropic/claude-3.7-sonnet",
+		SessionID:    "session-cache-test",
+		InputTokens:  1000,
+		OutputTokens: 200,
+		Latency:      1 * time.Second,
+	}
+	m1.ComputeFinalMetrics(pricing, st)
+	if m1.CallCost <= 0 {
+		t.Fatalf("expected non-zero call cost for miss, got %f", m1.CallCost)
+	}
+	firstCost := m1.CallCost
+
+	// Cache HIT call with upstream-zeroed usage
+	m2 := RequestMetrics{
+		Model:         "anthropic/claude-3.7-sonnet",
+		SessionID:     "session-cache-test",
+		CacheStatus:   "HIT",
+		CacheAge:      120,
+		CacheTTL:      180,
+		CacheSourceID: "gen-src-456",
+		InputTokens:   0,
+		OutputTokens:  0,
+		Latency:       50 * time.Millisecond,
+	}
+	m2.ComputeFinalMetrics(pricing, st)
+
+	if m2.CallCost != 0.0 {
+		t.Errorf("expected $0.00 call cost on HIT, got %f", m2.CallCost)
+	}
+	if m2.CacheHitRate != 0.0 {
+		t.Errorf("expected 0.0%% cache hit rate for zeroed prompt, got %f", m2.CacheHitRate)
+	}
+	if m2.ThroughputTPS != 0.0 {
+		t.Errorf("expected 0.0 TPS for zeroed output, got %f", m2.ThroughputTPS)
+	}
+	if math.Abs(m2.SessionCost-firstCost) > 1e-6 {
+		t.Errorf("expected session cost to remain %f, got %f", firstCost, m2.SessionCost)
+	}
+}
+
+// TestRequestMetrics_ComputeFinalMetrics_CacheHitWithNonZeroUsage pins the
+// accounting contract for a HIT that reports real usage: the call is free, but
+// the tokens still land in the session tracker because they describe context
+// that was actually consumed.
+func TestRequestMetrics_ComputeFinalMetrics_CacheHitWithNonZeroUsage(t *testing.T) {
+	st := NewSessionTracker(1*time.Hour, 100)
+	pricing := Pricing{
+		Prompt:     0.000003,
+		Completion: 0.000015,
+	}
+
+	m := RequestMetrics{
+		Model:         "anthropic/claude-3.7-sonnet",
+		SessionID:     "session-hit-usage",
+		CacheStatus:   "HIT",
+		CacheAge:      30,
+		CacheTTL:      270,
+		CacheSourceID: "gen-src-789",
+		InputTokens:   1200,
+		OutputTokens:  350,
+		Latency:       100 * time.Millisecond,
+	}
+	m.ComputeFinalMetrics(pricing, st)
+
+	if m.CallCost != 0.0 {
+		t.Errorf("expected $0.00 call cost on HIT with reported usage, got %f", m.CallCost)
+	}
+	if m.SessionCost != 0.0 {
+		t.Errorf("expected session cost to stay at $0.00, got %f", m.SessionCost)
+	}
+	if m.ThroughputTPS <= 0 {
+		t.Errorf("expected TPS to be computed from reported output tokens, got %f", m.ThroughputTPS)
+	}
+
+	stats, ok := st.Get("session-hit-usage")
+	if !ok {
+		t.Fatalf("expected session to be tracked on HIT")
+	}
+	if stats.InputTokens != 1200 {
+		t.Errorf("expected 1200 input tokens recorded on HIT, got %d", stats.InputTokens)
+	}
+	if stats.OutputTokens != 350 {
+		t.Errorf("expected 350 output tokens recorded on HIT, got %d", stats.OutputTokens)
+	}
+	if stats.TotalCost != 0.0 {
+		t.Errorf("expected $0.00 session total on a HIT-only session, got %f", stats.TotalCost)
+	}
+}
+
+func TestLogObservability_ResponseCacheFormatting(t *testing.T) {
+	t.Run("HIT log formatting", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+		m := RequestMetrics{
+			Model:         "anthropic/claude-3.7-sonnet",
+			SessionID:     "session-hit",
+			CacheStatus:   "HIT",
+			CacheAge:      45,
+			CacheTTL:      255,
+			CacheSourceID: "gen-xyz-789",
+			Latency:       120 * time.Millisecond,
+		}
+		LogObservability(logger, m)
+		out := buf.String()
+
+		if !strings.Contains(out, "response cache: HIT (age: 45s)") {
+			t.Errorf("expected 'response cache: HIT (age: 45s)' in msg, got: %s", out)
+		}
+		if !strings.Contains(out, "response_cache_status=HIT") {
+			t.Errorf("expected response_cache_status=HIT attribute, got: %s", out)
+		}
+		if !strings.Contains(out, "response_cache_age=45") {
+			t.Errorf("expected response_cache_age=45 attribute, got: %s", out)
+		}
+		if !strings.Contains(out, "response_cache_ttl=255") {
+			t.Errorf("expected response_cache_ttl=255 attribute, got: %s", out)
+		}
+		if !strings.Contains(out, "response_cache_source_id=gen-xyz-789") {
+			t.Errorf("expected response_cache_source_id=gen-xyz-789 attribute, got: %s", out)
+		}
+	})
+
+	t.Run("MISS log formatting", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+		m := RequestMetrics{
+			Model:        "anthropic/claude-3.7-sonnet",
+			SessionID:    "session-miss",
+			CacheStatus:  "MISS",
+			CacheTTL:     300,
+			InputTokens:  500,
+			OutputTokens: 100,
+			Latency:      1500 * time.Millisecond,
+		}
+		LogObservability(logger, m)
+		out := buf.String()
+
+		if !strings.Contains(out, "response cache: MISS") {
+			t.Errorf("expected 'response cache: MISS' in msg, got: %s", out)
+		}
+		if !strings.Contains(out, "response_cache_status=MISS") {
+			t.Errorf("expected response_cache_status=MISS attribute, got: %s", out)
+		}
+	})
+}

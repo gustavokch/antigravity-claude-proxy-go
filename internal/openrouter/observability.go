@@ -25,6 +25,12 @@ type RequestMetrics struct {
 	CacheHitRate        float64       `json:"cache_hit_rate"`
 	CallCost            float64       `json:"call_cost"`
 	SessionCost         float64       `json:"session_cost"`
+
+	// Response Caching
+	CacheStatus   string `json:"cache_status,omitempty"`      // "HIT", "MISS", or ""
+	CacheAge      int    `json:"cache_age_seconds,omitempty"` // Age in seconds on HIT
+	CacheTTL      int    `json:"cache_ttl_seconds,omitempty"`
+	CacheSourceID string `json:"cache_source_id,omitempty"`
 }
 
 // ComputeFinalMetrics calculates TPS, cache hit rate, call cost, and session cost.
@@ -45,8 +51,14 @@ func (m *RequestMetrics) ComputeFinalMetrics(pricing Pricing, sessionTracker *Se
 		m.ThroughputTPS = 0.0
 	}
 
-	// Cost per API call
-	m.CallCost = CalculateCost(pricing, m.InputTokens+m.CacheReadTokens, m.OutputTokens, m.CacheReadTokens, m.CacheCreationTokens)
+	// Cost per API call. A response cache HIT is served free, so it bills
+	// nothing — but any usage the upstream still reports is left intact and
+	// recorded below, because it describes context the request consumed.
+	if m.CacheStatus == "HIT" {
+		m.CallCost = 0.0
+	} else {
+		m.CallCost = CalculateCost(pricing, m.InputTokens+m.CacheReadTokens, m.OutputTokens, m.CacheReadTokens, m.CacheCreationTokens)
+	}
 
 	// Cost per session
 	if sessionTracker == nil {
@@ -62,8 +74,16 @@ func LogObservability(log *slog.Logger, m RequestMetrics) {
 		log = slog.Default()
 	}
 
-	msg := fmt.Sprintf("[OpenRouter] %s | tokens: %s in (%s cached, %.1f%% hit), %s out | %.1f TPS | %s | $%.4f ($%.4f session)",
+	cacheTag := ""
+	if m.CacheStatus == "HIT" {
+		cacheTag = fmt.Sprintf(" | response cache: HIT (age: %ds)", m.CacheAge)
+	} else if m.CacheStatus == "MISS" {
+		cacheTag = " | response cache: MISS"
+	}
+
+	msg := fmt.Sprintf("[OpenRouter] %s%s | tokens: %s in (%s cached, %.1f%% hit), %s out | %.1f TPS | %s | $%.4f ($%.4f session)",
 		m.Model,
+		cacheTag,
 		formatInt(m.InputTokens),
 		formatInt(m.CacheReadTokens),
 		m.CacheHitRate,
@@ -77,7 +97,7 @@ func LogObservability(log *slog.Logger, m RequestMetrics) {
 		msg += fmt.Sprintf(" | provider: %s", m.Provider)
 	}
 
-	log.Info(msg,
+	attrs := []any{
 		slog.String("gateway", "openrouter"),
 		slog.String("model", m.Model),
 		slog.String("session_id", m.SessionID),
@@ -92,7 +112,17 @@ func LogObservability(log *slog.Logger, m RequestMetrics) {
 		slog.Float64("call_cost_usd", m.CallCost),
 		slog.Float64("session_cost_usd", m.SessionCost),
 		slog.String("level_tag", "SUCCESS"),
-	)
+	}
+	if m.CacheStatus != "" {
+		attrs = append(attrs,
+			slog.String("response_cache_status", m.CacheStatus),
+			slog.Int("response_cache_age", m.CacheAge),
+			slog.Int("response_cache_ttl", m.CacheTTL),
+			slog.String("response_cache_source_id", m.CacheSourceID),
+		)
+	}
+
+	log.Info(msg, attrs...)
 }
 
 func formatInt(n int) string {

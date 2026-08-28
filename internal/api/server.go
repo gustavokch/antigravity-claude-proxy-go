@@ -1143,6 +1143,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		if appSpoofed {
 			openrouter.ApplySpoofHeaders(upReq, spoofTitle, spoofCategories, spoofReferer)
 		}
+		cacheCfg := openrouter.ResolveResponseCacheConfig(openRouterCfg.ResponseCache, perModel.ResponseCache)
+		openrouter.ApplyResponseCacheHeaders(upReq, request.Header, cacheCfg)
 
 		attempts++
 		resp, err := httpClient.Do(upReq)
@@ -1166,6 +1168,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 
 		// 2xx — handle success
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			cacheInfo := openrouter.ExtractResponseCacheHeaders(resp.Header)
 			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 			if isStream {
 				headersCutoff.Stop()
@@ -1345,7 +1348,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					openrouter.DefaultRouter.RecordResult(model, provider, true, server.now().Sub(attemptStart), totalInput+totalOutput)
 					openrouter.DefaultRouter.SetSticky(sessionID, model, provider)
 				}
-				server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, totalInput, totalOutput, totalCacheRead, attemptCw, provider)
+				server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, totalInput, totalOutput, totalCacheRead, attemptCw, provider, cacheInfo)
 				if totalCCRRetrievals > 0 && server.tracker != nil {
 					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
 				}
@@ -1427,7 +1430,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				// failover, later requests must not retry the dead provider first.
 				openrouter.DefaultRouter.SetSticky(sessionID, model, provider)
 			}
-			server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, in, out, cr, cw, provider)
+			server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, in, out, cr, cw, provider, cacheInfo)
 			if totalCCRRetrievals > 0 && server.tracker != nil {
 				server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
 			}
@@ -1660,6 +1663,7 @@ func truncate(s string, n int) string {
 // context lives until the stream ends (headers already arrived within budget).
 func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http.Response, model, sessionID string, pricing openrouter.Pricing, startTime, attemptStart time.Time, provider string, cancel context.CancelFunc) {
 	defer cancel()
+	cacheInfo := openrouter.ExtractResponseCacheHeaders(resp.Header)
 	copyUpstreamHeaders(writer.Header(), resp.Header)
 	writer.WriteHeader(resp.StatusCode)
 	flusher, hasFlusher := writer.(http.Flusher)
@@ -1680,7 +1684,7 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 			}
 		}
 		// Cost follows the served endpoint (pricing is the model-level base here).
-		server.recordOpenRouterMetrics(model, sessionID, effectiveAttemptPricing(pricing, model, served), startTime, in, out, cr, cw, served)
+		server.recordOpenRouterMetrics(model, sessionID, effectiveAttemptPricing(pricing, model, served), startTime, in, out, cr, cw, served, cacheInfo)
 	})
 	defer interceptor.Close()
 
@@ -1785,7 +1789,7 @@ func writeSSEEvent(bw *bufio.Writer, eventType string, dataObj map[string]any, r
 
 // recordOpenRouterMetrics is shared between stream and unary paths. Pricing is
 // resolved here so both paths apply the model-catalog fallback uniformly.
-func (server *Server) recordOpenRouterMetrics(model, sessionID string, pricing openrouter.Pricing, startTime time.Time, in, out, cr, cw int, provider string) openrouter.RequestMetrics {
+func (server *Server) recordOpenRouterMetrics(model, sessionID string, pricing openrouter.Pricing, startTime time.Time, in, out, cr, cw int, provider string, cacheInfo openrouter.ResponseCacheInfo) openrouter.RequestMetrics {
 	latency := server.now().Sub(startTime)
 	metrics := openrouter.RequestMetrics{
 		Model:               model,
@@ -1796,6 +1800,10 @@ func (server *Server) recordOpenRouterMetrics(model, sessionID string, pricing o
 		CacheReadTokens:     cr,
 		CacheCreationTokens: cw,
 		Latency:             latency,
+		CacheStatus:         cacheInfo.Status,
+		CacheAge:            cacheInfo.Age,
+		CacheTTL:            cacheInfo.TTL,
+		CacheSourceID:       cacheInfo.SourceID,
 	}
 	metrics.ComputeFinalMetrics(resolveEffectivePricing(pricing, model), openrouter.DefaultSessionTracker)
 	openrouter.LogObservability(server.logger, metrics)

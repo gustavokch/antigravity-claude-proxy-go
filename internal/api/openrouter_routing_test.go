@@ -495,7 +495,7 @@ func TestRecordOpenRouterMetrics_ResolvesModelPricing(t *testing.T) {
 	env := &routingTestEnv{}
 	server := env.newServer(t)
 
-	m := server.recordOpenRouterMetrics("anthropic/claude-3.7-sonnet", "sess", openrouter.Pricing{}, server.now(), 1000, 500, 0, 0, "p1")
+	m := server.recordOpenRouterMetrics("anthropic/claude-3.7-sonnet", "sess", openrouter.Pricing{}, server.now(), 1000, 500, 0, 0, "p1", openrouter.ResponseCacheInfo{})
 	want := 1000*0.000003 + 500*0.000015
 	if m.CallCost != want {
 		t.Errorf("CallCost = %v, want %v (model-catalog pricing must apply)", m.CallCost, want)
