@@ -140,6 +140,26 @@ func TestPytestFilter_CRLF(t *testing.T) {
 	}
 }
 
+func TestPytestFilter_FailedSummaryLinesSurvive(t *testing.T) {
+	// FAILED short-summary lines carry the failure signal and must never be
+	// treated as progress, whatever the gate does.
+	for _, line := range []string{
+		"FAILED test_calc.py::test_add - AssertionError: 1 != 2",
+		"FAILED test_calc.py::test_div",
+		"ERROR test_calc.py::test_setup",
+	} {
+		if isPytestProgress(line) {
+			t.Errorf("isPytestProgress(%q) = true, want false", line)
+		}
+	}
+	// A bare failure-progress run is still progress and must be stripped.
+	for _, line := range []string{"FF..", "F", "..F.. [ 50%]"} {
+		if !isPytestProgress(line) {
+			t.Errorf("isPytestProgress(%q) = false, want true", line)
+		}
+	}
+}
+
 func TestUnittestFilter(t *testing.T) {
 	input := "...\n...\nF..\n======================================================================\nFAIL: test_add (test_calc.TestCalc)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"test_calc.py\", line 10, in test_add\n    self.assertEqual(add(1, 1), 3)\nAssertionError: 2 != 3\n\n----------------------------------------------------------------------\nRan 9 tests in 0.002s\n\nFAILED (failures=1)\n"
 	got, changed := crushUnittest(input)

@@ -17,6 +17,11 @@ func isPytestProgress(line string) bool {
 	if strings.HasSuffix(trimmed, "%]") && strings.Contains(trimmed, ".py") {
 		return true
 	}
+	// Short-summary lines start with a status word, not a progress glyph.
+	// They can never be progress, so skip the regex entirely.
+	if strings.HasPrefix(trimmed, "FAILED ") || strings.HasPrefix(trimmed, "ERROR ") {
+		return false
+	}
 	if strings.HasSuffix(trimmed, "]") || strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "s") || strings.HasPrefix(trimmed, "F") || strings.HasPrefix(trimmed, "x") || strings.HasPrefix(trimmed, "X") {
 		return pytestProgressRe.MatchString(trimmed)
 	}
