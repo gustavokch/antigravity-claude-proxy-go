@@ -20,6 +20,31 @@ func toolResultMsg(payload string) any {
 	}}
 }
 
+func TestEngine_CommandCrusherRunsBeforeSmartCrusher(t *testing.T) {
+	cfg := fullConfig()
+	cfg.CommandCrusher = true
+	engine := NewEngine(cfg)
+	// A payload that is BOTH pytest output and invalid for JSON compaction:
+	// crusher must strip the progress line, smart crusher must leave it alone.
+	payload := "collected 2 items\n\ntest_a.py .. [100%]\n\n=== 2 passed in 0.01s ==="
+	req := map[string]any{"messages": []any{toolResultMsg(payload)}}
+
+	reqCtx, err := engine.Process(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
+	if strings.Contains(got, "[100%]") {
+		t.Errorf("expected progress line stripped, got %q", got)
+	}
+	if !strings.Contains(got, "=== 2 passed in 0.01s ===") {
+		t.Errorf("expected summary retained, got %q", got)
+	}
+	if reqCtx.BytesAfter >= reqCtx.BytesBefore {
+		t.Errorf("expected savings, before=%d after=%d", reqCtx.BytesBefore, reqCtx.BytesAfter)
+	}
+}
+
 func TestEngine_CommandCrusherDisabledByDefault(t *testing.T) {
 	engine := NewEngine(fullConfig()) // fullConfig does not set CommandCrusher
 	payload := "collected 2 items\n\ntest_a.py .. [100%]\n\n=== 2 passed in 0.01s ==="
