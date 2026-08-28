@@ -242,13 +242,22 @@ Additional environment controls:
         "displayName": "Claude 3.7 Sonnet (OpenRouter)",
         "contextLength": 200000,
         "maxOutputTokens": 64000,
-        "enabled": true
+        "enabled": true,
+        "responseCache": {
+          "enabled": false,
+          "ttlSeconds": 120
+        }
       }
     ],
     "appSpoof": {
       "title": "Claude Code",
       "categories": "cli-agent",
       "referer": "https://claude.ai/code"
+    },
+    "responseCache": {
+      "enabled": true,
+      "ttlSeconds": 600,
+      "allowClientOverride": true
     }
   },
   "headroom": {
@@ -418,7 +427,19 @@ The OpenRouter Gateway allows querying OpenRouter's Anthropic-compatible message
 2. **Dynamic Discovery**: The Web UI includes a model discovery modal that queries `GET /v1/models` from OpenRouter with search, context window inspection, and provider filters.
 3. **Allowlist & Aliasing**: Add models from OpenRouter to your allowlist and define convenient aliases (e.g. `claude-3-7-openrouter` -> `anthropic/claude-3.7-sonnet`).
 4. **Metadata-Driven Token Limits**: Automatically calculates maximum output tokens based on provider metadata.
-5. **Harness-Gate Spoofing**: Some free models (e.g. `thinkingmachines/inkling:free`) reject unattributed requests with `403 permission_error ... only available on agentic harnesses`. When OpenRouter returns that error, the proxy retries the same request once with `HTTP-Referer`, `X-OpenRouter-Title`, and `X-OpenRouter-Categories` attribution headers (defaults: `https://claude.ai/code`, `Claude Code`, `cli-agent`). Override via the `openrouter.appSpoof` block in `config.json` or Web UI.
+5. **Server-Side Response Caching**: OpenRouter can serve a repeated request from its own cache instead of re-running the model. Configure it globally under `openrouter.responseCache`, and per model under an allowlist entry's `responseCache` block, which overrides the global one field by field.
+
+   | Field | Default | Meaning |
+   |---|---|---|
+   | `enabled` | `false` | Ask OpenRouter to cache responses for this request. |
+   | `ttlSeconds` | `300` | Cache lifetime, clamped to `1`–`86400`. |
+   | `allowClientOverride` | `true` | Let the downstream client steer caching per request. |
+
+   When override is allowed, a client may send `X-OpenRouter-Cache: true|false` to turn caching on or off for one request, `X-OpenRouter-Cache-TTL: <seconds>` to pick a lifetime (parsed and clamped by the proxy; an unparseable value is dropped), and `X-OpenRouter-Cache-Clear: true` to invalidate the cached entry before answering. A TTL sent on its own tunes caching that is already enabled; it never enables caching by itself. When override is denied, client cache headers are ignored and the configured values apply.
+
+   Upstream cache headers are passed back to the client on both unary and streaming responses: `X-OpenRouter-Cache-Status` (`HIT`/`MISS`), `X-OpenRouter-Cache-Age`, `X-OpenRouter-Cache-TTL`, and `X-OpenRouter-Cache-Source-Id`. A `HIT` is billed at `$0.00` in observability and session cost, while any usage OpenRouter still reports is recorded as consumed context.
+
+6. **Harness-Gate Spoofing**: Some free models (e.g. `thinkingmachines/inkling:free`) reject unattributed requests with `403 permission_error ... only available on agentic harnesses`. When OpenRouter returns that error, the proxy retries the same request once with `HTTP-Referer`, `X-OpenRouter-Title`, and `X-OpenRouter-Categories` attribution headers (defaults: `https://claude.ai/code`, `Claude Code`, `cli-agent`). Override via the `openrouter.appSpoof` block in `config.json` or Web UI.
 
 ---
 
