@@ -166,3 +166,100 @@ func BenchmarkCCRStore_PutGet(b *testing.B) {
 		}
 	})
 }
+
+func generateBenchmarkTranscript(numMessages int) map[string]any {
+	msgs := make([]any, 0, numMessages)
+	for i := 0; i < numMessages; i += 2 {
+		tuID := fmt.Sprintf("call_%d", i)
+		toolName := "Read"
+		if i%4 == 0 {
+			toolName = "Glob"
+		} else if i%6 == 0 {
+			toolName = "Bash"
+		}
+		msgs = append(msgs, map[string]any{
+			"role": "assistant",
+			"content": []any{
+				map[string]any{
+					"type": "tool_use",
+					"id":   tuID,
+					"name": toolName,
+					"input": map[string]any{
+						"file_path": fmt.Sprintf("/path/to/file_%d.go", i),
+					},
+				},
+			},
+		})
+
+		var content string
+		if toolName == "Read" {
+			var sb strings.Builder
+			for line := 1; line <= 100; line++ {
+				sb.WriteString(fmt.Sprintf("  %d\tfunc line%d() { println(%d) }\n", line, line, line))
+			}
+			content = sb.String()
+		} else if toolName == "Bash" {
+			content = generateBenchmarkLog(100)
+		} else {
+			content = generateBenchmarkJSON(20)
+		}
+
+		msgs = append(msgs, map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": tuID,
+					"content":     content,
+				},
+			},
+		})
+	}
+	return map[string]any{
+		"model":      "claude-3-5-sonnet",
+		"max_tokens": float64(8192),
+		"messages":   msgs,
+	}
+}
+
+func BenchmarkToolInspector_Build(b *testing.B) {
+	req := generateBenchmarkTranscript(40)
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		inspector := NewToolInspector(req)
+		if inspector.VerbatimCount() == 0 {
+			b.Fatalf("expected verbatim items")
+		}
+	}
+}
+
+func BenchmarkEngineProcess_WithVerbatim(b *testing.B) {
+	engine := NewEngine(Config{
+		Enabled:               true,
+		SmartCrusher:          true,
+		TabularArrays:         true,
+		CodeCompressor:        true,
+		PreserveVerbatimReads: true,
+		LiveTurns:             2,
+		OutputShaper: OutputShaperConfig{
+			Enabled:                  true,
+			VerbositySteering:        true,
+			EffortRouting:            true,
+			MechanicalThinkingBudget: 1024,
+		},
+	})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		reqCopy := generateBenchmarkTranscript(40)
+		ctx := context.Background()
+		_, err := engine.Process(ctx, reqCopy)
+		if err != nil {
+			b.Fatalf("process failed: %v", err)
+		}
+	}
+}
