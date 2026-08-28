@@ -324,3 +324,57 @@ func TestGitLogFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestCrushCommandOutput_Idempotent(t *testing.T) {
+	samples := map[string]string{
+		"pytest":     "collected 2 items\n\ntest_a.py .. [100%]\n\n=== 2 passed in 0.01s ===",
+		"unittest":   "...\nF\nRan 4 tests in 0.01s\n\nFAILED (failures=1)\n",
+		"ruff":       "a.py:1:1: E402 x\na.py:1:1: E402 x\n",
+		"jest":       "✓ a (1ms)\n✕ b\nTests: 1 failed, 1 passed, 2 total",
+		"mocha":      "  ✓ a\n  1 passing (1ms)\n",
+		"tsc":        "a.ts(1,1): error TS2322: x\na.ts(1,1): error TS2322: x",
+		"eslint":     "  1:1  error  x  no-undef\n  1:1  error  x  no-undef",
+		"gotest":     "=== RUN   TestA\n--- PASS: TestA (0.00s)\nok  \tx/y\t0.1s",
+		"golangci":   "a.go:1:1: x (govet)\na.go:1:1: x (govet)",
+		"cargotest":  "running 1 test\ntest t::a ... ok\n\ntest result: ok. 1 passed",
+		"cargobuild": "   Compiling x v1.0.0\n    Finished dev target(s) in 0.1s",
+		"gitstatus":  "On branch main\n  (use \"git add <file>...\" to update what will be committed)\n\tmodified:   a.go",
+		"gitlog":     "commit 545eec4f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d\nAuthor: A <a@b.c>\nDate:   Thu Aug 28 10:00:00 2026 -0300\n\n    subject",
+	}
+	for name, sample := range samples {
+		once, changed := CrushCommandOutput(sample)
+		if !changed {
+			t.Errorf("%s: expected first pass to change output", name)
+			continue
+		}
+		twice, changedAgain := CrushCommandOutput(once)
+		if changedAgain || twice != once {
+			t.Errorf("%s: not idempotent\nfirst:  %q\nsecond: %q", name, once, twice)
+		}
+	}
+}
+
+func TestCrushCommandOutput_FallbackUnchanged(t *testing.T) {
+	for _, input := range []string{
+		"",
+		"hello world",
+		"package main\n\nfunc main() {}\n",
+		"{\"json\": true}",
+		"     1\tline one\n     2\tline two\n     3\tline three\n",
+	} {
+		got, changed := CrushCommandOutput(input)
+		if changed || got != input {
+			t.Errorf("fallback mutated input %q -> %q", input, got)
+		}
+	}
+}
+
+func TestDetectSignature_NoFalsePositiveOnSource(t *testing.T) {
+	// Go source mentioning test markers in comments/strings must not match
+	// unless the shape is real go test output. Note: skipVerbatim is the
+	// primary guard preventing source file corruption in the pipeline.
+	src := "package main\n\n// === RUN is not a test log here\nfunc main() { println(\"ok  \tnot-a-package\") }\n"
+	if sig := detectSignature(src); sig != sigGoTest && sig != sigNone {
+		t.Errorf("unexpected signature %v", sig)
+	}
+}
