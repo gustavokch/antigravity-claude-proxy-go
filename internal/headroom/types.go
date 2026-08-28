@@ -29,6 +29,7 @@ type OutputShaperConfig struct {
 
 type Config struct {
 	Enabled        bool `json:"enabled"`
+	CommandCrusher bool `json:"commandCrusher,omitempty"`
 	SmartCrusher   bool `json:"smartCrusher,omitempty"`
 	TabularArrays  bool `json:"tabularArrays,omitempty"`
 	CodeCompressor bool `json:"codeCompressor,omitempty"`

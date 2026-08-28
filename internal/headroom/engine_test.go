@@ -20,6 +20,20 @@ func toolResultMsg(payload string) any {
 	}}
 }
 
+func TestEngine_CommandCrusherDisabledByDefault(t *testing.T) {
+	engine := NewEngine(fullConfig()) // fullConfig does not set CommandCrusher
+	payload := "collected 2 items\n\ntest_a.py .. [100%]\n\n=== 2 passed in 0.01s ==="
+	req := map[string]any{"messages": []any{toolResultMsg(payload)}}
+
+	if _, err := engine.Process(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
+	if got != payload {
+		t.Errorf("disabled stage must not modify payload, got %q", got)
+	}
+}
+
 func TestEngine_CompressesToolResults(t *testing.T) {
 	engine := NewEngine(fullConfig())
 	req := map[string]any{"messages": []any{toolResultMsg("{\n  \"a\": 1\n}")}}

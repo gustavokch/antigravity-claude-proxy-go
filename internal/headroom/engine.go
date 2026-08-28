@@ -22,6 +22,7 @@ func NewEngine(cfg Config) *Engine {
 		store:  store,
 		pipeline: NewPipeline(
 			NewCCRStage(store),
+			&CommandCrusherStage{},
 			&SmartCrusherStage{},
 			&CodeCompressorStage{},
 			&OutputShaperStage{},
