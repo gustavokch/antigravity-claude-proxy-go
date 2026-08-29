@@ -28,6 +28,23 @@ var RetrieveToolDefinition = map[string]any{
 	},
 }
 
+func cloneRetrieveToolDefinition() map[string]any {
+	return map[string]any{
+		"name":        "headroom_retrieve",
+		"description": "Retrieve the full content of a demoted context chunk by its chunk ID.",
+		"input_schema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"chunk_id": map[string]any{
+					"type":        "string",
+					"description": "The chunk ID to retrieve, formatted as chunk_<hash>.",
+				},
+			},
+			"required": []any{"chunk_id"},
+		},
+	}
+}
+
 // CCRStage performs Content-Conditioned Retrieval demotion of oversized tool results
 // in historical (frozen) conversation turns.
 type CCRStage struct {
@@ -126,7 +143,7 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext,
 			}
 		}
 		if !hasRetrieve {
-			reqCtx.Request["tools"] = append(tools, RetrieveToolDefinition)
+			reqCtx.Request["tools"] = append(tools, cloneRetrieveToolDefinition())
 		}
 	}
 

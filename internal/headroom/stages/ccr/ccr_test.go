@@ -344,3 +344,37 @@ func TestCCRStage_LogsChunkDemotion(t *testing.T) {
 		}
 	}
 }
+
+func TestCCRStage_ToolDefinitionCloned(t *testing.T) {
+	store := NewCCRStore(1024 * 1024)
+	stage := NewStage(store)
+	req := map[string]any{
+		"tools": []any{
+			map[string]any{"name": "read_file"},
+		},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}
+	cfg := &headroom.Config{
+		CCR: headroom.CCRConfig{Enabled: true},
+	}
+	reqCtx := &headroom.RequestContext{Request: req}
+	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tools := req["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	injected, ok := tools[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tool map, got %T", tools[1])
+	}
+	injected["name"] = "mutated_retrieve"
+	if RetrieveToolDefinition["name"] == "mutated_retrieve" {
+		// Restore original for subsequent tests
+		RetrieveToolDefinition["name"] = "headroom_retrieve"
+		t.Errorf("RetrieveToolDefinition was mutated by request mutation")
+	}
+}
