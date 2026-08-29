@@ -28,6 +28,7 @@ import (
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/code"
 	"antigravity-go-proxy/internal/headroom/stages/crusher"
 	"antigravity-go-proxy/internal/headroom/stages/smart"
 	"antigravity-go-proxy/internal/kimi"
@@ -146,7 +147,7 @@ func New(options Options) (*Server, error) {
 		headroom.NewCCRStage(srv.ccrStore),
 		crusher.NewStage(),
 		smart.NewStage(),
-		&headroom.CodeCompressorStage{},
+		code.NewStage(),
 		&headroom.OutputShaperStage{},
 	)
 	if cfg.OpenRouter.Enabled {

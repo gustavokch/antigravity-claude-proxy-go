@@ -43,20 +43,6 @@ func generateBenchmarkLog(lines int) string {
 	return sb.String()
 }
 
-func BenchmarkCodeCompressor_PruneText(b *testing.B) {
-	data := generateBenchmarkLog(500)
-	b.SetBytes(int64(len(data)))
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		out := PruneText(data)
-		if len(out) >= len(data) {
-			b.Fatalf("expected pruning")
-		}
-	}
-}
-
 func BenchmarkCCRStore_PutGet(b *testing.B) {
 	store := NewCCRStore(64)
 	payloads := make([]string, 100)
