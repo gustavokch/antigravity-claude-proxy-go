@@ -1,10 +1,13 @@
-package headroom
+package code
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+
+	"antigravity-go-proxy/internal/headroom"
 )
 
 var multipleBlankLinesRegex = regexp.MustCompile(`\n{3,}`)
@@ -14,6 +17,10 @@ var multipleBlankLinesRegex = regexp.MustCompile(`\n{3,}`)
 const repeatThreshold = 3
 
 type CodeCompressorStage struct{}
+
+func NewStage() *CodeCompressorStage {
+	return &CodeCompressorStage{}
+}
 
 func (s *CodeCompressorStage) Name() string { return "code_compressor" }
 
@@ -47,20 +54,28 @@ func PruneText(input string) string {
 	return multipleBlankLinesRegex.ReplaceAllString(strings.Join(out, "\n"), "\n\n")
 }
 
-func (s *CodeCompressorStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Config) error {
-	if !cfg.CodeCompressor {
+func (s *CodeCompressorStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext, cfg *headroom.Config) error {
+	if !cfg.CodeCompressor || reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
-	walkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
-		if skipVerbatim(reqCtx, cfg, ord) {
-			return // pruning trailing whitespace or folding repeated lines breaks
-			// the byte-exact old_string a later Edit draws from this payload
+	log := reqCtx.Log()
+	dbg := log.Enabled(ctx, slog.LevelDebug)
+
+	headroom.WalkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
+		if headroom.SkipVerbatim(reqCtx, cfg, ord) {
+			return
 		}
 		before := get()
 		after := PruneText(before)
-		if after != before {
-			set(after)
-			reqCtx.RecordRewrite(before, after)
+		if after == before {
+			return
+		}
+		set(after)
+		reqCtx.RecordRewrite(before, after)
+		if dbg {
+			log.Debug("code_compressor pruned tool output",
+				"stage", s.Name(), "request_id", reqCtx.RequestID, "ordinal", ord,
+				"bytes_before", len(before), "bytes_after", len(after))
 		}
 	})
 	return nil

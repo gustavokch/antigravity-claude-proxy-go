@@ -1,9 +1,11 @@
-package headroom
+package smart
 
 import (
 	"context"
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/headroom"
 )
 
 func TestTabularConversion_UniformScalarArray(t *testing.T) {
@@ -137,8 +139,8 @@ func TestSmartCrusher_TabularArraysFlag(t *testing.T) {
 	stage := &SmartCrusherStage{}
 
 	// When TabularArrays is false, only json.Compact is used
-	reqCtx := &RequestContext{Request: req}
-	if err := stage.Execute(context.Background(), reqCtx, &Config{Enabled: true, SmartCrusher: true, TabularArrays: false}); err != nil {
+	reqCtx := &headroom.RequestContext{Request: req}
+	if err := stage.Execute(context.Background(), reqCtx, &headroom.Config{Enabled: true, SmartCrusher: true, TabularArrays: false}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
@@ -155,8 +157,8 @@ func TestSmartCrusher_TabularArraysFlag(t *testing.T) {
 			map[string]any{"type": "tool_result", "content": jsonInput},
 		}},
 	}}
-	reqCtx2 := &RequestContext{Request: req2}
-	if err := stage.Execute(context.Background(), reqCtx2, &Config{Enabled: true, SmartCrusher: true, TabularArrays: true}); err != nil {
+	reqCtx2 := &headroom.RequestContext{Request: req2}
+	if err := stage.Execute(context.Background(), reqCtx2, &headroom.Config{Enabled: true, SmartCrusher: true, TabularArrays: true}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	got2 := req2["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
@@ -205,4 +207,3 @@ func TestTabularConversion_BackslashesAndSpecialChars(t *testing.T) {
 		t.Errorf("crlf newline was not normalized and escaped properly: %s", out)
 	}
 }
-

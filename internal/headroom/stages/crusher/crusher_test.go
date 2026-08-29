@@ -1,14 +1,23 @@
-package headroom
+package crusher
 
 import (
+	"bytes"
 	"context"
-	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/headroom"
 )
 
-func crusherConfig() Config {
-	return Config{Enabled: true, CommandCrusher: true, PreserveVerbatimReads: true}
+func crusherConfig() headroom.Config {
+	return headroom.Config{Enabled: true, CommandCrusher: true, PreserveVerbatimReads: true}
+}
+
+func toolResultMsg(payload string) any {
+	return map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "tool_result", "tool_use_id": "tu_" + payload[:1], "content": payload},
+	}}
 }
 
 func TestCommandCrusher_IsErrorUntouched(t *testing.T) {
@@ -17,8 +26,8 @@ func TestCommandCrusher_IsErrorUntouched(t *testing.T) {
 		map[string]any{"type": "tool_result", "tool_use_id": "tu_1", "is_error": true, "content": payload},
 	}}}}
 
-	reqCtx := &RequestContext{Request: req}
-	if err := (&CommandCrusherStage{}).Execute(context.Background(), reqCtx, &Config{Enabled: true, CommandCrusher: true}); err != nil {
+	reqCtx := &headroom.RequestContext{Request: req}
+	if err := (&CommandCrusherStage{}).Execute(context.Background(), reqCtx, &headroom.Config{Enabled: true, CommandCrusher: true}); err != nil {
 		t.Fatal(err)
 	}
 	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
@@ -32,7 +41,7 @@ func TestCommandCrusher_VerbatimSkipped(t *testing.T) {
 	payload := "     1\tpackage main\n     2\t// === RUN fake\n     3\tfunc main() {}\n"
 	req := map[string]any{"messages": []any{toolResultMsg(payload)}}
 	cfg := crusherConfig()
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
 
 	if err := (&CommandCrusherStage{}).Execute(context.Background(), reqCtx, &cfg); err != nil {
 		t.Fatal(err)
@@ -55,7 +64,7 @@ func TestCommandCrusher_I3_AssistantTextUntouched(t *testing.T) {
 		toolResultMsg("collected 1 items\n\ntest_a.py . [100%]\n\n=== 1 passed in 0.01s ==="),
 	}}
 	cfg := crusherConfig()
-	reqCtx := &RequestContext{Request: req}
+	reqCtx := &headroom.RequestContext{Request: req}
 
 	if err := (&CommandCrusherStage{}).Execute(context.Background(), reqCtx, &cfg); err != nil {
 		t.Fatal(err)
@@ -76,7 +85,7 @@ func TestErrorOrdinals_MixedBlocks(t *testing.T) {
 			}},
 		}},
 	}}
-	errs := errorOrdinals(req)
+	errs := headroom.ErrorOrdinals(req)
 	if !errs[0] || errs[1] || errs[2] {
 		t.Errorf("expected only ordinal 0 marked, got %v", errs)
 	}
@@ -528,44 +537,6 @@ func TestDetectSignature_NoFalsePositiveOnSource(t *testing.T) {
 	}
 }
 
-func generatePytestOutput(tests int) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("collected %d items\n\n", tests))
-	for i := 0; i < tests/10; i++ {
-		fmt.Fprintf(&sb, "test_mod_%d.py .......... [%3d%%]\n", i, (i+1)*100/(tests/10))
-	}
-	sb.WriteString("=== 200 passed in 12.40s ===\n")
-	return sb.String()
-}
-
-func BenchmarkCommandCrusher_Pytest100KB(b *testing.B) {
-	data := generatePytestOutput(10000) // ~100KB
-	for len(data) < 100*1024 {
-		data += data[:len(data)/2]
-	}
-	b.SetBytes(int64(len(data)))
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		out, changed := CrushCommandOutput(data)
-		if !changed || len(out) >= len(data) {
-			b.Fatal("expected compression")
-		}
-	}
-}
-
-func BenchmarkCommandCrusher_Fallback100KB(b *testing.B) {
-	data := strings.Repeat("just an ordinary log line with no signature\n", 2400) // ~100KB
-	b.SetBytes(int64(len(data)))
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, changed := CrushCommandOutput(data); changed {
-			b.Fatal("unexpected change")
-		}
-	}
-}
-
 // Words made only of pytest glyph characters are prose, not progress. pytest
 // emits uppercase E for an error; lowercase e is not an outcome glyph, so
 // accepting it swallows ordinary words printed by a test.
@@ -588,5 +559,67 @@ func TestPytestFilter_BareErrorLineSurvives(t *testing.T) {
 		if !isPytestProgress(line) {
 			t.Errorf("isPytestProgress(%q) = false, want true", line)
 		}
+	}
+}
+
+func TestCommandCrusherStage_LogsRewrite(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":    "tool_result",
+						"content": "...........................\n=== 5 passed in 0.05s ===\n",
+					},
+				},
+			},
+		},
+	}
+	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	cfg := &headroom.Config{Enabled: true, CommandCrusher: true}
+
+	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"command_crusher compressed tool output", "signature", "ordinal", "bytes_before"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q; got: %s", want, out)
+		}
+	}
+}
+
+func TestCommandCrusherStage_SilentWhenDebugDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":    "tool_result",
+						"content": "...........................\n=== 5 passed in 0.05s ===\n",
+					},
+				},
+			},
+		},
+	}
+	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	cfg := &headroom.Config{Enabled: true, CommandCrusher: true}
+
+	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reqCtx.RewritesCount == 0 {
+		t.Fatal("expected the rewrite to still happen with logging off")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no output above DEBUG, got: %s", buf.String())
 	}
 }

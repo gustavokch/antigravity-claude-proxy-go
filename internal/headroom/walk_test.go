@@ -19,7 +19,7 @@ func TestWalkToolResults_VisitsStringAndArrayForms(t *testing.T) {
 	}}
 
 	var seen []string
-	walkToolResultText(req, 0, func(_, _ int, get func() string, set func(string)) {
+	WalkToolResultText(req, 0, func(_, _ int, get func() string, set func(string)) {
 		seen = append(seen, get())
 		set(get() + "!")
 	})
@@ -61,7 +61,7 @@ func TestWalkToolResults_RespectsFromIndex(t *testing.T) {
 	req := map[string]any{"messages": []any{mk("a"), mk("b"), mk("c")}}
 
 	var seen []string
-	walkToolResultText(req, 2, func(_, _ int, get func() string, set func(string)) {
+	WalkToolResultText(req, 2, func(_, _ int, get func() string, set func(string)) {
 		seen = append(seen, get())
 	})
 	if len(seen) != 1 || seen[0] != "c" {
@@ -82,7 +82,7 @@ func TestWalkToolResults_OrdinalMonotonic(t *testing.T) {
 
 	var ords []int
 	var payloads []string
-	walkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
+	WalkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
 		ords = append(ords, ord)
 		payloads = append(payloads, get())
 	})

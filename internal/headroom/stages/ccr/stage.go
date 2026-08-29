@@ -1,9 +1,12 @@
-package headroom
+package ccr
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+
+	"antigravity-go-proxy/internal/headroom"
 )
 
 // defaultMinChunkBytes is the minimum byte size for a payload to be demoted.
@@ -25,14 +28,31 @@ var RetrieveToolDefinition = map[string]any{
 	},
 }
 
+func cloneRetrieveToolDefinition() map[string]any {
+	return map[string]any{
+		"name":        "headroom_retrieve",
+		"description": "Retrieve the full content of a demoted context chunk by its chunk ID.",
+		"input_schema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"chunk_id": map[string]any{
+					"type":        "string",
+					"description": "The chunk ID to retrieve, formatted as chunk_<hash>.",
+				},
+			},
+			"required": []any{"chunk_id"},
+		},
+	}
+}
+
 // CCRStage performs Content-Conditioned Retrieval demotion of oversized tool results
 // in historical (frozen) conversation turns.
 type CCRStage struct {
 	store *CCRStore
 }
 
-// NewCCRStage creates a new CCRStage backed by the given CCRStore.
-func NewCCRStage(store *CCRStore) *CCRStage {
+// NewStage creates a new CCRStage backed by the given CCRStore.
+func NewStage(store *CCRStore) *CCRStage {
 	return &CCRStage{store: store}
 }
 
@@ -62,7 +82,7 @@ func makePreview(s string, maxLen int) string {
 	return s
 }
 
-func (s *CCRStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Config) error {
+func (s *CCRStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext, cfg *headroom.Config) error {
 	if !cfg.CCR.Enabled || reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
@@ -75,13 +95,16 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Con
 		minBytes = defaultMinChunkBytes
 	}
 
+	log := reqCtx.Log()
+	dbg := log.Enabled(ctx, slog.LevelDebug)
+
 	// Only demote if FrozenPrefixIndex >= 0 (there is at least one message outside the live window)
 	if reqCtx.FrozenPrefixIndex >= 0 {
-		walkToolResultText(reqCtx.Request, 0, func(idx, ord int, get func() string, set func(string)) {
+		headroom.WalkToolResultText(reqCtx.Request, 0, func(idx, ord int, get func() string, set func(string)) {
 			if idx > reqCtx.FrozenPrefixIndex {
 				return // live turn; keep inline
 			}
-			if skipVerbatim(reqCtx, cfg, ord) {
+			if headroom.SkipVerbatim(reqCtx, cfg, ord) {
 				return // file content the model will quote back; demotion would
 				// force a retrieve round trip before any Edit could match
 			}
@@ -97,12 +120,19 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Con
 			set(token)
 			reqCtx.RecordRewrite(before, token)
 			reqCtx.ChunksStored++
+			if dbg {
+				log.Debug("ccr demoted chunk",
+					"stage", s.Name(), "chunk_id", id,
+					"request_id", reqCtx.RequestID,
+					"ordinal", ord, "message_index", idx,
+					"chunk_bytes", len(before), "store_bytes", s.store.Bytes())
+			}
 		})
 	}
 
 	// Invariant I4: Only inject tool if the client provided a tools list.
 	// Invariant I2: Inject unconditionally when tools are present to maintain cache stability.
-	if tools, ok := reqCtx.Request["tools"].([]any); ok && tools != nil && len(tools) > 0 {
+	if tools, ok := reqCtx.Request["tools"].([]any); ok && len(tools) > 0 {
 		hasRetrieve := false
 		for _, rawTool := range tools {
 			if toolMap, isMap := rawTool.(map[string]any); isMap {
@@ -113,7 +143,7 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Con
 			}
 		}
 		if !hasRetrieve {
-			reqCtx.Request["tools"] = append(tools, RetrieveToolDefinition)
+			reqCtx.Request["tools"] = append(tools, cloneRetrieveToolDefinition())
 		}
 	}
 

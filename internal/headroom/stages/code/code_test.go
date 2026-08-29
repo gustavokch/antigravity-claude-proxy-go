@@ -1,10 +1,25 @@
-package headroom
+package code
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/headroom"
 )
+
+func toolResultText(t *testing.T, req map[string]any, msgIdx int) string {
+	t.Helper()
+	msgs := req["messages"].([]any)
+	block := msgs[msgIdx].(map[string]any)["content"].([]any)[0].(map[string]any)
+	s, ok := block["content"].(string)
+	if !ok {
+		t.Fatalf("message %d tool_result content is not a string: %T", msgIdx, block["content"])
+	}
+	return s
+}
 
 func TestPruneText(t *testing.T) {
 	tests := []struct{ name, in, want string }{
@@ -54,10 +69,10 @@ func TestCodeCompressor_OnlyTouchesToolResults(t *testing.T) {
 			map[string]any{"type": "tool_result", "content": "out   \n\n\n\nput"},
 		}},
 	}}
-	reqCtx := &RequestContext{Request: req}
+	reqCtx := &headroom.RequestContext{Request: req}
 
 	stage := &CodeCompressorStage{}
-	if err := stage.Execute(context.Background(), reqCtx, &Config{Enabled: true, CodeCompressor: true}); err != nil {
+	if err := stage.Execute(context.Background(), reqCtx, &headroom.Config{Enabled: true, CodeCompressor: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -78,10 +93,10 @@ func TestCodeCompressor_LargeLogCollapses(t *testing.T) {
 			map[string]any{"type": "tool_result", "content": log},
 		}},
 	}}
-	reqCtx := &RequestContext{Request: req}
+	reqCtx := &headroom.RequestContext{Request: req}
 
 	stage := &CodeCompressorStage{}
-	if err := stage.Execute(context.Background(), reqCtx, &Config{Enabled: true, CodeCompressor: true}); err != nil {
+	if err := stage.Execute(context.Background(), reqCtx, &headroom.Config{Enabled: true, CodeCompressor: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
@@ -107,8 +122,8 @@ func TestCodeCompressor_SkipsVerbatimReadResult(t *testing.T) {
 			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": payload},
 		}},
 	}}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
-	cfg := &Config{Enabled: true, CodeCompressor: true, PreserveVerbatimReads: true}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
+	cfg := &headroom.Config{Enabled: true, CodeCompressor: true, PreserveVerbatimReads: true}
 
 	stage := &CodeCompressorStage{}
 	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
@@ -135,8 +150,8 @@ func TestCodeCompressor_StillPrunesNonVerbatim(t *testing.T) {
 			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": payload},
 		}},
 	}}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
-	cfg := &Config{Enabled: true, CodeCompressor: true, PreserveVerbatimReads: true}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
+	cfg := &headroom.Config{Enabled: true, CodeCompressor: true, PreserveVerbatimReads: true}
 
 	stage := &CodeCompressorStage{}
 	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
@@ -146,5 +161,33 @@ func TestCodeCompressor_StillPrunesNonVerbatim(t *testing.T) {
 	got := toolResultText(t, req, 1)
 	if got != "log line one\nlog line two\n" {
 		t.Errorf("non-verbatim payload must still prune, got %q", got)
+	}
+}
+
+func TestCodeCompressorStage_LogsPruning(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":    "tool_result",
+						"content": "function test() {\n\n\n\n  return true;\n\n\n\n}",
+					},
+				},
+			},
+		},
+	}
+	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	cfg := &headroom.Config{Enabled: true, CodeCompressor: true}
+
+	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "code_compressor pruned tool output") {
+		t.Fatalf("expected pruning log, got: %s", buf.String())
 	}
 }

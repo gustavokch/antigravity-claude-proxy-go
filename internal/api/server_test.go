@@ -18,6 +18,8 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/stats"
 )
@@ -760,7 +762,7 @@ func TestCustomEndpoint_CCRHydration_Streaming(t *testing.T) {
 	}
 
 	var ok bool
-	chunkID, ok = server.headroom.CCRStore().Put("Secret Custom Endpoint context payload")
+	chunkID, ok = server.ccrStore.Put("Secret Custom Endpoint context payload")
 	if !ok {
 		t.Fatalf("Failed to put chunk into CCRStore")
 	}
@@ -882,7 +884,7 @@ func TestCustomEndpoint_CCRHydration_Unary(t *testing.T) {
 	}
 
 	var ok bool
-	chunkID, ok = server.headroom.CCRStore().Put("Secret Custom Endpoint Unary payload")
+	chunkID, ok = server.ccrStore.Put("Secret Custom Endpoint Unary payload")
 	if !ok {
 		t.Fatalf("Failed to put chunk into CCRStore")
 	}
@@ -1047,3 +1049,21 @@ func TestServer_ClaudeCodeBackgroundWorker_InitialTick(t *testing.T) {
 	}
 }
 
+func TestServer_ApplyHeadroomConfigResizesCCRStore(t *testing.T) {
+	srv := &Server{
+		ccrStore: ccr.NewCCRStoreFromMB(10),
+	}
+	srv.applyHeadroomConfig(config.HeadroomConfig{
+		CCR: headroom.CCRConfig{
+			MaxStoreMB: 25,
+		},
+	})
+	if got := srv.ccrStore.MaxBytes(); got != int64(25)*1024*1024 {
+		t.Fatalf("expected CCRStore maxBytes to be 25MB (%d), got %d", int64(25)*1024*1024, got)
+	}
+}
+
+func TestServer_ApplyHeadroomConfigNilCCRStoreNoPanic(t *testing.T) {
+	srv := &Server{}
+	srv.applyHeadroomConfig(config.HeadroomConfig{CCR: headroom.CCRConfig{MaxStoreMB: 25}})
+}

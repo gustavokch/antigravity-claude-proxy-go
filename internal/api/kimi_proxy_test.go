@@ -319,7 +319,7 @@ func TestServer_ForwardToKimi_CCRHydration_Streaming(t *testing.T) {
 
 	server := newKimiTestServer(t)
 	var ok bool
-	chunkID, ok = server.headroom.CCRStore().Put("Secret Kimi context payload")
+	chunkID, ok = server.ccrStore.Put("Secret Kimi context payload")
 	if !ok {
 		t.Fatalf("Failed to put chunk into CCRStore")
 	}
@@ -430,7 +430,7 @@ func TestServer_ForwardToKimi_CCRHydration_Unary(t *testing.T) {
 
 	server := newKimiTestServer(t)
 	var ok bool
-	chunkID, ok = server.headroom.CCRStore().Put("Secret Kimi Unary payload")
+	chunkID, ok = server.ccrStore.Put("Secret Kimi Unary payload")
 	if !ok {
 		t.Fatalf("Failed to put chunk into CCRStore")
 	}

@@ -1,9 +1,25 @@
-package headroom
+package smart
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/headroom"
 )
+
+func toolResultText(t *testing.T, req map[string]any, msgIdx int) string {
+	t.Helper()
+	msgs := req["messages"].([]any)
+	block := msgs[msgIdx].(map[string]any)["content"].([]any)[0].(map[string]any)
+	s, ok := block["content"].(string)
+	if !ok {
+		t.Fatalf("message %d tool_result content is not a string: %T", msgIdx, block["content"])
+	}
+	return s
+}
 
 func TestCompactJSON(t *testing.T) {
 	tests := []struct {
@@ -70,10 +86,10 @@ func TestSmartCrusher_CompactsHistoryNotJustLastTurn(t *testing.T) {
 		}}
 	}
 	req := map[string]any{"messages": []any{mk(), mk(), mk()}}
-	reqCtx := &RequestContext{Request: req, FrozenPrefixIndex: 0}
+	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: 0}
 
 	stage := &SmartCrusherStage{}
-	if err := stage.Execute(context.Background(), reqCtx, &Config{Enabled: true, SmartCrusher: true}); err != nil {
+	if err := stage.Execute(context.Background(), reqCtx, &headroom.Config{Enabled: true, SmartCrusher: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -97,7 +113,7 @@ func TestSmartCrusher_DisabledIsNoOp(t *testing.T) {
 		}},
 	}}
 	stage := &SmartCrusherStage{}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, &Config{Enabled: true, SmartCrusher: false}); err != nil {
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, &headroom.Config{Enabled: true, SmartCrusher: false}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"]
@@ -117,8 +133,8 @@ func TestSmartCrusher_SkipsVerbatimJSONFileRead(t *testing.T) {
 			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": prettyJSON},
 		}},
 	}}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
-	cfg := &Config{Enabled: true, SmartCrusher: true, PreserveVerbatimReads: true}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
+	cfg := &headroom.Config{Enabled: true, SmartCrusher: true, PreserveVerbatimReads: true}
 
 	stage := &SmartCrusherStage{}
 	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
@@ -152,8 +168,8 @@ func TestSmartCrusher_SkipsTabularOnVerbatim(t *testing.T) {
 			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": payload},
 		}},
 	}}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
-	cfg := &Config{Enabled: true, SmartCrusher: true, TabularArrays: true, PreserveVerbatimReads: true}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
+	cfg := &headroom.Config{Enabled: true, SmartCrusher: true, TabularArrays: true, PreserveVerbatimReads: true}
 
 	stage := &SmartCrusherStage{}
 	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
@@ -163,5 +179,34 @@ func TestSmartCrusher_SkipsTabularOnVerbatim(t *testing.T) {
 	got := toolResultText(t, req, 1)
 	if got != payload {
 		t.Errorf("tabular conversion must not fire on verbatim payload, got %q", got)
+	}
+}
+
+func TestSmartCrusherStage_LogsCompaction(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":    "tool_result",
+						"content": "{\n  \"foo\": \"bar\",\n  \"baz\": 123\n}",
+					},
+				},
+			},
+		},
+	}
+	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	cfg := &headroom.Config{Enabled: true, SmartCrusher: true}
+
+	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "smart_crusher compacted tool output") ||
+		!strings.Contains(buf.String(), "mode=compact") {
+		t.Fatalf("expected compaction log, got: %s", buf.String())
 	}
 }

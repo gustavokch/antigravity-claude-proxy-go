@@ -28,6 +28,11 @@ import (
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
+	"antigravity-go-proxy/internal/headroom/stages/code"
+	"antigravity-go-proxy/internal/headroom/stages/crusher"
+	"antigravity-go-proxy/internal/headroom/stages/shaper"
+	"antigravity-go-proxy/internal/headroom/stages/smart"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/modelcatalog"
@@ -98,6 +103,7 @@ type Server struct {
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	tracker            *stats.Tracker
 	headroom           *headroom.Engine
+	ccrStore           *ccr.CCRStore
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -136,7 +142,16 @@ func New(options Options) (*Server, error) {
 	}
 
 	cfg := config.Get()
-	srv.headroom = headroom.NewEngine(cfg.Headroom)
+	srv.ccrStore = ccr.NewCCRStoreFromMB(cfg.Headroom.CCR.MaxStoreMB)
+	srv.headroom = headroom.NewEngine(
+		cfg.Headroom,
+		srv.logger,
+		ccr.NewStage(srv.ccrStore),
+		crusher.NewStage(),
+		smart.NewStage(),
+		code.NewStage(),
+		shaper.NewStage(),
+	)
 	if cfg.OpenRouter.Enabled {
 		openrouter.DefaultClient.WarmupCacheAsync(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL)
 	}
@@ -161,6 +176,9 @@ func applyRouterConfig(openRouterCfg config.OpenRouterConfig) {
 func (server *Server) applyHeadroomConfig(cfg config.HeadroomConfig) {
 	if server.headroom != nil {
 		server.headroom.UpdateConfig(cfg)
+	}
+	if server.ccrStore != nil {
+		server.ccrStore.SetMaxMB(cfg.CCR.MaxStoreMB)
 	}
 }
 
@@ -737,11 +755,6 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		if hrCtx, err := server.headroom.Process(request.Context(), anthropicRequest); err != nil {
 			server.logger.Warn("headroom pipeline failed; forwarding request unmodified", "error", err)
 		} else if hrCtx.BytesBefore > 0 || hrCtx.EffortClamped {
-			server.logger.Debug("headroom compressed request",
-				"bytesBefore", hrCtx.BytesBefore, "bytesAfter", hrCtx.BytesAfter,
-				"effortClamped", hrCtx.EffortClamped,
-				"continuation", hrCtx.ContinuationKind,
-				"verbatimSkipped", hrCtx.VerbatimSkipped)
 			if server.tracker != nil {
 				server.tracker.RecordHeadroom(stats.HeadroomSample{
 					BytesBefore:           hrCtx.BytesBefore,
@@ -1904,14 +1917,14 @@ func (server *Server) isCCREnabled() bool {
 		return false
 	}
 	cfg := server.headroom.GetConfig()
-	return cfg.Enabled && cfg.CCR.Enabled && server.headroom.CCRStore() != nil
+	return cfg.Enabled && cfg.CCR.Enabled && server.ccrStore != nil
 }
 
 func (server *Server) getCCRChunkPayload(chunkID string) (string, bool) {
-	if server.headroom == nil || server.headroom.CCRStore() == nil {
+	if server.ccrStore == nil {
 		return fmt.Sprintf("Error: CCR store unavailable (chunk %s)", chunkID), true
 	}
-	payload, found := server.headroom.CCRStore().Get(chunkID)
+	payload, found := server.ccrStore.Get(chunkID)
 	if !found {
 		return fmt.Sprintf("Error: Chunk %s not found or evicted from CCR store", chunkID), true
 	}

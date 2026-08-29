@@ -1,70 +1,9 @@
 package headroom
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
-
-// TestVerbatim_EditExactMatchSurvivesPipeline runs the full engine over a
-// request whose tool_result is a realistic Read payload (trailing whitespace, a
-// blank-line run, and four identical lines) and asserts the payload is returned
-// byte-for-byte. This is the property an Edit's old_string depends on.
-func TestVerbatim_EditExactMatchSurvivesPipeline(t *testing.T) {
-	payload := realisticReadPayload()
-
-	engine := NewEngine(Config{
-		Enabled:               true,
-		SmartCrusher:          true,
-		TabularArrays:         true,
-		CodeCompressor:        true,
-		LiveTurns:             2,
-		PreserveVerbatimReads: true,
-		CCR: CCRConfig{
-			Enabled:       true,
-			MinChunkBytes: 2048,
-		},
-	})
-
-	req := readEditRequest(payload)
-
-	if _, err := engine.Process(context.Background(), req); err != nil {
-		t.Fatalf("Process error: %v", err)
-	}
-
-	got := toolResultText(t, req, 2)
-	if got != payload {
-		t.Errorf("Read payload mutated; Edit old_string drawn from it cannot match disk.\nfirst divergence:\n%s", firstDiff(payload, got))
-	}
-}
-
-// TestVerbatim_DisabledByConfig restores pre-fix behaviour when the operator
-// opts out: the same payload is demoted/mutated again.
-func TestVerbatim_DisabledByConfig(t *testing.T) {
-	payload := realisticReadPayload()
-
-	engine := NewEngine(Config{
-		Enabled:               true,
-		SmartCrusher:          true,
-		CodeCompressor:        true,
-		LiveTurns:             2,
-		PreserveVerbatimReads: false,
-		CCR: CCRConfig{
-			Enabled:       true,
-			MinChunkBytes: 2048,
-		},
-	})
-
-	req := readEditRequest(payload)
-	if _, err := engine.Process(context.Background(), req); err != nil {
-		t.Fatalf("Process error: %v", err)
-	}
-
-	got := toolResultText(t, req, 2)
-	if got == payload {
-		t.Error("with PreserveVerbatimReads=false the payload must be rewritten as before")
-	}
-}
 
 // realisticReadPayload builds `cat -n` Read output with the three shapes the
 // lossy stages destroy: trailing whitespace, a run of identical lines, and
@@ -243,11 +182,11 @@ func TestToolInspector_OrdinalsStableAcrossFrom(t *testing.T) {
 	req := map[string]any{"messages": []any{mk("a"), mk("b"), mk("c"), mk("d")}}
 
 	fromZero := map[int]string{}
-	walkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
+	WalkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
 		fromZero[ord] = get()
 	})
 	fromTwo := map[int]string{}
-	walkToolResultText(req, 2, func(_, ord int, get func() string, _ func(string)) {
+	WalkToolResultText(req, 2, func(_, ord int, get func() string, _ func(string)) {
 		fromTwo[ord] = get()
 	})
 
@@ -263,19 +202,19 @@ func TestToolInspector_OrdinalsStableAcrossFrom(t *testing.T) {
 
 func TestNormalizeToolName(t *testing.T) {
 	cases := map[string]string{
-		"Read":                        "read",
-		"READ":                        "read",
-		"read_file":                   "read_file",
-		"mcp__filesystem__read_file":  "read_file",
-		"filesystem:read_file":        "read_file",
-		"fs.readFile":                 "readfile",
-		"mcp__x__Read":                "read",
-		"str_replace_editor":          "str_replace_editor",
-		"mcp__acme__fetch_thing":      "fetch_thing",
+		"Read":                       "read",
+		"READ":                       "read",
+		"read_file":                  "read_file",
+		"mcp__filesystem__read_file": "read_file",
+		"filesystem:read_file":       "read_file",
+		"fs.readFile":                "readfile",
+		"mcp__x__Read":               "read",
+		"str_replace_editor":         "str_replace_editor",
+		"mcp__acme__fetch_thing":     "fetch_thing",
 	}
 	for in, want := range cases {
-		if got := normalizeToolName(in); got != want {
-			t.Errorf("normalizeToolName(%q) = %q, want %q", in, got, want)
+		if got := NormalizeToolName(in); got != want {
+			t.Errorf("NormalizeToolName(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -367,12 +306,45 @@ func TestLooksLikeNumberedSource_HugeCountersDoNotMatch(t *testing.T) {
 	text := "18446744073709551616\tstart\n" +
 		"18446744073709551617\tstep\n" +
 		"18446744073709551618\tdone\n"
-	if looksLikeNumberedSource(text) {
+	if LooksLikeNumberedSource(text) {
 		t.Error("counters that overflow int must not read as numbered source")
 	}
 
 	// Ordinary numbered source keeps matching.
-	if !looksLikeNumberedSource("   1\tpackage main\n   2\t\n   3\tfunc main() {}\n") {
+	if !LooksLikeNumberedSource("   1\tpackage main\n   2\t\n   3\tfunc main() {}\n") {
 		t.Error("cat -n output must still classify as numbered source")
+	}
+}
+
+// TestExportedPayloadHelpers pins the shared heuristics the shaper stage
+// consumes. They must stay in one place: classifyContinuation derives its
+// starting ordinal from CountTextPayloads, and any drift from the copy used by
+// WalkToolResultText and ErrorOrdinals misaligns verbatim ordinals.
+func TestExportedPayloadHelpers(t *testing.T) {
+	block := map[string]any{"type": "tool_result", "content": []any{
+		map[string]any{"type": "text", "text": "a"},
+		map[string]any{"type": "image"},
+		map[string]any{"type": "text", "text": "b"},
+	}}
+	if got := CountTextPayloads(block); got != 2 {
+		t.Errorf("CountTextPayloads = %d, want 2", got)
+	}
+	if got := CountTextPayloads(map[string]any{"content": "one"}); got != 1 {
+		t.Errorf("CountTextPayloads(string form) = %d, want 1", got)
+	}
+	if !LooksLikeNumberedSource("   1\tpackage main\n   2\t\n   3\tfunc main() {}\n") {
+		t.Error("LooksLikeNumberedSource missed numbered source")
+	}
+	if LooksLikeNumberedSource("2024 lines read\n1 error\n") {
+		t.Error("LooksLikeNumberedSource matched a plain log")
+	}
+	if !LooksLikeUnifiedDiff("--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-a\n+b\n") {
+		t.Error("LooksLikeUnifiedDiff missed a patch body")
+	}
+	if LooksLikeUnifiedDiff("--- not a diff") {
+		t.Error("LooksLikeUnifiedDiff matched a non-diff")
+	}
+	if got := NormalizeToolName("mcp__filesystem__read_file"); got != "read_file" {
+		t.Errorf("NormalizeToolName = %q, want %q", got, "read_file")
 	}
 }
