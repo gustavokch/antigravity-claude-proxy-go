@@ -100,6 +100,8 @@ func (server *Server) syncRefreshedAccountToConfig(accID, newToken, newRefreshTo
 			"mode":       cfg.ClaudeCode.Mode,
 			"autoImport": cfg.ClaudeCode.AutoImport,
 			"accounts":   accountsList,
+			"allowlist":  cfg.ClaudeCode.Allowlist,
+			"routing":    cfg.ClaudeCode.Routing,
 		}
 		_, _ = config.Save(map[string]any{"claudecode": ccCfg})
 	}

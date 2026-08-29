@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/claudecode"
@@ -538,4 +539,57 @@ func TestForwardToClaudeCode_AutoRefreshOn401(t *testing.T) {
 		t.Errorf("expected 2 upstream requests (initial 401 + retry), got %d", reqCount)
 	}
 }
+
+func TestSyncRefreshedAccountToConfig_PreservesAllowlistAndRouting(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	allowlist := []claudecode.ModelConfig{
+		{
+			ID:      "claude-custom-1",
+			Aliases: []string{"custom-1"},
+			Enabled: true,
+		},
+	}
+	routing := claudecode.RoutingConfig{
+		Retry429Max:      7,
+		BackoffBaseMs:    1500,
+		BackoffCapMs:     40000,
+		RequestBudgetMs:  180000,
+		CooldownDuration: 45000,
+	}
+
+	config.SetForTest(config.Config{
+		ClaudeCode: claudecode.Config{
+			Enabled: true,
+			BaseURL: "https://api.anthropic.com",
+			Mode:    "pool",
+			Accounts: []claudecode.AccountConfig{
+				{
+					ID:           "acc-1",
+					Name:         "Account 1",
+					Token:        "old-token",
+					RefreshToken: "old-refresh",
+					Type:         "oauth",
+					Enabled:      true,
+				},
+			},
+			Allowlist: allowlist,
+			Routing:   routing,
+		},
+	})
+
+	srv := &Server{}
+	now := time.Now().Add(1 * time.Hour)
+	srv.syncRefreshedAccountToConfig("acc-1", "new-token", "new-refresh", &now)
+
+	updated := config.Get().ClaudeCode
+	if len(updated.Allowlist) != 1 || updated.Allowlist[0].ID != "claude-custom-1" {
+		t.Fatalf("allowlist lost or modified: %+v", updated.Allowlist)
+	}
+	if updated.Routing.Retry429Max != 7 || updated.Routing.BackoffBaseMs != 1500 {
+		t.Fatalf("routing config lost or modified: %+v", updated.Routing)
+	}
+}
+
 
