@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDiscoverLocalCredentials(t *testing.T) {
@@ -116,6 +117,40 @@ func TestDiscoverLocalCredentials_OAuthWithRefreshToken(t *testing.T) {
 	}
 	if oauthAcc.AccountUUID != "uuid-1234" {
 		t.Errorf("expected accountUuid=uuid-1234, got %s", oauthAcc.AccountUUID)
+	}
+}
+
+func TestDiscoverLocalCredentials_MillisecondTimestamp(t *testing.T) {
+	tempDir := t.TempDir()
+	// 1756500000000 ms is in year 2025
+	claudeJSON := `{
+		"oauthToken": "sk-ant-oat-token-milli",
+		"refreshToken": "ant-refresh-token-milli",
+		"expiresAt": 1756500000000
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, ".claude.json"), []byte(claudeJSON), 0600)
+	if err != nil {
+		t.Fatalf("failed to write test .claude.json: %v", err)
+	}
+
+	accounts, err := DiscoverLocalCredentials(tempDir)
+	if err != nil {
+		t.Fatalf("DiscoverLocalCredentials failed: %v", err)
+	}
+
+	if len(accounts) == 0 {
+		t.Fatalf("expected at least 1 account, got 0")
+	}
+
+	acc := accounts[0]
+	if acc.ExpiresAt == nil {
+		t.Fatalf("expected non-nil ExpiresAt")
+	}
+
+	expectedYear := time.UnixMilli(1756500000000).Year()
+	if acc.ExpiresAt.Year() != expectedYear {
+		t.Errorf("expected year %d, got %d (raw: %v)", expectedYear, acc.ExpiresAt.Year(), acc.ExpiresAt)
 	}
 }
 

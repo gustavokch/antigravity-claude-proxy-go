@@ -96,12 +96,19 @@ func extractTokensFromJSON(data []byte, sourceLabel string, target map[string]Ac
 
 	if expVal, ok := raw["expiresAt"]; ok {
 		if expStr, ok := expVal.(string); ok {
-			if t, err := time.Parse(time.RFC3339, expStr); err == nil {
+			if t, err := time.Parse(time.RFC3339Nano, expStr); err == nil {
+				expiresAt = &t
+			} else if t, err := time.Parse(time.RFC3339, expStr); err == nil {
 				expiresAt = &t
 			}
 		} else if expNum, ok := expVal.(float64); ok {
-			t := time.Unix(int64(expNum), 0)
-			expiresAt = &t
+			if expNum > 1e11 {
+				t := time.UnixMilli(int64(expNum))
+				expiresAt = &t
+			} else {
+				t := time.Unix(int64(expNum), 0)
+				expiresAt = &t
+			}
 		}
 	}
 
