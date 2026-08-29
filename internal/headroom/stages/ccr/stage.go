@@ -114,7 +114,7 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext,
 
 	// Invariant I4: Only inject tool if the client provided a tools list.
 	// Invariant I2: Inject unconditionally when tools are present to maintain cache stability.
-	if tools, ok := reqCtx.Request["tools"].([]any); ok && tools != nil && len(tools) > 0 {
+	if tools, ok := reqCtx.Request["tools"].([]any); ok && len(tools) > 0 {
 		hasRetrieve := false
 		for _, rawTool := range tools {
 			if toolMap, isMap := rawTool.(map[string]any); isMap {
