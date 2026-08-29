@@ -29,6 +29,7 @@ import (
 	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/headroom/stages/crusher"
+	"antigravity-go-proxy/internal/headroom/stages/smart"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/modelcatalog"
@@ -144,7 +145,7 @@ func New(options Options) (*Server, error) {
 		srv.logger,
 		headroom.NewCCRStage(srv.ccrStore),
 		crusher.NewStage(),
-		&headroom.SmartCrusherStage{},
+		smart.NewStage(),
 		&headroom.CodeCompressorStage{},
 		&headroom.OutputShaperStage{},
 	)

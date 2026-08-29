@@ -43,46 +43,6 @@ func generateBenchmarkLog(lines int) string {
 	return sb.String()
 }
 
-func BenchmarkSmartCrusher_CompactJSON(b *testing.B) {
-	data := generateBenchmarkJSON(100)
-	b.SetBytes(int64(len(data)))
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		out, changed := CompactJSON(data)
-		if !changed || len(out) >= len(data) {
-			b.Fatalf("expected compaction")
-		}
-	}
-}
-
-func BenchmarkTabularConversion(b *testing.B) {
-	var sb strings.Builder
-	sb.WriteString("[\n")
-	for i := 0; i < 100; i++ {
-		sb.WriteString(fmt.Sprintf(`  {"id": %d, "name": "Item %d", "status": "active", "code": "C-%d"}`, i, i, i))
-		if i < 99 {
-			sb.WriteString(",\n")
-		} else {
-			sb.WriteString("\n")
-		}
-	}
-	sb.WriteString("]")
-	data := sb.String()
-
-	b.SetBytes(int64(len(data)))
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		out, changed := TryTabularConversion(data, DefaultMinTabularSavings)
-		if !changed || len(out) >= len(data) {
-			b.Fatalf("expected tabular conversion")
-		}
-	}
-}
-
 func BenchmarkCodeCompressor_PruneText(b *testing.B) {
 	data := generateBenchmarkLog(500)
 	b.SetBytes(int64(len(data)))
