@@ -137,5 +137,22 @@ func TestRateLimits_IsRateLimited(t *testing.T) {
 	if !rl2.IsRateLimited(now) {
 		t.Errorf("expected IsRateLimited=true when InputTokensRemaining is 0 and Reset in future")
 	}
+
+	// RetryAfter test
+	rl3 := RateLimits{
+		RetryAfter:  45,
+		LastUpdated: now.Add(-10 * time.Second),
+	}
+	if !rl3.IsRateLimited(now) {
+		t.Errorf("expected IsRateLimited=true when RetryAfter is active (45s - 10s = 35s remaining)")
+	}
+
+	rl4 := RateLimits{
+		RetryAfter:  30,
+		LastUpdated: now.Add(-40 * time.Second),
+	}
+	if rl4.IsRateLimited(now) {
+		t.Errorf("expected IsRateLimited=false when RetryAfter has expired")
+	}
 }
 

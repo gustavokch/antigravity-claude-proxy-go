@@ -93,8 +93,12 @@ func ExtractRateLimits(h http.Header) RateLimits {
 	return rl
 }
 
-// IsRateLimited returns true if any limit has 0 remaining and reset timestamp is in the future.
+// IsRateLimited returns true if any limit has 0 remaining and reset timestamp is in the future,
+// or if RetryAfter duration is currently active.
 func (rl RateLimits) IsRateLimited(now time.Time) bool {
+	if rl.RetryAfter > 0 && !rl.LastUpdated.IsZero() && rl.LastUpdated.Add(time.Duration(rl.RetryAfter)*time.Second).After(now) {
+		return true
+	}
 	if rl.RequestsLimit > 0 && rl.RequestsRemaining == 0 && rl.RequestsReset.After(now) {
 		return true
 	}
