@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -425,3 +426,36 @@ func (c *Client) FetchModels(ctx context.Context, token string, baseURL string) 
 
 	return models, nil
 }
+
+// FetchRateLimits performs a lightweight query to Anthropic /v1/models to extract active rate-limit headers.
+func (c *Client) FetchRateLimits(ctx context.Context, token string) (RateLimits, error) {
+	cleanToken := strings.TrimSpace(token)
+	if cleanToken == "" {
+		return RateLimits{}, errors.New("cannot fetch rate limits with empty token")
+	}
+
+	url := fmt.Sprintf("%s/v1/models", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return RateLimits{}, fmt.Errorf("create rate-limit probe request: %w", err)
+	}
+
+	req.Header.Set("anthropic-version", DefaultAnthropicVersion)
+	req.Header.Set("User-Agent", "Claude-Code/2.1.246")
+	ApplyAuthHeaders(req, cleanToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return RateLimits{}, fmt.Errorf("execute rate-limit probe: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	rl := ExtractRateLimits(resp.Header)
+	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusTooManyRequests {
+		return rl, fmt.Errorf("rate-limit probe returned status %d", resp.StatusCode)
+	}
+
+	return rl, nil
+}
+

@@ -383,3 +383,34 @@ func TestEnrichModel(t *testing.T) {
 		})
 	}
 }
+
+func TestClient_FetchRateLimits(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-ant-oat-test" {
+			t.Errorf("unexpected auth header: %s", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("anthropic-ratelimit-requests-limit", "500")
+		w.Header().Set("anthropic-ratelimit-requests-remaining", "495")
+		w.Header().Set("anthropic-ratelimit-tokens-limit", "200000")
+		w.Header().Set("anthropic-ratelimit-tokens-remaining", "198000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-3-7-sonnet"}]}`))
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, nil)
+	rl, err := client.FetchRateLimits(context.Background(), "sk-ant-oat-test")
+	if err != nil {
+		t.Fatalf("FetchRateLimits failed: %v", err)
+	}
+
+	if rl.RequestsLimit != 500 || rl.RequestsRemaining != 495 {
+		t.Errorf("unexpected requests limit: %+v", rl)
+	}
+	if rl.TokensLimit != 200000 || rl.TokensRemaining != 198000 {
+		t.Errorf("unexpected tokens limit: %+v", rl)
+	}
+}
