@@ -127,6 +127,36 @@ func (s *CCRStore) Get(id string) (string, bool) {
 	return entry.value, true
 }
 
+// SetMaxBytes resizes the store capacity in bytes, evicting LRU entries if
+// currentBytes now exceeds the new maxBytes. A non-positive value falls back
+// to defaultMaxStoreMB, matching NewCCRStore's zero-value behavior.
+func (s *CCRStore) SetMaxBytes(maxBytes int64) {
+	if maxBytes <= 0 {
+		maxBytes = int64(defaultMaxStoreMB) * 1024 * 1024
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxBytes = maxBytes
+	for s.currentBytes > s.maxBytes && s.ll.Len() > 0 {
+		s.evictOldestLocked()
+	}
+}
+
+// SetMaxMB resizes the store capacity in megabytes.
+func (s *CCRStore) SetMaxMB(maxMB int) {
+	if maxMB <= 0 {
+		maxMB = defaultMaxStoreMB
+	}
+	s.SetMaxBytes(int64(maxMB) * 1024 * 1024)
+}
+
+// MaxBytes returns the current capacity in bytes.
+func (s *CCRStore) MaxBytes() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxBytes
+}
+
 // Size returns the count of items in the store.
 func (s *CCRStore) Size() int {
 	s.mu.Lock()

@@ -171,3 +171,71 @@ func TestCCRStore_IDCollisionKeepsNewestContent(t *testing.T) {
 		t.Fatalf("byte accounting drifted: got %d, want %d", store.Bytes(), len(second))
 	}
 }
+
+func TestCCRStore_SetMaxBytesShrinksAndEvictsOldest(t *testing.T) {
+	store := NewCCRStore(1000)
+
+	id1, ok1 := store.Put("payload_one_1234567890")   // 22 bytes
+	id2, ok2 := store.Put("payload_two_1234567890")   // 22 bytes
+	id3, ok3 := store.Put("payload_three_1234567890") // 24 bytes
+	if !ok1 || !ok2 || !ok3 {
+		t.Fatalf("failed initial puts")
+	}
+	if store.Size() != 3 {
+		t.Fatalf("expected 3 items, got %d", store.Size())
+	}
+
+	// Shrink capacity so only the newest item fits.
+	store.SetMaxBytes(30)
+
+	if store.MaxBytes() != 30 {
+		t.Fatalf("expected maxBytes 30, got %d", store.MaxBytes())
+	}
+	if store.Bytes() > 30 {
+		t.Fatalf("expected store bytes <= 30, got %d", store.Bytes())
+	}
+	if _, found := store.Get(id1); found {
+		t.Errorf("expected id1 to be evicted after shrink")
+	}
+	if _, found := store.Get(id2); found {
+		t.Errorf("expected id2 to be evicted after shrink")
+	}
+	if _, found := store.Get(id3); !found {
+		t.Errorf("expected newest item id3 to remain")
+	}
+}
+
+func TestCCRStore_SetMaxBytesGrowKeepsExistingEntries(t *testing.T) {
+	store := NewCCRStore(30)
+	id1, ok1 := store.Put("payload_one_1234567890") // 22 bytes
+	if !ok1 {
+		t.Fatal("expected put to succeed")
+	}
+
+	store.SetMaxBytes(1000)
+
+	if store.MaxBytes() != 1000 {
+		t.Fatalf("expected maxBytes 1000, got %d", store.MaxBytes())
+	}
+	if _, found := store.Get(id1); !found {
+		t.Error("expected id1 to survive a capacity increase")
+	}
+}
+
+func TestCCRStore_SetMaxMBZeroOrNegativeUsesDefault(t *testing.T) {
+	store := NewCCRStore(100)
+	store.SetMaxMB(0)
+	expectedBytes := int64(defaultMaxStoreMB) * 1024 * 1024
+	if store.MaxBytes() != expectedBytes {
+		t.Fatalf("expected %d bytes, got %d", expectedBytes, store.MaxBytes())
+	}
+}
+
+func TestCCRStore_SetMaxMBResizesToExactValue(t *testing.T) {
+	store := NewCCRStore(100)
+	store.SetMaxMB(25)
+	expectedBytes := int64(25) * 1024 * 1024
+	if store.MaxBytes() != expectedBytes {
+		t.Fatalf("expected %d bytes, got %d", expectedBytes, store.MaxBytes())
+	}
+}

@@ -177,6 +177,9 @@ func (server *Server) applyHeadroomConfig(cfg config.HeadroomConfig) {
 	if server.headroom != nil {
 		server.headroom.UpdateConfig(cfg)
 	}
+	if server.ccrStore != nil {
+		server.ccrStore.SetMaxMB(cfg.CCR.MaxStoreMB)
+	}
 }
 
 // tickClaudeCodeBackgroundWorker checks for expiring OAuth tokens and proactively refreshes them.
