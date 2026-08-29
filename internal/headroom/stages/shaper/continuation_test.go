@@ -1,15 +1,17 @@
-package headroom
+package shaper
 
 import (
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/headroom"
 )
 
 func TestClassifyContinuation(t *testing.T) {
 	cases := []struct {
 		name      string
 		req       map[string]any
-		inspector *ToolInspector
+		inspector *headroom.ToolInspector
 		want      continuationKind
 	}{
 		{
@@ -75,7 +77,7 @@ func TestClassifyContinuation(t *testing.T) {
 					},
 				},
 			},
-			inspector: NewToolInspector(map[string]any{
+			inspector: headroom.NewToolInspector(map[string]any{
 				"messages": []any{
 					map[string]any{
 						"role": "assistant",
@@ -111,7 +113,7 @@ func TestClassifyContinuation(t *testing.T) {
 					},
 				},
 			},
-			inspector: NewToolInspector(map[string]any{
+			inspector: headroom.NewToolInspector(map[string]any{
 				"messages": []any{
 					map[string]any{
 						"role": "assistant",
@@ -147,7 +149,7 @@ func TestClassifyContinuation(t *testing.T) {
 					},
 				},
 			},
-			inspector: NewToolInspector(map[string]any{
+			inspector: headroom.NewToolInspector(map[string]any{
 				"messages": []any{
 					map[string]any{
 						"role": "assistant",
@@ -183,7 +185,7 @@ func TestClassifyContinuation(t *testing.T) {
 					},
 				},
 			},
-			inspector: NewToolInspector(map[string]any{
+			inspector: headroom.NewToolInspector(map[string]any{
 				"messages": []any{
 					map[string]any{
 						"role": "assistant",
@@ -268,7 +270,7 @@ func TestClassifyContinuation(t *testing.T) {
 					},
 				},
 			},
-			inspector: NewToolInspector(map[string]any{
+			inspector: headroom.NewToolInspector(map[string]any{
 				"messages": []any{
 					map[string]any{
 						"role": "assistant",

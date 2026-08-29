@@ -1,8 +1,12 @@
-package headroom
+package shaper
 
 import (
 	"context"
 	"regexp"
+	"strconv"
+	"strings"
+
+	"antigravity-go-proxy/internal/headroom"
 )
 
 const DefaultVerbosityPrompt = "Respond with concise technical precision. Avoid conversational filler, preamble, and meta-commentary. Focus directly on answering questions and executing actions."
@@ -68,16 +72,22 @@ func isCodingToolName(name string) bool {
 	return codingToolNames[normalizeToolName(name)]
 }
 
+func normalizeToolName(name string) string {
+	name = strings.ToLower(name)
+	if strings.HasPrefix(name, "mcp__") {
+		parts := strings.Split(name, "__")
+		name = parts[len(parts)-1]
+	}
+	if i := strings.LastIndexAny(name, ":."); i != -1 {
+		name = name[i+1:]
+	}
+	return name
+}
+
 // testOutputPatterns are tuned for precision, not recall. A false positive
 // classifies the turn as coding and skips the clamp, so a loose pattern does
 // not merely add noise: it disables effort routing for every turn that happens
 // to contain the word.
-//
-// PASS and FAIL stay case sensitive, because every runner emits them uppercase
-// while "pass" and "fail" are common English. The diagnostic prefixes are
-// anchored to the start of a line, so "an error: field" inside a sentence no
-// longer matches. The "---\s*FAIL" and "ok\s+\t" entries were dropped as
-// duplicates of the two patterns above them.
 var testOutputPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bFAIL\b`),
 	regexp.MustCompile(`\bPASS\b`),
@@ -94,8 +104,6 @@ var testOutputPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bcompilation (failed|error)\b`),
 }
 
-// looksLikeTestOutput reports whether text carries a compiler or test-runner
-// verdict — the point in a loop where the model most needs to reason.
 func looksLikeTestOutput(text string) bool {
 	for _, re := range testOutputPatterns {
 		if re.MatchString(text) {
@@ -105,11 +113,79 @@ func looksLikeTestOutput(text string) bool {
 	return false
 }
 
+var numberedLineRe = regexp.MustCompile(`^\s{0,6}(\d+)(\t|\s*\|\s?)`)
+
+const minNumberedLines = 3
+const numberedSourceScanCap = 64
+
+func looksLikeNumberedSource(text string) bool {
+	lines := strings.SplitN(text, "\n", numberedSourceScanCap+1)
+	if len(lines) > numberedSourceScanCap {
+		lines = lines[:numberedSourceScanCap]
+	}
+	run := 0
+	prev := -1
+	for _, line := range lines {
+		m := numberedLineRe.FindStringSubmatch(line)
+		if m == nil {
+			run = 0
+			prev = -1
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			run = 0
+			prev = -1
+			continue
+		}
+		if run > 0 && n < prev {
+			run = 0
+		}
+		run++
+		prev = n
+		if run >= minNumberedLines {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeUnifiedDiff(text string) bool {
+	if !strings.HasPrefix(text, "--- ") && !strings.Contains(text, "\n--- ") {
+		return false
+	}
+	return strings.Contains(text, "\n+++ ") && strings.Contains(text, "\n@@ ")
+}
+
+func countTextPayloads(toolResultBlock map[string]any) int {
+	switch payload := toolResultBlock["content"].(type) {
+	case string:
+		return 1
+	case []any:
+		n := 0
+		for _, innerRaw := range payload {
+			inner, ok := innerRaw.(map[string]any)
+			if !ok || inner["type"] != "text" {
+				continue
+			}
+			if _, ok := inner["text"].(string); ok {
+				n++
+			}
+		}
+		return n
+	}
+	return 0
+}
+
 type OutputShaperStage struct{}
+
+func NewStage() *OutputShaperStage {
+	return &OutputShaperStage{}
+}
 
 func (s *OutputShaperStage) Name() string { return "output_shaper" }
 
-func (s *OutputShaperStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Config) error {
+func (s *OutputShaperStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext, cfg *headroom.Config) error {
 	if !cfg.OutputShaper.Enabled {
 		return nil
 	}
@@ -126,12 +202,12 @@ func (s *OutputShaperStage) Execute(ctx context.Context, reqCtx *RequestContext,
 	// Coding continuations keep their requested budget: the model is mid-task
 	// and clamping it to the 1024 floor is what makes it guess at edits.
 	if kind == kindMechanical || (kind == kindCoding && cfg.OutputShaper.ClampCodingContinuations) {
-		s.clampEffort(reqCtx, cfg)
+		s.clampEffort(reqCtx, cfg, kind)
 	}
 	return nil
 }
 
-func (s *OutputShaperStage) applySteering(req map[string]any, cfg *Config) {
+func (s *OutputShaperStage) applySteering(req map[string]any, cfg *headroom.Config) {
 	text := cfg.OutputShaper.SteeringText
 	if text == "" {
 		text = DefaultVerbosityPrompt
@@ -152,7 +228,7 @@ func (s *OutputShaperStage) applySteering(req map[string]any, cfg *Config) {
 // which case the verbatim signal is skipped and the text heuristics carry the
 // classification on their own. A mechanicalMaxBytes of 0 selects
 // defaultMechanicalMaxBytes.
-func classifyContinuation(req map[string]any, inspector *ToolInspector, mechanicalMaxBytes int) continuationKind {
+func classifyContinuation(req map[string]any, inspector *headroom.ToolInspector, mechanicalMaxBytes int) continuationKind {
 	messages, ok := req["messages"].([]any)
 	if !ok || len(messages) == 0 {
 		return kindInteractive
@@ -257,13 +333,7 @@ func classifyContinuation(req map[string]any, inspector *ToolInspector, mechanic
 	return kindMechanical
 }
 
-// isMechanicalContinuation reports whether the final turn is a mechanical
-// continuation. Retained as the narrow predicate over classifyContinuation.
-func isMechanicalContinuation(req map[string]any) bool {
-	return classifyContinuation(req, nil, 0) == kindMechanical
-}
-
-func (s *OutputShaperStage) clampEffort(reqCtx *RequestContext, cfg *Config) {
+func (s *OutputShaperStage) clampEffort(reqCtx *headroom.RequestContext, cfg *headroom.Config, kind continuationKind) {
 	req := reqCtx.Request
 
 	budget := cfg.OutputShaper.MechanicalThinkingBudget
@@ -271,14 +341,19 @@ func (s *OutputShaperStage) clampEffort(reqCtx *RequestContext, cfg *Config) {
 		budget = minThinkingBudget
 	}
 
+	original := 0
+	clamped := 0
+
 	// Anthropic shape. Only present-and-enabled thinking is clamped (I4).
 	if thinking, ok := req["thinking"].(map[string]any); ok && thinking["type"] == "enabled" {
 		if current, ok := thinking["budget_tokens"].(float64); ok && int(current) > budget {
 			// max_tokens must stay strictly greater than budget_tokens.
 			if maxTokens, ok := req["max_tokens"].(float64); !ok || int(maxTokens) > budget {
 				thinking["budget_tokens"] = float64(budget)
-				reqCtx.OriginalThinking = int(current)
-				reqCtx.ClampedThinking = budget
+				original = int(current)
+				clamped = budget
+				reqCtx.OriginalThinking = original
+				reqCtx.ClampedThinking = clamped
 				reqCtx.EffortClamped = true
 			}
 		}
@@ -294,5 +369,13 @@ func (s *OutputShaperStage) clampEffort(reqCtx *RequestContext, cfg *Config) {
 	if effort, ok := req["reasoning_effort"].(string); ok && effort == "high" {
 		req["reasoning_effort"] = "low"
 		reqCtx.EffortClamped = true
+	}
+
+	if reqCtx.EffortClamped {
+		reqCtx.Log().Debug("output_shaper clamped thinking budget",
+			"stage", s.Name(),
+			"continuation_kind", kind.String(),
+			"original_budget", original,
+			"clamped_budget", clamped)
 	}
 }

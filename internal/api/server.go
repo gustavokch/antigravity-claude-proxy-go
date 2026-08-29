@@ -30,6 +30,7 @@ import (
 	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/headroom/stages/code"
 	"antigravity-go-proxy/internal/headroom/stages/crusher"
+	"antigravity-go-proxy/internal/headroom/stages/shaper"
 	"antigravity-go-proxy/internal/headroom/stages/smart"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/logger"
@@ -148,7 +149,7 @@ func New(options Options) (*Server, error) {
 		crusher.NewStage(),
 		smart.NewStage(),
 		code.NewStage(),
-		&headroom.OutputShaperStage{},
+		shaper.NewStage(),
 	)
 	if cfg.OpenRouter.Enabled {
 		openrouter.DefaultClient.WarmupCacheAsync(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL)

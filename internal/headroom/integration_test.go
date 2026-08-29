@@ -10,6 +10,7 @@ import (
 	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/headroom/stages/code"
 	"antigravity-go-proxy/internal/headroom/stages/crusher"
+	"antigravity-go-proxy/internal/headroom/stages/shaper"
 	"antigravity-go-proxy/internal/headroom/stages/smart"
 )
 
@@ -21,7 +22,7 @@ func testStages(store *headroom.CCRStore) []headroom.Stage {
 		crusher.NewStage(),
 		smart.NewStage(),
 		code.NewStage(),
-		&headroom.OutputShaperStage{},
+		shaper.NewStage(),
 	}
 }
 

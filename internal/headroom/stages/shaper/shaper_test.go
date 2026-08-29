@@ -1,13 +1,17 @@
-package headroom
+package shaper
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/headroom"
 )
 
-func shaperCfg() *Config {
-	return &Config{Enabled: true, OutputShaper: OutputShaperConfig{
+func shaperCfg() *headroom.Config {
+	return &headroom.Config{Enabled: true, OutputShaper: headroom.OutputShaperConfig{
 		Enabled: true, VerbositySteering: true, EffortRouting: true,
 		MechanicalThinkingBudget: 1024,
 	}}
@@ -16,7 +20,7 @@ func shaperCfg() *Config {
 func TestOutputShaper_AppendsSteeringToStringSystem(t *testing.T) {
 	req := map[string]any{"system": "You are a helpful assistant."}
 	stage := &OutputShaperStage{}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, shaperCfg()); err != nil {
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	system := req["system"].(string)
@@ -33,7 +37,7 @@ func TestOutputShaper_AppendsBlockToArraySystem(t *testing.T) {
 		map[string]any{"type": "text", "text": "base", "cache_control": map[string]any{"type": "ephemeral"}},
 	}}
 	stage := &OutputShaperStage{}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, shaperCfg()); err != nil {
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	blocks := req["system"].([]any)
@@ -51,7 +55,7 @@ func TestOutputShaper_UsesCustomSteeringText(t *testing.T) {
 	cfg.OutputShaper.SteeringText = "Be terse."
 	req := map[string]any{"system": "base"}
 	stage := &OutputShaperStage{}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, cfg); err != nil {
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(req["system"].(string), "Be terse.") {
@@ -73,7 +77,7 @@ func TestOutputShaper_ClampsThinkingOnMechanicalTurn(t *testing.T) {
 		"thinking":   map[string]any{"type": "enabled", "budget_tokens": float64(16000)},
 		"messages":   []any{toolContinuation(false)},
 	}
-	reqCtx := &RequestContext{Request: req}
+	reqCtx := &headroom.RequestContext{Request: req}
 	stage := &OutputShaperStage{}
 	if err := stage.Execute(context.Background(), reqCtx, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -94,7 +98,7 @@ func TestOutputShaper_DoesNotClampOnErrorResult(t *testing.T) {
 		"messages":   []any{toolContinuation(true)},
 	}
 	stage := &OutputShaperStage{}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, shaperCfg()); err != nil {
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if req["thinking"].(map[string]any)["budget_tokens"] != float64(16000) {
@@ -109,7 +113,7 @@ func TestOutputShaper_DoesNotClampOnUserTurn(t *testing.T) {
 		"messages":   []any{map[string]any{"role": "user", "content": "think hard about this"}},
 	}
 	stage := &OutputShaperStage{}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, shaperCfg()); err != nil {
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if req["thinking"].(map[string]any)["budget_tokens"] != float64(16000) {
@@ -120,7 +124,7 @@ func TestOutputShaper_DoesNotClampOnUserTurn(t *testing.T) {
 func TestOutputShaper_NeverInventsThinking(t *testing.T) {
 	req := map[string]any{"max_tokens": float64(8192), "messages": []any{toolContinuation(false)}}
 	stage := &OutputShaperStage{}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, shaperCfg()); err != nil {
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, exists := req["thinking"]; exists {
@@ -135,7 +139,7 @@ func TestOutputShaper_RespectsMaxTokensFloor(t *testing.T) {
 		"messages":   []any{toolContinuation(false)},
 	}
 	stage := &OutputShaperStage{}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, shaperCfg()); err != nil {
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if req["thinking"].(map[string]any)["budget_tokens"] != float64(16000) {
@@ -146,8 +150,8 @@ func TestOutputShaper_RespectsMaxTokensFloor(t *testing.T) {
 func TestOutputShaper_BypassWhenDisabled(t *testing.T) {
 	req := map[string]any{"system": "Original"}
 	stage := &OutputShaperStage{}
-	cfg := &Config{Enabled: true, OutputShaper: OutputShaperConfig{Enabled: false, VerbositySteering: true}}
-	if err := stage.Execute(context.Background(), &RequestContext{Request: req}, cfg); err != nil {
+	cfg := &headroom.Config{Enabled: true, OutputShaper: headroom.OutputShaperConfig{Enabled: false, VerbositySteering: true}}
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{Request: req}, cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if req["system"] != "Original" {
@@ -174,7 +178,7 @@ func TestOutputShaper_DoesNotClampCodingContinuation(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
 	stage := &OutputShaperStage{}
 	if err := stage.Execute(context.Background(), reqCtx, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -207,7 +211,7 @@ func TestOutputShaper_ClampsMechanicalContinuation(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
 	stage := &OutputShaperStage{}
 	if err := stage.Execute(context.Background(), reqCtx, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -242,7 +246,7 @@ func TestOutputShaper_ClampCodingOptIn(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
 	stage := &OutputShaperStage{}
 	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -273,7 +277,7 @@ func TestOutputShaper_MechanicalMaxBytesRespected(t *testing.T) {
 			},
 		},
 	}
-	underCtx := &RequestContext{Request: underReq}
+	underCtx := &headroom.RequestContext{Request: underReq}
 	stage := &OutputShaperStage{}
 	if err := stage.Execute(context.Background(), underCtx, cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -295,7 +299,7 @@ func TestOutputShaper_MechanicalMaxBytesRespected(t *testing.T) {
 			},
 		},
 	}
-	overCtx := &RequestContext{Request: overReq}
+	overCtx := &headroom.RequestContext{Request: overReq}
 	if err := stage.Execute(context.Background(), overCtx, cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -322,7 +326,7 @@ func TestOutputShaper_ReasoningEffortNotDowngradedOnCoding(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
 	stage := &OutputShaperStage{}
 	if err := stage.Execute(context.Background(), reqCtx, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -354,7 +358,7 @@ func TestOutputShaper_RecordsContinuationKind(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &RequestContext{Request: req, Verbatim: NewToolInspector(req)}
+	reqCtx := &headroom.RequestContext{Request: req, Verbatim: headroom.NewToolInspector(req)}
 	stage := &OutputShaperStage{}
 	if err := stage.Execute(context.Background(), reqCtx, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -365,13 +369,6 @@ func TestOutputShaper_RecordsContinuationKind(t *testing.T) {
 }
 
 func TestLooksLikeTestOutput_ProseIsNotTestOutput(t *testing.T) {
-	// Case-insensitive \bPASS\b, \berror:, and \bwarning: matched ordinary
-	// prose, so almost every tool result classified as coding and effort
-	// routing never clamped anything.
-	//
-	// The discriminator is position, not wording: a diagnostic prefix opens a
-	// line, while prose mentions it mid-sentence. A line that genuinely starts
-	// "warning:" is treated as a diagnostic even if what follows is short.
 	prose := []string{
 		"Please pass the auth token to the handler.",
 		"The user does not have an error: field here",
@@ -407,9 +404,6 @@ func TestLooksLikeTestOutput_RealRunnerOutput(t *testing.T) {
 }
 
 func TestClassifyContinuation_ZeroMaxBytesUsesDefault(t *testing.T) {
-	// A zero ceiling means "unset", not "clamp everything". This pins that
-	// meaning across the signature change from a variadic to a plain
-	// parameter, where an omitted argument becomes an explicit 0.
 	small := map[string]any{"messages": []any{
 		map[string]any{"role": "user", "content": []any{
 			map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "done"},
@@ -431,9 +425,6 @@ func TestClassifyContinuation_ZeroMaxBytesUsesDefault(t *testing.T) {
 }
 
 func TestClassifyContinuation_LargeNonCodeIsLarge(t *testing.T) {
-	// A payload over the ceiling with no code signal is not coding; it is only
-	// big. Labelling it "coding" made the telemetry unreadable, since a real
-	// edit loop and a long log line looked identical.
 	req := map[string]any{"messages": []any{
 		map[string]any{"role": "user", "content": []any{
 			map[string]any{"type": "tool_result", "tool_use_id": "t1",
@@ -461,7 +452,7 @@ func TestOutputShaper_LargeContinuationIsNotClamped(t *testing.T) {
 			}},
 		},
 	}
-	reqCtx := &RequestContext{Request: req}
+	reqCtx := &headroom.RequestContext{Request: req}
 	stage := &OutputShaperStage{}
 	if err := stage.Execute(context.Background(), reqCtx, shaperCfg()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -471,5 +462,47 @@ func TestOutputShaper_LargeContinuationIsNotClamped(t *testing.T) {
 	}
 	if reqCtx.EffortClamped {
 		t.Error("large continuation must not be clamped")
+	}
+}
+
+func TestOutputShaperStage_LogsEffortClamp(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	req := map[string]any{
+		"thinking": map[string]any{"type": "enabled", "budget_tokens": float64(4096)},
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "tool_result", "content": "mkdir /foo/bar"},
+				},
+			},
+		},
+	}
+	reqCtx := &headroom.RequestContext{
+		Request:  req,
+		Logger:   logger,
+		Verbatim: headroom.NewToolInspector(req),
+	}
+	cfg := &headroom.Config{
+		Enabled: true,
+		OutputShaper: headroom.OutputShaperConfig{
+			Enabled:                  true,
+			EffortRouting:            true,
+			MechanicalThinkingBudget: 1024,
+		},
+	}
+
+	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reqCtx.EffortClamped {
+		t.Fatal("expected effort clamp")
+	}
+	for _, want := range []string{"output_shaper clamped thinking budget", "continuation_kind", "original_budget", "clamped_budget"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("log missing %q; got: %s", want, buf.String())
+		}
 	}
 }
