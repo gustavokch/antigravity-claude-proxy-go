@@ -233,8 +233,23 @@ func newTestEngine(cfg headroom.Config) *headroom.Engine {
 	return headroom.NewEngine(cfg, nil, testStages(store)...)
 }
 
-func fullConfig() headroom.Config { /* moved verbatim from engine_test.go */ }
-func toolResultMsg(payload string) any { /* moved verbatim from engine_test.go */ }
+// fullConfig and toolResultMsg move verbatim from engine_test.go, gaining
+// only the headroom. qualification.
+func fullConfig() headroom.Config {
+	return headroom.Config{
+		Enabled: true, SmartCrusher: true, CodeCompressor: true, LiveTurns: 2,
+		OutputShaper: headroom.OutputShaperConfig{
+			Enabled: true, VerbositySteering: true, EffortRouting: true,
+			MechanicalThinkingBudget: 1024,
+		},
+	}
+}
+
+func toolResultMsg(payload string) any {
+	return map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "tool_result", "tool_use_id": "tu_" + payload[:1], "content": payload},
+	}}
+}
 ```
 
 Move into this file, changing only the package clause and adding `headroom.` qualifications: every test in `engine_test.go` that calls `NewEngine` with real stages, the two in `verbatim_test.go` (lines 16, 46), `ccr_test.go:183`, `continuation_test.go:351`, and `BenchmarkEngine_Process` / `BenchmarkEngineProcess_WithVerbatim`. `engine_test.go` keeps only the mock-stage tests from Step 1.
@@ -334,7 +349,29 @@ func TestCommandCrusherStage_LogsRewrite(t *testing.T) {
 func TestCommandCrusherStage_SilentWhenDebugDisabled(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	// ... same request ...
+
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":    "tool_result",
+						"content": "...........................\n=== 5 passed in 0.05s ===\n",
+					},
+				},
+			},
+		},
+	}
+	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	cfg := &headroom.Config{Enabled: true, CommandCrusher: true}
+
+	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reqCtx.RewritesCount == 0 {
+		t.Fatal("expected the rewrite to still happen with logging off")
+	}
 	if buf.Len() != 0 {
 		t.Fatalf("expected no output above DEBUG, got: %s", buf.String())
 	}
@@ -348,7 +385,48 @@ Expected: FAIL — no such package.
 
 - [ ] **Step 3: Move the code**
 
-`git mv` the four `crusher_*.go` files and the test into the new directory, then split `command_crusher.go` into `stage.go`, `detector.go`, and `lines.go`. Change the package clause to `crusher`. Requalify `ErrorOrdinals`, `WalkToolResultText`, `SkipVerbatim`, `RequestContext`, and `Config` as `headroom.X`. Add the guarded DEBUG record from spec §5.1 inside the walk callback. `detectSignature` returns the signature already; log `sig.String()` — add a `String()` method on `signature` if one does not exist.
+`git mv` the four `crusher_*.go` files and the test into the new directory, then split `command_crusher.go` into `stage.go`, `detector.go`, and `lines.go`. Change the package clause to `crusher`. Requalify `ErrorOrdinals`, `WalkToolResultText`, `SkipVerbatim`, `RequestContext`, and `Config` as `headroom.X`. `detectSignature` returns the signature already; log `sig.String()` — add a `String()` method on `signature` if one does not exist.
+
+The `Execute` body becomes:
+
+```go
+func (s *CommandCrusherStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext, cfg *headroom.Config) error {
+	if !cfg.CommandCrusher || reqCtx == nil || reqCtx.Request == nil {
+		return nil
+	}
+	log := reqCtx.Log()
+	dbg := log.Enabled(ctx, slog.LevelDebug)
+
+	errOrds := headroom.ErrorOrdinals(reqCtx.Request)
+	headroom.WalkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
+		if errOrds[ord] {
+			return // invariant I4
+		}
+		if headroom.SkipVerbatim(reqCtx, cfg, ord) {
+			reqCtx.VerbatimSkipped++
+			return // invariant I2
+		}
+		before := get()
+		after, changed := CrushCommandOutput(before)
+		if !changed {
+			return
+		}
+		set(after)
+		reqCtx.RecordRewrite(before, after)
+		if dbg {
+			log.Debug("command_crusher compressed tool output",
+				"stage", s.Name(),
+				"signature", detectSignature(before).String(),
+				"ordinal", ord,
+				"bytes_before", len(before),
+				"bytes_after", len(after))
+		}
+	})
+	return nil
+}
+```
+
+The guard ordering (`errOrds` then `SkipVerbatim` then rewrite) and the `VerbatimSkipped` increment must match the current `command_crusher.go:59-80` exactly — this is a move, not a rewrite.
 
 - [ ] **Step 4: Rewire and verify**
 
@@ -420,7 +498,33 @@ func TestSmartCrusherStage_LogsCompaction(t *testing.T) {
 ```
 
 - [ ] **Step 2: Run to confirm failure** — `go test ./internal/headroom/stages/smart/...`
-- [ ] **Step 3: Move the code**, requalify core helpers, add the guarded DEBUG record with `mode` (`compact` or `tabular`), `ordinal`, `bytes_before`, `bytes_after`.
+- [ ] **Step 3: Move the code**, requalify core helpers, and add the guarded DEBUG record. `mode` distinguishes the two transforms this stage applies:
+
+```go
+log := reqCtx.Log()
+dbg := log.Enabled(ctx, slog.LevelDebug)
+
+headroom.WalkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
+	if headroom.SkipVerbatim(reqCtx, cfg, ord) {
+		reqCtx.VerbatimSkipped++
+		return
+	}
+	before := get()
+	after, mode, changed := s.transform(before, cfg) // mode is "compact" or "tabular"
+	if !changed {
+		return
+	}
+	set(after)
+	reqCtx.RecordRewrite(before, after)
+	if dbg {
+		log.Debug("smart_crusher compacted tool output",
+			"stage", s.Name(), "mode", mode, "ordinal", ord,
+			"bytes_before", len(before), "bytes_after", len(after))
+	}
+})
+```
+
+`transform` is the existing `CompactJSON` / `TryTabularConversion` decision in `smart_crusher.go:34-60`, extracted only so the mode label is available to the log. Its branch order and thresholds are unchanged.
 - [ ] **Step 4: Rewire `server.go` to `smart.NewStage()`; run `go test -race ./... && go build ./...`**
 - [ ] **Step 5: Commit**
 
@@ -479,7 +583,31 @@ func TestCodeCompressorStage_LogsPruning(t *testing.T) {
 ```
 
 - [ ] **Step 2: Run to confirm failure** — `go test ./internal/headroom/stages/code/...`
-- [ ] **Step 3: Move the code**, requalify, add the guarded DEBUG record with `ordinal`, `bytes_before`, `bytes_after`.
+- [ ] **Step 3: Move the code**, requalify core helpers, and add the guarded DEBUG record:
+
+```go
+log := reqCtx.Log()
+dbg := log.Enabled(ctx, slog.LevelDebug)
+
+headroom.WalkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
+	if headroom.SkipVerbatim(reqCtx, cfg, ord) {
+		reqCtx.VerbatimSkipped++
+		return
+	}
+	before := get()
+	after := PruneText(before)
+	if after == before {
+		return
+	}
+	set(after)
+	reqCtx.RecordRewrite(before, after)
+	if dbg {
+		log.Debug("code_compressor pruned tool output",
+			"stage", s.Name(), "ordinal", ord,
+			"bytes_before", len(before), "bytes_after", len(after))
+	}
+})
+```
 - [ ] **Step 4: Rewire `server.go` to `code.NewStage()`; run `go test -race ./... && go build ./...`**
 - [ ] **Step 5: Commit**
 
@@ -552,7 +680,25 @@ func TestOutputShaperStage_LogsEffortClamp(t *testing.T) {
 ```
 
 - [ ] **Step 2: Run to confirm failure** — `go test ./internal/headroom/stages/shaper/...`
-- [ ] **Step 3: Move the code**, requalify, add the DEBUG record in `clampEffort`. This one fires at most once per request, so no `Enabled` guard is required.
+- [ ] **Step 3: Move the code**, requalify, and add the DEBUG record at the end of `clampEffort`. This fires at most once per request, so no `Enabled` guard is required:
+
+```go
+func (s *OutputShaperStage) clampEffort(reqCtx *headroom.RequestContext, cfg *headroom.Config) {
+	// ... existing classification and clamping, unchanged ...
+	reqCtx.EffortClamped = true
+	reqCtx.OriginalThinking = original
+	reqCtx.ClampedThinking = clamped
+	reqCtx.ContinuationKind = kind.String()
+
+	reqCtx.Log().Debug("output_shaper clamped thinking budget",
+		"stage", s.Name(),
+		"continuation_kind", kind.String(),
+		"original_budget", original,
+		"clamped_budget", clamped)
+}
+```
+
+`clampEffort` currently takes `(reqCtx *RequestContext, cfg *Config)` and has no receiver use; keep the signature and add the receiver only if `s.Name()` is wanted in the record.
 - [ ] **Step 4: Rewire `server.go` to `shaper.NewStage()`; run `go test -race ./... && go build ./...`**
 - [ ] **Step 5: Commit**
 
@@ -624,14 +770,35 @@ func TestCCRStage_LogsChunkDemotion(t *testing.T) {
 ```
 
 - [ ] **Step 2: Run to confirm failure** — `go test ./internal/headroom/stages/ccr/...`
-- [ ] **Step 3: Move the code**, requalify, add the guarded DEBUG record with `chunk_id`, `ordinal`, `message_index`, `chunk_bytes`, `store_bytes`.
+- [ ] **Step 3: Move the code**, requalify core helpers, and add the guarded DEBUG record inside the demotion callback (`ccr_stage.go:80-104`):
+
+```go
+log := reqCtx.Log()
+dbg := log.Enabled(ctx, slog.LevelDebug)
+
+// ... inside the existing WalkToolResultText callback, after set(token):
+reqCtx.RecordRewrite(before, token)
+reqCtx.ChunksStored++
+if dbg {
+	log.Debug("ccr demoted chunk",
+		"stage", s.Name(), "chunk_id", id,
+		"ordinal", ord, "message_index", idx,
+		"chunk_bytes", len(before), "store_bytes", s.store.Bytes())
+}
+```
+
+The `FrozenPrefixIndex` gate, the `SkipVerbatim` gate, the `minBytes` floor, and the retrieve-tool injection block below the walk all move unchanged.
 - [ ] **Step 4: Rewire the server**
 
 ```go
 srv.ccrStore = ccr.NewCCRStoreFromMB(cfg.Headroom.CCR.MaxStoreMB)
 ```
 
-Retype the `Server.ccrStore` field to `*ccr.CCRStore` and switch `headroom.NewCCRStage(...)` to `ccr.NewStage(srv.ccrStore)`. Repoint `headroom.ChunkID` in `headroom_ccr_test.go`.
+Retype the `Server.ccrStore` field to `*ccr.CCRStore` and switch `headroom.NewCCRStage(...)` to `ccr.NewStage(srv.ccrStore)`. Repoint `headroom.ChunkID` in `headroom_ccr_test.go`. In `integration_test.go`, `testStages` changes signature from `testStages(store *headroom.CCRStore)` to `testStages(store *ccr.CCRStore)`, and `newTestEngine` builds the store with `ccr.NewCCRStoreFromMB`. After this task no `headroom.CCRStore` identifier remains anywhere in the tree:
+
+```bash
+grep -rn "headroom\.CCRStore\|headroom\.ChunkID\|headroom\.NewCCRStage\|headroom\.NewCCRStore" internal || echo "OK: no stale CCR references"
+```
 
 - [ ] **Step 5: Verify** — `go test -race ./... && go build ./...`
 - [ ] **Step 6: Commit**
@@ -711,8 +878,9 @@ Task 8 Step 4 compares against `/tmp/headroom-baseline-bench.txt`.
 
 - [x] **Ordering**: engine decoupling (Task 2) precedes every file move, so `engine.go` never references a deleted type. Every task ends compiling and green.
 - [x] **Spec coverage**: five stages extracted, core made stage-free, store ownership moved to the server, guarded DEBUG logging plus a `request_id`-correlated summary, all invariants carried into explicit verification steps.
-- [x] **Placeholder scan**: no TBD/TODO. `pipeline.go` is created unconditionally in Task 1; `benchmark_test.go` is split across Tasks 3-7 and scoped in Task 8.
-- [x] **Call-site completeness**: `Engine.CCRStore()` (3 non-test + 11 test sites) and `headroom.ChunkID` (4 sites) are named with their files.
+- [x] **Placeholder scan**: no TBD/TODO, no "similar to Task N", no prose-only code steps. Every stage-move task carries the actual `Execute` or log-call body it must produce. `pipeline.go` is created unconditionally in Task 1; `benchmark_test.go` is split across Tasks 3-7 and scoped in Task 8.
+- [x] **Call-site completeness**: `Engine.CCRStore()` (3 non-test + 11 test sites) and `headroom.ChunkID` (4 sites) are named with their files. Task 7 Step 4 ends with a `grep` that fails loudly if any stale `headroom.CCRStore*` identifier survives.
 - [x] **Test preservation**: every existing test file is moved and edited, never recreated; Task 8 Step 5 audits the diffs for it.
-- [x] **Type consistency**: `NewEngine(cfg, logger, stages...)`, `Stage`, and `RequestContext` are identical across tasks; `Server.ccrStore` changes type once, in Task 7, and the plan says so.
+- [x] **Type consistency**: `NewEngine(cfg, logger, stages...)`, `Stage`, and `RequestContext` are identical across tasks. Two signatures change type mid-series and both are called out where it happens: `Server.ccrStore` and `testStages(store)` go from `*headroom.CCRStore` to `*ccr.CCRStore` in Task 7.
 - [x] **Compilable snippets**: every Go block was written against the current signatures in `internal/headroom`.
+- [x] **Task right-sizing**: eight tasks, 45 steps. Each task ends at a reviewable boundary — a passing `go test -race ./...` on a compiling tree — and a reviewer could reject any one stage move while accepting its neighbors.

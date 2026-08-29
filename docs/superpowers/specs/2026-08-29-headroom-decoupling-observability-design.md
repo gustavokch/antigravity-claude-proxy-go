@@ -291,7 +291,7 @@ func (s *CommandCrusherStage) Execute(ctx context.Context, reqCtx *RequestContex
 		// ...
 		if dbg {
 			log.Debug("command_crusher compressed tool output",
-				"signature", sig.String(), "ordinal", ord,
+				"stage", s.Name(), "signature", sig.String(), "ordinal", ord,
 				"bytes_before", len(before), "bytes_after", len(after))
 		}
 	})
@@ -301,17 +301,19 @@ func (s *CommandCrusherStage) Execute(ctx context.Context, reqCtx *RequestContex
 
 An unguarded `log.Debug("msg", "k", v)` still allocates the variadic slice and boxes each scalar even when the level is off. The guard is what makes the "no cost when DEBUG is disabled" claim literally true, and it is verified by the stage benchmarks.
 
+`stage` is passed as an inline attribute rather than bound with `Logger.With(...)` per `Execute`: `With` allocates a handler even when nothing is ever logged, which would put a per-request cost back on the disabled path.
+
 ### 5.2 Event matrix
 
-Every record inherits `module=headroom` and `request_id` from the request-scoped logger.
+Every record inherits `module=headroom` and `request_id` from the request-scoped logger. Every stage record additionally carries `stage`, the value of that stage's `Name()`.
 
 | Level   | Component | Event                        | Attributes                                                                                                                                 |
 | ------- | --------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DEBUG` | `crusher` | Signature match & compression | `signature`, `ordinal`, `bytes_before`, `bytes_after`                                                                                        |
-| `DEBUG` | `smart`   | JSON compaction / tabular     | `mode` (`compact`\|`tabular`), `ordinal`, `bytes_before`, `bytes_after`                                                                       |
-| `DEBUG` | `code`    | Whitespace & repeat pruning   | `ordinal`, `bytes_before`, `bytes_after`                                                                                                      |
-| `DEBUG` | `shaper`  | Effort routing & clamp        | `continuation_kind`, `original_budget`, `clamped_budget`                                                                                      |
-| `DEBUG` | `ccr`     | Chunk demotion                | `chunk_id`, `ordinal`, `message_index`, `chunk_bytes`, `store_bytes`                                                                          |
+| `DEBUG` | `crusher` | Signature match & compression | `stage`, `signature`, `ordinal`, `bytes_before`, `bytes_after`                                                                                |
+| `DEBUG` | `smart`   | JSON compaction / tabular     | `stage`, `mode` (`compact`\|`tabular`), `ordinal`, `bytes_before`, `bytes_after`                                                              |
+| `DEBUG` | `code`    | Whitespace & repeat pruning   | `stage`, `ordinal`, `bytes_before`, `bytes_after`                                                                                            |
+| `DEBUG` | `shaper`  | Effort routing & clamp        | `stage`, `continuation_kind`, `original_budget`, `clamped_budget`                                                                             |
+| `DEBUG` | `ccr`     | Chunk demotion                | `stage`, `chunk_id`, `ordinal`, `message_index`, `chunk_bytes`, `store_bytes`                                                                 |
 | `DEBUG` | `headroom`| Pipeline summary              | `rewrites`, `bytes_before`, `bytes_after`, `saved_bytes`, `saved_pct`, `chunks_stored`, `effort_clamped`, `continuation`, `verbatim_skipped`, `duration_ms` |
 | `ERROR` | `headroom`| Pipeline stage failure        | `error`                                                                                                                                       |
 
