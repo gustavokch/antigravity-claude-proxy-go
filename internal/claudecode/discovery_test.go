@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDiscoverLocalCredentials(t *testing.T) {
@@ -65,3 +66,91 @@ func TestDiscoverLocalCredentials(t *testing.T) {
 		t.Errorf("expected to find sk-ant-api03-test-key-999")
 	}
 }
+
+func TestDiscoverLocalCredentials_OAuthWithRefreshToken(t *testing.T) {
+	tempDir := t.TempDir()
+	claudeJSON := `{
+		"oauthAccount": {
+			"accountUuid": "uuid-1234",
+			"emailAddress": "dev@example.com",
+			"organizationUuid": "org-5678"
+		},
+		"oauthToken": "sk-ant-oat-token-abc",
+		"refreshToken": "ant-refresh-token-xyz",
+		"expiresAt": "2026-08-29T18:00:00Z"
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, ".claude.json"), []byte(claudeJSON), 0600)
+	if err != nil {
+		t.Fatalf("failed to write test .claude.json: %v", err)
+	}
+
+	accounts, err := DiscoverLocalCredentials(tempDir)
+	if err != nil {
+		t.Fatalf("DiscoverLocalCredentials failed: %v", err)
+	}
+
+	if len(accounts) == 0 {
+		t.Fatalf("expected at least 1 discovered account, got 0")
+	}
+
+	var oauthAcc *AccountConfig
+	for _, a := range accounts {
+		if a.Token == "sk-ant-oat-token-abc" {
+			accCopy := a
+			oauthAcc = &accCopy
+			break
+		}
+	}
+
+	if oauthAcc == nil {
+		t.Fatalf("expected oauth account with token sk-ant-oat-token-abc")
+	}
+	if oauthAcc.Type != "oauth" {
+		t.Errorf("expected type=oauth, got %s", oauthAcc.Type)
+	}
+	if oauthAcc.RefreshToken != "ant-refresh-token-xyz" {
+		t.Errorf("expected refreshToken=ant-refresh-token-xyz, got %s", oauthAcc.RefreshToken)
+	}
+	if oauthAcc.Email != "dev@example.com" {
+		t.Errorf("expected email=dev@example.com, got %s", oauthAcc.Email)
+	}
+	if oauthAcc.AccountUUID != "uuid-1234" {
+		t.Errorf("expected accountUuid=uuid-1234, got %s", oauthAcc.AccountUUID)
+	}
+}
+
+func TestDiscoverLocalCredentials_MillisecondTimestamp(t *testing.T) {
+	tempDir := t.TempDir()
+	// 1756500000000 ms is in year 2025
+	claudeJSON := `{
+		"oauthToken": "sk-ant-oat-token-milli",
+		"refreshToken": "ant-refresh-token-milli",
+		"expiresAt": 1756500000000
+	}`
+
+	err := os.WriteFile(filepath.Join(tempDir, ".claude.json"), []byte(claudeJSON), 0600)
+	if err != nil {
+		t.Fatalf("failed to write test .claude.json: %v", err)
+	}
+
+	accounts, err := DiscoverLocalCredentials(tempDir)
+	if err != nil {
+		t.Fatalf("DiscoverLocalCredentials failed: %v", err)
+	}
+
+	if len(accounts) == 0 {
+		t.Fatalf("expected at least 1 account, got 0")
+	}
+
+	acc := accounts[0]
+	if acc.ExpiresAt == nil {
+		t.Fatalf("expected non-nil ExpiresAt")
+	}
+
+	expectedYear := time.UnixMilli(1756500000000).Year()
+	if acc.ExpiresAt.Year() != expectedYear {
+		t.Errorf("expected year %d, got %d (raw: %v)", expectedYear, acc.ExpiresAt.Year(), acc.ExpiresAt)
+	}
+}
+

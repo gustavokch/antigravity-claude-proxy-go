@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/openrouter"
 )
 
@@ -25,20 +26,97 @@ var (
 var ccHTTPClient *claudecode.Client
 
 func getOrCreateCCPool(cfg claudecode.Config) (*claudecode.AccountPool, *claudecode.Client) {
+	var s *Server
+	return s.getOrCreateCCPool(cfg)
+}
+
+func ccAccountsEqual(a, b []claudecode.AccountConfig) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Token != b[i].Token || a[i].RefreshToken != b[i].RefreshToken || a[i].Enabled != b[i].Enabled {
+			return false
+		}
+	}
+	return true
+}
+
+func (server *Server) getOrCreateCCPool(cfg claudecode.Config) (*claudecode.AccountPool, *claudecode.Client) {
 	ccPoolMu.Lock()
 	defer ccPoolMu.Unlock()
 
 	key := cfg.BaseURL
-	if ccPoolInst == nil || ccPoolKey != key || len(ccPoolCfg.Accounts) != len(cfg.Accounts) {
+	if ccPoolInst == nil || ccPoolKey != key || !ccAccountsEqual(ccPoolCfg.Accounts, cfg.Accounts) {
 		ccPoolInst = claudecode.NewAccountPool(cfg.Accounts)
 		ccHTTPClient = claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.BaseURL), nil)
 		ccPoolKey = key
 		ccPoolCfg = cfg
+
+		if server != nil && server.claudeCodeOAuthMgr != nil {
+			oauthMgr := server.claudeCodeOAuthMgr
+			ccPoolInst.SetTokenRefresher(func(refreshToken string) (string, string, int, error) {
+				resp, err := oauthMgr.RefreshToken(refreshToken)
+				if err != nil {
+					return "", "", 0, err
+				}
+				return resp.AccessToken, resp.RefreshToken, resp.ExpiresIn, nil
+			})
+		}
 	}
 	if ccHTTPClient == nil {
 		ccHTTPClient = claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.BaseURL), nil)
 	}
 	return ccPoolInst, ccHTTPClient
+}
+
+// syncRefreshedAccountToConfig updates config.json with newly refreshed token credentials.
+func (server *Server) syncRefreshedAccountToConfig(accID, newToken, newRefreshToken string, expiresAt *time.Time) {
+	if accID == "" || newToken == "" {
+		return
+	}
+	cfg := config.Get()
+	accountsList := make([]any, 0, len(cfg.ClaudeCode.Accounts))
+	updated := false
+	for _, a := range cfg.ClaudeCode.Accounts {
+		aMap := map[string]any{
+			"id":               a.ID,
+			"name":             a.Name,
+			"token":            a.Token,
+			"refreshToken":     a.RefreshToken,
+			"expiresAt":        a.ExpiresAt,
+			"email":            a.Email,
+			"accountUuid":      a.AccountUUID,
+			"organizationUuid": a.OrganizationUUID,
+			"type":             a.Type,
+			"priority":         a.Priority,
+			"enabled":          a.Enabled,
+			"source":           a.Source,
+		}
+		if a.ID == accID {
+			aMap["token"] = newToken
+			if newRefreshToken != "" {
+				aMap["refreshToken"] = newRefreshToken
+			}
+			if expiresAt != nil {
+				aMap["expiresAt"] = expiresAt.Format(time.RFC3339)
+			}
+			updated = true
+		}
+		accountsList = append(accountsList, aMap)
+	}
+	if updated {
+		ccCfg := map[string]any{
+			"enabled":    cfg.ClaudeCode.Enabled,
+			"baseUrl":    cfg.ClaudeCode.BaseURL,
+			"mode":       cfg.ClaudeCode.Mode,
+			"autoImport": cfg.ClaudeCode.AutoImport,
+			"accounts":   accountsList,
+			"allowlist":  cfg.ClaudeCode.Allowlist,
+			"routing":    cfg.ClaudeCode.Routing,
+		}
+		_, _ = config.Save(map[string]any{"claudecode": ccCfg})
+	}
 }
 
 var ccPoolCfg claudecode.Config
@@ -224,7 +302,7 @@ func (server *Server) forwardToClaudeCode(
 	reqBody []byte,
 	model string,
 ) {
-	pool, client := getOrCreateCCPool(ccCfg)
+	pool, client := server.getOrCreateCCPool(ccCfg)
 	sessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
 
 	if server.isCCREnabled() {
@@ -240,6 +318,11 @@ func (server *Server) forwardToClaudeCode(
 						return nil, fmt.Errorf("no Claude Code accounts available: %w", err)
 					}
 
+					_ = pool.RefreshTokenIfNeeded(acc)
+					if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
+						server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
+					}
+
 					pool.Acquire(acc.ID)
 					startTime := time.Now()
 
@@ -252,6 +335,32 @@ func (server *Server) forwardToClaudeCode(
 						}
 						excluded[acc.ID] = true
 						continue
+					}
+
+					// If 401 Unauthorized and account has refresh token, attempt token refresh and retry once
+					if resp.StatusCode == http.StatusUnauthorized {
+						if acc.RefreshToken != "" {
+							if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
+								if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
+									server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
+									retryResp, retryErr := client.SendMessage(ctx, refreshedAcc.Token, bodyBytes, request.Header)
+									if retryErr == nil {
+										_ = resp.Body.Close()
+										resp = retryResp
+									}
+								}
+							}
+						}
+						if resp.StatusCode == http.StatusUnauthorized {
+							_ = resp.Body.Close()
+							pool.Release(acc.ID)
+							pool.RecordFailure(acc.ID, true, 30*time.Second)
+							if server.logger != nil {
+								server.logger.Warn("claudecode 401 unauthorized, failing over", "account", acc.ID)
+							}
+							excluded[acc.ID] = true
+							continue
+						}
 					}
 
 					rl := claudecode.ExtractRateLimits(resp.Header)
@@ -319,6 +428,11 @@ func (server *Server) forwardToClaudeCode(
 			return
 		}
 
+		_ = pool.RefreshTokenIfNeeded(acc)
+		if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
+			server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
+		}
+
 		pool.Acquire(acc.ID)
 		startTime := time.Now()
 
@@ -331,6 +445,32 @@ func (server *Server) forwardToClaudeCode(
 			}
 			excluded[acc.ID] = true
 			continue
+		}
+
+		// If 401 Unauthorized and account has refresh token, attempt token refresh and retry once
+		if resp.StatusCode == http.StatusUnauthorized {
+			if acc.RefreshToken != "" {
+				if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
+					if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
+						server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
+						retryResp, retryErr := client.SendMessage(request.Context(), refreshedAcc.Token, reqBody, request.Header)
+						if retryErr == nil {
+							_ = resp.Body.Close()
+							resp = retryResp
+						}
+					}
+				}
+			}
+			if resp.StatusCode == http.StatusUnauthorized {
+				_ = resp.Body.Close()
+				pool.Release(acc.ID)
+				pool.RecordFailure(acc.ID, true, 30*time.Second)
+				if server.logger != nil {
+					server.logger.Warn("claudecode 401 unauthorized, failing over", "account", acc.ID)
+				}
+				excluded[acc.ID] = true
+				continue
+			}
 		}
 
 		rl := claudecode.ExtractRateLimits(resp.Header)

@@ -250,6 +250,103 @@ func (p *AccountPool) RefreshTokenIfNeeded(acc *Account) error {
 	return nil
 }
 
+// RefreshAccountToken forces an immediate token refresh for an account regardless of expiry timestamp.
+func (p *AccountPool) RefreshAccountToken(accountID string) error {
+	p.mu.RLock()
+	acc, exists := p.accounts[accountID]
+	refresher := p.tokenRefresher
+	p.mu.RUnlock()
+
+	if !exists || acc == nil {
+		return ErrAccountNotFound
+	}
+	if refresher == nil {
+		return errors.New("no token refresher configured for pool")
+	}
+
+	acc.mu.RLock()
+	refreshToken := acc.RefreshToken
+	acc.mu.RUnlock()
+
+	if refreshToken == "" {
+		return fmt.Errorf("account %s has no refresh token", accountID)
+	}
+
+	newToken, newRefreshToken, expiresIn, err := refresher(refreshToken)
+	if err != nil {
+		return fmt.Errorf("refresh token for %s: %w", accountID, err)
+	}
+
+	acc.mu.Lock()
+	acc.Token = newToken
+	if newRefreshToken != "" {
+		acc.RefreshToken = newRefreshToken
+	}
+	if expiresIn > 0 {
+		newExp := time.Now().Add(time.Duration(expiresIn) * time.Second)
+		acc.ExpiresAt = &newExp
+	}
+	acc.mu.Unlock()
+
+	_ = p.SaveStoredAccounts()
+	return nil
+}
+
+// RefreshAllExpiringTokens scans all enabled accounts and refreshes those expiring within window.
+func (p *AccountPool) RefreshAllExpiringTokens(window time.Duration) ([]string, error) {
+	p.mu.RLock()
+	refresher := p.tokenRefresher
+	accounts := make([]*Account, 0, len(p.accounts))
+	for _, acc := range p.accounts {
+		accounts = append(accounts, acc)
+	}
+	p.mu.RUnlock()
+
+	if refresher == nil {
+		return nil, nil
+	}
+
+	var refreshedIDs []string
+	var errs []error
+	now := time.Now()
+
+	for _, acc := range accounts {
+		acc.mu.RLock()
+		enabled := acc.Enabled
+		refreshToken := acc.RefreshToken
+		expiresAt := acc.ExpiresAt
+		id := acc.ID
+		acc.mu.RUnlock()
+
+		if !enabled || refreshToken == "" || expiresAt == nil {
+			continue
+		}
+
+		if expiresAt.Sub(now) <= window {
+			if err := p.RefreshAccountToken(id); err == nil {
+				refreshedIDs = append(refreshedIDs, id)
+			} else {
+				errs = append(errs, fmt.Errorf("account %s: %w", id, err))
+			}
+		}
+	}
+
+	return refreshedIDs, errors.Join(errs...)
+}
+
+// UpdateAccountRateLimits updates the cached rate limits for an account.
+func (p *AccountPool) UpdateAccountRateLimits(accountID string, rl RateLimits) {
+	p.mu.RLock()
+	acc, ok := p.accounts[accountID]
+	p.mu.RUnlock()
+
+	if ok && acc != nil {
+		acc.mu.Lock()
+		acc.RateLimits = rl
+		acc.mu.Unlock()
+	}
+}
+
 // GetAccount retrieves a single account by ID.
 func (p *AccountPool) GetAccount(id string) (*Account, bool) {
 	p.mu.RLock()
@@ -396,11 +493,7 @@ func isAccountHealthy(acc *Account, now time.Time) bool {
 	if acc.CooldownUntil.After(now) {
 		return false
 	}
-	// Check rate limits if reset is in future
-	if acc.RateLimits.RequestsRemaining == 0 && acc.RateLimits.RequestsReset.After(now) {
-		return false
-	}
-	if acc.RateLimits.TokensRemaining == 0 && acc.RateLimits.TokensReset.After(now) {
+	if acc.RateLimits.IsRateLimited(now) {
 		return false
 	}
 	return true

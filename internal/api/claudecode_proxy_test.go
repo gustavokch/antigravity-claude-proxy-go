@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,7 +10,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/headroom"
@@ -451,3 +455,226 @@ func TestForwardToClaudeCode_CCRHydration_Unary(t *testing.T) {
 		t.Fatalf("Expected output_tokens 24, got %v", usage["output_tokens"])
 	}
 }
+
+func TestForwardToClaudeCode_AutoRefreshOn401(t *testing.T) {
+	reqCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		authHdr := r.Header.Get("Authorization")
+		if reqCount == 1 {
+			// First request returns 401 expired token
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}`))
+			return
+		}
+		// Second request with refreshed token succeeds
+		if authHdr != "Bearer sk-ant-oat01-refreshed-token" {
+			t.Errorf("expected Bearer sk-ant-oat01-refreshed-token, got %s", authHdr)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_123","type":"message","usage":{"input_tokens":10,"output_tokens":20}}`))
+	}))
+	defer ts.Close()
+
+	oauthMgr := auth.NewClaudeCodeOAuthManager()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "sk-ant-oat01-refreshed-token",
+			"refresh_token": "new-refresh-token",
+			"expires_in":    3600,
+		})
+	}))
+	defer tokenSrv.Close()
+	oauthMgr.SetEndpoints("", tokenSrv.URL, "", nil)
+
+	srv, err := New(Options{
+		APIKey: "test-key",
+		Credentials: func(ctx context.Context) (auth.Credentials, error) {
+			return auth.Credentials{AccessToken: "token"}, nil
+		},
+		NewUpstream:        func(s string) Upstream { return nil },
+		ClaudeCodeOAuthMgr: oauthMgr,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	cfg := claudecode.Config{
+		Enabled: true,
+		BaseURL: ts.URL,
+		Accounts: []claudecode.AccountConfig{
+			{
+				ID:           "acc-oauth",
+				Name:         "OAuth Acc",
+				Token:        "expired-token",
+				RefreshToken: "valid-refresh",
+				Type:         "oauth",
+				Priority:     1,
+				Enabled:      true,
+			},
+		},
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+
+	reqBody := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":"hello"}]}`)
+	httpReq := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	srv.forwardToClaudeCode(w, httpReq, cfg, reqBody, "claude-3-7-sonnet-20250219")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 OK after auto-refresh retry, got %d: %s", w.Code, w.Body.String())
+	}
+	if reqCount != 2 {
+		t.Errorf("expected 2 upstream requests (initial 401 + retry), got %d", reqCount)
+	}
+}
+
+func TestSyncRefreshedAccountToConfig_PreservesAllowlistAndRouting(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	allowlist := []claudecode.ModelConfig{
+		{
+			ID:      "claude-custom-1",
+			Aliases: []string{"custom-1"},
+			Enabled: true,
+		},
+	}
+	routing := claudecode.RoutingConfig{
+		Retry429Max:      7,
+		BackoffBaseMs:    1500,
+		BackoffCapMs:     40000,
+		RequestBudgetMs:  180000,
+		CooldownDuration: 45000,
+	}
+
+	config.SetForTest(config.Config{
+		ClaudeCode: claudecode.Config{
+			Enabled: true,
+			BaseURL: "https://api.anthropic.com",
+			Mode:    "pool",
+			Accounts: []claudecode.AccountConfig{
+				{
+					ID:           "acc-1",
+					Name:         "Account 1",
+					Token:        "old-token",
+					RefreshToken: "old-refresh",
+					Type:         "oauth",
+					Enabled:      true,
+				},
+			},
+			Allowlist: allowlist,
+			Routing:   routing,
+		},
+	})
+
+	srv := &Server{}
+	now := time.Now().Add(1 * time.Hour)
+	srv.syncRefreshedAccountToConfig("acc-1", "new-token", "new-refresh", &now)
+
+	updated := config.Get().ClaudeCode
+	if len(updated.Allowlist) != 1 || updated.Allowlist[0].ID != "claude-custom-1" {
+		t.Fatalf("allowlist lost or modified: %+v", updated.Allowlist)
+	}
+	if updated.Routing.Retry429Max != 7 || updated.Routing.BackoffBaseMs != 1500 {
+		t.Fatalf("routing config lost or modified: %+v", updated.Routing)
+	}
+}
+
+func TestForwardToClaudeCode_401RetryFailure_FailsOver(t *testing.T) {
+	reqCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		authHdr := r.Header.Get("Authorization")
+		apiKeyHdr := r.Header.Get("x-api-key")
+		if authHdr == "Bearer sk-ant-oat01-acc1-tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}`))
+			return
+		}
+		if apiKeyHdr == "acc2-tok" || authHdr == "Bearer acc2-tok" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"msg_456","type":"message","usage":{"input_tokens":5,"output_tokens":10}}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	oauthMgr := auth.NewClaudeCodeOAuthManager()
+	// OAuth refresh fails for acc1
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer tokenSrv.Close()
+	oauthMgr.SetEndpoints("", tokenSrv.URL, "", nil)
+
+	srv, err := New(Options{
+		APIKey: "test-key",
+		Credentials: func(ctx context.Context) (auth.Credentials, error) {
+			return auth.Credentials{AccessToken: "token"}, nil
+		},
+		NewUpstream:        func(s string) Upstream { return nil },
+		ClaudeCodeOAuthMgr: oauthMgr,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	cfg := claudecode.Config{
+		Enabled: true,
+		BaseURL: ts.URL,
+		Accounts: []claudecode.AccountConfig{
+			{
+				ID:           "acc-1",
+				Name:         "Account 1",
+				Token:        "sk-ant-oat01-acc1-tok",
+				RefreshToken: "bad-refresh",
+				Type:         "oauth",
+				Priority:     1,
+				Enabled:      true,
+			},
+			{
+				ID:       "acc-2",
+				Name:     "Account 2",
+				Token:    "acc2-tok",
+				Type:     "api_key",
+				Priority: 2,
+				Enabled:  true,
+			},
+		},
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+
+	reqBody := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":"hello"}]}`)
+	httpReq := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	srv.forwardToClaudeCode(w, httpReq, cfg, reqBody, "claude-3-7-sonnet-20250219")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected failover to acc-2 with status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+
+
