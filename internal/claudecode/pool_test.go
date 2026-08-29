@@ -190,3 +190,91 @@ func TestAccountPool_StickyCapacityBounds(t *testing.T) {
 		t.Errorf("expected sticky map size <= %d, got %d", maxStickyEntries, stickyLen)
 	}
 }
+
+func TestAccountPool_RefreshTokenIfNeeded_AndForceRefresh(t *testing.T) {
+	exp := time.Now().Add(2 * time.Minute) // Expiring in 2m (within 5m window)
+	pool := NewAccountPool([]AccountConfig{
+		{
+			ID:           "acc-oauth",
+			Name:         "OAuth Acc",
+			Token:        "old-access-tok",
+			RefreshToken: "valid-refresh-tok",
+			ExpiresAt:    &exp,
+			Type:         "oauth",
+			Enabled:      true,
+		},
+	})
+
+	refreshedCount := 0
+	pool.SetTokenRefresher(func(refreshToken string) (string, string, int, error) {
+		refreshedCount++
+		if refreshedCount == 1 && refreshToken != "valid-refresh-tok" {
+			t.Errorf("unexpected refresh token 1: %s", refreshToken)
+		}
+		if refreshedCount == 2 && refreshToken != "new-refresh-tok" {
+			t.Errorf("unexpected refresh token 2: %s", refreshToken)
+		}
+		return "new-access-tok", "new-refresh-tok", 3600, nil
+	})
+
+	acc, _ := pool.GetAccount("acc-oauth")
+	err := pool.RefreshTokenIfNeeded(acc)
+	if err != nil {
+		t.Fatalf("RefreshTokenIfNeeded failed: %v", err)
+	}
+
+	if refreshedCount != 1 {
+		t.Errorf("expected 1 refresh, got %d", refreshedCount)
+	}
+
+	acc.mu.RLock()
+	if acc.Token != "new-access-tok" || acc.RefreshToken != "new-refresh-tok" {
+		t.Errorf("tokens not updated: token=%s, refresh=%s", acc.Token, acc.RefreshToken)
+	}
+	acc.mu.RUnlock()
+
+	// Force refresh test
+	err = pool.RefreshAccountToken("acc-oauth")
+	if err != nil {
+		t.Fatalf("RefreshAccountToken failed: %v", err)
+	}
+	if refreshedCount != 2 {
+		t.Errorf("expected 2 refreshes, got %d", refreshedCount)
+	}
+}
+
+func TestAccountPool_RefreshAllExpiringTokens(t *testing.T) {
+	expiringSoon := time.Now().Add(10 * time.Minute)
+	fresh := time.Now().Add(5 * time.Hour)
+
+	pool := NewAccountPool([]AccountConfig{
+		{
+			ID:           "acc-1",
+			Token:        "tok-1",
+			RefreshToken: "ref-1",
+			ExpiresAt:    &expiringSoon,
+			Enabled:      true,
+		},
+		{
+			ID:           "acc-2",
+			Token:        "tok-2",
+			RefreshToken: "ref-2",
+			ExpiresAt:    &fresh,
+			Enabled:      true,
+		},
+	})
+
+	pool.SetTokenRefresher(func(refreshToken string) (string, string, int, error) {
+		return "refreshed-" + refreshToken, "new-" + refreshToken, 7200, nil
+	})
+
+	refreshedIDs, err := pool.RefreshAllExpiringTokens(15 * time.Minute)
+	if err != nil {
+		t.Fatalf("RefreshAllExpiringTokens failed: %v", err)
+	}
+
+	if len(refreshedIDs) != 1 || refreshedIDs[0] != "acc-1" {
+		t.Errorf("expected only acc-1 refreshed, got: %v", refreshedIDs)
+	}
+}
+
