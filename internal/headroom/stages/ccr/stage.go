@@ -106,6 +106,7 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext,
 			if dbg {
 				log.Debug("ccr demoted chunk",
 					"stage", s.Name(), "chunk_id", id,
+					"request_id", reqCtx.RequestID,
 					"ordinal", ord, "message_index", idx,
 					"chunk_bytes", len(before), "store_bytes", s.store.Bytes())
 			}

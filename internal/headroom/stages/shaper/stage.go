@@ -296,6 +296,7 @@ func (s *OutputShaperStage) clampEffort(reqCtx *headroom.RequestContext, cfg *he
 	if reqCtx.EffortClamped {
 		reqCtx.Log().Debug("output_shaper clamped thinking budget",
 			"stage", s.Name(),
+			"request_id", reqCtx.RequestID,
 			"continuation_kind", kind.String(),
 			"original_budget", original,
 			"clamped_budget", clamped)

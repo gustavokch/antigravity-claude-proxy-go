@@ -70,7 +70,7 @@ func (s *SmartCrusherStage) Execute(ctx context.Context, reqCtx *headroom.Reques
 		reqCtx.RecordRewrite(before, after)
 		if dbg {
 			log.Debug("smart_crusher compacted tool output",
-				"stage", s.Name(), "mode", mode, "ordinal", ord,
+				"stage", s.Name(), "request_id", reqCtx.RequestID, "mode", mode, "ordinal", ord,
 				"bytes_before", len(before), "bytes_after", len(after))
 		}
 	})

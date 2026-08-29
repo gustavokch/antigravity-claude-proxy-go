@@ -49,8 +49,9 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 
 	reqCtx := &RequestContext{
 		Request:           req,
+		RequestID:         e.seq.Add(1),
 		FrozenPrefixIndex: FrozenPrefixIndex(req, cfg.LiveTurns),
-		Logger:            e.logger.With("request_id", e.seq.Add(1)),
+		Logger:            e.logger,
 	}
 	// The inspector has two consumers: the verbatim skip guards, and the
 	// continuation classifier's tool-name lookup. Build it when either needs
@@ -63,7 +64,7 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 
 	start := time.Now()
 	if err := e.pipeline.Run(ctx, reqCtx, &cfg); err != nil {
-		reqCtx.Log().Error("headroom pipeline failed", "error", err)
+		reqCtx.Log().Error("headroom pipeline failed", "request_id", reqCtx.RequestID, "error", err)
 		return nil, err
 	}
 
@@ -77,6 +78,7 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 			savedPct = float64(saved) / float64(reqCtx.BytesBefore) * 100
 		}
 		log.Debug("headroom compression summary",
+			"request_id", reqCtx.RequestID,
 			"rewrites", reqCtx.RewritesCount,
 			"bytes_before", reqCtx.BytesBefore,
 			"bytes_after", reqCtx.BytesAfter,

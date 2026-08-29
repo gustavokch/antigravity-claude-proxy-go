@@ -55,7 +55,14 @@ type Config struct {
 type RequestContext struct {
 	Request map[string]any
 
-	// Logger is the request-scoped logger configured with request_id and other context.
+	// RequestID is the monotonic identifier assigned by Engine.Process,
+	// logged as an inline attribute rather than bound via Logger.With — With
+	// clones a handler on every request, which is the allocation this field
+	// exists to avoid.
+	RequestID uint64
+
+	// Logger is the shared base logger (module=headroom), not cloned per
+	// request.
 	Logger *slog.Logger
 
 	// FrozenPrefixIndex is the highest message index CCR is allowed to demote.

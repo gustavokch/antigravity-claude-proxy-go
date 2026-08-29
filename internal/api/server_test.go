@@ -1067,4 +1067,3 @@ func TestServer_ApplyHeadroomConfigNilCCRStoreNoPanic(t *testing.T) {
 	srv := &Server{}
 	srv.applyHeadroomConfig(config.HeadroomConfig{CCR: headroom.CCRConfig{MaxStoreMB: 25}})
 }
-

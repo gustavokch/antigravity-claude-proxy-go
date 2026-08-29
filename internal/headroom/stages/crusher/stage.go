@@ -75,6 +75,7 @@ func (s *CommandCrusherStage) Execute(ctx context.Context, reqCtx *headroom.Requ
 		if dbg {
 			log.Debug("command_crusher compressed tool output",
 				"stage", s.Name(),
+				"request_id", reqCtx.RequestID,
 				"signature", detectSignature(before).String(),
 				"ordinal", ord,
 				"bytes_before", len(before),

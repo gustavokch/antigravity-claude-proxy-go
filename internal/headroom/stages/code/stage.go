@@ -74,7 +74,7 @@ func (s *CodeCompressorStage) Execute(ctx context.Context, reqCtx *headroom.Requ
 		reqCtx.RecordRewrite(before, after)
 		if dbg {
 			log.Debug("code_compressor pruned tool output",
-				"stage", s.Name(), "ordinal", ord,
+				"stage", s.Name(), "request_id", reqCtx.RequestID, "ordinal", ord,
 				"bytes_before", len(before), "bytes_after", len(after))
 		}
 	})

@@ -89,3 +89,23 @@ func TestEngine_SummaryLogAllocatesNothingWhenDebugDisabled(t *testing.T) {
 		t.Fatalf("summary log allocates when debug is disabled: %.0f allocs vs %.0f baseline", with, base)
 	}
 }
+
+// TestEngine_ProcessZeroLoggerAllocsWhenDebugDisabled pins that Process no
+// longer clones a child logger per request via Logger.With("request_id", ...).
+// The two allocations left (RequestContext, and the Config copy whose address
+// is passed into Pipeline.Run) are unrelated to logging and pre-date this fix.
+func TestEngine_ProcessZeroLoggerAllocsWhenDebugDisabled(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx := context.Background()
+	req := map[string]any{"messages": []any{}}
+
+	engine := NewEngine(Config{Enabled: true}, logger, &mockStage{name: "mock"})
+
+	allocs := testing.AllocsPerRun(200, func() {
+		_, _ = engine.Process(ctx, req)
+	})
+
+	if allocs > 2.0 {
+		t.Fatalf("expected <= 2 allocs (RequestContext + Config copy, no logger clone), got %.0f allocs", allocs)
+	}
+}
