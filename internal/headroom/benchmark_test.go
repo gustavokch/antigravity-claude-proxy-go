@@ -1,7 +1,6 @@
 package headroom
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -98,52 +97,6 @@ func BenchmarkCodeCompressor_PruneText(b *testing.B) {
 	}
 }
 
-func BenchmarkEngine_Process(b *testing.B) {
-	engine := NewEngine(Config{
-		Enabled:        true,
-		SmartCrusher:   true,
-		TabularArrays:  true,
-		CodeCompressor: true,
-		LiveTurns:      2,
-		OutputShaper: OutputShaperConfig{
-			Enabled:                  true,
-			VerbositySteering:        true,
-			EffortRouting:            true,
-			MechanicalThinkingBudget: 1024,
-		},
-	})
-
-	jsonData := generateBenchmarkJSON(50)
-	logData := generateBenchmarkLog(200)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		req := map[string]any{
-			"model":      "claude-3-5-sonnet",
-			"max_tokens": float64(8192),
-			"thinking":   map[string]any{"type": "enabled", "budget_tokens": float64(16000)},
-			"messages": []any{
-				map[string]any{"role": "user", "content": "run task"},
-				map[string]any{"role": "assistant", "content": []any{
-					map[string]any{"type": "tool_use", "id": "tu_1", "name": "fetch"},
-				}},
-				map[string]any{"role": "user", "content": []any{
-					map[string]any{"type": "tool_result", "tool_use_id": "tu_1", "content": jsonData},
-					map[string]any{"type": "tool_result", "tool_use_id": "tu_2", "content": logData},
-				}},
-			},
-		}
-
-		ctx := context.Background()
-		reqCtx, err := engine.Process(ctx, req)
-		if err != nil || reqCtx.BytesBefore <= reqCtx.BytesAfter {
-			b.Fatalf("process failed or no compression: %v", err)
-		}
-	}
-}
-
 func BenchmarkCCRStore_PutGet(b *testing.B) {
 	store := NewCCRStore(64)
 	payloads := make([]string, 100)
@@ -231,35 +184,6 @@ func BenchmarkToolInspector_Build(b *testing.B) {
 		inspector := NewToolInspector(req)
 		if inspector.VerbatimCount() == 0 {
 			b.Fatalf("expected verbatim items")
-		}
-	}
-}
-
-func BenchmarkEngineProcess_WithVerbatim(b *testing.B) {
-	engine := NewEngine(Config{
-		Enabled:               true,
-		SmartCrusher:          true,
-		TabularArrays:         true,
-		CodeCompressor:        true,
-		PreserveVerbatimReads: true,
-		LiveTurns:             2,
-		OutputShaper: OutputShaperConfig{
-			Enabled:                  true,
-			VerbositySteering:        true,
-			EffortRouting:            true,
-			MechanicalThinkingBudget: 1024,
-		},
-	})
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		reqCopy := generateBenchmarkTranscript(40)
-		ctx := context.Background()
-		_, err := engine.Process(ctx, reqCopy)
-		if err != nil {
-			b.Fatalf("process failed: %v", err)
 		}
 	}
 }

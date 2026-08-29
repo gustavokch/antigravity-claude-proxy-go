@@ -299,20 +299,22 @@ func TestForwardToClaudeCode_CCRHydration_Streaming(t *testing.T) {
 	ccHTTPClient = nil
 	ccPoolMu.Unlock()
 
+	store := headroom.NewCCRStore(1024 * 1024)
 	headroomEngine := headroom.NewEngine(headroom.Config{
 		Enabled: true,
 		CCR: headroom.CCRConfig{
 			Enabled: true,
 		},
-	})
+	}, nil, headroom.NewCCRStage(store))
 	var ok bool
-	chunkID, ok = headroomEngine.CCRStore().Put("Secret Claude Code payload")
+	chunkID, ok = store.Put("Secret Claude Code payload")
 	if !ok {
 		t.Fatalf("Failed to put chunk into CCRStore")
 	}
 
 	srv := &Server{
 		headroom: headroomEngine,
+		ccrStore: store,
 	}
 
 	reqBody := `{"model":"claude-sonnet-5","stream":true,"messages":[{"role":"user","content":"Fetch chunk"}]}`
@@ -406,20 +408,22 @@ func TestForwardToClaudeCode_CCRHydration_Unary(t *testing.T) {
 	ccHTTPClient = nil
 	ccPoolMu.Unlock()
 
+	store := headroom.NewCCRStore(1024 * 1024)
 	headroomEngine := headroom.NewEngine(headroom.Config{
 		Enabled: true,
 		CCR: headroom.CCRConfig{
 			Enabled: true,
 		},
-	})
+	}, nil, headroom.NewCCRStage(store))
 	var ok bool
-	chunkID, ok = headroomEngine.CCRStore().Put("Secret Claude Code Unary payload")
+	chunkID, ok = store.Put("Secret Claude Code Unary payload")
 	if !ok {
 		t.Fatalf("Failed to put chunk into CCRStore")
 	}
 
 	srv := &Server{
 		headroom: headroomEngine,
+		ccrStore: store,
 	}
 
 	reqBody := `{"model":"claude-sonnet-5","stream":false,"messages":[{"role":"user","content":"Fetch chunk"}]}`

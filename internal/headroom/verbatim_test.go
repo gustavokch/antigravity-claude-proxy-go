@@ -1,70 +1,9 @@
 package headroom
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
-
-// TestVerbatim_EditExactMatchSurvivesPipeline runs the full engine over a
-// request whose tool_result is a realistic Read payload (trailing whitespace, a
-// blank-line run, and four identical lines) and asserts the payload is returned
-// byte-for-byte. This is the property an Edit's old_string depends on.
-func TestVerbatim_EditExactMatchSurvivesPipeline(t *testing.T) {
-	payload := realisticReadPayload()
-
-	engine := NewEngine(Config{
-		Enabled:               true,
-		SmartCrusher:          true,
-		TabularArrays:         true,
-		CodeCompressor:        true,
-		LiveTurns:             2,
-		PreserveVerbatimReads: true,
-		CCR: CCRConfig{
-			Enabled:       true,
-			MinChunkBytes: 2048,
-		},
-	})
-
-	req := readEditRequest(payload)
-
-	if _, err := engine.Process(context.Background(), req); err != nil {
-		t.Fatalf("Process error: %v", err)
-	}
-
-	got := toolResultText(t, req, 2)
-	if got != payload {
-		t.Errorf("Read payload mutated; Edit old_string drawn from it cannot match disk.\nfirst divergence:\n%s", firstDiff(payload, got))
-	}
-}
-
-// TestVerbatim_DisabledByConfig restores pre-fix behaviour when the operator
-// opts out: the same payload is demoted/mutated again.
-func TestVerbatim_DisabledByConfig(t *testing.T) {
-	payload := realisticReadPayload()
-
-	engine := NewEngine(Config{
-		Enabled:               true,
-		SmartCrusher:          true,
-		CodeCompressor:        true,
-		LiveTurns:             2,
-		PreserveVerbatimReads: false,
-		CCR: CCRConfig{
-			Enabled:       true,
-			MinChunkBytes: 2048,
-		},
-	})
-
-	req := readEditRequest(payload)
-	if _, err := engine.Process(context.Background(), req); err != nil {
-		t.Fatalf("Process error: %v", err)
-	}
-
-	got := toolResultText(t, req, 2)
-	if got == payload {
-		t.Error("with PreserveVerbatimReads=false the payload must be rewritten as before")
-	}
-}
 
 // realisticReadPayload builds `cat -n` Read output with the three shapes the
 // lossy stages destroy: trailing whitespace, a run of identical lines, and

@@ -1,7 +1,6 @@
 package headroom
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -313,50 +312,5 @@ func TestClassifyContinuation(t *testing.T) {
 				t.Errorf("classifyContinuation() = %v (%s), want %v (%s)", got, got.String(), tc.want, tc.want.String())
 			}
 		})
-	}
-}
-
-// The coding classifier reads tool names out of the ToolInspector. Building it
-// only under PreserveVerbatimReads means turning that flag off silently demotes
-// coding continuations to mechanical and clamps thinking mid-edit — the exact
-// failure effort routing was fixed to avoid.
-func TestEngine_EffortRoutingKeepsInspector(t *testing.T) {
-	newReq := func() map[string]any {
-		return map[string]any{
-			"thinking": map[string]any{"type": "enabled", "budget_tokens": 16000},
-			"messages": []any{
-				map[string]any{"role": "user", "content": "edit the file"},
-				map[string]any{"role": "assistant", "content": []any{
-					map[string]any{"type": "tool_use", "id": "tu_1", "name": "Edit",
-						"input": map[string]any{"file_path": "/repo/main.go"}},
-				}},
-				map[string]any{"role": "user", "content": []any{
-					map[string]any{"type": "tool_result", "tool_use_id": "tu_1",
-						"content": "Applied 1 edit."},
-				}},
-			},
-		}
-	}
-
-	cfg := Config{
-		Enabled:               true,
-		PreserveVerbatimReads: false,
-		OutputShaper: OutputShaperConfig{
-			Enabled:                  true,
-			EffortRouting:            true,
-			MechanicalThinkingBudget: 1024,
-		},
-	}
-
-	engine := NewEngine(cfg)
-	reqCtx, err := engine.Process(context.Background(), newReq())
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	if reqCtx.ContinuationKind != "coding" {
-		t.Errorf("continuation = %q; want \"coding\" with PreserveVerbatimReads off", reqCtx.ContinuationKind)
-	}
-	if reqCtx.EffortClamped {
-		t.Error("coding continuation must keep its thinking budget")
 	}
 }

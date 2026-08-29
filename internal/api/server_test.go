@@ -760,7 +760,7 @@ func TestCustomEndpoint_CCRHydration_Streaming(t *testing.T) {
 	}
 
 	var ok bool
-	chunkID, ok = server.headroom.CCRStore().Put("Secret Custom Endpoint context payload")
+	chunkID, ok = server.ccrStore.Put("Secret Custom Endpoint context payload")
 	if !ok {
 		t.Fatalf("Failed to put chunk into CCRStore")
 	}
@@ -882,7 +882,7 @@ func TestCustomEndpoint_CCRHydration_Unary(t *testing.T) {
 	}
 
 	var ok bool
-	chunkID, ok = server.headroom.CCRStore().Put("Secret Custom Endpoint Unary payload")
+	chunkID, ok = server.ccrStore.Put("Secret Custom Endpoint Unary payload")
 	if !ok {
 		t.Fatalf("Failed to put chunk into CCRStore")
 	}

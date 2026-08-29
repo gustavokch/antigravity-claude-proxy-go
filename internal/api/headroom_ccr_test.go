@@ -129,7 +129,7 @@ func TestHeadroomCCR_CloudCodeUnaryHydration(t *testing.T) {
 	}
 
 	// Pre-store chunk in server's CCR store
-	srv.headroom.CCRStore().Put(chunkPayload)
+	srv.ccrStore.Put(chunkPayload)
 
 	reqBody := map[string]any{
 		"model": "gemini-3.5-flash-low",
@@ -237,7 +237,7 @@ func TestHeadroomCCR_CloudCodeStreamHydration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New server: %v", err)
 	}
-	srv.headroom.CCRStore().Put(chunkPayload)
+	srv.ccrStore.Put(chunkPayload)
 
 	reqBody := map[string]any{
 		"model":  "gemini-3.5-flash-low",
@@ -544,7 +544,7 @@ func TestHeadroomCCR_OpenRouterUnaryHydration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New server: %v", err)
 	}
-	srv.headroom.CCRStore().Put(chunkPayload)
+	srv.ccrStore.Put(chunkPayload)
 
 	reqBody := map[string]any{
 		"model": "anthropic/claude-3.7-sonnet",
@@ -757,7 +757,7 @@ func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New server: %v", err)
 	}
-	srv.headroom.CCRStore().Put(chunkPayload)
+	srv.ccrStore.Put(chunkPayload)
 
 	reqBody := map[string]any{
 		"model":  "anthropic/claude-3.7-sonnet",
@@ -923,7 +923,7 @@ func TestHeadroomCCR_OpenRouterStream_NoRetrieveLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New server: %v", err)
 	}
-	srv.headroom.CCRStore().Put(chunkPayload)
+	srv.ccrStore.Put(chunkPayload)
 
 	rec := postMessages(t, srv, map[string]any{
 		"model": "anthropic/claude-3.7-sonnet", "stream": true,

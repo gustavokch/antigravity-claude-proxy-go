@@ -213,15 +213,16 @@ func TestClaudeCodeObservability_StreamUsage(t *testing.T) {
 // so forwardToClaudeCode takes the CCR hydration path.
 func ccCCRServer(t *testing.T, buf *bytes.Buffer, payload string) (*Server, string) {
 	t.Helper()
+	store := headroom.NewCCRStore(1024 * 1024)
 	engine := headroom.NewEngine(headroom.Config{
 		Enabled: true,
 		CCR:     headroom.CCRConfig{Enabled: true},
-	})
-	chunkID, ok := engine.CCRStore().Put(payload)
+	}, nil, headroom.NewCCRStage(store))
+	chunkID, ok := store.Put(payload)
 	if !ok {
 		t.Fatalf("failed to store CCR chunk")
 	}
-	srv := &Server{headroom: engine, logger: ccCaptureLog(buf)}
+	srv := &Server{headroom: engine, ccrStore: store, logger: ccCaptureLog(buf)}
 	if !srv.isCCREnabled() {
 		t.Fatalf("CCR path not enabled; test would exercise the direct path")
 	}

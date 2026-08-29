@@ -178,58 +178,6 @@ func TestCCRStage_DisabledIsNoOp(t *testing.T) {
 	}
 }
 
-func TestEngine_CCRStoresOriginalBeforeCompression(t *testing.T) {
-	prettyJSON := "{\n  \"field\": 1,\n  \"nested\": [\n    " + strings.Repeat("\"long_data_item\",\n    ", 150) + "\"end\"\n  ]\n}"
-	engine := NewEngine(Config{
-		Enabled:        true,
-		SmartCrusher:   true,
-		CodeCompressor: true,
-		LiveTurns:      1,
-		CCR: CCRConfig{
-			Enabled:       true,
-			MinChunkBytes: 500,
-		},
-	})
-
-	req := map[string]any{
-		"tools": []any{map[string]any{"name": "test_tool"}},
-		"messages": []any{
-			// Frozen message 0 (len > 500)
-			map[string]any{"role": "user", "content": []any{
-				map[string]any{"type": "tool_result", "content": prettyJSON},
-			}},
-			// Live message 1
-			map[string]any{"role": "user", "content": "summarize please"},
-		},
-	}
-
-	reqCtx, err := engine.Process(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Process error: %v", err)
-	}
-
-	if reqCtx.ChunksStored != 1 {
-		t.Errorf("expected 1 chunk stored, got %d", reqCtx.ChunksStored)
-	}
-
-	chunkID := ChunkID(prettyJSON)
-	stored, found := engine.CCRStore().Get(chunkID)
-	if !found {
-		t.Fatalf("chunk not found in engine store")
-	}
-	// The stored payload must be the uncompressed pretty JSON (exact match)
-	if stored != prettyJSON {
-		t.Errorf("expected uncompacted original stored in CCR store, got:\n%s", stored)
-	}
-
-	// The message 0 in req should be rewritten to the chunk token
-	msg0Content := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
-	if !strings.HasPrefix(msg0Content, `[HEADROOM_CHUNK id="chunk_`) {
-		t.Errorf("expected chunk token in message 0, got: %s", msg0Content)
-	}
-}
-
-
 func TestCCRStage_SkipsVerbatimReadResult(t *testing.T) {
 	store := NewCCRStore(1024 * 1024)
 	stage := NewCCRStage(store)

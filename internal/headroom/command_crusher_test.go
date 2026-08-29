@@ -11,6 +11,12 @@ func crusherConfig() Config {
 	return Config{Enabled: true, CommandCrusher: true, PreserveVerbatimReads: true}
 }
 
+func toolResultMsg(payload string) any {
+	return map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "tool_result", "tool_use_id": "tu_" + payload[:1], "content": payload},
+	}}
+}
+
 func TestCommandCrusher_IsErrorUntouched(t *testing.T) {
 	payload := "collected 1 items\n\ntest_a.py F [100%]\n\n=== 1 failed in 0.01s ==="
 	req := map[string]any{"messages": []any{map[string]any{"role": "user", "content": []any{

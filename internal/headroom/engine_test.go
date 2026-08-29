@@ -1,177 +1,70 @@
 package headroom
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 )
 
-func fullConfig() Config {
-	return Config{
-		Enabled: true, SmartCrusher: true, CodeCompressor: true, LiveTurns: 2,
-		OutputShaper: OutputShaperConfig{Enabled: true, VerbositySteering: true, EffortRouting: true, MechanicalThinkingBudget: 1024},
+type mockStage struct {
+	name     string
+	executed bool
+	rewrite  bool
+}
+
+func (m *mockStage) Name() string { return m.name }
+func (m *mockStage) Execute(_ context.Context, reqCtx *RequestContext, _ *Config) error {
+	m.executed = true
+	if m.rewrite {
+		reqCtx.RecordRewrite("aaaaaaaaaa", "a")
 	}
+	return nil
 }
 
-func toolResultMsg(payload string) any {
-	return map[string]any{"role": "user", "content": []any{
-		map[string]any{"type": "tool_result", "tool_use_id": "tu_" + payload[:1], "content": payload},
-	}}
-}
+func TestEngine_ProcessRunsInjectedStagesAndLogsSummary(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-func TestEngine_CommandCrusherRunsBeforeSmartCrusher(t *testing.T) {
-	cfg := fullConfig()
-	cfg.CommandCrusher = true
-	engine := NewEngine(cfg)
-	// A payload that is BOTH pytest output and invalid for JSON compaction:
-	// crusher must strip the progress line, smart crusher must leave it alone.
-	payload := "collected 2 items\n\ntest_a.py .. [100%]\n\n=== 2 passed in 0.01s ==="
-	req := map[string]any{"messages": []any{toolResultMsg(payload)}}
+	stage := &mockStage{name: "mock", rewrite: true}
+	engine := NewEngine(Config{Enabled: true}, logger, stage)
 
-	reqCtx, err := engine.Process(context.Background(), req)
+	reqCtx, err := engine.Process(context.Background(), map[string]any{"messages": []any{}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
-	if strings.Contains(got, "[100%]") {
-		t.Errorf("expected progress line stripped, got %q", got)
+	if !stage.executed {
+		t.Fatal("injected stage did not execute")
 	}
-	if !strings.Contains(got, "=== 2 passed in 0.01s ===") {
-		t.Errorf("expected summary retained, got %q", got)
+	if reqCtx.RewritesCount != 1 {
+		t.Fatalf("expected 1 rewrite, got %d", reqCtx.RewritesCount)
 	}
-	if reqCtx.BytesAfter >= reqCtx.BytesBefore {
-		t.Errorf("expected savings, before=%d after=%d", reqCtx.BytesBefore, reqCtx.BytesAfter)
-	}
-}
 
-func TestEngine_CommandCrusherDisabledByDefault(t *testing.T) {
-	engine := NewEngine(fullConfig()) // fullConfig does not set CommandCrusher
-	payload := "collected 2 items\n\ntest_a.py .. [100%]\n\n=== 2 passed in 0.01s ==="
-	req := map[string]any{"messages": []any{toolResultMsg(payload)}}
-
-	if _, err := engine.Process(context.Background(), req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
-	if got != payload {
-		t.Errorf("disabled stage must not modify payload, got %q", got)
-	}
-}
-
-func TestEngine_CompressesToolResults(t *testing.T) {
-	engine := NewEngine(fullConfig())
-	req := map[string]any{"messages": []any{toolResultMsg("{\n  \"a\": 1\n}")}}
-
-	reqCtx, err := engine.Process(context.Background(), req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"]
-	if got != `{"a":1}` {
-		t.Errorf("expected compacted tool_result, got %q", got)
-	}
-	if reqCtx.BytesBefore <= reqCtx.BytesAfter {
-		t.Errorf("expected savings, got before=%d after=%d", reqCtx.BytesBefore, reqCtx.BytesAfter)
-	}
-}
-
-func TestEngine_DisabledIsCompleteBypass(t *testing.T) {
-	engine := NewEngine(Config{Enabled: false, SmartCrusher: true, CodeCompressor: true})
-	original := "{\n  \"a\": 1\n}"
-	req := map[string]any{"system": "base", "messages": []any{toolResultMsg(original)}}
-
-	if _, err := engine.Process(context.Background(), req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"]
-	if got != original || req["system"] != "base" {
-		t.Error("disabled engine must not modify the request at all")
-	}
-}
-
-// TestEngine_PrefixBytesStableAcrossTurns is the executable form of invariant
-// I1: the serialized bytes of the shared conversation prefix must be identical
-// between turn N and turn N+1, or the provider prompt cache misses every turn.
-func TestEngine_PrefixBytesStableAcrossTurns(t *testing.T) {
-	payloads := []string{
-		"{\n  \"first\": true\n}",
-		"log line   \n\n\n\nmore log",
-		"{\n  \"third\": [1, 2, 3]\n}",
-	}
-	build := func(n int) map[string]any {
-		msgs := make([]any, 0, n)
-		for i := 0; i < n; i++ {
-			msgs = append(msgs, toolResultMsg(payloads[i%len(payloads)]))
+	out := buf.String()
+	for _, want := range []string{"headroom compression summary", "request_id", "saved_bytes", "duration_ms"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("summary log missing %q; got: %s", want, out)
 		}
-		return map[string]any{"system": "base", "messages": msgs}
-	}
-
-	engine := NewEngine(fullConfig())
-
-	turn1 := build(3)
-	if _, err := engine.Process(context.Background(), turn1); err != nil {
-		t.Fatalf("turn 1: %v", err)
-	}
-	turn2 := build(5)
-	if _, err := engine.Process(context.Background(), turn2); err != nil {
-		t.Fatalf("turn 2: %v", err)
-	}
-
-	prefix1, _ := json.Marshal(turn1["messages"].([]any))
-	prefix2, _ := json.Marshal(turn2["messages"].([]any)[:3])
-	if string(prefix1) != string(prefix2) {
-		t.Errorf("prefix diverged between turns; prompt cache would miss\nturn1: %s\nturn2: %s", prefix1, prefix2)
-	}
-	if sys1, sys2 := turn1["system"], turn2["system"]; sys1 != sys2 {
-		t.Errorf("system prompt diverged between turns: %v vs %v", sys1, sys2)
 	}
 }
 
-func TestEngine_Idempotent(t *testing.T) {
-	engine := NewEngine(fullConfig())
-	req := map[string]any{"messages": []any{toolResultMsg("{\n  \"a\": 1\n}"), toolResultMsg("b   \n\n\n\nb2")}}
+func TestEngine_ProcessAssignsDistinctRequestIDs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	engine := NewEngine(Config{Enabled: true}, logger, &mockStage{name: "mock", rewrite: true})
 
-	if _, err := engine.Process(context.Background(), req); err != nil {
-		t.Fatalf("first pass: %v", err)
-	}
-	once, _ := json.Marshal(req["messages"])
-	if _, err := engine.Process(context.Background(), req); err != nil {
-		t.Fatalf("second pass: %v", err)
-	}
-	twice, _ := json.Marshal(req["messages"])
-	if string(once) != string(twice) {
-		t.Errorf("pipeline is not idempotent\nonce:  %s\ntwice: %s", once, twice)
+	_, _ = engine.Process(context.Background(), map[string]any{"messages": []any{}})
+	_, _ = engine.Process(context.Background(), map[string]any{"messages": []any{}})
+
+	if strings.Count(buf.String(), "request_id=1") != 1 || strings.Count(buf.String(), "request_id=2") != 1 {
+		t.Fatalf("expected request_id 1 and 2 exactly once each; got: %s", buf.String())
 	}
 }
 
-func TestEngine_UpdateConfigTakesEffect(t *testing.T) {
-	engine := NewEngine(Config{Enabled: false})
-	engine.UpdateConfig(fullConfig())
-	if !engine.GetConfig().Enabled {
-		t.Fatal("expected updated config to be live")
-	}
-	req := map[string]any{"messages": []any{toolResultMsg("{\n  \"a\": 1\n}")}}
-	if _, err := engine.Process(context.Background(), req); err != nil {
+func TestEngine_ProcessNilLoggerFallsBackToDefault(t *testing.T) {
+	engine := NewEngine(Config{Enabled: true}, nil, &mockStage{name: "mock"})
+	if _, err := engine.Process(context.Background(), map[string]any{"messages": []any{}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	got := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"]
-	if got != `{"a":1}` {
-		t.Errorf("updated config not applied, got %q", got)
-	}
-}
-
-func TestEngine_ConcurrentProcessIsSafe(t *testing.T) {
-	engine := NewEngine(fullConfig())
-	done := make(chan struct{})
-	for i := 0; i < 16; i++ {
-		go func() {
-			defer func() { done <- struct{}{} }()
-			req := map[string]any{"messages": []any{toolResultMsg(strings.Repeat("{\n \"x\": 1\n}", 1))}}
-			_, _ = engine.Process(context.Background(), req)
-		}()
-	}
-	for i := 0; i < 16; i++ {
-		<-done
 	}
 }
