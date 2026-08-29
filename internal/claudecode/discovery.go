@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // DiscoverLocalCredentials attempts to scan standard Claude CLI config paths and environment
@@ -71,6 +72,39 @@ func extractTokensFromJSON(data []byte, sourceLabel string, target map[string]Ac
 		return
 	}
 
+	var email, accountUUID, orgUUID, refreshToken string
+	var expiresAt *time.Time
+
+	// Check oauthAccount object
+	if oauthAcc, ok := raw["oauthAccount"].(map[string]any); ok {
+		if em, ok := oauthAcc["emailAddress"].(string); ok {
+			email = strings.TrimSpace(em)
+		}
+		if au, ok := oauthAcc["accountUuid"].(string); ok {
+			accountUUID = strings.TrimSpace(au)
+		}
+		if ou, ok := oauthAcc["organizationUuid"].(string); ok {
+			orgUUID = strings.TrimSpace(ou)
+		}
+	}
+
+	if refTok, ok := raw["refreshToken"].(string); ok {
+		refreshToken = strings.TrimSpace(refTok)
+	} else if refTok, ok := raw["refresh_token"].(string); ok {
+		refreshToken = strings.TrimSpace(refTok)
+	}
+
+	if expVal, ok := raw["expiresAt"]; ok {
+		if expStr, ok := expVal.(string); ok {
+			if t, err := time.Parse(time.RFC3339, expStr); err == nil {
+				expiresAt = &t
+			}
+		} else if expNum, ok := expVal.(float64); ok {
+			t := time.Unix(int64(expNum), 0)
+			expiresAt = &t
+		}
+	}
+
 	tokenKeys := []string{
 		"sessionKey", "setup_token", "setupToken", "token",
 		"oauth_token", "oauthToken", "apiKey", "api_key", "anthropicApiKey",
@@ -83,18 +117,29 @@ func extractTokensFromJSON(data []byte, sourceLabel string, target map[string]Ac
 				if cleanToken != "" && !strings.HasPrefix(cleanToken, "test") {
 					if _, exists := target[cleanToken]; !exists {
 						tokenType := "setup_token"
-						if strings.HasPrefix(cleanToken, "sk-ant-api") {
+						if IsOAuthToken(cleanToken) || key == "oauthToken" || key == "oauth_token" || refreshToken != "" {
+							tokenType = "oauth"
+						} else if strings.HasPrefix(cleanToken, "sk-ant-api") {
 							tokenType = "api_key"
 						}
 						id := generateTokenID(cleanToken)
+						name := fmt.Sprintf("Claude CLI (%s)", sourceLabel)
+						if email != "" {
+							name = fmt.Sprintf("Claude Code (%s)", email)
+						}
 						target[cleanToken] = AccountConfig{
-							ID:       fmt.Sprintf("auto-%s-%s", sourceLabel, id),
-							Name:     fmt.Sprintf("Claude CLI (%s)", sourceLabel),
-							Token:    cleanToken,
-							Type:     tokenType,
-							Priority: 1,
-							Enabled:  true,
-							Source:   "auto_import",
+							ID:               fmt.Sprintf("auto-%s-%s", sourceLabel, id),
+							Name:             name,
+							Token:            cleanToken,
+							RefreshToken:     refreshToken,
+							ExpiresAt:        expiresAt,
+							Email:            email,
+							AccountUUID:      accountUUID,
+							OrganizationUUID: orgUUID,
+							Type:             tokenType,
+							Priority:         1,
+							Enabled:          true,
+							Source:           "auto_import",
 						}
 					}
 				}
@@ -111,7 +156,9 @@ func extractTokensFromJSON(data []byte, sourceLabel string, target map[string]Ac
 					if cleanToken != "" && !strings.HasPrefix(cleanToken, "test") {
 						if _, exists := target[cleanToken]; !exists {
 							tokenType := "setup_token"
-							if strings.HasPrefix(cleanToken, "sk-ant-api") {
+							if IsOAuthToken(cleanToken) {
+								tokenType = "oauth"
+							} else if strings.HasPrefix(cleanToken, "sk-ant-api") {
 								tokenType = "api_key"
 							}
 							id := generateTokenID(cleanToken)
