@@ -215,6 +215,9 @@ func TestClaudeCodeManagement_AccountRateLimitsAndRefresh(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
 	config.SetForTest(config.Config{
 		ClaudeCode: claudecode.Config{
 			Enabled: true,

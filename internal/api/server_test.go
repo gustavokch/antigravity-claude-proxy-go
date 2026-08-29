@@ -950,6 +950,9 @@ func TestServer_ClaudeCodeBackgroundWorker(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
 	exp := time.Now().Add(5 * time.Minute)
 	config.SetForTest(config.Config{
 		ClaudeCode: claudecode.Config{
