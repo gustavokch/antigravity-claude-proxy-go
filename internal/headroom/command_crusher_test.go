@@ -76,7 +76,7 @@ func TestErrorOrdinals_MixedBlocks(t *testing.T) {
 			}},
 		}},
 	}}
-	errs := errorOrdinals(req)
+	errs := ErrorOrdinals(req)
 	if !errs[0] || errs[1] || errs[2] {
 		t.Errorf("expected only ordinal 0 marked, got %v", errs)
 	}

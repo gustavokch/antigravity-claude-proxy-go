@@ -37,8 +37,8 @@ func (s *SmartCrusherStage) Execute(ctx context.Context, reqCtx *RequestContext,
 	}
 	// from=0: history included. Position independence is what keeps the
 	// provider prompt cache warm across turns (invariant I1).
-	walkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
-		if skipVerbatim(reqCtx, cfg, ord) {
+	WalkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
+		if SkipVerbatim(reqCtx, cfg, ord) {
 			return // CompactJSON is a no-op on cat -n output, but a raw JSON
 			// file read starts with '{' and TryTabularConversion is lossy
 		}

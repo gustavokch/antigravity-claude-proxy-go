@@ -1,8 +1,10 @@
 package headroom
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 )
 
@@ -57,5 +59,28 @@ func TestPipeline_StopsOnStageError(t *testing.T) {
 	}
 	if s2.runs != 0 {
 		t.Errorf("expected stage2 to be skipped after error")
+	}
+}
+
+func TestRequestContext_LogIsNilSafe(t *testing.T) {
+	reqCtx := &RequestContext{}
+	if reqCtx.Log() == nil {
+		t.Fatal("Log() must never return nil")
+	}
+}
+
+func TestRequestContext_RecordRewriteCountsAndAccounts(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	reqCtx := &RequestContext{Logger: logger}
+
+	reqCtx.RecordRewrite("hello world 12345", "hello")
+
+	if reqCtx.BytesBefore != 17 || reqCtx.BytesAfter != 5 || reqCtx.RewritesCount != 1 {
+		t.Fatalf("unexpected telemetry: before=%d after=%d rewrites=%d",
+			reqCtx.BytesBefore, reqCtx.BytesAfter, reqCtx.RewritesCount)
+	}
+	if reqCtx.Log() != logger {
+		t.Fatal("Log() must return the injected logger")
 	}
 }

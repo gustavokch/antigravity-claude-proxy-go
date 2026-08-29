@@ -243,11 +243,11 @@ func TestToolInspector_OrdinalsStableAcrossFrom(t *testing.T) {
 	req := map[string]any{"messages": []any{mk("a"), mk("b"), mk("c"), mk("d")}}
 
 	fromZero := map[int]string{}
-	walkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
+	WalkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
 		fromZero[ord] = get()
 	})
 	fromTwo := map[int]string{}
-	walkToolResultText(req, 2, func(_, ord int, get func() string, _ func(string)) {
+	WalkToolResultText(req, 2, func(_, ord int, get func() string, _ func(string)) {
 		fromTwo[ord] = get()
 	})
 

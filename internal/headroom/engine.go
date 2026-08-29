@@ -54,12 +54,12 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 
 	reqCtx := &RequestContext{
 		Request:           req,
-		FrozenPrefixIndex: frozenPrefixIndex(req, cfg.LiveTurns),
+		FrozenPrefixIndex: FrozenPrefixIndex(req, cfg.LiveTurns),
 	}
 	// The inspector has two consumers: the verbatim skip guards, and the
 	// continuation classifier's tool-name lookup. Build it when either needs
 	// it — gating it on PreserveVerbatimReads alone made turning that flag off
-	// silently demote coding continuations to mechanical. skipVerbatim still
+	// silently demote coding continuations to mechanical. SkipVerbatim still
 	// checks PreserveVerbatimReads, so the skip guards stay off.
 	if cfg.PreserveVerbatimReads || (cfg.OutputShaper.Enabled && cfg.OutputShaper.EffortRouting) {
 		reqCtx.Verbatim = NewToolInspector(req)
@@ -70,9 +70,9 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 	return reqCtx, nil
 }
 
-// frozenPrefixIndex returns the highest message index outside the live window.
+// FrozenPrefixIndex returns the highest message index outside the live window.
 // -1 means every message is live.
-func frozenPrefixIndex(req map[string]any, liveTurns int) int {
+func FrozenPrefixIndex(req map[string]any, liveTurns int) int {
 	if liveTurns <= 0 {
 		liveTurns = defaultLiveTurns
 	}

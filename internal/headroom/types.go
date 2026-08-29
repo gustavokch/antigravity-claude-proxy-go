@@ -1,6 +1,9 @@
 package headroom
 
-import "context"
+import (
+	"context"
+	"log/slog"
+)
 
 // CCRConfig controls Content-Conditioned Retrieval (Phase 2).
 type CCRConfig struct {
@@ -52,14 +55,18 @@ type Config struct {
 type RequestContext struct {
 	Request map[string]any
 
+	// Logger is the request-scoped logger configured with request_id and other context.
+	Logger *slog.Logger
+
 	// FrozenPrefixIndex is the highest message index CCR is allowed to demote.
 	// Messages with index > FrozenPrefixIndex are the live turns and stay
 	// inline. -1 means "everything is live".
 	FrozenPrefixIndex int
 
 	// Byte accounting over rewritten blocks only (not whole-request sizes).
-	BytesBefore int
-	BytesAfter  int
+	BytesBefore   int
+	BytesAfter    int
+	RewritesCount int
 
 	// OutputShaper telemetry.
 	EffortClamped    bool
@@ -78,33 +85,22 @@ type RequestContext struct {
 	VerbatimSkipped int
 }
 
+// Log returns the request-scoped logger, or slog.Default() if nil.
+func (r *RequestContext) Log() *slog.Logger {
+	if r == nil || r.Logger == nil {
+		return slog.Default()
+	}
+	return r.Logger
+}
+
 // RecordRewrite accumulates byte accounting for one rewritten block.
 func (r *RequestContext) RecordRewrite(before, after string) {
 	r.BytesBefore += len(before)
 	r.BytesAfter += len(after)
+	r.RewritesCount++
 }
 
 type Stage interface {
 	Name() string
 	Execute(ctx context.Context, reqCtx *RequestContext, cfg *Config) error
-}
-
-type Pipeline struct {
-	stages []Stage
-}
-
-func NewPipeline(stages ...Stage) *Pipeline {
-	return &Pipeline{stages: stages}
-}
-
-func (p *Pipeline) Run(ctx context.Context, reqCtx *RequestContext, cfg *Config) error {
-	if cfg == nil || !cfg.Enabled {
-		return nil
-	}
-	for _, stage := range p.stages {
-		if err := stage.Execute(ctx, reqCtx, cfg); err != nil {
-			return err
-		}
-	}
-	return nil
 }

@@ -91,7 +91,7 @@ func NewToolInspector(req map[string]any) *ToolInspector {
 	}
 
 	// Pass 1: index every tool_use block and classify by name and input.
-	walkToolUseBlocks(req, func(_ int, block map[string]any) {
+	WalkToolUseBlocks(req, func(_ int, block map[string]any) {
 		id, _ := block["id"].(string)
 		if id == "" {
 			return
@@ -112,7 +112,7 @@ func NewToolInspector(req map[string]any) *ToolInspector {
 
 	// Pass 2: mark each tool_result payload whose call is verbatim, or whose
 	// own text carries the shape of numbered source or a patch.
-	walkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
+	WalkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
 		text := get()
 		if looksLikeNumberedSource(text) || looksLikeUnifiedDiff(text) {
 			t.verbatimOrdinals[ord] = true
@@ -120,9 +120,9 @@ func NewToolInspector(req map[string]any) *ToolInspector {
 	})
 
 	// A payload is also verbatim when its tool_use resolves to a verbatim tool.
-	// walkToolResultText does not expose tool_use_id, so do that mapping here.
+	// WalkToolResultText does not expose tool_use_id, so do that mapping here.
 	ord := 0
-	walkMessages(req, func(msg map[string]any) {
+	WalkMessages(req, func(msg map[string]any) {
 		blocks, ok := msg["content"].([]any)
 		if !ok {
 			return
@@ -164,9 +164,9 @@ func (t *ToolInspector) VerbatimCount() int {
 	return len(t.verbatimOrdinals)
 }
 
-// skipVerbatim reports whether the payload at ord must be left byte-for-byte,
+// SkipVerbatim reports whether the payload at ord must be left byte-for-byte,
 // recording the skip for telemetry.
-func skipVerbatim(reqCtx *RequestContext, cfg *Config, ord int) bool {
+func SkipVerbatim(reqCtx *RequestContext, cfg *Config, ord int) bool {
 	if !cfg.PreserveVerbatimReads || reqCtx == nil || reqCtx.Verbatim == nil {
 		return false
 	}
@@ -264,8 +264,8 @@ func looksLikeUnifiedDiff(text string) bool {
 	return strings.Contains(text, "\n+++ ") && strings.Contains(text, "\n@@ ")
 }
 
-// walkMessages calls fn for every well-formed message map in order.
-func walkMessages(req map[string]any, fn func(msg map[string]any)) {
+// WalkMessages calls fn for every well-formed message map in order.
+func WalkMessages(req map[string]any, fn func(msg map[string]any)) {
 	messages, ok := req["messages"].([]any)
 	if !ok {
 		return

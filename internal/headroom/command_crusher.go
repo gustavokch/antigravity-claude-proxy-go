@@ -60,14 +60,14 @@ func (s *CommandCrusherStage) Execute(ctx context.Context, reqCtx *RequestContex
 	if !cfg.CommandCrusher {
 		return nil
 	}
-	errOrds := errorOrdinals(reqCtx.Request)
+	errOrds := ErrorOrdinals(reqCtx.Request)
 	// from=0: history included. Position independence keeps the provider
 	// prompt cache warm across turns (invariant I1).
-	walkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
+	WalkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
 		if errOrds[ord] {
 			return // spec §4: is_error payloads pass through unchanged
 		}
-		if skipVerbatim(reqCtx, cfg, ord) {
+		if SkipVerbatim(reqCtx, cfg, ord) {
 			return
 		}
 		before := get()
@@ -77,37 +77,6 @@ func (s *CommandCrusherStage) Execute(ctx context.Context, reqCtx *RequestContex
 		}
 	})
 	return nil
-}
-
-// errorOrdinals returns the document-order ordinals of every text payload
-// inside an is_error tool_result block, using the same ordinal accounting as
-// walkToolResultText so the sets line up.
-func errorOrdinals(req map[string]any) map[int]bool {
-	var errs map[int]bool
-	ord := 0
-	walkMessages(req, func(msg map[string]any) {
-		blocks, ok := msg["content"].([]any)
-		if !ok {
-			return
-		}
-		for _, raw := range blocks {
-			block, ok := raw.(map[string]any)
-			if !ok || block["type"] != "tool_result" {
-				continue
-			}
-			n := countTextPayloads(block)
-			if isErr, _ := block["is_error"].(bool); isErr {
-				if errs == nil {
-					errs = make(map[int]bool)
-				}
-				for j := ord; j < ord+n; j++ {
-					errs[j] = true
-				}
-			}
-			ord += n
-		}
-	})
-	return errs
 }
 
 // signature identifies a tool-output format. Detection order in
