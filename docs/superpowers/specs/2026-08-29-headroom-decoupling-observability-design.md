@@ -1,20 +1,27 @@
 # Design Specification: Headroom Engine Decoupling & Observability Enhancement
 
-**Date**: 2026-08-29  
-**Status**: Approved  
+**Date**: 2026-08-29
+**Status**: Approved (revision 2)
 **Scope**: Architectural Refactoring & Observability
 
 ---
 
 ## 1. Overview & Goals
 
-This specification defines the architectural refactoring to decouple the **Headroom Engine** orchestration core from individual transformation stages (most notably the **RTK Suite / CommandCrusher** pattern compression engine) into dedicated modular subpackages under `internal/headroom/stages/`. Additionally, it establishes structured observability across all transformation stages and the core pipeline.
+This specification defines the architectural refactoring that decouples the **Headroom Engine** orchestration core from the individual transformation stages (most notably the **RTK Suite / CommandCrusher** pattern compression engine) into dedicated modular subpackages under `internal/headroom/stages/`. It also establishes structured observability across all transformation stages and the core pipeline.
 
 ### Core Objectives
-1. **Decouple Headroom Engine Core**: Ensure `internal/headroom` has zero direct imports of transformation stages, functioning purely as a pluggable pipeline coordinator.
-2. **Modular Stage Isolation**: Package CommandCrusher (RTK Suite), SmartCrusher, CodeCompressor, OutputShaper, and CCR into self-contained subpackages under `internal/headroom/stages/`.
-3. **Structured Observability**: Instrument the pipeline and all stages with `*slog.Logger`, emitting detailed debug logs for individual block rewrites, and summary info logs for pipeline execution checkpoints.
-4. **Preserve All Safety Invariants**: Maintain strict preservation of `is_error` tool results, verbatim file-read payloads, and position-independent prompt cache stability.
+
+1. **Decouple the Headroom Engine core**: `internal/headroom` imports no package under `internal/headroom/stages/`. It becomes a pluggable pipeline coordinator only.
+2. **Modular stage isolation**: CommandCrusher, SmartCrusher, CodeCompressor, OutputShaper, and CCR each move into a self-contained subpackage under `internal/headroom/stages/`.
+3. **Structured observability**: Instrument the pipeline and every stage with `*slog.Logger`, emitting per-rewrite DEBUG records and a per-request DEBUG summary, all correlated by `request_id`.
+4. **Preserve every safety invariant**: `is_error` tool results, verbatim file-read payloads, and position-independent prompt cache stability remain exactly as they are today.
+
+### Non-Goals
+
+- No new metrics. `stats.HeadroomSample` and the existing tracker plumbing are unchanged; per-stage byte savings are exposed through logs only.
+- No change to compression behavior. Every stage produces byte-identical output before and after the move. This refactor is observably a no-op on the wire.
+- No new configuration surface. Log verbosity is controlled by the server's existing `*slog.Logger` level.
 
 ---
 
@@ -22,43 +29,62 @@ This specification defines the architectural refactoring to decouple the **Headr
 
 ```
 internal/
-├── headroom/                          # Core Orchestration Engine
-│   ├── engine.go                      # Engine lifecycle, Process(), UpdateConfig()
-│   ├── pipeline.go                    # Pipeline runner, Stage execution loop
+├── headroom/                          # Core orchestration engine (imports no stage)
+│   ├── engine.go                      # Engine lifecycle, Process(), UpdateConfig(), request_id
+│   ├── pipeline.go                    # Pipeline runner (extracted from types.go)
 │   ├── types.go                       # Stage interface, RequestContext, Config types
-│   ├── verbatim.go                    # ToolInspector & verbatim file-read protection
-│   ├── walk.go                        # Fast JSON AST / tool_result message tree walker
-│   └── engine_test.go                 # Engine orchestration unit tests
-└── headroom/stages/                   # Pluggable Compression & Transformation Stages
-    ├── crusher/                       # RTK CommandCrusher (CLI Tool Output Optimization)
-    │   ├── stage.go                   # CommandCrusherStage (implements headroom.Stage)
-    │   ├── detector.go                # Fast signature detection (git, pytest, cargo, etc.)
+│   ├── verbatim.go                    # ToolInspector, SkipVerbatim
+│   ├── walk.go                        # WalkToolResultText, WalkToolUseBlocks, ErrorOrdinals
+│   ├── engine_test.go                 # Engine orchestration tests (mock stages)
+│   ├── integration_test.go            # package headroom_test — full-pipeline tests
+│   ├── types_test.go
+│   ├── walk_test.go
+│   ├── verbatim_test.go
+│   └── benchmark_test.go              # Engine + ToolInspector benchmarks only
+└── headroom/stages/                   # Pluggable transformation stages
+    ├── crusher/                       # RTK CommandCrusher (CLI tool output optimization)
+    │   ├── stage.go                   # CommandCrusherStage, CrushCommandOutput
+    │   ├── detector.go                # signature enum + detectSignature
+    │   ├── lines.go                   # filterLines, dedupeLines, nextLine, isLowerHex,
+    │   │                              #   hasCommitLine, hasCargoVerbLine
     │   ├── crusher_git.go             # git status, git log
     │   ├── crusher_gorust.go          # go test, golangci-lint, cargo test, cargo build
     │   ├── crusher_javascript.go      # jest, mocha, tsc, eslint
     │   ├── crusher_python.go          # pytest, unittest, ruff
-    │   └── crusher_test.go            # Comprehensive signature & regression tests
-    ├── smart/                         # SmartCrusher (JSON compactor & tabular array stage)
-    │   ├── stage.go                   # SmartCrusherStage
-    │   ├── tabular.go                 # Tabular array transformer
-    │   └── smart_test.go
-    ├── code/                          # CodeCompressor (whitespace & empty line stripper)
-    │   ├── stage.go                   # CodeCompressorStage
-    │   └── code_test.go
-    ├── shaper/                        # OutputShaper (Effort routing & thinking budget)
-    │   ├── stage.go                   # OutputShaperStage
-    │   └── shaper_test.go
-    └── ccr/                           # Content-Conditioned Retrieval (Phase 2 Chunking)
-        ├── stage.go                   # CCRStage
-        ├── store.go                   # Memory chunk store
-        └── ccr_test.go
+    │   ├── crusher_test.go            # moved from internal/headroom/command_crusher_test.go
+    │   └── bench_test.go
+    ├── smart/                         # SmartCrusher (JSON compaction & tabular arrays)
+    │   ├── stage.go                   # SmartCrusherStage, CompactJSON
+    │   ├── tabular.go                 # TryTabularConversion
+    │   ├── smart_test.go
+    │   ├── tabular_test.go
+    │   └── bench_test.go
+    ├── code/                          # CodeCompressor (whitespace & repeat-line pruning)
+    │   ├── stage.go                   # CodeCompressorStage, PruneText
+    │   ├── code_test.go
+    │   └── bench_test.go
+    ├── shaper/                        # OutputShaper (verbosity steering & effort routing)
+    │   ├── stage.go                   # OutputShaperStage, classifyContinuation
+    │   ├── shaper_test.go
+    │   └── continuation_test.go
+    └── ccr/                           # Content-Conditioned Retrieval (Phase 2 chunking)
+        ├── stage.go                   # CCRStage, FormatChunkToken, RetrieveToolDefinition
+        ├── store.go                   # CCRStore, ChunkID
+        ├── ccr_test.go
+        ├── store_test.go
+        └── bench_test.go
 ```
+
+Test files move with the code they cover. They are edited (package clause, core helper requalification, new log assertions), never rewritten from scratch: `command_crusher_test.go` alone carries ~24 KB of signature regression coverage that must survive the move intact.
+
+Fourteen existing tests exercise the whole pipeline through `NewEngine`. A file declaring `package headroom` cannot import a stage subpackage — `stages/*` imports `headroom`, so that is an import cycle — therefore those tests move to `package headroom_test` in `internal/headroom/integration_test.go`. Being an external test package, it may import both the core and every stage. `engine_test.go` stays in `package headroom` and covers orchestration against mock stages only.
 
 ---
 
 ## 3. Core Interfaces & Engine Contract
 
-### 3.1 Stage Interface
+### 3.1 Stage interface (unchanged)
+
 ```go
 package headroom
 
@@ -70,7 +96,10 @@ type Stage interface {
 }
 ```
 
-### 3.2 RequestContext & Telemetry
+### 3.2 RequestContext & telemetry
+
+`Logger` is a plain field so callers may leave it nil. Every stage reads it through `Log()`, which is nil-safe — dozens of existing tests construct `&RequestContext{Request: req}` literals and must keep working.
+
 ```go
 package headroom
 
@@ -84,9 +113,12 @@ type RequestContext struct {
 	RewritesCount     int
 	Verbatim          *ToolInspector
 	VerbatimSkipped   int
-	Logger            *slog.Logger
 
-	// Stage-specific telemetry
+	// Logger is the request-scoped logger, pre-bound with request_id by the
+	// Engine. May be nil; read it through Log().
+	Logger *slog.Logger
+
+	// Stage-specific telemetry.
 	ChunksStored     int
 	EffortClamped    bool
 	OriginalThinking int
@@ -94,6 +126,16 @@ type RequestContext struct {
 	ContinuationKind string
 }
 
+// Log returns the request-scoped logger, falling back to the default logger
+// when none was injected.
+func (r *RequestContext) Log() *slog.Logger {
+	if r.Logger == nil {
+		return slog.Default()
+	}
+	return r.Logger
+}
+
+// RecordRewrite accumulates byte accounting for one rewritten block.
 func (r *RequestContext) RecordRewrite(before, after string) {
 	r.BytesBefore += len(before)
 	r.BytesAfter += len(after)
@@ -101,7 +143,25 @@ func (r *RequestContext) RecordRewrite(before, after string) {
 }
 ```
 
-### 3.3 Engine Construction & Execution
+### 3.3 Exported core helpers
+
+The stages live outside the package, so the AST helpers they share must be exported. Bodies are unchanged; only names and, in one case, the file they live in.
+
+| Today (unexported)                     | After (exported)                        | File          |
+| -------------------------------------- | --------------------------------------- | ------------- |
+| `walkToolResultText` (`walk.go`)       | `WalkToolResultText`                    | `walk.go`     |
+| `walkToolUseBlocks` (`walk.go`)        | `WalkToolUseBlocks`                     | `walk.go`     |
+| `errorOrdinals` (`command_crusher.go`) | `ErrorOrdinals` — **moves to walk.go**  | `walk.go`     |
+| `skipVerbatim` (`verbatim.go`)         | `SkipVerbatim`                          | `verbatim.go` |
+| `walkMessages` (`verbatim.go`)         | `WalkMessages`                          | `verbatim.go` |
+| `frozenPrefixIndex` (`engine.go`)      | `FrozenPrefixIndex`                     | `engine.go`   |
+
+`ErrorOrdinals` is core AST logic that happens to live in `command_crusher.go` today. It must be relocated into `walk.go` in the first task, before the crusher files are deleted, otherwise the crusher move takes the function with it.
+
+### 3.4 Engine construction & execution
+
+The engine no longer builds any stage and no longer owns the CCR store. It receives both the logger and the stage list from the composition root.
+
 ```go
 package headroom
 
@@ -109,6 +169,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -117,6 +178,7 @@ type Engine struct {
 	config   Config
 	pipeline *Pipeline
 	logger   *slog.Logger
+	seq      atomic.Uint64
 }
 
 func NewEngine(cfg Config, logger *slog.Logger, stages ...Stage) *Engine {
@@ -132,117 +194,162 @@ func NewEngine(cfg Config, logger *slog.Logger, stages ...Stage) *Engine {
 
 func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestContext, error) {
 	cfg := e.GetConfig()
-	if !cfg.Enabled {
-		return &RequestContext{Request: req}, nil
-	}
 
-	start := time.Now()
 	reqCtx := &RequestContext{
 		Request:           req,
 		FrozenPrefixIndex: FrozenPrefixIndex(req, cfg.LiveTurns),
-		Logger:            e.logger,
+		Logger:            e.logger.With("request_id", e.seq.Add(1)),
 	}
-
 	if cfg.PreserveVerbatimReads || (cfg.OutputShaper.Enabled && cfg.OutputShaper.EffortRouting) {
 		reqCtx.Verbatim = NewToolInspector(req)
 	}
 
+	start := time.Now()
 	if err := e.pipeline.Run(ctx, reqCtx, &cfg); err != nil {
-		e.logger.Error("headroom pipeline failed", "error", err)
+		reqCtx.Log().Error("headroom pipeline failed", "error", err)
 		return nil, err
 	}
 
-	duration := time.Since(start)
-	if reqCtx.RewritesCount > 0 || reqCtx.ChunksStored > 0 || reqCtx.EffortClamped {
-		savedBytes := reqCtx.BytesBefore - reqCtx.BytesAfter
+	if reqCtx.BytesBefore > 0 || reqCtx.EffortClamped {
+		saved := reqCtx.BytesBefore - reqCtx.BytesAfter
 		var savedPct float64
 		if reqCtx.BytesBefore > 0 {
-			savedPct = float64(savedBytes) / float64(reqCtx.BytesBefore) * 100
+			savedPct = float64(saved) / float64(reqCtx.BytesBefore) * 100
 		}
-		e.logger.Info("headroom compression summary",
+		reqCtx.Log().Debug("headroom compression summary",
 			"rewrites", reqCtx.RewritesCount,
 			"bytes_before", reqCtx.BytesBefore,
 			"bytes_after", reqCtx.BytesAfter,
-			"saved_bytes", savedBytes,
+			"saved_bytes", saved,
 			"saved_pct", savedPct,
-			"duration_ms", float64(duration.Microseconds())/1000.0,
+			"chunks_stored", reqCtx.ChunksStored,
+			"effort_clamped", reqCtx.EffortClamped,
+			"continuation", reqCtx.ContinuationKind,
+			"verbatim_skipped", reqCtx.VerbatimSkipped,
+			"duration_ms", float64(time.Since(start).Microseconds())/1000.0,
 		)
 	}
-
 	return reqCtx, nil
 }
 ```
 
----
+Notes on this contract:
 
-## 4. Subpackage Stage Implementation
+- **`request_id`** is a per-engine monotonic counter, not a transport ID. Nothing in the proxy path currently threads a request identifier through `context.Context`; a counter is sufficient to disambiguate interleaved concurrent DEBUG output, and it costs one atomic add per request.
+- **No early return on `!cfg.Enabled`.** `Pipeline.Run` already short-circuits on a disabled config, and `Process` must keep returning a `RequestContext` whose `FrozenPrefixIndex` and `Verbatim` are populated. Adding an early return would change behavior for callers that read those fields.
+- **Summary log level is DEBUG.** The equivalent server-side log at `internal/api/server.go:740` is removed in the same change, so there is exactly one summary record per request and one place that owns its field names. `server.go` keeps the `Warn` on pipeline failure and the `tracker.RecordHeadroom` call.
 
-### 4.1 RTK CommandCrusher (`internal/headroom/stages/crusher`)
-- Implements `headroom.Stage`.
-- Houses signature detection (`SigGitStatus`, `SigPytest`, `SigJest`, `SigGoTest`, `SigCargoTest`, etc.) and compression functions.
-- Directly logs signature matches and compression yields when a rewrite occurs.
-- Completely isolated from other stages.
+### 3.5 Store ownership
 
-### 4.2 SmartCrusher (`internal/headroom/stages/smart`)
-- Compresses JSON outputs into compact single-line JSON and tabular arrays.
-- Respects `cfg.SmartCrusher` and `cfg.TabularArrays`.
+`Engine.CCRStore()` is removed. The server owns the store, constructs it, hands it to the CCR stage, and serves retrieval from its own field.
 
-### 4.3 CodeCompressor (`internal/headroom/stages/code`)
-- Trims excess blank lines and leading/trailing indentation noise in code blocks.
-- Respects `cfg.CodeCompressor`.
-
-### 4.4 OutputShaper (`internal/headroom/stages/shaper`)
-- Applies verbosity steering prompts and effort routing (thinking budget clamping for mechanical tasks).
-- Respects `cfg.OutputShaper.Enabled`.
-
-### 4.5 Content-Conditioned Retrieval (`internal/headroom/stages/ccr`)
-- Manages `CCRStore` for chunk offloading and hydration.
-- Respects `cfg.CCR.Enabled`.
+- `internal/api/server.go` gains a `ccrStore *ccr.CCRStore` field.
+- `server.go:1907`, `:1911`, `:1914` read `server.ccrStore` instead of `server.headroom.CCRStore()`.
+- Test call sites move from `srv.headroom.CCRStore()` to `srv.ccrStore`: `headroom_ccr_test.go`, `server_test.go`, `kimi_proxy_test.go`, `claudecode_proxy_test.go`, `claudecode_observability_test.go`.
+- `headroom.ChunkID` becomes `ccr.ChunkID`; `internal/api/headroom_ccr_test.go` has four call sites.
 
 ---
 
-## 5. Wiring in `internal/api/server.go`
+## 4. Subpackage Stage Implementations
 
-`internal/api/server.go` acts as the composition root, initializing stages and injecting them into `headroom.NewEngine`:
+Each stage keeps its current behavior exactly. The only additions are the package boundary, requalified core helper calls, and the logging described in §5.
+
+### 4.1 `stages/crusher` — RTK CommandCrusher
+
+Signature detection (`SigGitStatus`, `SigPytest`, `SigJest`, `SigGoTest`, `SigCargoTest`, …) and the per-tool compression functions. Consumes `headroom.ErrorOrdinals`, `headroom.WalkToolResultText`, `headroom.SkipVerbatim`. Exports `NewStage() *CommandCrusherStage` and `CrushCommandOutput`.
+
+### 4.2 `stages/smart` — SmartCrusher
+
+Compacts JSON tool output to single-line form and converts uniform object arrays to tabular form. Respects `cfg.SmartCrusher` and `cfg.TabularArrays`. Exports `NewStage()`, `CompactJSON`, `TryTabularConversion`, `DefaultMinTabularSavings`.
+
+### 4.3 `stages/code` — CodeCompressor
+
+Collapses runs of blank lines and repeated lines. Respects `cfg.CodeCompressor`. Exports `NewStage()`, `PruneText`.
+
+### 4.4 `stages/shaper` — OutputShaper
+
+Verbosity steering prompt injection and effort routing (thinking budget clamping for mechanical continuations). Consumes `headroom.ToolInspector`. Respects `cfg.OutputShaper`. Exports `NewStage()`, `DefaultVerbosityPrompt`.
+
+### 4.5 `stages/ccr` — Content-Conditioned Retrieval
+
+Chunk demotion, store management, and retrieve-tool injection. Exports `NewStage(store *CCRStore)`, `NewCCRStore`, `NewCCRStoreFromMB`, `ChunkID`, `FormatChunkToken`, `RetrieveToolDefinition`.
+
+---
+
+## 5. Observability
+
+### 5.1 Hot-path rule
+
+Per-block DEBUG records fire once per `tool_result` text payload, so they run inside the walk loop. Every stage resolves the level once per `Execute` and guards the loop body:
 
 ```go
-ccrStore := ccr.NewCCRStoreFromMB(cfg.Headroom.CCR.MaxStoreMB)
-srv.ccrStore = ccrStore
+func (s *CommandCrusherStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Config) error {
+	log := reqCtx.Log()
+	dbg := log.Enabled(ctx, slog.LevelDebug)
+	// ...
+	headroom.WalkToolResultText(reqCtx.Request, 0, func(_, ord int, get func() string, set func(string)) {
+		// ...
+		if dbg {
+			log.Debug("command_crusher compressed tool output",
+				"signature", sig.String(), "ordinal", ord,
+				"bytes_before", len(before), "bytes_after", len(after))
+		}
+	})
+	return nil
+}
+```
+
+An unguarded `log.Debug("msg", "k", v)` still allocates the variadic slice and boxes each scalar even when the level is off. The guard is what makes the "no cost when DEBUG is disabled" claim literally true, and it is verified by the stage benchmarks.
+
+### 5.2 Event matrix
+
+Every record inherits `module=headroom` and `request_id` from the request-scoped logger.
+
+| Level   | Component | Event                        | Attributes                                                                                                                                 |
+| ------- | --------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DEBUG` | `crusher` | Signature match & compression | `signature`, `ordinal`, `bytes_before`, `bytes_after`                                                                                        |
+| `DEBUG` | `smart`   | JSON compaction / tabular     | `mode` (`compact`\|`tabular`), `ordinal`, `bytes_before`, `bytes_after`                                                                       |
+| `DEBUG` | `code`    | Whitespace & repeat pruning   | `ordinal`, `bytes_before`, `bytes_after`                                                                                                      |
+| `DEBUG` | `shaper`  | Effort routing & clamp        | `continuation_kind`, `original_budget`, `clamped_budget`                                                                                      |
+| `DEBUG` | `ccr`     | Chunk demotion                | `chunk_id`, `ordinal`, `message_index`, `chunk_bytes`, `store_bytes`                                                                          |
+| `DEBUG` | `headroom`| Pipeline summary              | `rewrites`, `bytes_before`, `bytes_after`, `saved_bytes`, `saved_pct`, `chunks_stored`, `effort_clamped`, `continuation`, `verbatim_skipped`, `duration_ms` |
+| `ERROR` | `headroom`| Pipeline stage failure        | `error`                                                                                                                                       |
+
+The `WARN` "unparseable payload bypassed" row from revision 1 is dropped. `WalkToolResultText` skips malformed blocks silently by design; a record there would fire on every non-text content block of every request and cost an allocation to say nothing actionable.
+
+---
+
+## 6. Wiring in `internal/api/server.go`
+
+`server.go` is the composition root. It builds the store, builds the stages, and injects them alongside the logger:
+
+```go
+srv.ccrStore = ccr.NewCCRStoreFromMB(cfg.Headroom.CCR.MaxStoreMB)
 
 srv.headroom = headroom.NewEngine(
-    cfg.Headroom,
-    srv.logger,
-    ccr.NewStage(ccrStore),
-    crusher.NewStage(),
-    smart.NewStage(),
-    code.NewStage(),
-    shaper.NewStage(),
+	cfg.Headroom,
+	srv.logger,
+	ccr.NewStage(srv.ccrStore),
+	crusher.NewStage(),
+	smart.NewStage(),
+	code.NewStage(),
+	shaper.NewStage(),
 )
 ```
 
----
-
-## 6. Observability Matrix
-
-| Level | Component | Event | Attributes |
-|---|---|---|---|
-| `DEBUG` | `crusher` | Signature match & compression | `signature`, `bytes_before`, `bytes_after`, `saved_bytes`, `saved_pct` |
-| `DEBUG` | `smart` | JSON compaction | `bytes_before`, `bytes_after`, `saved_bytes` |
-| `DEBUG` | `code` | Code stripping | `lines_stripped`, `bytes_before`, `bytes_after` |
-| `DEBUG` | `shaper` | Effort routing & clamp | `continuation_kind`, `original_budget`, `clamped_budget` |
-| `DEBUG` | `verbatim` | File read skipped | `tool_name`, `file_path`, `ordinal` |
-| `INFO` | `headroom` | Pipeline execution summary | `rewrites`, `bytes_before`, `bytes_after`, `saved_bytes`, `saved_pct`, `duration_ms` |
-| `INFO` | `ccr` | Store / Retrieval | `action`, `chunk_id`, `chunk_bytes`, `store_total_mb` |
-| `WARN` | `headroom` | Unparseable / malformed payload bypassed | `stage`, `block_index`, `reason` |
-| `ERROR` | `headroom` | Pipeline stage failure | `stage`, `error` |
+Stage order is unchanged from today's `NewEngine`: CCR, crusher, smart, code, shaper. `srv.logger` is assigned in the `&Server{...}` literal above this call, so it is non-nil at construction time.
 
 ---
 
 ## 7. Verification & Invariants
 
-1. **Deterministic Compression (Invariant I1)**: Output compression is pure and deterministic.
-2. **Verbatim File Read Safety (Invariant I2)**: Payloads corresponding to verbatim file reads are strictly preserved untouched.
-3. **Assistant Text Untouched (Invariant I3)**: Assistant messages are never modified.
-4. **Tool Error Safety (Invariant I4)**: Tool results with `is_error: true` are never modified.
-5. **No Performance Degradation**: Fast-path signature checks and zero-allocation logging when DEBUG level is disabled.
-6. **100% Test Coverage & Race-Free**: All existing unit and integration tests pass with `go test -race ./...`.
+1. **I1 — Deterministic compression**: compression is pure and position-independent.
+2. **I2 — Verbatim file-read safety**: payloads classified verbatim are preserved byte-for-byte.
+3. **I3 — Assistant text untouched**: assistant messages, thinking blocks, signatures, and `tool_use` inputs are never rewritten.
+4. **I4 — Tool error safety**: `tool_result` blocks with `is_error: true` are never rewritten.
+5. **I5 — Behavioral no-op**: the refactor changes no compressed output. Every moved test passes unmodified except for its package clause and helper qualification.
+6. **I6 — No cost when DEBUG is off**: per-block logging sits behind a `Logger.Enabled` guard resolved once per `Execute`; stage benchmarks show no regression against the pre-move baseline.
+7. **I7 — Core stays clean**: `go list -f '{{join .Imports "\n"}}' ./internal/headroom` contains no `internal/headroom/stages` entry.
+8. **I8 — Green suite**: `go test -race ./...` passes at every commit, not only at the end of the series.
+
+Build target: Go 1.27rc2 (`go.mod`), `log/slog`, standard library `testing`.
