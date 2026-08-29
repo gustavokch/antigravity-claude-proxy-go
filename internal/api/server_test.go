@@ -981,3 +981,69 @@ func TestServer_ClaudeCodeBackgroundWorker(t *testing.T) {
 	}
 }
 
+func TestServer_ClaudeCodeBackgroundWorker_InitialTick(t *testing.T) {
+	refreshed := make(chan string, 1)
+	oauthMgr := auth.NewClaudeCodeOAuthManager()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshed <- "refreshed"
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "sk-ant-oat01-init-tok",
+			"refresh_token": "new-ref",
+			"expires_in":    3600,
+		})
+	}))
+	defer tokenSrv.Close()
+	oauthMgr.SetEndpoints("", tokenSrv.URL, "", nil)
+
+	srv, err := New(Options{
+		APIKey: "key",
+		Credentials: func(ctx context.Context) (auth.Credentials, error) {
+			return auth.Credentials{AccessToken: "tok"}, nil
+		},
+		NewUpstream:        func(s string) Upstream { return nil },
+		ClaudeCodeOAuthMgr: oauthMgr,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	exp := time.Now().Add(5 * time.Minute)
+	config.SetForTest(config.Config{
+		ClaudeCode: claudecode.Config{
+			Enabled: true,
+			Accounts: []claudecode.AccountConfig{
+				{
+					ID:           "acc-bg-init",
+					Token:        "tok-bg",
+					RefreshToken: "ref-bg",
+					ExpiresAt:    &exp,
+					Type:         "oauth",
+					Enabled:      true,
+				},
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Starting worker should trigger tick immediately without waiting 5 min
+	srv.StartClaudeCodeBackgroundWorker(ctx)
+
+	select {
+	case <-refreshed:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for initial background token refresh tick")
+	}
+}
+

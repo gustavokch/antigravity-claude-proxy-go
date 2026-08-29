@@ -30,12 +30,24 @@ func getOrCreateCCPool(cfg claudecode.Config) (*claudecode.AccountPool, *claudec
 	return s.getOrCreateCCPool(cfg)
 }
 
+func ccAccountsEqual(a, b []claudecode.AccountConfig) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Token != b[i].Token || a[i].RefreshToken != b[i].RefreshToken || a[i].Enabled != b[i].Enabled {
+			return false
+		}
+	}
+	return true
+}
+
 func (server *Server) getOrCreateCCPool(cfg claudecode.Config) (*claudecode.AccountPool, *claudecode.Client) {
 	ccPoolMu.Lock()
 	defer ccPoolMu.Unlock()
 
 	key := cfg.BaseURL
-	if ccPoolInst == nil || ccPoolKey != key || len(ccPoolCfg.Accounts) != len(cfg.Accounts) {
+	if ccPoolInst == nil || ccPoolKey != key || !ccAccountsEqual(ccPoolCfg.Accounts, cfg.Accounts) {
 		ccPoolInst = claudecode.NewAccountPool(cfg.Accounts)
 		ccHTTPClient = claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.BaseURL), nil)
 		ccPoolKey = key

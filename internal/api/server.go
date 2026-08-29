@@ -197,8 +197,11 @@ func (server *Server) tickClaudeCodeBackgroundWorker() {
 
 // StartClaudeCodeBackgroundWorker starts a background loop to refresh expiring Claude Code OAuth tokens.
 func (server *Server) StartClaudeCodeBackgroundWorker(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
 	go func() {
+		// Run an initial refresh check immediately upon startup
+		server.tickClaudeCodeBackgroundWorker()
+
+		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
