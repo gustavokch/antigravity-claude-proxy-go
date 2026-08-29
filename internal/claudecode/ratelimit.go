@@ -9,13 +9,19 @@ import (
 
 // Standard Anthropic rate-limit header keys (case-insensitive in http.Header).
 const (
-	HeaderRequestsLimit     = "anthropic-ratelimit-requests-limit"
-	HeaderRequestsRemaining = "anthropic-ratelimit-requests-remaining"
-	HeaderRequestsReset     = "anthropic-ratelimit-requests-reset"
-	HeaderTokensLimit       = "anthropic-ratelimit-tokens-limit"
-	HeaderTokensRemaining   = "anthropic-ratelimit-tokens-remaining"
-	HeaderTokensReset       = "anthropic-ratelimit-tokens-reset"
-	HeaderRetryAfter        = "retry-after"
+	HeaderRequestsLimit        = "anthropic-ratelimit-requests-limit"
+	HeaderRequestsRemaining    = "anthropic-ratelimit-requests-remaining"
+	HeaderRequestsReset        = "anthropic-ratelimit-requests-reset"
+	HeaderTokensLimit          = "anthropic-ratelimit-tokens-limit"
+	HeaderTokensRemaining      = "anthropic-ratelimit-tokens-remaining"
+	HeaderTokensReset          = "anthropic-ratelimit-tokens-reset"
+	HeaderInputTokensLimit     = "anthropic-ratelimit-input-tokens-limit"
+	HeaderInputTokensRemaining = "anthropic-ratelimit-input-tokens-remaining"
+	HeaderInputTokensReset     = "anthropic-ratelimit-input-tokens-reset"
+	HeaderOutputTokensLimit    = "anthropic-ratelimit-output-tokens-limit"
+	HeaderOutputTokensRemaining = "anthropic-ratelimit-output-tokens-remaining"
+	HeaderOutputTokensReset    = "anthropic-ratelimit-output-tokens-reset"
+	HeaderRetryAfter           = "retry-after"
 )
 
 // ExtractRateLimits parses standard Anthropic rate-limit headers from an HTTP response header.
@@ -52,11 +58,56 @@ func ExtractRateLimits(h http.Header) RateLimits {
 		rl.TokensReset = parseTimestamp(val)
 	}
 
+	if val := h.Get(HeaderInputTokensLimit); val != "" {
+		if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+			rl.InputTokensLimit = n
+		}
+	}
+	if val := h.Get(HeaderInputTokensRemaining); val != "" {
+		if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+			rl.InputTokensRemaining = n
+		}
+	}
+	if val := h.Get(HeaderInputTokensReset); val != "" {
+		rl.InputTokensReset = parseTimestamp(val)
+	}
+
+	if val := h.Get(HeaderOutputTokensLimit); val != "" {
+		if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+			rl.OutputTokensLimit = n
+		}
+	}
+	if val := h.Get(HeaderOutputTokensRemaining); val != "" {
+		if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+			rl.OutputTokensRemaining = n
+		}
+	}
+	if val := h.Get(HeaderOutputTokensReset); val != "" {
+		rl.OutputTokensReset = parseTimestamp(val)
+	}
+
 	if val := h.Get(HeaderRetryAfter); val != "" {
 		rl.RetryAfter = parseRetryAfter(val)
 	}
 
 	return rl
+}
+
+// IsRateLimited returns true if any limit has 0 remaining and reset timestamp is in the future.
+func (rl RateLimits) IsRateLimited(now time.Time) bool {
+	if rl.RequestsLimit > 0 && rl.RequestsRemaining == 0 && rl.RequestsReset.After(now) {
+		return true
+	}
+	if rl.TokensLimit > 0 && rl.TokensRemaining == 0 && rl.TokensReset.After(now) {
+		return true
+	}
+	if rl.InputTokensLimit > 0 && rl.InputTokensRemaining == 0 && rl.InputTokensReset.After(now) {
+		return true
+	}
+	if rl.OutputTokensLimit > 0 && rl.OutputTokensRemaining == 0 && rl.OutputTokensReset.After(now) {
+		return true
+	}
+	return false
 }
 
 // parseTimestamp attempts multiple common time formats (RFC3339, RFC3339Nano, ISO8601, or relative seconds).

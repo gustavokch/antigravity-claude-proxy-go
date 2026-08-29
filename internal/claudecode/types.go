@@ -70,14 +70,20 @@ type Config struct {
 
 // RateLimits tracks Anthropic API rate limits extracted from response headers.
 type RateLimits struct {
-	RequestsLimit     int64     `json:"requestsLimit"`
-	RequestsRemaining int64     `json:"requestsRemaining"`
-	RequestsReset     time.Time `json:"requestsReset"`
-	TokensLimit       int64     `json:"tokensLimit"`
-	TokensRemaining   int64     `json:"tokensRemaining"`
-	TokensReset       time.Time `json:"tokensReset"`
-	RetryAfter        int       `json:"retryAfter,omitempty"` // Seconds
-	LastUpdated       time.Time `json:"lastUpdated"`
+	RequestsLimit        int64     `json:"requestsLimit"`
+	RequestsRemaining    int64     `json:"requestsRemaining"`
+	RequestsReset        time.Time `json:"requestsReset"`
+	TokensLimit          int64     `json:"tokensLimit"`
+	TokensRemaining      int64     `json:"tokensRemaining"`
+	TokensReset          time.Time `json:"tokensReset"`
+	InputTokensLimit     int64     `json:"inputTokensLimit,omitempty"`
+	InputTokensRemaining int64     `json:"inputTokensRemaining,omitempty"`
+	InputTokensReset     time.Time `json:"inputTokensReset,omitempty"`
+	OutputTokensLimit    int64     `json:"outputTokensLimit,omitempty"`
+	OutputTokensRemaining int64    `json:"outputTokensRemaining,omitempty"`
+	OutputTokensReset    time.Time `json:"outputTokensReset,omitempty"`
+	RetryAfter           int       `json:"retryAfter,omitempty"` // Seconds
+	LastUpdated          time.Time `json:"lastUpdated"`
 }
 
 // Account represents an active, runtime-managed Claude Code credential.

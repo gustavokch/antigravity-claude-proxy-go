@@ -86,3 +86,56 @@ func TestExtractRateLimits_FloatingPointSeconds(t *testing.T) {
 		t.Errorf("expected non-zero RequestsReset parsed from relative float seconds")
 	}
 }
+
+func TestExtractRateLimits_GranularTokens(t *testing.T) {
+	h := make(http.Header)
+	h.Set("anthropic-ratelimit-requests-limit", "1000")
+	h.Set("anthropic-ratelimit-requests-remaining", "990")
+	h.Set("anthropic-ratelimit-requests-reset", "2026-08-29T15:04:05Z")
+	h.Set("anthropic-ratelimit-input-tokens-limit", "500000")
+	h.Set("anthropic-ratelimit-input-tokens-remaining", "450000")
+	h.Set("anthropic-ratelimit-input-tokens-reset", "2026-08-29T15:05:00Z")
+	h.Set("anthropic-ratelimit-output-tokens-limit", "100000")
+	h.Set("anthropic-ratelimit-output-tokens-remaining", "95000")
+	h.Set("anthropic-ratelimit-output-tokens-reset", "2026-08-29T15:06:00Z")
+	h.Set("anthropic-ratelimit-tokens-limit", "600000")
+	h.Set("anthropic-ratelimit-tokens-remaining", "545000")
+	h.Set("anthropic-ratelimit-tokens-reset", "2026-08-29T15:06:00Z")
+
+	rl := ExtractRateLimits(h)
+
+	if rl.InputTokensLimit != 500000 || rl.InputTokensRemaining != 450000 {
+		t.Errorf("input tokens mismatch: limit=%d, rem=%d", rl.InputTokensLimit, rl.InputTokensRemaining)
+	}
+	if rl.OutputTokensLimit != 100000 || rl.OutputTokensRemaining != 95000 {
+		t.Errorf("output tokens mismatch: limit=%d, rem=%d", rl.OutputTokensLimit, rl.OutputTokensRemaining)
+	}
+	if rl.TokensLimit != 600000 || rl.TokensRemaining != 545000 {
+		t.Errorf("unified tokens mismatch: limit=%d, rem=%d", rl.TokensLimit, rl.TokensRemaining)
+	}
+	if rl.IsRateLimited(time.Now()) {
+		t.Errorf("expected not rate limited")
+	}
+}
+
+func TestRateLimits_IsRateLimited(t *testing.T) {
+	now := time.Now()
+	rl := RateLimits{
+		RequestsLimit:     100,
+		RequestsRemaining: 0,
+		RequestsReset:     now.Add(30 * time.Second),
+	}
+	if !rl.IsRateLimited(now) {
+		t.Errorf("expected IsRateLimited=true when RequestsRemaining is 0 and Reset in future")
+	}
+
+	rl2 := RateLimits{
+		InputTokensLimit:     500,
+		InputTokensRemaining: 0,
+		InputTokensReset:     now.Add(30 * time.Second),
+	}
+	if !rl2.IsRateLimited(now) {
+		t.Errorf("expected IsRateLimited=true when InputTokensRemaining is 0 and Reset in future")
+	}
+}
+
