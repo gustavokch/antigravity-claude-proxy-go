@@ -375,6 +375,12 @@ func (server *Server) handleClaudeCodeModelsFetch(writer http.ResponseWriter, re
 
 // handleClaudeCodeAccountRateLimits queries active rate limits from Anthropic for a specific account.
 func (server *Server) handleClaudeCodeAccountRateLimits(writer http.ResponseWriter, request *http.Request, accountID string) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "account_id is required"})
+		return
+	}
+
 	cfg := config.Get()
 	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
 	if pool == nil {
@@ -421,6 +427,12 @@ func (server *Server) handleClaudeCodeAccountRateLimits(writer http.ResponseWrit
 
 // handleClaudeCodeAccountRefresh forces an immediate OAuth token refresh for an account.
 func (server *Server) handleClaudeCodeAccountRefresh(writer http.ResponseWriter, _ *http.Request, accountID string) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "account_id is required"})
+		return
+	}
+
 	cfg := config.Get()
 	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
 	if pool == nil {

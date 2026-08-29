@@ -307,6 +307,7 @@ func (p *AccountPool) RefreshAllExpiringTokens(window time.Duration) ([]string, 
 	}
 
 	var refreshedIDs []string
+	var errs []error
 	now := time.Now()
 
 	for _, acc := range accounts {
@@ -324,11 +325,13 @@ func (p *AccountPool) RefreshAllExpiringTokens(window time.Duration) ([]string, 
 		if expiresAt.Sub(now) <= window {
 			if err := p.RefreshAccountToken(id); err == nil {
 				refreshedIDs = append(refreshedIDs, id)
+			} else {
+				errs = append(errs, fmt.Errorf("account %s: %w", id, err))
 			}
 		}
 	}
 
-	return refreshedIDs, nil
+	return refreshedIDs, errors.Join(errs...)
 }
 
 // UpdateAccountRateLimits updates the cached rate limits for an account.

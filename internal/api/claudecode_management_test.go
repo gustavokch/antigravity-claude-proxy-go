@@ -264,3 +264,36 @@ func TestClaudeCodeManagement_AccountRateLimitsAndRefresh(t *testing.T) {
 		t.Fatalf("expected status 200, got %d: %s", w2.Code, w2.Body.String())
 	}
 }
+
+func TestClaudeCodeManagement_EmptyAccountID(t *testing.T) {
+	srv, err := New(Options{
+		APIKey: "test-key",
+		Credentials: func(ctx context.Context) (auth.Credentials, error) {
+			return auth.Credentials{AccessToken: "tok"}, nil
+		},
+		NewUpstream: func(s string) Upstream { return nil },
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	config.SetForTest(config.Config{
+		ClaudeCode: claudecode.Config{
+			Enabled: true,
+		},
+	})
+
+	// Empty ID for ratelimits
+	w := httptest.NewRecorder()
+	srv.handleClaudeCodeAccountRateLimits(w, httptest.NewRequest(http.MethodPost, "/", nil), "")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400 for empty account ID on ratelimits, got %d", w.Code)
+	}
+
+	// Empty ID for refresh
+	w2 := httptest.NewRecorder()
+	srv.handleClaudeCodeAccountRefresh(w2, httptest.NewRequest(http.MethodPost, "/", nil), "")
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400 for empty account ID on refresh, got %d", w2.Code)
+	}
+}

@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -275,6 +276,32 @@ func TestAccountPool_RefreshAllExpiringTokens(t *testing.T) {
 
 	if len(refreshedIDs) != 1 || refreshedIDs[0] != "acc-1" {
 		t.Errorf("expected only acc-1 refreshed, got: %v", refreshedIDs)
+	}
+}
+
+func TestAccountPool_RefreshAllExpiringTokens_Errors(t *testing.T) {
+	expiringSoon := time.Now().Add(5 * time.Minute)
+
+	pool := NewAccountPool([]AccountConfig{
+		{
+			ID:           "acc-fail",
+			Token:        "tok-fail",
+			RefreshToken: "bad-ref",
+			ExpiresAt:    &expiringSoon,
+			Enabled:      true,
+		},
+	})
+
+	pool.SetTokenRefresher(func(refreshToken string) (string, string, int, error) {
+		return "", "", 0, errors.New("upstream oauth error")
+	})
+
+	refreshedIDs, err := pool.RefreshAllExpiringTokens(15 * time.Minute)
+	if err == nil {
+		t.Fatalf("expected error from RefreshAllExpiringTokens when account refresh fails, got nil")
+	}
+	if len(refreshedIDs) != 0 {
+		t.Errorf("expected 0 refreshed IDs, got %d", len(refreshedIDs))
 	}
 }
 
