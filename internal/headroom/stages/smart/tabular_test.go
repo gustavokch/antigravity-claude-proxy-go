@@ -207,4 +207,3 @@ func TestTabularConversion_BackslashesAndSpecialChars(t *testing.T) {
 		t.Errorf("crlf newline was not normalized and escaped properly: %s", out)
 	}
 }
-

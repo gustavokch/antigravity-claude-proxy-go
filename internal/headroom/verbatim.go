@@ -298,4 +298,3 @@ func countTextPayloads(toolResultBlock map[string]any) int {
 	}
 	return 0
 }
-

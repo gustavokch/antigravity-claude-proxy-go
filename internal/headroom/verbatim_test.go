@@ -202,15 +202,15 @@ func TestToolInspector_OrdinalsStableAcrossFrom(t *testing.T) {
 
 func TestNormalizeToolName(t *testing.T) {
 	cases := map[string]string{
-		"Read":                        "read",
-		"READ":                        "read",
-		"read_file":                   "read_file",
-		"mcp__filesystem__read_file":  "read_file",
-		"filesystem:read_file":        "read_file",
-		"fs.readFile":                 "readfile",
-		"mcp__x__Read":                "read",
-		"str_replace_editor":          "str_replace_editor",
-		"mcp__acme__fetch_thing":      "fetch_thing",
+		"Read":                       "read",
+		"READ":                       "read",
+		"read_file":                  "read_file",
+		"mcp__filesystem__read_file": "read_file",
+		"filesystem:read_file":       "read_file",
+		"fs.readFile":                "readfile",
+		"mcp__x__Read":               "read",
+		"str_replace_editor":         "str_replace_editor",
+		"mcp__acme__fetch_thing":     "fetch_thing",
 	}
 	for in, want := range cases {
 		if got := normalizeToolName(in); got != want {
