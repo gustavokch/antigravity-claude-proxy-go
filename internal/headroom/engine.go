@@ -67,13 +67,16 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 		return nil, err
 	}
 
-	if reqCtx.BytesBefore > 0 || reqCtx.EffortClamped {
+	// Guarded like the per-stage records (invariant I6): the varargs slice and
+	// the boxing of every int/float below are built before Debug is called, so
+	// an unguarded summary would allocate on every compressed request.
+	if log := reqCtx.Log(); (reqCtx.BytesBefore > 0 || reqCtx.EffortClamped) && log.Enabled(ctx, slog.LevelDebug) {
 		saved := reqCtx.BytesBefore - reqCtx.BytesAfter
 		var savedPct float64
 		if reqCtx.BytesBefore > 0 {
 			savedPct = float64(saved) / float64(reqCtx.BytesBefore) * 100
 		}
-		reqCtx.Log().Debug("headroom compression summary",
+		log.Debug("headroom compression summary",
 			"rewrites", reqCtx.RewritesCount,
 			"bytes_before", reqCtx.BytesBefore,
 			"bytes_after", reqCtx.BytesAfter,

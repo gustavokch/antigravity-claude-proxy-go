@@ -3,6 +3,7 @@ package headroom
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -66,5 +67,25 @@ func TestEngine_ProcessNilLoggerFallsBackToDefault(t *testing.T) {
 	engine := NewEngine(Config{Enabled: true}, nil, &mockStage{name: "mock"})
 	if _, err := engine.Process(context.Background(), map[string]any{"messages": []any{}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestEngine_SummaryLogAllocatesNothingWhenDebugDisabled pins invariant I6 at
+// the engine level: with DEBUG off, the summary must not build its varargs
+// slice or box its int/float values, so a rewriting request must allocate no
+// more than a non-rewriting one.
+func TestEngine_SummaryLogAllocatesNothingWhenDebugDisabled(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx := context.Background()
+	req := map[string]any{"messages": []any{}}
+
+	quiet := NewEngine(Config{Enabled: true}, logger, &mockStage{name: "mock"})
+	loud := NewEngine(Config{Enabled: true}, logger, &mockStage{name: "mock", rewrite: true})
+
+	base := testing.AllocsPerRun(200, func() { _, _ = quiet.Process(ctx, req) })
+	with := testing.AllocsPerRun(200, func() { _, _ = loud.Process(ctx, req) })
+
+	if with > base {
+		t.Fatalf("summary log allocates when debug is disabled: %.0f allocs vs %.0f baseline", with, base)
 	}
 }
