@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/auth"
+	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/logger"
@@ -921,3 +922,59 @@ func TestCustomEndpoint_CCRHydration_Unary(t *testing.T) {
 		t.Fatalf("Expected output_tokens 24, got %v", usage["output_tokens"])
 	}
 }
+
+func TestServer_ClaudeCodeBackgroundWorker(t *testing.T) {
+	refreshed := make(chan string, 1)
+	oauthMgr := auth.NewClaudeCodeOAuthManager()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshed <- "refreshed"
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "sk-ant-oat01-new-tok",
+			"refresh_token": "new-ref",
+			"expires_in":    3600,
+		})
+	}))
+	defer tokenSrv.Close()
+	oauthMgr.SetEndpoints("", tokenSrv.URL, "", nil)
+
+	srv, err := New(Options{
+		APIKey: "key",
+		Credentials: func(ctx context.Context) (auth.Credentials, error) {
+			return auth.Credentials{AccessToken: "tok"}, nil
+		},
+		NewUpstream:        func(s string) Upstream { return nil },
+		ClaudeCodeOAuthMgr: oauthMgr,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	exp := time.Now().Add(5 * time.Minute)
+	config.SetForTest(config.Config{
+		ClaudeCode: claudecode.Config{
+			Enabled: true,
+			Accounts: []claudecode.AccountConfig{
+				{
+					ID:           "acc-bg",
+					Token:        "tok-bg",
+					RefreshToken: "ref-bg",
+					ExpiresAt:    &exp,
+					Type:         "oauth",
+					Enabled:      true,
+				},
+			},
+		},
+	})
+
+	// Execute one background check tick
+	srv.tickClaudeCodeBackgroundWorker()
+
+	select {
+	case <-refreshed:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for background token refresh")
+	}
+}
+

@@ -164,6 +164,53 @@ func (server *Server) applyHeadroomConfig(cfg config.HeadroomConfig) {
 	}
 }
 
+// tickClaudeCodeBackgroundWorker checks for expiring OAuth tokens and proactively refreshes them.
+func (server *Server) tickClaudeCodeBackgroundWorker() {
+	cfg := config.Get()
+	if !cfg.ClaudeCode.Enabled {
+		return
+	}
+	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+	if pool == nil {
+		return
+	}
+
+	// Proactively refresh tokens expiring in <= 15 minutes
+	refreshed, err := pool.RefreshAllExpiringTokens(15 * time.Minute)
+	if err != nil {
+		if server.logger != nil {
+			server.logger.Warn("background token refresh failed", "error", err)
+		}
+		return
+	}
+	if len(refreshed) > 0 {
+		for _, id := range refreshed {
+			if refreshedAcc, ok := pool.GetAccount(id); ok {
+				server.syncRefreshedAccountToConfig(id, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
+			}
+		}
+		if server.logger != nil {
+			server.logger.Info("background refreshed Claude Code tokens", "count", len(refreshed), "accounts", refreshed)
+		}
+	}
+}
+
+// StartClaudeCodeBackgroundWorker starts a background loop to refresh expiring Claude Code OAuth tokens.
+func (server *Server) StartClaudeCodeBackgroundWorker(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				server.tickClaudeCodeBackgroundWorker()
+			}
+		}
+	}()
+}
+
 type responseWriterRecorder struct {
 	http.ResponseWriter
 	statusCode   int
