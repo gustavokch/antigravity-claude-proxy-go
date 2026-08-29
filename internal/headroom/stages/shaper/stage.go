@@ -186,7 +186,7 @@ func NewStage() *OutputShaperStage {
 func (s *OutputShaperStage) Name() string { return "output_shaper" }
 
 func (s *OutputShaperStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext, cfg *headroom.Config) error {
-	if !cfg.OutputShaper.Enabled {
+	if !cfg.OutputShaper.Enabled || reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
 	if cfg.OutputShaper.VerbositySteering {

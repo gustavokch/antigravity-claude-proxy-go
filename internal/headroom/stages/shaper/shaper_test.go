@@ -506,3 +506,16 @@ func TestOutputShaperStage_LogsEffortClamp(t *testing.T) {
 		}
 	}
 }
+
+// TestOutputShaper_NilRequestIsNoOp pins the guard contract shared with the
+// other stages: a RequestContext without a Request must be skipped, not
+// written into. Steering assigns req["system"], which panics on a nil map.
+func TestOutputShaper_NilRequestIsNoOp(t *testing.T) {
+	stage := NewStage()
+	if err := stage.Execute(context.Background(), &headroom.RequestContext{}, shaperCfg()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := stage.Execute(context.Background(), nil, shaperCfg()); err != nil {
+		t.Fatalf("unexpected error on nil request context: %v", err)
+	}
+}
