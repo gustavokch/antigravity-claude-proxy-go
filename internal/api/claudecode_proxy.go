@@ -326,16 +326,28 @@ func (server *Server) forwardToClaudeCode(
 					}
 
 					// If 401 Unauthorized and account has refresh token, attempt token refresh and retry once
-					if resp.StatusCode == http.StatusUnauthorized && acc.RefreshToken != "" {
-						if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
-							if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
-								server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
-								_ = resp.Body.Close()
-								retryResp, retryErr := client.SendMessage(ctx, refreshedAcc.Token, bodyBytes, request.Header)
-								if retryErr == nil {
-									resp = retryResp
+					if resp.StatusCode == http.StatusUnauthorized {
+						if acc.RefreshToken != "" {
+							if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
+								if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
+									server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
+									retryResp, retryErr := client.SendMessage(ctx, refreshedAcc.Token, bodyBytes, request.Header)
+									if retryErr == nil {
+										_ = resp.Body.Close()
+										resp = retryResp
+									}
 								}
 							}
+						}
+						if resp.StatusCode == http.StatusUnauthorized {
+							_ = resp.Body.Close()
+							pool.Release(acc.ID)
+							pool.RecordFailure(acc.ID, true, 30*time.Second)
+							if server.logger != nil {
+								server.logger.Warn("claudecode 401 unauthorized, failing over", "account", acc.ID)
+							}
+							excluded[acc.ID] = true
+							continue
 						}
 					}
 
@@ -424,16 +436,28 @@ func (server *Server) forwardToClaudeCode(
 		}
 
 		// If 401 Unauthorized and account has refresh token, attempt token refresh and retry once
-		if resp.StatusCode == http.StatusUnauthorized && acc.RefreshToken != "" {
-			if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
-				if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
-					server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
-					_ = resp.Body.Close()
-					retryResp, retryErr := client.SendMessage(request.Context(), refreshedAcc.Token, reqBody, request.Header)
-					if retryErr == nil {
-						resp = retryResp
+		if resp.StatusCode == http.StatusUnauthorized {
+			if acc.RefreshToken != "" {
+				if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
+					if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
+						server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
+						retryResp, retryErr := client.SendMessage(request.Context(), refreshedAcc.Token, reqBody, request.Header)
+						if retryErr == nil {
+							_ = resp.Body.Close()
+							resp = retryResp
+						}
 					}
 				}
+			}
+			if resp.StatusCode == http.StatusUnauthorized {
+				_ = resp.Body.Close()
+				pool.Release(acc.ID)
+				pool.RecordFailure(acc.ID, true, 30*time.Second)
+				if server.logger != nil {
+					server.logger.Warn("claudecode 401 unauthorized, failing over", "account", acc.ID)
+				}
+				excluded[acc.ID] = true
+				continue
 			}
 		}
 

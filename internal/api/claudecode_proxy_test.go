@@ -592,4 +592,89 @@ func TestSyncRefreshedAccountToConfig_PreservesAllowlistAndRouting(t *testing.T)
 	}
 }
 
+func TestForwardToClaudeCode_401RetryFailure_FailsOver(t *testing.T) {
+	reqCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		authHdr := r.Header.Get("Authorization")
+		apiKeyHdr := r.Header.Get("x-api-key")
+		if authHdr == "Bearer sk-ant-oat01-acc1-tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}`))
+			return
+		}
+		if apiKeyHdr == "acc2-tok" || authHdr == "Bearer acc2-tok" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"msg_456","type":"message","usage":{"input_tokens":5,"output_tokens":10}}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	oauthMgr := auth.NewClaudeCodeOAuthManager()
+	// OAuth refresh fails for acc1
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer tokenSrv.Close()
+	oauthMgr.SetEndpoints("", tokenSrv.URL, "", nil)
+
+	srv, err := New(Options{
+		APIKey: "test-key",
+		Credentials: func(ctx context.Context) (auth.Credentials, error) {
+			return auth.Credentials{AccessToken: "token"}, nil
+		},
+		NewUpstream:        func(s string) Upstream { return nil },
+		ClaudeCodeOAuthMgr: oauthMgr,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	cfg := claudecode.Config{
+		Enabled: true,
+		BaseURL: ts.URL,
+		Accounts: []claudecode.AccountConfig{
+			{
+				ID:           "acc-1",
+				Name:         "Account 1",
+				Token:        "sk-ant-oat01-acc1-tok",
+				RefreshToken: "bad-refresh",
+				Type:         "oauth",
+				Priority:     1,
+				Enabled:      true,
+			},
+			{
+				ID:       "acc-2",
+				Name:     "Account 2",
+				Token:    "acc2-tok",
+				Type:     "api_key",
+				Priority: 2,
+				Enabled:  true,
+			},
+		},
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+
+	reqBody := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":"hello"}]}`)
+	httpReq := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	srv.forwardToClaudeCode(w, httpReq, cfg, reqBody, "claude-3-7-sonnet-20250219")
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected failover to acc-2 with status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+
 
