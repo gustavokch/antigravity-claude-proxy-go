@@ -3,8 +3,6 @@ package shaper
 import (
 	"context"
 	"regexp"
-	"strconv"
-	"strings"
 
 	"antigravity-go-proxy/internal/headroom"
 )
@@ -69,19 +67,7 @@ var codingToolNames = map[string]bool{
 }
 
 func isCodingToolName(name string) bool {
-	return codingToolNames[normalizeToolName(name)]
-}
-
-func normalizeToolName(name string) string {
-	name = strings.ToLower(name)
-	if strings.HasPrefix(name, "mcp__") {
-		parts := strings.Split(name, "__")
-		name = parts[len(parts)-1]
-	}
-	if i := strings.LastIndexAny(name, ":."); i != -1 {
-		name = name[i+1:]
-	}
-	return name
+	return codingToolNames[headroom.NormalizeToolName(name)]
 }
 
 // testOutputPatterns are tuned for precision, not recall. A false positive
@@ -111,70 +97,6 @@ func looksLikeTestOutput(text string) bool {
 		}
 	}
 	return false
-}
-
-var numberedLineRe = regexp.MustCompile(`^\s{0,6}(\d+)(\t|\s*\|\s?)`)
-
-const minNumberedLines = 3
-const numberedSourceScanCap = 64
-
-func looksLikeNumberedSource(text string) bool {
-	lines := strings.SplitN(text, "\n", numberedSourceScanCap+1)
-	if len(lines) > numberedSourceScanCap {
-		lines = lines[:numberedSourceScanCap]
-	}
-	run := 0
-	prev := -1
-	for _, line := range lines {
-		m := numberedLineRe.FindStringSubmatch(line)
-		if m == nil {
-			run = 0
-			prev = -1
-			continue
-		}
-		n, err := strconv.Atoi(m[1])
-		if err != nil {
-			run = 0
-			prev = -1
-			continue
-		}
-		if run > 0 && n < prev {
-			run = 0
-		}
-		run++
-		prev = n
-		if run >= minNumberedLines {
-			return true
-		}
-	}
-	return false
-}
-
-func looksLikeUnifiedDiff(text string) bool {
-	if !strings.HasPrefix(text, "--- ") && !strings.Contains(text, "\n--- ") {
-		return false
-	}
-	return strings.Contains(text, "\n+++ ") && strings.Contains(text, "\n@@ ")
-}
-
-func countTextPayloads(toolResultBlock map[string]any) int {
-	switch payload := toolResultBlock["content"].(type) {
-	case string:
-		return 1
-	case []any:
-		n := 0
-		for _, innerRaw := range payload {
-			inner, ok := innerRaw.(map[string]any)
-			if !ok || inner["type"] != "text" {
-				continue
-			}
-			if _, ok := inner["text"].(string); ok {
-				n++
-			}
-		}
-		return n
-	}
-	return 0
 }
 
 type OutputShaperStage struct{}
@@ -272,7 +194,7 @@ func classifyContinuation(req map[string]any, inspector *headroom.ToolInspector,
 			if !ok || b["type"] != "tool_result" {
 				continue
 			}
-			startOrd += countTextPayloads(b)
+			startOrd += headroom.CountTextPayloads(b)
 		}
 	}
 
@@ -291,7 +213,7 @@ func classifyContinuation(req map[string]any, inspector *headroom.ToolInspector,
 			}
 		}
 
-		numPayloads := countTextPayloads(block)
+		numPayloads := headroom.CountTextPayloads(block)
 		if inspector != nil {
 			for j := currOrd; j < currOrd+numPayloads; j++ {
 				if inspector.IsVerbatimOrdinal(j) {
@@ -305,7 +227,7 @@ func classifyContinuation(req map[string]any, inspector *headroom.ToolInspector,
 		switch content := block["content"].(type) {
 		case string:
 			totalBytes += len(content)
-			if looksLikeNumberedSource(content) || looksLikeUnifiedDiff(content) || looksLikeTestOutput(content) {
+			if headroom.LooksLikeNumberedSource(content) || headroom.LooksLikeUnifiedDiff(content) || looksLikeTestOutput(content) {
 				return kindCoding
 			}
 		case []any:
@@ -316,7 +238,7 @@ func classifyContinuation(req map[string]any, inspector *headroom.ToolInspector,
 				}
 				if text, ok := inner["text"].(string); ok {
 					totalBytes += len(text)
-					if looksLikeNumberedSource(text) || looksLikeUnifiedDiff(text) || looksLikeTestOutput(text) {
+					if headroom.LooksLikeNumberedSource(text) || headroom.LooksLikeUnifiedDiff(text) || looksLikeTestOutput(text) {
 						return kindCoding
 					}
 				}

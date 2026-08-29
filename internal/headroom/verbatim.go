@@ -56,7 +56,7 @@ var nonVerbatimToolNames = map[string]bool{
 }
 
 func isNonVerbatimToolName(name string) bool {
-	return nonVerbatimToolNames[normalizeToolName(name)]
+	return nonVerbatimToolNames[NormalizeToolName(name)]
 }
 
 // strongPathKeys name a file by contract; any non-empty string value counts.
@@ -114,7 +114,7 @@ func NewToolInspector(req map[string]any) *ToolInspector {
 	// own text carries the shape of numbered source or a patch.
 	WalkToolResultText(req, 0, func(_, ord int, get func() string, _ func(string)) {
 		text := get()
-		if looksLikeNumberedSource(text) || looksLikeUnifiedDiff(text) {
+		if LooksLikeNumberedSource(text) || LooksLikeUnifiedDiff(text) {
 			t.verbatimOrdinals[ord] = true
 		}
 	})
@@ -132,7 +132,7 @@ func NewToolInspector(req map[string]any) *ToolInspector {
 			if !ok || block["type"] != "tool_result" {
 				continue
 			}
-			n := countTextPayloads(block)
+			n := CountTextPayloads(block)
 			if id, _ := block["tool_use_id"].(string); id != "" {
 				if info, ok := t.byID[id]; ok && info.Verbatim {
 					for j := ord; j < ord+n; j++ {
@@ -177,10 +177,10 @@ func SkipVerbatim(reqCtx *RequestContext, cfg *Config, ord int) bool {
 	return true
 }
 
-// normalizeToolName lowercases and strips MCP and namespace decoration, so
+// NormalizeToolName lowercases and strips MCP and namespace decoration, so
 // "mcp__filesystem__read_file", "filesystem:read_file", and "fs.readFile" all
 // reduce to the bare tool name.
-func normalizeToolName(name string) string {
+func NormalizeToolName(name string) string {
 	name = strings.ToLower(name)
 	if strings.HasPrefix(name, "mcp__") {
 		parts := strings.Split(name, "__")
@@ -193,7 +193,7 @@ func normalizeToolName(name string) string {
 }
 
 func isVerbatimToolName(name string) bool {
-	return verbatimToolNames[normalizeToolName(name)]
+	return verbatimToolNames[NormalizeToolName(name)]
 }
 
 // inputLooksLikeFileRead reports whether a tool_use input names a single file
@@ -217,11 +217,11 @@ func inputLooksLikeFileRead(input map[string]any) bool {
 	return false
 }
 
-// looksLikeNumberedSource reports whether text is line-numbered file content —
+// LooksLikeNumberedSource reports whether text is line-numbered file content —
 // the `cat -n` shape that Read and most MCP file tools emit. Requires at least
 // minNumberedLines consecutive matching lines with non-decreasing numbers so a
 // log with a leading counter does not trigger it.
-func looksLikeNumberedSource(text string) bool {
+func LooksLikeNumberedSource(text string) bool {
 	lines := strings.SplitN(text, "\n", numberedSourceScanCap+1)
 	if len(lines) > numberedSourceScanCap {
 		lines = lines[:numberedSourceScanCap]
@@ -256,8 +256,8 @@ func looksLikeNumberedSource(text string) bool {
 	return false
 }
 
-// looksLikeUnifiedDiff reports whether text is a unified diff or patch body.
-func looksLikeUnifiedDiff(text string) bool {
+// LooksLikeUnifiedDiff reports whether text is a unified diff or patch body.
+func LooksLikeUnifiedDiff(text string) bool {
 	if !strings.HasPrefix(text, "--- ") && !strings.Contains(text, "\n--- ") {
 		return false
 	}
@@ -277,9 +277,9 @@ func WalkMessages(req map[string]any, fn func(msg map[string]any)) {
 	}
 }
 
-// countTextPayloads mirrors walkToolResultText's ordinal accounting: one per
+// CountTextPayloads mirrors walkToolResultText's ordinal accounting: one per
 // string-form payload or per text block inside an array-form payload.
-func countTextPayloads(toolResultBlock map[string]any) int {
+func CountTextPayloads(toolResultBlock map[string]any) int {
 	switch payload := toolResultBlock["content"].(type) {
 	case string:
 		return 1

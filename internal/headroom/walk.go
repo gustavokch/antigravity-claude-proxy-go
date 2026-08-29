@@ -106,7 +106,7 @@ func ErrorOrdinals(req map[string]any) map[int]bool {
 			if !ok || block["type"] != "tool_result" {
 				continue
 			}
-			n := countTextPayloads(block)
+			n := CountTextPayloads(block)
 			if isErr, _ := block["is_error"].(bool); isErr {
 				if errs == nil {
 					errs = make(map[int]bool)

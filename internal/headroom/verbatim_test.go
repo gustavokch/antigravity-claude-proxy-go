@@ -213,8 +213,8 @@ func TestNormalizeToolName(t *testing.T) {
 		"mcp__acme__fetch_thing":     "fetch_thing",
 	}
 	for in, want := range cases {
-		if got := normalizeToolName(in); got != want {
-			t.Errorf("normalizeToolName(%q) = %q, want %q", in, got, want)
+		if got := NormalizeToolName(in); got != want {
+			t.Errorf("NormalizeToolName(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -306,12 +306,45 @@ func TestLooksLikeNumberedSource_HugeCountersDoNotMatch(t *testing.T) {
 	text := "18446744073709551616\tstart\n" +
 		"18446744073709551617\tstep\n" +
 		"18446744073709551618\tdone\n"
-	if looksLikeNumberedSource(text) {
+	if LooksLikeNumberedSource(text) {
 		t.Error("counters that overflow int must not read as numbered source")
 	}
 
 	// Ordinary numbered source keeps matching.
-	if !looksLikeNumberedSource("   1\tpackage main\n   2\t\n   3\tfunc main() {}\n") {
+	if !LooksLikeNumberedSource("   1\tpackage main\n   2\t\n   3\tfunc main() {}\n") {
 		t.Error("cat -n output must still classify as numbered source")
+	}
+}
+
+// TestExportedPayloadHelpers pins the shared heuristics the shaper stage
+// consumes. They must stay in one place: classifyContinuation derives its
+// starting ordinal from CountTextPayloads, and any drift from the copy used by
+// WalkToolResultText and ErrorOrdinals misaligns verbatim ordinals.
+func TestExportedPayloadHelpers(t *testing.T) {
+	block := map[string]any{"type": "tool_result", "content": []any{
+		map[string]any{"type": "text", "text": "a"},
+		map[string]any{"type": "image"},
+		map[string]any{"type": "text", "text": "b"},
+	}}
+	if got := CountTextPayloads(block); got != 2 {
+		t.Errorf("CountTextPayloads = %d, want 2", got)
+	}
+	if got := CountTextPayloads(map[string]any{"content": "one"}); got != 1 {
+		t.Errorf("CountTextPayloads(string form) = %d, want 1", got)
+	}
+	if !LooksLikeNumberedSource("   1\tpackage main\n   2\t\n   3\tfunc main() {}\n") {
+		t.Error("LooksLikeNumberedSource missed numbered source")
+	}
+	if LooksLikeNumberedSource("2024 lines read\n1 error\n") {
+		t.Error("LooksLikeNumberedSource matched a plain log")
+	}
+	if !LooksLikeUnifiedDiff("--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-a\n+b\n") {
+		t.Error("LooksLikeUnifiedDiff missed a patch body")
+	}
+	if LooksLikeUnifiedDiff("--- not a diff") {
+		t.Error("LooksLikeUnifiedDiff matched a non-diff")
+	}
+	if got := NormalizeToolName("mcp__filesystem__read_file"); got != "read_file" {
+		t.Errorf("NormalizeToolName = %q, want %q", got, "read_file")
 	}
 }
