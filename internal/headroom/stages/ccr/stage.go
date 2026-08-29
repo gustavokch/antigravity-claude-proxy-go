@@ -1,9 +1,12 @@
-package headroom
+package ccr
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+
+	"antigravity-go-proxy/internal/headroom"
 )
 
 // defaultMinChunkBytes is the minimum byte size for a payload to be demoted.
@@ -31,8 +34,8 @@ type CCRStage struct {
 	store *CCRStore
 }
 
-// NewCCRStage creates a new CCRStage backed by the given CCRStore.
-func NewCCRStage(store *CCRStore) *CCRStage {
+// NewStage creates a new CCRStage backed by the given CCRStore.
+func NewStage(store *CCRStore) *CCRStage {
 	return &CCRStage{store: store}
 }
 
@@ -62,7 +65,7 @@ func makePreview(s string, maxLen int) string {
 	return s
 }
 
-func (s *CCRStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Config) error {
+func (s *CCRStage) Execute(ctx context.Context, reqCtx *headroom.RequestContext, cfg *headroom.Config) error {
 	if !cfg.CCR.Enabled || reqCtx == nil || reqCtx.Request == nil {
 		return nil
 	}
@@ -75,13 +78,16 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Con
 		minBytes = defaultMinChunkBytes
 	}
 
+	log := reqCtx.Log()
+	dbg := log.Enabled(ctx, slog.LevelDebug)
+
 	// Only demote if FrozenPrefixIndex >= 0 (there is at least one message outside the live window)
 	if reqCtx.FrozenPrefixIndex >= 0 {
-		WalkToolResultText(reqCtx.Request, 0, func(idx, ord int, get func() string, set func(string)) {
+		headroom.WalkToolResultText(reqCtx.Request, 0, func(idx, ord int, get func() string, set func(string)) {
 			if idx > reqCtx.FrozenPrefixIndex {
 				return // live turn; keep inline
 			}
-			if SkipVerbatim(reqCtx, cfg, ord) {
+			if headroom.SkipVerbatim(reqCtx, cfg, ord) {
 				return // file content the model will quote back; demotion would
 				// force a retrieve round trip before any Edit could match
 			}
@@ -97,6 +103,12 @@ func (s *CCRStage) Execute(ctx context.Context, reqCtx *RequestContext, cfg *Con
 			set(token)
 			reqCtx.RecordRewrite(before, token)
 			reqCtx.ChunksStored++
+			if dbg {
+				log.Debug("ccr demoted chunk",
+					"stage", s.Name(), "chunk_id", id,
+					"ordinal", ord, "message_index", idx,
+					"chunk_bytes", len(before), "store_bytes", s.store.Bytes())
+			}
 		})
 	}
 

@@ -13,6 +13,7 @@ import (
 
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
 )
 
 // ccCaptureLog returns a logger writing JSON records into buf.
@@ -213,11 +214,11 @@ func TestClaudeCodeObservability_StreamUsage(t *testing.T) {
 // so forwardToClaudeCode takes the CCR hydration path.
 func ccCCRServer(t *testing.T, buf *bytes.Buffer, payload string) (*Server, string) {
 	t.Helper()
-	store := headroom.NewCCRStore(1024 * 1024)
+	store := ccr.NewCCRStore(1024 * 1024)
 	engine := headroom.NewEngine(headroom.Config{
 		Enabled: true,
 		CCR:     headroom.CCRConfig{Enabled: true},
-	}, nil, headroom.NewCCRStage(store))
+	}, nil, ccr.NewStage(store))
 	chunkID, ok := store.Put(payload)
 	if !ok {
 		t.Fatalf("failed to store CCR chunk")

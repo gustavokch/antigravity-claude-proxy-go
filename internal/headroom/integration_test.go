@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/headroom/stages/code"
 	"antigravity-go-proxy/internal/headroom/stages/crusher"
 	"antigravity-go-proxy/internal/headroom/stages/shaper"
@@ -16,9 +17,9 @@ import (
 
 // testStages returns the production stage list. Tasks 3-7 update this single
 // helper as each stage moves into its own subpackage.
-func testStages(store *headroom.CCRStore) []headroom.Stage {
+func testStages(store *ccr.CCRStore) []headroom.Stage {
 	return []headroom.Stage{
-		headroom.NewCCRStage(store),
+		ccr.NewStage(store),
 		crusher.NewStage(),
 		smart.NewStage(),
 		code.NewStage(),
@@ -27,7 +28,7 @@ func testStages(store *headroom.CCRStore) []headroom.Stage {
 }
 
 func newTestEngine(cfg headroom.Config) *headroom.Engine {
-	store := headroom.NewCCRStoreFromMB(cfg.CCR.MaxStoreMB)
+	store := ccr.NewCCRStoreFromMB(cfg.CCR.MaxStoreMB)
 	return headroom.NewEngine(cfg, nil, testStages(store)...)
 }
 
@@ -353,7 +354,7 @@ func TestEngine_CCRStoresOriginalBeforeCompression(t *testing.T) {
 			MinChunkBytes: 500,
 		},
 	}
-	store := headroom.NewCCRStoreFromMB(cfg.CCR.MaxStoreMB)
+	store := ccr.NewCCRStoreFromMB(cfg.CCR.MaxStoreMB)
 	engine := headroom.NewEngine(cfg, nil, testStages(store)...)
 
 	req := map[string]any{
@@ -377,7 +378,7 @@ func TestEngine_CCRStoresOriginalBeforeCompression(t *testing.T) {
 		t.Errorf("expected 1 chunk stored, got %d", reqCtx.ChunksStored)
 	}
 
-	chunkID := headroom.ChunkID(prettyJSON)
+	chunkID := ccr.ChunkID(prettyJSON)
 	_, found := store.Get(chunkID)
 	if !found {
 		t.Fatalf("chunk not found in engine store")

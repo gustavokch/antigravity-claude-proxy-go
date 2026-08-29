@@ -13,7 +13,7 @@ import (
 
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
-	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
 )
@@ -80,7 +80,7 @@ func makeSSE(part map[string]any, finishReason string) cloudcode.SSEEvent {
 
 func TestHeadroomCCR_CloudCodeUnaryHydration(t *testing.T) {
 	chunkPayload := "original long documentation content stored in CCR store"
-	chunkID := headroom.ChunkID(chunkPayload)
+	chunkID := ccr.ChunkID(chunkPayload)
 
 	backend := &ccrMockBackend{}
 
@@ -190,7 +190,7 @@ func TestHeadroomCCR_CloudCodeUnaryHydration(t *testing.T) {
 
 func TestHeadroomCCR_CloudCodeStreamHydration(t *testing.T) {
 	chunkPayload := "streamed chunk data from store"
-	chunkID := headroom.ChunkID(chunkPayload)
+	chunkID := ccr.ChunkID(chunkPayload)
 
 	backend := &ccrMockBackend{}
 
@@ -434,7 +434,7 @@ func TestHeadroomCCR_IterationCapStopsLoop(t *testing.T) {
 
 func TestHeadroomCCR_OpenRouterUnaryHydration(t *testing.T) {
 	chunkPayload := "openrouter chunk payload from store"
-	chunkID := headroom.ChunkID(chunkPayload)
+	chunkID := ccr.ChunkID(chunkPayload)
 
 	var callsMu sync.Mutex
 	var calls []map[string]any
@@ -584,7 +584,7 @@ func TestHeadroomCCR_OpenRouterUnaryHydration(t *testing.T) {
 
 func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
 	chunkPayload := "openrouter streamed chunk payload from store"
-	chunkID := headroom.ChunkID(chunkPayload)
+	chunkID := ccr.ChunkID(chunkPayload)
 
 	var callsMu sync.Mutex
 	var calls []map[string]any
@@ -831,7 +831,7 @@ func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
 // sees it will try to answer a tool it does not implement.
 func TestHeadroomCCR_OpenRouterStream_NoRetrieveLeak(t *testing.T) {
 	chunkPayload := "openrouter leak-check chunk payload"
-	chunkID := headroom.ChunkID(chunkPayload)
+	chunkID := ccr.ChunkID(chunkPayload)
 
 	var callsMu sync.Mutex
 	callNum := 0

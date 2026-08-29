@@ -16,6 +16,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
 )
 
 // fakeMsgServer returns an httptest server that emulates Anthropic /v1/messages.
@@ -299,13 +300,13 @@ func TestForwardToClaudeCode_CCRHydration_Streaming(t *testing.T) {
 	ccHTTPClient = nil
 	ccPoolMu.Unlock()
 
-	store := headroom.NewCCRStore(1024 * 1024)
+	store := ccr.NewCCRStore(1024 * 1024)
 	headroomEngine := headroom.NewEngine(headroom.Config{
 		Enabled: true,
 		CCR: headroom.CCRConfig{
 			Enabled: true,
 		},
-	}, nil, headroom.NewCCRStage(store))
+	}, nil, ccr.NewStage(store))
 	var ok bool
 	chunkID, ok = store.Put("Secret Claude Code payload")
 	if !ok {
@@ -408,13 +409,13 @@ func TestForwardToClaudeCode_CCRHydration_Unary(t *testing.T) {
 	ccHTTPClient = nil
 	ccPoolMu.Unlock()
 
-	store := headroom.NewCCRStore(1024 * 1024)
+	store := ccr.NewCCRStore(1024 * 1024)
 	headroomEngine := headroom.NewEngine(headroom.Config{
 		Enabled: true,
 		CCR: headroom.CCRConfig{
 			Enabled: true,
 		},
-	}, nil, headroom.NewCCRStage(store))
+	}, nil, ccr.NewStage(store))
 	var ok bool
 	chunkID, ok = store.Put("Secret Claude Code Unary payload")
 	if !ok {

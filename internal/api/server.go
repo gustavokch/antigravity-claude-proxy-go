@@ -28,6 +28,7 @@ import (
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/headroom/stages/code"
 	"antigravity-go-proxy/internal/headroom/stages/crusher"
 	"antigravity-go-proxy/internal/headroom/stages/shaper"
@@ -102,7 +103,7 @@ type Server struct {
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	tracker            *stats.Tracker
 	headroom           *headroom.Engine
-	ccrStore           *headroom.CCRStore
+	ccrStore           *ccr.CCRStore
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -141,11 +142,11 @@ func New(options Options) (*Server, error) {
 	}
 
 	cfg := config.Get()
-	srv.ccrStore = headroom.NewCCRStoreFromMB(cfg.Headroom.CCR.MaxStoreMB)
+	srv.ccrStore = ccr.NewCCRStoreFromMB(cfg.Headroom.CCR.MaxStoreMB)
 	srv.headroom = headroom.NewEngine(
 		cfg.Headroom,
 		srv.logger,
-		headroom.NewCCRStage(srv.ccrStore),
+		ccr.NewStage(srv.ccrStore),
 		crusher.NewStage(),
 		smart.NewStage(),
 		code.NewStage(),
