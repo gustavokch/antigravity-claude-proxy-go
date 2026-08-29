@@ -2,10 +2,15 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"antigravity-go-proxy/internal/auth"
+	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/config"
 )
 
 func TestClaudeCodeManagement_ModelsFetch(t *testing.T) {
@@ -173,4 +178,86 @@ func TestClaudeCodeManagement_Accounts_RoutingAndSerialization(t *testing.T) {
 			t.Fatalf("expected 200 OK on delete with path param, got %d: %s", delRec.Code, delRec.Body.String())
 		}
 	})
+}
+
+func TestClaudeCodeManagement_AccountRateLimitsAndRefresh(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("anthropic-ratelimit-requests-limit", "100")
+		w.Header().Set("anthropic-ratelimit-requests-remaining", "90")
+		w.Header().Set("anthropic-ratelimit-input-tokens-limit", "50000")
+		w.Header().Set("anthropic-ratelimit-input-tokens-remaining", "45000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-3-7-sonnet"}]}`))
+	}))
+	defer ts.Close()
+
+	oauthMgr := auth.NewClaudeCodeOAuthManager()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "new-tok",
+			"refresh_token": "new-ref",
+			"expires_in":    3600,
+		})
+	}))
+	defer tokenSrv.Close()
+	oauthMgr.SetEndpoints("", tokenSrv.URL, "", nil)
+
+	srv, err := New(Options{
+		APIKey: "test-key",
+		Credentials: func(ctx context.Context) (auth.Credentials, error) {
+			return auth.Credentials{AccessToken: "tok"}, nil
+		},
+		NewUpstream:        func(s string) Upstream { return nil },
+		ClaudeCodeOAuthMgr: oauthMgr,
+	})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	config.SetForTest(config.Config{
+		ClaudeCode: claudecode.Config{
+			Enabled: true,
+			BaseURL: ts.URL,
+			Accounts: []claudecode.AccountConfig{
+				{
+					ID:           "acc-test-rl",
+					Name:         "Test RL",
+					Token:        "tok-test",
+					RefreshToken: "ref-test",
+					Type:         "oauth",
+					Enabled:      true,
+				},
+			},
+		},
+	})
+
+	// 1. POST /api/claudecode/accounts/acc-test-rl/ratelimits
+	rlReq := httptest.NewRequest(http.MethodPost, "/api/claudecode/accounts/acc-test-rl/ratelimits", nil)
+	w := httptest.NewRecorder()
+	srv.routeClaudeCodeManagement(w, rlReq, "/api/claudecode/accounts/acc-test-rl/ratelimits", http.MethodPost)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var rlResp struct {
+		Status     string                `json:"status"`
+		RateLimits claudecode.RateLimits `json:"rate_limits"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&rlResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if rlResp.RateLimits.RequestsLimit != 100 || rlResp.RateLimits.RequestsRemaining != 90 {
+		t.Errorf("unexpected rate limits: %+v", rlResp.RateLimits)
+	}
+
+	// 2. POST /api/claudecode/accounts/acc-test-rl/refresh
+	refReq := httptest.NewRequest(http.MethodPost, "/api/claudecode/accounts/acc-test-rl/refresh", nil)
+	w2 := httptest.NewRecorder()
+	srv.routeClaudeCodeManagement(w2, refReq, "/api/claudecode/accounts/acc-test-rl/refresh", http.MethodPost)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w2.Code, w2.Body.String())
+	}
 }

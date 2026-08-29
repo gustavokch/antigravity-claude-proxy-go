@@ -288,9 +288,20 @@ func (server *Server) routeClaudeCodeManagement(writer http.ResponseWriter, requ
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/claudecode/accounts/"), "/test")
 		server.handleClaudeCodeAccountTest(writer, request, id)
 		return true
+	case strings.HasPrefix(path, "/api/claudecode/accounts/") && strings.HasSuffix(path, "/ratelimits") && method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/claudecode/accounts/"), "/ratelimits")
+		server.handleClaudeCodeAccountRateLimits(writer, request, id)
+		return true
+	case strings.HasPrefix(path, "/api/claudecode/accounts/") && strings.HasSuffix(path, "/refresh") && method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/claudecode/accounts/"), "/refresh")
+		server.handleClaudeCodeAccountRefresh(writer, request, id)
+		return true
 	case strings.HasPrefix(path, "/api/claudecode/accounts/") && method == http.MethodDelete:
 		id := strings.TrimPrefix(path, "/api/claudecode/accounts/")
 		server.handleClaudeCodeAccountDelete(writer, request, id)
+		return true
+	case path == "/api/claudecode/ratelimits" && method == http.MethodPost:
+		server.handleClaudeCodeAllRateLimits(writer, request)
 		return true
 	case path == "/api/claudecode/import" && method == http.MethodPost:
 		server.handleClaudeCodeAutoImport(writer, request)
@@ -361,3 +372,106 @@ func (server *Server) handleClaudeCodeModelsFetch(writer http.ResponseWriter, re
 		"total":  len(models),
 	})
 }
+
+// handleClaudeCodeAccountRateLimits queries active rate limits from Anthropic for a specific account.
+func (server *Server) handleClaudeCodeAccountRateLimits(writer http.ResponseWriter, request *http.Request, accountID string) {
+	cfg := config.Get()
+	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+	if pool == nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": "pool not initialized"})
+		return
+	}
+
+	var token string
+	if acc, ok := pool.GetAccount(accountID); ok {
+		token = acc.Token
+	}
+	if token == "" {
+		for _, a := range cfg.ClaudeCode.Accounts {
+			if a.ID == accountID {
+				token = a.Token
+				break
+			}
+		}
+	}
+
+	if token == "" {
+		writeJSON(writer, http.StatusNotFound, map[string]any{"status": "error", "error": "account not found or has no token"})
+		return
+	}
+
+	client := claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.ClaudeCode.BaseURL), nil)
+	rl, err := client.FetchRateLimits(request.Context(), token)
+	if err != nil && rl.RequestsLimit == 0 && rl.TokensLimit == 0 {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	pool.UpdateAccountRateLimits(accountID, rl)
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status":      "ok",
+		"account_id":  accountID,
+		"rate_limits": rl,
+	})
+}
+
+// handleClaudeCodeAccountRefresh forces an immediate OAuth token refresh for an account.
+func (server *Server) handleClaudeCodeAccountRefresh(writer http.ResponseWriter, _ *http.Request, accountID string) {
+	cfg := config.Get()
+	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+	if pool == nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": "pool not initialized"})
+		return
+	}
+
+	if err := pool.RefreshAccountToken(accountID); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	if refreshedAcc, ok := pool.GetAccount(accountID); ok {
+		server.syncRefreshedAccountToConfig(accountID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
+	}
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status":     "ok",
+		"account_id": accountID,
+	})
+}
+
+// handleClaudeCodeAllRateLimits probes active rate limits for all enabled accounts.
+func (server *Server) handleClaudeCodeAllRateLimits(writer http.ResponseWriter, request *http.Request) {
+	cfg := config.Get()
+	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+	if pool == nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": "pool not initialized"})
+		return
+	}
+
+	accounts := pool.ListAccounts()
+	client := claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.ClaudeCode.BaseURL), nil)
+
+	results := make(map[string]claudecode.RateLimits)
+	for _, acc := range accounts {
+		if !acc.Enabled || acc.Token == "" {
+			continue
+		}
+		if rl, err := client.FetchRateLimits(request.Context(), acc.Token); err == nil {
+			pool.UpdateAccountRateLimits(acc.ID, rl)
+			results[acc.ID] = rl
+		}
+	}
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status":      "ok",
+		"rate_limits": results,
+	})
+}
+
