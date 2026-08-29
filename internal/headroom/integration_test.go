@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/crusher"
 )
 
 // testStages returns the production stage list. Tasks 3-7 update this single
@@ -15,7 +16,7 @@ import (
 func testStages(store *headroom.CCRStore) []headroom.Stage {
 	return []headroom.Stage{
 		headroom.NewCCRStage(store),
-		&headroom.CommandCrusherStage{},
+		crusher.NewStage(),
 		&headroom.SmartCrusherStage{},
 		&headroom.CodeCompressorStage{},
 		&headroom.OutputShaperStage{},
