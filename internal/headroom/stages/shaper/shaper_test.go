@@ -63,6 +63,34 @@ func TestOutputShaper_UsesCustomSteeringText(t *testing.T) {
 	}
 }
 
+func TestOutputShaper_EmptyStringSystemPrompt(t *testing.T) {
+	stage := NewStage()
+	req := map[string]any{
+		"system": "",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+	}
+	cfg := &headroom.Config{
+		OutputShaper: headroom.OutputShaperConfig{
+			Enabled:           true,
+			VerbositySteering: true,
+			SteeringText:      "Custom Prompt",
+		},
+	}
+	reqCtx := &headroom.RequestContext{Request: req}
+	if err := stage.Execute(context.Background(), reqCtx, cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sys, ok := req["system"].(string)
+	if !ok {
+		t.Fatalf("expected string system, got %T", req["system"])
+	}
+	if sys != "Custom Prompt" {
+		t.Errorf("expected 'Custom Prompt', got %q", sys)
+	}
+}
+
 func toolContinuation(isError bool) map[string]any {
 	block := map[string]any{"type": "tool_result", "content": "ok"}
 	if isError {

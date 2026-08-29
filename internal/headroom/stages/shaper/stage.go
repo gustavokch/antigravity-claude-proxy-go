@@ -138,7 +138,11 @@ func (s *OutputShaperStage) applySteering(req map[string]any, cfg *headroom.Conf
 	// earlier system block keeps its exact bytes.
 	switch sys := req["system"].(type) {
 	case string:
-		req["system"] = sys + "\n\n" + text
+		if sys == "" {
+			req["system"] = text
+		} else {
+			req["system"] = sys + "\n\n" + text
+		}
 	case []any:
 		req["system"] = append(sys, map[string]any{"type": "text", "text": text})
 	case nil:
