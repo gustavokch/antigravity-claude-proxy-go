@@ -140,3 +140,34 @@ func TestCCRStore_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestCCRStore_IDCollisionKeepsNewestContent covers the truncated-id case:
+// ChunkID keeps only 48 bits of the digest, so two distinct payloads can map to
+// one id. The store must never serve the older payload under a token minted for
+// the newer one, and must not double count its bytes.
+func TestCCRStore_IDCollisionKeepsNewestContent(t *testing.T) {
+	store := NewCCRStore(1024)
+	const id = "chunk_collide0001"
+
+	if _, ok := store.putWithID(id, "first payload"); !ok {
+		t.Fatal("first put rejected")
+	}
+	second := "second payload, longer than the first"
+	if _, ok := store.putWithID(id, second); !ok {
+		t.Fatal("colliding put rejected")
+	}
+
+	got, found := store.Get(id)
+	if !found {
+		t.Fatal("chunk missing after colliding put")
+	}
+	if got != second {
+		t.Fatalf("stale content served: got %q, want %q", got, second)
+	}
+	if store.Size() != 1 {
+		t.Fatalf("expected 1 entry, got %d", store.Size())
+	}
+	if store.Bytes() != int64(len(second)) {
+		t.Fatalf("byte accounting drifted: got %d, want %d", store.Bytes(), len(second))
+	}
+}

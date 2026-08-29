@@ -57,6 +57,12 @@ func NewCCRStoreFromMB(maxMB int) *CCRStore {
 // Put stores content in the LRU cache.
 // Returns the chunk ID and true if stored, or ("", false) if rejected (e.g. entry exceeds total capacity).
 func (s *CCRStore) Put(content string) (string, bool) {
+	return s.putWithID(ChunkID(content), content)
+}
+
+// putWithID is Put with the identifier supplied by the caller, so the
+// truncated-id collision path is directly testable.
+func (s *CCRStore) putWithID(id, content string) (string, bool) {
 	size := int64(len(content))
 
 	s.mu.Lock()
@@ -67,11 +73,25 @@ func (s *CCRStore) Put(content string) (string, bool) {
 		return "", false
 	}
 
-	id := ChunkID(content)
-
-	// If already present, promote to front
 	if elem, ok := s.cache[id]; ok {
+		entry := elem.Value.(*ccrEntry)
+		if entry.value == content {
+			// Same payload: promote to front.
+			s.ll.MoveToFront(elem)
+			return id, true
+		}
+		// ChunkID keeps 48 bits of the digest, so two payloads can share an id.
+		// The token was minted for this content, so this content is what a later
+		// retrieve must return; the older payload is dropped.
+		s.currentBytes += size - entry.size
+		entry.value = content
+		entry.size = size
 		s.ll.MoveToFront(elem)
+		// Never evict the entry just written: it is at the front, so stop while
+		// it is the only one left.
+		for s.currentBytes > s.maxBytes && s.ll.Len() > 1 {
+			s.evictOldestLocked()
+		}
 		return id, true
 	}
 
