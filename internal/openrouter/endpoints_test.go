@@ -109,6 +109,56 @@ func TestFlattenEndpointsResponse(t *testing.T) {
 			t.Errorf("expected error for garbage")
 		}
 	})
+
+	// Regression: OpenRouter now sends latency_last_30m / throughput_last_30m
+	// as percentile objects {"p50":..,"p75":..,"p90":..,"p99":..} instead of
+	// bare numbers. float64 fields made the whole-document unmarshal fail and
+	// every fetch errored with "unrecognized shape" (live repro 2026-08-30).
+	t.Run("canonical-percentile-objects", func(t *testing.T) {
+		body := []byte(`{"data":{"name":"z-ai/glm-5.3","endpoints":[
+			{"provider_name":"Io Net","tag":"io-net/fp8","context_length":262144,
+			 "uptime_last_5m":100,"uptime_last_30m":99.33973589435774,"uptime_last_1d":92.09543750149271,
+			 "latency_last_30m":{"p50":2229.5,"p75":4813.5,"p90":10117.7,"p99":26895.49},
+			 "throughput_last_30m":{"p50":25,"p75":40,"p90":54,"p99":78}}]}}`)
+		got, err := flattenEndpointsResponse(body)
+		if err != nil {
+			t.Fatalf("percentile-object shape must decode, got: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 endpoint, got %d", len(got))
+		}
+		if got[0].LatencyLast30mMs != 2229.5 {
+			t.Errorf("latency p50 = %v, want 2229.5", got[0].LatencyLast30mMs)
+		}
+		if got[0].ThroughputLast30mTPS != 25 {
+			t.Errorf("throughput p50 = %v, want 25", got[0].ThroughputLast30mTPS)
+		}
+	})
+
+	t.Run("canonical-mixed-number-and-object", func(t *testing.T) {
+		// Legacy bare-number latency must keep decoding (older snapshots).
+		body := []byte(`{"data":{"name":"m","endpoints":[
+			{"provider_name":"a","latency_last_30m":1500,"throughput_last_30m":42}]}}`)
+		got, err := flattenEndpointsResponse(body)
+		if err != nil {
+			t.Fatalf("legacy numeric shape must decode, got: %v", err)
+		}
+		if got[0].LatencyLast30mMs != 1500 || got[0].ThroughputLast30mTPS != 42 {
+			t.Errorf("unexpected legacy values: %+v", got[0])
+		}
+	})
+
+	t.Run("canonical-null-percentile", func(t *testing.T) {
+		body := []byte(`{"data":{"name":"m","endpoints":[
+			{"provider_name":"a","latency_last_30m":null,"throughput_last_30m":null}]}}`)
+		got, err := flattenEndpointsResponse(body)
+		if err != nil {
+			t.Fatalf("null percentile fields must decode, got: %v", err)
+		}
+		if got[0].LatencyLast30mMs != 0 || got[0].ThroughputLast30mTPS != 0 {
+			t.Errorf("expected zero values for null, got %+v", got[0])
+		}
+	})
 }
 
 func TestEndpointsClient_FetchAndCache(t *testing.T) {

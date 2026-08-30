@@ -289,7 +289,7 @@ func (r *ProviderRouter) scoreLocked(w RankWeights, ep ProviderEndpoint, stats m
 	// Use API priors when present and local empty.
 	if w.Latency > 0 && ep.LatencyLast30mMs > 0 {
 		if s, ok := stats[ep.ProviderName]; !ok || s.successCount == 0 {
-			ms := ep.LatencyLast30mMs
+			ms := float64(ep.LatencyLast30mMs)
 			if ms < 100 {
 				ms = 100
 			}
@@ -301,7 +301,7 @@ func (r *ProviderRouter) scoreLocked(w RankWeights, ep ProviderEndpoint, stats m
 	}
 	if w.Throughput > 0 && ep.ThroughputLast30mTPS > 0 {
 		if s, ok := stats[ep.ProviderName]; !ok || s.successCount == 0 {
-			t := ep.ThroughputLast30mTPS
+			t := float64(ep.ThroughputLast30mTPS)
 			if t < 1 {
 				t = 1
 			}

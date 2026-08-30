@@ -11,20 +11,51 @@ import (
 	"time"
 )
 
+// P50Metric decodes an OpenRouter latency/throughput statistic that appears
+// as either a bare number (legacy shape) or a percentile object
+// {"p50":..,"p75":..,"p90":..,"p99":..} (current shape). Both normalize to
+// the median (p50) so router priors keep working with one scalar. Decoding
+// fails only when neither form is present.
+type P50Metric float64
+
+// UnmarshalJSON accepts a JSON number, null, or a percentile object.
+func (m *P50Metric) UnmarshalJSON(data []byte) error {
+	var num float64
+	if err := json.Unmarshal(data, &num); err == nil {
+		*m = P50Metric(num)
+		return nil
+	}
+	var obj struct {
+		P50 *float64 `json:"p50"`
+		P75 *float64 `json:"p75"`
+		P90 *float64 `json:"p90"`
+		P99 *float64 `json:"p99"`
+	}
+	if err := json.Unmarshal(data, &obj); err == nil {
+		for _, p := range []*float64{obj.P50, obj.P75, obj.P90, obj.P99} {
+			if p != nil {
+				*m = P50Metric(*p)
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("decode percentile stat: unsupported shape %s", data)
+}
+
 // ProviderEndpoint represents a single upstream provider serving a model on OpenRouter.
 type ProviderEndpoint struct {
-	ProviderName         string   `json:"provider_name"`
-	Tag                  string   `json:"tag,omitempty"`
-	ContextLength        int      `json:"context_length,omitempty"`
-	MaxCompletionTokens  int      `json:"max_completion_tokens,omitempty"`
-	UptimeLast5m         float64  `json:"uptime_last_5m,omitempty"`
-	UptimeLast30m        float64  `json:"uptime_last_30m,omitempty"`
-	UptimeLast1d         float64  `json:"uptime_last_1d,omitempty"`
-	LatencyLast30mMs     float64  `json:"latency_last_30m,omitempty"`
-	ThroughputLast30mTPS float64  `json:"throughput_last_30m,omitempty"`
-	Status               int      `json:"status,omitempty"`
-	SupportedParameters  []string `json:"supported_parameters,omitempty"`
-	Pricing              *Pricing `json:"pricing,omitempty"`
+	ProviderName         string    `json:"provider_name"`
+	Tag                  string    `json:"tag,omitempty"`
+	ContextLength        int       `json:"context_length,omitempty"`
+	MaxCompletionTokens  int       `json:"max_completion_tokens,omitempty"`
+	UptimeLast5m         float64   `json:"uptime_last_5m,omitempty"`
+	UptimeLast30m        float64   `json:"uptime_last_30m,omitempty"`
+	UptimeLast1d         float64   `json:"uptime_last_1d,omitempty"`
+	LatencyLast30mMs     P50Metric `json:"latency_last_30m,omitempty"`
+	ThroughputLast30mTPS P50Metric `json:"throughput_last_30m,omitempty"`
+	Status               int       `json:"status,omitempty"`
+	SupportedParameters  []string  `json:"supported_parameters,omitempty"`
+	Pricing              *Pricing  `json:"pricing,omitempty"`
 }
 
 // BlendedUptime returns the weighted uptime signal (5m 50%, 30m 30%, 1d 20%),
