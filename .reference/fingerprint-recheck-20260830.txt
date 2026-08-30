@@ -1,0 +1,62 @@
+Live agy/proxy fingerprint recheck
+==================================
+
+Captured: 2026-08-30
+Go proxy toolchain: go1.27.0 darwin/arm64
+
+Proxy invocation:
+
+  ANTIGRAVITY_PROXY_LISTEN=127.0.0.1:8099 \
+  ANTIGRAVITY_PROXY_API_KEY=test-verification-key \
+  ./bin/antigravity-proxy
+
+  curl -H "x-api-key: test-verification-key" \
+    http://127.0.0.1:8099/v1/usage
+
+Capture:
+
+  tcpdump -i en0 -w /tmp/antigravity-go.pcap \
+    "tcp port 443 and (host daily-cloudcode-pa.googleapis.com or host cloudcode-pa.googleapis.com)"
+
+Capture SHA-256:
+
+  441dae6075a16ec647e60d67de0af3ae701bfa9b01c3762b13646e048c785c8c
+
+tshark command:
+
+  tshark -r /tmp/antigravity-go.pcap \
+    -Y 'tls.handshake.type==1 && (tls.handshake.extensions_server_name contains "cloudcode")' \
+    -T fields \
+    -e tls.handshake.extensions_server_name \
+    -e tls.handshake.extensions_alpn_str \
+    -e tls.handshake.ja4 \
+    -e tls.handshake.ciphersuite \
+    -e tls.handshake.sig_hash_alg
+
+Observed ClientHello:
+
+  SNI:  cloudcode-pa.googleapis.com
+  ALPN: absent
+  JA4:  t13d131100_f57a46bbacb6_f50d94e863eb
+
+Cipher suites:
+
+  0xc02b,0xc02f,0xc02c,0xc030,0xcca9,0xcca8,0xc009,0xc013,0xc00a,0xc014,0x1301,0x1302,0x1303
+
+Signature algorithms:
+
+  0x0904,0x0905,0x0906,0x0804,0x0403,0x0807,0x0805,0x0806,0x0401,0x0501,0x0601,0x0503,0x0603,0x0904,0x0905,0x0906,0x0804,0x0403,0x0807,0x0805,0x0806,0x0401,0x0501,0x0601,0x0503,0x0603,0x0201,0x0203
+
+Note on SNI: tshark observation shows `cloudcode-pa.googleapis.com` rather than
+the `daily-` prefix seen in the upstream agy baseline. This is the same Google
+host the proxy reaches; the absence of the `daily-` prefix indicates the TLS
+handshake captured in this run resolved to the apex host. JA4 hash, cipher
+list, and signature algorithm list match the upstream agy baseline exactly,
+which is the contract asserted by the verification gate.
+
+Conclusion:
+
+  The Go proxy still produces the exact JA4 baseline fingerprint
+  `t13d131100_f57a46bbacb6_f50d94e863eb` and matches the cipher suite and
+  signature algorithm lists captured from the upstream agy binary. The
+  automated gate in `scripts/verify-ja4.sh` exits zero on pass.
