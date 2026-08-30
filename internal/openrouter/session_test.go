@@ -130,6 +130,31 @@ func TestExtractSessionID(t *testing.T) {
 		t.Errorf("expected extracted session_id 6c03114f-4472-472b-8abc-b64396665e4d, got %s", id)
 	}
 
+	// 2c. From metadata.user_id with parsed map object
+	req2c := httptest.NewRequest("POST", "/v1/messages", nil)
+	body2c := map[string]any{
+		"metadata": map[string]any{
+			"user_id": map[string]any{
+				"device_id":  "6a0a24c3",
+				"session_id": "nested-map-session-789",
+			},
+		},
+	}
+	if id := ExtractSessionID(req2c, body2c); id != "nested-map-session-789" {
+		t.Errorf("expected extracted session_id nested-map-session-789, got %s", id)
+	}
+
+	// 2d. From body.user_id with parsed map object
+	req2d := httptest.NewRequest("POST", "/v1/messages", nil)
+	body2d := map[string]any{
+		"user_id": map[string]any{
+			"user_id": "inner-uid-999",
+		},
+	}
+	if id := ExtractSessionID(req2d, body2d); id != "inner-uid-999" {
+		t.Errorf("expected extracted session_id inner-uid-999, got %s", id)
+	}
+
 	// 3. Fallback with port stripping (different ports from same client yield same session ID)
 	req3a := httptest.NewRequest("POST", "/v1/messages", nil)
 	req3a.RemoteAddr = "127.0.0.1:12345"

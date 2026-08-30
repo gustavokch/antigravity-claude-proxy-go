@@ -151,6 +151,26 @@ func parseNestedSessionID(val string) string {
 	return val
 }
 
+// extractSessionFromValue extracts a session identifier from a string (possibly JSON-encoded)
+// or a pre-parsed map object.
+func extractSessionFromValue(val any) string {
+	if val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case string:
+		return parseNestedSessionID(v)
+	case map[string]any:
+		if s, ok := v["session_id"].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+		if uid, ok := v["user_id"].(string); ok && strings.TrimSpace(uid) != "" {
+			return strings.TrimSpace(uid)
+		}
+	}
+	return ""
+}
+
 // ExtractSessionID extracts the session or conversation identifier from request headers or body.
 func ExtractSessionID(req *http.Request, reqBody map[string]any) string {
 	if req != nil {
@@ -163,18 +183,18 @@ func ExtractSessionID(req *http.Request, reqBody map[string]any) string {
 
 	if reqBody != nil {
 		if meta, ok := reqBody["metadata"].(map[string]any); ok {
-			if s, ok := meta["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-				return parseNestedSessionID(s)
+			if s := extractSessionFromValue(meta["session_id"]); s != "" {
+				return s
 			}
-			if u, ok := meta["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-				return parseNestedSessionID(u)
+			if u := extractSessionFromValue(meta["user_id"]); u != "" {
+				return u
 			}
 		}
-		if s, ok := reqBody["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-			return parseNestedSessionID(s)
+		if s := extractSessionFromValue(reqBody["session_id"]); s != "" {
+			return s
 		}
-		if u, ok := reqBody["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-			return parseNestedSessionID(u)
+		if u := extractSessionFromValue(reqBody["user_id"]); u != "" {
+			return u
 		}
 	}
 
