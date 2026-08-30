@@ -402,7 +402,14 @@ func Save(updates map[string]any) (Config, error) {
 		}
 		if k == "claudecode" {
 				if vMap, ok := v.(map[string]any); ok {
+					// Start from the persisted section so keys absent from the
+					// update (e.g. accounts on a settings-only save) survive.
 					ccCopy := make(map[string]any)
+					if exCC, ok := currentMap[k].(map[string]any); ok {
+						for ck, cv := range exCC {
+							ccCopy[ck] = cv
+						}
+					}
 					for ck, cv := range vMap {
 						if ck == "accounts" {
 							newAccs, okNew := cv.([]any)

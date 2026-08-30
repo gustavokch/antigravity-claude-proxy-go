@@ -19,6 +19,27 @@ func (server *Server) handleClaudeCodeConfigGet(writer http.ResponseWriter, _ *h
 	})
 }
 
+// ccAccountToMap converts an account to its full persisted form. Every config
+// rewrite must use this so surviving accounts keep their refresh token,
+// expiry, email, UUIDs and source; dropping any of these breaks token refresh
+// after a restart.
+func ccAccountToMap(a claudecode.AccountConfig) map[string]any {
+	return map[string]any{
+		"id":               a.ID,
+		"name":             a.Name,
+		"token":            a.Token,
+		"refreshToken":     a.RefreshToken,
+		"expiresAt":        a.ExpiresAt,
+		"email":            a.Email,
+		"accountUuid":      a.AccountUUID,
+		"organizationUuid": a.OrganizationUUID,
+		"type":             a.Type,
+		"priority":         a.Priority,
+		"enabled":          a.Enabled,
+		"source":           a.Source,
+	}
+}
+
 // handleClaudeCodeConfigPost saves ClaudeCode gateway config.
 func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, request *http.Request) {
 	var body map[string]any
@@ -26,6 +47,11 @@ func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, req
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid JSON"})
 		return
 	}
+
+	// The UI round-trips a stale, token-redacted accounts snapshot in this
+	// payload. Settings saves must never touch accounts — account mutations
+	// go through the dedicated /api/claudecode/accounts endpoints.
+	delete(body, "accounts")
 
 	_, err := config.Save(map[string]any{"claudecode": body})
 	if err != nil {
@@ -73,15 +99,7 @@ func (server *Server) handleClaudeCodeAccountsPost(writer http.ResponseWriter, r
 	// Merge account into config via Save — config.Save handles token preservation.
 	accounts := make([]any, 0, len(cfg.ClaudeCode.Accounts)+1)
 	for _, a := range cfg.ClaudeCode.Accounts {
-		acc := map[string]any{
-			"id":       a.ID,
-			"name":     a.Name,
-			"token":    a.Token,
-			"type":     a.Type,
-			"priority": a.Priority,
-			"enabled":  a.Enabled,
-		}
-		accounts = append(accounts, acc)
+		accounts = append(accounts, ccAccountToMap(a))
 	}
 	// Add or update by ID.
 	id, _ := body["id"].(string)
@@ -137,15 +155,7 @@ func (server *Server) handleClaudeCodeAccountDelete(writer http.ResponseWriter, 
 	accounts := make([]any, 0, len(cfg.ClaudeCode.Accounts))
 	for _, a := range cfg.ClaudeCode.Accounts {
 		if a.ID != accountID {
-			acc := map[string]any{
-				"id":       a.ID,
-				"name":     a.Name,
-				"token":    a.Token,
-				"type":     a.Type,
-				"priority": a.Priority,
-				"enabled":  a.Enabled,
-			}
-			accounts = append(accounts, acc)
+			accounts = append(accounts, ccAccountToMap(a))
 		}
 	}
 
@@ -216,15 +226,7 @@ func (server *Server) handleClaudeCodeAutoImport(writer http.ResponseWriter, _ *
 
 	accounts := make([]any, 0, len(cfg.ClaudeCode.Accounts)+len(discovered))
 	for _, a := range cfg.ClaudeCode.Accounts {
-		acc := map[string]any{
-			"id":       a.ID,
-			"name":     a.Name,
-			"token":    a.Token,
-			"type":     a.Type,
-			"priority": a.Priority,
-			"enabled":  a.Enabled,
-		}
-		accounts = append(accounts, acc)
+		accounts = append(accounts, ccAccountToMap(a))
 	}
 
 	imported := 0
