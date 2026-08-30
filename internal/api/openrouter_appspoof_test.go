@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -301,6 +302,55 @@ func TestOpenRouterForwarding_HarnessGateStickyAcrossRequests(t *testing.T) {
 	if got, _ := lastTitle.Load().(string); got != openrouter.DefaultSpoofAppTitle {
 		t.Errorf("request 2: first-attempt title = %q, want %q (spoof headers should be set before the first upstream call)", got, openrouter.DefaultSpoofAppTitle)
 	}
+}
+
+// TestOpenRouterForwarding_AppSpoofActivatedConcurrentAccess verifies that
+// concurrent requests crossing the harness gate at the same time do not
+// race on server.appSpoofActivated. Run with -race.
+func TestOpenRouterForwarding_AppSpoofActivatedConcurrentAccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	newSpoofTestServer(t, map[string]any{}, func(w http.ResponseWriter, r *http.Request) {
+		title := r.Header.Get("X-OpenRouter-Title")
+		w.Header().Set("Content-Type", "application/json")
+		if title == "" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(harnessGateBody))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"thinkingmachines/inkling:free"}`))
+	})
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	const n = 16
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			reqPayload := `{"model":"thinkingmachines/inkling:free","messages":[{"role":"user","content":"Hello"}]}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("x-api-key", "test-proxy-key")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("concurrent request: expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestOpenRouterForwarding_AttributionHeadersPassThrough(t *testing.T) {

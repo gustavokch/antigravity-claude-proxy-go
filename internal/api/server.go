@@ -1208,7 +1208,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				upReq.Header.Set(h, v)
 			}
 		}
-		if appSpoofed := server.appSpoofActivated; appSpoofed {
+		server.mu.Lock()
+		appSpoofed := server.appSpoofActivated
+		server.mu.Unlock()
+		if appSpoofed {
 			openrouter.ApplySpoofHeaders(upReq, spoofTitle, spoofCategories, spoofReferer)
 		}
 		cacheCfg := openrouter.ResolveResponseCacheConfig(openRouterCfg.ResponseCache, perModel.ResponseCache)
@@ -1538,9 +1541,15 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		// Harness-gated model: attribution-level rejection, not a provider
 		// failure. Retry once with spoofed app headers; if the gate persists,
 		// further providers fail identically — surface the upstream error.
+		// The retry decision is keyed on appSpoofed, the value read when this
+		// attempt's own headers were built — not a fresh read of
+		// server.appSpoofActivated, which another concurrent request could
+		// have flipped after this attempt was already sent unspoofed.
 		if resp.StatusCode == http.StatusForbidden && openrouter.IsHarnessGateError(bodyBytes) {
-			if !server.appSpoofActivated {
+			if !appSpoofed {
+				server.mu.Lock()
 				server.appSpoofActivated = true
+				server.mu.Unlock()
 				tried[provider] = false
 				server.logger.Info("OpenRouter harness gate intercepted; retrying with spoofed attribution headers",
 					"model", model, "provider", provider)
