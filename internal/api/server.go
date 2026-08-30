@@ -110,6 +110,12 @@ type Server struct {
 	upstreamToken     string
 	upstream          Upstream
 	projects          map[string]string
+
+	// appSpoofActivated flips to true the first time any request crosses an
+	// OpenRouter harness gate. It is process-lifetime by design: the gate is
+	// uniform (attribution or no attribution), so a single intercept proves
+	// the proxy must carry spoofed app headers for the rest of the run.
+	appSpoofActivated bool
 }
 
 func New(options Options) (*Server, error) {
@@ -1097,7 +1103,6 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	if spoofReferer == "" {
 		spoofReferer = openrouter.DefaultSpoofAppReferer
 	}
-	appSpoofed := false
 
 	var (
 		lastStatus         int
@@ -1203,7 +1208,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				upReq.Header.Set(h, v)
 			}
 		}
-		if appSpoofed {
+		if appSpoofed := server.appSpoofActivated; appSpoofed {
 			openrouter.ApplySpoofHeaders(upReq, spoofTitle, spoofCategories, spoofReferer)
 		}
 		cacheCfg := openrouter.ResolveResponseCacheConfig(openRouterCfg.ResponseCache, perModel.ResponseCache)
@@ -1534,8 +1539,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		// failure. Retry once with spoofed app headers; if the gate persists,
 		// further providers fail identically — surface the upstream error.
 		if resp.StatusCode == http.StatusForbidden && openrouter.IsHarnessGateError(bodyBytes) {
-			if !appSpoofed {
-				appSpoofed = true
+			if !server.appSpoofActivated {
+				server.appSpoofActivated = true
 				tried[provider] = false
 				server.logger.Info("OpenRouter harness gate intercepted; retrying with spoofed attribution headers",
 					"model", model, "provider", provider)
