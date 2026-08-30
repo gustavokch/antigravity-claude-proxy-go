@@ -110,6 +110,12 @@ type Server struct {
 	upstreamToken     string
 	upstream          Upstream
 	projects          map[string]string
+
+	// appSpoofActivated flips to true the first time any request crosses an
+	// OpenRouter harness gate. It is process-lifetime by design: the gate is
+	// uniform (attribution or no attribution), so a single intercept proves
+	// the proxy must carry spoofed app headers for the rest of the run.
+	appSpoofActivated bool
 }
 
 func New(options Options) (*Server, error) {
@@ -1097,7 +1103,6 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	if spoofReferer == "" {
 		spoofReferer = openrouter.DefaultSpoofAppReferer
 	}
-	appSpoofed := false
 
 	var (
 		lastStatus         int
@@ -1203,6 +1208,9 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				upReq.Header.Set(h, v)
 			}
 		}
+		server.mu.Lock()
+		appSpoofed := server.appSpoofActivated
+		server.mu.Unlock()
 		if appSpoofed {
 			openrouter.ApplySpoofHeaders(upReq, spoofTitle, spoofCategories, spoofReferer)
 		}
@@ -1533,9 +1541,15 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		// Harness-gated model: attribution-level rejection, not a provider
 		// failure. Retry once with spoofed app headers; if the gate persists,
 		// further providers fail identically — surface the upstream error.
+		// The retry decision is keyed on appSpoofed, the value read when this
+		// attempt's own headers were built — not a fresh read of
+		// server.appSpoofActivated, which another concurrent request could
+		// have flipped after this attempt was already sent unspoofed.
 		if resp.StatusCode == http.StatusForbidden && openrouter.IsHarnessGateError(bodyBytes) {
 			if !appSpoofed {
-				appSpoofed = true
+				server.mu.Lock()
+				server.appSpoofActivated = true
+				server.mu.Unlock()
 				tried[provider] = false
 				server.logger.Info("OpenRouter harness gate intercepted; retrying with spoofed attribution headers",
 					"model", model, "provider", provider)

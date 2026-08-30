@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,6 +205,152 @@ func TestOpenRouterForwarding_HarnessGatePersistent403(t *testing.T) {
 	if !strings.Contains(string(body), "only available on agentic harnesses") {
 		t.Errorf("expected upstream gate error surfaced to client, got %s", string(body))
 	}
+}
+
+// TestOpenRouterForwarding_HarnessGateStickyAcrossRequests verifies that once
+// any request has crossed an OpenRouter harness gate, all subsequent requests
+// ship spoofed app headers on their first upstream attempt — no second gate
+// intercept, no second log line. The flag lives on the *Server and is
+// process-lifetime by design: the gate is uniform (the proxy either has app
+// attribution or it does not), so a single intercept proves the proxy must
+// carry spoofed app headers for the rest of the run.
+func TestOpenRouterForwarding_HarnessGateStickyAcrossRequests(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var (
+		calls              int32
+		attributedAttempts int32
+		gatedAttempts      int32
+		lastTitle          atomic.Value
+	)
+
+	newSpoofTestServer(t, map[string]any{}, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		title := r.Header.Get("X-OpenRouter-Title")
+		lastTitle.Store(title)
+		if title == "" {
+			atomic.AddInt32(&gatedAttempts, 1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(harnessGateBody))
+			return
+		}
+		atomic.AddInt32(&attributedAttempts, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"thinkingmachines/inkling:free"}`))
+	})
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	makeReq := func() *httptest.ResponseRecorder {
+		reqPayload := `{"model":"thinkingmachines/inkling:free","messages":[{"role":"user","content":"Hello"}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", "test-proxy-key")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// First request: must cross the gate and retry with spoofed headers.
+	rec1 := makeReq()
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("request 1: expected 200 OK after spoofed retry, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("request 1: expected 2 upstream attempts (gate + spoofed), got %d", got)
+	}
+	if got := atomic.LoadInt32(&gatedAttempts); got != 1 {
+		t.Errorf("request 1: expected 1 gated upstream attempt, got %d", got)
+	}
+	if got := atomic.LoadInt32(&attributedAttempts); got != 1 {
+		t.Errorf("request 1: expected 1 attributed upstream attempt, got %d", got)
+	}
+	if got, _ := lastTitle.Load().(string); got != openrouter.DefaultSpoofAppTitle {
+		t.Errorf("request 1: last attempt title = %q, want %q", got, openrouter.DefaultSpoofAppTitle)
+	}
+
+	// Second request on the same *Server: spoof flag must already be set, so
+	// the gate is never re-encountered and headers go out on the first attempt.
+	callsBefore := atomic.LoadInt32(&calls)
+	gatedBefore := atomic.LoadInt32(&gatedAttempts)
+	attributedBefore := atomic.LoadInt32(&attributedAttempts)
+
+	rec2 := makeReq()
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("request 2: expected 200 OK, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls) - callsBefore; got != 1 {
+		t.Errorf("request 2: expected 1 upstream attempt (no gate retry), got %d", got)
+	}
+	if got := atomic.LoadInt32(&gatedAttempts) - gatedBefore; got != 0 {
+		t.Errorf("request 2: expected 0 gated attempts (sticky flag must keep spoof on), got %d", got)
+	}
+	if got := atomic.LoadInt32(&attributedAttempts) - attributedBefore; got != 1 {
+		t.Errorf("request 2: expected 1 attributed attempt, got %d", got)
+	}
+	if got, _ := lastTitle.Load().(string); got != openrouter.DefaultSpoofAppTitle {
+		t.Errorf("request 2: first-attempt title = %q, want %q (spoof headers should be set before the first upstream call)", got, openrouter.DefaultSpoofAppTitle)
+	}
+}
+
+// TestOpenRouterForwarding_AppSpoofActivatedConcurrentAccess verifies that
+// concurrent requests crossing the harness gate at the same time do not
+// race on server.appSpoofActivated. Run with -race.
+func TestOpenRouterForwarding_AppSpoofActivatedConcurrentAccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	newSpoofTestServer(t, map[string]any{}, func(w http.ResponseWriter, r *http.Request) {
+		title := r.Header.Get("X-OpenRouter-Title")
+		w.Header().Set("Content-Type", "application/json")
+		if title == "" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(harnessGateBody))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"thinkingmachines/inkling:free"}`))
+	})
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	const n = 16
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			reqPayload := `{"model":"thinkingmachines/inkling:free","messages":[{"role":"user","content":"Hello"}]}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("x-api-key", "test-proxy-key")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("concurrent request: expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestOpenRouterForwarding_AttributionHeadersPassThrough(t *testing.T) {
