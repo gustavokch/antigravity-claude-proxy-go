@@ -643,3 +643,123 @@ func TestOpenRouterObservability_GLMStreamingWithHeaderProviderAndJSONSession(t 
 		t.Errorf("expected output_tokens=120 in log, got: %s", logs)
 	}
 }
+
+func TestOpenRouterObservability_StreamingWithCCREnabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		// 1. Comment line with provider
+		_, _ = w.Write([]byte(": Provider: Together\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		// 2. message_start with Anthropic usage
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_ccr_1\",\"model\":\"meta-llama/llama-3-70b\",\"usage\":{\"input_tokens\":600,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":0}}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		// 3. content_block_delta
+		_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"CCR generation\"}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		// 4. message_delta with output tokens
+		_, _ = w.Write([]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"usage\":{\"output_tokens\":180}}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer mockOR.Close()
+
+	openrouter.DefaultClient.SaveCache([]openrouter.ModelItem{
+		{
+			ID:   "meta-llama/llama-3-70b",
+			Name: "Llama 3 70B",
+			Pricing: &openrouter.Pricing{
+				Prompt:     0.000001,
+				Completion: 0.000002,
+			},
+		},
+	})
+
+	_, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-test-key",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{
+					"id":      "meta-llama/llama-3-70b",
+					"enabled": true,
+				},
+			},
+		},
+		"headroom": map[string]any{
+			"enabled": true,
+			"ccr": map[string]any{
+				"enabled": true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	testLogger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+		Logger:  testLogger,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"meta-llama/llama-3-70b","stream":true,"messages":[{"role":"user","content":"Hello"}],"metadata":{"user_id":{"session_id":"ccr-session-999"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "[OpenRouter]") {
+		t.Errorf("expected [OpenRouter] log tag, got: %s", logs)
+	}
+	if !strings.Contains(logs, "meta-llama/llama-3-70b") {
+		t.Errorf("expected model in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "session_id=ccr-session-999") {
+		t.Errorf("expected session_id=ccr-session-999 in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "provider=Together") {
+		t.Errorf("expected provider=Together in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "input_tokens=600") {
+		t.Errorf("expected input_tokens=600 in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "cache_read_tokens=100") {
+		t.Errorf("expected cache_read_tokens=100 in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "output_tokens=180") {
+		t.Errorf("expected output_tokens=180 in log, got: %s", logs)
+	}
+}

@@ -1271,6 +1271,23 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					}
 
 					switch eventType {
+					case ":comment":
+						if !streamStarted {
+							copyUpstreamHeaders(writer.Header(), resp.Header)
+							writer.WriteHeader(resp.StatusCode)
+							streamStarted = true
+						}
+						if _, err := bw.WriteString(string(rawData) + "\n\n"); err != nil {
+							return err
+						}
+						if err := bw.Flush(); err != nil {
+							return err
+						}
+						if hasFlusher && flusher != nil {
+							flusher.Flush()
+						}
+						return nil
+
 					case "message_start":
 						if ccrHydrations == 0 {
 							if !streamStarted {
@@ -1804,6 +1821,10 @@ func parseSSEStream(reader io.Reader, handleEvent func(eventType string, dataObj
 			lineStr := strings.TrimRight(string(line), "\r\n")
 			if lineStr == "" {
 				if err := dispatch(); err != nil {
+					return err
+				}
+			} else if strings.HasPrefix(lineStr, ":") {
+				if err := handleEvent(":comment", nil, []byte(lineStr)); err != nil {
 					return err
 				}
 			} else if strings.HasPrefix(lineStr, "event: ") {
