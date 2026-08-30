@@ -11,7 +11,6 @@ set -euo pipefail
 
 PCAP_FILE="/tmp/antigravity-go.pcap"
 EXPECTED_JA4="t13d131100_f57a46bbacb6_f50d94e863eb"
-EXPECTED_SNI="daily-cloudcode-pa.googleapis.com"
 PROXY_PORT="8099"
 PROXY_KEY="${ANTIGRAVITY_PROXY_API_KEY:-test-verification-key}"
 PROXY_LOG="/tmp/proxy-verification.log"
