@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,82 @@ func formatInt(n int) string {
 	return string(out)
 }
 
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i), true
+		}
+		if f, err := n.Float64(); err == nil {
+			return int(f), true
+		}
+	}
+	return 0, false
+}
+
+func parseUsageMap(usage map[string]any, inputTokens, outputTokens, cacheRead, cacheWrite *int) {
+	if usage == nil {
+		return
+	}
+
+	var promptTokens int
+	var hasPromptTokens bool
+
+	if v, ok := toInt(usage["input_tokens"]); ok && v > *inputTokens {
+		*inputTokens = v
+	} else if v, ok := toInt(usage["prompt_tokens"]); ok {
+		promptTokens = v
+		hasPromptTokens = true
+	}
+
+	if v, ok := toInt(usage["output_tokens"]); ok && v > *outputTokens {
+		*outputTokens = v
+	} else if v, ok := toInt(usage["completion_tokens"]); ok && v > *outputTokens {
+		*outputTokens = v
+	}
+
+	if v, ok := toInt(usage["cache_read_input_tokens"]); ok && v > *cacheRead {
+		*cacheRead = v
+	} else if v, ok := toInt(usage["cache_read_tokens"]); ok && v > *cacheRead {
+		*cacheRead = v
+	} else if v, ok := toInt(usage["cached_tokens"]); ok && v > *cacheRead {
+		*cacheRead = v
+	}
+
+	if v, ok := toInt(usage["cache_creation_input_tokens"]); ok && v > *cacheWrite {
+		*cacheWrite = v
+	} else if v, ok := toInt(usage["cache_write_tokens"]); ok && v > *cacheWrite {
+		*cacheWrite = v
+	}
+
+	if promptDetails, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+		if v, ok := toInt(promptDetails["cached_tokens"]); ok && v > *cacheRead {
+			*cacheRead = v
+		}
+	}
+
+	if hasPromptTokens {
+		totalPrompt := promptTokens
+		uncached := totalPrompt
+		if *cacheRead > 0 {
+			if uncached >= *cacheRead {
+				uncached -= *cacheRead
+			} else {
+				uncached = 0
+			}
+		}
+		if uncached > *inputTokens {
+			*inputTokens = uncached
+		}
+	}
+}
+
 // ParseUsageFromJSON extracts token counts from Anthropic or OpenAI JSON usage responses.
 func ParseUsageFromJSON(body []byte) (inputTokens, outputTokens, cacheRead, cacheWrite int) {
 	var raw map[string]any
@@ -157,49 +234,30 @@ func ParseUsageFromJSON(body []byte) (inputTokens, outputTokens, cacheRead, cach
 		return
 	}
 
-	usage, ok := raw["usage"].(map[string]any)
-	if !ok {
+	if usage, ok := raw["usage"].(map[string]any); ok {
+		parseUsageMap(usage, &inputTokens, &outputTokens, &cacheRead, &cacheWrite)
 		return
 	}
-
-	isOpenAIFormat := false
-	// Anthropic format
-	if v, ok := usage["input_tokens"].(float64); ok {
-		inputTokens = int(v)
-	} else if v, ok := usage["prompt_tokens"].(float64); ok {
-		inputTokens = int(v)
-		isOpenAIFormat = true
-	}
-
-	if v, ok := usage["output_tokens"].(float64); ok {
-		outputTokens = int(v)
-	} else if v, ok := usage["completion_tokens"].(float64); ok {
-		outputTokens = int(v)
-	}
-
-	if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-		cacheRead = int(v)
-	}
-	if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
-		cacheWrite = int(v)
-	}
-
-	// OpenAI format details
-	if promptDetails, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-		if v, ok := promptDetails["cached_tokens"].(float64); ok && cacheRead == 0 {
-			cacheRead = int(v)
+	if msg, ok := raw["message"].(map[string]any); ok {
+		if usage, ok := msg["usage"].(map[string]any); ok {
+			parseUsageMap(usage, &inputTokens, &outputTokens, &cacheRead, &cacheWrite)
+			return
 		}
 	}
-
-	// OpenAI prompt_tokens includes cached tokens; normalize inputTokens to uncached input tokens
-	if isOpenAIFormat && cacheRead > 0 {
-		if inputTokens >= cacheRead {
-			inputTokens -= cacheRead
-		} else {
-			inputTokens = 0
+	if resp, ok := raw["response"].(map[string]any); ok {
+		if usage, ok := resp["usage"].(map[string]any); ok {
+			parseUsageMap(usage, &inputTokens, &outputTokens, &cacheRead, &cacheWrite)
+			return
 		}
 	}
-
+	if choices, ok := raw["choices"].([]any); ok && len(choices) > 0 {
+		if ch, ok := choices[0].(map[string]any); ok {
+			if usage, ok := ch["usage"].(map[string]any); ok {
+				parseUsageMap(usage, &inputTokens, &outputTokens, &cacheRead, &cacheWrite)
+				return
+			}
+		}
+	}
 	return
 }
 
@@ -222,62 +280,80 @@ func ParseUsageFromSSELine(line string, inputTokens, outputTokens, cacheRead, ca
 	// 1. Anthropic message_start event: message.usage
 	if msg, ok := event["message"].(map[string]any); ok {
 		if usage, ok := msg["usage"].(map[string]any); ok {
-			if v, ok := usage["input_tokens"].(float64); ok && int(v) > *inputTokens {
-				*inputTokens = int(v)
-			}
-			if v, ok := usage["cache_read_input_tokens"].(float64); ok && int(v) > *cacheRead {
-				*cacheRead = int(v)
-			}
-			if v, ok := usage["cache_creation_input_tokens"].(float64); ok && int(v) > *cacheWrite {
-				*cacheWrite = int(v)
-			}
+			parseUsageMap(usage, inputTokens, outputTokens, cacheRead, cacheWrite)
 		}
 	}
 
 	// 2. Anthropic message_delta / OpenAI usage event: usage
 	if usage, ok := event["usage"].(map[string]any); ok {
-		if v, ok := usage["output_tokens"].(float64); ok && int(v) > *outputTokens {
-			*outputTokens = int(v)
+		parseUsageMap(usage, inputTokens, outputTokens, cacheRead, cacheWrite)
+	}
+
+	// 3. Nested delta.usage
+	if delta, ok := event["delta"].(map[string]any); ok {
+		if usage, ok := delta["usage"].(map[string]any); ok {
+			parseUsageMap(usage, inputTokens, outputTokens, cacheRead, cacheWrite)
 		}
-		if v, ok := usage["completion_tokens"].(float64); ok && int(v) > *outputTokens {
-			*outputTokens = int(v)
+	}
+
+	// 4. Nested response.usage
+	if resp, ok := event["response"].(map[string]any); ok {
+		if usage, ok := resp["usage"].(map[string]any); ok {
+			parseUsageMap(usage, inputTokens, outputTokens, cacheRead, cacheWrite)
 		}
-		if v, ok := usage["input_tokens"].(float64); ok && int(v) > *inputTokens {
-			*inputTokens = int(v)
-		}
-		if v, ok := usage["cache_read_input_tokens"].(float64); ok && int(v) > *cacheRead {
-			*cacheRead = int(v)
-		}
-		if v, ok := usage["cache_creation_input_tokens"].(float64); ok && int(v) > *cacheWrite {
-			*cacheWrite = int(v)
-		}
-		if promptDetails, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-			if v, ok := promptDetails["cached_tokens"].(float64); ok && int(v) > *cacheRead {
-				*cacheRead = int(v)
+	}
+
+	// 5. OpenAI choices[0].usage or choices[0].delta.usage
+	if choices, ok := event["choices"].([]any); ok && len(choices) > 0 {
+		if ch, ok := choices[0].(map[string]any); ok {
+			if usage, ok := ch["usage"].(map[string]any); ok {
+				parseUsageMap(usage, inputTokens, outputTokens, cacheRead, cacheWrite)
 			}
-		}
-		// OpenAI prompt_tokens
-		if v, ok := usage["prompt_tokens"].(float64); ok {
-			totalPrompt := int(v)
-			uncached := totalPrompt
-			if *cacheRead > 0 {
-				if uncached >= *cacheRead {
-					uncached -= *cacheRead
-				} else {
-					uncached = 0
+			if delta, ok := ch["delta"].(map[string]any); ok {
+				if usage, ok := delta["usage"].(map[string]any); ok {
+					parseUsageMap(usage, inputTokens, outputTokens, cacheRead, cacheWrite)
 				}
-			}
-			if uncached > *inputTokens {
-				*inputTokens = uncached
 			}
 		}
 	}
 }
 
-// ExtractProviderFromSSELine returns the top-level "provider" field of an SSE
-// data payload (OpenRouter reports the served provider there), or "".
+// ExtractProviderFromHeader extracts the upstream provider from OpenRouter response headers.
+func ExtractProviderFromHeader(h http.Header) string {
+	if h == nil {
+		return ""
+	}
+	for _, key := range []string{"OpenRouter-Provider", "X-OpenRouter-Provider", "X-Provider"} {
+		if v := strings.TrimSpace(h.Get(key)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// ExtractProviderFromSSELine returns the provider from an SSE line
+// (comment lines like ": provider: deepinfra" or data payloads with "provider"), or "".
 func ExtractProviderFromSSELine(line string) string {
 	line = strings.TrimSpace(line)
+	// Check SSE comment lines
+	if strings.HasPrefix(line, ":") {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(line, ":"))
+		for _, prefix := range []string{
+			"provider:", "PROVIDER:",
+			"OPENROUTER PROCESSING:", "openrouter processing:",
+			"OPENROUTER PROVIDER:", "openrouter provider:",
+			"openrouter:", "OPENROUTER:",
+		} {
+			if strings.HasPrefix(trimmed, prefix) {
+				p := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+				if p != "" {
+					return p
+				}
+			}
+		}
+		return ""
+	}
+
 	if !strings.HasPrefix(line, "data:") {
 		return ""
 	}
@@ -289,8 +365,18 @@ func ExtractProviderFromSSELine(line string) string {
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
 		return ""
 	}
-	if s, ok := event["provider"].(string); ok {
-		return s
+	if s, ok := event["provider"].(string); ok && strings.TrimSpace(s) != "" {
+		return strings.TrimSpace(s)
+	}
+	if msg, ok := event["message"].(map[string]any); ok {
+		if s, ok := msg["provider"].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	if resp, ok := event["response"].(map[string]any); ok {
+		if s, ok := resp["provider"].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
 	}
 	return ""
 }
@@ -373,9 +459,17 @@ func (s *SSEInterceptor) TerminalErr() error {
 func (s *SSEInterceptor) finalize() {
 	s.once.Do(func() {
 		s.mu.Lock()
-		// Process any remaining bytes
+		// Process any remaining bytes by splitting on newlines
 		if s.buf.Len() > 0 {
-			ParseUsageFromSSELine(s.buf.String(), &s.inTokens, &s.outTokens, &s.cacheRead, &s.cacheWrite)
+			remaining := s.buf.String()
+			for _, line := range strings.Split(remaining, "\n") {
+				line = strings.TrimRight(line, "\r")
+				ParseUsageFromSSELine(line, &s.inTokens, &s.outTokens, &s.cacheRead, &s.cacheWrite)
+				if p := ExtractProviderFromSSELine(line); p != "" && s.provider == "" {
+					s.provider = p
+				}
+			}
+			s.buf.Reset()
 		}
 		in := s.inTokens
 		out := s.outTokens

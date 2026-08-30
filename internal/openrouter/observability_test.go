@@ -116,6 +116,59 @@ func TestParseUsageFromJSON(t *testing.T) {
 	if in != 500 || out != 200 || cr != 500 || cw != 0 {
 		t.Errorf("unexpected openai parse: in=%d, out=%d, cr=%d, cw=%d", in, out, cr, cw)
 	}
+
+	// Nested in message.usage
+	nestedMessageJSON := []byte(`{
+		"message": {
+			"usage": {
+				"input_tokens": 1100,
+				"output_tokens": 400
+			}
+		}
+	}`)
+	in, out, cr, cw = ParseUsageFromJSON(nestedMessageJSON)
+	if in != 1100 || out != 400 {
+		t.Errorf("unexpected nested message parse: in=%d, out=%d", in, out)
+	}
+
+	// Nested in response.usage
+	nestedResponseJSON := []byte(`{
+		"response": {
+			"usage": {
+				"prompt_tokens": 900,
+				"completion_tokens": 150
+			}
+		}
+	}`)
+	in, out, cr, cw = ParseUsageFromJSON(nestedResponseJSON)
+	if in != 900 || out != 150 {
+		t.Errorf("unexpected nested response parse: in=%d, out=%d", in, out)
+	}
+}
+
+func TestParseUsageFromSSELine_VariousFormats(t *testing.T) {
+	var in, out, cr, cw int
+
+	// 1. Anthropic message_start with prompt_tokens and completion_tokens
+	line1 := `data: {"type":"message_start","message":{"usage":{"prompt_tokens":450,"output_tokens":1}}}`
+	ParseUsageFromSSELine(line1, &in, &out, &cr, &cw)
+	if in != 450 || out != 1 {
+		t.Errorf("expected in=450 out=1, got in=%d out=%d", in, out)
+	}
+
+	// 2. OpenRouter delta usage with output_tokens
+	line2 := `data: {"type":"message_delta","delta":{"usage":{"output_tokens":120}}}`
+	ParseUsageFromSSELine(line2, &in, &out, &cr, &cw)
+	if out != 120 {
+		t.Errorf("expected out=120, got out=%d", out)
+	}
+
+	// 3. OpenRouter choices[0].usage
+	line3 := `data: {"id":"gen-1","choices":[{"delta":{},"usage":{"prompt_tokens":600,"completion_tokens":250}}]}`
+	ParseUsageFromSSELine(line3, &in, &out, &cr, &cw)
+	if in != 600 || out != 250 {
+		t.Errorf("expected in=600 out=250, got in=%d out=%d", in, out)
+	}
 }
 
 func TestParseUsageFromSSELine_OpenAI(t *testing.T) {
@@ -217,11 +270,43 @@ func TestExtractProviderFromSSELine(t *testing.T) {
 		{`data: [DONE]`, ""},
 		{`event: message_start`, ""},
 		{`data: {bad json`, ""},
+		{`: provider: deepinfra`, "deepinfra"},
+		{`: OPENROUTER PROCESSING: Novita`, "Novita"},
+		{`data: {"type":"message_start","message":{"provider":"Together"}}`, "Together"},
 	}
 	for _, c := range cases {
 		if got := ExtractProviderFromSSELine(c.line); got != c.want {
 			t.Errorf("ExtractProviderFromSSELine(%q) = %q, want %q", c.line, got, c.want)
 		}
+	}
+}
+
+func TestSSEInterceptor_MultilineTrailingBuffer(t *testing.T) {
+	// Stream ends with buffered data containing event + data without final flush before EOF
+	sseData := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":500}}}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":200}}" // no trailing \n
+
+	var capturedIn, capturedOut int
+	interceptor := NewSSEInterceptor(io.NopCloser(strings.NewReader(sseData)), func(in, out, cr, cw int) {
+		capturedIn = in
+		capturedOut = out
+	})
+	buf := make([]byte, 1024)
+	for {
+		_, err := interceptor.Read(buf)
+		if err != nil {
+			break
+		}
+	}
+	_ = interceptor.Close()
+
+	if capturedIn != 500 {
+		t.Errorf("expected input tokens 500, got %d", capturedIn)
+	}
+	if capturedOut != 200 {
+		t.Errorf("expected output tokens 200, got %d", capturedOut)
 	}
 }
 

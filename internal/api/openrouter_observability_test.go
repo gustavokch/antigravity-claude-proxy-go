@@ -537,3 +537,109 @@ func TestResolveEffectivePricing(t *testing.T) {
 		t.Errorf("expected cached pricing to be resolved, got %+v", res2)
 	}
 }
+
+func TestOpenRouterObservability_GLMStreamingWithHeaderProviderAndJSONSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("OpenRouter-Provider", "Z-AI")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		// 1. message_start with prompt_tokens
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_glm_1\",\"model\":\"z-ai/glm-5.3\",\"usage\":{\"prompt_tokens\":850,\"completion_tokens\":0}}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		// 2. content_block_delta
+		_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"GLM generation\"}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		// 3. message_delta with completion_tokens
+		_, _ = w.Write([]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"usage\":{\"completion_tokens\":120}}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer mockOR.Close()
+
+	openrouter.DefaultClient.SaveCache([]openrouter.ModelItem{
+		{
+			ID:   "z-ai/glm-5.3",
+			Name: "GLM 5.3",
+			Pricing: &openrouter.Pricing{
+				Prompt:     0.000001,
+				Completion: 0.000002,
+			},
+		},
+	})
+
+	_, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-test-key",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{
+					"id":      "z-ai/glm-5.3",
+					"enabled": true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	testLogger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+		Logger:  testLogger,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"z-ai/glm-5.3","stream":true,"messages":[{"role":"user","content":"Hello"}],"metadata":{"user_id":"{\"device_id\":\"6a0a24c3\",\"account_uuid\":\"aabe0580\",\"session_id\":\"6c03114f-4472-472b-8abc-b64396665e4d\"}"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "[OpenRouter]") {
+		t.Errorf("expected [OpenRouter] log tag, got: %s", logs)
+	}
+	if !strings.Contains(logs, "z-ai/glm-5.3") {
+		t.Errorf("expected z-ai/glm-5.3 in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "session_id=6c03114f-4472-472b-8abc-b64396665e4d") {
+		t.Errorf("expected clean session_id in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "provider=Z-AI") {
+		t.Errorf("expected provider=Z-AI in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "input_tokens=850") {
+		t.Errorf("expected input_tokens=850 in log, got: %s", logs)
+	}
+	if !strings.Contains(logs, "output_tokens=120") {
+		t.Errorf("expected output_tokens=120 in log, got: %s", logs)
+	}
+}

@@ -119,6 +119,17 @@ func TestExtractSessionID(t *testing.T) {
 		t.Errorf("expected meta-session-456, got %s", id)
 	}
 
+	// 2b. From metadata.user_id with JSON-encoded session string
+	req2b := httptest.NewRequest("POST", "/v1/messages", nil)
+	body2b := map[string]any{
+		"metadata": map[string]any{
+			"user_id": `{"device_id":"6a0a24c32704dc7fec147799c3e8161a371cbea05de6ccb8c376847bfa428346","account_uuid":"aabe0580-c4df-475e-8f00-7715f1947755","session_id":"6c03114f-4472-472b-8abc-b64396665e4d"}`,
+		},
+	}
+	if id := ExtractSessionID(req2b, body2b); id != "6c03114f-4472-472b-8abc-b64396665e4d" {
+		t.Errorf("expected extracted session_id 6c03114f-4472-472b-8abc-b64396665e4d, got %s", id)
+	}
+
 	// 3. Fallback with port stripping (different ports from same client yield same session ID)
 	req3a := httptest.NewRequest("POST", "/v1/messages", nil)
 	req3a.RemoteAddr = "127.0.0.1:12345"

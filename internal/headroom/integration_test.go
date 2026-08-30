@@ -89,6 +89,38 @@ func TestEngine_CommandCrusherDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestEngine_CommandCrusherRunsWhenHeadroomDisabled(t *testing.T) {
+	// Headroom master toggle false, CommandCrusher true: CommandCrusher (RTK Suite) must run independently.
+	cfg := headroom.Config{
+		Enabled:        false,
+		CommandCrusher: true,
+		SmartCrusher:   true, // Should NOT run because Enabled is false
+	}
+	engine := newTestEngine(cfg)
+	pytestPayload := "collected 2 items\n\ntest_a.py .. [100%]\n\n=== 2 passed in 0.01s ==="
+	jsonPayload := "{\n  \"a\": 1\n}"
+	req := map[string]any{"messages": []any{
+		toolResultMsg(pytestPayload),
+		toolResultMsg(jsonPayload),
+	}}
+
+	reqCtx, err := engine.Process(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	gotPytest := req["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
+	if strings.Contains(gotPytest, "[100%]") {
+		t.Errorf("CommandCrusher should run when Headroom is disabled, but progress line remained: %q", gotPytest)
+	}
+	gotJSON := req["messages"].([]any)[1].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
+	if gotJSON != jsonPayload {
+		t.Errorf("SmartCrusher must stay disabled when Headroom is disabled, got %q", gotJSON)
+	}
+	if reqCtx.BytesAfter >= reqCtx.BytesBefore {
+		t.Errorf("expected savings from CommandCrusher, before=%d after=%d", reqCtx.BytesBefore, reqCtx.BytesAfter)
+	}
+}
+
 func TestEngine_CompressesToolResults(t *testing.T) {
 	engine := newTestEngine(fullConfig())
 	req := map[string]any{"messages": []any{toolResultMsg("{\n  \"a\": 1\n}")}}

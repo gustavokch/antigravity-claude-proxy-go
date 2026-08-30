@@ -3122,39 +3122,29 @@
                     </div>
 
                     <div class="form-control view-card border-space-border/50 hover:border-neon-cyan/50"
-                        :class="[
-                            serverConfig.headroom?.enabled && serverConfig.headroom?.commandCrusher ? 'border-neon-cyan/50 bg-neon-cyan/5' : '',
-                            !serverConfig.headroom?.enabled ? 'opacity-70' : ''
-                        ]">
+                        :class="serverConfig.headroom?.commandCrusher ? 'border-neon-cyan/50 bg-neon-cyan/5' : ''">
                         <!-- Master Toggle -->
                         <div class="flex items-center justify-between">
                             <div class="flex flex-col gap-1">
                                 <div class="flex items-center gap-2">
                                     <span class="text-sm font-medium text-gray-200"
-                                        :class="serverConfig.headroom?.enabled && serverConfig.headroom?.commandCrusher ? 'text-neon-cyan' : ''"
+                                        :class="serverConfig.headroom?.commandCrusher ? 'text-neon-cyan' : ''"
                                         x-text="$store.global.t('commandCrusherEnabled')">Enable CommandCrusher</span>
                                     <span class="badge badge-xs bg-neon-cyan/10 text-neon-cyan border-neon-cyan/30 text-[9px] font-mono uppercase tracking-wider">RTK Suite</span>
                                 </div>
                                 <span class="text-[11px] text-gray-500" x-text="$store.global.t('commandCrusherDesc')">Signature-based pattern compression for test runners, linters, compilers, and git commands (40–80% savings).</span>
-                                <div x-show="!serverConfig.headroom?.enabled" class="text-[11px] text-amber-400/80 flex items-center gap-1.5 mt-0.5">
-                                    <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                    </svg>
-                                    <span x-text="$store.global.t('commandCrusherRequiresEngine')">Requires Headroom Engine to be enabled above.</span>
-                                </div>
                             </div>
-                            <label class="relative inline-flex items-center" :class="!serverConfig.headroom?.enabled ? 'cursor-not-allowed' : 'cursor-pointer'">
+                            <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" class="sr-only peer" :checked="serverConfig.headroom?.commandCrusher === true"
-                                    :disabled="!serverConfig.headroom?.enabled"
                                     @change="toggleCommandCrusher($el.checked)" aria-label="CommandCrusher toggle">
                                 <div
-                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black peer-disabled:opacity-40">
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black">
                                 </div>
                             </label>
                         </div>
 
                         <!-- Details & Tool Matrix -->
-                        <div x-show="serverConfig.headroom?.enabled && serverConfig.headroom?.commandCrusher" x-transition class="mt-4 pt-4 border-t border-space-border/30 space-y-4">
+                        <div x-show="serverConfig.headroom?.commandCrusher" x-transition class="mt-4 pt-4 border-t border-space-border/30 space-y-4">
                             <!-- Supported tools grid -->
                             <div>
                                 <div class="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-2 flex items-center justify-between">
