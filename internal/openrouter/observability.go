@@ -261,13 +261,17 @@ func ParseUsageFromJSON(body []byte) (inputTokens, outputTokens, cacheRead, cach
 	return
 }
 
-// ParseUsageFromSSELine parses a single SSE line (e.g. data: {...}) and updates token counts.
+// ParseUsageFromSSELine parses a single SSE line (e.g. data: {...}) or bare JSON line and updates token counts.
 func ParseUsageFromSSELine(line string, inputTokens, outputTokens, cacheRead, cacheWrite *int) {
 	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "data:") {
+	var payload string
+	if strings.HasPrefix(line, "data:") {
+		payload = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	} else if strings.HasPrefix(line, "{") {
+		payload = line
+	} else {
 		return
 	}
-	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	if payload == "" || payload == "[DONE]" {
 		return
 	}
@@ -338,14 +342,15 @@ func ExtractProviderFromSSELine(line string) string {
 	// Check SSE comment lines
 	if strings.HasPrefix(line, ":") {
 		trimmed := strings.TrimSpace(strings.TrimPrefix(line, ":"))
+		trimmedLower := strings.ToLower(trimmed)
 		for _, prefix := range []string{
-			"provider:", "PROVIDER:",
-			"OPENROUTER PROCESSING:", "openrouter processing:",
-			"OPENROUTER PROVIDER:", "openrouter provider:",
-			"openrouter:", "OPENROUTER:",
+			"provider:",
+			"openrouter processing:",
+			"openrouter provider:",
+			"openrouter:",
 		} {
-			if strings.HasPrefix(trimmed, prefix) {
-				p := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+			if strings.HasPrefix(trimmedLower, prefix) {
+				p := strings.TrimSpace(trimmed[len(prefix):])
 				if p != "" {
 					return p
 				}
@@ -354,10 +359,15 @@ func ExtractProviderFromSSELine(line string) string {
 		return ""
 	}
 
-	if !strings.HasPrefix(line, "data:") {
+	var payload string
+	if strings.HasPrefix(line, "data:") {
+		payload = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	} else if strings.HasPrefix(line, "{") {
+		payload = line
+	} else {
 		return ""
 	}
-	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+
 	if payload == "" || payload == "[DONE]" {
 		return ""
 	}

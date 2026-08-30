@@ -169,6 +169,13 @@ func TestParseUsageFromSSELine_VariousFormats(t *testing.T) {
 	if in != 600 || out != 250 {
 		t.Errorf("expected in=600 out=250, got in=%d out=%d", in, out)
 	}
+
+	// 4. Bare JSON line without "data: " prefix (e.g. from parseSSEStream rawData)
+	line4 := `{"type":"message_start","message":{"usage":{"input_tokens":750,"output_tokens":40}}}`
+	ParseUsageFromSSELine(line4, &in, &out, &cr, &cw)
+	if in != 750 || out != 250 { // out was 250, 40 < 250 so out stays 250
+		t.Errorf("expected in=750 out=250, got in=%d out=%d", in, out)
+	}
 }
 
 func TestParseUsageFromSSELine_OpenAI(t *testing.T) {
@@ -271,8 +278,13 @@ func TestExtractProviderFromSSELine(t *testing.T) {
 		{`event: message_start`, ""},
 		{`data: {bad json`, ""},
 		{`: provider: deepinfra`, "deepinfra"},
+		{`: Provider: DeepInfra`, "DeepInfra"},
 		{`: OPENROUTER PROCESSING: Novita`, "Novita"},
+		{`: OpenRouter Processing: NovitaAI`, "NovitaAI"},
+		{`: openrouter: Together`, "Together"},
 		{`data: {"type":"message_start","message":{"provider":"Together"}}`, "Together"},
+		{`{"type":"message_start","provider":"Z-AI"}`, "Z-AI"},
+		{`{"message":{"provider":"Hyperbolic"}}`, "Hyperbolic"},
 	}
 	for _, c := range cases {
 		if got := ExtractProviderFromSSELine(c.line); got != c.want {
