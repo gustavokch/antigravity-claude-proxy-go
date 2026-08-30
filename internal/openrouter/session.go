@@ -3,6 +3,7 @@ package openrouter
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net"
 	"net/http"
 	"strings"
@@ -132,27 +133,68 @@ func (st *SessionTracker) Reset() {
 	st.sessions = make(map[string]*SessionStats)
 }
 
+// parseNestedSessionID attempts to parse a stringified JSON user_id object
+// (as sent by Claude Code in metadata.user_id) to extract the inner session_id.
+func parseNestedSessionID(val string) string {
+	val = strings.TrimSpace(val)
+	if strings.HasPrefix(val, "{") && strings.HasSuffix(val, "}") {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(val), &parsed); err == nil {
+			if s, ok := parsed["session_id"].(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+			if uid, ok := parsed["user_id"].(string); ok && strings.TrimSpace(uid) != "" {
+				return strings.TrimSpace(uid)
+			}
+		}
+	}
+	return val
+}
+
+// extractSessionFromValue extracts a session identifier from a string (possibly JSON-encoded)
+// or a pre-parsed map object.
+func extractSessionFromValue(val any) string {
+	if val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case string:
+		return parseNestedSessionID(v)
+	case map[string]any:
+		if s, ok := v["session_id"].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+		if uid, ok := v["user_id"].(string); ok && strings.TrimSpace(uid) != "" {
+			return strings.TrimSpace(uid)
+		}
+	}
+	return ""
+}
+
 // ExtractSessionID extracts the session or conversation identifier from request headers or body.
 func ExtractSessionID(req *http.Request, reqBody map[string]any) string {
 	if req != nil {
 		for _, header := range []string{"x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
 			if val := strings.TrimSpace(req.Header.Get(header)); val != "" {
-				return val
+				return parseNestedSessionID(val)
 			}
 		}
 	}
 
 	if reqBody != nil {
 		if meta, ok := reqBody["metadata"].(map[string]any); ok {
-			if s, ok := meta["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-				return strings.TrimSpace(s)
+			if s := extractSessionFromValue(meta["session_id"]); s != "" {
+				return s
 			}
-			if u, ok := meta["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-				return strings.TrimSpace(u)
+			if u := extractSessionFromValue(meta["user_id"]); u != "" {
+				return u
 			}
 		}
-		if s, ok := reqBody["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
+		if s := extractSessionFromValue(reqBody["session_id"]); s != "" {
+			return s
+		}
+		if u := extractSessionFromValue(reqBody["user_id"]); u != "" {
+			return u
 		}
 	}
 

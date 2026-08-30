@@ -11,10 +11,13 @@ func NewPipeline(stages ...Stage) *Pipeline {
 }
 
 func (p *Pipeline) Run(ctx context.Context, reqCtx *RequestContext, cfg *Config) error {
-	if cfg == nil || !cfg.Enabled {
+	if cfg == nil || (!cfg.Enabled && !cfg.CommandCrusher) {
 		return nil
 	}
 	for _, stage := range p.stages {
+		if !cfg.Enabled && stage.Name() != "command_crusher" {
+			continue
+		}
 		if err := stage.Execute(ctx, reqCtx, cfg); err != nil {
 			return err
 		}

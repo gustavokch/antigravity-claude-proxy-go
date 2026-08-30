@@ -1232,6 +1232,9 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		// 2xx — handle success
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			cacheInfo := openrouter.ExtractResponseCacheHeaders(resp.Header)
+			if headerProvider := openrouter.ExtractProviderFromHeader(resp.Header); headerProvider != "" && provider == "" {
+				provider = canonicalServedProvider(model, headerProvider)
+			}
 			isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 			if isStream {
 				headersCutoff.Stop()
@@ -1268,6 +1271,23 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					}
 
 					switch eventType {
+					case ":comment":
+						if !streamStarted {
+							copyUpstreamHeaders(writer.Header(), resp.Header)
+							writer.WriteHeader(resp.StatusCode)
+							streamStarted = true
+						}
+						if _, err := bw.WriteString(string(rawData) + "\n\n"); err != nil {
+							return err
+						}
+						if err := bw.Flush(); err != nil {
+							return err
+						}
+						if hasFlusher && flusher != nil {
+							flusher.Flush()
+						}
+						return nil
+
 					case "message_start":
 						if ccrHydrations == 0 {
 							if !streamStarted {
@@ -1433,6 +1453,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			servedProvider := extractServedProviderJSON(bodyBytes)
 			if servedProvider != "" {
 				provider = canonicalServedProvider(model, servedProvider)
+			} else if headerProvider := openrouter.ExtractProviderFromHeader(resp.Header); headerProvider != "" && provider == "" {
+				provider = canonicalServedProvider(model, headerProvider)
 			}
 			// Cost follows the served endpoint, resolved after the override.
 			attemptPricing := effectiveAttemptPricing(pricing, model, provider)
@@ -1733,8 +1755,11 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 
 	var interceptor *openrouter.SSEInterceptor
 	interceptor = openrouter.NewSSEInterceptor(resp.Body, func(in, out, cr, cw int) {
-		// Prefer the provider reported by the stream over the requested one.
+		// Prefer the provider reported by the stream over the header/requested one.
 		served := provider
+		if headerProvider := openrouter.ExtractProviderFromHeader(resp.Header); headerProvider != "" && served == "" {
+			served = canonicalServedProvider(model, headerProvider)
+		}
 		if p := interceptor.Provider(); p != "" {
 			served = canonicalServedProvider(model, p)
 		}
@@ -1796,6 +1821,10 @@ func parseSSEStream(reader io.Reader, handleEvent func(eventType string, dataObj
 			lineStr := strings.TrimRight(string(line), "\r\n")
 			if lineStr == "" {
 				if err := dispatch(); err != nil {
+					return err
+				}
+			} else if strings.HasPrefix(lineStr, ":") {
+				if err := handleEvent(":comment", nil, []byte(lineStr)); err != nil {
 					return err
 				}
 			} else if strings.HasPrefix(lineStr, "event: ") {
