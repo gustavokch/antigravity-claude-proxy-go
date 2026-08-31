@@ -552,6 +552,7 @@ window.translations.en = {
     uptime: "Uptime",
     latency: "Latency",
     tps: "TPS",
+    price: "Price",
     score: "Score",
     order: "Order",
     pin: "Pin",

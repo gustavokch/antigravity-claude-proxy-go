@@ -481,6 +481,7 @@ window.translations.pt = {
     uptime: "Disponibilidade",
     latency: "Latência",
     tps: "TPS",
+    price: "Preço",
     score: "Pontuação",
     order: "Ordem",
     pin: "Fixar",
