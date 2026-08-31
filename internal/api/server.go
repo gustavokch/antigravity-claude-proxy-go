@@ -2340,13 +2340,36 @@ func (server *Server) resolveProject(ctx context.Context, credentials auth.Crede
 	return projectID, nil
 }
 
+// statusClientClosedRequest is nginx's convention (499) for a client that
+// disconnected before the response was written.
+const statusClientClosedRequest = 499
+
 func (server *Server) writeError(writer http.ResponseWriter, err error) {
-	server.logger.Error("API request failed", "error", err)
+	if isContextError(err) {
+		// Cancellation and deadlines originate at the client or at a
+		// bounded internal deadline, not at this server; keep them out of
+		// the error log.
+		server.logger.Warn("API request aborted", "error", err)
+	} else {
+		server.logger.Error("API request failed", "error", err)
+	}
 	status, kind, message := classifyError(err)
 	writeAPIError(writer, status, kind, message)
 }
 
+// isContextError reports whether err is a context cancellation or deadline
+// error, possibly wrapped by intermediate layers.
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 func classifyError(err error) (int, string, string) {
+	if errors.Is(err, context.Canceled) {
+		return statusClientClosedRequest, "api_error", "Request canceled by the client."
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout, "api_error", "Request deadline exceeded while contacting the upstream."
+	}
 	var selectionError *modelcatalog.SelectionError
 	if errors.As(err, &selectionError) {
 		return http.StatusBadRequest, "invalid_request_error", selectionError.Error()
