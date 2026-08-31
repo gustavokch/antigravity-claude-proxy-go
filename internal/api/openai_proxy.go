@@ -161,7 +161,8 @@ func (w *openAIResponseWriter) beginStream(statusCode int) {
 	w.inner.WriteHeader(statusCode)
 }
 
-func (w *openAIResponseWriter) writeSSEData(payload []byte) {
+// writeSSEFrame frames and writes one SSE payload as "data: <payload>\n\n".
+func (w *openAIResponseWriter) writeSSEFrame(payload []byte) {
 	_, _ = w.inner.Write(append(append([]byte("data: "), payload...), '\n', '\n'))
 }
 
@@ -171,7 +172,7 @@ func (w *openAIResponseWriter) writeSSEChunk(chunk map[string]any) {
 	if err != nil {
 		return
 	}
-	_, _ = w.inner.Write(append(append([]byte("data: "), encoded...), '\n', '\n'))
+	w.writeSSEFrame(encoded)
 }
 
 // handleStreamError emits an OpenAI error payload for a mid-stream error.
@@ -182,7 +183,7 @@ func (w *openAIResponseWriter) handleStreamError(message, kind string) {
 	if err != nil {
 		return
 	}
-	_, _ = w.inner.Write(append(append([]byte("data: "), encoded...), '\n', '\n'))
+	w.writeSSEFrame(encoded)
 }
 
 // writeStreamEnd emits the optional usage chunk (when the client requested
@@ -203,7 +204,7 @@ func (w *openAIResponseWriter) writeStreamEnd() {
 			},
 		})
 	}
-	_, _ = w.inner.Write([]byte("data: [DONE]\n\n"))
+	w.writeSSEFrame([]byte("[DONE]"))
 }
 
 // handleStreamEvent translates one parsed Anthropic SSE event into OpenAI
