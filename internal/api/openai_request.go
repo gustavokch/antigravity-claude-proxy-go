@@ -24,16 +24,15 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 			continue
 		}
 		role := stringFrom(message["role"])
+		var blocks []any
 		switch role {
 		case "system", "developer":
 			systemParts = append(systemParts, openAIContentToText(message["content"]))
+			continue
 		case "user":
-			anthropicMessages = append(anthropicMessages, map[string]any{
-				"role":    "user",
-				"content": openAIContentToBlocks(message["content"]),
-			})
+			blocks = openAIContentToBlocks(message["content"])
 		case "assistant":
-			blocks := openAIContentToBlocks(message["content"])
+			blocks = openAIContentToBlocks(message["content"])
 			for _, rawToolCall := range message["tool_calls"].([]any) {
 				toolUse, err := openAIToolCallToToolUse(rawToolCall)
 				if err != nil {
@@ -43,17 +42,13 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 					blocks = append(blocks, toolUse)
 				}
 			}
-			anthropicMessages = append(anthropicMessages, map[string]any{
-				"role":    "assistant",
-				"content": blocks,
-			})
 		case "tool":
-			toolResult := openAIToolMessageToToolResult(message)
-			anthropicMessages = append(anthropicMessages, map[string]any{
-				"role":    "user",
-				"content": []any{toolResult},
-			})
+			role = "user"
+			blocks = []any{openAIToolMessageToToolResult(message)}
+		default:
+			continue
 		}
+		anthropicMessages = appendMessage(anthropicMessages, role, blocks)
 	}
 	if len(systemParts) > 0 {
 		anthropic["system"] = joinNonEmpty(systemParts, "\n\n")
@@ -122,6 +117,23 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 	}
 
 	return anthropic, nil
+}
+
+// appendMessage appends one translated message, merging into the previous
+// kept message when the role matches. The Anthropic Messages API requires
+// strictly alternating roles; OpenAI sequences that violate this (parallel
+// role:"tool" results, back-to-back user messages) must collapse into one
+// message with multiple content blocks.
+func appendMessage(messages []any, role string, blocks []any) []any {
+	if len(messages) > 0 {
+		if last, ok := messages[len(messages)-1].(map[string]any); ok && stringFrom(last["role"]) == role {
+			if lastBlocks, ok := last["content"].([]any); ok {
+				last["content"] = append(lastBlocks, blocks...)
+				return messages
+			}
+		}
+	}
+	return append(messages, map[string]any{"role": role, "content": blocks})
 }
 
 // openAIContentToBlocks converts OpenAI message content (string, null, or a

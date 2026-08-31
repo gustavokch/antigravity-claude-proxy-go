@@ -198,6 +198,48 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			}`,
 		},
 		{
+			name: "parallel tool results merge into one user message",
+			input: `{"model":"m","messages":[
+				{"role":"user","content":"weather and time?"},
+				{"role":"assistant","tool_calls":[
+					{"id":"call_1","function":{"name":"get_weather","arguments":"{}"}},
+					{"id":"call_2","function":{"name":"get_time","arguments":"{}"}}
+				]},
+				{"role":"tool","tool_call_id":"call_1","content":"sunny"},
+				{"role":"tool","tool_call_id":"call_2","content":"noon"}
+			]}`,
+			want: `{
+				"model": "m",
+				"messages": [
+					{"role": "user", "content": [{"type": "text", "text": "weather and time?"}]},
+					{"role": "assistant", "content": [
+						{"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}},
+						{"type": "tool_use", "id": "call_2", "name": "get_time", "input": {}}
+					]},
+					{"role": "user", "content": [
+						{"type": "tool_result", "tool_use_id": "call_1", "content": [{"type": "text", "text": "sunny"}]},
+						{"type": "tool_result", "tool_use_id": "call_2", "content": [{"type": "text", "text": "noon"}]}
+					]}
+				],
+				"max_tokens": 4096
+			}`,
+		},
+		{
+			name: "consecutive same-role messages merge",
+			input: `{"model":"m","messages":[
+				{"role":"user","content":"a"},
+				{"role":"user","content":"b"}
+			]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "text", "text": "a"},
+					{"type": "text", "text": "b"}
+				]}],
+				"max_tokens": 4096
+			}`,
+		},
+		{
 			name:  "empty string content tolerated as empty text block",
 			input: `{"model":"m","messages":[{"role":"user","content":""}]}`,
 			want: `{
