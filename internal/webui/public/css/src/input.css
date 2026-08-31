@@ -193,7 +193,7 @@
   padding: var(--view-padding);
   gap: var(--view-gap);
   min-height: calc(100vh - 56px);
-  max-width: 900px;
+  max-width: 1400px;
 }
 
 .view-header {
