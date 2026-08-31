@@ -100,6 +100,13 @@ func TestModelsHandlerReportsClientDisconnect(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &document); err != nil {
 		t.Fatalf("decode body %q: %v", recorder.Body.String(), err)
 	}
+	errObj, ok := document["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("body %q has no error object", recorder.Body.String())
+	}
+	if errObj["type"] != "api_error" {
+		t.Fatalf("error.type=%v; want api_error", errObj["type"])
+	}
 }
 
 // levelRecordingHandler records the logger writes so tests can assert
