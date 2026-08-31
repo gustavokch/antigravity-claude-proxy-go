@@ -1,23 +1,21 @@
-<div x-data class="view-container-centered">
+<div x-data class="view-container">
     <!-- Header & Tabs -->
-    <div class="view-card !p-0 flex flex-col overflow-hidden">
-        <div class="bg-space-900/50 border-b border-space-border px-8 pt-8 pb-0 shrink-0">
-            <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-bold text-white flex items-center gap-2">
-                    <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    <span x-text="$store.global.t('systemConfig')">System Configuration</span>
-                </h3>
-            </div>
+    <div class="view-card flex flex-col overflow-hidden">
+        <div class="view-card-header gap-4">
+            <h3 class="text-xl font-bold text-white flex items-center gap-2 shrink-0">
+                <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span x-text="$store.global.t('systemConfig')">System Configuration</span>
+            </h3>
 
             <div class="flex gap-6 overflow-x-auto">
                 <button @click="$store.global.settingsTab = 'ui'"
-                    class="pb-3 border-b-2 transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
-                    :class="$store.global.settingsTab === 'ui' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'">
+                    class="transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
+                    :class="$store.global.settingsTab === 'ui' ? 'text-white' : 'text-gray-500 hover:text-gray-300'">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24"
                         stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -26,8 +24,8 @@
                     <span x-text="$store.global.t('tabInterface')">Interface</span>
                 </button>
                 <button @click="$store.global.settingsTab = 'claude'"
-                    class="pb-3 border-b-2 transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
-                    :class="$store.global.settingsTab === 'claude' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'">
+                    class="transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
+                    :class="$store.global.settingsTab === 'claude' ? 'text-white' : 'text-gray-500 hover:text-gray-300'">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24"
                         stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -36,8 +34,8 @@
                     <span x-text="$store.global.t('tabClaude')">Claude CLI</span>
                 </button>
                 <button @click="$store.global.settingsTab = 'models'"
-                    class="pb-3 border-b-2 transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
-                    :class="$store.global.settingsTab === 'models' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'">
+                    class="transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
+                    :class="$store.global.settingsTab === 'models' ? 'text-white' : 'text-gray-500 hover:text-gray-300'">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24"
                         stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -46,8 +44,8 @@
                     <span x-text="$store.global.t('tabModels')">Models</span>
                 </button>
                 <button @click="$store.global.settingsTab = 'server'"
-                    class="pb-3 border-b-2 transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
-                    :class="$store.global.settingsTab === 'server' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'">
+                    class="transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
+                    :class="$store.global.settingsTab === 'server' ? 'text-white' : 'text-gray-500 hover:text-gray-300'">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24"
                         stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -59,7 +57,7 @@
         </div>
 
         <!-- Scrollable Content -->
-        <div class="p-8 overflow-y-auto flex-1 custom-scrollbar">
+        <div class="overflow-y-auto flex-1 custom-scrollbar">
 
             <!-- Tab 1: UI Preferences -->
             <div x-show="$store.global.settingsTab === 'ui'" class="space-y-8 animate-fade-in">
@@ -1138,6 +1136,7 @@
                                                     <div x-show="getRoutingPanel(item.id).error" class="text-xs text-red-400 font-mono py-2" x-text="getRoutingPanel(item.id).error"></div>
 
                                                     <template x-if="getRoutingPanel(item.id).data">
+                                                        <div class="overflow-x-auto">
                                                         <table class="standard-table">
                                                             <thead>
                                                                 <tr>
@@ -1146,6 +1145,7 @@
                                                                     <th x-text="$store.global.t('contextLength') || 'Context'">Context</th>
                                                                     <th x-text="$store.global.t('latency') || 'Latency'">Latency</th>
                                                                     <th x-text="$store.global.t('tps') || 'TPS'">TPS</th>
+                                                                    <th x-text="$store.global.t('price') || 'Price'">Price</th>
                                                                     <th x-text="$store.global.t('score') || 'Score'">Score</th>
                                                                     <th x-show="(item.providerMode || 'auto') === 'pinned'" x-text="$store.global.t('pin') || 'Pin'">Pin</th>
                                                                     <th x-show="(item.providerMode || 'auto') === 'custom'" x-text="$store.global.t('order') || 'Order'">Order</th>
@@ -1162,6 +1162,7 @@
                                                                         <td class="font-mono text-xs text-gray-300" x-text="p.contextLength ? Math.round(p.contextLength / 1000) + 'k' : '-'"></td>
                                                                         <td class="font-mono text-xs text-gray-300" x-text="p.stats && p.stats.latencyMsEWMA ? Math.round(p.stats.latencyMsEWMA) + 'ms' : '-'"></td>
                                                                         <td class="font-mono text-xs text-gray-300" x-text="p.stats && p.stats.tpsEWMA ? p.stats.tpsEWMA.toFixed(1) : '-'"></td>
+                                                                        <td class="font-mono text-xs text-gray-300" :title="$store.global.t('priceTooltip') || 'USD per 1M tokens — input / output'" x-text="formatPrice(p)"></td>
                                                                         <td class="font-mono text-xs text-neon-purple" x-text="p.score != null ? p.score.toFixed(3) : '-'"></td>
                                                                         <td x-show="(item.providerMode || 'auto') === 'pinned'">
                                                                             <button class="btn btn-xs"
@@ -1186,6 +1187,7 @@
                                                                 </template>
                                                             </tbody>
                                                         </table>
+                                                        </div>
                                                     </template>
                                                 </div>
                                             </td>

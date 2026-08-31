@@ -438,6 +438,25 @@ window.Components.models = () => ({
         return (blend * 100).toFixed(1) + '%';
     },
 
+    // Format a provider's OpenRouter pricing (USD per token) as
+    // "$in / $out" per 1M tokens. Missing pricing renders '-' and a zero
+    // price renders 'FREE' (OpenRouter free variants). Prices below the
+    // 4-decimal render floor clamp to '<$0.0001' so they never read as
+    // zero (and stay distinct from FREE).
+    formatPrice(entry) {
+        const pr = entry && entry.endpoint && entry.endpoint.pricing;
+        if (!pr) return '-';
+        const perM = (v) => {
+            if (typeof v !== 'number' || !isFinite(v)) return '-';
+            const m = v * 1e6;
+            if (m === 0) return 'FREE';
+            if (m >= 0.1) return '$' + m.toFixed(2);
+            if (m < 0.00005) return '<$0.0001';
+            return '$' + parseFloat(m.toFixed(4));
+        };
+        return perM(pr.prompt) + ' / ' + perM(pr.completion);
+    },
+
     async fetchOpenRouterConfig() {
         const password = Alpine.store('global').webuiPassword;
         try {

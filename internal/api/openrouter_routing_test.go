@@ -461,6 +461,34 @@ func TestManagement_OpenRouterProvidersEndpoint(t *testing.T) {
 		t.Errorf("expected stats object on provider entry")
 	}
 
+	// The routing table renders pricing per provider from the served
+	// endpoint object; lock the contract.
+	ep, ok := first["endpoint"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected endpoint object on provider entry")
+	}
+	pricing, ok := ep["pricing"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected pricing object on p1 endpoint")
+	}
+	if pr, ok := pricing["prompt"].(float64); !ok || pr != 0.000003 {
+		t.Errorf("expected p1 prompt pricing 0.000003, got %v", pricing["prompt"])
+	}
+	if pc, ok := pricing["completion"].(float64); !ok || pc != 0.000015 {
+		t.Errorf("expected p1 completion pricing 0.000015, got %v", pricing["completion"])
+	}
+	second, ok := providers[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object for second provider entry")
+	}
+	ep2, ok := second["endpoint"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected endpoint object on p2 entry")
+	}
+	if _, has := ep2["pricing"]; has {
+		t.Errorf("expected no pricing object on p2 endpoint (absent upstream)")
+	}
+
 	// Missing model param → 400.
 	req2 := httptest.NewRequest(http.MethodGet, "/api/openrouter/providers", nil)
 	rec2 := httptest.NewRecorder()
