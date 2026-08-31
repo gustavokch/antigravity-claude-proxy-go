@@ -25,6 +25,7 @@ func (stubResolver) Invalidate(string) {}
 // channel so tests control when the upstream fetch completes.
 type blockingModelsClient struct {
 	calls   atomic.Int32
+	fail    atomic.Bool
 	release chan struct{}
 }
 
@@ -36,6 +37,9 @@ func (c *blockingModelsClient) FetchAvailableModels(ctx context.Context, project
 	c.calls.Add(1)
 	select {
 	case <-c.release:
+		if c.fail.Load() {
+			return cloudcode.Response{}, errors.New("upstream unavailable")
+		}
 		return cloudcode.Response{Body: []byte(testCatalogBody)}, nil
 	case <-ctx.Done():
 		return cloudcode.Response{}, ctx.Err()
@@ -143,5 +147,56 @@ func TestConcurrentModelFetchesShareOneUpstreamCall(t *testing.T) {
 	dispatcher.mu.RUnlock()
 	if pending != nil {
 		t.Fatal("modelsFetch still set after the shared fetch completed")
+	}
+}
+
+func TestSharedModelFetchErrorFreesSlotForNextCaller(t *testing.T) {
+	release := make(chan struct{})
+	client := &blockingModelsClient{release: release}
+	dispatcher := newDispatcherWithClient(t, client)
+
+	// Start the shared fetch, then make the upstream fail on release.
+	first := dispatcher.startModelFetch()
+	client.fail.Store(true)
+	close(release)
+	select {
+	case <-first.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared catalog fetch did not complete")
+	}
+	if first.err == nil {
+		t.Fatal("shared fetch succeeded; want upstream error")
+	}
+	callsAfterDeadFetch := client.calls.Load()
+
+	// The failed call must free the slot; otherwise every later caller
+	// would attach to the dead call and receive its error forever. The
+	// goroutine clears the slot after closing done, so poll briefly.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		dispatcher.mu.RLock()
+		pending := dispatcher.modelsFetch
+		dispatcher.mu.RUnlock()
+		if pending == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("modelsFetch still set after the shared fetch failed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The next caller starts a fresh upstream fetch, not the dead call.
+	second := dispatcher.startModelFetch()
+	if second == first {
+		t.Fatal("startModelFetch returned the failed call instead of a fresh fetch")
+	}
+	select {
+	case <-second.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fresh fetch did not complete")
+	}
+	if got := client.calls.Load(); got <= callsAfterDeadFetch {
+		t.Fatalf("upstream FetchAvailableModels calls=%d; want more than %d from the fresh fetch", got, callsAfterDeadFetch)
 	}
 }
