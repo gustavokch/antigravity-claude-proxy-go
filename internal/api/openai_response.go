@@ -97,14 +97,16 @@ func anthropicStopReasonToOpenAI(raw any) string {
 // openAIStreamState converts a sequence of Anthropic SSE events into OpenAI
 // chunk maps. One instance per streamed response.
 type openAIStreamState struct {
-	model          string
-	id             string
-	created        int64
-	toolIndexByBk  map[int]int
-	toolCount      int
-	finishReason   string
-	stopReasonSeen bool
-	done           bool
+	model            string
+	id               string
+	created          int64
+	toolIndexByBk    map[int]int
+	toolCount        int
+	finishReason     string
+	stopReasonSeen   bool
+	done             bool
+	promptTokens     int
+	completionTokens int
 }
 
 func newOpenAIStreamState(model string) *openAIStreamState {
@@ -139,7 +141,7 @@ func (s *openAIStreamState) HandleEvent(eventType string, data map[string]any) [
 		message, _ := data["message"].(map[string]any)
 		s.id = "chatcmpl-" + stringFrom(message["id"])
 		if usage, ok := message["usage"].(map[string]any); ok {
-			_ = numberToInt(usage["input_tokens"])
+			s.promptTokens = numberToInt(usage["input_tokens"])
 		}
 		return []map[string]any{s.chunk(map[string]any{"role": "assistant", "content": ""}, nil)}
 
@@ -189,6 +191,9 @@ func (s *openAIStreamState) HandleEvent(eventType string, data map[string]any) [
 				s.finishReason = anthropicStopReasonToOpenAI(reason)
 				s.stopReasonSeen = true
 			}
+		}
+		if usage, ok := data["usage"].(map[string]any); ok {
+			s.completionTokens = numberToInt(usage["output_tokens"])
 		}
 		return nil
 

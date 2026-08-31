@@ -617,7 +617,7 @@ func TestOpenAIChatCompletions_SSE(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
 		frames := []struct{ event, data string }{
-			{"message_start", `{"type":"message_start","message":{"id":"msg_stream","role":"assistant","content":[]},"usage":{"input_tokens":9}}`},
+			{"message_start", `{"type":"message_start","message":{"id":"msg_stream","role":"assistant","content":[],"usage":{"input_tokens":9}}}`},
 			{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
 			{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}`},
 			{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}`},
@@ -658,7 +658,7 @@ func TestOpenAIChatCompletions_SSE(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","messages":[{"role":"user","content":"Hi"}],"stream":true}`
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqPayload))
 	req.Header.Set("Authorization", "Bearer test-proxy-key")
 
@@ -677,7 +677,7 @@ func TestOpenAIChatCompletions_SSE(t *testing.T) {
 	}
 
 	var text strings.Builder
-	var sawRoleChunk, sawFinishChunk bool
+	var sawRoleChunk, sawFinishChunk, sawUsageChunk bool
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
@@ -690,6 +690,7 @@ func TestOpenAIChatCompletions_SSE(t *testing.T) {
 				Delta        map[string]any `json:"delta"`
 				FinishReason any            `json:"finish_reason"`
 			} `json:"choices"`
+			Usage map[string]any `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk); err != nil {
 			t.Fatalf("chunk line is not JSON: %v\nline: %s", err, line)
@@ -700,8 +701,14 @@ func TestOpenAIChatCompletions_SSE(t *testing.T) {
 		if chunk.Model != "anthropic/claude-3.7-sonnet" {
 			t.Errorf("chunk model = %v, want requested model", chunk.Model)
 		}
-		if len(chunk.Choices) != 1 {
-			t.Fatalf("chunk choices length = %d", len(chunk.Choices))
+		if len(chunk.Choices) == 0 {
+			// Usage chunk: final chunk with empty choices (OpenAI spec for
+			// stream_options.include_usage).
+			if chunk.Usage["prompt_tokens"] != float64(9) || chunk.Usage["completion_tokens"] != float64(7) {
+				t.Errorf("usage chunk = %v, want prompt 9 completion 7", chunk.Usage)
+			}
+			sawUsageChunk = true
+			continue
 		}
 		if chunk.Choices[0].Delta["role"] == "assistant" {
 			sawRoleChunk = true
@@ -719,8 +726,15 @@ func TestOpenAIChatCompletions_SSE(t *testing.T) {
 	if !sawFinishChunk {
 		t.Errorf("missing final chunk with finish_reason=stop:\n%s", body)
 	}
+	if !sawUsageChunk {
+		t.Errorf("missing final usage chunk with empty choices:\n%s", body)
+	}
 	if text.String() != "Hello" {
 		t.Errorf("streamed content = %q, want %q", text.String(), "Hello")
+	}
+	// [DONE] must come after the usage chunk.
+	if strings.LastIndex(body, `"choices":[]`) > strings.LastIndex(body, "data: [DONE]") {
+		t.Errorf("usage chunk must precede data: [DONE]:\n%s", body)
 	}
 }
 
@@ -883,6 +897,20 @@ func TestOpenAIChatCompletions_OversizedBody(t *testing.T) {
 	}
 	if _, ok := errBody["error"].(map[string]any); !ok {
 		t.Errorf("expected OpenAI error envelope, got %v", errBody)
+	}
+}
+
+// TestOpenAIStreamState_UsageCapture pins usage capture from message_start
+// (input_tokens) and message_delta (output_tokens) for the final usage chunk.
+func TestOpenAIStreamState_UsageCapture(t *testing.T) {
+	state := newOpenAIStreamState("m")
+	var dataObj map[string]any
+	_ = json.Unmarshal([]byte(`{"type":"message_start","message":{"id":"msg_u","usage":{"input_tokens":9}}}`), &dataObj)
+	_ = state.HandleEvent("message_start", dataObj)
+	_ = state.HandleEvent("message_delta", map[string]any{"type": "message_delta", "usage": map[string]any{"output_tokens": 7}})
+	_ = state.HandleEvent("message_stop", map[string]any{"type": "message_stop"})
+	if state.promptTokens != 9 || state.completionTokens != 7 {
+		t.Errorf("usage = prompt %d completion %d, want 9/7", state.promptTokens, state.completionTokens)
 	}
 }
 

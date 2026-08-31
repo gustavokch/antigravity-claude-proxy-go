@@ -50,9 +50,20 @@ func (server *Server) chatCompletions(writer http.ResponseWriter, request *http.
 	forwarded.Header = request.Header.Clone()
 	forwarded.Header.Set("Content-Type", "application/json")
 
-	translator := newOpenAIResponseWriter(writer, requestModel)
+	translator := newOpenAIResponseWriter(writer, requestModel, openAIUsageRequested(openaiRequest))
 	server.messages(translator, forwarded)
 	translator.finish()
+}
+
+// openAIUsageRequested reports whether the OpenAI client asked for token
+// usage in the stream (stream_options.include_usage).
+func openAIUsageRequested(openaiRequest map[string]any) bool {
+	options, ok := openaiRequest["stream_options"].(map[string]any)
+	if !ok {
+		return false
+	}
+	requested, _ := options["include_usage"].(bool)
+	return requested
 }
 
 // writeOpenAIError writes an OpenAI-shaped error envelope.
@@ -70,15 +81,16 @@ func writeOpenAIError(writer http.ResponseWriter, status int, kind, message stri
 // flushing is preserved. Headers are only written downstream once the mode is
 // known, so failures before stream start still surface as plain JSON errors.
 type openAIResponseWriter struct {
-	inner      http.ResponseWriter
-	model      string
-	mode       responseMode
-	statusCode int
-	sent       bool // headers+body started on inner
-	buf        bytes.Buffer
-	stream     *openAIStreamState
-	parser     sseLineParser
-	doneSent   bool
+	inner          http.ResponseWriter
+	model          string
+	mode           responseMode
+	statusCode     int
+	sent           bool // headers+body started on inner
+	buf            bytes.Buffer
+	stream         *openAIStreamState
+	parser         sseLineParser
+	doneSent       bool
+	usageRequested bool
 }
 
 type responseMode int
@@ -89,8 +101,8 @@ const (
 	responseModeSSE
 )
 
-func newOpenAIResponseWriter(inner http.ResponseWriter, model string) *openAIResponseWriter {
-	return &openAIResponseWriter{inner: inner, model: model}
+func newOpenAIResponseWriter(inner http.ResponseWriter, model string, usageRequested bool) *openAIResponseWriter {
+	return &openAIResponseWriter{inner: inner, model: model, usageRequested: usageRequested}
 }
 
 func (w *openAIResponseWriter) Header() http.Header { return w.inner.Header() }
@@ -173,6 +185,27 @@ func (w *openAIResponseWriter) handleStreamError(message, kind string) {
 	_, _ = w.inner.Write(append(append([]byte("data: "), encoded...), '\n', '\n'))
 }
 
+// writeStreamEnd emits the optional usage chunk (when the client requested
+// stream_options.include_usage and any usage was observed) followed by the
+// data: [DONE] sentinel. Called exactly once per stream.
+func (w *openAIResponseWriter) writeStreamEnd() {
+	if w.usageRequested && w.stream != nil && (w.stream.promptTokens > 0 || w.stream.completionTokens > 0) {
+		w.writeSSEChunk(map[string]any{
+			"id":      w.stream.id,
+			"object":  "chat.completion.chunk",
+			"created": w.stream.created,
+			"model":   w.stream.model,
+			"choices": []any{},
+			"usage": map[string]any{
+				"prompt_tokens":     w.stream.promptTokens,
+				"completion_tokens": w.stream.completionTokens,
+				"total_tokens":      w.stream.promptTokens + w.stream.completionTokens,
+			},
+		})
+	}
+	_, _ = w.inner.Write([]byte("data: [DONE]\n\n"))
+}
+
 // handleStreamEvent translates one parsed Anthropic SSE event into OpenAI
 // chunks.
 func (w *openAIResponseWriter) handleStreamEvent(eventType string, data map[string]any) {
@@ -189,7 +222,7 @@ func (w *openAIResponseWriter) handleStreamEvent(eventType string, data map[stri
 	}
 	if w.stream.done && !w.doneSent {
 		w.doneSent = true
-		_, _ = w.inner.Write([]byte("data: [DONE]\n\n"))
+		w.writeStreamEnd()
 	}
 }
 
@@ -203,7 +236,7 @@ func (w *openAIResponseWriter) finish() {
 	}
 	if w.mode == responseModeSSE && w.sent && !w.doneSent {
 		w.doneSent = true
-		_, _ = w.inner.Write([]byte("data: [DONE]\n\n"))
+		w.writeStreamEnd()
 	}
 	if flusher, ok := w.inner.(http.Flusher); ok {
 		flusher.Flush()
