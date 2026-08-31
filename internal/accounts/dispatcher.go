@@ -160,7 +160,42 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 	}
 }
 
+// fetchModelsTimeout bounds a decoupled catalog fetch, including any OAuth
+// token refresh it triggers, so work abandoned by one disconnected client
+// still completes and cannot run forever.
+const fetchModelsTimeout = 30 * time.Second
+
+// FetchAvailableModels returns the upstream model catalog. The fetch runs on
+// a background context bounded by fetchModelsTimeout, so a single client
+// disconnect cannot cancel shared work (OAuth token refresh, catalog cache,
+// account quota update) — the same rationale as the OpenRouter catalog
+// fetch (internal/openrouter/client.go). When the caller's context ends
+// first, the caller receives its context error while the fetch continues
+// in the background.
 func (dispatcher *Dispatcher) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
+	fetchCtx, cancel := context.WithTimeout(context.Background(), fetchModelsTimeout)
+	type fetchResult struct {
+		response cloudcode.Response
+		err      error
+	}
+	done := make(chan fetchResult, 1)
+	go func() {
+		// cancel() must live here, inside the goroutine: cancelling from
+		// the wrapper would abort the fetch the moment an abandoned
+		// caller returns.
+		defer cancel()
+		response, err := dispatcher.fetchAvailableModels(fetchCtx)
+		done <- fetchResult{response: response, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.response, result.err
+	case <-ctx.Done():
+		return cloudcode.Response{}, ctx.Err()
+	}
+}
+
+func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
 	var lastError error
 	for attempt := 0; attempt < max(dispatcher.maxRetries, dispatcher.manager.Count()+1); attempt++ {
 		selection := dispatcher.manager.Select("")
