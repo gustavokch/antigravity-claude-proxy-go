@@ -477,11 +477,16 @@ func TestManagement_OpenRouterProvidersEndpoint(t *testing.T) {
 	if pc, ok := pricing["completion"].(float64); !ok || pc != 0.000015 {
 		t.Errorf("expected p1 completion pricing 0.000015, got %v", pricing["completion"])
 	}
-	second, _ := providers[1].(map[string]any)
-	if ep2, ok := second["endpoint"].(map[string]any); ok {
-		if _, has := ep2["pricing"]; has {
-			t.Errorf("expected no pricing object on p2 endpoint (absent upstream)")
-		}
+	second, ok := providers[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object for second provider entry")
+	}
+	ep2, ok := second["endpoint"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected endpoint object on p2 entry")
+	}
+	if _, has := ep2["pricing"]; has {
+		t.Errorf("expected no pricing object on p2 endpoint (absent upstream)")
 	}
 
 	// Missing model param → 400.
