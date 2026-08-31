@@ -346,6 +346,8 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 			server.usage(writer, request)
 		case path == "/v1/messages" && request.Method == http.MethodPost:
 			server.messages(writer, request)
+		case path == "/v1/chat/completions" && request.Method == http.MethodPost:
+			server.chatCompletions(writer, request)
 		case path == "/v1/messages/count_tokens" && request.Method == http.MethodPost:
 			writeAPIError(writer, http.StatusNotImplemented, "not_implemented", "Token counting is not implemented. Use /v1/messages with max_tokens or configure your client to skip token counting.")
 		default:
