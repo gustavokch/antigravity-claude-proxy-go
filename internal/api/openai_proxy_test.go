@@ -808,6 +808,42 @@ func TestOpenAIStreamState_Thinking(t *testing.T) {
 	}
 }
 
+// TestOpenAIChatCompletions_OversizedBody caps the request body the same way
+// /v1/messages does: bodies beyond maxRequestBody are rejected with 413 and an
+// OpenAI error envelope instead of being buffered in full.
+func TestOpenAIChatCompletions_OversizedBody(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	oversized := strings.Repeat("a", maxRequestBody+1)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(oversized))
+	req.Header.Set("Authorization", "Bearer test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	var errBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if _, ok := errBody["error"].(map[string]any); !ok {
+		t.Errorf("expected OpenAI error envelope, got %v", errBody)
+	}
+}
+
 // numberEq compares a decoded JSON number to an int regardless of whether the
 // value came from json.Unmarshal (float64) or was built in memory (int).
 func numberEq(value any, want int) bool {

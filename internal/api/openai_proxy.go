@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -15,8 +16,14 @@ import (
 // dispatch pipeline (model mapping, headroom, provider routing, retries, cost
 // tracking) is reused untouched; translation lives at the edge only.
 func (server *Server) chatCompletions(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
 	body, err := io.ReadAll(request.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeOpenAIError(writer, http.StatusRequestEntityTooLarge, "invalid_request_error", "Request body too large")
+			return
+		}
 		writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to read request body: "+err.Error())
 		return
 	}
