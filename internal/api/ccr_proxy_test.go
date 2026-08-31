@@ -850,3 +850,122 @@ func TestCCRProxyStream_MidStreamUpstreamError(t *testing.T) {
 		t.Fatalf("Expected error message in SSE event, got: %s", clientResp)
 	}
 }
+
+// A thinking block streamed before a headroom_retrieve call must be replayed
+// upstream with its full thinking text and signature. The hydration loop
+// rebuilds the assistant message from the accumulated stream state; dropping
+// thinking_delta/signature_delta yields {"type":"thinking","thinking":""},
+// which upstream rejects with 400 "each thinking block must contain thinking".
+func TestCCRProxyStream_HydrationReplaysThinkingBlock(t *testing.T) {
+	var callCount int32
+	upstreamHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		curr := atomic.AddInt32(&callCount, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		if curr == 1 {
+			// Turn 1: thinking block (index 0) + headroom_retrieve (index 1)
+			fmt.Fprintf(w, "event: message_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"test-model\",\"usage\":{\"output_tokens\":10}}}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"I need the chunk first.\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-abc-123\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_ret1\",\"name\":\"headroom_retrieve\",\"input\":{}}}\n\n")
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"chunk_id\\\":\\\"chunk_777\\\"}\"}}\n\n")
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n")
+
+			fmt.Fprintf(w, "event: message_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":15}}\n\n")
+			fmt.Fprintf(w, "event: message_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+			return
+		}
+
+		// Turn 2: verify replayed assistant message carries the thinking block.
+		body, _ := io.ReadAll(r.Body)
+		var reqMap map[string]any
+		if err := json.Unmarshal(body, &reqMap); err != nil {
+			t.Errorf("turn 2 request not valid JSON: %v", err)
+		}
+		msgs, _ := reqMap["messages"].([]any)
+		if len(msgs) != 3 {
+			t.Errorf("Expected 3 messages in turn 2, got %d", len(msgs))
+		} else {
+			asstMsg, _ := msgs[1].(map[string]any)
+			asstContent, _ := asstMsg["content"].([]any)
+			if len(asstContent) != 2 {
+				t.Errorf("Expected 2 content blocks in assistant turn, got %d", len(asstContent))
+			} else {
+				block0, _ := asstContent[0].(map[string]any)
+				if bType, _ := block0["type"].(string); bType != "thinking" {
+					t.Errorf("Expected assistant block 0 type thinking, got %v", block0["type"])
+				}
+				if text, _ := block0["thinking"].(string); text != "I need the chunk first." {
+					t.Errorf("Expected thinking text 'I need the chunk first.', got %q", text)
+				}
+				if sig, _ := block0["signature"].(string); sig != "sig-abc-123" {
+					t.Errorf("Expected signature 'sig-abc-123', got %q", sig)
+				}
+			}
+		}
+
+		fmt.Fprintf(w, "event: message_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"role\":\"assistant\",\"model\":\"test-model\",\"usage\":{\"output_tokens\":10}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		fmt.Fprintf(w, "event: content_block_delta\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer with chunk 777.\"}}\n\n")
+		fmt.Fprintf(w, "event: content_block_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		fmt.Fprintf(w, "event: message_delta\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":20}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+	})
+
+	server := httptest.NewServer(upstreamHandler)
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{
+		"model": "test-model",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Question"},
+		},
+	}
+
+	opts := CCRProxyOptions{
+		IsCCREnabled: func() bool { return true },
+		GetChunk: func(chunkID string) (string, bool) {
+			return "Chunk 777 data", false
+		},
+		Sender: func(ctx context.Context, body []byte) (*http.Response, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			return http.DefaultClient.Do(req)
+		},
+	}
+
+	err := ProxyAnthropicStreamWithCCR(context.Background(), rec, reqMap, opts)
+	if err != nil {
+		t.Fatalf("ProxyAnthropicStreamWithCCR failed: %v", err)
+	}
+
+	clientResp := rec.Body.String()
+	if !strings.Contains(clientResp, "I need the chunk first.") {
+		t.Fatalf("Client missing thinking_delta forward: %s", clientResp)
+	}
+}

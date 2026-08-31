@@ -971,3 +971,256 @@ func TestHeadroomCCR_OpenRouterStream_NoRetrieveLeak(t *testing.T) {
 		}
 	}
 }
+
+// The OpenRouter CCR streaming path must accumulate thinking_delta and
+// signature_delta into the replayed assistant message, same as the shared CCR
+// proxy. Dropping them replays {"type":"thinking","thinking":""} which upstream
+// rejects with 400 "each thinking block must contain thinking".
+func TestHeadroomCCR_OpenRouterStreamHydration_ThinkingBlock(t *testing.T) {
+	chunkPayload := "openrouter thinking-replay chunk payload"
+	chunkID := ccr.ChunkID(chunkPayload)
+
+	var callsMu sync.Mutex
+	var calls []map[string]any
+
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
+				{ID: "anthropic/claude-3.7-sonnet", Name: "Claude 3.7 Sonnet",
+					Pricing: &openrouter.Pricing{Prompt: 0.000003, Completion: 0.000015}},
+			}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/endpoints") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
+			return
+		}
+
+		bodyBytes, _ := io.ReadAll(r.Body)
+		var reqMap map[string]any
+		_ = json.Unmarshal(bodyBytes, &reqMap)
+
+		callsMu.Lock()
+		callNum := len(calls)
+		calls = append(calls, reqMap)
+		callsMu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		writeSSE := func(eventType string, data map[string]any) {
+			b, _ := json.Marshal(data)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, string(b))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+
+		if callNum == 0 {
+			writeSSE("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+				"id": "msg_think_1", "type": "message", "role": "assistant",
+				"content": []any{}, "usage": map[string]any{"input_tokens": 100, "output_tokens": 5},
+			}})
+			writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+				"content_block": map[string]any{"type": "thinking", "thinking": ""}})
+			writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+				"delta": map[string]any{"type": "thinking_delta", "thinking": "Retrieve the chunk first."}})
+			writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+				"delta": map[string]any{"type": "signature_delta", "signature": "sig-or-456"}})
+			writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+
+			writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 1,
+				"content_block": map[string]any{"type": "tool_use", "id": "tu_ret", "name": "headroom_retrieve", "input": map[string]any{}}})
+			writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 1,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": fmt.Sprintf(`{"chunk_id":%q}`, chunkID)}})
+			writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 1})
+
+			writeSSE("message_delta", map[string]any{"type": "message_delta",
+				"delta": map[string]any{"stop_reason": "tool_use"}, "usage": map[string]any{"output_tokens": 20}})
+			writeSSE("message_stop", map[string]any{"type": "message_stop"})
+			return
+		}
+
+		// Verify the replayed assistant message carries the thinking block.
+		msgs, _ := reqMap["messages"].([]any)
+		if len(msgs) != 3 {
+			t.Errorf("expected 3 messages on second call, got %d", len(msgs))
+		} else {
+			asstMsg, _ := msgs[1].(map[string]any)
+			asstContent, _ := asstMsg["content"].([]any)
+			if len(asstContent) != 2 {
+				t.Errorf("expected 2 assistant blocks, got %d", len(asstContent))
+			} else {
+				block0, _ := asstContent[0].(map[string]any)
+				if bType, _ := block0["type"].(string); bType != "thinking" {
+					t.Errorf("expected assistant block 0 type thinking, got %v", block0["type"])
+				}
+				if text, _ := block0["thinking"].(string); text != "Retrieve the chunk first." {
+					t.Errorf("expected thinking text, got %q", text)
+				}
+				if sig, _ := block0["signature"].(string); sig != "sig-or-456" {
+					t.Errorf("expected signature sig-or-456, got %q", sig)
+				}
+			}
+		}
+
+		writeSSE("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+			"id": "msg_think_2", "type": "message", "role": "assistant",
+			"content": []any{}, "usage": map[string]any{"input_tokens": 150, "output_tokens": 5},
+		}})
+		writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "text", "text": "Done."}})
+		writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		writeSSE("message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn"}, "usage": map[string]any{"output_tokens": 30}})
+		writeSSE("message_stop", map[string]any{"type": "message_stop"})
+	}))
+	defer mockOR.Close()
+
+	tmp := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmp)
+	t.Setenv("HOME", tmp)
+	_, _ = config.Load()
+	_, _ = config.Save(map[string]any{
+		"headroom": map[string]any{"enabled": true, "ccr": map[string]any{"enabled": true}},
+		"openrouter": map[string]any{
+			"enabled": true, "baseURL": mockOR.URL, "apiKey": "sk-or-test",
+			"allowlist": []any{map[string]any{"id": "anthropic/claude-3.7-sonnet", "enabled": true}},
+		},
+	})
+
+	tracker, _ := stats.NewTracker("")
+	srv, err := New(Options{APIKey: "test-key", Backend: &mockCloudCodeBackend{}, Tracker: tracker})
+	if err != nil {
+		t.Fatalf("New server: %v", err)
+	}
+	srv.ccrStore.Put(chunkPayload)
+
+	rec := postMessages(t, srv, map[string]any{
+		"model": "anthropic/claude-3.7-sonnet", "stream": true,
+		"tools":    []any{map[string]any{"name": "t"}},
+		"messages": []any{map[string]any{"role": "user", "content": "thinking replay"}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	callsMu.Lock()
+	totalCalls := len(calls)
+	callsMu.Unlock()
+	if totalCalls != 2 {
+		t.Fatalf("expected 2 OpenRouter calls, got %d", totalCalls)
+	}
+	if !strings.Contains(rec.Body.String(), "Retrieve the chunk first.") {
+		t.Errorf("client missing thinking_delta forward: %s", rec.Body.String())
+	}
+}
+
+// The CloudCode streaming path must accumulate thinking_delta and
+// signature_delta like every other CCR path: the hydration loop replays
+// state.AssistantBlocks() upstream, and an empty thinking block there fails
+// conversion/validation with "each thinking block must contain thinking".
+func TestHeadroomCCR_CloudCodeStreamHydration_ThinkingBlock(t *testing.T) {
+	chunkPayload := "cloudcode thinking-replay chunk payload"
+	chunkID := ccr.ChunkID(chunkPayload)
+	const thinkSig = "sig-cloudcode-0123456789abcdef0123456789abcdef0123456789"
+	if len(thinkSig) < 50 {
+		t.Fatalf("test signature must exceed MinSignatureLength")
+	}
+
+	backend := &ccrMockBackend{}
+
+	// Call 1: thought part + headroom_retrieve tool call.
+	backend.responses = append(backend.responses, func(cb func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+		_ = cb(makeSSE(map[string]any{
+			"thought": true, "text": "Thinking about retrieval.",
+			"thoughtSignature": thinkSig,
+		}, ""))
+		callPart := map[string]any{
+			"functionCall": map[string]any{
+				"name": "headroom_retrieve",
+				"id":   "toolu_cc_think",
+				"args": map[string]any{"chunk_id": chunkID},
+			},
+		}
+		_ = cb(makeSSE(callPart, "STOP"))
+		return cloudcode.Response{}, nil
+	})
+
+	// Call 2: verify the replayed messages carry the thinking block, then answer.
+	backend.responses = append(backend.responses, func(cb func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+		msgs, _ := backend.getCall(1)["messages"].([]any)
+		found := false
+		for _, rawMsg := range msgs {
+			msg, _ := rawMsg.(map[string]any)
+			if role, _ := msg["role"].(string); role != "assistant" {
+				continue
+			}
+			for _, rawBlock := range msg["content"].([]any) {
+				block, _ := rawBlock.(map[string]any)
+				if block["type"] != "thinking" {
+					continue
+				}
+				if text, _ := block["thinking"].(string); text == "Thinking about retrieval." {
+					if sig, _ := block["signature"].(string); sig == thinkSig {
+						found = true
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("replayed assistant message missing thinking text and signature:\n%s", mustJSON(backend.getCall(1)))
+		}
+		_ = cb(makeSSE(map[string]any{"text": "Hydrated answer with thought."}, "STOP"))
+		return cloudcode.Response{}, nil
+	})
+
+	tmp := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmp)
+	t.Setenv("HOME", tmp)
+	_, _ = config.Load()
+	_, _ = config.Save(map[string]any{
+		"headroom": map[string]any{
+			"enabled": true,
+			"ccr":     map[string]any{"enabled": true, "maxStoreMB": 64},
+		},
+	})
+
+	tracker, _ := stats.NewTracker("")
+	srv, err := New(Options{APIKey: "test-key", Backend: backend, Tracker: tracker})
+	if err != nil {
+		t.Fatalf("New server: %v", err)
+	}
+	srv.ccrStore.Put(chunkPayload)
+
+	rec := postMessages(t, srv, map[string]any{
+		"model":  "gemini-3.5-flash-low",
+		"stream": true,
+		"tools":  []any{map[string]any{"name": "search"}},
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": fmt.Sprintf("[HEADROOM_CHUNK id=%q lines=5 preview=\"p\"]", chunkID),
+			},
+		},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if backend.callCount() != 2 {
+		t.Fatalf("expected 2 backend calls, got %d", backend.callCount())
+	}
+	if !strings.Contains(rec.Body.String(), "Thinking about retrieval.") {
+		t.Errorf("client missing thinking_delta forward: %s", rec.Body.String())
+	}
+}
+
+func mustJSON(v any) string {
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(raw)
+}

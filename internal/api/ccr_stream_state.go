@@ -110,6 +110,24 @@ func (s *ccrStreamState) AppendText(upstreamIdx int, text string) {
 	}
 }
 
+// AppendThinking accumulates a thinking_delta onto the block. Thinking blocks
+// replayed upstream without their text are rejected with 400 "each thinking
+// block must contain thinking".
+func (s *ccrStreamState) AppendThinking(upstreamIdx int, text string) {
+	if upstreamIdx < len(s.blocks) && s.blocks[upstreamIdx] != nil {
+		prev, _ := s.blocks[upstreamIdx]["thinking"].(string)
+		s.blocks[upstreamIdx]["thinking"] = prev + text
+	}
+}
+
+// AppendSignature accumulates a signature_delta onto the block. A thinking
+// block replayed without its signature fails upstream validation.
+func (s *ccrStreamState) AppendSignature(upstreamIdx int, signature string) {
+	if upstreamIdx < len(s.blocks) && s.blocks[upstreamIdx] != nil {
+		s.blocks[upstreamIdx]["signature"] = signature
+	}
+}
+
 // Finalize parses each buffered tool_use input into block["input"] and returns
 // the headroom_retrieve calls in document order. Call once, after the upstream
 // stream has ended.

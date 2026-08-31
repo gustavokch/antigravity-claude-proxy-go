@@ -1334,6 +1334,14 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 						case "text_delta":
 							text, _ := delta["text"].(string)
 							state.AppendText(idx, text)
+						case "thinking_delta":
+							if text, ok := delta["thinking"].(string); ok {
+								state.AppendThinking(idx, text)
+							}
+						case "signature_delta":
+							if sig, ok := delta["signature"].(string); ok {
+								state.AppendSignature(idx, sig)
+							}
 						}
 						downstream, emit := state.MapIndex(idx)
 						if !emit {
@@ -2161,6 +2169,14 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 				case "text_delta":
 					text, _ := delta["text"].(string)
 					state.AppendText(idx, text)
+				case "thinking_delta":
+					if text, ok := delta["thinking"].(string); ok {
+						state.AppendThinking(idx, text)
+					}
+				case "signature_delta":
+					if sig, ok := delta["signature"].(string); ok {
+						state.AppendSignature(idx, sig)
+					}
 				}
 				downstream, emit := state.MapIndex(idx)
 				if !emit {

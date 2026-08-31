@@ -175,6 +175,14 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 						if pj, ok := delta["partial_json"].(string); ok {
 							state.AppendJSON(idx, pj)
 						}
+					} else if dType == "thinking_delta" {
+						if text, ok := delta["thinking"].(string); ok {
+							state.AppendThinking(idx, text)
+						}
+					} else if dType == "signature_delta" {
+						if sig, ok := delta["signature"].(string); ok {
+							state.AppendSignature(idx, sig)
+						}
 					}
 				}
 				if downstreamIdx, emit := state.MapIndex(idx); emit {
