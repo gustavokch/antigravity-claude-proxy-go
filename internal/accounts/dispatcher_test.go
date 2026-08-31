@@ -107,3 +107,41 @@ func TestFetchAvailableModelsSurvivesCallerCancel(t *testing.T) {
 	}
 	t.Fatal("background fetch never cached the catalog after caller cancel")
 }
+
+func TestConcurrentModelFetchesShareOneUpstreamCall(t *testing.T) {
+	release := make(chan struct{})
+	client := &blockingModelsClient{release: release}
+	dispatcher := newDispatcherWithClient(t, client)
+
+	// Leader: starts the shared fetch; the upstream call blocks on release.
+	first := dispatcher.startModelFetch()
+
+	// Joiner: arrives while the fetch is in flight and must attach to the
+	// same call instead of starting a second upstream request.
+	second := dispatcher.startModelFetch()
+	if first != second {
+		t.Fatal("second caller started a new upstream fetch instead of sharing the in-flight call")
+	}
+
+	// Let the shared fetch finish and check the result.
+	close(release)
+	select {
+	case <-first.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared catalog fetch did not complete")
+	}
+	if first.err != nil {
+		t.Fatalf("shared fetch error: %v", first.err)
+	}
+	if got := client.calls.Load(); got != 1 {
+		t.Fatalf("upstream FetchAvailableModels calls=%d; want 1", got)
+	}
+
+	// Once complete, the slot frees so the next caller starts a fresh fetch.
+	dispatcher.mu.RLock()
+	pending := dispatcher.modelsFetch
+	dispatcher.mu.RUnlock()
+	if pending != nil {
+		t.Fatal("modelsFetch still set after the shared fetch completed")
+	}
+}

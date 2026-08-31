@@ -76,6 +76,8 @@ type Dispatcher struct {
 	clients   map[string]accountClient
 	catalog   *modelcatalog.Catalog
 	catalogAt time.Time
+	// modelsFetch is the shared in-flight catalog fetch; guarded by mu.
+	modelsFetch *modelFetchCall
 }
 
 func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
@@ -165,34 +167,59 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 // still completes and cannot run forever.
 const fetchModelsTimeout = 30 * time.Second
 
-// FetchAvailableModels returns the upstream model catalog. The fetch runs on
-// a background context bounded by fetchModelsTimeout, so a single client
-// disconnect cannot cancel shared work (OAuth token refresh, catalog cache,
-// account quota update) — the same rationale as the OpenRouter catalog
-// fetch (internal/openrouter/client.go). When the caller's context ends
-// first, the caller receives its context error while the fetch continues
-// in the background.
+// modelFetchCall is one shared catalog fetch. Concurrent FetchAvailableModels
+// callers attach to the same call; done is closed once response and err are
+// set, so any number of callers — or none, if they all disconnected — can
+// observe the result.
+type modelFetchCall struct {
+	done     chan struct{}
+	response cloudcode.Response
+	err      error
+}
+
+// FetchAvailableModels returns the upstream model catalog. All concurrent
+// callers share a single in-flight fetch running on a background context
+// bounded by fetchModelsTimeout (see internal/openrouter/client.go for the
+// same pattern). When the caller's context ends first, the caller receives
+// its context error while the shared fetch continues and still refreshes
+// the catalog cache and account quotas.
 func (dispatcher *Dispatcher) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
-	fetchCtx, cancel := context.WithTimeout(context.Background(), fetchModelsTimeout)
-	type fetchResult struct {
-		response cloudcode.Response
-		err      error
-	}
-	done := make(chan fetchResult, 1)
-	go func() {
-		// cancel() must live here, inside the goroutine: cancelling from
-		// the wrapper would abort the fetch the moment an abandoned
-		// caller returns.
-		defer cancel()
-		response, err := dispatcher.fetchAvailableModels(fetchCtx)
-		done <- fetchResult{response: response, err: err}
-	}()
+	call := dispatcher.startModelFetch()
 	select {
-	case result := <-done:
-		return result.response, result.err
+	case <-call.done:
+		return call.response, call.err
 	case <-ctx.Done():
 		return cloudcode.Response{}, ctx.Err()
 	}
+}
+
+// startModelFetch returns the in-progress shared fetch, starting one when no
+// fetch is running. Writing response/err before closing done makes the
+// result visible to every waiter without extra locking.
+func (dispatcher *Dispatcher) startModelFetch() *modelFetchCall {
+	dispatcher.mu.Lock()
+	if call := dispatcher.modelsFetch; call != nil {
+		dispatcher.mu.Unlock()
+		return call
+	}
+	call := &modelFetchCall{done: make(chan struct{})}
+	dispatcher.modelsFetch = call
+	dispatcher.mu.Unlock()
+
+	fetchCtx, cancel := context.WithTimeout(context.Background(), fetchModelsTimeout)
+	go func() {
+		// cancel() lives inside the goroutine: cancelling from the caller
+		// would abort the fetch the moment an abandoned caller returns.
+		defer cancel()
+		call.response, call.err = dispatcher.fetchAvailableModels(fetchCtx)
+		close(call.done)
+		dispatcher.mu.Lock()
+		if dispatcher.modelsFetch == call {
+			dispatcher.modelsFetch = nil
+		}
+		dispatcher.mu.Unlock()
+	}()
+	return call
 }
 
 func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
