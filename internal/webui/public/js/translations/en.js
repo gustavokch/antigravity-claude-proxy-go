@@ -553,6 +553,7 @@ window.translations.en = {
     latency: "Latency",
     tps: "TPS",
     price: "Price",
+    priceTooltip: "USD per 1M tokens — input / output",
     score: "Score",
     order: "Order",
     pin: "Pin",

@@ -1164,7 +1164,7 @@
                                                                         <td class="font-mono text-xs text-gray-300" x-text="p.contextLength ? Math.round(p.contextLength / 1000) + 'k' : '-'"></td>
                                                                         <td class="font-mono text-xs text-gray-300" x-text="p.stats && p.stats.latencyMsEWMA ? Math.round(p.stats.latencyMsEWMA) + 'ms' : '-'"></td>
                                                                         <td class="font-mono text-xs text-gray-300" x-text="p.stats && p.stats.tpsEWMA ? p.stats.tpsEWMA.toFixed(1) : '-'"></td>
-                                                                        <td class="font-mono text-xs text-gray-300" title="USD per 1M tokens — input / output" x-text="formatPrice(p)"></td>
+                                                                        <td class="font-mono text-xs text-gray-300" :title="$store.global.t('priceTooltip') || 'USD per 1M tokens — input / output'" x-text="formatPrice(p)"></td>
                                                                         <td class="font-mono text-xs text-neon-purple" x-text="p.score != null ? p.score.toFixed(3) : '-'"></td>
                                                                         <td x-show="(item.providerMode || 'auto') === 'pinned'">
                                                                             <button class="btn btn-xs"

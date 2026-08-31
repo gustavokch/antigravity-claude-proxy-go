@@ -482,6 +482,7 @@ window.translations.pt = {
     latency: "Latência",
     tps: "TPS",
     price: "Preço",
+    priceTooltip: "USD por 1M de tokens — entrada / saída",
     score: "Pontuação",
     order: "Ordem",
     pin: "Fixar",
