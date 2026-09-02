@@ -2192,10 +2192,10 @@
                                                 <div class="text-[10px] text-gray-500 line-clamp-1 mt-0.5" x-text="m.description || ''"></div>
                                             </td>
                                             <td class="font-mono text-xs text-gray-400">
-                                                <span x-text="m.context_length ? (Math.round(m.context_length / 1000) + 'k') : '-'"></span>
+                                                <span x-text="formatDiscoverTokens(m.context_length)"></span>
                                             </td>
                                             <td class="font-mono text-xs text-gray-400">
-                                                <span x-text="(m.max_completion_tokens || (m.top_provider && m.top_provider.max_completion_tokens)) ? (Math.round((m.max_completion_tokens || (m.top_provider && m.top_provider.max_completion_tokens)) / 1000) + 'k') : '-'"></span>
+                                                <span x-text="formatDiscoverTokens(m.max_completion_tokens || (m.top_provider && m.top_provider.max_completion_tokens))"></span>
                                             </td>
                                             <td>
                                                 <input type="text" x-model="addAllowlistAliasMap[m.id]"

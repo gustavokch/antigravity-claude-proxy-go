@@ -1137,6 +1137,12 @@ window.Components.models = () => ({
         return (this.openRouterConfig.allowlist || []).some(m => m.id === modelId);
     },
 
+    formatDiscoverTokens(value) {
+        if (!value) return '-';
+        if (value < 1000) return String(value);
+        return Math.round(value / 1000) + 'k';
+    },
+
     async addToAllowlist(discoveredModel, alias = '') {
         if (this.isAllowlisted(discoveredModel.id)) return;
         const maxOutput = discoveredModel.max_completion_tokens ||
