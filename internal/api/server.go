@@ -775,14 +775,15 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 
 	model := stringFrom(anthropicRequest["model"])
 	if cfg.Kimi.Enabled {
-		if kimiMatch := matchKimiModel(cfg.Kimi, model); kimiMatch != "" {
-			anthropicRequest["model"] = kimiMatch
+		if kimiEntry, ok := matchKimiModelEntry(cfg.Kimi, model); ok {
+			anthropicRequest["model"] = kimiEntry.ID
 			reqBody, err := json.Marshal(anthropicRequest)
 			if err != nil {
 				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Kimi request: "+err.Error())
 				return
 			}
-			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, kimiMatch)
+			reqBody = clampMaxTokensToFloor(reqBody, anthropicRequest, kimiEntry.MaxOutputTokens)
+			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, kimiEntry.ID)
 			return
 		}
 	}
@@ -1041,18 +1042,28 @@ func clampMaxTokensToFloor(reqBody []byte, req map[string]any, perModelMax int) 
 // matchKimiModel returns the Kimi model ID if `model` matches an enabled
 // allowlist entry by either ID or alias. Returns "" if no match.
 func matchKimiModel(cfg config.KimiConfig, model string) string {
-	if model == "" {
+	item, ok := matchKimiModelEntry(cfg, model)
+	if !ok {
 		return ""
+	}
+	return item.ID
+}
+
+// matchKimiModelEntry returns the enabled allowlist entry matching `model` by
+// either ID or alias. Returns ok=false if no match.
+func matchKimiModelEntry(cfg config.KimiConfig, model string) (config.KimiModelConfig, bool) {
+	if model == "" {
+		return config.KimiModelConfig{}, false
 	}
 	for _, item := range cfg.Allowlist {
 		if !item.Enabled {
 			continue
 		}
 		if (item.ID != "" && item.ID == model) || (item.Alias != "" && item.Alias == model) {
-			return item.ID
+			return item, true
 		}
 	}
-	return ""
+	return config.KimiModelConfig{}, false
 }
 
 func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *http.Request, openRouterCfg config.OpenRouterConfig, reqBody []byte, anthropicRequest map[string]any) {
