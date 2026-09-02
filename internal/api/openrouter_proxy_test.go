@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -454,6 +455,93 @@ func TestOpenRouterForwarding_PassesThroughMaxTokensAboveCatalogMax(t *testing.T
 	}
 	if receivedMaxTokens != 4096 {
 		t.Errorf("expected upstream max_tokens passthrough 4096, got %v", receivedMaxTokens)
+	}
+}
+
+// TestOpenRouterForwarding_MaxOutputTokensFromWebUISaveRoundTrip locks the
+// contract behind the WebUI limits panel: a POST /api/openrouter/config save
+// carrying maxOutputTokens must be honored by the running forwarder on the
+// next request, without a restart. The WebUI writes the whole allowlist
+// through this endpoint, so this is the path the clamp fix depends on.
+func TestOpenRouterForwarding_MaxOutputTokensFromWebUISaveRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedMaxTokens float64
+
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
+				{ID: "muse-spark-1.3-contributor", Name: "Muse Spark 1.3",
+					Pricing: &openrouter.Pricing{Prompt: 0.000001, Completion: 0.000002}},
+			}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/endpoints") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		if v, ok := parsed["max_tokens"].(float64); ok {
+			receivedMaxTokens = v
+		}
+		_, _ = w.Write([]byte(`{"id":"msg_x","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"muse-spark-1.3-contributor"}`))
+	}))
+	defer mockOR.Close()
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	// Save via the management endpoint the WebUI settings page uses — same
+	// shape the limits panel's debounced save sends (allowlist replace).
+	payload := fmt.Sprintf(`{
+		"enabled": true,
+		"apiKey": "sk-or-v1-secret-123",
+		"baseUrl": %q,
+		"allowlist": [
+			{
+				"id": "muse-spark-1.3-contributor",
+				"displayName": "Muse Spark 1.3 (OpenRouter)",
+				"contextLength": 200000,
+				"maxOutputTokens": 16,
+				"enabled": true
+			}
+		]
+	}`, mockOR.URL)
+
+	saveReq := httptest.NewRequest(http.MethodPost, "/api/openrouter/config", strings.NewReader(payload))
+	saveReq.Header.Set("Content-Type", "application/json")
+	saveRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(saveRec, saveReq)
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on config save, got %d: %s", saveRec.Code, saveRec.Body.String())
+	}
+
+	reqPayload := `{"model":"muse-spark-1.3-contributor","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedMaxTokens != 16 {
+		t.Errorf("expected upstream max_tokens clamped to 16 after WebUI save, got %v", receivedMaxTokens)
 	}
 }
 

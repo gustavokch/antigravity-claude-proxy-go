@@ -1189,6 +1189,29 @@
                                                         </table>
                                                         </div>
                                                     </template>
+
+                                                    <!-- Per-model limits: context window + max output tokens -->
+                                                    <div class="pt-2 border-t border-space-border/40">
+                                                        <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2" x-text="$store.global.t('openRouterLimits') || 'Limits'">Limits</div>
+                                                        <div class="grid grid-cols-2 gap-4">
+                                                            <div>
+                                                                <label class="block text-[10px] text-gray-400 mb-1" :for="'or-ctx-' + item.id" x-text="$store.global.t('openRouterContextLength') || 'Context Window'">Context Window</label>
+                                                                <input type="number" min="0" :id="'or-ctx-' + item.id" :value="item.contextLength || ''"
+                                                                    @change="updateAllowlistContextLength(item.id, $event.target.value)"
+                                                                    :aria-label="'Context window for ' + item.id"
+                                                                    class="input input-xs bg-space-800 border-space-border text-gray-200 font-mono text-xs w-full focus:border-blue-500"
+                                                                    placeholder="e.g. 200000">
+                                                            </div>
+                                                            <div>
+                                                                <label class="block text-[10px] text-gray-400 mb-1" :for="'or-maxout-' + item.id" x-text="$store.global.t('openRouterMaxOutput') || 'Max Output'">Max Output</label>
+                                                                <input type="number" min="0" :id="'or-maxout-' + item.id" :value="item.maxOutputTokens || ''"
+                                                                    @change="updateAllowlistMaxOutputTokens(item.id, $event.target.value)"
+                                                                    :aria-label="'Max output tokens for ' + item.id"
+                                                                    class="input input-xs bg-space-800 border-space-border text-gray-200 font-mono text-xs w-full focus:border-blue-500"
+                                                                    placeholder="e.g. 16">
+                                                            </div>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </td>
                                         </tr>
@@ -1277,8 +1300,11 @@
                                         <th class="w-12 text-right pr-4" x-text="$store.global.t('actions') || 'Actions'">Actions</th>
                                     </tr>
                                 </thead>
-                                <tbody>
-                                    <template x-for="(m, idx) in (kimiConfig.allowlist || [])" :key="m.id">
+                                <!-- Alpine x-for renders only the first root element of its
+                                     template, so each iteration gets its own <tbody> (valid
+                                     HTML) to hold both the model row and the limits panel row. -->
+                                <template x-for="(m, idx) in (kimiConfig.allowlist || [])" :key="m.id">
+                                    <tbody>
                                         <tr class="hover:bg-white/5 transition-colors">
                                             <td class="pl-4 text-center">
                                                 <input type="checkbox" class="toggle toggle-xs toggle-primary"
@@ -1302,17 +1328,46 @@
                                                     placeholder="Display name...">
                                             </td>
                                             <td class="text-right pr-4">
-                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400 min-h-[28px] min-w-[28px]"
-                                                    @click="kimiConfig.allowlist.splice(idx, 1); saveKimiConfig()"
-                                                    :aria-label="'Remove ' + m.id + ' from allowlist'"
-                                                    title="Remove">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                    </svg>
-                                                </button>
+                                                <div class="flex items-center justify-end gap-1">
+                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-white min-h-[28px] min-w-[28px]"
+                                                        @click="toggleKimiExpanded(m.id)"
+                                                        :aria-expanded="isKimiExpanded(m.id)"
+                                                        :aria-label="(isKimiExpanded(m.id) ? 'Collapse' : 'Expand') + ' limits for ' + m.id"
+                                                        :title="$store.global.t('kimiMaxOutput') || 'Max Output'">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 transition-transform" :class="isKimiExpanded(m.id) && 'rotate-90'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                                                        </svg>
+                                                    </button>
+                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400 min-h-[28px] min-w-[28px]"
+                                                        @click="kimiConfig.allowlist.splice(idx, 1); saveKimiConfig()"
+                                                        :aria-label="'Remove ' + m.id + ' from allowlist'"
+                                                        title="Remove">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
-                                    </template>
+                                        <!-- Per-model limits panel -->
+                                        <tr x-show="isKimiExpanded(m.id)" class="bg-space-900/40">
+                                            <td colspan="5" class="!p-0">
+                                                <div class="px-6 py-4 border-t border-space-border/40">
+                                                    <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2" x-text="$store.global.t('openRouterLimits') || 'Limits'">Limits</div>
+                                                    <div class="max-w-xs">
+                                                        <label class="block text-[10px] text-gray-400 mb-1" :for="'kimi-maxout-' + m.id" x-text="$store.global.t('kimiMaxOutput') || 'Max Output'">Max Output</label>
+                                                        <input type="number" min="0" :id="'kimi-maxout-' + m.id" :value="m.maxOutputTokens || ''"
+                                                            @change="updateKimiMaxOutput(idx, $event.target.value)"
+                                                            :aria-label="'Max output tokens for ' + m.id"
+                                                            class="input input-xs bg-space-800 border-space-border text-gray-200 font-mono text-xs w-full focus:border-cyan-400"
+                                                            placeholder="e.g. 16">
+                                                    </div>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </template>
+                                <tbody>
                                     <tr x-show="!kimiConfig.allowlist || kimiConfig.allowlist.length === 0">
                                         <td colspan="5" class="text-center py-6 text-gray-400 text-xs font-mono">
                                             NO KIMI MODELS ALLOWLISTED. CLICK "DISCOVER MODELS" TO ADD.
@@ -2121,9 +2176,10 @@
                             <table class="standard-table">
                                 <thead class="sticky top-0 bg-space-900 z-10">
                                     <tr>
-                                        <th class="pl-4 w-4/12" x-text="$store.global.t('model') || 'Model'">Model</th>
+                                        <th class="pl-4 w-3/12" x-text="$store.global.t('model') || 'Model'">Model</th>
                                         <th class="w-2/12" x-text="$store.global.t('contextLength') || 'Context'">Context</th>
-                                        <th class="w-4/12" x-text="$store.global.t('alias') || 'Custom Local Alias'">Custom Local Alias</th>
+                                        <th class="w-2/12" x-text="$store.global.t('openRouterDiscoverMaxOutput') || 'Max Output'">Max Output</th>
+                                        <th class="w-3/12" x-text="$store.global.t('alias') || 'Custom Local Alias'">Custom Local Alias</th>
                                         <th class="w-2/12 text-right pr-4" x-text="$store.global.t('actions') || 'Action'">Action</th>
                                     </tr>
                                 </thead>
@@ -2137,6 +2193,9 @@
                                             </td>
                                             <td class="font-mono text-xs text-gray-400">
                                                 <span x-text="m.context_length ? (Math.round(m.context_length / 1000) + 'k') : '-'"></span>
+                                            </td>
+                                            <td class="font-mono text-xs text-gray-400">
+                                                <span x-text="(m.max_completion_tokens || (m.top_provider && m.top_provider.max_completion_tokens)) ? (Math.round((m.max_completion_tokens || (m.top_provider && m.top_provider.max_completion_tokens)) / 1000) + 'k') : '-'"></span>
                                             </td>
                                             <td>
                                                 <input type="text" x-model="addAllowlistAliasMap[m.id]"

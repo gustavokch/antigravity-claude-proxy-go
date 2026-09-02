@@ -360,6 +360,22 @@ window.Components.models = () => ({
         this.expandedRouting = new Set(this.expandedRouting);
     },
 
+    // Per-model limits panel state for the Kimi allowlist (no routing panel there)
+    expandedKimi: new Set(),
+
+    isKimiExpanded(modelId) {
+        return this.expandedKimi.has(modelId);
+    },
+
+    toggleKimiExpanded(modelId) {
+        if (this.expandedKimi.has(modelId)) {
+            this.expandedKimi.delete(modelId);
+        } else {
+            this.expandedKimi.add(modelId);
+        }
+        this.expandedKimi = new Set(this.expandedKimi);
+    },
+
     async fetchRoutingProviders(modelId) {
         const password = Alpine.store('global').webuiPassword;
         this.routingPanels = { ...this.routingPanels, [modelId]: { loading: true, error: '', data: null } };
@@ -420,6 +436,15 @@ window.Components.models = () => ({
         this._routingSaveTimer = setTimeout(() => {
             this._routingSaveTimer = null;
             this.saveOpenRouterConfig();
+        }, 500);
+    },
+
+    // Same trailing debounce for the Kimi allowlist limits input.
+    saveKimiConfigDebounced() {
+        if (this._kimiSaveTimer) clearTimeout(this._kimiSaveTimer);
+        this._kimiSaveTimer = setTimeout(() => {
+            this._kimiSaveTimer = null;
+            this.saveKimiConfig();
         }, 500);
     },
 
@@ -1149,6 +1174,37 @@ window.Components.models = () => ({
         if (item) {
             item.alias = (alias || '').trim();
             await this.saveOpenRouterConfig();
+        }
+    },
+
+    // Coerce a limits input to a non-negative integer. Empty/invalid becomes 0,
+    // which the config omits and the proxy clamp treats as "no floor".
+    asInt(value) {
+        const n = parseInt(value, 10);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+    },
+
+    async updateAllowlistContextLength(modelId, value) {
+        const item = (this.openRouterConfig.allowlist || []).find(m => m.id === modelId);
+        if (item) {
+            item.contextLength = this.asInt(value);
+            this.saveOpenRouterConfigDebounced();
+        }
+    },
+
+    async updateAllowlistMaxOutputTokens(modelId, value) {
+        const item = (this.openRouterConfig.allowlist || []).find(m => m.id === modelId);
+        if (item) {
+            item.maxOutputTokens = this.asInt(value);
+            this.saveOpenRouterConfigDebounced();
+        }
+    },
+
+    updateKimiMaxOutput(idx, value) {
+        const item = (this.kimiConfig.allowlist || [])[idx];
+        if (item) {
+            item.maxOutputTokens = this.asInt(value);
+            this.saveKimiConfigDebounced();
         }
     },
 
