@@ -105,6 +105,56 @@ func TestServer_ForwardToKimi_AllowsAliasMatch(t *testing.T) {
 	}
 }
 
+func TestServer_ForwardToKimi_ClampsMaxTokensToAllowlistFloor(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	_, err := config.Save(map[string]any{
+		"kimi": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-kimi-test",
+			"baseUrl": upstream.URL,
+			"allowlist": []map[string]any{
+				{"id": "kimi-k2-thinking", "maxOutputTokens": 16, "enabled": true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	server := newKimiTestServer(t)
+
+	body := `{"model":"kimi-k2-thinking","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	var upstreamReq map[string]any
+	if err := json.Unmarshal(gotBody, &upstreamReq); err != nil {
+		t.Fatalf("unmarshal upstream body %s: %v", gotBody, err)
+	}
+	if got, want := upstreamReq["max_tokens"], float64(16); got != want {
+		t.Errorf("upstream max_tokens = %v, want %v (allowlist floor)", got, want)
+	}
+	if rec.Code != 200 {
+		t.Errorf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestServer_KimiEndToEnd_StreamingResponse(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)

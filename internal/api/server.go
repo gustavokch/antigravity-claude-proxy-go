@@ -775,14 +775,15 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 
 	model := stringFrom(anthropicRequest["model"])
 	if cfg.Kimi.Enabled {
-		if kimiMatch := matchKimiModel(cfg.Kimi, model); kimiMatch != "" {
-			anthropicRequest["model"] = kimiMatch
+		if kimiEntry, ok := matchKimiModelEntry(cfg.Kimi, model); ok {
+			anthropicRequest["model"] = kimiEntry.ID
 			reqBody, err := json.Marshal(anthropicRequest)
 			if err != nil {
 				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Kimi request: "+err.Error())
 				return
 			}
-			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, kimiMatch)
+			reqBody = clampMaxTokensToFloor(reqBody, anthropicRequest, kimiEntry.MaxOutputTokens)
+			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, kimiEntry.ID)
 			return
 		}
 	}
@@ -1003,21 +1004,66 @@ func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {
 	}
 }
 
+// clampMaxTokensToFloor raises the Anthropic-shaped body's max_tokens to
+// the allowlist MaxOutputTokens when the client sent a smaller value. Values
+// at or above the catalog max pass through untouched. Returns the re-marshaled
+// body so both the raw passthrough path and the provider-injected path see
+// the correction. A perModelMax of 0 leaves the body unchanged.
+func clampMaxTokensToFloor(reqBody []byte, req map[string]any, perModelMax int) []byte {
+	if perModelMax <= 0 {
+		return reqBody
+	}
+	raw, ok := req["max_tokens"]
+	if !ok {
+		return reqBody
+	}
+	var current int
+	switch v := raw.(type) {
+	case float64:
+		current = int(v)
+	case int:
+		current = v
+	case int64:
+		current = int(v)
+	default:
+		return reqBody
+	}
+	if current >= perModelMax {
+		return reqBody
+	}
+	req["max_tokens"] = perModelMax
+	out, err := json.Marshal(req)
+	if err != nil {
+		return reqBody
+	}
+	return out
+}
+
 // matchKimiModel returns the Kimi model ID if `model` matches an enabled
 // allowlist entry by either ID or alias. Returns "" if no match.
 func matchKimiModel(cfg config.KimiConfig, model string) string {
-	if model == "" {
+	item, ok := matchKimiModelEntry(cfg, model)
+	if !ok {
 		return ""
+	}
+	return item.ID
+}
+
+// matchKimiModelEntry returns the enabled allowlist entry matching `model` by
+// either ID or alias. Returns ok=false if no match.
+func matchKimiModelEntry(cfg config.KimiConfig, model string) (config.KimiModelConfig, bool) {
+	if model == "" {
+		return config.KimiModelConfig{}, false
 	}
 	for _, item := range cfg.Allowlist {
 		if !item.Enabled {
 			continue
 		}
 		if (item.ID != "" && item.ID == model) || (item.Alias != "" && item.Alias == model) {
-			return item.ID
+			return item, true
 		}
 	}
-	return ""
+	return config.KimiModelConfig{}, false
 }
 
 func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *http.Request, openRouterCfg config.OpenRouterConfig, reqBody []byte, anthropicRequest map[string]any) {
@@ -1045,6 +1091,14 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			break
 		}
 	}
+	// OpenRouter rejects requests with max_tokens below the model's
+	// advertised MaxOutputTokens (the new muse-spark 1.3 model returns 400
+	// "max_output_tokens The number must be >= 16"). Floor to the allowlist
+	// MaxOutputTokens when the client sent a smaller value; values at or
+	// above the catalog max pass through untouched. Re-marshal reqBody so
+	// both the raw passthrough path and the provider-injected path see the
+	// corrected value.
+	reqBody = clampMaxTokensToFloor(reqBody, anthropicRequest, perModel.MaxOutputTokens)
 	order := openrouter.ProviderOrder{
 		Mode:  stringDefault(perModel.ProviderMode, "auto"),
 		Pin:   perModel.PinnedProvider,
