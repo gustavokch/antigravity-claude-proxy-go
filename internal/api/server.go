@@ -1005,8 +1005,42 @@ func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {
 
 // matchKimiModel returns the Kimi model ID if `model` matches an enabled
 // allowlist entry by either ID or alias. Returns "" if no match.
-func matchKimiModel(cfg config.KimiConfig, model string) string {
-	if model == "" {
+// clampOpenRouterMaxTokens raises the Anthropic-shaped body's max_tokens to
+// the allowlist MaxOutputTokens when the client sent a smaller value. Values
+// at or above the catalog max pass through untouched. Returns the re-marshaled
+// body so both the raw passthrough path and the provider-injected path see
+// the correction. A perModelMax of 0 leaves the body unchanged.
+func clampOpenRouterMaxTokens(reqBody []byte, req map[string]any, perModelMax int) []byte {
+	if perModelMax <= 0 {
+		return reqBody
+	}
+	raw, ok := req["max_tokens"]
+	if !ok {
+		return reqBody
+	}
+	var current int
+	switch v := raw.(type) {
+	case float64:
+		current = int(v)
+	case int:
+		current = v
+	case int64:
+		current = int(v)
+	default:
+		return reqBody
+	}
+	if current >= perModelMax {
+		return reqBody
+	}
+	req["max_tokens"] = perModelMax
+	out, err := json.Marshal(req)
+	if err != nil {
+		return reqBody
+	}
+	return out
+}
+
+func matchKimiModel(cfg config.KimiConfig, model string) string {	if model == "" {
 		return ""
 	}
 	for _, item := range cfg.Allowlist {
@@ -1045,6 +1079,14 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			break
 		}
 	}
+	// OpenRouter rejects requests with max_tokens below the model's
+	// advertised MaxOutputTokens (the new muse-spark 1.3 model returns 400
+	// "max_output_tokens The number must be >= 16"). Floor to the allowlist
+	// MaxOutputTokens when the client sent a smaller value; values at or
+	// above the catalog max pass through untouched. Re-marshal reqBody so
+	// both the raw passthrough path and the provider-injected path see the
+	// corrected value.
+	reqBody = clampOpenRouterMaxTokens(reqBody, anthropicRequest, perModel.MaxOutputTokens)
 	order := openrouter.ProviderOrder{
 		Mode:  stringDefault(perModel.ProviderMode, "auto"),
 		Pin:   perModel.PinnedProvider,
