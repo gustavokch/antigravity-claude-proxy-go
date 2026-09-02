@@ -1003,14 +1003,12 @@ func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {
 	}
 }
 
-// matchKimiModel returns the Kimi model ID if `model` matches an enabled
-// allowlist entry by either ID or alias. Returns "" if no match.
-// clampOpenRouterMaxTokens raises the Anthropic-shaped body's max_tokens to
+// clampMaxTokensToFloor raises the Anthropic-shaped body's max_tokens to
 // the allowlist MaxOutputTokens when the client sent a smaller value. Values
 // at or above the catalog max pass through untouched. Returns the re-marshaled
 // body so both the raw passthrough path and the provider-injected path see
 // the correction. A perModelMax of 0 leaves the body unchanged.
-func clampOpenRouterMaxTokens(reqBody []byte, req map[string]any, perModelMax int) []byte {
+func clampMaxTokensToFloor(reqBody []byte, req map[string]any, perModelMax int) []byte {
 	if perModelMax <= 0 {
 		return reqBody
 	}
@@ -1040,7 +1038,10 @@ func clampOpenRouterMaxTokens(reqBody []byte, req map[string]any, perModelMax in
 	return out
 }
 
-func matchKimiModel(cfg config.KimiConfig, model string) string {	if model == "" {
+// matchKimiModel returns the Kimi model ID if `model` matches an enabled
+// allowlist entry by either ID or alias. Returns "" if no match.
+func matchKimiModel(cfg config.KimiConfig, model string) string {
+	if model == "" {
 		return ""
 	}
 	for _, item := range cfg.Allowlist {
@@ -1086,7 +1087,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	// above the catalog max pass through untouched. Re-marshal reqBody so
 	// both the raw passthrough path and the provider-injected path see the
 	// corrected value.
-	reqBody = clampOpenRouterMaxTokens(reqBody, anthropicRequest, perModel.MaxOutputTokens)
+	reqBody = clampMaxTokensToFloor(reqBody, anthropicRequest, perModel.MaxOutputTokens)
 	order := openrouter.ProviderOrder{
 		Mode:  stringDefault(perModel.ProviderMode, "auto"),
 		Pin:   perModel.PinnedProvider,
