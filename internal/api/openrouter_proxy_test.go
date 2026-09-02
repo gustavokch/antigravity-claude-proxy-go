@@ -304,13 +304,11 @@ func TestMergedModelsEndpoint(t *testing.T) {
 	}
 }
 
-func TestOpenRouterForwarding_ClampsMaxTokensBelowCatalogMax(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
-	t.Setenv("HOME", tmpDir)
-
-	var receivedMaxTokens float64
-
+// startOpenRouterMock starts a mock OpenRouter upstream that serves the
+// models catalog, an empty endpoints list, and captures max_tokens from any
+// chat request body into *received.
+func startOpenRouterMock(t *testing.T, received *float64) *httptest.Server {
+	t.Helper()
 	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/v1/models" {
@@ -328,11 +326,21 @@ func TestOpenRouterForwarding_ClampsMaxTokensBelowCatalogMax(t *testing.T) {
 		var parsed map[string]any
 		_ = json.Unmarshal(body, &parsed)
 		if v, ok := parsed["max_tokens"].(float64); ok {
-			receivedMaxTokens = v
+			*received = v
 		}
 		_, _ = w.Write([]byte(`{"id":"msg_x","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"muse-spark-1.3-contributor"}`))
 	}))
-	defer mockOR.Close()
+	t.Cleanup(mockOR.Close)
+	return mockOR
+}
+
+func TestOpenRouterForwarding_ClampsMaxTokensBelowAllowlistFloor(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedMaxTokens float64
+	mockOR := startOpenRouterMock(t, &receivedMaxTokens)
 
 	_, err := config.Save(map[string]any{
 		"openrouter": map[string]any{
@@ -381,35 +389,13 @@ func TestOpenRouterForwarding_ClampsMaxTokensBelowCatalogMax(t *testing.T) {
 	}
 }
 
-func TestOpenRouterForwarding_PassesThroughMaxTokensAboveCatalogMax(t *testing.T) {
+func TestOpenRouterForwarding_PassesThroughMaxTokensAboveAllowlistFloor(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
 	var receivedMaxTokens float64
-
-	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/v1/models" {
-			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
-				{ID: "muse-spark-1.3-contributor", Name: "Muse Spark 1.3",
-					Pricing: &openrouter.Pricing{Prompt: 0.000001, Completion: 0.000002}},
-			}})
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/endpoints") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		var parsed map[string]any
-		_ = json.Unmarshal(body, &parsed)
-		if v, ok := parsed["max_tokens"].(float64); ok {
-			receivedMaxTokens = v
-		}
-		_, _ = w.Write([]byte(`{"id":"msg_y","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"muse-spark-1.3-contributor"}`))
-	}))
-	defer mockOR.Close()
+	mockOR := startOpenRouterMock(t, &receivedMaxTokens)
 
 	_, err := config.Save(map[string]any{
 		"openrouter": map[string]any{
@@ -469,29 +455,7 @@ func TestOpenRouterForwarding_MaxOutputTokensFromWebUISaveRoundTrip(t *testing.T
 	t.Setenv("HOME", tmpDir)
 
 	var receivedMaxTokens float64
-
-	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/v1/models" {
-			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
-				{ID: "muse-spark-1.3-contributor", Name: "Muse Spark 1.3",
-					Pricing: &openrouter.Pricing{Prompt: 0.000001, Completion: 0.000002}},
-			}})
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/endpoints") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		var parsed map[string]any
-		_ = json.Unmarshal(body, &parsed)
-		if v, ok := parsed["max_tokens"].(float64); ok {
-			receivedMaxTokens = v
-		}
-		_, _ = w.Write([]byte(`{"id":"msg_x","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"muse-spark-1.3-contributor"}`))
-	}))
-	defer mockOR.Close()
+	mockOR := startOpenRouterMock(t, &receivedMaxTokens)
 
 	server, err := New(Options{
 		APIKey:  "test-proxy-key",
