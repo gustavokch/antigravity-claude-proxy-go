@@ -389,6 +389,148 @@ func TestGemini37ThinkingLevelOmitsBudget(t *testing.T) {
 	}
 }
 
+func TestSchemaCleanerEnsuresArrayItemsAlwaysPresent(t *testing.T) {
+	t.Parallel()
+
+	// Case 1: Nested array without items (the exact bug: where -> items: array -> missing items)
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"where": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "array",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	cleaned := asMap(CleanSchema(SanitizeSchema(schema)))
+	queryProp := asMap(asMap(cleaned["properties"])["query"])
+	whereProp := asMap(asMap(queryProp["properties"])["where"])
+	if whereProp["type"] != "ARRAY" {
+		t.Fatalf("where type = %v, want ARRAY", whereProp["type"])
+	}
+	whereItems := asMap(whereProp["items"])
+	if whereItems == nil {
+		t.Fatal("where.items is nil")
+	}
+	if whereItems["type"] != "ARRAY" {
+		t.Fatalf("where.items type = %v, want ARRAY", whereItems["type"])
+	}
+	whereInnerItems := asMap(whereItems["items"])
+	if whereInnerItems == nil {
+		t.Fatal("where.items.items is nil! Cloud Code will reject this with: * ...properties[query].properties[where].items.items: missing field.")
+	}
+	if whereInnerItems["type"] != "STRING" {
+		t.Fatalf("where.items.items type = %v, want STRING", whereInnerItems["type"])
+	}
+
+	// Case 2: Untyped array without items
+	untypedArray := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tags": map[string]any{
+				"type": "array",
+			},
+		},
+	}
+	cleanedUntyped := asMap(CleanSchema(SanitizeSchema(untypedArray)))
+	tagsProp := asMap(asMap(cleanedUntyped["properties"])["tags"])
+	if tagsProp["type"] != "ARRAY" {
+		t.Fatalf("tags type = %v, want ARRAY", tagsProp["type"])
+	}
+	tagsItems := asMap(tagsProp["items"])
+	if tagsItems == nil {
+		t.Fatal("tags.items is nil")
+	}
+	if tagsItems["type"] != "STRING" {
+		t.Fatalf("tags.items type = %v, want STRING", tagsItems["type"])
+	}
+
+	// Case 3: Tuple items (array of schemas) should normalize to single Schema object
+	tupleArray := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"coords": map[string]any{
+				"type": "array",
+				"items": []any{
+					map[string]any{"type": "number"},
+					map[string]any{"type": "number"},
+				},
+			},
+		},
+	}
+	cleanedTuple := asMap(CleanSchema(SanitizeSchema(tupleArray)))
+	coordsProp := asMap(asMap(cleanedTuple["properties"])["coords"])
+	coordsItems := asMap(coordsProp["items"])
+	if coordsItems == nil {
+		t.Fatal("coords.items must be an object (map), not nil or slice")
+	}
+	if coordsItems["type"] != "NUMBER" {
+		t.Fatalf("coords.items type = %v, want NUMBER", coordsItems["type"])
+	}
+
+	// Case 4: Full Anthropic request with tool function declarations having nested arrays
+	anthropicReq := map[string]any{
+		"model": "gemini-3.8-flash-high",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "run query"},
+		},
+		"tools": []any{
+			map[string]any{
+				"name":        "db_query",
+				"description": "Execute database query",
+				"input_schema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"where": map[string]any{
+									"type": "array",
+									"items": map[string]any{
+										"type": "array",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	converted := ConvertAnthropicToGoogle(anthropicReq, NewSignatureCache())
+	toolsSlice := asSlice(converted["tools"])
+	if len(toolsSlice) != 1 {
+		t.Fatalf("tools length = %d, want 1", len(toolsSlice))
+	}
+	declSlice := asSlice(asMap(toolsSlice[0])["functionDeclarations"])
+	if len(declSlice) != 1 {
+		t.Fatalf("functionDeclarations length = %d, want 1", len(declSlice))
+	}
+	decl := asMap(declSlice[0])
+	if decl["name"] != "db_query" {
+		t.Fatalf("decl name = %v, want db_query", decl["name"])
+	}
+	params := asMap(decl["parameters"])
+	qProp := asMap(asMap(params["properties"])["query"])
+	wProp := asMap(asMap(qProp["properties"])["where"])
+	wItems := asMap(wProp["items"])
+	if wItems == nil {
+		t.Fatal("tool parameter where.items is nil")
+	}
+	wInner := asMap(wItems["items"])
+	if wInner == nil || wInner["type"] != "STRING" {
+		t.Fatalf("tool parameter where.items.items = %#v, want type: STRING", wInner)
+	}
+}
+
 func readObjectFixture(t *testing.T, path string) map[string]any {
 	t.Helper()
 	contents, err := os.ReadFile(path)
