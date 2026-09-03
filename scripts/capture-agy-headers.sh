@@ -23,7 +23,10 @@ LISTEN_HOST="127.0.0.1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADDON="$SCRIPT_DIR/mitm_header_dump.py"
 CONFDIR="${ANTIGRAVITY_MITM_CONFDIR:-$HOME/.mitmproxy}"
-DUMP_OUT="${MITM_DUMP_OUT:-/tmp/agy-headers-mitm.jsonl}"
+# Fresh capture per run: the addon appends, so a fixed default would mix
+# stale entries into a new capture. Override via MITM_DUMP_OUT.
+DUMP_OUT="${MITM_DUMP_OUT:-/tmp/agy-headers-mitm-$(date +%Y%m%d-%H%M%S).jsonl}"
+export MITM_DUMP_OUT="$DUMP_OUT"
 
 if [ "$#" -eq 0 ]; then
   echo "usage: $0 <command> [args...]" >&2
@@ -31,7 +34,7 @@ if [ "$#" -eq 0 ]; then
   echo "  Runs <command> through a local mitmdump intercepting ONLY the" >&2
   echo "  cloudcode-pa / daily-cloudcode-pa endpoints. Put the proxy on the" >&2
   echo "  command yourself: HTTPS_PROXY=http://$LISTEN_HOST:$PORT." >&2
-  echo "  JSONL lands in \$MITM_DUMP_OUT (default /tmp/agy-headers-mitm.jsonl)." >&2
+  echo "  JSONL lands in \$MITM_DUMP_OUT (default /tmp/agy-headers-mitm-<ts>.jsonl)." >&2
   exit 2
 fi
 

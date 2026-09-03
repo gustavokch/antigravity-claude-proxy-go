@@ -29,17 +29,24 @@ CLOUDCODE_HOSTS = {
     "daily-cloudcode-pa.googleapis.com",
 }
 
-# Substring match on purpose: over-redact anything auth-ish.
+# Substring match on purpose: over-redact anything auth-ish. Cookie and
+# api-key names are included so a future agy that grows a session cookie or
+# key header never lands a live credential in the JSONL.
 SENSITIVE_NAME = re.compile(
-    r"authorization|proxy-authorization|x-goog-iam-authorization",
+    r"authorization|proxy-authorization|x-goog-iam-authorization|cookie|api[_-]?key",
     re.IGNORECASE,
 )
+
+# Header values carrying credentials as "<scheme> <token>" get scheme kept in
+# the clear and the token hashed. Values in any other shape (Cookie crumbs,
+# raw keys) are hashed whole — nothing of the value stays readable.
+AUTH_SCHEMES = {"bearer", "basic", "digest", "token", "negotiate", "oauth"}
 
 
 def _redact(value: str) -> dict:
     parts = value.split(None, 1)
-    scheme = parts[0] if parts else ""
-    token = parts[1] if len(parts) > 1 else ""
+    scheme = parts[0] if parts and parts[0].lower() in AUTH_SCHEMES else ""
+    token = parts[1] if scheme and len(parts) > 1 else value
     return {
         "redacted": True,
         "scheme": scheme,
