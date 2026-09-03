@@ -1,0 +1,59 @@
+Live agy/proxy fingerprint recheck
+==================================
+
+Captured: 2026-09-03
+agy version: 1.1.25 (/Users/gus/.local/bin/agy)
+Go proxy toolchain: go1.27.0 darwin/arm64
+
+agy invocation:
+
+  /Users/gus/.local/bin/agy \
+    --log-file=/tmp/agy-recheck-20260903.log \
+    --print='Reply with exactly AGY_RECHECK_OK_20260903' \
+    --print-timeout=90s
+
+Observed response:
+
+  AGY_RECHECK_OK_20260903
+
+Capture:
+
+  sudo tcpdump -i en5 -w /tmp/agy-current-recheck-20260903.pcap \
+    "tcp port 443 and (host daily-cloudcode-pa.googleapis.com or host cloudcode-pa.googleapis.com)"
+
+Capture SHA-256:
+
+  86b4c431ca023e2da5c524455669a12f4392c6988a92d799090eae7cbfc80ffb
+
+tshark command:
+
+  tshark -r /tmp/agy-current-recheck-20260903.pcap \
+    -Y 'tls.handshake.type==1 && (tls.handshake.extensions_server_name contains "cloudcode")' \
+    -T fields \
+    -e tls.handshake.extensions_server_name \
+    -e tls.handshake.extensions_alpn_str \
+    -e tls.handshake.ja4 \
+    -e tls.handshake.ciphersuite \
+    -e tls.handshake.sig_hash_alg
+
+Observed ClientHello (14 rows: 13x daily- SNI, 1x apex SNI):
+
+  SNI:  daily-cloudcode-pa.googleapis.com (primary) / cloudcode-pa.googleapis.com (apex)
+  ALPN: absent
+  JA4:  t13d131100_f57a46bbacb6_f50d94e863eb
+
+Cipher suites:
+
+  0xc02b,0xc02f,0xc02c,0xc030,0xcca9,0xcca8,0xc009,0xc013,0xc00a,0xc014,0x1301,0x1302,0x1303
+
+Signature algorithms:
+
+  0x0904,0x0905,0x0906,0x0804,0x0403,0x0807,0x0805,0x0806,0x0401,0x0501,0x0601,0x0503,0x0603,0x0904,0x0905,0x0906,0x0804,0x0403,0x0807,0x0805,0x0806,0x0401,0x0501,0x0601,0x0503,0x0603,0x0201,0x0203
+
+Conclusion:
+
+  agy 1.1.25 still produces the exact JA4 baseline fingerprint
+  t13d131100_f57a46bbacb6_f50d94e863eb with ALPN absent. Cipher suite and
+  signature algorithm lists are byte-identical to the 2026-07-15 and
+  2026-08-30 rechecks. The hardcoded EXPECTED_JA4 in scripts/verify-ja4.sh
+  remains valid for agy 1.1.25; no re-pinning needed.
