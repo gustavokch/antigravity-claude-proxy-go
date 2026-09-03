@@ -338,7 +338,7 @@ func TestOpenAIChatCompletions_Unary(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer test-proxy-key")
@@ -392,6 +392,68 @@ func TestOpenAIChatCompletions_Unary(t *testing.T) {
 	}
 	if completion["model"] != "anthropic/claude-3.7-sonnet" {
 		t.Errorf("model = %v, want echo of requested model", completion["model"])
+	}
+}
+
+// TestOpenAIChatCompletions_MaxTokensFloor: a client max_tokens below the
+// provider floor (16) is raised to the floor before forwarding.
+func TestOpenAIChatCompletions_MaxTokensFloor(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedMaxTokens any
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		receivedMaxTokens = body["max_tokens"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_f","type":"message","role":"assistant","model":"anthropic/claude-3.7-sonnet","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer mockOR.Close()
+
+	_, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-v1-secret-123",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{"id": "anthropic/claude-3.7-sonnet", "enabled": true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","max_tokens":4,"messages":[{"role":"user","content":"Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-proxy-key")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedMaxTokens != float64(16) {
+		t.Errorf("expected upstream max_tokens raised to floor 16, got %v", receivedMaxTokens)
 	}
 }
 
@@ -579,7 +641,7 @@ func TestOpenAIChatCompletions_UpstreamError(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqPayload))
 	req.Header.Set("Authorization", "Bearer test-proxy-key")
 
@@ -659,7 +721,7 @@ func TestOpenAIChatCompletions_SSE(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}`
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqPayload))
 	req.Header.Set("Authorization", "Bearer test-proxy-key")
 

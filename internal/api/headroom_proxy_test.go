@@ -201,6 +201,7 @@ func TestHeadroom_CompressesOpenRouterDispatch(t *testing.T) {
 	}
 	body := toolResultBody("{\n  \"a\": 1\n}")
 	body["model"] = "claude-3-5-sonnet"
+	body["max_tokens"] = 1024
 	if rec := postMessages(t, srv, body); rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
