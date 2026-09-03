@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // translateOpenAIRequest converts a decoded OpenAI Chat Completions request
@@ -33,13 +34,23 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 			blocks = openAIContentToBlocks(message["content"])
 		case "assistant":
 			blocks = openAIContentToBlocks(message["content"])
-			for _, rawToolCall := range message["tool_calls"].([]any) {
-				toolUse, err := openAIToolCallToToolUse(rawToolCall)
-				if err != nil {
-					return nil, err
-				}
-				if toolUse != nil {
-					blocks = append(blocks, toolUse)
+			// tool_calls is optional on assistant messages; an absent or null
+			// value must not trip the type assertion.
+			if rawToolCalls, exists := message["tool_calls"]; exists && rawToolCalls != nil {
+				toolCalls, ok := rawToolCalls.([]any)
+				if !ok {
+					slog.Warn("openai translate: assistant tool_calls is not an array, skipping",
+						"type", fmt.Sprintf("%T", rawToolCalls))
+				} else {
+					for _, rawToolCall := range toolCalls {
+						toolUse, err := openAIToolCallToToolUse(rawToolCall)
+						if err != nil {
+							return nil, err
+						}
+						if toolUse != nil {
+							blocks = append(blocks, toolUse)
+						}
+					}
 				}
 			}
 		case "tool":
@@ -92,9 +103,9 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 		if maxTokens := numberToInt(rawMaxCompletionTokens); maxTokens > 0 {
 			anthropic["max_tokens"] = maxTokens
 		}
-	} else {
-		anthropic["max_tokens"] = 4096
 	}
+	// No default: when the client omits the limit, the messages handler
+	// derives it from the model's own limits or omits it upstream.
 
 	if temperature, exists := openaiRequest["temperature"]; exists {
 		anthropic["temperature"] = temperature

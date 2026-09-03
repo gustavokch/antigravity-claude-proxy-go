@@ -91,7 +91,7 @@ func TestOpenRouterObservability_Unary(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")
@@ -229,7 +229,7 @@ func TestOpenRouterObservability_StreamingSSE(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","stream":true,"messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")
@@ -349,7 +349,7 @@ func TestOpenRouterObservability_MultiCallSessionProgression(t *testing.T) {
 	sessionID := "progression-session-xyz"
 
 	// Turn 1
-	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"anthropic/claude-3.7-sonnet","messages":[{"role":"user","content":"turn 1"}]}`))
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"messages":[{"role":"user","content":"turn 1"}]}`))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.Header.Set("x-api-key", "test-proxy-key")
 	req1.Header.Set("x-session-id", sessionID)
@@ -362,7 +362,7 @@ func TestOpenRouterObservability_MultiCallSessionProgression(t *testing.T) {
 	}
 
 	// Turn 2
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"anthropic/claude-3.7-sonnet","messages":[{"role":"user","content":"turn 2"}]}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"messages":[{"role":"user","content":"turn 2"}]}`))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("x-api-key", "test-proxy-key")
 	req2.Header.Set("x-session-id", sessionID)
@@ -474,7 +474,7 @@ func TestOpenRouterObservability_ColdCacheAutoPricing(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"qwen/qwen3.8-max","messages":[{"role":"user","content":"Hello Qwen"}]}`
+	reqPayload := `{"model":"qwen/qwen3.8-max","max_tokens":1024,"messages":[{"role":"user","content":"Hello Qwen"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")
@@ -611,7 +611,7 @@ func TestOpenRouterObservability_GLMStreamingWithHeaderProviderAndJSONSession(t 
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"z-ai/glm-5.3","stream":true,"messages":[{"role":"user","content":"Hello"}],"metadata":{"user_id":"{\"device_id\":\"6a0a24c3\",\"account_uuid\":\"aabe0580\",\"session_id\":\"6c03114f-4472-472b-8abc-b64396665e4d\"}"}}`
+	reqPayload := `{"model":"z-ai/glm-5.3","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hello"}],"metadata":{"user_id":"{\"device_id\":\"6a0a24c3\",\"account_uuid\":\"aabe0580\",\"session_id\":\"6c03114f-4472-472b-8abc-b64396665e4d\"}"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")
@@ -728,7 +728,7 @@ func TestOpenRouterObservability_StreamingWithCCREnabled(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"meta-llama/llama-3-70b","stream":true,"messages":[{"role":"user","content":"Hello"}],"metadata":{"user_id":{"session_id":"ccr-session-999"}}}`
+	reqPayload := `{"model":"meta-llama/llama-3-70b","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hello"}],"metadata":{"user_id":{"session_id":"ccr-session-999"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")

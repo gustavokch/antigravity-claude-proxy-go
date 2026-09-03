@@ -547,7 +547,7 @@ func TestHeadroomCCR_OpenRouterUnaryHydration(t *testing.T) {
 	srv.ccrStore.Put(chunkPayload)
 
 	reqBody := map[string]any{
-		"model": "anthropic/claude-3.7-sonnet",
+		"model": "anthropic/claude-3.7-sonnet", "max_tokens": 1024,
 		"tools": []any{map[string]any{"name": "t"}},
 		"messages": []any{
 			map[string]any{"role": "user", "content": "or retrieve test"},
@@ -760,7 +760,7 @@ func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
 	srv.ccrStore.Put(chunkPayload)
 
 	reqBody := map[string]any{
-		"model":  "anthropic/claude-3.7-sonnet",
+		"model":  "anthropic/claude-3.7-sonnet", "max_tokens": 1024,
 		"stream": true,
 		"tools":  []any{map[string]any{"name": "t"}},
 		"messages": []any{
@@ -926,7 +926,7 @@ func TestHeadroomCCR_OpenRouterStream_NoRetrieveLeak(t *testing.T) {
 	srv.ccrStore.Put(chunkPayload)
 
 	rec := postMessages(t, srv, map[string]any{
-		"model": "anthropic/claude-3.7-sonnet", "stream": true,
+		"model": "anthropic/claude-3.7-sonnet", "stream": true, "max_tokens": 1024,
 		"tools":    []any{map[string]any{"name": "t"}},
 		"messages": []any{map[string]any{"role": "user", "content": "leak check"}},
 	})
@@ -1098,7 +1098,7 @@ func TestHeadroomCCR_OpenRouterStreamHydration_ThinkingBlock(t *testing.T) {
 	srv.ccrStore.Put(chunkPayload)
 
 	rec := postMessages(t, srv, map[string]any{
-		"model": "anthropic/claude-3.7-sonnet", "stream": true,
+		"model": "anthropic/claude-3.7-sonnet", "stream": true, "max_tokens": 1024,
 		"tools":    []any{map[string]any{"name": "t"}},
 		"messages": []any{map[string]any{"role": "user", "content": "thinking replay"}},
 	})

@@ -105,7 +105,7 @@ func TestOpenRouterForwarding_Unary(t *testing.T) {
 	}
 
 	// 1. Test request using alias claude-3-7-openrouter
-	reqPayload := `{"model":"claude-3-7-openrouter","messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")
@@ -191,7 +191,7 @@ func TestOpenRouterForwarding_SSE(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","stream":true,"messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")
@@ -334,7 +334,11 @@ func startOpenRouterMock(t *testing.T, received *float64) *httptest.Server {
 	return mockOR
 }
 
-func TestOpenRouterForwarding_ClampsMaxTokensBelowAllowlistFloor(t *testing.T) {
+// TestOpenRouterForwarding_RaisesMaxTokensToMinimumFloor covers the original
+// muse-spark failure mode: providers reject tiny max_tokens values, so a value
+// we do send is raised to the 16 minimum. The allowlist override is set high
+// (64000) so only the minimum floor explains the result.
+func TestOpenRouterForwarding_RaisesMaxTokensToMinimumFloor(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
@@ -352,7 +356,7 @@ func TestOpenRouterForwarding_ClampsMaxTokensBelowAllowlistFloor(t *testing.T) {
 					"id":              "muse-spark-1.3-contributor",
 					"displayName":     "Muse Spark 1.3 (OpenRouter)",
 					"contextLength":   200000,
-					"maxOutputTokens": 16,
+					"maxOutputTokens": 64000,
 					"enabled":         true,
 				},
 			},
@@ -385,11 +389,13 @@ func TestOpenRouterForwarding_ClampsMaxTokensBelowAllowlistFloor(t *testing.T) {
 		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
 	}
 	if receivedMaxTokens != 16 {
-		t.Errorf("expected upstream max_tokens clamped to 16, got %v", receivedMaxTokens)
+		t.Errorf("expected upstream max_tokens raised to minimum floor 16, got %v", receivedMaxTokens)
 	}
 }
 
-func TestOpenRouterForwarding_PassesThroughMaxTokensAboveAllowlistFloor(t *testing.T) {
+// TestOpenRouterForwarding_PassesThroughMaxTokensBelowLimit: a request value
+// under the known limit is sent unchanged — never raised.
+func TestOpenRouterForwarding_PassesThroughMaxTokensBelowLimit(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
@@ -407,7 +413,7 @@ func TestOpenRouterForwarding_PassesThroughMaxTokensAboveAllowlistFloor(t *testi
 					"id":              "muse-spark-1.3-contributor",
 					"displayName":     "Muse Spark 1.3 (OpenRouter)",
 					"contextLength":   200000,
-					"maxOutputTokens": 16,
+					"maxOutputTokens": 64000,
 					"enabled":         true,
 				},
 			},
@@ -444,11 +450,126 @@ func TestOpenRouterForwarding_PassesThroughMaxTokensAboveAllowlistFloor(t *testi
 	}
 }
 
+// TestOpenRouterForwarding_ClampsMaxTokensDownToManualOverride: a request
+// value above the webUI manual override is clamped down to the override.
+func TestOpenRouterForwarding_ClampsMaxTokensDownToManualOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedMaxTokens float64
+	mockOR := startOpenRouterMock(t, &receivedMaxTokens)
+
+	_, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-v1-secret-123",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{
+					"id":              "muse-spark-1.3-contributor",
+					"displayName":     "Muse Spark 1.3 (OpenRouter)",
+					"contextLength":   200000,
+					"maxOutputTokens": 1024,
+					"enabled":         true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"muse-spark-1.3-contributor","max_tokens":4096,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedMaxTokens != 1024 {
+		t.Errorf("expected upstream max_tokens clamped down to override 1024, got %v", receivedMaxTokens)
+	}
+}
+
+// TestOpenRouterForwarding_OverrideBelowFloorWins: an admin-set cap below
+// the provider floor (override 15 < floor 16) still wins — the client value
+// clamps down to the override and the floor never raises past a known limit.
+func TestOpenRouterForwarding_OverrideBelowFloorWins(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedMaxTokens float64
+	mockOR := startOpenRouterMock(t, &receivedMaxTokens)
+
+	_, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-v1-secret-123",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{
+					"id":              "muse-spark-1.3-contributor",
+					"displayName":     "Muse Spark 1.3 (OpenRouter)",
+					"contextLength":   200000,
+					"maxOutputTokens": 15,
+					"enabled":         true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"muse-spark-1.3-contributor","max_tokens":4096,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedMaxTokens != 15 {
+		t.Errorf("expected upstream max_tokens clamped to override 15 (floor must not exceed a known limit), got %v", receivedMaxTokens)
+	}
+}
+
 // TestOpenRouterForwarding_MaxOutputTokensFromWebUISaveRoundTrip locks the
 // contract behind the WebUI limits panel: a POST /api/openrouter/config save
 // carrying maxOutputTokens must be honored by the running forwarder on the
 // next request, without a restart. The WebUI writes the whole allowlist
-// through this endpoint, so this is the path the clamp fix depends on.
+// through this endpoint, so this is the path the max_tokens policy depends on.
 func TestOpenRouterForwarding_MaxOutputTokensFromWebUISaveRoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
@@ -506,6 +627,89 @@ func TestOpenRouterForwarding_MaxOutputTokensFromWebUISaveRoundTrip(t *testing.T
 	}
 	if receivedMaxTokens != 16 {
 		t.Errorf("expected upstream max_tokens clamped to 16 after WebUI save, got %v", receivedMaxTokens)
+	}
+}
+
+// TestOpenRouterForwarding_RejectsWhenNothingKnown: no max_tokens in the
+// client request, no webUI override (0), and the mock catalog advertises no
+// max completion tokens — the upstream /v1/messages schema requires the
+// field, so the proxy must reject early with a clear 400 instead of
+// forwarding a request that is guaranteed to fail.
+func TestOpenRouterForwarding_RejectsWhenNothingKnown(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	// Isolate from the shared process-wide catalog cache: other tests warm it
+	// with fixtures that do advertise max completion tokens.
+	openrouter.DefaultClient.SaveCache(nil)
+	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(nil) })
+
+	upstreamCalled := false
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(openrouter.ModelsResponse{Data: []openrouter.ModelItem{
+				{ID: "muse-spark-1.3-contributor", Name: "Muse Spark 1.3",
+					Pricing: &openrouter.Pricing{Prompt: 0.000001, Completion: 0.000002}},
+			}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/endpoints") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
+			return
+		}
+		upstreamCalled = true
+		_, _ = w.Write([]byte(`{"id":"msg_x","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"muse-spark-1.3-contributor"}`))
+	}))
+	t.Cleanup(mockOR.Close)
+
+	_, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-v1-secret-123",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{
+					"id":            "muse-spark-1.3-contributor",
+					"displayName":   "Muse Spark 1.3 (OpenRouter)",
+					"contextLength": 200000,
+					"enabled":       true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"muse-spark-1.3-contributor","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "max_tokens") {
+		t.Errorf("expected error body to mention max_tokens, got %s", rec.Body.String())
+	}
+	if upstreamCalled {
+		t.Error("expected upstream never to be called when max_tokens cannot be determined")
 	}
 }
 
@@ -602,7 +806,7 @@ func TestModelMappingToOpenRouterAndForwarded(t *testing.T) {
 	}
 
 	// 1. Test mapping to OpenRouter ID
-	reqPayload := `{"model":"alias-to-or-id","messages":[{"role":"user","content":"Hi"}]}`
+	reqPayload := `{"model":"alias-to-or-id","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-key")
@@ -616,7 +820,7 @@ func TestModelMappingToOpenRouterAndForwarded(t *testing.T) {
 	}
 
 	// 2. Test mapping to OpenRouter Alias
-	reqPayload = `{"model":"alias-to-or-alias","messages":[{"role":"user","content":"Hi"}]}`
+	reqPayload = `{"model":"alias-to-or-alias","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}]}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-key")
@@ -630,7 +834,7 @@ func TestModelMappingToOpenRouterAndForwarded(t *testing.T) {
 	}
 
 	// 3. Test mapping to Custom Forwarding Endpoint
-	reqPayload = `{"model":"alias-to-custom","messages":[{"role":"user","content":"Hi"}]}`
+	reqPayload = `{"model":"alias-to-custom","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}]}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-key")
@@ -644,7 +848,7 @@ func TestModelMappingToOpenRouterAndForwarded(t *testing.T) {
 	}
 
 	// 4. Test multi-hop chained mapping
-	reqPayload = `{"model":"hop-1","messages":[{"role":"user","content":"Hi"}]}`
+	reqPayload = `{"model":"hop-1","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}]}`
 	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-key")

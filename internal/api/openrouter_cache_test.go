@@ -95,7 +95,7 @@ func TestOpenRouterCache_RequestHeaderInjection(t *testing.T) {
 			},
 		}, handler)
 
-		reqPayload := `{"model":"claude-3-7-openrouter","messages":[{"role":"user","content":"Hello"}]}`
+		reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", "test-proxy-key")
@@ -146,7 +146,7 @@ func TestOpenRouterCache_RequestHeaderInjection(t *testing.T) {
 			},
 		}, handler)
 
-		reqPayload := `{"model":"claude-3-7-openrouter","messages":[{"role":"user","content":"Hello"}]}`
+		reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", "test-proxy-key")
@@ -200,7 +200,7 @@ func TestOpenRouterCache_RequestHeaderInjection(t *testing.T) {
 			},
 		}, handler)
 
-		reqPayload := `{"model":"claude-3-7-openrouter","messages":[{"role":"user","content":"Hello"}]}`
+		reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", "test-proxy-key")
@@ -253,7 +253,7 @@ func TestOpenRouterCache_RequestHeaderInjection(t *testing.T) {
 			},
 		}, handler)
 
-		reqPayload := `{"model":"claude-3-7-openrouter","messages":[{"role":"user","content":"Hello"}]}`
+		reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", "test-proxy-key")
@@ -309,7 +309,7 @@ func TestOpenRouterCache_ResponseHeaderPropagationAndHitHandling(t *testing.T) {
 			},
 		}, handler)
 
-		reqPayload := `{"model":"claude-3-7-openrouter","messages":[{"role":"user","content":"Hello"}]}`
+		reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", "test-proxy-key")
@@ -364,7 +364,7 @@ func TestOpenRouterCache_ResponseHeaderPropagationAndHitHandling(t *testing.T) {
 			},
 		}, handler)
 
-		reqPayload := `{"model":"claude-3-7-openrouter","messages":[{"role":"user","content":"Hello"}]}`
+		reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", "test-proxy-key")
@@ -418,7 +418,7 @@ func TestOpenRouterCache_ResponseHeaderPropagationAndHitHandling(t *testing.T) {
 			},
 		}, handler)
 
-		reqPayload := `{"model":"claude-3-7-openrouter","stream":true,"messages":[{"role":"user","content":"Hello streaming"}]}`
+		reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hello streaming"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", "test-proxy-key")

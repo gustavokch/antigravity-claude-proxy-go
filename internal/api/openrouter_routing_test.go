@@ -104,7 +104,7 @@ func (e *routingTestEnv) doRequestWithSession(t *testing.T, server *Server, ctx 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	reqPayload := `{"model":"claude-3-7-openrouter","messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"claude-3-7-openrouter","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")

@@ -26,7 +26,7 @@ type OpenRouterModelConfig struct {
 	Alias           string                         `json:"alias,omitempty"`
 	DisplayName     string                         `json:"displayName,omitempty"`
 	ContextLen      int                            `json:"contextLength,omitempty"`
-	MaxOutputTokens int                            `json:"maxOutputTokens,omitempty"`
+	MaxOutputTokens int                            `json:"maxOutputTokens,omitempty"` // manual max_tokens override; 0 = derive from the model's discovered limit
 	Enabled         bool                           `json:"enabled"`
 	ProviderMode    string                         `json:"providerMode,omitempty"`
 	PinnedProvider  string                         `json:"pinnedProvider,omitempty"`
@@ -74,7 +74,7 @@ type KimiModelConfig struct {
 	Alias           string `json:"alias,omitempty"`
 	DisplayName     string `json:"displayName,omitempty"`
 	ContextLen      int    `json:"contextLength,omitempty"`
-	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
+	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"` // manual max_tokens override; 0 = omit/derive
 	Enabled         bool   `json:"enabled"`
 }
 

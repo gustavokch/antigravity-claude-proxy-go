@@ -65,7 +65,7 @@ func serveSpoofRequest(t *testing.T) *httptest.ResponseRecorder {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"thinkingmachines/inkling:free","messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"thinkingmachines/inkling:free","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")
@@ -253,7 +253,7 @@ func TestOpenRouterForwarding_HarnessGateStickyAcrossRequests(t *testing.T) {
 	}
 
 	makeReq := func() *httptest.ResponseRecorder {
-		reqPayload := `{"model":"thinkingmachines/inkling:free","messages":[{"role":"user","content":"Hello"}]}`
+		reqPayload := `{"model":"thinkingmachines/inkling:free","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", "test-proxy-key")
@@ -339,7 +339,7 @@ func TestOpenRouterForwarding_AppSpoofActivatedConcurrentAccess(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			reqPayload := `{"model":"thinkingmachines/inkling:free","messages":[{"role":"user","content":"Hello"}]}`
+			reqPayload := `{"model":"thinkingmachines/inkling:free","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("x-api-key", "test-proxy-key")
@@ -377,7 +377,7 @@ func TestOpenRouterForwarding_AttributionHeadersPassThrough(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	reqPayload := `{"model":"thinkingmachines/inkling:free","messages":[{"role":"user","content":"Hello"}]}`
+	reqPayload := `{"model":"thinkingmachines/inkling:free","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "test-proxy-key")

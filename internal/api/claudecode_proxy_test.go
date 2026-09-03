@@ -683,3 +683,26 @@ func TestForwardToClaudeCode_401RetryFailure_FailsOver(t *testing.T) {
 
 
 
+
+func TestClaudeCodeEntryMaxOutput(t *testing.T) {
+	t.Run("configured allowlist entry wins", func(t *testing.T) {
+		cfg := claudecode.Config{
+			Allowlist: []claudecode.ModelConfig{
+				{ID: "claude-sonnet-5", MaxOutputTokens: 1234},
+			},
+		}
+		if got := claudeCodeEntryMaxOutput(cfg, "claude-sonnet-5"); got != 1234 {
+			t.Errorf("got %d, want 1234", got)
+		}
+	})
+	t.Run("empty allowlist falls back to defaults", func(t *testing.T) {
+		if got := claudeCodeEntryMaxOutput(claudecode.Config{}, "claude-sonnet-5"); got != 8192 {
+			t.Errorf("got %d, want 8192 (default allowlist)", got)
+		}
+	})
+	t.Run("unknown model returns 0", func(t *testing.T) {
+		if got := claudeCodeEntryMaxOutput(claudecode.Config{}, "no-such-model"); got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
+	})
+}

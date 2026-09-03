@@ -1067,3 +1067,25 @@ func TestServer_ApplyHeadroomConfigNilCCRStoreNoPanic(t *testing.T) {
 	srv := &Server{}
 	srv.applyHeadroomConfig(config.HeadroomConfig{CCR: headroom.CCRConfig{MaxStoreMB: 25}})
 }
+
+func TestApplyMaxTokensPolicy_FloorNeverExceedsKnownLimit(t *testing.T) {
+	body := []byte(`{"max_tokens":4}`)
+	req := map[string]any{"max_tokens": float64(4)}
+	out := applyMaxTokensPolicy(body, req, 8, 0)
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["max_tokens"] != float64(8) {
+		t.Errorf("expected clamp to limit 8, got %v", got["max_tokens"])
+	}
+}
+
+func TestApplyMaxTokensPolicy_DoesNotMutateCallerMap(t *testing.T) {
+	body := []byte(`{"model":"m"}`)
+	req := map[string]any{"model": "m"}
+	_ = applyMaxTokensPolicy(body, req, 1024, 0)
+	if _, present := req["max_tokens"]; present {
+		t.Errorf("caller map mutated: %v", req)
+	}
+}

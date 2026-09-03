@@ -684,7 +684,9 @@ window.Components.models = () => ({
                     alias: '',
                     displayName: p.displayName,
                     contextLength: p.contextLength,
-                    maxOutputTokens: p.maxOutputTokens,
+                    // 0 = auto: the proxy derives max_tokens from the model's
+                    // own limits instead of a webUI-baked default.
+                    maxOutputTokens: 0,
                     enabled: true
                 });
             }
@@ -1145,15 +1147,14 @@ window.Components.models = () => ({
 
     async addToAllowlist(discoveredModel, alias = '') {
         if (this.isAllowlisted(discoveredModel.id)) return;
-        const maxOutput = discoveredModel.max_completion_tokens ||
-            (discoveredModel.top_provider && discoveredModel.top_provider.max_completion_tokens) ||
-            0;
         const newItem = {
             id: discoveredModel.id,
             alias: (alias || '').trim(),
             displayName: discoveredModel.name || discoveredModel.id,
             contextLength: discoveredModel.context_length || 0,
-            maxOutputTokens: maxOutput,
+            // Pre-fill from the catalog's advertised completion cap when
+            // known; 0 = auto, the proxy derives max_tokens at request time.
+            maxOutputTokens: (discoveredModel.top_provider && discoveredModel.top_provider.max_completion_tokens) || 0,
             enabled: true
         };
         this.openRouterConfig.allowlist.push(newItem);
@@ -1184,7 +1185,8 @@ window.Components.models = () => ({
     },
 
     // Coerce a limits input to a non-negative integer. Empty/invalid becomes 0,
-    // which the config omits and the proxy clamp treats as "no floor".
+    // which the config omits and the proxy treats as "auto: derive from the
+    // model's own limits".
     asInt(value) {
         const n = parseInt(value, 10);
         return Number.isFinite(n) && n > 0 ? n : 0;

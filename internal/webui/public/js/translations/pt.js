@@ -453,6 +453,7 @@ window.translations.pt = {
     openRouterAllowlist: "Modelos e Aliases na Allowlist",
     openRouterLimits: "Limites",
     openRouterMaxOutput: "Saída Máx.",
+    maxOutputAuto: "auto (limite do modelo)",
     openRouterContextLength: "Janela de Contexto",
     kimiMaxOutput: "Saída Máx.",
     openRouterDiscoverMaxOutput: "Saída Máx.",
