@@ -90,12 +90,12 @@ type quotaInfo struct {
 var routingAliases = map[string]string{
 	// Cloud Code publishes gemini-3.1-pro-high in models, but current agy
 	// selects the separate agent route for the same display model.
-	"gemini-3.1-pro-high":        "Gemini 3.1 Pro (High)",
-	"gemini-3.1-pro":             "Gemini 3.1 Pro (High)",
-	"gemini-pro":                 "Gemini 3.1 Pro (High)",
-	"gemini-3.6-flash":           "Gemini 3.6 Flash (High)",
-	"gemini-3.7-flash":           "Gemini 3.7 Flash (High)",
-	"gpt-oss-120b":               "GPT-OSS 120B (Medium)",
+	"gemini-3.1-pro-high": "Gemini 3.1 Pro (High)",
+	"gemini-3.1-pro":      "Gemini 3.1 Pro (High)",
+	"gemini-pro":          "Gemini 3.1 Pro (High)",
+	"gemini-3.6-flash":    "Gemini 3.6 Flash (High)",
+	"gemini-3.7-flash":    "Gemini 3.7 Flash (High)",
+	"gpt-oss-120b":        "GPT-OSS 120B (Medium)",
 	// gemini-3.8-flash-{high,medium,low} first published by agy 1.1.25
 	// (.reference/agy-models-20260903.txt, View A).
 	"gemini-3.8-flash":        "Gemini 3.8 Flash (High)",
@@ -105,9 +105,11 @@ var routingAliases = map[string]string{
 	// Legacy gemini-3.5 IDs repoint to the gemini-3.8 family tier-preserving
 	// (user decision 2026-09-03). Accounts that still publish real 3.5 are
 	// unaffected: byID/byDisplay lookups win before routingAliases.
-	"gemini-3.5-flash":        "Gemini 3.8 Flash (High)",
-	"gemini-3.5-flash-high":   "Gemini 3.8 Flash (High)",
-	"gemini-3.5-flash-medium": "Gemini 3.8 Flash (Medium)",
+	"gemini-3.5-flash":           "Gemini 3.8 Flash (High)",
+	"gemini-3.5-flash-high":      "Gemini 3.8 Flash (High)",
+	"gemini-3.5-flash-medium":    "Gemini 3.8 Flash (Medium)",
+	"gemini-3.5-flash-low":       "Gemini 3.8 Flash (Low)",
+	"gemini-3.5-flash-extra-low": "Gemini 3.8 Flash (Low)",
 	"gemini-3.7-flash-high":      "Gemini 3.7 Flash (High)",
 	"gemini-3.7-flash-medium":    "Gemini 3.7 Flash (Medium)",
 	"gemini-3.7-flash-low":       "Gemini 3.7 Flash (Low)",

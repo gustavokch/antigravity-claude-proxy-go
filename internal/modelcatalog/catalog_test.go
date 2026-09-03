@@ -395,9 +395,11 @@ func TestLegacyGemini35AliasRepointing(t *testing.T) {
 		t.Fatal(err)
 	}
 	repointed := map[string]string{
-		"gemini-3.5-flash":        "gemini-3.8-flash-high",
-		"gemini-3.5-flash-high":   "gemini-3.8-flash-high",
-		"gemini-3.5-flash-medium": "gemini-3.8-flash-medium",
+		"gemini-3.5-flash":           "gemini-3.8-flash-high",
+		"gemini-3.5-flash-high":      "gemini-3.8-flash-high",
+		"gemini-3.5-flash-medium":    "gemini-3.8-flash-medium",
+		"gemini-3.5-flash-low":       "gemini-3.8-flash-low",
+		"gemini-3.5-flash-extra-low": "gemini-3.8-flash-low",
 	}
 	for requested, wantID := range repointed {
 		resolved, err := catalog.Resolve(requested)
