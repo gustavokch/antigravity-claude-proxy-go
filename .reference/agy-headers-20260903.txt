@@ -1,0 +1,43 @@
+agy 1.1.25 client header verification
+=====================================
+
+Captured: 2026-09-03
+Binary: /Users/gus/.local/bin/agy (v1.1.25, Mach-O arm64)
+Built with: go1.28-20260721-RC01 cl/951519500 (boringcrypto, fieldtrack)
+
+Method: string-table extraction over the agy binary (same approach as
+internal/auth/agy_oauth.go for OAuth credentials). Wire-level verification
+of headers is impossible without TLS keylog, which the zero-TLS-customization
+rule forbids. Live JA4 for this binary was verified separately
+(.reference/fingerprint-recheck-20260903.txt) and matches the baseline.
+
+Per-constant verdicts (proxy constants in internal/cloudcode/client.go:30-32):
+
+1. DefaultUserAgentVersion = "2.0.3"  (User-Agent: antigravity/<ver> <os>/<arch>)
+   Evidence: no `antigravity/<digits>` literal in the binary; UA version is
+   composed at runtime (format-string/build-var). Unrecoverable via strings.
+   Verdict: unknown — KEEP existing constant.
+
+2. DefaultClientVersion = "1.110.0"  (X-Client-Version header)
+   Evidence: only proto field names `clientVersion` and header name
+   `X-Client-Protocol` found; no `1.110.*` literal anywhere in the binary.
+   Verdict: unknown — KEEP existing constant.
+
+3. GoogleAPIClient = "gl-go/1.26.4 auth/0.5 google-api-go-client/0.5"
+   Evidence: literal `google-api-go-client/0.5` confirmed in the binary
+   (exact match with the constant's third segment). `gl-go/%s auth/%s`
+   exists only as a format template (`gl-go/%s auth/%s google-byoid-sdk
+   source/%s sa-impersonation/%t config-lifetime/%t` and bare `gl-go/%s`),
+   so the gl-go and auth segments are runtime-composed in agy and cannot be
+   compared as literals.
+   Verdict: template-only for segments 1-2, exact for segment 3 — KEEP
+   existing constant.
+
+Conclusion:
+
+  No exact-literal drift could be confirmed for any of the three header
+  constants against agy 1.1.25. Per plan policy (conservative over
+  guessing), all constants stay unchanged. The authoritative disguise
+  contract (JA4) was re-verified live and matches. A future MITM-based
+  header capture is the only path to byte-exact header confirmation and is
+  out of scope for this plan.
