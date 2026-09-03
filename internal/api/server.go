@@ -1161,11 +1161,19 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	}
 	// max_tokens policy: pass the client value through (clamped down to the
 	// known model max), fill from the webUI override when set, otherwise
-	// derive from the cached OpenRouter catalog. Nothing known = omit the
-	// field. Never raised above the client value.
+	// derive from the cached OpenRouter catalog. Never raised above the
+	// client value except by the provider floor.
+	// The upstream /v1/messages schema requires max_tokens. When the client
+	// omitted it and nothing is known (cold catalog cache, no override),
+	// forwarding is guaranteed to 400 — reject early with a clear error.
 	derivedMax := 0
 	if perModel.MaxOutputTokens <= 0 {
 		derivedMax = deriveOpenRouterMaxOutput(model)
+	}
+	if _, present := anthropicRequest["max_tokens"]; !present && perModel.MaxOutputTokens <= 0 && derivedMax <= 0 {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error",
+			"max_tokens is required: client omitted it and no limit is known for model "+model)
+		return
 	}
 	reqBody = applyMaxTokensPolicy(reqBody, anthropicRequest, perModel.MaxOutputTokens, derivedMax)
 	order := openrouter.ProviderOrder{

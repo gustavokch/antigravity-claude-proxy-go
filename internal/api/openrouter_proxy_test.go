@@ -572,16 +572,17 @@ func TestOpenRouterForwarding_MaxOutputTokensFromWebUISaveRoundTrip(t *testing.T
 	}
 }
 
-// TestOpenRouterForwarding_OmitsMaxTokensWhenNothingKnown: no max_tokens in
-// the client request, no webUI override (0), and the mock catalog advertises
-// no max completion tokens — the upstream body must omit the field entirely
-// rather than carry a hardcoded default.
-func TestOpenRouterForwarding_OmitsMaxTokensWhenNothingKnown(t *testing.T) {
+// TestOpenRouterForwarding_RejectsWhenNothingKnown: no max_tokens in the
+// client request, no webUI override (0), and the mock catalog advertises no
+// max completion tokens — the upstream /v1/messages schema requires the
+// field, so the proxy must reject early with a clear 400 instead of
+// forwarding a request that is guaranteed to fail.
+func TestOpenRouterForwarding_RejectsWhenNothingKnown(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 
-	var receivedBody map[string]any
+	upstreamCalled := false
 	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/v1/models" {
@@ -595,8 +596,7 @@ func TestOpenRouterForwarding_OmitsMaxTokensWhenNothingKnown(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"endpoints": []any{}}})
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &receivedBody)
+		upstreamCalled = true
 		_, _ = w.Write([]byte(`{"id":"msg_x","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"muse-spark-1.3-contributor"}`))
 	}))
 	t.Cleanup(mockOR.Close)
@@ -639,11 +639,14 @@ func TestOpenRouterForwarding_OmitsMaxTokensWhenNothingKnown(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if _, present := receivedBody["max_tokens"]; present {
-		t.Errorf("expected upstream body to omit max_tokens, got %v", receivedBody["max_tokens"])
+	if !strings.Contains(rec.Body.String(), "max_tokens") {
+		t.Errorf("expected error body to mention max_tokens, got %s", rec.Body.String())
+	}
+	if upstreamCalled {
+		t.Error("expected upstream never to be called when max_tokens cannot be determined")
 	}
 }
 
