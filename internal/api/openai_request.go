@@ -33,13 +33,17 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 			blocks = openAIContentToBlocks(message["content"])
 		case "assistant":
 			blocks = openAIContentToBlocks(message["content"])
-			for _, rawToolCall := range message["tool_calls"].([]any) {
-				toolUse, err := openAIToolCallToToolUse(rawToolCall)
-				if err != nil {
-					return nil, err
-				}
-				if toolUse != nil {
-					blocks = append(blocks, toolUse)
+			// tool_calls is optional on assistant messages; an absent or null
+			// value must not trip the type assertion.
+			if toolCalls, ok := message["tool_calls"].([]any); ok {
+				for _, rawToolCall := range toolCalls {
+					toolUse, err := openAIToolCallToToolUse(rawToolCall)
+					if err != nil {
+						return nil, err
+					}
+					if toolUse != nil {
+						blocks = append(blocks, toolUse)
+					}
 				}
 			}
 		case "tool":

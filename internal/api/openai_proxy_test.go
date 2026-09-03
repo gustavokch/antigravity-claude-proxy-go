@@ -100,6 +100,22 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			}`,
 		},
 		{
+			name: "assistant message without tool_calls does not panic",
+			input: `{"model":"m","messages":[
+				{"role":"system","content":"You are a helpful assistant."},
+				{"role":"assistant","content":"ok"},
+				{"role":"user","content":"Say hello."}
+			]}`,
+			want: `{
+				"model": "m",
+				"system": "You are a helpful assistant.",
+				"messages": [
+					{"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+					{"role": "user", "content": [{"type": "text", "text": "Say hello."}]}
+				]
+			}`,
+		},
+		{
 			name:    "malformed tool_call arguments is an error",
 			input:   `{"model":"m","messages":[{"role":"assistant","tool_calls":[{"id":"call_1","function":{"name":"f","arguments":"{not json"}}]}]}`,
 			wantErr: "invalid_request_error",
