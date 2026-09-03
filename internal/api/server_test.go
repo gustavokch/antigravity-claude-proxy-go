@@ -97,10 +97,6 @@ func TestMessagesCanonicalAndAnthropicAlias(t *testing.T) {
 	if first["project"] != "managed-project" || first["model"] != "claude-sonnet-4-6" {
 		t.Fatalf("payload=%#v", first)
 	}
-	firstSession := upstream.requestOptions[0].SessionID
-	if firstSession == "" || upstream.requestOptions[1].SessionID != firstSession {
-		t.Fatalf("session IDs=%q,%q", firstSession, upstream.requestOptions[1].SessionID)
-	}
 }
 
 func TestStreamingMessagesEmitAnthropicSSE(t *testing.T) {

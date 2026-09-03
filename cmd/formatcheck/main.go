@@ -38,8 +38,6 @@ func main() {
 		"thinking":   map[string]any{"type": "enabled", "budget_tokens": 1024},
 	}
 	payload := builder.BuildCloudCodeRequest(request, *project, credentials.Email)
-	innerRequest, _ := payload["request"].(map[string]any)
-	sessionID, _ := innerRequest["sessionId"].(string)
 
 	client := cloudcode.New(cloudcode.Options{AccessToken: credentials.AccessToken, Timeout: *timeout})
 	defer client.CloseIdleConnections()
@@ -51,8 +49,7 @@ func main() {
 		headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
 	}
 	response, err := client.StreamGenerateContent(ctx, payload, cloudcode.RequestOptions{
-		SessionID: sessionID,
-		Headers:   headers,
+		Headers: headers,
 	}, func(event cloudcode.SSEEvent) error {
 		if err := accumulator.Consume(event.Data); err != nil {
 			return err

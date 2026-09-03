@@ -69,9 +69,9 @@ sleep 1
 
 echo "=== 4. Starting Packet Capture ==="
 # macOS rejects -i any for unprivileged users; pick the egress interface for
-# Cloud Code. Default to en0 (Wi-Fi) and let ANTIGRAVITY_CAPTURE_IFACE override.
+# Cloud Code. Default to en5 (Wi-Fi) and let ANTIGRAVITY_CAPTURE_IFACE override.
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  CAP_IFACE="${ANTIGRAVITY_CAPTURE_IFACE:-en0}"
+  CAP_IFACE="${ANTIGRAVITY_CAPTURE_IFACE:-en5}"
 else
   CAP_IFACE="any"
 fi

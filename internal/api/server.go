@@ -848,9 +848,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			server.writeError(writer, err)
 			return
 		}
-		payload := server.builder.BuildCloudCodeRequest(anthropicRequest, projectID, credentials.Email)
-		innerRequest, _ := payload["request"].(map[string]any)
-		options := cloudcode.RequestOptions{SessionID: stringFrom(innerRequest["sessionId"])}
+		options := cloudcode.RequestOptions{}
 		if proxyformat.GetModelFamily(model) == proxyformat.FamilyClaude && proxyformat.IsThinkingModel(model) {
 			options.Headers = make(http.Header)
 			options.Headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")

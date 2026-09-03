@@ -141,3 +141,31 @@ No keychain mutation, no sudo, no persistent machine state from this
 capture session. The post-revocation failing-curl check from the plan is
 trivially satisfied: any curl through mitmdump without SSL_CERT_FILE
 already fails TLS against the untrusted CA.
+
+Resolution (2026-09-03, user-approved)
+--------------------------------------
+Decision: strip extras, match agy 1.1.25 exactly (option 2 of the STOP).
+Implemented test-first in internal/cloudcode/client.go:
+
+- Removed headers agy never sends: X-Client-Name, X-Client-Version,
+  x-goog-api-client, X-Machine-Session-Id, Accept. RequestOptions lost its
+  Accept/SessionID fields; the Headers override map remains (anthropic-beta).
+- Accept-Encoding identity -> gzip. Manual Accept-Encoding disables
+  net/http auto-decompression, so readResponse and DoSSE now decompress
+  gzip responses themselves (maybeGunzip, Content-Encoding driven) —
+  covered by TestDoJSONDecompressesGzipResponse and
+  TestDoSSEDecompressesGzipStream.
+- User-Agent restructured to the captured agy literal format:
+  antigravity/cli/1.1.25 (aidev_client; os_type=<goos>; arch=<goarch>;
+  cl=975399401; auth_method=consumer). Constants now:
+  DefaultUserAgentVersion="1.1.25", AgyBuildCL="975399401",
+  AgyAuthMethod="consumer". DefaultClientVersion and GoogleAPIClient are
+  gone (headers do not exist on the wire).
+- Header ORDER not reproduced (order-drift stands): agy's stable
+  non-stdlib order would require transport restructuring; Go net/http
+  order is accepted upstream.
+
+Gate: go build/vet/test -race ./... green (19 packages).
+sudo ./scripts/verify-ja4.sh: "Fingerprint verification SUCCESS! JA4
+matches agy baseline exact." (t13d131100_f57a46bbacb6_f50d94e863eb) —
+ClientHello untouched by the header changes.
