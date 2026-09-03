@@ -92,9 +92,9 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 		if maxTokens := numberToInt(rawMaxCompletionTokens); maxTokens > 0 {
 			anthropic["max_tokens"] = maxTokens
 		}
-	} else {
-		anthropic["max_tokens"] = 4096
 	}
+	// No default: when the client omits the limit, the messages handler
+	// derives it from the model's own limits or omits it upstream.
 
 	if temperature, exists := openaiRequest["temperature"]; exists {
 		anthropic["temperature"] = temperature

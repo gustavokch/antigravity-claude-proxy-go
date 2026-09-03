@@ -30,8 +30,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			input: `{"model":"kimi-k2","messages":[{"role":"user","content":"Hello"}]}`,
 			want: `{
 				"model": "kimi-k2",
-				"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
-				"max_tokens": 4096
+				"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}]
 			}`,
 		},
 		{
@@ -43,8 +42,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			want: `{
 				"model": "m",
 				"system": "Be terse.",
-				"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
-				"max_tokens": 4096
+				"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}]
 			}`,
 		},
 		{
@@ -57,8 +55,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			want: `{
 				"model": "m",
 				"system": "A\n\nB",
-				"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}],
-				"max_tokens": 4096
+				"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}]
 			}`,
 		},
 		{
@@ -99,8 +96,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 					{"role": "user", "content": [{"type": "text", "text": "weather?"}]},
 					{"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Lisbon"}}]}
 				],
-				"tools": [{"name": "get_weather", "description": "Get weather", "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}}],
-				"max_tokens": 4096
+				"tools": [{"name": "get_weather", "description": "Get weather", "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}}]
 			}`,
 		},
 		{
@@ -121,8 +117,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 					{"role": "user", "content": [{"type": "text", "text": "weather?"}]},
 					{"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}]},
 					{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": [{"type": "text", "text": "sunny 22C"}]}]}
-				],
-				"max_tokens": 4096
+				]
 			}`,
 		},
 		{
@@ -131,8 +126,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			want: `{
 				"model": "m",
 				"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
-				"stop_sequences": ["END"],
-				"max_tokens": 4096
+				"stop_sequences": ["END"]
 			}`,
 		},
 		{
@@ -141,8 +135,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			want: `{
 				"model": "m",
 				"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
-				"stop_sequences": ["A", "B"],
-				"max_tokens": 4096
+				"stop_sequences": ["A", "B"]
 			}`,
 		},
 		{
@@ -153,8 +146,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 				"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
 				"temperature": 0.5,
 				"top_p": 0.9,
-				"stream": true,
-				"max_tokens": 4096
+				"stream": true
 			}`,
 		},
 		{
@@ -163,8 +155,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			want: `{
 				"model": "m",
 				"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
-				"tool_choice": {"type": "auto"},
-				"max_tokens": 4096
+				"tool_choice": {"type": "auto"}
 			}`,
 		},
 		{
@@ -173,8 +164,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			want: `{
 				"model": "m",
 				"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
-				"tool_choice": {"type": "none"},
-				"max_tokens": 4096
+				"tool_choice": {"type": "none"}
 			}`,
 		},
 		{
@@ -183,8 +173,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			want: `{
 				"model": "m",
 				"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
-				"tool_choice": {"type": "any"},
-				"max_tokens": 4096
+				"tool_choice": {"type": "any"}
 			}`,
 		},
 		{
@@ -193,8 +182,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			want: `{
 				"model": "m",
 				"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
-				"tool_choice": {"type": "tool", "name": "get_weather"},
-				"max_tokens": 4096
+				"tool_choice": {"type": "tool", "name": "get_weather"}
 			}`,
 		},
 		{
@@ -220,8 +208,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 						{"type": "tool_result", "tool_use_id": "call_1", "content": [{"type": "text", "text": "sunny"}]},
 						{"type": "tool_result", "tool_use_id": "call_2", "content": [{"type": "text", "text": "noon"}]}
 					]}
-				],
-				"max_tokens": 4096
+				]
 			}`,
 		},
 		{
@@ -235,8 +222,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 				"messages": [{"role": "user", "content": [
 					{"type": "text", "text": "a"},
 					{"type": "text", "text": "b"}
-				]}],
-				"max_tokens": 4096
+				]}]
 			}`,
 		},
 		{
@@ -244,8 +230,7 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			input: `{"model":"m","messages":[{"role":"user","content":""}]}`,
 			want: `{
 				"model": "m",
-				"messages": [{"role": "user", "content": [{"type": "text", "text": ""}]}],
-				"max_tokens": 4096
+				"messages": [{"role": "user", "content": [{"type": "text", "text": ""}]}]
 			}`,
 		},
 	}

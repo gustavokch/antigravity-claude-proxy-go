@@ -749,9 +749,9 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			anthropicRequest["model"] = current
 		}
 	}
-	if _, exists := anthropicRequest["max_tokens"]; !exists {
-		anthropicRequest["max_tokens"] = 4096
-	}
+	// max_tokens is no longer injected here. It is sent upstream only when
+	// the client supplied it or a per-model limit is known; see
+	// applyMaxTokensPolicy.
 	if len(messages) == 1 && messages[0] != nil {
 		if message, ok := messages[0].(map[string]any); ok && message["content"] == "count" {
 			writeJSON(writer, http.StatusOK, map[string]any{})
@@ -782,7 +782,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Kimi request: "+err.Error())
 				return
 			}
-			reqBody = clampMaxTokensToFloor(reqBody, anthropicRequest, kimiEntry.MaxOutputTokens)
+			reqBody = applyMaxTokensPolicy(reqBody, anthropicRequest, kimiEntry.MaxOutputTokens, 0)
 			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, kimiEntry.ID)
 			return
 		}
@@ -795,6 +795,10 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal ClaudeCode request: "+err.Error())
 				return
 			}
+			// The Anthropic gateway requires max_tokens; derive it from the
+			// allowlist entry (defaults carry each model's max output) when
+			// the client omitted it. Client values are clamped down, never up.
+			ccBody = applyMaxTokensPolicy(ccBody, anthropicRequest, 0, claudeCodeEntryMaxOutput(cfg.ClaudeCode, ccMatch))
 			server.forwardToClaudeCode(writer, request, cfg.ClaudeCode, ccBody, ccMatch)
 			return
 		}
@@ -1004,39 +1008,79 @@ func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {
 	}
 }
 
-// clampMaxTokensToFloor raises the Anthropic-shaped body's max_tokens to
-// the allowlist MaxOutputTokens when the client sent a smaller value. Values
-// at or above the catalog max pass through untouched. Returns the re-marshaled
-// body so both the raw passthrough path and the provider-injected path see
-// the correction. A perModelMax of 0 leaves the body unchanged.
-func clampMaxTokensToFloor(reqBody []byte, req map[string]any, perModelMax int) []byte {
-	if perModelMax <= 0 {
-		return reqBody
+// minMaxTokensFloor guards against providers that reject tiny max_tokens
+// values (muse-spark 1.3 returns 400 "max_output_tokens The number must be
+// >= 16"). Applied only to values we actually send.
+const minMaxTokensFloor = 16
+
+// applyMaxTokensPolicy decides the max_tokens sent upstream:
+//   - client value present: kept, clamped down to the effective limit when
+//     the limit is known and the value exceeds it. Never raised.
+//   - absent with a manual webUI override (allowlist MaxOutputTokens > 0):
+//     set to the override.
+//   - absent with no override but a derived model limit: set to the limit.
+//   - absent with nothing known: the field is omitted entirely.
+//
+// Returns the re-marshaled body when the map changed, the original body
+// otherwise, so both the raw passthrough path and the provider-injected path
+// see the same value.
+func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, derivedLimit int) []byte {
+	limit := manualOverride
+	if limit <= 0 {
+		limit = derivedLimit
 	}
-	raw, ok := req["max_tokens"]
-	if !ok {
-		return reqBody
+	raw, present := req["max_tokens"]
+	if !present {
+		if limit <= 0 {
+			return reqBody
+		}
+		value := limit
+		if value < minMaxTokensFloor {
+			value = minMaxTokensFloor
+		}
+		req["max_tokens"] = value
+	} else {
+		var current int
+		switch v := raw.(type) {
+		case float64:
+			current = int(v)
+		case int:
+			current = v
+		case int64:
+			current = int(v)
+		default:
+			return reqBody
+		}
+		value := current
+		if limit > 0 && value > limit {
+			value = limit
+		}
+		if value < minMaxTokensFloor {
+			value = minMaxTokensFloor
+		}
+		if value == current {
+			return reqBody
+		}
+		req["max_tokens"] = value
 	}
-	var current int
-	switch v := raw.(type) {
-	case float64:
-		current = int(v)
-	case int:
-		current = v
-	case int64:
-		current = int(v)
-	default:
-		return reqBody
-	}
-	if current >= perModelMax {
-		return reqBody
-	}
-	req["max_tokens"] = perModelMax
 	out, err := json.Marshal(req)
 	if err != nil {
 		return reqBody
 	}
 	return out
+}
+
+// deriveOpenRouterMaxOutput returns the model's advertised max output from
+// the cached OpenRouter model catalog, or 0 when unknown.
+func deriveOpenRouterMaxOutput(model string) int {
+	models := openrouter.DefaultClient.GetCachedModels()
+	for i := range models {
+		item := models[i]
+		if item.ID == model || item.CanonicalSlug == model {
+			return item.GetMaxOutputTokens()
+		}
+	}
+	return 0
 }
 
 // matchKimiModel returns the Kimi model ID if `model` matches an enabled
@@ -1066,6 +1110,22 @@ func matchKimiModelEntry(cfg config.KimiConfig, model string) (config.KimiModelC
 	return config.KimiModelConfig{}, false
 }
 
+// claudeCodeEntryMaxOutput returns the allowlist entry's MaxOutputTokens for
+// a canonical Claude Code model ID, falling back to the built-in defaults
+// when the configured allowlist has no entry. 0 when unknown.
+func claudeCodeEntryMaxOutput(cfg claudecode.Config, canonicalID string) int {
+	allowlist := cfg.Allowlist
+	if len(allowlist) == 0 {
+		allowlist = claudecode.DefaultAllowlist()
+	}
+	for _, item := range allowlist {
+		if item.ID == canonicalID {
+			return item.MaxOutputTokens
+		}
+	}
+	return 0
+}
+
 func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *http.Request, openRouterCfg config.OpenRouterConfig, reqBody []byte, anthropicRequest map[string]any) {
 	baseURL := openrouter.NormalizeBaseURL(openRouterCfg.BaseURL)
 	targetURL, err := url.Parse(baseURL + "/v1/messages")
@@ -1091,14 +1151,15 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			break
 		}
 	}
-	// OpenRouter rejects requests with max_tokens below the model's
-	// advertised MaxOutputTokens (the new muse-spark 1.3 model returns 400
-	// "max_output_tokens The number must be >= 16"). Floor to the allowlist
-	// MaxOutputTokens when the client sent a smaller value; values at or
-	// above the catalog max pass through untouched. Re-marshal reqBody so
-	// both the raw passthrough path and the provider-injected path see the
-	// corrected value.
-	reqBody = clampMaxTokensToFloor(reqBody, anthropicRequest, perModel.MaxOutputTokens)
+	// max_tokens policy: pass the client value through (clamped down to the
+	// known model max), fill from the webUI override when set, otherwise
+	// derive from the cached OpenRouter catalog. Nothing known = omit the
+	// field. Never raised above the client value.
+	derivedMax := 0
+	if perModel.MaxOutputTokens <= 0 {
+		derivedMax = deriveOpenRouterMaxOutput(model)
+	}
+	reqBody = applyMaxTokensPolicy(reqBody, anthropicRequest, perModel.MaxOutputTokens, derivedMax)
 	order := openrouter.ProviderOrder{
 		Mode:  stringDefault(perModel.ProviderMode, "auto"),
 		Pin:   perModel.PinnedProvider,

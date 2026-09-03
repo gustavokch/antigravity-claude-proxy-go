@@ -550,6 +550,7 @@ window.translations.en = {
     providerRouting: "Provider Routing",
     openRouterLimits: "Limits",
     openRouterMaxOutput: "Max Output",
+    maxOutputAuto: "auto (model limit)",
     openRouterContextLength: "Context Window",
     kimiMaxOutput: "Max Output",
     openRouterDiscoverMaxOutput: "Max Output",

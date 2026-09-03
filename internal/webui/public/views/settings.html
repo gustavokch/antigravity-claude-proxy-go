@@ -1208,7 +1208,7 @@
                                                                     @change="updateAllowlistMaxOutputTokens(item.id, $event.target.value)"
                                                                     :aria-label="'Max output tokens for ' + item.id"
                                                                     class="input input-xs bg-space-800 border-space-border text-gray-200 font-mono text-xs w-full focus:border-blue-500"
-                                                                    placeholder="e.g. 16">
+                                                                    :placeholder="$store.global.t('maxOutputAuto') || 'auto (model limit)'">
                                                             </div>
                                                         </div>
                                                     </div>
@@ -1360,7 +1360,7 @@
                                                             @change="updateKimiMaxOutput(idx, $event.target.value)"
                                                             :aria-label="'Max output tokens for ' + m.id"
                                                             class="input input-xs bg-space-800 border-space-border text-gray-200 font-mono text-xs w-full focus:border-cyan-400"
-                                                            placeholder="e.g. 16">
+                                                            :placeholder="$store.global.t('maxOutputAuto') || 'auto (model limit)'">
                                                     </div>
                                                 </div>
                                             </td>
