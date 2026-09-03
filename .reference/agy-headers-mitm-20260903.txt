@@ -83,3 +83,44 @@ Redaction proof
   grep -c '"redacted": true'  -> 41 (one Authorization per flow)
   grep -c '"redacted": false' -> 0
   grep -ci 'Bearer eyJ'       -> 0 (no raw token anywhere)
+
+Verdict table: agy 1.1.25 MITM ground truth vs proxy outbound headers
+---------------------------------------------------------------------
+Proxy references: internal/cloudcode/client.go:30-32 (constants),
+:139-147 (defaultHeader), :271-276 (per-request). Verdicts per plan:
+
+| # | Header           | agy 1.1.25 observed                                   | proxy outbound                                   | verdict          |
+|---|------------------|-------------------------------------------------------|--------------------------------------------------|------------------|
+| 1 | Host             | daily-cloudcode-pa.googleapis.com                     | from endpoint URL (transport)                    | exact (n/a)      |
+| 2 | User-Agent       | antigravity/cli/1.1.25 (aidev_client; os_type=darwin; arch=arm64; cl=975399401; auth_method=consumer) | antigravity/<DefaultUserAgentVersion=2.0.3> <goos>/<goarch> | value-drift |
+| 3 | Content-Length / Transfer-Encoding | transport-managed; chunked on :streamGenerateContent | transport-managed (Go sets both equivalently) | exact (n/a)      |
+| 4 | Authorization    | Bearer <token>                                        | Bearer <token>                                   | exact            |
+| 5 | Content-Type     | application/json                                      | application/json                                 | exact            |
+| 6 | Accept-Encoding  | gzip                                                  | identity                                         | value-drift      |
+| 7 | X-Client-Name    | ABSENT                                                | antigravity                                      | extra-in-proxy   |
+| 8 | X-Client-Version | ABSENT                                                | <DefaultClientVersion=1.110.0>                   | extra-in-proxy   |
+| 9 | x-goog-api-client| ABSENT                                                | gl-go/1.26.4 auth/0.5 google-api-go-client/0.5   | extra-in-proxy   |
+|10 | X-Machine-Session-Id | ABSENT                                            | per-request when SessionID set                   | extra-in-proxy   |
+|11 | Accept           | ABSENT                                                | per-request when Accept != application/json      | extra-in-proxy   |
+|12 | header ORDER     | stable deliberate order (identical all 41 requests)   | Go http.Header: transport specials + sorted subset | order-drift    |
+
+Notes on #12: agy's stable non-alphabetical order (Host, UA, CL, Auth, CT,
+AE) is not net/http's writeSubset sort, so agy serializes headers outside
+the stdlib request-write path. The proxy is Go net/http; reproducing agy's
+exact wire order would require transport restructuring. Upstream demonstrably
+tolerates the proxy's current order (JA4 gate passes, calls succeed), so
+order-drift is recorded, not fixed, without explicit sign-off.
+
+Notes on #2: agy's UA embeds per-build (cl=) and per-account
+(auth_method=consumer) fields; it is not a static constant the proxy can
+"sync" verbatim without spoofing those fields.
+
+Plan branch decision: 5 extra-in-proxy headers (7-11) + 2 value-drifts
+(2, 6) => per Global Constraints this is a STOP: surface to the user before
+touching internal/cloudcode/client.go. No constants were synced in this
+commit; the three constants are now known to describe headers agy does not
+send (X-Client-Version, x-goog-api-client) plus a UA whose format agy does
+not use.
+
+Supersession: .reference/agy-headers-20260903.txt verdicts superseded (see
+note added at the top of that file).

@@ -1,6 +1,13 @@
 agy 1.1.25 client header verification
 =====================================
 
+> SUPERSEDED 2026-09-03 by .reference/agy-headers-mitm-20260903.txt
+> (byte-level MITM capture). The MITM ground truth shows agy 1.1.25 sends
+> none of the headers analyzed here (no X-Client-Version, no
+> x-goog-api-client, no X-Client-Name on Cloud Code requests). The
+> string-table verdicts below were answering the wrong question and are
+> retained only for provenance.
+
 Captured: 2026-09-03
 Binary: /Users/gus/.local/bin/agy (v1.1.25, Mach-O arm64)
 Built with: go1.28-20260721-RC01 cl/951519500 (boringcrypto, fieldtrack)
