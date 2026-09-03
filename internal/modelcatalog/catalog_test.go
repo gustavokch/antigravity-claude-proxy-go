@@ -264,6 +264,213 @@ func TestClaudeRoutingAliases(t *testing.T) {
 	}
 }
 
+func TestGemini38FlashFamilyDirectTierIDs(t *testing.T) {
+	t.Parallel()
+	// agy 1.1.25 publishes gemini-3.8-flash-{high,medium,low} as direct
+	// routing IDs (View A in .reference/agy-models-20260903.txt).
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low"
+		]}]}],
+		"models":{
+			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	direct, err := catalog.Resolve("gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.ID != "gemini-3.8-flash-high" || direct.GetUpstreamID() != "gemini-3.8-flash-high" {
+		t.Fatalf("direct 3.8 high: ID=%q UpstreamID=%q", direct.ID, direct.GetUpstreamID())
+	}
+
+	// Bare family ID resolves to the high tier via routing alias.
+	base, err := catalog.ResolveWithRequest("gemini-3.8-flash", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.ID != "gemini-3.8-flash-high" {
+		t.Fatalf("bare 3.8 should resolve to high tier, got %q", base.ID)
+	}
+
+	med, err := catalog.ResolveWithRequest("gemini-3.8-flash", map[string]any{"reasoning_effort": "medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if med.ID != "gemini-3.8-flash-medium" {
+		t.Fatalf("reasoning_effort medium on 3.8: got %q", med.ID)
+	}
+
+	low, err := catalog.ResolveWithRequest("gemini-3.8-flash", map[string]any{"thinking": map[string]any{"type": "disabled"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if low.ID != "gemini-3.8-flash-low" || !low.SupportsThinking {
+		t.Fatalf("disabled 3.8 should clamp to low with thinking on, got ID=%q SupportsThinking=%v", low.ID, low.SupportsThinking)
+	}
+
+	rows := 0
+	for _, pub := range catalog.PublicModels() {
+		if strings.HasPrefix(pub.ID, "gemini-3.8") {
+			rows++
+			if pub.ID != "gemini-3.8-flash" || pub.DisplayName != "Gemini 3.8 Flash" {
+				t.Fatalf("public 3.8 row: ID=%q Name=%q", pub.ID, pub.DisplayName)
+			}
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("expected exactly one public gemini-3.8 row, got %d", rows)
+	}
+}
+
+func TestGemini38UsesTieredUpstreamWhenPresent(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.7-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.7-flash-high"
+		]}]}],
+		"models":{
+			"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)","supportsThinking":true,"thinkingBudget":16000},
+			"gemini-3.8-flash-tiered":{"supportsThinking":true,"thinkingBudget":-1,"minThinkingBudget":32,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	high, err := catalog.Resolve("gemini-3.8-flash-high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if high.ID != "gemini-3.8-flash-high" || high.GetUpstreamID() != "gemini-3.8-flash-tiered" || high.ThinkingLevel != "HIGH" {
+		t.Fatalf("3.8 tiered high: ID=%q UpstreamID=%q ThinkingLevel=%q", high.ID, high.GetUpstreamID(), high.ThinkingLevel)
+	}
+
+	med, err := catalog.ResolveWithRequest("gemini-3.8-flash", map[string]any{"reasoning_effort": "medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if med.ID != "gemini-3.8-flash-medium" || med.GetUpstreamID() != "gemini-3.8-flash-tiered" || med.ThinkingLevel != "MEDIUM" {
+		t.Fatalf("3.8 tiered medium: ID=%q UpstreamID=%q ThinkingLevel=%q", med.ID, med.GetUpstreamID(), med.ThinkingLevel)
+	}
+
+	for _, m := range catalog.PublicModels() {
+		if strings.Contains(m.ID, "tiered") {
+			t.Fatalf("public catalog leaked tiered id: %#v", m)
+		}
+	}
+	for _, m := range catalog.Selectable() {
+		if strings.Contains(m.ID, "tiered") {
+			t.Fatalf("selectable id leaked tiered: %q", m.ID)
+		}
+	}
+}
+
+func TestLegacyGemini35AliasRepointing(t *testing.T) {
+	t.Parallel()
+	// User decision 2026-09-03: gemini-3.5 IDs repoint to the gemini-3.8
+	// family, tier-preserving, whenever the account catalog lacks a 3.5
+	// entry. Accounts that still publish real 3.5 keep serving it: byID /
+	// byDisplay lookups win before routingAliases.
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low"
+		]}]}],
+		"models":{
+			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true},
+			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true},
+			"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repointed := map[string]string{
+		"gemini-3.5-flash":        "gemini-3.8-flash-high",
+		"gemini-3.5-flash-high":   "gemini-3.8-flash-high",
+		"gemini-3.5-flash-medium": "gemini-3.8-flash-medium",
+	}
+	for requested, wantID := range repointed {
+		resolved, err := catalog.Resolve(requested)
+		if err != nil {
+			t.Errorf("Resolve(%q) unexpected error: %v", requested, err)
+			continue
+		}
+		if resolved.ID != wantID {
+			t.Errorf("Resolve(%q): expected %q, got %q", requested, wantID, resolved.ID)
+		}
+	}
+
+	// reasoning_effort on a legacy 3.5 ID follows the repoint to 3.8 tiers.
+	med, err := catalog.ResolveWithRequest("gemini-3.5-flash", map[string]any{"reasoning_effort": "medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if med.ID != "gemini-3.8-flash-medium" {
+		t.Fatalf("legacy 3.5 effort=medium should land on 3.8 medium, got %q", med.ID)
+	}
+
+	// Accounts that still publish real 3.5 keep resolving it directly.
+	published, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.5-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.5-flash-high"
+		]}]}],
+		"models":{
+			"gemini-3.5-flash-high":{"displayName":"Gemini 3.5 Flash (High)","supportsThinking":true}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := published.Resolve("gemini-3.5-flash-high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.ID != "gemini-3.5-flash-high" || direct.GetUpstreamID() != "gemini-3.5-flash-high" {
+		t.Fatalf("published 3.5 must resolve directly, got ID=%q UpstreamID=%q", direct.ID, direct.GetUpstreamID())
+	}
+}
+
+func TestGemini37DirectTiersNotOverwritten(t *testing.T) {
+	t.Parallel()
+	// agy 1.1.25 publishes gemini-3.7-flash-{high,medium,low} directly
+	// (View A in .reference/agy-models-20260903.txt). When the tiered ID is
+	// absent, upstream's own direct tier entries must be kept verbatim —
+	// not replaced by gemini-3.6 fallback clones.
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.7-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.7-flash-high","gemini-3.7-flash-medium","gemini-3.7-flash-low"
+		]}]}],
+		"models":{
+			"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.7-flash-medium":{"displayName":"Gemini 3.7 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000},
+			"gemini-3.7-flash-low":{"displayName":"Gemini 3.7 Flash (Low)","supportsThinking":true,"thinkingBudget":1024}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	direct, err := catalog.Resolve("gemini-3.7-flash-high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.ID != "gemini-3.7-flash-high" || direct.GetUpstreamID() != "gemini-3.7-flash-high" || direct.ThinkingBudget != 16000 {
+		t.Fatalf("direct 3.7 high must be kept verbatim: ID=%q UpstreamID=%q Budget=%d", direct.ID, direct.GetUpstreamID(), direct.ThinkingBudget)
+	}
+}
+
 func TestSelectionErrorSuggestions(t *testing.T) {
 	t.Parallel()
 	catalog, err := Parse([]byte(`{
