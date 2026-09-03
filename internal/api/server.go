@@ -1016,10 +1016,12 @@ const minMaxTokensFloor = 16
 
 // applyMaxTokensPolicy decides the max_tokens sent upstream:
 //   - client value present: kept, clamped down to the effective limit when
-//     the limit is known and the value exceeds it. Never raised.
+//     the limit is known and the value exceeds it. Never raised above the
+//     client value except by the provider floor (see minMaxTokensFloor).
 //   - absent with a manual webUI override (allowlist MaxOutputTokens > 0):
-//     set to the override.
-//   - absent with no override but a derived model limit: set to the limit.
+//     set to the override, raised to the floor when below it.
+//   - absent with no override but a derived model limit: set to the limit,
+//     raised to the floor when below it.
 //   - absent with nothing known: the field is omitted entirely.
 //
 // Returns the re-marshaled body when the value changed, the original body
@@ -1056,6 +1058,8 @@ func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, de
 		case int64:
 			current = int(v)
 		default:
+			slog.Warn("max_tokens policy: non-numeric client value, forwarding unchanged",
+				"type", fmt.Sprintf("%T", raw))
 			return reqBody
 		}
 		value = current
@@ -1073,6 +1077,7 @@ func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, de
 	next["max_tokens"] = value
 	out, err := json.Marshal(next)
 	if err != nil {
+		slog.Warn("max_tokens policy: failed to re-marshal request body, forwarding unchanged", "error", err)
 		return reqBody
 	}
 	return out

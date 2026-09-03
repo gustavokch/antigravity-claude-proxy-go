@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // translateOpenAIRequest converts a decoded OpenAI Chat Completions request
@@ -35,14 +36,20 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 			blocks = openAIContentToBlocks(message["content"])
 			// tool_calls is optional on assistant messages; an absent or null
 			// value must not trip the type assertion.
-			if toolCalls, ok := message["tool_calls"].([]any); ok {
-				for _, rawToolCall := range toolCalls {
-					toolUse, err := openAIToolCallToToolUse(rawToolCall)
-					if err != nil {
-						return nil, err
-					}
-					if toolUse != nil {
-						blocks = append(blocks, toolUse)
+			if rawToolCalls, exists := message["tool_calls"]; exists && rawToolCalls != nil {
+				toolCalls, ok := rawToolCalls.([]any)
+				if !ok {
+					slog.Warn("openai translate: assistant tool_calls is not an array, skipping",
+						"type", fmt.Sprintf("%T", rawToolCalls))
+				} else {
+					for _, rawToolCall := range toolCalls {
+						toolUse, err := openAIToolCallToToolUse(rawToolCall)
+						if err != nil {
+							return nil, err
+						}
+						if toolUse != nil {
+							blocks = append(blocks, toolUse)
+						}
 					}
 				}
 			}
