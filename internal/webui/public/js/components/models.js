@@ -1152,9 +1152,9 @@ window.Components.models = () => ({
             alias: (alias || '').trim(),
             displayName: discoveredModel.name || discoveredModel.id,
             contextLength: discoveredModel.context_length || 0,
-            // 0 = auto: the proxy derives max_tokens from the model's own
-            // limits at request time; this field is a manual override only.
-            maxOutputTokens: 0,
+            // Pre-fill from the catalog's advertised completion cap when
+            // known; 0 = auto, the proxy derives max_tokens at request time.
+            maxOutputTokens: (discoveredModel.top_provider && discoveredModel.top_provider.max_completion_tokens) || 0,
             enabled: true
         };
         this.openRouterConfig.allowlist.push(newItem);
