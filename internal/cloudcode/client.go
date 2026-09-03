@@ -245,6 +245,7 @@ func (c *Client) DoSSE(ctx context.Context, endpoints []string, path string, pay
 		result := Response{Endpoint: endpoint, StatusCode: response.StatusCode, Header: response.Header}
 		streamReader, streamErr := maybeGunzip(response)
 		if streamErr != nil {
+			_ = response.Body.Close()
 			failures = append(failures, fmt.Errorf("open Cloud Code stream from %s: %w", endpoint, streamErr))
 			continue
 		}

@@ -164,6 +164,24 @@ func TestDoSSEDecompressesGzipStream(t *testing.T) {
 	}
 }
 
+func TestDoSSEClosesBodyOnGunzipError(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Encoding", "gzip")
+		_, _ = writer.Write([]byte("invalid-gzip-payload"))
+	}))
+	defer server.Close()
+
+	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
+	client.contentEndpoints = []string{server.URL}
+	_, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected error on corrupt gzip stream, got nil")
+	}
+}
+
 func TestLoadCodeAssistMetadata(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
