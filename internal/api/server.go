@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/rand"
 	"net"
 	"net/http"
@@ -1021,24 +1022,30 @@ const minMaxTokensFloor = 16
 //   - absent with no override but a derived model limit: set to the limit.
 //   - absent with nothing known: the field is omitted entirely.
 //
-// Returns the re-marshaled body when the map changed, the original body
+// Returns the re-marshaled body when the value changed, the original body
 // otherwise, so both the raw passthrough path and the provider-injected path
-// see the same value.
+// see the same value. The caller's map is never mutated.
 func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, derivedLimit int) []byte {
 	limit := manualOverride
 	if limit <= 0 {
 		limit = derivedLimit
 	}
+	// The provider floor never exceeds a known limit: an admin-set cap below
+	// the floor still wins.
+	floor := minMaxTokensFloor
+	if limit > 0 && limit < floor {
+		floor = limit
+	}
+	value := 0
 	raw, present := req["max_tokens"]
 	if !present {
 		if limit <= 0 {
 			return reqBody
 		}
-		value := limit
-		if value < minMaxTokensFloor {
-			value = minMaxTokensFloor
+		value = limit
+		if value < floor {
+			value = floor
 		}
-		req["max_tokens"] = value
 	} else {
 		var current int
 		switch v := raw.(type) {
@@ -1051,19 +1058,20 @@ func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, de
 		default:
 			return reqBody
 		}
-		value := current
+		value = current
 		if limit > 0 && value > limit {
 			value = limit
 		}
-		if value < minMaxTokensFloor {
-			value = minMaxTokensFloor
+		if value < floor {
+			value = floor
 		}
 		if value == current {
 			return reqBody
 		}
-		req["max_tokens"] = value
 	}
-	out, err := json.Marshal(req)
+	next := maps.Clone(req)
+	next["max_tokens"] = value
+	out, err := json.Marshal(next)
 	if err != nil {
 		return reqBody
 	}
