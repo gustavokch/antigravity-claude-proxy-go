@@ -2,7 +2,7 @@ agy 1.1.25 header ground truth via local MITM
 =============================================
 
 Captured: 2026-09-03
-Binary: /Users/gus/.local/bin/agy (v1.1.25)
+Binary: $HOME/.local/bin/agy (v1.1.25)
 Tool: mitmproxy 12.2.3 (mitmdump), addon scripts/mitm_header_dump.py,
 harness scripts/capture-agy-headers.sh (branch feat/agy-mitm-header-capture).
 Raw evidence: .reference/agy-headers-mitm-20260903.jsonl (41 flows,

@@ -2,12 +2,12 @@ Live agy/proxy fingerprint recheck
 ==================================
 
 Captured: 2026-09-03
-agy version: 1.1.25 (/Users/gus/.local/bin/agy)
+agy version: 1.1.25 ($HOME/.local/bin/agy)
 Go proxy toolchain: go1.27.0 darwin/arm64
 
 agy invocation:
 
-  /Users/gus/.local/bin/agy \
+  $HOME/.local/bin/agy \
     --log-file=/tmp/agy-recheck-20260903.log \
     --print='Reply with exactly AGY_RECHECK_OK_20260903' \
     --print-timeout=90s

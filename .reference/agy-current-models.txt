@@ -2,7 +2,7 @@ Current agy selectable-model baseline
 =====================================
 
 Captured: 2026-09-03
-Binary: /Users/gus/.local/bin/agy 1.1.25
+Binary: $HOME/.local/bin/agy 1.1.25
 Sources (all live on this host; see .reference/agy-models-20260903.txt for
 the full ground-truth analysis):
 

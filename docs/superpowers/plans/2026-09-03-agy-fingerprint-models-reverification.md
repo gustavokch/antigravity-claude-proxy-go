@@ -6,7 +6,7 @@
 
 **Architecture:** Discovery-first: capture ground truth from the local agy binary (live JA4 pcap, binary string table, raw `fetchAvailableModels` JSON) BEFORE any code change; catalog code changes branch on those findings. Zero TLS customization stays — JA4 must match or we stop and surface.
 
-**Tech Stack:** Go 1.27, `crypto/tls` (untouched), tcpdump/tshark, `agy` CLI (at `/Users/gus/.local/bin/agy`, v1.1.25, authed), `cmd/cloudcodecheck`, jq.
+**Tech Stack:** Go 1.27, `crypto/tls` (untouched), tcpdump/tshark, `agy` CLI (at `$HOME/.local/bin/agy`, v1.1.25, authed), `cmd/cloudcodecheck`, jq.
 
 **Spec:** `.reference/agy-current-baseline.txt`, `.reference/fingerprint-recheck-20260830.txt`, `AGENTS.md` fingerprint gate section, `internal/modelcatalog/catalog.go`.
 
@@ -69,9 +69,9 @@ Headers are encrypted on the wire (no keylog allowed — zero-TLS rule), so veri
 
 - [ ] Probe:
 ```bash
-strings -a -n 4 /Users/gus/.local/bin/agy | grep -E 'antigravity|gl-go|google-api-go-client|google-byoid|auth/0\.' | head -30
-grep -aoE 'gl-go/1\.[0-9]+\.[0-9]+|auth/0\.[0-9]+|google-api-go-client/0\.[0-9]+|google-byoid-sdk' /Users/gus/.local/bin/agy | sort -u
-grep -aoE 'X-Client-Version' /Users/gus/.local/bin/agy | sort -u
+strings -a -n 4 "$HOME/.local/bin/agy" | grep -E 'antigravity|gl-go|google-api-go-client|google-byoid|auth/0\.' | head -30
+grep -aoE 'gl-go/1\.[0-9]+\.[0-9]+|auth/0\.[0-9]+|google-api-go-client/0\.[0-9]+|google-byoid-sdk' "$HOME/.local/bin/agy" | sort -u
+grep -aoE 'X-Client-Version' "$HOME/.local/bin/agy" | sort -u
 ```
 - [ ] Record per-constant verdict in `.reference/agy-headers-20260903.txt`: proxy value, agy 1.1.25 evidence, confidence (`exact` / `template-only` / `unknown`). Known template in binary: `gl-go/%s auth/%s google-byoid-sdk source/%s` — exact baked literal may be unrecoverable.
 - [ ] Branch: exact literal differs → do Task 3 header update; `template-only`/`unknown` → keep constants, document in evidence file. Never change the `antigravity/%s %s/%s` UA format itself.

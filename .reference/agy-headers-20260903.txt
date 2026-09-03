@@ -9,7 +9,7 @@ agy 1.1.25 client header verification
 > retained only for provenance.
 
 Captured: 2026-09-03
-Binary: /Users/gus/.local/bin/agy (v1.1.25, Mach-O arm64)
+Binary: $HOME/.local/bin/agy (v1.1.25, Mach-O arm64)
 Built with: go1.28-20260721-RC01 cl/951519500 (boringcrypto, fieldtrack)
 
 Method: string-table extraction over the agy binary (same approach as

@@ -8,7 +8,7 @@
 
 **Architecture:** `mitmdump` on `127.0.0.1:18080` with a small Python dump addon (ordered JSONL per request, Authorization redacted at write time). `agy` launched with `HTTPS_PROXY` pointing at it and the mitmproxy CA trusted in the login keychain. Capture scoped to cloudcode hosts only via `allow_hosts`. Evidence committed redacted to `.reference/`. Constants sync (if drift) lands test-first.
 
-**Tech Stack:** Go 1.27, mitmproxy 10+ (`brew install mitmproxy`), Python 3 addon, `agy` CLI v1.1.25 (`/Users/gus/.local/bin/agy`, authed), macOS `security` CLI, jq.
+**Tech Stack:** Go 1.27, mitmproxy 10+ (`brew install mitmproxy`), Python 3 addon, `agy` CLI v1.1.25 (`$HOME/.local/bin/agy`, authed), macOS `security` CLI, jq.
 
 **Spec:** `internal/cloudcode/client.go:30-32` (constants), `client.go:139-147` (defaultHeader), `client.go:271-276` (per-request headers), `.reference/agy-headers-20260903.txt` (prior low-confidence verdicts), AGENTS.md fingerprint gate.
 
