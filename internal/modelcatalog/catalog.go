@@ -90,15 +90,26 @@ type quotaInfo struct {
 var routingAliases = map[string]string{
 	// Cloud Code publishes gemini-3.1-pro-high in models, but current agy
 	// selects the separate agent route for the same display model.
-	"gemini-3.1-pro-high":        "Gemini 3.1 Pro (High)",
-	"gemini-3.1-pro":             "Gemini 3.1 Pro (High)",
-	"gemini-pro":                 "Gemini 3.1 Pro (High)",
-	"gemini-3.5-flash-high":      "Gemini 3.5 Flash (High)",
-	"gemini-3.5-flash":           "Gemini 3.5 Flash (High)",
-	"gemini-3.5-flash-medium":    "Gemini 3.5 Flash (Medium)",
-	"gemini-3.6-flash":           "Gemini 3.6 Flash (High)",
-	"gemini-3.7-flash":           "Gemini 3.7 Flash (High)",
-	"gpt-oss-120b":               "GPT-OSS 120B (Medium)",
+	"gemini-3.1-pro-high": "Gemini 3.1 Pro (High)",
+	"gemini-3.1-pro":      "Gemini 3.1 Pro (High)",
+	"gemini-pro":          "Gemini 3.1 Pro (High)",
+	"gemini-3.6-flash":    "Gemini 3.6 Flash (High)",
+	"gemini-3.7-flash":    "Gemini 3.7 Flash (High)",
+	"gpt-oss-120b":        "GPT-OSS 120B (Medium)",
+	// gemini-3.8-flash-{high,medium,low} first published by agy 1.1.25
+	// (.reference/agy-models-20260903.txt, View A).
+	"gemini-3.8-flash":        "Gemini 3.8 Flash (High)",
+	"gemini-3.8-flash-high":   "Gemini 3.8 Flash (High)",
+	"gemini-3.8-flash-medium": "Gemini 3.8 Flash (Medium)",
+	"gemini-3.8-flash-low":    "Gemini 3.8 Flash (Low)",
+	// Legacy gemini-3.5 IDs repoint to the gemini-3.8 family tier-preserving
+	// (user decision 2026-09-03). Accounts that still publish real 3.5 are
+	// unaffected: byID/byDisplay lookups win before routingAliases.
+	"gemini-3.5-flash":           "Gemini 3.8 Flash (High)",
+	"gemini-3.5-flash-high":      "Gemini 3.8 Flash (High)",
+	"gemini-3.5-flash-medium":    "Gemini 3.8 Flash (Medium)",
+	"gemini-3.5-flash-low":       "Gemini 3.8 Flash (Low)",
+	"gemini-3.5-flash-extra-low": "Gemini 3.8 Flash (Low)",
 	"gemini-3.7-flash-high":      "Gemini 3.7 Flash (High)",
 	"gemini-3.7-flash-medium":    "Gemini 3.7 Flash (Medium)",
 	"gemini-3.7-flash-low":       "Gemini 3.7 Flash (Low)",
@@ -145,6 +156,8 @@ var routingAliases = map[string]string{
 }
 
 const gemini37TieredID = "gemini-3.7-flash-tiered"
+
+const gemini38TieredID = "gemini-3.8-flash-tiered"
 
 func Parse(body []byte) (*Catalog, error) {
 	var document responseDocument
@@ -213,6 +226,7 @@ func Parse(body []byte) (*Catalog, error) {
 	}
 
 	applyGemini37(catalog, document.Models)
+	applyGemini38(catalog, document.Models)
 
 	if len(catalog.selectable) == 0 {
 		return nil, errors.New("Cloud Code catalog has no selectable agent models")
@@ -364,6 +378,14 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 			model.SupportsThinking = true
 			return model, nil
 		}
+		if isGemini38Flash(model.ID) || isGemini38Flash(requested) {
+			if variant, err := catalog.Resolve("gemini-3.8-flash-low"); err == nil {
+				return variant, nil
+			}
+			model.ThinkingLevel = "LOW"
+			model.SupportsThinking = true
+			return model, nil
+		}
 		model.SupportsThinking = false
 		model.ThinkingBudget = 0
 		return model, nil
@@ -373,12 +395,17 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 		targetID := ""
 		lowerReq := strings.ToLower(strings.TrimSpace(requested))
 		switch {
+		case strings.HasPrefix(lowerReq, "gemini-3.8-flash"):
+			targetID = "gemini-3.8-flash-" + effort
 		case strings.HasPrefix(lowerReq, "gemini-3.7-flash"):
 			targetID = "gemini-3.7-flash-" + effort
 		case strings.HasPrefix(lowerReq, "gemini-3.6-flash"):
 			targetID = "gemini-3.6-flash-" + effort
 		case strings.HasPrefix(lowerReq, "gemini-3.5-flash"):
-			targetID = "gemini-3.5-flash-" + effort
+			// Legacy 3.5 IDs repoint to the 3.8 family (user decision
+			// 2026-09-03); fall back to a real 3.5 tier only when this
+			// account has no 3.8 at all.
+			targetID = "gemini-3.8-flash-" + effort
 		}
 		if targetID != "" {
 			if variant, err := catalog.Resolve(targetID); err == nil {
@@ -386,6 +413,14 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 					variant.ThinkingBudget = budget
 				}
 				return variant, nil
+			}
+			if strings.HasPrefix(lowerReq, "gemini-3.5-flash") {
+				if variant, err := catalog.Resolve("gemini-3.5-flash-" + effort); err == nil {
+					if hasBudget && budget > 0 {
+						variant.ThinkingBudget = budget
+					}
+					return variant, nil
+				}
 			}
 		}
 	}
@@ -402,6 +437,9 @@ func CleanModelIDAndName(id, displayName string) (string, string) {
 	cleanName := displayName
 
 	switch {
+	case strings.HasPrefix(lowerID, "gemini-3.8-flash"):
+		cleanID = "gemini-3.8-flash"
+		cleanName = "Gemini 3.8 Flash"
 	case strings.HasPrefix(lowerID, "gemini-3.7-flash"):
 		cleanID = "gemini-3.7-flash"
 		cleanName = "Gemini 3.7 Flash"
@@ -457,6 +495,10 @@ func isGemini37Flash(id string) bool {
 	return strings.HasPrefix(strings.ToLower(id), "gemini-3.7-flash")
 }
 
+func isGemini38Flash(id string) bool {
+	return strings.HasPrefix(strings.ToLower(id), "gemini-3.8-flash")
+}
+
 func modelFromDetails(id string, details modelDetails) Model {
 	model := Model{
 		ID: id, DisplayName: details.DisplayName, Description: details.Description,
@@ -474,10 +516,12 @@ func modelFromDetails(id string, details modelDetails) Model {
 	return model
 }
 
-// applyGemini37 publishes gemini-3.7-flash-{high,medium,low}. Cloud Code serves
-// 3.7 as a single gemini-3.7-flash-tiered runtime plus thinkingLevel; agy's
-// high/medium/low slugs are not in agentModelSorts. Fall back to the matching
-// 3.6 Flash ID only when the tiered model is absent from the catalog.
+// applyGemini37 publishes gemini-3.7-flash-{high,medium,low}. Cloud Code may
+// serve 3.7 as a single gemini-3.7-flash-tiered runtime plus thinkingLevel;
+// agy 1.1.25 also publishes the high/medium/low slugs directly
+// (.reference/agy-models-20260903.txt). When the tiered model is present it
+// backs every tier; when absent, upstream's own direct tier entries are kept
+// verbatim, and only missing tiers fall back to the matching 3.6 Flash ID.
 func applyGemini37(catalog *Catalog, models map[string]modelDetails) {
 	variants := []struct {
 		id, displayName, level, fallback string
@@ -502,6 +546,62 @@ func applyGemini37(catalog *Catalog, models map[string]modelDetails) {
 			model = modelFromDetails(gemini37TieredID, tiered)
 			model.UpstreamID = gemini37TieredID
 			model.ThinkingLevel = variant.level
+		} else if _, ok := catalog.byID[variant.id]; ok {
+			// Upstream publishes this tier directly; keep it verbatim.
+			continue
+		} else if base, ok := catalog.byID[variant.fallback]; ok {
+			model = base
+			model.UpstreamID = variant.fallback
+		} else {
+			continue
+		}
+		model.ID = variant.id
+		model.DisplayName = variant.displayName
+		catalog.byID[variant.id] = model
+		catalog.byDisplay[strings.ToLower(variant.displayName)] = model
+		if index, exists := present[variant.id]; exists {
+			catalog.selectable[index] = model
+			continue
+		}
+		prepend = append(prepend, model)
+		present[variant.id] = -1
+	}
+	if len(prepend) > 0 {
+		catalog.selectable = append(prepend, catalog.selectable...)
+	}
+}
+
+// applyGemini38 publishes gemini-3.8-flash-{high,medium,low} the same way
+// applyGemini37 handles 3.7: a gemini-3.8-flash-tiered upstream entry backs
+// every tier when present; otherwise direct upstream tier entries are kept
+// verbatim and only missing tiers fall back to the matching 3.7 Flash ID.
+func applyGemini38(catalog *Catalog, models map[string]modelDetails) {
+	variants := []struct {
+		id, displayName, level, fallback string
+	}{
+		{"gemini-3.8-flash-high", "Gemini 3.8 Flash (High)", "HIGH", "gemini-3.7-flash-high"},
+		{"gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)", "MEDIUM", "gemini-3.7-flash-medium"},
+		{"gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)", "LOW", "gemini-3.7-flash-low"},
+	}
+
+	tiered, hasTiered := models[gemini38TieredID]
+	hasTiered = hasTiered && !tiered.Disabled
+
+	present := make(map[string]int, len(catalog.selectable))
+	for i, model := range catalog.selectable {
+		present[model.ID] = i
+	}
+
+	var prepend []Model
+	for _, variant := range variants {
+		var model Model
+		if hasTiered {
+			model = modelFromDetails(gemini38TieredID, tiered)
+			model.UpstreamID = gemini38TieredID
+			model.ThinkingLevel = variant.level
+		} else if _, ok := catalog.byID[variant.id]; ok {
+			// Upstream publishes this tier directly; keep it verbatim.
+			continue
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
 			model = base
 			model.UpstreamID = variant.fallback
