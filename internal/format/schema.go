@@ -57,6 +57,10 @@ func SanitizeSchema(value any) map[string]any {
 			result[key] = properties
 		case "items":
 			if items := asSlice(raw); items != nil {
+				// JSON Schema tuple form (list of per-position schemas) has
+				// no Gemini counterpart: collapse to the first schema. A
+				// heterogeneous tuple like [number, string] loses the later
+				// positions' types — accepted, Gemini rejects tuple schemas.
 				if len(items) > 0 {
 					result[key] = SanitizeSchema(items[0])
 				} else {
@@ -155,6 +159,8 @@ func cleanSchemaPhases(result map[string]any) map[string]any {
 		}
 	}
 	if items := asSlice(result["items"]); items != nil {
+		// Tuple form collapses to the first schema — Gemini has no tuple
+		// support; later positions' types are dropped (see SanitizeSchema).
 		if len(items) > 0 {
 			result["items"] = CleanSchema(items[0])
 		} else {
