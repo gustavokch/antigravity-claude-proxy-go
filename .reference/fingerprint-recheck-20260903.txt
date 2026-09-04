@@ -7,7 +7,7 @@ Go proxy toolchain: go1.27.0 darwin/arm64
 
 agy invocation:
 
-  agy \
+  $HOME/.local/bin/agy \
     --log-file=/tmp/agy-recheck-20260903.log \
     --print='Reply with exactly AGY_RECHECK_OK_20260903' \
     --print-timeout=90s

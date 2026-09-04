@@ -57,11 +57,15 @@ func SanitizeSchema(value any) map[string]any {
 			result[key] = properties
 		case "items":
 			if items := asSlice(raw); items != nil {
-				cleaned := make([]any, 0, len(items))
-				for _, item := range items {
-					cleaned = append(cleaned, SanitizeSchema(item))
+				// JSON Schema tuple form (list of per-position schemas) has
+				// no Gemini counterpart: collapse to the first schema. A
+				// heterogeneous tuple like [number, string] loses the later
+				// positions' types — accepted, Gemini rejects tuple schemas.
+				if len(items) > 0 {
+					result[key] = SanitizeSchema(items[0])
+				} else {
+					result[key] = map[string]any{"type": "string"}
 				}
-				result[key] = cleaned
 			} else {
 				result[key] = SanitizeSchema(raw)
 			}
@@ -70,10 +74,17 @@ func SanitizeSchema(value any) map[string]any {
 		}
 	}
 	if stringValue(result["type"]) == "" {
-		result["type"] = "object"
+		if result["items"] != nil {
+			result["type"] = "array"
+		} else {
+			result["type"] = "object"
+		}
 	}
 	if result["type"] == "object" && len(asMap(result["properties"])) == 0 {
 		return mergeSchemaPlaceholder(result)
+	}
+	if result["type"] == "array" && result["items"] == nil {
+		result["items"] = map[string]any{"type": "string"}
 	}
 	return result
 }
@@ -148,11 +159,13 @@ func cleanSchemaPhases(result map[string]any) map[string]any {
 		}
 	}
 	if items := asSlice(result["items"]); items != nil {
-		cleaned := make([]any, 0, len(items))
-		for _, item := range items {
-			cleaned = append(cleaned, CleanSchema(item))
+		// Tuple form collapses to the first schema — Gemini has no tuple
+		// support; later positions' types are dropped (see SanitizeSchema).
+		if len(items) > 0 {
+			result["items"] = CleanSchema(items[0])
+		} else {
+			result["items"] = map[string]any{"type": "STRING"}
 		}
-		result["items"] = cleaned
 	} else if item := asMap(result["items"]); item != nil {
 		result["items"] = cleanSchemaPhases(item)
 	}
@@ -161,6 +174,20 @@ func cleanSchemaPhases(result map[string]any) map[string]any {
 	}
 	if value, ok := result["type"].(string); ok {
 		result["type"] = googleSchemaType(value)
+	} else {
+		if result["properties"] != nil {
+			result["type"] = "OBJECT"
+		} else if result["items"] != nil {
+			result["type"] = "ARRAY"
+		} else {
+			result["type"] = "STRING"
+		}
+	}
+	if result["type"] == "ARRAY" && result["items"] == nil {
+		result["items"] = map[string]any{"type": "STRING"}
+	}
+	if result["type"] == "OBJECT" && len(asMap(result["properties"])) == 0 {
+		result = mergeSchemaPlaceholder(result)
 	}
 	return result
 }

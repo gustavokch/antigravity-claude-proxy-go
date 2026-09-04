@@ -1,0 +1,171 @@
+agy 1.1.25 header ground truth via local MITM
+=============================================
+
+Captured: 2026-09-03
+Binary: $HOME/.local/bin/agy (v1.1.25)
+Tool: mitmproxy 12.2.3 (mitmdump), addon scripts/mitm_header_dump.py,
+harness scripts/capture-agy-headers.sh (branch feat/agy-mitm-header-capture).
+Raw evidence: .reference/agy-headers-mitm-20260903.jsonl (41 flows,
+Authorization redacted in-process before write: scheme + sha256 + len only).
+
+Method
+------
+mitmdump on 127.0.0.1:18081, allow_hosts scoped to the two Cloud Code hosts,
+agy launched with HTTPS_PROXY/HTTP_PROXY pointing at it. Byte-exactness
+contract: mitmproxy preserves header name casing, value and received order;
+it does not preserve raw wire octets (whitespace, line endings). Evidence
+below is header-list exact, not raw-octet exact.
+
+Trust path (differs from plan expectation — NO keychain mutation happened)
+--------------------------------------------------------------------------
+- Probe A: SSL_CERT_FILE alone. Go client (go1.27 probe) through the MITM:
+  TLS-OK 404. Apple curl 8.7.1 (SecureTransport/LibreSSL) without -k:
+  404. Both honor SSL_CERT_FILE, so no keychain trust was needed.
+- First agy attempt with SSL_CERT_FILE set to ONLY the mitm CA failed at
+  the eligibility check (www.googleapis.com is a passthrough host, real
+  Google chain, unknown authority). Fix: SSL_CERT_FILE points at a
+  combined bundle (system roots + mitm CA). Lesson: SSL_CERT_FILE
+  REPLACES the whole root pool on darwin; scope it accordingly.
+- mitmproxy CA sha256 (not installed anywhere on this machine):
+  5553529cfcaf19b39d515e6daf203b70bc6533c68e0b297d7d27660c8564efea
+- Interception proof: agy printed AGY_MITM_OK_20260903 (its --print round
+  trip succeeded end to end through the MITM). No cert pinning observed.
+
+Deviations from plan (all recorded, none behavioral for the evidence)
+---------------------------------------------------------------------
+- Port 18081 instead of 18080: the user's live proxy instance occupies
+  127.0.0.1:18080; harness ANTIGRAVITY_MITM_PORT override used.
+- allow_hosts regex anchored AND port-tolerant:
+  ^(cloudcode|daily-cloudcode)-pa\.googleapis\.com(:443)?$
+  mitmproxy 12 matches allow_hosts against "host:port", so a bare anchored
+  host regex silently passes everything through as a raw tunnel (verified
+  empirically with a debug addon before the capture).
+- agy log written to the session scratchpad, not /tmp.
+
+Capture summary
+---------------
+- 41 requests, ALL to daily-cloudcode-pa.googleapis.com (cloudcode-pa prod
+  host never contacted by agy 1.1.25 in this run).
+- HTTP version: 41x HTTP/1.1 (consistent with the ALPN-absent ClientHello
+  in the 2026-09-03 pcap).
+- Endpoints hit: :loadCodeAssist, :fetchAvailableModels,
+  :streamGenerateContent?alt=sse, :fetchUserInfo, :listExperiments,
+  :fetchAdminControls, :recordCodeAssistMetrics,
+  :retrieveUserQuotaSummary, :setUserSettings, :writeTrajectoryAcls.
+- Single OAuth token across the run (1 distinct redacted sha256).
+- Single User-Agent literal across all 41 requests.
+
+Per-endpoint header table (identical set on every endpoint)
+-----------------------------------------------------------
+Wire order is STABLE across all 41 requests (no Go map randomization
+pattern). Canonical order, non-streaming endpoints:
+
+  1. Host: daily-cloudcode-pa.googleapis.com
+  2. User-Agent: antigravity/cli/1.1.25 (aidev_client; os_type=darwin; arch=arm64; cl=975399401; auth_method=consumer)
+  3. Content-Length: <body length>
+  4. Authorization: Bearer <redacted: sha256 83bb7bc1…, len 260>
+  5. Content-Type: application/json
+  6. Accept-Encoding: gzip
+
+Streaming endpoint (:streamGenerateContent?alt=sse) differs only in slot 3:
+  3. Transfer-Encoding: chunked   (replaces Content-Length)
+
+Header names present in the entire capture, complete set:
+  Host, User-Agent, Content-Length, Transfer-Encoding, Authorization,
+  Content-Type, Accept-Encoding
+
+Notably ABSENT from every agy 1.1.25 request:
+  X-Client-Name, X-Client-Version, x-goog-api-client,
+  X-Machine-Session-Id, Accept
+
+Redaction proof
+---------------
+  grep -c '"redacted": true'  -> 41 (one Authorization per flow)
+  grep -c '"redacted": false' -> 0
+  grep -ci 'Bearer eyJ'       -> 0 (no raw token anywhere)
+
+Verdict table: agy 1.1.25 MITM ground truth vs proxy outbound headers
+---------------------------------------------------------------------
+Proxy references: internal/cloudcode/client.go:30-32 (constants),
+:139-147 (defaultHeader), :271-276 (per-request). Verdicts per plan:
+
+| # | Header           | agy 1.1.25 observed                                   | proxy outbound                                   | verdict          |
+|---|------------------|-------------------------------------------------------|--------------------------------------------------|------------------|
+| 1 | Host             | daily-cloudcode-pa.googleapis.com                     | from endpoint URL (transport)                    | exact (n/a)      |
+| 2 | User-Agent       | antigravity/cli/1.1.25 (aidev_client; os_type=darwin; arch=arm64; cl=975399401; auth_method=consumer) | antigravity/<DefaultUserAgentVersion=2.0.3> <goos>/<goarch> | value-drift |
+| 3 | Content-Length / Transfer-Encoding | transport-managed; chunked on :streamGenerateContent | transport-managed (Go sets both equivalently) | exact (n/a)      |
+| 4 | Authorization    | Bearer <token>                                        | Bearer <token>                                   | exact            |
+| 5 | Content-Type     | application/json                                      | application/json                                 | exact            |
+| 6 | Accept-Encoding  | gzip                                                  | identity                                         | value-drift      |
+| 7 | X-Client-Name    | ABSENT                                                | antigravity                                      | extra-in-proxy   |
+| 8 | X-Client-Version | ABSENT                                                | <DefaultClientVersion=1.110.0>                   | extra-in-proxy   |
+| 9 | x-goog-api-client| ABSENT                                                | gl-go/1.26.4 auth/0.5 google-api-go-client/0.5   | extra-in-proxy   |
+|10 | X-Machine-Session-Id | ABSENT                                            | per-request when SessionID set                   | extra-in-proxy   |
+|11 | Accept           | ABSENT                                                | per-request when Accept != application/json      | extra-in-proxy   |
+|12 | header ORDER     | stable deliberate order (identical all 41 requests)   | Go http.Header: transport specials + sorted subset | order-drift    |
+
+Notes on #12: agy's stable non-alphabetical order (Host, UA, CL, Auth, CT,
+AE) is not net/http's writeSubset sort, so agy serializes headers outside
+the stdlib request-write path. The proxy is Go net/http; reproducing agy's
+exact wire order would require transport restructuring. Upstream demonstrably
+tolerates the proxy's current order (JA4 gate passes, calls succeed), so
+order-drift is recorded, not fixed, without explicit sign-off.
+
+Notes on #2: agy's UA embeds per-build (cl=) and per-account
+(auth_method=consumer) fields; it is not a static constant the proxy can
+"sync" verbatim without spoofing those fields.
+
+Plan branch decision: 5 extra-in-proxy headers (7-11) + 2 value-drifts
+(2, 6) => per Global Constraints this is a STOP: surface to the user before
+touching internal/cloudcode/client.go. No constants were synced in this
+commit; the three constants are now known to describe headers agy does not
+send (X-Client-Version, x-goog-api-client) plus a UA whose format agy does
+not use.
+
+Supersession: .reference/agy-headers-20260903.txt verdicts superseded (see
+note added at the top of that file).
+
+Machine-state cleanup (mandatory; executed 2026-09-03)
+------------------------------------------------------
+Trust was granted via SSL_CERT_FILE env only (process-scoped), so the
+planned keychain revocation was never needed. Verification:
+
+  security find-certificate -Z 5553529c… login.keychain-db
+    -> "The specified item could not be found in the keychain."
+       (mitmproxy CA never added to any keychain — nothing to revoke)
+  pgrep -fl mitmdump        -> none (no capture process left running)
+  grep SSL_CERT_FILE shells -> none (no persistent env exports)
+  env | grep SSL_CERT       -> not set
+
+No keychain mutation, no sudo, no persistent machine state from this
+capture session. The post-revocation failing-curl check from the plan is
+trivially satisfied: any curl through mitmdump without SSL_CERT_FILE
+already fails TLS against the untrusted CA.
+
+Resolution (2026-09-03, user-approved)
+--------------------------------------
+Decision: strip extras, match agy 1.1.25 exactly (option 2 of the STOP).
+Implemented test-first in internal/cloudcode/client.go:
+
+- Removed headers agy never sends: X-Client-Name, X-Client-Version,
+  x-goog-api-client, X-Machine-Session-Id, Accept. RequestOptions lost its
+  Accept/SessionID fields; the Headers override map remains (anthropic-beta).
+- Accept-Encoding identity -> gzip. Manual Accept-Encoding disables
+  net/http auto-decompression, so readResponse and DoSSE now decompress
+  gzip responses themselves (maybeGunzip, Content-Encoding driven) —
+  covered by TestDoJSONDecompressesGzipResponse and
+  TestDoSSEDecompressesGzipStream.
+- User-Agent restructured to the captured agy literal format:
+  antigravity/cli/1.1.25 (aidev_client; os_type=<goos>; arch=<goarch>;
+  cl=975399401; auth_method=consumer). Constants now:
+  DefaultUserAgentVersion="1.1.25", AgyBuildCL="975399401",
+  AgyAuthMethod="consumer". DefaultClientVersion and GoogleAPIClient are
+  gone (headers do not exist on the wire).
+- Header ORDER not reproduced (order-drift stands): agy's stable
+  non-stdlib order would require transport restructuring; Go net/http
+  order is accepted upstream.
+
+Gate: go build/vet/test -race ./... green (19 packages).
+sudo ./scripts/verify-ja4.sh: "Fingerprint verification SUCCESS! JA4
+matches agy baseline exact." (t13d131100_f57a46bbacb6_f50d94e863eb) —
+ClientHello untouched by the header changes.

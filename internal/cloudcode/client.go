@@ -3,6 +3,7 @@ package cloudcode
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -27,9 +28,9 @@ const (
 	PathGenerateContent      = "/v1internal:generateContent"
 	PathStreamGenerate       = "/v1internal:streamGenerateContent?alt=sse"
 
-	DefaultUserAgentVersion = "2.0.3"
-	DefaultClientVersion    = "1.110.0"
-	GoogleAPIClient         = "gl-go/1.26.4 auth/0.5 google-api-go-client/0.5"
+	DefaultUserAgentVersion = "1.1.25"
+	AgyBuildCL              = "975399401"
+	AgyAuthMethod           = "consumer"
 )
 
 var (
@@ -40,7 +41,6 @@ var (
 type Options struct {
 	AccessToken      string
 	UserAgentVersion string
-	ClientVersion    string
 	Timeout          time.Duration
 	HTTPClient       *http.Client
 }
@@ -51,7 +51,6 @@ type Client struct {
 	transport             *http.Transport
 	accessToken           string
 	userAgent             string
-	clientVersion         string
 	contentEndpoints      []string
 	provisioningEndpoints []string
 	defaultHeader         http.Header
@@ -98,9 +97,7 @@ func (e *HTTPError) Error() string {
 }
 
 type RequestOptions struct {
-	Accept    string
-	SessionID string
-	Headers   http.Header
+	Headers http.Header
 }
 
 type SSEEvent struct {
@@ -125,9 +122,6 @@ func New(options Options) *Client {
 	if options.UserAgentVersion == "" {
 		options.UserAgentVersion = DefaultUserAgentVersion
 	}
-	if options.ClientVersion == "" {
-		options.ClientVersion = DefaultClientVersion
-	}
 
 	var transport *http.Transport
 	client := options.HTTPClient
@@ -136,22 +130,22 @@ func New(options Options) *Client {
 		client = &http.Client{Transport: transport, Timeout: options.Timeout}
 	}
 
-	userAgent := platformUserAgent(options.UserAgentVersion)
+	// Header set matches agy 1.1.25 wire ground truth exactly (MITM capture
+	// 2026-09-03, .reference/agy-headers-mitm-20260903.txt): agy sends only
+	// Authorization, Content-Type, Accept-Encoding: gzip and User-Agent on
+	// Cloud Code requests — no X-Client-*, no x-goog-api-client, no Accept.
+	userAgent := agyUserAgent(options.UserAgentVersion)
 	header := make(http.Header)
 	header.Set("Authorization", "Bearer "+options.AccessToken)
 	header.Set("Content-Type", "application/json")
-	header.Set("Accept-Encoding", "identity")
+	header.Set("Accept-Encoding", "gzip")
 	header.Set("User-Agent", userAgent)
-	header.Set("X-Client-Name", "antigravity")
-	header.Set("X-Client-Version", options.ClientVersion)
-	header.Set("x-goog-api-client", GoogleAPIClient)
 
 	return &Client{
 		httpClient:            client,
 		transport:             transport,
 		accessToken:           options.AccessToken,
 		userAgent:             userAgent,
-		clientVersion:         options.ClientVersion,
 		contentEndpoints:      append([]string(nil), ContentEndpoints...),
 		provisioningEndpoints: append([]string(nil), ProvisioningEndpoints...),
 		defaultHeader:         header,
@@ -194,7 +188,6 @@ func (c *Client) GenerateContent(ctx context.Context, payload any, options Reque
 }
 
 func (c *Client) StreamGenerateContent(ctx context.Context, payload any, options RequestOptions, consume func(SSEEvent) error) (Response, error) {
-	options.Accept = "text/event-stream"
 	return c.DoSSE(ctx, c.contentEndpoints, PathStreamGenerate, payload, options, consume)
 }
 
@@ -250,7 +243,13 @@ func (c *Client) DoSSE(ctx context.Context, endpoints []string, path string, pay
 			continue
 		}
 		result := Response{Endpoint: endpoint, StatusCode: response.StatusCode, Header: response.Header}
-		err = ParseSSE(response.Body, consume)
+		streamReader, streamErr := maybeGunzip(response)
+		if streamErr != nil {
+			_ = response.Body.Close()
+			failures = append(failures, fmt.Errorf("open Cloud Code stream from %s: %w", endpoint, streamErr))
+			continue
+		}
+		err = ParseSSE(streamReader, consume)
 		closeErr := response.Body.Close()
 		if err != nil {
 			return result, fmt.Errorf("parse Cloud Code SSE stream: %w", err)
@@ -269,12 +268,6 @@ func (c *Client) newRequest(ctx context.Context, endpoint, path string, body []b
 		return nil, fmt.Errorf("create Cloud Code request: %w", err)
 	}
 	request.Header = c.defaultHeader.Clone()
-	if options.Accept != "" && options.Accept != "application/json" {
-		request.Header.Set("Accept", options.Accept)
-	}
-	if options.SessionID != "" {
-		request.Header.Set("X-Machine-Session-Id", options.SessionID)
-	}
 	for name, values := range options.Headers {
 		request.Header.Del(name)
 		for _, value := range values {
@@ -284,9 +277,23 @@ func (c *Client) newRequest(ctx context.Context, endpoint, path string, body []b
 	return request, nil
 }
 
+// maybeGunzip returns a decompressed view of response.Body when upstream
+// honored our Accept-Encoding: gzip. Setting that header manually disables
+// net/http's automatic decompression, so the client handles it here.
+func maybeGunzip(response *http.Response) (io.Reader, error) {
+	if !strings.EqualFold(response.Header.Get("Content-Encoding"), "gzip") {
+		return response.Body, nil
+	}
+	return gzip.NewReader(response.Body)
+}
+
 func readResponse(endpoint string, response *http.Response) (Response, error) {
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
+	bodyReader, err := maybeGunzip(response)
+	if err != nil {
+		return Response{}, fmt.Errorf("open Cloud Code response from %s: %w", endpoint, err)
+	}
+	body, err := io.ReadAll(io.LimitReader(bodyReader, 64<<20))
 	if err != nil {
 		return Response{}, fmt.Errorf("read Cloud Code response from %s: %w", endpoint, err)
 	}
@@ -389,12 +396,16 @@ func ParseSSE(reader io.Reader, consume func(SSEEvent) error) error {
 	return dispatch()
 }
 
-func platformUserAgent(version string) string {
+// agyUserAgent reproduces the agy 1.1.25 User-Agent literal captured in the
+// 2026-09-03 MITM run: version is the agy CLI version, cl its build
+// changelist, auth_method its OAuth account class.
+func agyUserAgent(version string) string {
 	osName := runtime.GOOS
 	if osName == "windows" {
 		osName = "win32"
 	}
-	return fmt.Sprintf("antigravity/%s %s/%s", version, osName, runtime.GOARCH)
+	return fmt.Sprintf("antigravity/cli/%s (aidev_client; os_type=%s; arch=%s; cl=%s; auth_method=%s)",
+		version, osName, runtime.GOARCH, AgyBuildCL, AgyAuthMethod)
 }
 
 func platformEnum() int {

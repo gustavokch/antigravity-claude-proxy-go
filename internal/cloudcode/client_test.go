@@ -2,12 +2,14 @@ package cloudcode
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -52,12 +54,22 @@ func TestFetchAvailableModelsHeadersAndDailyFallback(t *testing.T) {
 			t.Errorf("path = %q", request.URL.Path)
 		}
 		assertHeader(t, request, "Authorization", "Bearer token")
-		assertHeader(t, request, "X-Client-Name", "antigravity")
-		assertHeader(t, request, "X-Client-Version", DefaultClientVersion)
-		assertHeader(t, request, "x-goog-api-client", GoogleAPIClient)
-		assertHeader(t, request, "Accept-Encoding", "identity")
-		if !strings.HasPrefix(request.Header.Get("User-Agent"), "antigravity/2.0.3 ") {
-			t.Errorf("User-Agent = %q", request.Header.Get("User-Agent"))
+		assertHeader(t, request, "Content-Type", "application/json")
+		assertHeader(t, request, "Accept-Encoding", "gzip")
+		// agy 1.1.25 sends none of these (MITM ground truth, see
+		// .reference/agy-headers-mitm-20260903.txt).
+		assertNoHeader(t, request, "X-Client-Name")
+		assertNoHeader(t, request, "X-Client-Version")
+		assertNoHeader(t, request, "x-goog-api-client")
+		assertNoHeader(t, request, "Accept")
+		assertNoHeader(t, request, "X-Machine-Session-Id")
+		ua := request.Header.Get("User-Agent")
+		wantPrefix := "antigravity/cli/" + DefaultUserAgentVersion + " (aidev_client; os_type="
+		if !strings.HasPrefix(ua, wantPrefix) ||
+			!strings.Contains(ua, "; arch="+runtime.GOARCH+";") ||
+			!strings.Contains(ua, "; cl="+AgyBuildCL+";") ||
+			!strings.HasSuffix(ua, "; auth_method="+AgyAuthMethod+")") {
+			t.Errorf("User-Agent = %q", ua)
 		}
 		var body map[string]string
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
@@ -84,6 +96,89 @@ func TestFetchAvailableModelsHeadersAndDailyFallback(t *testing.T) {
 	}
 	if dailyCalls != 1 || prodCalls != 1 || response.Endpoint != prod.URL {
 		t.Fatalf("daily=%d prod=%d endpoint=%q", dailyCalls, prodCalls, response.Endpoint)
+	}
+}
+
+func TestDoJSONDecompressesGzipResponse(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// Manual Accept-Encoding disables net/http auto-decompression; the
+		// client must decompress itself (MITM: agy sends Accept-Encoding: gzip).
+		if got := request.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Errorf("Accept-Encoding = %q", got)
+		}
+		var buf bytes.Buffer
+		writer.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(&buf)
+		_, _ = gz.Write([]byte(`{"models":{}}`))
+		if err := gz.Close(); err != nil {
+			t.Error(err)
+		}
+		_, _ = writer.Write(buf.Bytes())
+	}))
+	defer server.Close()
+
+	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
+	client.contentEndpoints = []string{server.URL}
+	response, err := client.FetchAvailableModels(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(response.Body, &parsed); err != nil {
+		t.Fatalf("response body was not decompressed: %v (body=%q)", err, response.Body)
+	}
+	if parsed["models"] == nil {
+		t.Fatalf("parsed body = %#v", parsed)
+	}
+}
+
+func TestDoSSEDecompressesGzipStream(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Errorf("Accept-Encoding = %q", got)
+		}
+		var buf bytes.Buffer
+		writer.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(&buf)
+		_, _ = gz.Write([]byte("event: message\r\ndata: {\"ok\":true}\r\n\r\n"))
+		if err := gz.Close(); err != nil {
+			t.Error(err)
+		}
+		_, _ = writer.Write(buf.Bytes())
+	}))
+	defer server.Close()
+
+	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
+	client.contentEndpoints = []string{server.URL}
+	var events []SSEEvent
+	if _, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Event != "message" || string(events[0].Data) != `{"ok":true}` {
+		t.Fatalf("events = %#v (stream was not decompressed?)", events)
+	}
+}
+
+func TestDoSSEClosesBodyOnGunzipError(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Encoding", "gzip")
+		_, _ = writer.Write([]byte("invalid-gzip-payload"))
+	}))
+	defer server.Close()
+
+	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
+	client.contentEndpoints = []string{server.URL}
+	_, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected error on corrupt gzip stream, got nil")
 	}
 }
 
@@ -153,5 +248,12 @@ func assertHeader(t *testing.T, request *http.Request, name, want string) {
 	t.Helper()
 	if got := request.Header.Get(name); got != want {
 		t.Errorf("%s = %q, want %q", name, got, want)
+	}
+}
+
+func assertNoHeader(t *testing.T, request *http.Request, name string) {
+	t.Helper()
+	if got := request.Header.Get(name); got != "" {
+		t.Errorf("%s unexpectedly present: %q", name, got)
 	}
 }
