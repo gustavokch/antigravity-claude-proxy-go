@@ -36,12 +36,14 @@ type OpenRouterModelConfig struct {
 
 // OpenRouterRoutingConfig holds routing strategy knobs.
 type OpenRouterRoutingConfig struct {
-	FailureThreshold int `json:"failureThreshold,omitempty"`
-	Retry429Max      int `json:"retry429Max,omitempty"`
-	BackoffBaseMs    int `json:"backoffBaseMs,omitempty"`
-	BackoffCapMs     int `json:"backoffCapMs,omitempty"`
-	RequestBudgetMs  int `json:"requestBudgetMs,omitempty"`
-	RankWeights      struct {
+	FailureThreshold     int `json:"failureThreshold,omitempty"`
+	Retry429Max          int `json:"retry429Max,omitempty"`
+	MaxRetries           int `json:"maxRetries,omitempty"`
+	BackoffBaseMs        int `json:"backoffBaseMs,omitempty"`
+	BackoffCapMs         int `json:"backoffCapMs,omitempty"`
+	RequestBudgetMs      int `json:"requestBudgetMs,omitempty"`
+	MinRequestIntervalMs int `json:"minRequestIntervalMs,omitempty"`
+	RankWeights          struct {
 		Availability float64 `json:"availability,omitempty"`
 		Context      float64 `json:"context,omitempty"`
 		Latency      float64 `json:"latency,omitempty"`
@@ -238,11 +240,13 @@ func (c OpenRouterRoutingConfig) RankWeightsToOpenRouter() openrouter.RankWeight
 func DefaultRoutingConfig() OpenRouterRoutingConfig {
 	rw := openrouter.DefaultRankWeights()
 	return OpenRouterRoutingConfig{
-		FailureThreshold: 10,
-		Retry429Max:      10,
-		BackoffBaseMs:    500,
-		BackoffCapMs:     120000,
-		RequestBudgetMs:  120000,
+		FailureThreshold:     10,
+		Retry429Max:          10,
+		MaxRetries:           3,
+		BackoffBaseMs:        500,
+		BackoffCapMs:         120000,
+		RequestBudgetMs:      120000,
+		MinRequestIntervalMs: 0,
 		RankWeights: struct {
 			Availability float64 `json:"availability,omitempty"`
 			Context      float64 `json:"context,omitempty"`
