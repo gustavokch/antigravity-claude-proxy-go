@@ -91,11 +91,3 @@ func IsOpenRouterTransientError(statusCode int, body []byte) bool {
 	}
 	return false
 }
-
-// IsRetryableOpenRouterError checks if an attempt error or response is candidate for automatic retry.
-func IsRetryableOpenRouterError(statusCode int, body []byte, networkErr error) bool {
-	if networkErr != nil {
-		return true
-	}
-	return IsOpenRouterTransientError(statusCode, body)
-}
