@@ -200,3 +200,91 @@ func TestSharedModelFetchErrorFreesSlotForNextCaller(t *testing.T) {
 		t.Fatalf("upstream FetchAvailableModels calls=%d; want more than %d from the fresh fetch", got, callsAfterDeadFetch)
 	}
 }
+
+func TestUpdateAccountQuotaPopulatesGemini38FlashFamily(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tiered 3.8 expands to selectable 3.8 tiers with quota", func(t *testing.T) {
+		manager, err := New(Options{Accounts: []*Account{{Email: "user@example.com", Enabled: true}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatcher, err := NewDispatcher(DispatcherOptions{
+			Manager:   manager,
+			Resolver:  stubResolver{},
+			NewClient: func(string) CloudClient { return nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		tieredBody := []byte(`{
+			"defaultAgentModelId":"gemini-3.8-flash-high",
+			"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":["gemini-3.8-flash-high"]}]}],
+			"models":{
+				"gemini-3.8-flash-tiered":{"supportsThinking":true,"quotaInfo":{"remainingFraction":0.85,"resetTime":"2026-09-05T12:00:00Z"}}
+			}
+		}`)
+
+		acc := manager.GetAllAccounts()[0]
+		dispatcher.updateAccountQuota(acc, tieredBody)
+
+		updated := manager.GetAllAccounts()[0]
+		for _, tier := range []string{"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low"} {
+			q, ok := updated.Quota.Models[tier]
+			if !ok {
+				t.Fatalf("expected quota for %q, got map: %v", tier, updated.Quota.Models)
+			}
+			if q.RemainingFraction == nil || *q.RemainingFraction != 0.85 {
+				t.Fatalf("expected fraction 0.85 for %q, got %v", tier, q.RemainingFraction)
+			}
+			if q.ResetTime != "2026-09-05T12:00:00Z" {
+				t.Fatalf("expected reset time 2026-09-05T12:00:00Z for %q, got %q", tier, q.ResetTime)
+			}
+		}
+	})
+
+	t.Run("fallback from 3.7 populates 3.8 family quota", func(t *testing.T) {
+		manager, err := New(Options{Accounts: []*Account{{Email: "user2@example.com", Enabled: true}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatcher, err := NewDispatcher(DispatcherOptions{
+			Manager:   manager,
+			Resolver:  stubResolver{},
+			NewClient: func(string) CloudClient { return nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		fallbackBody := []byte(`{
+			"defaultAgentModelId":"gemini-3.7-flash-high",
+			"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":["gemini-3.7-flash-high","gemini-3.7-flash-medium","gemini-3.7-flash-low"]}]}],
+			"models":{
+				"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)","supportsThinking":true,"quotaInfo":{"remainingFraction":0.60,"resetTime":"2026-09-05T14:00:00Z"}},
+				"gemini-3.7-flash-medium":{"displayName":"Gemini 3.7 Flash (Medium)","supportsThinking":true,"quotaInfo":{"remainingFraction":0.70,"resetTime":"2026-09-05T14:00:00Z"}},
+				"gemini-3.7-flash-low":{"displayName":"Gemini 3.7 Flash (Low)","supportsThinking":true,"quotaInfo":{"remainingFraction":0.90,"resetTime":"2026-09-05T14:00:00Z"}}
+			}
+		}`)
+
+		acc := manager.GetAllAccounts()[0]
+		dispatcher.updateAccountQuota(acc, fallbackBody)
+
+		updated := manager.GetAllAccounts()[0]
+		tiers := map[string]float64{
+			"gemini-3.8-flash-high":   0.60,
+			"gemini-3.8-flash-medium": 0.70,
+			"gemini-3.8-flash-low":    0.90,
+		}
+		for tier, expectedFrac := range tiers {
+			q, ok := updated.Quota.Models[tier]
+			if !ok {
+				t.Fatalf("expected quota for fallback tier %q, got map: %v", tier, updated.Quota.Models)
+			}
+			if q.RemainingFraction == nil || *q.RemainingFraction != expectedFrac {
+				t.Fatalf("expected fraction %f for %q, got %v", expectedFrac, tier, q.RemainingFraction)
+			}
+		}
+	})
+}

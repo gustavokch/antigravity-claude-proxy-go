@@ -500,6 +500,11 @@ func isGemini38Flash(id string) bool {
 }
 
 func modelFromDetails(id string, details modelDetails) Model {
+	remaining := details.QuotaInfo.RemainingFraction
+	if remaining == nil && details.QuotaInfo.ResetTime != "" {
+		zero := 0.0
+		remaining = &zero
+	}
 	model := Model{
 		ID: id, DisplayName: details.DisplayName, Description: details.Description,
 		Disabled: details.Disabled, Recommended: details.Recommended,
@@ -507,7 +512,7 @@ func modelFromDetails(id string, details modelDetails) Model {
 		SupportsAdaptiveThinking: details.SupportsAdaptiveThinking,
 		ThinkingBudget:           details.ThinkingBudget, MinThinkingBudget: details.MinThinkingBudget,
 		MaxTokens: details.MaxTokens, MaxOutputTokens: details.MaxOutputTokens,
-		QuotaRemainingFraction: details.QuotaInfo.RemainingFraction,
+		QuotaRemainingFraction: remaining,
 		QuotaResetTime:         details.QuotaInfo.ResetTime,
 	}
 	if model.DisplayName == "" {
@@ -549,6 +554,10 @@ func applyGemini37(catalog *Catalog, models map[string]modelDetails) {
 		} else if _, ok := catalog.byID[variant.id]; ok {
 			// Upstream publishes this tier directly; keep it verbatim.
 			continue
+		} else if base, ok := catalog.byID["gemini-3.7-flash"]; ok {
+			model = base
+			model.UpstreamID = "gemini-3.7-flash"
+			model.ThinkingLevel = variant.level
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
 			model = base
 			model.UpstreamID = variant.fallback
@@ -602,6 +611,10 @@ func applyGemini38(catalog *Catalog, models map[string]modelDetails) {
 		} else if _, ok := catalog.byID[variant.id]; ok {
 			// Upstream publishes this tier directly; keep it verbatim.
 			continue
+		} else if base, ok := catalog.byID["gemini-3.8-flash"]; ok {
+			model = base
+			model.UpstreamID = "gemini-3.8-flash"
+			model.ThinkingLevel = variant.level
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
 			model = base
 			model.UpstreamID = variant.fallback

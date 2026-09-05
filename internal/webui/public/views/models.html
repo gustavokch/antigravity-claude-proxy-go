@@ -45,15 +45,28 @@
     <div class="view-card !p-4 flex flex-col lg:flex-row items-center justify-between gap-4">
         <div class="flex flex-col md:flex-row items-center gap-4 w-full lg:w-auto flex-wrap">
             <!-- Custom Select -->
-            <div class="relative w-full md:w-64 h-9">
+            <div class="relative w-full md:w-72 h-9">
                 <select
                     class="w-full h-full bg-space-800 border border-space-border text-gray-300 rounded pl-4 pr-10 focus:outline-none focus:border-blue-500 transition-all truncate text-xs cursor-pointer"
                     style="appearance: none; -webkit-appearance: none; -moz-appearance: none; background-image: none;"
                     x-model="$store.data.filters.account" @change="$store.data.computeQuotaRows()">
                     <option value="all" x-text="$store.global.t('allAccounts')">All Accounts</option>
-                    <template x-for="acc in $store.data.accounts" :key="acc.email">
-                        <option :value="acc.email" x-text="Redact.email(acc.email).split('@')[0]"></option>
-                    </template>
+
+                    <!-- Google Cloud Code Accounts Group -->
+                    <optgroup :label="$store.global.t('googleCloudCode') || 'Google Cloud Code'"
+                              x-show="$store.data.accounts.some(a => (a.provider || 'google') === 'google')">
+                        <template x-for="acc in $store.data.accounts.filter(a => (a.provider || 'google') === 'google')" :key="acc.id || acc.email">
+                            <option :value="acc.email || acc.id" x-text="'[Google] ' + (acc.email ? Redact.email(acc.email).split('@')[0] : acc.name)"></option>
+                        </template>
+                    </optgroup>
+
+                    <!-- Claude Code Accounts Group -->
+                    <optgroup :label="$store.global.t('claudeCode') || 'Claude Code'"
+                              x-show="$store.data.accounts.some(a => a.provider === 'claudecode')">
+                        <template x-for="acc in $store.data.accounts.filter(a => a.provider === 'claudecode')" :key="acc.id || acc.email">
+                            <option :value="acc.id || acc.email" x-text="'[Claude] ' + (acc.name || (acc.email ? Redact.email(acc.email) : acc.id)) + (acc.type ? ' (' + acc.type + ')' : '')"></option>
+                        </template>
+                    </optgroup>
                 </select>
                 <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-gray-500">
                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -268,20 +281,44 @@
                                 <!-- Per-account breakdown (non-compact only) -->
                                 <div x-show="!$store.settings.compact && row.quotaInfo && row.quotaInfo.length > 1"
                                      class="flex flex-col gap-1 mt-1 pt-1 border-t border-space-border/30">
-                                    <template x-for="q in getVisibleAccounts(row)" :key="q.fullEmail + '-detail'">
-                                        <div class="flex items-center gap-2">
-                                            <span class="text-[10px] font-mono text-gray-500 w-20 truncate text-right flex-shrink-0"
-                                                  x-text="Redact.email(q.email)"></span>
-                                            <div class="flex-1 h-1 rounded-full bg-space-800 overflow-hidden">
+                                    <template x-for="q in getVisibleAccounts(row)" :key="(q.id || q.fullEmail) + '-detail'">
+                                        <div class="flex items-center gap-2 py-0.5 text-xs">
+                                            <!-- Provider Badge -->
+                                            <span class="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider flex-shrink-0"
+                                                  :class="q.provider === 'claudecode' ? 'bg-purple-950/70 text-purple-300 border border-purple-800/60' : 'bg-blue-950/70 text-blue-300 border border-blue-800/60'"
+                                                  x-text="q.provider === 'claudecode' ? 'Claude' : 'Google'"></span>
+
+                                            <!-- Account Name / Email -->
+                                            <span class="text-[10px] font-mono text-gray-300 w-28 truncate text-left flex-shrink-0"
+                                                  :title="q.name ? q.name + ' (' + Redact.email(q.fullEmail) + ')' : Redact.email(q.fullEmail)"
+                                                  x-text="q.name || Redact.email(q.email)"></span>
+
+                                            <!-- Live Status Pill -->
+                                            <span class="px-1.5 py-0.2 rounded text-[9px] font-mono flex-shrink-0"
+                                                  :class="{
+                                                      'bg-emerald-950/60 text-emerald-400 border border-emerald-800/50': q.status === 'ok' || q.status === 'healthy',
+                                                      'bg-amber-950/60 text-amber-400 border border-amber-800/50': q.status === 'cooldown',
+                                                      'bg-red-950/60 text-red-400 border border-red-800/50': q.status === 'rate_limited',
+                                                      'bg-zinc-900 text-zinc-500 border border-zinc-700/50': q.status === 'disabled'
+                                                  }"
+                                                  x-text="q.status === 'ok' || q.status === 'healthy' ? ($store.global.t('readyStatus') || 'Ready') : (q.status === 'cooldown' ? ($store.global.t('cooldownStatus') || 'Cooldown') : (q.status === 'rate_limited' ? ($store.global.t('rateLimitedStatus') || 'Rate Limited') : ($store.global.t('disabledStatus') || 'Disabled')))"></span>
+
+                                            <!-- Progress Bar -->
+                                            <div class="flex-1 h-1.5 rounded-full bg-space-800 overflow-hidden">
                                                 <div class="h-full rounded-full transition-all duration-500"
-                                                     :class="q.pct > 50 ? 'bg-emerald-500/70' : (q.pct > 0 ? 'bg-amber-500/70' : 'bg-red-500/50')"
+                                                     :class="q.status === 'cooldown' ? 'bg-amber-500' : (q.pct > 50 ? 'bg-emerald-500/70' : (q.pct > 0 ? 'bg-amber-500/70' : 'bg-red-500/50'))"
                                                      :style="'width: ' + q.pct + '%'"></div>
                                             </div>
-                                            <span class="text-[10px] font-mono w-8 text-right flex-shrink-0"
+
+                                            <!-- Quota / Remaining -->
+                                            <span class="text-[10px] font-mono w-10 text-right flex-shrink-0"
                                                   :class="q.pct > 0 ? 'text-gray-400' : 'text-red-500/70'"
                                                   x-text="q.pct + '%'"></span>
+
+                                            <!-- Reset Countdown -->
                                             <span x-show="q.resetTime"
-                                                  class="text-[9px] font-mono text-gray-600 w-12 text-right flex-shrink-0"
+                                                  class="text-[9px] font-mono text-gray-500 w-14 text-right flex-shrink-0 truncate"
+                                                  :title="'Resets at: ' + q.resetTime"
                                                   x-text="window.utils.formatTimeUntil(q.resetTime)"></span>
                                         </div>
                                     </template>
@@ -299,7 +336,7 @@
                         </td>
                         <td x-show="!$store.settings.compact" class="font-mono text-xs">
                             <div class="tooltip tooltip-left"
-                                 :data-tip="row.quotaInfo && row.quotaInfo.length > 0 ? row.quotaInfo.filter(q => q.resetTime).map(q => Redact.email(q.email) + ': ' + q.resetTime).join('\n') : 'No reset data'">
+                                 :data-tip="row.quotaInfo && row.quotaInfo.length > 0 ? row.quotaInfo.filter(q => q.resetTime).map(q => (q.name || Redact.email(q.email)) + ': ' + q.resetTime).join('\n') : 'No reset data'">
                                 <span x-text="row.resetIn"
                                     :class="(row.resetIn && row.resetIn.indexOf('h') === -1 && row.resetIn !== '-') ? 'text-blue-400 font-bold' : 'text-gray-400'"></span>
                             </div>
@@ -319,18 +356,23 @@
                                     <template x-if="row.quotaInfo && row.quotaInfo.length > 0">
                                         <div class="flex flex-wrap gap-1 justify-start">
                                             <!-- Visible accounts (limited to maxVisible) -->
-                                            <template x-for="(q, idx) in row.quotaInfo.slice(0, maxVisible)" :key="q.fullEmail">
+                                            <template x-for="(q, idx) in row.quotaInfo.slice(0, maxVisible)" :key="q.id || q.fullEmail">
                                                 <div class="tooltip tooltip-left"
-                                                     :data-tip="`${Redact.email(q.fullEmail)} (${q.pct}%)` + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')">
+                                                     :data-tip="`${q.provider === 'claudecode' ? '[Claude Code] ' : '[Google] '}${q.name || Redact.email(q.fullEmail)} (${q.pct}%) · ${(q.status || 'ok').toUpperCase()}` + (q.priority ? ` · P${q.priority}` : '') + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')">
                                                     <div class="w-2.5 h-2.5 rounded-[2px] transition-all hover:scale-125 cursor-help"
-                                                        :class="q.pct > 50 ? 'bg-emerald-500 opacity-80' : (q.pct > 0 ? 'bg-amber-500 opacity-80' : 'bg-red-900 opacity-50')">
+                                                        :class="[
+                                                            q.status === 'disabled' ? 'bg-zinc-700 opacity-40' :
+                                                            q.status === 'cooldown' ? 'bg-amber-500 opacity-90 animate-pulse' :
+                                                            q.status === 'rate_limited' ? 'bg-red-600 opacity-80' :
+                                                            (q.pct > 50 ? 'bg-emerald-500 opacity-80' : (q.pct > 0 ? 'bg-amber-500 opacity-80' : 'bg-red-900 opacity-50'))
+                                                        ]">
                                                     </div>
                                                 </div>
                                             </template>
                                             <!-- Overflow indicator -->
                                             <template x-if="row.quotaInfo.length > maxVisible">
                                                 <div class="tooltip tooltip-left"
-                                                     :data-tip="row.quotaInfo.slice(maxVisible).map(q => `${Redact.email(q.fullEmail)} (${q.pct}%)` + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')).join('\n')">
+                                                     :data-tip="row.quotaInfo.slice(maxVisible).map(q => `${q.provider === 'claudecode' ? '[Claude Code] ' : '[Google] '}${q.name || Redact.email(q.fullEmail)} (${q.pct}%)` + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')).join('\n')">
                                                     <div class="w-2.5 h-2.5 rounded-[2px] bg-gray-700/50 border border-gray-600 flex items-center justify-center cursor-help hover:bg-gray-600/70 transition-colors">
                                                         <span class="text-[6px] text-gray-400 font-bold leading-none"
                                                               x-text="`+${row.quotaInfo.length - maxVisible}`"></span>
