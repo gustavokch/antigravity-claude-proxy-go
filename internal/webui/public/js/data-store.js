@@ -334,7 +334,9 @@ document.addEventListener('alpine:init', () => {
                     if (accModelThreshold !== undefined) thresholdSource = 'model';
                     else if (accThreshold !== undefined) thresholdSource = 'account';
 
-                    const provider = acc.provider || (acc.projectId ? 'google' : 'claudecode');
+                    // Backend always sends provider now; legacy cached rows
+                    // predate the field, and google is the legacy default.
+                    const provider = acc.provider || 'google';
                     const displayName = acc.name || (acc.email ? acc.email.split('@')[0] : acc.id);
                     const fullIdentifier = acc.email || acc.id;
 
