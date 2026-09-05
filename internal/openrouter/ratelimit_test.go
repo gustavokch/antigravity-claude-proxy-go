@@ -86,6 +86,20 @@ func TestExtractRateLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("treats absent remaining header as full quota when limit present", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("x-ratelimit-limit-requests", "100")
+		h.Set("x-ratelimit-reset-requests", "30s")
+
+		rl := ExtractRateLimits(h)
+		if rl.RequestsRemaining != 100 {
+			t.Errorf("RequestsRemaining = %d, want 100 (assumed full)", rl.RequestsRemaining)
+		}
+		if limited, _ := rl.IsRateLimited(time.Now()); limited {
+			t.Errorf("expected IsRateLimited = false when remaining header absent")
+		}
+	})
+
 	t.Run("extracts anthropic-style header aliases if present", func(t *testing.T) {
 		h := http.Header{}
 		h.Set("anthropic-ratelimit-requests-limit", "50")

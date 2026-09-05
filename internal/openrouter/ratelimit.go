@@ -57,10 +57,17 @@ func ExtractRateLimits(h http.Header) RateLimits {
 		}
 	}
 	// Requests remaining
+	sawRequestsRemaining := false
 	if val := getFirstHeader(h, HeaderORRateLimitRemainingRequests, HeaderAntRateLimitRemainingRequests); val != "" {
+		sawRequestsRemaining = true
 		if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
 			rl.RequestsRemaining = n
 		}
+	}
+	// Absent remaining means unknown quota, not zero: assume full so
+	// IsRateLimited does not stall on the reset window.
+	if rl.RequestsLimit > 0 && !sawRequestsRemaining {
+		rl.RequestsRemaining = rl.RequestsLimit
 	}
 	// Requests reset
 	if val := getFirstHeader(h, HeaderORRateLimitResetRequests, HeaderAntRateLimitResetRequests, HeaderORRateLimitReset); val != "" {
@@ -74,10 +81,15 @@ func ExtractRateLimits(h http.Header) RateLimits {
 		}
 	}
 	// Tokens remaining
+	sawTokensRemaining := false
 	if val := getFirstHeader(h, HeaderORRateLimitRemainingTokens, HeaderAntRateLimitRemainingTokens); val != "" {
+		sawTokensRemaining = true
 		if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
 			rl.TokensRemaining = n
 		}
+	}
+	if rl.TokensLimit > 0 && !sawTokensRemaining {
+		rl.TokensRemaining = rl.TokensLimit
 	}
 	// Tokens reset
 	if val := getFirstHeader(h, HeaderORRateLimitResetTokens, HeaderAntRateLimitResetTokens); val != "" {
