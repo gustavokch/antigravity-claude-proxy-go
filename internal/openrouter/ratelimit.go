@@ -269,18 +269,24 @@ func parseRateLimitTimestamp(val string) time.Time {
 	if val == "" {
 		return time.Time{}
 	}
-	// Try seconds or duration string (e.g. "500ms", "12.5s", "12")
-	clean := strings.TrimSuffix(strings.TrimSuffix(val, "ms"), "s")
-	if sec, err := strconv.ParseFloat(clean, 64); err == nil && sec >= 0 {
-		if strings.HasSuffix(val, "ms") {
-			return time.Now().Add(time.Duration(sec * float64(time.Millisecond)))
+	// Plain integers first: a large value is epoch seconds, and the float
+	// fallback below would otherwise read it as relative seconds. Small
+	// integers stay relative (seconds until reset).
+	if unixSec, err := strconv.ParseInt(val, 10, 64); err == nil {
+		if unixSec > 1500000000 {
+			return time.Unix(unixSec, 0)
 		}
-		return time.Now().Add(time.Duration(sec * float64(time.Second)))
+		return time.Now().Add(time.Duration(unixSec) * time.Second)
 	}
 
-	// Try unix timestamp in seconds
-	if unixSec, err := strconv.ParseInt(val, 10, 64); err == nil && unixSec > 1500000000 {
-		return time.Unix(unixSec, 0)
+	// Go duration strings: "500ms", "12.5s", "6m12s"
+	if d, err := time.ParseDuration(val); err == nil && d >= 0 {
+		return time.Now().Add(d)
+	}
+
+	// Bare decimal = seconds (e.g. "12.5")
+	if sec, err := strconv.ParseFloat(val, 64); err == nil && sec >= 0 {
+		return time.Now().Add(time.Duration(sec * float64(time.Second)))
 	}
 
 	layouts := []string{

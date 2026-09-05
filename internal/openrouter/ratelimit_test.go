@@ -61,6 +61,31 @@ func TestExtractRateLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("parses epoch-seconds reset as absolute time", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("x-ratelimit-reset-requests", "1757083200")
+
+		rl := ExtractRateLimits(h)
+		want := time.Unix(1757083200, 0)
+		if !rl.RequestsReset.Equal(want) {
+			t.Errorf("RequestsReset = %v, want epoch %v", rl.RequestsReset, want)
+		}
+	})
+
+	t.Run("parses compound duration reset values", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("x-ratelimit-reset-tokens", "6m12s")
+
+		rl := ExtractRateLimits(h)
+		if rl.TokensReset.IsZero() {
+			t.Fatalf("TokensReset with compound duration should not be zero")
+		}
+		now := time.Now()
+		if diff := rl.TokensReset.Sub(now); diff < 370*time.Second || diff > 374*time.Second {
+			t.Errorf("TokensReset diff out of range: %v", diff)
+		}
+	})
+
 	t.Run("extracts anthropic-style header aliases if present", func(t *testing.T) {
 		h := http.Header{}
 		h.Set("anthropic-ratelimit-requests-limit", "50")
