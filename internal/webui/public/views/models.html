@@ -299,9 +299,10 @@
                                                       'bg-emerald-950/60 text-emerald-400 border border-emerald-800/50': q.status === 'ok' || q.status === 'healthy',
                                                       'bg-amber-950/60 text-amber-400 border border-amber-800/50': q.status === 'cooldown',
                                                       'bg-red-950/60 text-red-400 border border-red-800/50': q.status === 'rate_limited',
+                                                      'bg-red-950/60 text-red-400 border border-red-800/50': q.status === 'invalid',
                                                       'bg-zinc-900 text-zinc-500 border border-zinc-700/50': q.status === 'disabled'
                                                   }"
-                                                  x-text="q.status === 'ok' || q.status === 'healthy' ? ($store.global.t('readyStatus') || 'Ready') : (q.status === 'cooldown' ? ($store.global.t('cooldownStatus') || 'Cooldown') : (q.status === 'rate_limited' ? ($store.global.t('rateLimitedStatus') || 'Rate Limited') : ($store.global.t('disabledStatus') || 'Disabled')))"></span>
+                                                  x-text="q.status === 'ok' || q.status === 'healthy' ? ($store.global.t('readyStatus') || 'Ready') : (q.status === 'cooldown' ? ($store.global.t('cooldownStatus') || 'Cooldown') : (q.status === 'rate_limited' ? ($store.global.t('rateLimitedStatus') || 'Rate Limited') : (q.status === 'invalid' ? ($store.global.t('invalidStatus') || 'Invalid') : ($store.global.t('disabledStatus') || 'Disabled')))))"></span>
 
                                             <!-- Progress Bar -->
                                             <div class="flex-1 h-1.5 rounded-full bg-space-800 overflow-hidden">
