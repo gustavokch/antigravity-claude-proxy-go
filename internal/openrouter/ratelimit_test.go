@@ -203,4 +203,10 @@ func TestRateLimiter_PacingAndRecording(t *testing.T) {
 	if limited {
 		t.Errorf("expected model to not be rate limited after RecordSuccess")
 	}
+
+	// Reset should clear minInterval, cooldowns, limits, and timestamps
+	limiter.Reset()
+	if limiter.minInterval != 0 {
+		t.Errorf("expected minInterval to be reset to 0, got %v", limiter.minInterval)
+	}
 }

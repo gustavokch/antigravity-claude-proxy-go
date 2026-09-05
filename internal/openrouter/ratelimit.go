@@ -144,6 +144,7 @@ func (l *RateLimiter) Reset() {
 	l.limits = make(map[string]RateLimits)
 	l.cooldowns = make(map[string]time.Time)
 	l.lastRequestAt = make(map[string]time.Time)
+	l.minInterval = 0
 }
 
 // RecordRateLimit registers a rate-limit event for a model with an optional cooldown.
