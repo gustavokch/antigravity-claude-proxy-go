@@ -253,8 +253,8 @@ func parseRateLimitTimestamp(val string) time.Time {
 	if val == "" {
 		return time.Time{}
 	}
-	// Try seconds or duration string (e.g. "12.5s" or "12")
-	clean := strings.TrimSuffix(strings.TrimSuffix(val, "s"), "ms")
+	// Try seconds or duration string (e.g. "500ms", "12.5s", "12")
+	clean := strings.TrimSuffix(strings.TrimSuffix(val, "ms"), "s")
 	if sec, err := strconv.ParseFloat(clean, 64); err == nil && sec >= 0 {
 		if strings.HasSuffix(val, "ms") {
 			return time.Now().Add(time.Duration(sec * float64(time.Millisecond)))

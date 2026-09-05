@@ -43,6 +43,24 @@ func TestExtractRateLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("extracts millisecond reset headers accurately", func(t *testing.T) {
+		h := http.Header{}
+		h.Set("x-ratelimit-reset-requests", "500ms")
+		h.Set("x-ratelimit-reset-tokens", "250ms")
+
+		rl := ExtractRateLimits(h)
+		if rl.RequestsReset.IsZero() {
+			t.Errorf("RequestsReset with ms duration should not be zero")
+		}
+		if rl.TokensReset.IsZero() {
+			t.Errorf("TokensReset with ms duration should not be zero")
+		}
+		now := time.Now()
+		if diff := rl.RequestsReset.Sub(now); diff < 200*time.Millisecond || diff > 800*time.Millisecond {
+			t.Errorf("RequestsReset diff out of range: %v", diff)
+		}
+	})
+
 	t.Run("extracts anthropic-style header aliases if present", func(t *testing.T) {
 		h := http.Header{}
 		h.Set("anthropic-ratelimit-requests-limit", "50")
