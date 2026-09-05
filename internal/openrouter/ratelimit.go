@@ -218,15 +218,30 @@ func (l *RateLimiter) Wait(ctx context.Context, model string) error {
 		minInt := l.minInterval
 		var delay time.Duration
 		if minInt > 0 {
-			if last, ok := l.lastRequestAt[model]; ok {
-				elapsed := now.Sub(last)
-				if elapsed < minInt {
-					delay = minInt - elapsed
+			now = time.Now()
+			if last, ok := l.lastRequestAt["*"]; ok {
+				if elapsed := now.Sub(last); elapsed < minInt {
+					if d := minInt - elapsed; d > delay {
+						delay = d
+					}
+				}
+			}
+			if model != "" && model != "*" {
+				if last, ok := l.lastRequestAt[model]; ok {
+					if elapsed := now.Sub(last); elapsed < minInt {
+						if d := minInt - elapsed; d > delay {
+							delay = d
+						}
+					}
 				}
 			}
 		}
 		if delay <= 0 {
-			l.lastRequestAt[model] = time.Now()
+			ts := time.Now()
+			l.lastRequestAt["*"] = ts
+			if model != "" {
+				l.lastRequestAt[model] = ts
+			}
 			l.mu.Unlock()
 			return nil
 		}

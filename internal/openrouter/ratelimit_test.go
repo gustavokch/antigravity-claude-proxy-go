@@ -210,3 +210,26 @@ func TestRateLimiter_PacingAndRecording(t *testing.T) {
 		t.Errorf("expected minInterval to be reset to 0, got %v", limiter.minInterval)
 	}
 }
+
+func TestRateLimiter_GatewayWideMultiModelPacing(t *testing.T) {
+	limiter := NewRateLimiter()
+	limiter.SetMinRequestInterval(25 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	// Request model A
+	if err := limiter.Wait(ctx, "model-a"); err != nil {
+		t.Fatalf("Wait model-a failed: %v", err)
+	}
+
+	// Immediate next request for a different model (model-b) must still be paced globally
+	if err := limiter.Wait(ctx, "model-b"); err != nil {
+		t.Fatalf("Wait model-b failed: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 20*time.Millisecond {
+		t.Errorf("expected gateway-wide pacing delay >= 20ms across models, got %v", elapsed)
+	}
+}
