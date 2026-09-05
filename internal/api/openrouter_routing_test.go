@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,9 +31,11 @@ func setupRoutingTestEnv(t *testing.T, mockURL string, endpoints []openrouter.Pr
 	prevEndpoints := openrouter.DefaultEndpointsClient
 	openrouter.DefaultRouter = openrouter.NewProviderRouter(openrouter.DefaultRoutingConfig())
 	openrouter.DefaultEndpointsClient = openrouter.NewEndpointsClient(2*time.Second, time.Hour)
+	openrouter.DefaultRateLimiter.Reset()
 	t.Cleanup(func() {
 		openrouter.DefaultRouter = prevRouter
 		openrouter.DefaultEndpointsClient = prevEndpoints
+		openrouter.DefaultRateLimiter.Reset()
 	})
 
 	// Seed endpoints cache so the request path does not hit the mock for
@@ -859,5 +862,328 @@ func TestCanonicalServedProvider(t *testing.T) {
 		if got := canonicalServedProvider("m", c.served); got != c.want {
 			t.Errorf("canonicalServedProvider(%q) = %q, want %q", c.served, got, c.want)
 		}
+	}
+}
+
+func TestOpenRouterRouting_AutoRetryOnTransient404NoEndpointsFound(t *testing.T) {
+	var attempts int32
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		n := atomic.AddInt32(&attempts, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"not_found_error","message":"No endpoints found for minimax/minimax-m3.","error_type":"not_found"},"request_id":"gen-123","metadata":{"routing_funnel":[{"step":"Initial Endpoints","endpoint_count":0}]}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_ok","model":"minimax/minimax-m3","usage":{"input_tokens":10,"output_tokens":5}}`))
+	}))
+	defer mockOR.Close()
+
+	env := setupRoutingTestEnv(t, mockOR.URL, nil)
+	env.saveConfig(t, map[string]any{
+		"id":            "minimax/minimax-m3",
+		"alias":         "minimax-m3",
+		"displayName":   "MiniMax M3",
+		"contextLength": 200000,
+		"enabled":       true,
+	}, map[string]any{
+		"maxRetries":    3,
+		"backoffBaseMs": 1,
+		"backoffCapMs":  5,
+	})
+	server := env.newServer(t)
+
+	reqPayload := `{"model":"minimax/minimax-m3","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after automatic retry, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Errorf("expected 2 attempts, got %d", got)
+	}
+}
+
+func TestOpenRouterRouting_AutoRetryOnTransient503ServiceUnavailable(t *testing.T) {
+	var attempts int32
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		n := atomic.AddInt32(&attempts, 1)
+		if n <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"service temporarily unavailable"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_ok","model":"claude-3-7-openrouter","usage":{"input_tokens":10,"output_tokens":5}}`))
+	}))
+	defer mockOR.Close()
+
+	env := setupRoutingTestEnv(t, mockOR.URL, nil)
+	env.saveConfig(t, nil, map[string]any{
+		"maxRetries":    3,
+		"backoffBaseMs": 1,
+		"backoffCapMs":  5,
+	})
+	server := env.newServer(t)
+
+	rec := env.doRequest(t, server, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after automatic retry, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&attempts); got != 3 {
+		t.Errorf("expected 3 attempts, got %d", got)
+	}
+}
+
+func TestOpenRouterRouting_ExhaustedRetriesReturnsLastAttemptCount(t *testing.T) {
+	var attempts int32
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"not_found_error","message":"No endpoints found for minimax/minimax-m3."}}`))
+	}))
+	defer mockOR.Close()
+
+	env := setupRoutingTestEnv(t, mockOR.URL, nil)
+	env.saveConfig(t, map[string]any{
+		"id":            "minimax/minimax-m3",
+		"alias":         "minimax-m3",
+		"displayName":   "MiniMax M3",
+		"contextLength": 200000,
+		"enabled":       true,
+	}, map[string]any{
+		"maxRetries":    3,
+		"backoffBaseMs": 1,
+		"backoffCapMs":  5,
+	})
+	server := env.newServer(t)
+
+	reqPayload := `{"model":"minimax/minimax-m3","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after exhausted retries, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// maxRetries counts retry cycles over the full candidate chain: the first
+	// walk plus 3 retry cycles of a single candidate = 4 attempts.
+	if got := atomic.LoadInt32(&attempts); got != 4 {
+		t.Errorf("expected 4 attempts (1 + 3 retry cycles), got %d", got)
+	}
+	if !strings.Contains(rec.Body.String(), "failed after 4 attempt(s)") {
+		t.Errorf("expected error message to state 4 attempts, got: %s", rec.Body.String())
+	}
+}
+
+func TestOpenRouterRouting_NonRetryable400DoesNotRetry(t *testing.T) {
+	var attempts int32
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"messages must be an array of objects"}}`))
+	}))
+	defer mockOR.Close()
+
+	env := setupRoutingTestEnv(t, mockOR.URL, nil)
+	env.saveConfig(t, map[string]any{
+		"id":            "minimax/minimax-m3",
+		"alias":         "minimax-m3",
+		"displayName":   "MiniMax M3",
+		"contextLength": 200000,
+		"enabled":       true,
+	}, map[string]any{
+		"maxRetries":    3,
+		"backoffBaseMs": 1,
+		"backoffCapMs":  5,
+	})
+	server := env.newServer(t)
+
+	reqPayload := `{"model":"minimax/minimax-m3","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 immediately, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("expected exactly 1 attempt for non-retryable 400, got %d", got)
+	}
+}
+
+func TestOpenRouterRouting_WrapAroundFiresWithMoreCandidatesThanMaxRetries(t *testing.T) {
+	var attempts int32
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"not_found_error","message":"No endpoints found for anthropic/claude-3.7-sonnet."}}`))
+	}))
+	defer mockOR.Close()
+
+	// Two ranked candidates, maxRetries=1: wrap-around must still fire after
+	// the first full walk (old attempts-based condition could not).
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "prov-a", ContextLength: 200000},
+		{ProviderName: "prov-b", ContextLength: 200000},
+	}
+	env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+	env.saveConfig(t, nil, map[string]any{
+		"maxRetries":    1,
+		"backoffBaseMs": 1,
+		"backoffCapMs":  5,
+	})
+	server := env.newServer(t)
+
+	rec := env.doRequest(t, server, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after exhausted retries, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// First walk of 2 candidates + 1 retry cycle of 2 = 4 attempts.
+	if got := atomic.LoadInt32(&attempts); got != 4 {
+		t.Errorf("expected 4 attempts (2 candidates x 2 cycles), got %d", got)
+	}
+}
+
+func TestOpenRouterRouting_429WrapAroundRecordsCooldown(t *testing.T) {
+	var timestamps []time.Time
+	var mu sync.Mutex
+
+	// No ratelimit headers: the only pacing between attempt 2 and 3 must come
+	// from the wrap-around cooldown record.
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		timestamps = append(timestamps, time.Now())
+		mu.Unlock()
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded"}}`))
+	}))
+	defer mockOR.Close()
+
+	env := setupRoutingTestEnv(t, mockOR.URL, nil)
+	env.saveConfig(t, map[string]any{
+		"id":            "minimax/minimax-m3",
+		"alias":         "minimax-m3",
+		"displayName":   "MiniMax M3",
+		"contextLength": 200000,
+		"enabled":       true,
+	}, map[string]any{
+		"maxRetries":    3,
+		"retry429Max":   1,
+		"backoffBaseMs": 100,
+		"backoffCapMs":  400,
+	})
+	server := env.newServer(t)
+
+	reqPayload := `{"model":"minimax/minimax-m3","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after exhausted retries, got %d: %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// maxRetries=3 cycles with max429=1: each cycle holds 2 attempts
+	// (one 429 backoff retry, then one 429 that exhausts consec429 and wraps).
+	// 4 cycles total = 8 attempts.
+	if len(timestamps) != 8 {
+		t.Fatalf("expected 8 attempts (4 cycles x 2), got %d", len(timestamps))
+	}
+	// Attempt 2 exhausts consec429 and wraps around: the cooldown recorded at
+	// the wrap must pace attempt 3 via loop-top RateLimiter.Wait. Floor is
+	// 0.75x backoffBaseMs^2 growth with jitter.
+	wrapGap := timestamps[2].Sub(timestamps[1])
+	if wrapGap < 50*time.Millisecond {
+		t.Errorf("expected wrap-around cooldown gap >= 50ms between attempts 2 and 3, got %v", wrapGap)
+	}
+}
+
+func TestOpenRouterRouting_GatewayRateLimitingPacing(t *testing.T) {
+	var timestamps []time.Time
+	var mu sync.Mutex
+
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		timestamps = append(timestamps, time.Now())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-ratelimit-remaining-requests", "10")
+		_, _ = w.Write([]byte(`{"id":"msg_ok","model":"minimax/minimax-m3","usage":{"input_tokens":5,"output_tokens":5}}`))
+	}))
+	defer mockOR.Close()
+
+	env := setupRoutingTestEnv(t, mockOR.URL, nil)
+	env.saveConfig(t, map[string]any{
+		"id":            "minimax/minimax-m3",
+		"alias":         "minimax-m3",
+		"displayName":   "MiniMax M3",
+		"contextLength": 200000,
+		"enabled":       true,
+	}, map[string]any{
+		"minRequestIntervalMs": 30,
+	})
+	server := env.newServer(t)
+
+	// Fire 2 sequential requests
+	for i := 0; i < 2; i++ {
+		reqPayload := `{"model":"minimax/minimax-m3","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", "test-proxy-key")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d failed: %d", i, rec.Code)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(timestamps) != 2 {
+		t.Fatalf("expected 2 requests received, got %d", len(timestamps))
+	}
+	diff := timestamps[1].Sub(timestamps[0])
+	if diff < 20*time.Millisecond {
+		t.Errorf("expected pacing diff >= 20ms, got %v", diff)
 	}
 }

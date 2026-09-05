@@ -124,3 +124,87 @@ func TestIsHarnessGateError(t *testing.T) {
 		})
 	}
 }
+
+func TestIsOpenRouterTransientError(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       bool
+	}{
+		{
+			name:       "404 no endpoints found for model",
+			statusCode: http.StatusNotFound,
+			body:       `{"type":"error","error":{"type":"not_found_error","message":"No endpoints found for minimax/minimax-m3.","error_type":"not_found"},"request_id":"gen-123","metadata":{"routing_funnel":[{"step":"Initial Endpoints","endpoint_count":0}]}}`,
+			want:       true,
+		},
+		{
+			name:       "404 plain model not found",
+			statusCode: http.StatusNotFound,
+			body:       `{"error":{"message":"Model not found: bad-model-id"}}`,
+			want:       false,
+		},
+		{
+			name:       "429 rate limited",
+			statusCode: http.StatusTooManyRequests,
+			body:       `{"error":{"message":"rate limit exceeded"}}`,
+			want:       true,
+		},
+		{
+			name:       "500 internal server error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"internal error"}}`,
+			want:       true,
+		},
+		{
+			name:       "502 bad gateway",
+			statusCode: http.StatusBadGateway,
+			body:       `{"error":{"message":"bad gateway"}}`,
+			want:       true,
+		},
+		{
+			name:       "503 service unavailable",
+			statusCode: http.StatusServiceUnavailable,
+			body:       `{"error":{"message":"service unavailable"}}`,
+			want:       true,
+		},
+		{
+			name:       "504 gateway timeout",
+			statusCode: http.StatusGatewayTimeout,
+			body:       `{"error":{"message":"gateway timeout"}}`,
+			want:       true,
+		},
+		{
+			name:       "529 capacity overloaded",
+			statusCode: 529,
+			body:       `{"error":{"message":"overloaded"}}`,
+			want:       true,
+		},
+		{
+			name:       "400 invalid request syntax",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"message":"messages must be an array"}}`,
+			want:       false,
+		},
+		{
+			name:       "401 unauthorized",
+			statusCode: http.StatusUnauthorized,
+			body:       `{"error":{"message":"invalid api key"}}`,
+			want:       false,
+		},
+		{
+			name:       "403 permission error without transient phrase",
+			statusCode: http.StatusForbidden,
+			body:       `{"error":{"message":"insufficient credits"}}`,
+			want:       false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsOpenRouterTransientError(tc.statusCode, []byte(tc.body)); got != tc.want {
+				t.Errorf("IsOpenRouterTransientError(%d, %s) = %v, want %v", tc.statusCode, tc.name, got, tc.want)
+			}
+		})
+	}
+}

@@ -60,3 +60,34 @@ func IsHarnessGateError(body []byte) bool {
 	lower := strings.ToLower(string(body))
 	return strings.Contains(lower, "agentic harness")
 }
+
+// IsOpenRouterTransientError reports whether an upstream error is temporary and retryable.
+func IsOpenRouterTransientError(statusCode int, body []byte) bool {
+	if statusCode == http.StatusTooManyRequests || statusCode == http.StatusRequestTimeout || statusCode == 529 {
+		return true
+	}
+	if statusCode >= 500 {
+		return true
+	}
+	lower := strings.ToLower(string(body))
+	transientPhrases := []string{
+		"no endpoints found",
+		"no available endpoints",
+		"endpoint not found",
+		"temporarily unavailable",
+		"overloaded",
+		"capacity exceeded",
+		"upstream failed",
+		"upstream error",
+		"routing_funnel",
+		"provider returned error",
+		"timed out",
+		"rate limit",
+	}
+	for _, phrase := range transientPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}

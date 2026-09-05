@@ -178,6 +178,11 @@ func applyRouterConfig(openRouterCfg config.OpenRouterConfig) {
 		FailureThreshold: openRouterCfg.Routing.FailureThreshold,
 		RankWeights:      openRouterCfg.Routing.RankWeightsToOpenRouter(),
 	})
+	if openRouterCfg.Routing.MinRequestIntervalMs > 0 {
+		openrouter.DefaultRateLimiter.SetMinRequestInterval(time.Duration(openRouterCfg.Routing.MinRequestIntervalMs) * time.Millisecond)
+	} else {
+		openrouter.DefaultRateLimiter.SetMinRequestInterval(0)
+	}
 }
 
 func (server *Server) applyHeadroomConfig(cfg config.HeadroomConfig) {
@@ -1240,6 +1245,21 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		spoofReferer = openrouter.DefaultSpoofAppReferer
 	}
 
+	maxRetries := openRouterCfg.Routing.MaxRetries
+	// maxRetries bounds retry cycles over the full candidate chain; the first
+	// walk of every provider is not counted against it.
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+	base := openRouterCfg.Routing.BackoffBaseMs
+	if base <= 0 {
+		base = 500
+	}
+	cap := openRouterCfg.Routing.BackoffCapMs
+	if cap <= 0 {
+		cap = 120000
+	}
+
 	var (
 		lastStatus         int
 		lastBody           []byte
@@ -1247,6 +1267,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		consec429          int
 		tried              = make(map[string]bool)
 		attempts           int
+		retryCycle         int
 		ccrHydrations      int
 		totalCCRRetrievals int
 		streamStarted      bool
@@ -1277,6 +1298,9 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 		if request.Context().Err() != nil {
 			// Client disconnected — abort retry loop.
+			return
+		}
+		if err := openrouter.DefaultRateLimiter.Wait(request.Context(), model); err != nil {
 			return
 		}
 		if providerIdx >= len(candidates) {
@@ -1369,12 +1393,26 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return
 			}
 			providerIdx++
+			if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+				retryCycle++
+				providerIdx = 0
+				tried = make(map[string]bool)
+				d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+				if server.now().Add(d).After(deadline) {
+					break
+				}
+				if !sleepOrDone(request.Context(), d) {
+					return
+				}
+			}
 			lastStatus = 0
 			continue
 		}
 
 		// 2xx — handle success
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			rl := openrouter.ExtractRateLimits(resp.Header)
+			openrouter.DefaultRateLimiter.RecordSuccess(model, rl)
 			cacheInfo := openrouter.ExtractResponseCacheHeaders(resp.Header)
 			if headerProvider := openrouter.ExtractProviderFromHeader(resp.Header); headerProvider != "" && provider == "" {
 				provider = canonicalServedProvider(model, headerProvider)
@@ -1392,6 +1430,18 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 						openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 					}
 					providerIdx++
+					if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+						retryCycle++
+						providerIdx = 0
+						tried = make(map[string]bool)
+						d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+						if server.now().Add(d).After(deadline) {
+							break
+						}
+						if !sleepOrDone(request.Context(), d) {
+							return
+						}
+					}
 					continue
 				}
 
@@ -1515,6 +1565,18 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 							openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 						}
 						providerIdx++
+						if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+							retryCycle++
+							providerIdx = 0
+							tried = make(map[string]bool)
+							d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+							if server.now().Add(d).After(deadline) {
+								break
+							}
+							if !sleepOrDone(request.Context(), d) {
+								return
+							}
+						}
 						continue
 					}
 					return
@@ -1599,6 +1661,18 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 				}
 				providerIdx++
+				if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+					retryCycle++
+					providerIdx = 0
+					tried = make(map[string]bool)
+					d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+					if server.now().Add(d).After(deadline) {
+						break
+					}
+					if !sleepOrDone(request.Context(), d) {
+						return
+					}
+				}
 				continue
 			}
 			// Capture served provider from response if present
@@ -1682,6 +1756,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		lastStatus = resp.StatusCode
 		lastBody = bodyBytes
 
+		rl := openrouter.ExtractRateLimits(resp.Header)
+
 		// Harness-gated model: attribution-level rejection, not a provider
 		// failure. Retry once with spoofed app headers; if the gate persists,
 		// further providers fail identically — surface the upstream error.
@@ -1702,6 +1778,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			break
 		}
 
+		isTransient := openrouter.IsOpenRouterTransientError(resp.StatusCode, bodyBytes)
 		action, backoff := classify(resp.StatusCode, nil)
 		// 429 is a transient rate limit, not provider death: recording it as a
 		// failure would let a rate-limit storm trip the breaker on a healthy
@@ -1720,17 +1797,20 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			if consec429 > max429 {
 				providerIdx++
 				consec429 = 0
+				if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+					retryCycle++
+					providerIdx = 0
+					tried = make(map[string]bool)
+					// Record the cooldown instead of sleeping here: the
+					// loop-top RateLimiter.Wait enforces it, which also
+					// paces concurrent requests to the same model.
+					d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+					openrouter.DefaultRateLimiter.RecordRateLimit(model, rl, d)
+				}
 				continue
 			}
-			base := openRouterCfg.Routing.BackoffBaseMs
-			if base <= 0 {
-				base = 500
-			}
-			cap := openRouterCfg.Routing.BackoffCapMs
-			if cap <= 0 {
-				cap = 120000
-			}
 			d := computeBackoff(consec429, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+			openrouter.DefaultRateLimiter.RecordRateLimit(model, rl, d)
 			if server.now().Add(d).After(deadline) {
 				break
 			}
@@ -1746,6 +1826,18 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return
 			}
 			providerIdx++
+			if providerIdx >= len(candidates) && isTransient && retryCycle < maxRetries && server.now().Before(deadline) {
+				retryCycle++
+				providerIdx = 0
+				tried = make(map[string]bool)
+				d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+				if server.now().Add(d).After(deadline) {
+					break
+				}
+				if !sleepOrDone(request.Context(), d) {
+					return
+				}
+			}
 			continue
 		default:
 			// nextGiveUp
