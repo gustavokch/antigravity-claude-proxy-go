@@ -305,7 +305,7 @@ document.addEventListener('alpine:init', () => {
 
                 this.accounts.forEach(acc => {
                     if (acc.enabled === false) return;
-                    if (this.filters.account !== 'all' && acc.email !== this.filters.account) return;
+                    if (this.filters.account !== 'all' && acc.email !== this.filters.account && acc.id !== this.filters.account) return;
 
                     const limit = acc.limits?.[modelId];
                     if (!limit) return;
@@ -334,11 +334,24 @@ document.addEventListener('alpine:init', () => {
                     if (accModelThreshold !== undefined) thresholdSource = 'model';
                     else if (accThreshold !== undefined) thresholdSource = 'account';
 
+                    // Backend always sends provider now; legacy cached rows
+                    // predate the field, and google is the legacy default.
+                    const provider = acc.provider || 'google';
+                    const displayName = acc.name || (acc.email ? acc.email.split('@')[0] : acc.id);
+                    const fullIdentifier = acc.email || acc.id;
+
                     quotaInfo.push({
-                        email: acc.email.split('@')[0],
-                        fullEmail: acc.email,
+                        id: acc.id || acc.email,
+                        email: displayName,
+                        fullEmail: fullIdentifier,
+                        name: acc.name || '',
+                        provider: provider,
+                        type: acc.type || 'oauth',
+                        status: acc.status || 'ok',
+                        priority: acc.priority ?? 0,
                         pct: pct,
                         resetTime: limit.resetTime,
+                        rateLimits: acc.rateLimits || null,
                         thresholdPct: Math.round(effective * 100),
                         thresholdSource
                     });
@@ -482,8 +495,15 @@ document.addEventListener('alpine:init', () => {
          */
         _generatePlaceholderData() {
             const models = [
+                'claude-3-7-sonnet-20250219',
+                'claude-3-5-sonnet-20241022',
+                'claude-opus-5',
+                'claude-sonnet-5',
                 'claude-opus-4-6-thinking',
                 'claude-sonnet-4-6',
+                'gemini-3.8-flash-high',
+                'gemini-3.8-flash-medium',
+                'gemini-3.8-flash-low',
                 'gemini-3.1-pro-high',
                 'gemini-3.1-pro-low',
                 'gemini-3-flash',
@@ -515,7 +535,10 @@ document.addEventListener('alpine:init', () => {
                 });
 
                 return {
+                    id: email,
                     email,
+                    name: name,
+                    provider: 'google',
                     status: i === 3 ? 'invalid' : 'ok',
                     error: i === 3 ? 'Token expired' : null,
                     source: i === 0 ? 'database' : 'oauth',
@@ -530,6 +553,62 @@ document.addEventListener('alpine:init', () => {
                     subscription: { tier, projectId: `proj-${name}-${1000 + i}`, detectedAt: Date.now() },
                     limits
                 };
+            });
+
+            // Add Claude Code placeholder accounts
+            const ccLimits1 = {};
+            const ccLimits2 = {};
+            models.forEach(modelId => {
+                if (modelId.startsWith('claude-')) {
+                    ccLimits1[modelId] = {
+                        remaining: '95%',
+                        remainingFraction: 0.95,
+                        resetTime: null
+                    };
+                    ccLimits2[modelId] = {
+                        remaining: '70%',
+                        remainingFraction: 0.70,
+                        resetTime: new Date(Date.now() + 45 * 60000).toISOString()
+                    };
+                }
+            });
+
+            accounts.push({
+                id: 'cc-placeholder-1',
+                name: 'Claude Pro (OAuth)',
+                email: 'claude-pro@workspace.dev',
+                provider: 'claudecode',
+                type: 'oauth',
+                status: 'ok',
+                priority: 1,
+                enabled: true,
+                source: 'oauth',
+                rateLimits: {
+                    requestsLimit: 1000,
+                    requestsRemaining: 950,
+                    tokensLimit: 100000,
+                    tokensRemaining: 95000
+                },
+                limits: ccLimits1
+            });
+
+            accounts.push({
+                id: 'cc-placeholder-2',
+                name: 'Claude Team (Setup Token)',
+                email: 'claude-team@workspace.dev',
+                provider: 'claudecode',
+                type: 'setup_token',
+                status: 'ok',
+                priority: 2,
+                enabled: true,
+                source: 'setup_token',
+                rateLimits: {
+                    requestsLimit: 2000,
+                    requestsRemaining: 1400,
+                    tokensLimit: 200000,
+                    tokensRemaining: 140000
+                },
+                limits: ccLimits2
             });
 
             return { accounts, models };

@@ -13,6 +13,7 @@ window.Components.accountManager = () => ({
     deleting: false,
     reloading: false,
     selectedAccountEmail: '',
+    selectedAccountName: '',
     selectedAccountLimits: {},
 
     // Claude Code Accounts & Gateway State
@@ -45,28 +46,49 @@ window.Components.accountManager = () => ({
         this.loadCCConfig();
     },
 
+    get googleAccounts() {
+        return (Alpine.store('data').accounts || []).filter(acc => (acc.provider || 'google') === 'google');
+    },
+
+    get claudeStoreAccounts() {
+        return (Alpine.store('data').accounts || []).filter(acc => acc.provider === 'claudecode');
+    },
+
     get filteredAccounts() {
-        const accounts = Alpine.store('data').accounts || [];
+        const accounts = this.googleAccounts;
         if (!this.searchQuery || this.searchQuery.trim() === '') {
             return accounts;
         }
 
         const query = this.searchQuery.toLowerCase().trim();
         return accounts.filter(acc => {
-            return acc.email.toLowerCase().includes(query) ||
+            return (acc.email || '').toLowerCase().includes(query) ||
                    (acc.projectId && acc.projectId.toLowerCase().includes(query)) ||
                    (acc.source && acc.source.toLowerCase().includes(query));
         });
     },
 
     get filteredCCAccounts() {
-        const accounts = this.ccAccounts || [];
+        const storeAccounts = this.claudeStoreAccounts;
+        const byId = new Map();
+        (this.ccAccounts || []).forEach(acc => {
+            if (acc && acc.id) byId.set(acc.id, acc);
+        });
+        storeAccounts.forEach(acc => {
+            const id = acc.id || acc.email;
+            if (id && !byId.has(id)) byId.set(id, acc);
+        });
+        const merged = [];
+        byId.forEach((snapshot, id) => {
+            const storeAcc = storeAccounts.find(a => (a.id || a.email) === id);
+            merged.push(storeAcc ? { ...snapshot, ...storeAcc } : snapshot);
+        });
         if (!this.searchQuery || this.searchQuery.trim() === '') {
-            return accounts;
+            return merged;
         }
 
         const query = this.searchQuery.toLowerCase().trim();
-        return accounts.filter(acc => {
+        return merged.filter(acc => {
             return (acc.name && acc.name.toLowerCase().includes(query)) ||
                    (acc.id && acc.id.toLowerCase().includes(query)) ||
                    (acc.type && acc.type.toLowerCase().includes(query));
@@ -231,8 +253,16 @@ window.Components.accountManager = () => ({
     },
 
     openQuotaModal(account) {
-        this.selectedAccountEmail = account.email;
-        this.selectedAccountLimits = account.limits || {};
+        this.selectedAccountEmail = account.email || account.id;
+        // Email-like "names" (backend sends email as name for google rows and
+        // for CC rows without a display name) bypass Redact when rendered
+        // verbatim; treat them as no name so the modal shows only the
+        // redacted email.
+        const nameLooksEmail = (account.name || '').includes('@');
+        this.selectedAccountName = nameLooksEmail ? '' : (account.name || '');
+        this.selectedAccountLimits = Object.fromEntries(
+            Object.entries(account.limits || {}).filter(([, v]) => v != null)
+        );
         document.getElementById('quota_modal').showModal();
     },
 

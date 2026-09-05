@@ -10,7 +10,7 @@
             <span>Google Cloud Code</span>
             <span class="px-1.5 py-0.2 rounded text-[10px] font-mono"
                   :class="accountTab === 'google' ? 'bg-space-900 text-zinc-300 border border-space-border' : 'bg-space-800 text-zinc-400 border border-space-border/60'"
-                  x-text="$store.data.accounts.length + '/' + $store.data.maxAccounts"></span>
+                  x-text="googleAccounts.length + '/' + $store.data.maxAccounts"></span>
         </button>
         <button class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
                 :class="accountTab === 'claudecode' ? 'bg-space-800 text-white border border-space-border' : 'text-zinc-400 hover:text-white hover:bg-space-850'"
@@ -21,7 +21,7 @@
             <span>Claude Code</span>
             <span class="px-1.5 py-0.2 rounded text-[10px] font-mono"
                   :class="accountTab === 'claudecode' ? 'bg-space-900 text-zinc-300 border border-space-border' : 'bg-space-800 text-zinc-400 border border-space-border/60'"
-                  x-text="ccAccounts.length"></span>
+                  x-text="filteredCCAccounts.length"></span>
         </button>
     </div>
 
@@ -43,7 +43,7 @@
         <!-- Action Buttons (Google Tab) -->
         <div class="flex items-center gap-2" x-show="accountTab === 'google'">
             <!-- Search -->
-            <div class="relative" x-show="$store.data.accounts.length > 0">
+            <div class="relative" x-show="googleAccounts.length > 0">
                 <input type="text"
                        x-model="searchQuery"
                        :placeholder="$store.global.t('searchAccounts')"
@@ -58,7 +58,7 @@
             <!-- Export Button -->
             <button class="btn btn-xs btn-outline border-space-border text-gray-400 hover:text-white transition-all gap-2 h-8"
                 @click="exportAccounts()"
-                x-show="$store.data.accounts.length > 0"
+                x-show="googleAccounts.length > 0"
                 :title="$store.global.t('exportAccounts') || 'Export Accounts'">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -89,15 +89,15 @@
             </button>
             <!-- Account Count Indicator -->
             <div class="flex items-center h-6 px-2 rounded bg-space-800/80 border border-space-border/50"
-                 :class="{ 'border-yellow-500/50': $store.data.accounts.length >= $store.data.maxAccounts }">
+                 :class="{ 'border-yellow-500/50': googleAccounts.length >= $store.data.maxAccounts }">
                 <span class="text-[11px] font-mono"
-                      :class="$store.data.accounts.length >= $store.data.maxAccounts ? 'text-yellow-400' : 'text-gray-400'"
-                      x-text="$store.data.accounts.length + '/' + $store.data.maxAccounts"></span>
+                      :class="googleAccounts.length >= $store.data.maxAccounts ? 'text-yellow-400' : 'text-gray-400'"
+                      x-text="googleAccounts.length + '/' + $store.data.maxAccounts"></span>
             </div>
             <button class="btn bg-blue-600 hover:bg-blue-700 border-none text-white btn-xs gap-2 h-8"
-                :class="{ 'opacity-50 cursor-not-allowed': $store.data.accounts.length >= $store.data.maxAccounts }"
-                :disabled="$store.data.accounts.length >= $store.data.maxAccounts"
-                @click="$store.data.accounts.length < $store.data.maxAccounts && document.getElementById('add_account_modal').showModal()">
+                :class="{ 'opacity-50 cursor-not-allowed': googleAccounts.length >= $store.data.maxAccounts }"
+                :disabled="googleAccounts.length >= $store.data.maxAccounts"
+                @click="googleAccounts.length < $store.data.maxAccounts && document.getElementById('add_account_modal').showModal()">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
                 </svg>
@@ -108,7 +108,7 @@
         <!-- Action Buttons (Claude Code Tab) -->
         <div class="flex items-center gap-2" x-show="accountTab === 'claudecode'">
             <!-- Search -->
-            <div class="relative" x-show="ccAccounts.length > 0">
+            <div class="relative" x-show="filteredCCAccounts.length > 0">
                 <input type="text"
                        x-model="searchQuery"
                        :placeholder="$store.global.t('searchAccounts') || 'Search accounts...'"
@@ -145,7 +145,7 @@
 
             <!-- Account Count Indicator -->
             <div class="flex items-center h-6 px-2 rounded bg-space-800/80 border border-space-border/50">
-                <span class="text-[11px] font-mono text-purple-300" x-text="ccAccounts.length + ' accounts'"></span>
+                <span class="text-[11px] font-mono text-purple-300" x-text="filteredCCAccounts.length + ' accounts'"></span>
             </div>
 
             <!-- Add Account Button -->
@@ -164,7 +164,7 @@
         <!-- Google Cloud Code Accounts Table -->
         <div x-show="accountTab === 'google'">
             <table class="w-full">
-            <thead x-show="$store.data.accounts.length > 0">
+            <thead x-show="googleAccounts.length > 0">
                 <tr class="bg-space-900/50 border-b border-space-border/50">
                     <th class="pl-6 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-16" x-text="$store.global.t('enabled')">Enabled</th>
                     <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider flex-1 min-w-[200px]" x-text="$store.global.t('accountEmail')">Account (Email)</th>
@@ -177,7 +177,7 @@
             </thead>
             <tbody>
                 <!-- Empty State -->
-                <template x-if="$store.data.accounts.length === 0">
+                <template x-if="googleAccounts.length === 0">
                     <tr>
                         <td colspan="6" class="py-16 text-center">
                             <div class="flex flex-col items-center gap-4 max-w-lg mx-auto">
@@ -340,7 +340,7 @@
                 </template>
 
                 <!-- No Search Results -->
-                <template x-if="$store.data.accounts.length > 0 && filteredAccounts.length === 0">
+                <template x-if="googleAccounts.length > 0 && filteredAccounts.length === 0">
                     <tr>
                         <td colspan="6" class="py-12 text-center">
                             <div class="flex flex-col items-center gap-3">
@@ -360,21 +360,22 @@
         <!-- Claude Code Accounts Table -->
         <div x-show="accountTab === 'claudecode'">
             <table class="w-full">
-                <thead x-show="ccAccounts.length > 0">
+                <thead x-show="filteredCCAccounts.length > 0">
                     <tr class="bg-space-900/50 border-b border-space-border/50">
                         <th class="pl-6 py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-16" x-text="$store.global.t('enabled')">Enabled</th>
                         <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider flex-1 min-w-[200px]" x-text="$store.global.t('ccAccountName') || 'Account Name / ID'">Account Name / ID</th>
                         <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-24" x-text="$store.global.t('type') || 'Type'">Type</th>
                         <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-20" x-text="$store.global.t('priority') || 'Priority'">Priority</th>
+                        <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-32" x-text="$store.global.t('quota') || 'Quota'">Quota</th>
                         <th class="py-3 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider w-32" x-text="$store.global.t('status') || 'Status'">Status</th>
                         <th class="py-3 pr-6 text-right text-[10px] font-bold text-gray-500 uppercase tracking-wider w-32" x-text="$store.global.t('operations')">Operations</th>
                     </tr>
                 </thead>
                 <tbody>
                     <!-- Empty State -->
-                    <template x-if="ccAccounts.length === 0">
+                    <template x-if="filteredCCAccounts.length === 0">
                         <tr>
-                            <td colspan="6" class="py-16 text-center">
+                            <td colspan="7" class="py-16 text-center">
                                 <div class="flex flex-col items-center gap-4 max-w-lg mx-auto">
                                     <div class="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center">
                                         <svg class="w-8 h-8 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -433,6 +434,30 @@
                             <!-- Priority -->
                             <td class="py-4">
                                 <span class="text-xs font-mono text-gray-300" x-text="acc.priority || 1"></span>
+                            </td>
+
+                            <!-- Quota -->
+                            <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
+                                <div x-data="{ quota: getMainModelQuota(acc) }">
+                                    <template x-if="quota.percent !== null">
+                                        <div class="flex items-center gap-2">
+                                            <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
+                                                <div class="h-full rounded-full transition-all"
+                                                     :class="{
+                                                         'bg-purple-400': quota.percent > 50,
+                                                         'bg-yellow-500': quota.percent > 20 && quota.percent <= 50,
+                                                         'bg-red-500': quota.percent <= 20
+                                                     }"
+                                                     :style="`width: ${quota.percent}%`">
+                                                </div>
+                                            </div>
+                                            <span class="text-xs font-mono text-gray-400" x-text="quota.percent + '%'"></span>
+                                        </div>
+                                    </template>
+                                    <template x-if="quota.percent === null">
+                                        <span class="text-xs text-gray-600">-</span>
+                                    </template>
+                                </div>
                             </td>
 
                             <!-- Status / Cooldown -->
@@ -665,7 +690,7 @@
                 </svg>
                 <span x-text="$store.global.t('quotaDistribution')">Quota Distribution</span>
             </h3>
-            <p class="text-sm text-gray-500 font-mono mb-6" x-text="Redact.email(selectedAccountEmail)"></p>
+            <p class="text-sm text-gray-500 font-mono mb-6" x-text="selectedAccountName ? selectedAccountName + ' (' + Redact.email(selectedAccountEmail) + ')' : Redact.email(selectedAccountEmail)"></p>
 
             <div class="grid grid-cols-1 gap-4 overflow-y-auto max-h-[60vh] pr-2 custom-scrollbar">
                 <template x-for="(limit, modelId) in selectedAccountLimits" :key="modelId">

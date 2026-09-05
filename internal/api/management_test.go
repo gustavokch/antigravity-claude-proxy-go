@@ -14,6 +14,7 @@ import (
 
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
+	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/logger"
@@ -129,16 +130,73 @@ func TestManagement_HealthAndLimits(t *testing.T) {
 		if res["totalAccounts"].(float64) != 1 {
 			t.Errorf("expected totalAccounts 1, got %v", res["totalAccounts"])
 		}
-		accounts, ok := res["accounts"].([]any)
-		if !ok || len(accounts) == 0 {
+		accountsList, ok := res["accounts"].([]any)
+		if !ok || len(accountsList) == 0 {
 			t.Fatal("expected accounts array in response")
 		}
-		firstAcc, ok := accounts[0].(map[string]any)
+		firstAcc, ok := accountsList[0].(map[string]any)
 		if !ok {
 			t.Fatal("expected account map")
 		}
 		if _, hasLimits := firstAcc["limits"]; !hasLimits {
 			t.Error("expected 'limits' key on account object")
+		}
+	})
+
+	t.Run("GET /account-limits returns gemini-3.8 family limits", func(t *testing.T) {
+		frac := 0.75
+		server.accountManager.UpdateAccountQuota("test@example.com", accounts.Quota{
+			Models: map[string]accounts.ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &frac,
+					ResetTime:         "2026-09-05T12:00:00Z",
+				},
+				"gemini-3.8-flash-medium": {
+					RemainingFraction: &frac,
+					ResetTime:         "2026-09-05T12:00:00Z",
+				},
+				"gemini-3.8-flash-low": {
+					RemainingFraction: &frac,
+					ResetTime:         "2026-09-05T12:00:00Z",
+				},
+			},
+		}, nil)
+
+		req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var res struct {
+			Models   []string `json:"models"`
+			Accounts []struct {
+				Limits map[string]struct {
+					Remaining         string   `json:"remaining"`
+					RemainingFraction *float64 `json:"remainingFraction"`
+					ResetTime         string   `json:"resetTime"`
+				} `json:"limits"`
+			} `json:"accounts"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Accounts) == 0 {
+			t.Fatal("expected at least 1 account")
+		}
+		limits := res.Accounts[0].Limits
+		for _, tier := range []string{"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low"} {
+			l, ok := limits[tier]
+			if !ok {
+				t.Fatalf("expected limit for %q, got: %v", tier, limits)
+			}
+			if l.RemainingFraction == nil || *l.RemainingFraction != 0.75 {
+				t.Fatalf("expected 0.75 for %q, got %v", tier, l.RemainingFraction)
+			}
+			if l.Remaining != "75%" {
+				t.Fatalf("expected '75%%' for %q, got %q", tier, l.Remaining)
+			}
 		}
 	})
 
@@ -826,5 +884,113 @@ func TestManagement_OpenRouterResponseCacheReplaceSemantics(t *testing.T) {
 		if rc, ok := raw.(map[string]any); !ok || len(rc) != 0 {
 			t.Errorf("expected responseCache to be cleared by an omitting save, got %v", raw)
 		}
+	}
+}
+
+func TestManagement_AccountLimits_WithClaudeCodeAccounts(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+
+	cfg := config.Get()
+	cfg.ClaudeCode.Enabled = true
+	cfg.ClaudeCode.Accounts = []claudecode.AccountConfig{
+		{
+			ID:       "cc-test-1",
+			Name:     "Claude Work",
+			Email:    "claude-work@example.com",
+			Token:    "sk-ant-test-123",
+			Type:     "oauth",
+			Priority: 1,
+			Enabled:  true,
+			Source:   "oauth",
+		},
+		{
+			ID:       "cc-test-disabled",
+			Name:     "Claude Disabled",
+			Email:    "claude-disabled@example.com",
+			Token:    "sk-ant-test-456",
+			Type:     "api_key",
+			Priority: 2,
+			Enabled:  false,
+			Source:   "manual",
+		},
+	}
+	cfg.ClaudeCode.Allowlist = []claudecode.ModelConfig{
+		{
+			ID:      "claude-3-7-sonnet-20250219",
+			Aliases: []string{"claude-3-7-sonnet-custom"},
+		},
+	}
+	config.SetForTest(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts, ok := res["accounts"].([]any)
+	if !ok || len(accounts) < 3 {
+		t.Fatalf("expected at least 3 accounts (1 google, 2 claudecode), got %d", len(accounts))
+	}
+
+	var foundWork, foundDisabled bool
+	for _, accRaw := range accounts {
+		acc := accRaw.(map[string]any)
+		if acc["provider"] == "claudecode" {
+			if acc["email"] == "claude-work@example.com" {
+				foundWork = true
+				if acc["status"] != "ok" {
+					t.Errorf("expected status ok for work account, got %v", acc["status"])
+				}
+				limits, ok := acc["limits"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected limits map on claudecode account")
+				}
+				if sonnet, hasSonnet := limits["claude-3-7-sonnet-20250219"].(map[string]any); !hasSonnet {
+					t.Errorf("expected claude-3-7-sonnet-20250219 in claudecode account limits")
+				} else {
+					if sonnet["remaining"] != "100%" {
+						t.Errorf("expected 100%% remaining for healthy account, got %v", sonnet["remaining"])
+					}
+				}
+				if alias, hasAlias := limits["claude-3-7-sonnet-custom"].(map[string]any); !hasAlias {
+					t.Errorf("expected claude-3-7-sonnet-custom alias in limits")
+				} else {
+					if alias["remaining"] != "100%" {
+						t.Errorf("expected 100%% remaining for alias, got %v", alias["remaining"])
+					}
+				}
+			} else if acc["email"] == "claude-disabled@example.com" {
+				foundDisabled = true
+				if acc["status"] != "disabled" {
+					t.Errorf("expected status disabled, got %v", acc["status"])
+				}
+				limits, ok := acc["limits"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected limits map on disabled account")
+				}
+				if sonnet, hasSonnet := limits["claude-3-7-sonnet-20250219"].(map[string]any); !hasSonnet {
+					t.Errorf("expected claude-3-7-sonnet-20250219 in disabled account limits")
+				} else {
+					if sonnet["remaining"] != "0%" {
+						t.Errorf("expected 0%% remaining for disabled account, got %v", sonnet["remaining"])
+					}
+				}
+			}
+		}
+	}
+	if !foundWork {
+		t.Errorf("claude-work@example.com account not found in response")
+	}
+	if !foundDisabled {
+		t.Errorf("claude-disabled@example.com account not found in response")
 	}
 }

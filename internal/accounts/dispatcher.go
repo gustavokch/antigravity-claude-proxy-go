@@ -621,28 +621,47 @@ func (dispatcher *Dispatcher) updateAccountQuota(account *Account, body []byte) 
 	if account == nil || len(body) == 0 {
 		return
 	}
-	var doc struct {
-		Models map[string]struct {
-			QuotaInfo struct {
-				RemainingFraction *float64 `json:"remainingFraction"`
-				ResetTime         string   `json:"resetTime"`
-			} `json:"quotaInfo"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil || len(doc.Models) == 0 {
+	catalog, err := modelcatalog.Parse(body)
+	if err != nil {
+		var doc struct {
+			Models map[string]struct {
+				QuotaInfo struct {
+					RemainingFraction *float64 `json:"remainingFraction"`
+					ResetTime         string   `json:"resetTime"`
+				} `json:"quotaInfo"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(body, &doc); err != nil || len(doc.Models) == 0 {
+			return
+		}
+		modelsQuota := make(map[string]ModelQuota, len(doc.Models))
+		for mID, mData := range doc.Models {
+			fraction := mData.QuotaInfo.RemainingFraction
+			if fraction == nil && mData.QuotaInfo.ResetTime != "" {
+				zero := 0.0
+				fraction = &zero
+			}
+			if fraction != nil || mData.QuotaInfo.ResetTime != "" {
+				modelsQuota[mID] = ModelQuota{
+					RemainingFraction: fraction,
+					ResetTime:         mData.QuotaInfo.ResetTime,
+				}
+			}
+		}
+		quota := Quota{
+			Models:      modelsQuota,
+			LastChecked: dispatcher.now().UnixMilli(),
+		}
+		dispatcher.manager.UpdateAccountQuota(account.Email, quota, nil)
 		return
 	}
-	modelsQuota := make(map[string]ModelQuota, len(doc.Models))
-	for mID, mData := range doc.Models {
-		fraction := mData.QuotaInfo.RemainingFraction
-		if fraction == nil && mData.QuotaInfo.ResetTime != "" {
-			zero := 0.0
-			fraction = &zero
-		}
-		if fraction != nil || mData.QuotaInfo.ResetTime != "" {
-			modelsQuota[mID] = ModelQuota{
-				RemainingFraction: fraction,
-				ResetTime:         mData.QuotaInfo.ResetTime,
+
+	modelsQuota := make(map[string]ModelQuota)
+	for _, m := range catalog.Selectable() {
+		if m.QuotaRemainingFraction != nil || m.QuotaResetTime != "" {
+			modelsQuota[m.ID] = ModelQuota{
+				RemainingFraction: m.QuotaRemainingFraction,
+				ResetTime:         m.QuotaResetTime,
 			}
 		}
 	}

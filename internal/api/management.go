@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/accounts"
+	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/openrouter"
@@ -210,34 +211,43 @@ func (server *Server) handleHealth(writer http.ResponseWriter, request *http.Req
 	server.health(writer)
 }
 
+func isClaudeModel(modelId string, allowlist []claudecode.ModelConfig) bool {
+	lower := strings.ToLower(modelId)
+	if strings.HasPrefix(lower, "claude-") {
+		return true
+	}
+	for _, m := range allowlist {
+		if strings.EqualFold(m.ID, modelId) {
+			return true
+		}
+		for _, a := range m.Aliases {
+			if strings.EqualFold(a, modelId) {
+				return true
+			}
+		}
+	}
+	for _, m := range claudecode.DefaultClaudeCatalogue() {
+		if strings.EqualFold(m.ID, modelId) {
+			return true
+		}
+		for _, a := range m.Aliases {
+			if strings.EqualFold(a, modelId) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *http.Request) {
 	cfg := config.Get()
 	includeHistory := request.URL.Query().Get("includeHistory") == "true"
-	if server.accountManager == nil {
-		modelMapping := cfg.ModelMapping
-		if modelMapping == nil {
-			modelMapping = make(map[string]any)
-		}
-		publicCfg := config.GetPublicConfig()
-		res := map[string]any{
-			"status":               "ok",
-			"timestamp":            server.now().UTC().Format(time.RFC3339Nano),
-			"totalAccounts":        0,
-			"models":               []string{},
-			"modelConfig":          modelMapping,
-			"customEndpoints":      publicCfg["customEndpoints"],
-			"openrouter":           publicCfg["openrouter"],
-			"globalQuotaThreshold": cfg.GlobalQuotaThreshold,
-			"accounts":             []any{},
-		}
-		if includeHistory && server.tracker != nil {
-			res["history"] = server.tracker.GetHistory()
-		}
-		writeJSON(writer, http.StatusOK, res)
-		return
+
+	var accountsList []*accounts.Account
+	if server.accountManager != nil {
+		accountsList = server.accountManager.GetAllAccounts()
 	}
 
-	accountsList := server.accountManager.GetAllAccounts()
 	format := request.URL.Query().Get("format")
 
 	if format == "table" {
@@ -279,6 +289,33 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		return
 	}
 
+	var ccSnapshots []claudecode.AccountSnapshot
+	if cfg.ClaudeCode.Enabled || len(cfg.ClaudeCode.Accounts) > 0 {
+		pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+		if pool != nil {
+			ccSnapshots = pool.Snapshots()
+		}
+		if len(ccSnapshots) == 0 && len(cfg.ClaudeCode.Accounts) > 0 {
+			for _, acc := range cfg.ClaudeCode.Accounts {
+				status := "healthy"
+				if !acc.Enabled {
+					status = "disabled"
+				}
+				ccSnapshots = append(ccSnapshots, claudecode.AccountSnapshot{
+					ID:        acc.ID,
+					Name:      acc.Name,
+					Email:     acc.Email,
+					Type:      acc.Type,
+					Priority:  acc.Priority,
+					Enabled:   acc.Enabled,
+					Source:    acc.Source,
+					Status:    status,
+					CreatedAt: server.now(),
+				})
+			}
+		}
+	}
+
 	modelSet := make(map[string]bool)
 	if catalog, err := server.fetchModelCatalog(request.Context()); err == nil && catalog != nil {
 		for _, m := range catalog.Selectable() {
@@ -293,14 +330,64 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			modelSet[m] = true
 		}
 	}
+
+	if cfg.ClaudeCode.Enabled || len(ccSnapshots) > 0 {
+		if len(cfg.ClaudeCode.Allowlist) > 0 {
+			for _, m := range cfg.ClaudeCode.Allowlist {
+				if m.ID != "" {
+					modelSet[m.ID] = true
+				}
+				for _, alias := range m.Aliases {
+					if alias != "" {
+						modelSet[alias] = true
+					}
+				}
+			}
+		} else {
+			for _, m := range claudecode.DefaultClaudeCatalogue() {
+				if m.ID != "" {
+					modelSet[m.ID] = true
+				}
+				for _, alias := range m.Aliases {
+					if alias != "" {
+						modelSet[alias] = true
+					}
+				}
+			}
+		}
+	}
+
+	if cfg.OpenRouter.Enabled {
+		for _, m := range cfg.OpenRouter.Allowlist {
+			if m.ID != "" {
+				modelSet[m.ID] = true
+			}
+			if m.Alias != "" {
+				modelSet[m.Alias] = true
+			}
+		}
+	}
+	if cfg.Kimi.Enabled {
+		for _, m := range cfg.Kimi.Allowlist {
+			if m.ID != "" {
+				modelSet[m.ID] = true
+			}
+			if m.Alias != "" {
+				modelSet[m.Alias] = true
+			}
+		}
+	}
+
 	sortedModels := make([]string, 0, len(modelSet))
 	for m := range modelSet {
 		sortedModels = append(sortedModels, m)
 	}
 	sort.Strings(sortedModels)
 
-	result := make([]map[string]any, 0, len(accountsList))
+	result := make([]map[string]any, 0, len(accountsList)+len(ccSnapshots))
 	now := server.now().UnixMilli()
+
+	// 1. Google Cloud Code accounts
 	for _, acc := range accountsList {
 		rateLimits := make(map[string]any)
 		for model, rl := range acc.ModelRateLimits {
@@ -339,7 +426,10 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		}
 
 		result = append(result, map[string]any{
+			"id":                   acc.Email,
 			"email":                acc.Email,
+			"name":                 acc.Email,
+			"provider":             "google",
 			"status":               status,
 			"error":                acc.InvalidReason,
 			"source":               acc.Source,
@@ -359,6 +449,112 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		})
 	}
 
+	// 2. Claude Code accounts
+	for _, ccAcc := range ccSnapshots {
+		limits := make(map[string]any, len(sortedModels))
+		rl := ccAcc.RateLimits
+
+		status := "ok"
+		if !ccAcc.Enabled {
+			status = "disabled"
+		} else if !ccAcc.CooldownUntil.IsZero() && ccAcc.CooldownUntil.After(server.now()) {
+			status = "cooldown"
+		} else if (rl.RequestsLimit > 0 && rl.RequestsRemaining == 0) || (rl.TokensLimit > 0 && rl.TokensRemaining == 0) {
+			status = "rate_limited"
+		}
+
+		for _, modelId := range sortedModels {
+			if !isClaudeModel(modelId, cfg.ClaudeCode.Allowlist) {
+				limits[modelId] = nil
+				continue
+			}
+
+			var frac float64 = 1.0
+			var resetTime any = nil
+
+			if status == "disabled" {
+				frac = 0.0
+			} else if status == "cooldown" {
+				frac = 0.0
+				resetTime = ccAcc.CooldownUntil.UTC().Format(time.RFC3339)
+			} else if status == "rate_limited" {
+				frac = 0.0
+				if !rl.RequestsReset.IsZero() {
+					resetTime = rl.RequestsReset.UTC().Format(time.RFC3339)
+				} else if !rl.TokensReset.IsZero() {
+					resetTime = rl.TokensReset.UTC().Format(time.RFC3339)
+				}
+			} else if rl.RequestsLimit > 0 || rl.TokensLimit > 0 {
+				reqFrac := 1.0
+				if rl.RequestsLimit > 0 {
+					reqFrac = float64(rl.RequestsRemaining) / float64(rl.RequestsLimit)
+				}
+				tokFrac := 1.0
+				if rl.TokensLimit > 0 {
+					tokFrac = float64(rl.TokensRemaining) / float64(rl.TokensLimit)
+				}
+				if reqFrac < tokFrac {
+					frac = reqFrac
+				} else {
+					frac = tokFrac
+				}
+				if !rl.RequestsReset.IsZero() {
+					resetTime = rl.RequestsReset.UTC().Format(time.RFC3339)
+				} else if !rl.TokensReset.IsZero() {
+					resetTime = rl.TokensReset.UTC().Format(time.RFC3339)
+				}
+			}
+
+			if frac < 0 {
+				frac = 0
+			}
+			if frac > 1.0 {
+				frac = 1.0
+			}
+
+			limits[modelId] = map[string]any{
+				"remaining":         fmt.Sprintf("%d%%", int(frac*100)),
+				"remainingFraction": frac,
+				"resetTime":         resetTime,
+			}
+		}
+
+		displayName := ccAcc.Name
+		if displayName == "" {
+			displayName = ccAcc.Email
+		}
+		if displayName == "" {
+			displayName = ccAcc.ID
+		}
+
+		var lastUsedMS int64
+		if !ccAcc.LastUsed.IsZero() {
+			lastUsedMS = ccAcc.LastUsed.UnixMilli()
+		}
+
+		result = append(result, map[string]any{
+			"id":                   ccAcc.ID,
+			"email":                ccAcc.Email,
+			"name":                 displayName,
+			"provider":             "claudecode",
+			"status":               status,
+			"error":                nil,
+			"source":               ccAcc.Source,
+			"type":                 ccAcc.Type,
+			"enabled":              ccAcc.Enabled,
+			"priority":             ccAcc.Priority,
+			"inFlight":             ccAcc.InFlight,
+			"isInvalid":            false,
+			"invalidReason":        "",
+			"verifyUrl":            "",
+			"lastUsed":             lastUsedMS,
+			"rateLimits":           ccAcc.RateLimits,
+			"limits":               limits,
+			"quotaThreshold":       0.0,
+			"modelQuotaThresholds": map[string]any{},
+		})
+	}
+
 	modelMapping := cfg.ModelMapping
 	if modelMapping == nil {
 		modelMapping = make(map[string]any)
@@ -368,11 +564,13 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	res := map[string]any{
 		"status":               "ok",
 		"timestamp":            server.now().UTC().Format(time.RFC3339Nano),
-		"totalAccounts":        len(accountsList),
+		"totalAccounts":        len(result),
 		"models":               sortedModels,
 		"modelConfig":          modelMapping,
 		"customEndpoints":      publicCfg["customEndpoints"],
 		"openrouter":           publicCfg["openrouter"],
+		"kimi":                 publicCfg["kimi"],
+		"claudecode":           publicCfg["claudecode"],
 		"globalQuotaThreshold": cfg.GlobalQuotaThreshold,
 		"accounts":             result,
 	}
