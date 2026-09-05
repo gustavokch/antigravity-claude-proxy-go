@@ -1034,6 +1034,63 @@ func TestOpenRouterRouting_NonRetryable400DoesNotRetry(t *testing.T) {
 	}
 }
 
+func TestOpenRouterRouting_429WrapAroundRecordsCooldown(t *testing.T) {
+	var timestamps []time.Time
+	var mu sync.Mutex
+
+	// No ratelimit headers: the only pacing between attempt 2 and 3 must come
+	// from the wrap-around cooldown record.
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		timestamps = append(timestamps, time.Now())
+		mu.Unlock()
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded"}}`))
+	}))
+	defer mockOR.Close()
+
+	env := setupRoutingTestEnv(t, mockOR.URL, nil)
+	env.saveConfig(t, map[string]any{
+		"id":            "minimax/minimax-m3",
+		"alias":         "minimax-m3",
+		"displayName":   "MiniMax M3",
+		"contextLength": 200000,
+		"enabled":       true,
+	}, map[string]any{
+		"maxRetries":    3,
+		"retry429Max":   1,
+		"backoffBaseMs": 100,
+		"backoffCapMs":  400,
+	})
+	server := env.newServer(t)
+
+	reqPayload := `{"model":"minimax/minimax-m3","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after exhausted retries, got %d: %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(timestamps) != 4 {
+		t.Fatalf("expected 4 attempts (2 full cycles of 1 candidate), got %d", len(timestamps))
+	}
+	// Attempt 2 exhausts consec429 and wraps around: the cooldown recorded at
+	// the wrap must pace attempt 3 via loop-top RateLimiter.Wait.
+	wrapGap := timestamps[2].Sub(timestamps[1])
+	if wrapGap < 100*time.Millisecond {
+		t.Errorf("expected wrap-around cooldown gap >= 100ms between attempts 2 and 3, got %v", wrapGap)
+	}
+}
+
 func TestOpenRouterRouting_GatewayRateLimitingPacing(t *testing.T) {
 	var timestamps []time.Time
 	var mu sync.Mutex

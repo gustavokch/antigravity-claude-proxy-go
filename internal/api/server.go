@@ -1793,6 +1793,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
 					providerIdx = 0
 					tried = make(map[string]bool)
+					// Record the cooldown instead of sleeping here: the
+					// loop-top RateLimiter.Wait enforces it, which also
+					// paces concurrent requests to the same model.
+					d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+					openrouter.DefaultRateLimiter.RecordRateLimit(model, rl, d)
 				}
 				continue
 			}
