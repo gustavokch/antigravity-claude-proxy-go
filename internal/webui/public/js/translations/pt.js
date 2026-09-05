@@ -60,6 +60,7 @@ window.translations.pt = {
     cooldownStatus: "Cooldown",
     rateLimitedStatus: "Limite Atingido",
     disabledStatus: "Desativado",
+    invalidStatus: "Inválido",
     reauthenticated: "reautenticado",
     added: "adicionado",
     successfully: "com sucesso",

@@ -64,6 +64,7 @@ window.translations.en = {
     cooldownStatus: "Cooldown",
     rateLimitedStatus: "Rate Limited",
     disabledStatus: "Disabled",
+    invalidStatus: "Invalid",
     selectProvider: "Select Account Provider",
     claudeCodeAccountAddedSuccess: "Claude Code account added successfully",
     reauthenticated: "re-authenticated",

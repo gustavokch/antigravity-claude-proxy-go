@@ -61,6 +61,13 @@ var commandCrusherKeys = []string{
 
 var locales = []string{"en", "pt"}
 
+// quotaStatusKeys are the i18n keys used by the per-account status pill in
+// views/models.html. Every locale must define them.
+var quotaStatusKeys = []string{
+	"readyStatus", "cooldownStatus", "rateLimitedStatus", "disabledStatus",
+	"invalidStatus",
+}
+
 func loadLocale(t *testing.T, locale string) string {
 	t.Helper()
 	b, err := Assets.ReadFile(fmt.Sprintf("public/js/translations/%s.js", locale))
@@ -122,6 +129,18 @@ func TestTranslations_CommandCrusherKeys(t *testing.T) {
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		for _, key := range commandCrusherKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_QuotaStatusKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range quotaStatusKeys {
 			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
 			if !re.MatchString(src) {
 				t.Errorf("locale %s missing key %q", locale, key)
