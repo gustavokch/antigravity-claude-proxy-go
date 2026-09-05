@@ -249,6 +249,32 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 				"messages": [{"role": "user", "content": [{"type": "text", "text": ""}]}]
 			}`,
 		},
+		{
+			name: "image_url data URI becomes base64 image block",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"text","text":"What does this show?"},
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "text", "text": "What does this show?"},
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+				]}]
+			}`,
+		},
+		{
+			name: "image_url remote URL becomes url image block",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"https://example.com/a.jpg"}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "url", "url": "https://example.com/a.jpg"}}
+				]}]
+			}`,
+		},
 	}
 
 	for _, tt := range tests {

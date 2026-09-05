@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // translateOpenAIRequest converts a decoded OpenAI Chat Completions request
@@ -164,6 +165,14 @@ func openAIContentToBlocks(content any) []any {
 			if partType := stringFrom(part["type"]); partType == "text" {
 				text, _ := part["text"].(string)
 				blocks = append(blocks, map[string]any{"type": "text", "text": text})
+			} else if partType == "image_url" {
+				if image := openAIImageURLToImageBlock(part["image_url"]); image != nil {
+					blocks = append(blocks, image)
+				}
+			} else if partType == "input_image" {
+				if image := openAIImageURLToImageBlock(part); image != nil {
+					blocks = append(blocks, image)
+				}
 			}
 		}
 	}
@@ -190,6 +199,50 @@ func openAIContentToText(content any) string {
 		return joinNonEmpty(parts, "\n\n")
 	default:
 		return ""
+	}
+}
+
+// openAIImageURLToImageBlock converts an OpenAI image_url part
+// ({"url": ...}) into an Anthropic image block. Data URIs become base64
+// sources; remote URLs become url sources. Returns nil when no usable URL.
+func openAIImageURLToImageBlock(raw any) map[string]any {
+	url := ""
+	switch typed := raw.(type) {
+	case string:
+		url = typed
+	case map[string]any:
+		url = stringFrom(typed["url"])
+		// Responses-style nesting: image_url is itself an object.
+		if url == "" {
+			if nested, ok := typed["image_url"].(map[string]any); ok {
+				url = stringFrom(nested["url"])
+			}
+		}
+	}
+	if url == "" {
+		return nil
+	}
+	if strings.HasPrefix(url, "{") {
+		return nil
+	}
+	if rest, ok := strings.CutPrefix(url, "data:"); ok {
+		mimeType, data, _ := strings.Cut(rest, ";base64,")
+		if data == "" {
+			return nil
+		}
+		if mimeType == "" {
+			mimeType = "image/jpeg"
+		}
+		return map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type": "base64", "media_type": mimeType, "data": data,
+			},
+		}
+	}
+	return map[string]any{
+		"type":   "image",
+		"source": map[string]any{"type": "url", "url": url},
 	}
 }
 
