@@ -385,6 +385,19 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 				]}]
 			}`,
 		},
+		{
+			name: "whitespace-only image url skipped",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"text","text":"hello"},
+				{"type":"image_url","image_url":{"url":"   "}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "text", "text": "hello"}
+				]}]
+			}`,
+		},
 	}
 
 	for _, tt := range tests {

@@ -235,6 +235,10 @@ func openAIImageURLToImageBlock(raw any) map[string]any {
 	if url == "" {
 		return nil
 	}
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return nil
+	}
 	if strings.HasPrefix(url, "{") {
 		return nil
 	}
