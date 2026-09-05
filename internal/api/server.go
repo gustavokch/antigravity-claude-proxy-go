@@ -1246,6 +1246,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	}
 
 	maxRetries := openRouterCfg.Routing.MaxRetries
+	// maxRetries bounds retry cycles over the full candidate chain; the first
+	// walk of every provider is not counted against it.
 	if maxRetries <= 0 {
 		maxRetries = 3
 	}
@@ -1265,6 +1267,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		consec429          int
 		tried              = make(map[string]bool)
 		attempts           int
+		retryCycle         int
 		ccrHydrations      int
 		totalCCRRetrievals int
 		streamStarted      bool
@@ -1390,10 +1393,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return
 			}
 			providerIdx++
-			if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
+			if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+				retryCycle++
 				providerIdx = 0
 				tried = make(map[string]bool)
-				d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+				d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 				if server.now().Add(d).After(deadline) {
 					break
 				}
@@ -1426,10 +1430,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 						openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 					}
 					providerIdx++
-					if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
+					if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+						retryCycle++
 						providerIdx = 0
 						tried = make(map[string]bool)
-						d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+						d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 						if server.now().Add(d).After(deadline) {
 							break
 						}
@@ -1560,10 +1565,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 							openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 						}
 						providerIdx++
-						if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
+						if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+							retryCycle++
 							providerIdx = 0
 							tried = make(map[string]bool)
-							d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+							d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 							if server.now().Add(d).After(deadline) {
 								break
 							}
@@ -1655,10 +1661,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 				}
 				providerIdx++
-				if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
+				if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+					retryCycle++
 					providerIdx = 0
 					tried = make(map[string]bool)
-					d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+					d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 					if server.now().Add(d).After(deadline) {
 						break
 					}
@@ -1790,13 +1797,14 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			if consec429 > max429 {
 				providerIdx++
 				consec429 = 0
-				if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
+				if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
+					retryCycle++
 					providerIdx = 0
 					tried = make(map[string]bool)
 					// Record the cooldown instead of sleeping here: the
 					// loop-top RateLimiter.Wait enforces it, which also
 					// paces concurrent requests to the same model.
-					d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+					d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 					openrouter.DefaultRateLimiter.RecordRateLimit(model, rl, d)
 				}
 				continue
@@ -1818,10 +1826,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return
 			}
 			providerIdx++
-			if providerIdx >= len(candidates) && isTransient && attempts < maxRetries && server.now().Before(deadline) {
+			if providerIdx >= len(candidates) && isTransient && retryCycle < maxRetries && server.now().Before(deadline) {
+				retryCycle++
 				providerIdx = 0
 				tried = make(map[string]bool)
-				d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+				d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 				if server.now().Add(d).After(deadline) {
 					break
 				}

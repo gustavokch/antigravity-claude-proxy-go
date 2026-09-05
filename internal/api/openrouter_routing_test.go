@@ -984,11 +984,13 @@ func TestOpenRouterRouting_ExhaustedRetriesReturnsLastAttemptCount(t *testing.T)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 after exhausted retries, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := atomic.LoadInt32(&attempts); got != 3 {
-		t.Errorf("expected 3 attempts, got %d", got)
+	// maxRetries counts retry cycles over the full candidate chain: the first
+	// walk plus 3 retry cycles of a single candidate = 4 attempts.
+	if got := atomic.LoadInt32(&attempts); got != 4 {
+		t.Errorf("expected 4 attempts (1 + 3 retry cycles), got %d", got)
 	}
-	if !strings.Contains(rec.Body.String(), "failed after 3 attempt(s)") {
-		t.Errorf("expected error message to state 3 attempts, got: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "failed after 4 attempt(s)") {
+		t.Errorf("expected error message to state 4 attempts, got: %s", rec.Body.String())
 	}
 }
 
@@ -1031,6 +1033,43 @@ func TestOpenRouterRouting_NonRetryable400DoesNotRetry(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&attempts); got != 1 {
 		t.Errorf("expected exactly 1 attempt for non-retryable 400, got %d", got)
+	}
+}
+
+func TestOpenRouterRouting_WrapAroundFiresWithMoreCandidatesThanMaxRetries(t *testing.T) {
+	var attempts int32
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"not_found_error","message":"No endpoints found for anthropic/claude-3.7-sonnet."}}`))
+	}))
+	defer mockOR.Close()
+
+	// Two ranked candidates, maxRetries=1: wrap-around must still fire after
+	// the first full walk (old attempts-based condition could not).
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "prov-a", ContextLength: 200000},
+		{ProviderName: "prov-b", ContextLength: 200000},
+	}
+	env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+	env.saveConfig(t, nil, map[string]any{
+		"maxRetries":    1,
+		"backoffBaseMs": 1,
+		"backoffCapMs":  5,
+	})
+	server := env.newServer(t)
+
+	rec := env.doRequest(t, server, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after exhausted retries, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// First walk of 2 candidates + 1 retry cycle of 2 = 4 attempts.
+	if got := atomic.LoadInt32(&attempts); got != 4 {
+		t.Errorf("expected 4 attempts (2 candidates x 2 cycles), got %d", got)
 	}
 }
 
@@ -1080,14 +1119,18 @@ func TestOpenRouterRouting_429WrapAroundRecordsCooldown(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(timestamps) != 4 {
-		t.Fatalf("expected 4 attempts (2 full cycles of 1 candidate), got %d", len(timestamps))
+	// maxRetries=3 cycles with max429=1: each cycle holds 2 attempts
+	// (one 429 backoff retry, then one 429 that exhausts consec429 and wraps).
+	// 4 cycles total = 8 attempts.
+	if len(timestamps) != 8 {
+		t.Fatalf("expected 8 attempts (4 cycles x 2), got %d", len(timestamps))
 	}
 	// Attempt 2 exhausts consec429 and wraps around: the cooldown recorded at
-	// the wrap must pace attempt 3 via loop-top RateLimiter.Wait.
+	// the wrap must pace attempt 3 via loop-top RateLimiter.Wait. Floor is
+	// 0.75x backoffBaseMs^2 growth with jitter.
 	wrapGap := timestamps[2].Sub(timestamps[1])
-	if wrapGap < 100*time.Millisecond {
-		t.Errorf("expected wrap-around cooldown gap >= 100ms between attempts 2 and 3, got %v", wrapGap)
+	if wrapGap < 50*time.Millisecond {
+		t.Errorf("expected wrap-around cooldown gap >= 50ms between attempts 2 and 3, got %v", wrapGap)
 	}
 }
 

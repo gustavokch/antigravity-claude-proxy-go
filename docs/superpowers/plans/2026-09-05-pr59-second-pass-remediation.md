@@ -56,6 +56,15 @@ Out of scope (flagged, needs owner sign-off): cycle-based wrap-around semantics.
 - **Step 2:** Full suite green.
 - **Step 3:** Commit `chore(openrouter): remove unused IsRetryableOpenRouterError`.
 
+### Task 5: Cycle-based wrap-around (owner-approved)
+- **Target Files:**
+  - `internal/api/server.go`
+  - `internal/config/config.go`
+  - `internal/api/openrouter_routing_test.go`
+- **Semantics:** `MaxRetries` now bounds retry *cycles* over the full candidate chain; the first walk of every provider is not counted. Backoff keyed on `retryCycle` (was `attempts`, which made the first wrap backoff hit the cap once the chain was long).
+- **Tests:** updated `ExhaustedRetries` (4 attempts), `429WrapAroundRecordsCooldown` (8 attempts), added `WrapAroundFiresWithMoreCandidatesThanMaxRetries` (2 candidates, `maxRetries=1`, 4 attempts).
+- **Commit:** `fix(openrouter): count retry cycles instead of total attempts for wrap-around`.
+
 ---
 
 ## Verification

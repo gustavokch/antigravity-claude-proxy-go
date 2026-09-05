@@ -36,8 +36,10 @@ type OpenRouterModelConfig struct {
 
 // OpenRouterRoutingConfig holds routing strategy knobs.
 type OpenRouterRoutingConfig struct {
-	FailureThreshold     int `json:"failureThreshold,omitempty"`
-	Retry429Max          int `json:"retry429Max,omitempty"`
+	FailureThreshold int `json:"failureThreshold,omitempty"`
+	Retry429Max      int `json:"retry429Max,omitempty"`
+	// MaxRetries bounds retry cycles over the full candidate chain; the
+	// first walk of every provider is not counted against it.
 	MaxRetries           int `json:"maxRetries,omitempty"`
 	BackoffBaseMs        int `json:"backoffBaseMs,omitempty"`
 	BackoffCapMs         int `json:"backoffCapMs,omitempty"`
