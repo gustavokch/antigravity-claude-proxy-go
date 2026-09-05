@@ -1426,6 +1426,17 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 						openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 					}
 					providerIdx++
+					if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
+						providerIdx = 0
+						tried = make(map[string]bool)
+						d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+						if server.now().Add(d).After(deadline) {
+							break
+						}
+						if !sleepOrDone(request.Context(), d) {
+							return
+						}
+					}
 					continue
 				}
 
@@ -1549,6 +1560,17 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 							openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 						}
 						providerIdx++
+						if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
+							providerIdx = 0
+							tried = make(map[string]bool)
+							d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+							if server.now().Add(d).After(deadline) {
+								break
+							}
+							if !sleepOrDone(request.Context(), d) {
+								return
+							}
+						}
 						continue
 					}
 					return
@@ -1633,6 +1655,17 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 				}
 				providerIdx++
+				if providerIdx >= len(candidates) && attempts < maxRetries && server.now().Before(deadline) {
+					providerIdx = 0
+					tried = make(map[string]bool)
+					d := computeBackoff(attempts, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
+					if server.now().Add(d).After(deadline) {
+						break
+					}
+					if !sleepOrDone(request.Context(), d) {
+						return
+					}
+				}
 				continue
 			}
 			// Capture served provider from response if present
