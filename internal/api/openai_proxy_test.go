@@ -249,6 +249,155 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 				"messages": [{"role": "user", "content": [{"type": "text", "text": ""}]}]
 			}`,
 		},
+		{
+			name: "image_url data URI becomes base64 image block",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"text","text":"What does this show?"},
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "text", "text": "What does this show?"},
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+				]}]
+			}`,
+		},
+		{
+			name: "image_url remote URL becomes url image block",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"https://example.com/a.jpg"}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "url", "url": "https://example.com/a.jpg"}}
+				]}]
+			}`,
+		},
+		{
+			name: "image_url with flat url property",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","url":"https://example.com/flat.jpg"}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "url", "url": "https://example.com/flat.jpg"}}
+				]}]
+			}`,
+		},
+		{
+			name: "image_url with direct string url",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","image_url":"https://example.com/direct.jpg"}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "url", "url": "https://example.com/direct.jpg"}}
+				]}]
+			}`,
+		},
+		{
+			name: "input_image part variant with nested url",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"input_image","image_url":{"url":"https://example.com/input.png"}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "url", "url": "https://example.com/input.png"}}
+				]}]
+			}`,
+		},
+		{
+			name: "native Anthropic image block passthrough",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+				]}]
+			}`,
+		},
+		{
+			name: "data URI with MIME parameters and whitespace in base64",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"data:image/png;charset=utf-8;base64,\n iVBORw0KGgo=\n"}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+				]}]
+			}`,
+		},
+		{
+			name: "invalid data URI without base64 skipped",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"text","text":"hello"},
+				{"type":"image_url","image_url":{"url":"data:text/plain,notbase64"}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "text", "text": "hello"}
+				]}]
+			}`,
+		},
+		{
+			name: "data URI with interior whitespace in base64",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO Rw0K\tGgo="}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+				]}]
+			}`,
+		},
+		{
+			name: "uppercase DATA prefix and MIME normalized",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"DATA:IMAGE/PNG;BASE64,iVBORw0KGgo="}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+				]}]
+			}`,
+		},
+		{
+			name: "non-http image url skipped",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"text","text":"hello"},
+				{"type":"image_url","image_url":{"url":"ftp://example.com/a.jpg"}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "text", "text": "hello"}
+				]}]
+			}`,
+		},
+		{
+			name: "whitespace-only image url skipped",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"text","text":"hello"},
+				{"type":"image_url","image_url":{"url":"   "}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "text", "text": "hello"}
+				]}]
+			}`,
+		},
 	}
 
 	for _, tt := range tests {

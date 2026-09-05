@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // translateOpenAIRequest converts a decoded OpenAI Chat Completions request
@@ -164,6 +165,20 @@ func openAIContentToBlocks(content any) []any {
 			if partType := stringFrom(part["type"]); partType == "text" {
 				text, _ := part["text"].(string)
 				blocks = append(blocks, map[string]any{"type": "text", "text": text})
+			} else if partType == "image_url" || partType == "input_image" {
+				image := openAIImageURLToImageBlock(part["image_url"])
+				if image == nil {
+					image = openAIImageURLToImageBlock(part)
+				}
+				if image != nil {
+					blocks = append(blocks, image)
+				}
+			} else if partType == "image" {
+				if source, ok := part["source"].(map[string]any); ok && len(source) > 0 {
+					blocks = append(blocks, part)
+				} else if image := openAIImageURLToImageBlock(part); image != nil {
+					blocks = append(blocks, image)
+				}
 			}
 		}
 	}
@@ -191,6 +206,85 @@ func openAIContentToText(content any) string {
 	default:
 		return ""
 	}
+}
+
+// openAIImageURLToImageBlock converts an OpenAI image_url part
+// ({"url": ...}) into an Anthropic image block. Data URIs become base64
+// sources; remote URLs become url sources. Returns nil when no usable URL.
+func openAIImageURLToImageBlock(raw any) map[string]any {
+	url := ""
+	switch typed := raw.(type) {
+	case string:
+		url = typed
+	case map[string]any:
+		url = stringFrom(typed["url"])
+		// Responses-style or flat nesting: image_url is an object or string.
+		if url == "" {
+			if nested, ok := typed["image_url"].(map[string]any); ok {
+				url = stringFrom(nested["url"])
+			} else if s := stringFrom(typed["image_url"]); s != "" {
+				url = s
+			}
+		}
+		if url == "" {
+			if source, ok := typed["source"].(map[string]any); ok {
+				url = stringFrom(source["url"])
+			}
+		}
+	}
+	if url == "" {
+		return nil
+	}
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return nil
+	}
+	if strings.HasPrefix(url, "{") {
+		return nil
+	}
+	if rest, ok := cutPrefixFold(url, "data:"); ok {
+		idx := strings.Index(strings.ToLower(rest), ";base64,")
+		if idx < 0 {
+			return nil
+		}
+		rawMime, rawData := rest[:idx], rest[idx+len(";base64,"):]
+		data := strings.Join(strings.Fields(rawData), "")
+		if data == "" {
+			return nil
+		}
+		mimeType, _, _ := strings.Cut(rawMime, ";")
+		mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+		if mimeType == "" {
+			mimeType = "image/jpeg"
+		}
+		return map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type": "base64", "media_type": mimeType, "data": data,
+			},
+		}
+	}
+	if !isHTTPURL(url) {
+		return nil
+	}
+	return map[string]any{
+		"type":   "image",
+		"source": map[string]any{"type": "url", "url": url},
+	}
+}
+
+// cutPrefixFold cuts prefix case-insensitively, preserving the rest verbatim.
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
+		return s, false
+	}
+	return s[len(prefix):], true
+}
+
+// isHTTPURL reports whether url uses http or https scheme.
+func isHTTPURL(url string) bool {
+	lower := strings.ToLower(url)
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
 // openAIToolCallToToolUse converts one OpenAI tool_call (arguments is a JSON
