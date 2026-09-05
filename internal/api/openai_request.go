@@ -238,17 +238,18 @@ func openAIImageURLToImageBlock(raw any) map[string]any {
 	if strings.HasPrefix(url, "{") {
 		return nil
 	}
-	if rest, ok := strings.CutPrefix(url, "data:"); ok {
-		rawMime, rawData, ok := strings.Cut(rest, ";base64,")
-		if !ok {
+	if rest, ok := cutPrefixFold(url, "data:"); ok {
+		idx := strings.Index(strings.ToLower(rest), ";base64,")
+		if idx < 0 {
 			return nil
 		}
-		data := strings.TrimSpace(rawData)
+		rawMime, rawData := rest[:idx], rest[idx+len(";base64,"):]
+		data := strings.Join(strings.Fields(rawData), "")
 		if data == "" {
 			return nil
 		}
 		mimeType, _, _ := strings.Cut(rawMime, ";")
-		mimeType = strings.TrimSpace(mimeType)
+		mimeType = strings.ToLower(strings.TrimSpace(mimeType))
 		if mimeType == "" {
 			mimeType = "image/jpeg"
 		}
@@ -259,10 +260,27 @@ func openAIImageURLToImageBlock(raw any) map[string]any {
 			},
 		}
 	}
+	if !isHTTPURL(url) {
+		return nil
+	}
 	return map[string]any{
 		"type":   "image",
 		"source": map[string]any{"type": "url", "url": url},
 	}
+}
+
+// cutPrefixFold cuts prefix case-insensitively, preserving the rest verbatim.
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
+		return s, false
+	}
+	return s[len(prefix):], true
+}
+
+// isHTTPURL reports whether url uses http or https scheme.
+func isHTTPURL(url string) bool {
+	lower := strings.ToLower(url)
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
 // openAIToolCallToToolUse converts one OpenAI tool_call (arguments is a JSON

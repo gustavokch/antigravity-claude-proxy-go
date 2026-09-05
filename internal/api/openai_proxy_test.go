@@ -348,6 +348,43 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 				]}]
 			}`,
 		},
+		{
+			name: "data URI with interior whitespace in base64",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO Rw0K\tGgo="}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+				]}]
+			}`,
+		},
+		{
+			name: "uppercase DATA prefix and MIME normalized",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"image_url","image_url":{"url":"DATA:IMAGE/PNG;BASE64,iVBORw0KGgo="}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+				]}]
+			}`,
+		},
+		{
+			name: "non-http image url skipped",
+			input: `{"model":"m","messages":[{"role":"user","content":[
+				{"type":"text","text":"hello"},
+				{"type":"image_url","image_url":{"url":"ftp://example.com/a.jpg"}}
+			]}]}`,
+			want: `{
+				"model": "m",
+				"messages": [{"role": "user", "content": [
+					{"type": "text", "text": "hello"}
+				]}]
+			}`,
+		},
 	}
 
 	for _, tt := range tests {
