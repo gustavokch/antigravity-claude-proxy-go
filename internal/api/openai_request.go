@@ -165,12 +165,18 @@ func openAIContentToBlocks(content any) []any {
 			if partType := stringFrom(part["type"]); partType == "text" {
 				text, _ := part["text"].(string)
 				blocks = append(blocks, map[string]any{"type": "text", "text": text})
-			} else if partType == "image_url" {
-				if image := openAIImageURLToImageBlock(part["image_url"]); image != nil {
+			} else if partType == "image_url" || partType == "input_image" {
+				image := openAIImageURLToImageBlock(part["image_url"])
+				if image == nil {
+					image = openAIImageURLToImageBlock(part)
+				}
+				if image != nil {
 					blocks = append(blocks, image)
 				}
-			} else if partType == "input_image" {
-				if image := openAIImageURLToImageBlock(part); image != nil {
+			} else if partType == "image" {
+				if source, ok := part["source"].(map[string]any); ok && len(source) > 0 {
+					blocks = append(blocks, part)
+				} else if image := openAIImageURLToImageBlock(part); image != nil {
 					blocks = append(blocks, image)
 				}
 			}
@@ -212,10 +218,17 @@ func openAIImageURLToImageBlock(raw any) map[string]any {
 		url = typed
 	case map[string]any:
 		url = stringFrom(typed["url"])
-		// Responses-style nesting: image_url is itself an object.
+		// Responses-style or flat nesting: image_url is an object or string.
 		if url == "" {
 			if nested, ok := typed["image_url"].(map[string]any); ok {
 				url = stringFrom(nested["url"])
+			} else if s := stringFrom(typed["image_url"]); s != "" {
+				url = s
+			}
+		}
+		if url == "" {
+			if source, ok := typed["source"].(map[string]any); ok {
+				url = stringFrom(source["url"])
 			}
 		}
 	}
@@ -226,10 +239,16 @@ func openAIImageURLToImageBlock(raw any) map[string]any {
 		return nil
 	}
 	if rest, ok := strings.CutPrefix(url, "data:"); ok {
-		mimeType, data, _ := strings.Cut(rest, ";base64,")
+		rawMime, rawData, ok := strings.Cut(rest, ";base64,")
+		if !ok {
+			return nil
+		}
+		data := strings.TrimSpace(rawData)
 		if data == "" {
 			return nil
 		}
+		mimeType, _, _ := strings.Cut(rawMime, ";")
+		mimeType = strings.TrimSpace(mimeType)
 		if mimeType == "" {
 			mimeType = "image/jpeg"
 		}
