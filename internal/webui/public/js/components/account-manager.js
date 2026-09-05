@@ -13,6 +13,7 @@ window.Components.accountManager = () => ({
     deleting: false,
     reloading: false,
     selectedAccountEmail: '',
+    selectedAccountName: '',
     selectedAccountLimits: {},
 
     // Claude Code Accounts & Gateway State
@@ -252,8 +253,11 @@ window.Components.accountManager = () => ({
     },
 
     openQuotaModal(account) {
-        this.selectedAccountEmail = account.email;
-        this.selectedAccountLimits = account.limits || {};
+        this.selectedAccountEmail = account.email || account.id;
+        this.selectedAccountName = account.name || '';
+        this.selectedAccountLimits = Object.fromEntries(
+            Object.entries(account.limits || {}).filter(([, v]) => v != null)
+        );
         document.getElementById('quota_modal').showModal();
     },
 

@@ -375,7 +375,7 @@
                     <!-- Empty State -->
                     <template x-if="filteredCCAccounts.length === 0">
                         <tr>
-                            <td colspan="6" class="py-16 text-center">
+                            <td colspan="7" class="py-16 text-center">
                                 <div class="flex flex-col items-center gap-4 max-w-lg mx-auto">
                                     <div class="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center">
                                         <svg class="w-8 h-8 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -690,7 +690,7 @@
                 </svg>
                 <span x-text="$store.global.t('quotaDistribution')">Quota Distribution</span>
             </h3>
-            <p class="text-sm text-gray-500 font-mono mb-6" x-text="Redact.email(selectedAccountEmail)"></p>
+            <p class="text-sm text-gray-500 font-mono mb-6" x-text="selectedAccountName ? selectedAccountName + ' (' + Redact.email(selectedAccountEmail) + ')' : Redact.email(selectedAccountEmail)"></p>
 
             <div class="grid grid-cols-1 gap-4 overflow-y-auto max-h-[60vh] pr-2 custom-scrollbar">
                 <template x-for="(limit, modelId) in selectedAccountLimits" :key="modelId">
