@@ -254,7 +254,12 @@ window.Components.accountManager = () => ({
 
     openQuotaModal(account) {
         this.selectedAccountEmail = account.email || account.id;
-        this.selectedAccountName = account.name || '';
+        // Email-like "names" (backend sends email as name for google rows and
+        // for CC rows without a display name) bypass Redact when rendered
+        // verbatim; treat them as no name so the modal shows only the
+        // redacted email.
+        const nameLooksEmail = (account.name || '').includes('@');
+        this.selectedAccountName = nameLooksEmail ? '' : (account.name || '');
         this.selectedAccountLimits = Object.fromEntries(
             Object.entries(account.limits || {}).filter(([, v]) => v != null)
         );
