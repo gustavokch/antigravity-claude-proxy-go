@@ -325,6 +325,12 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 				modelContext[m.ID] = m.MaxTokens
 			}
 		}
+		for _, m := range catalog.PublicModels() {
+			modelSet[m.ID] = true
+			if m.MaxTokens > 0 {
+				modelContext[m.ID] = m.MaxTokens
+			}
+		}
 	}
 	for _, acc := range accountsList {
 		for m := range acc.Quota.Models {
@@ -340,10 +346,16 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			for _, m := range cfg.ClaudeCode.Allowlist {
 				if m.ID != "" {
 					modelSet[m.ID] = true
+					if m.ContextLen > 0 {
+						modelContext[m.ID] = m.ContextLen
+					}
 				}
 				for _, alias := range m.Aliases {
 					if alias != "" {
 						modelSet[alias] = true
+						if m.ContextLen > 0 {
+							modelContext[alias] = m.ContextLen
+						}
 					}
 				}
 			}
@@ -365,9 +377,15 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		for _, m := range cfg.OpenRouter.Allowlist {
 			if m.ID != "" {
 				modelSet[m.ID] = true
+				if m.ContextLen > 0 {
+					modelContext[m.ID] = m.ContextLen
+				}
 			}
 			if m.Alias != "" {
 				modelSet[m.Alias] = true
+				if m.ContextLen > 0 {
+					modelContext[m.Alias] = m.ContextLen
+				}
 			}
 		}
 	}
@@ -375,9 +393,15 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		for _, m := range cfg.Kimi.Allowlist {
 			if m.ID != "" {
 				modelSet[m.ID] = true
+				if m.ContextLen > 0 {
+					modelContext[m.ID] = m.ContextLen
+				}
 			}
 			if m.Alias != "" {
 				modelSet[m.Alias] = true
+				if m.ContextLen > 0 {
+					modelContext[m.Alias] = m.ContextLen
+				}
 			}
 		}
 	}

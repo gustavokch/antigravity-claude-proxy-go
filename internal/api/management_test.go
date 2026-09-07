@@ -249,6 +249,12 @@ func TestManagement_HealthAndLimits(t *testing.T) {
 		if cw := res.ModelContext["gemini-2.5-pro"]; cw != 1048576 {
 			t.Errorf("expected modelContext[gemini-2.5-pro] = 1048576, got %v", cw)
 		}
+		if cw := res.ModelContext["gemini-3.8-flash"]; cw != 1048576 {
+			t.Errorf("expected modelContext[gemini-3.8-flash] = 1048576, got %v", cw)
+		}
+		if cw := res.ModelContext["claude-opus-4-6"]; cw != 250000 {
+			t.Errorf("expected modelContext[claude-opus-4-6] = 250000, got %v", cw)
+		}
 		// claude-opus-4-6-thinking fixture has maxTokens 250000; models without
 		// a positive maxTokens must not appear in the map.
 		if _, exists := res.ModelContext["claude-opus-4-6-thinking"]; !exists {
