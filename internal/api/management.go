@@ -320,12 +320,18 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	modelContext := make(map[string]any)
 	if catalog, err := server.fetchModelCatalog(request.Context()); err == nil && catalog != nil {
 		for _, m := range catalog.Selectable() {
+			if m.ID == "" {
+				continue
+			}
 			modelSet[m.ID] = true
 			if m.MaxTokens > 0 {
 				modelContext[m.ID] = m.MaxTokens
 			}
 		}
 		for _, m := range catalog.PublicModels() {
+			if m.ID == "" {
+				continue
+			}
 			modelSet[m.ID] = true
 			if m.MaxTokens > 0 {
 				modelContext[m.ID] = m.MaxTokens

@@ -255,10 +255,38 @@ func TestManagement_HealthAndLimits(t *testing.T) {
 		if cw := res.ModelContext["claude-opus-4-6"]; cw != 250000 {
 			t.Errorf("expected modelContext[claude-opus-4-6] = 250000, got %v", cw)
 		}
-		// claude-opus-4-6-thinking fixture has maxTokens 250000; models without
-		// a positive maxTokens must not appear in the map.
+		// claude-opus-4-6-thinking fixture has maxTokens 250000 (positive), so
+		// its entry must exist in the map.
 		if _, exists := res.ModelContext["claude-opus-4-6-thinking"]; !exists {
 			t.Errorf("expected modelContext entry for claude-opus-4-6-thinking: %v", res.ModelContext)
+		}
+	})
+
+	t.Run("GET /account-limits omits empty model IDs", func(t *testing.T) {
+		server.backend = &emptyIDDiscoveryTestBackend{}
+		handler := server.Handler()
+
+		req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var res struct {
+			Models       []string           `json:"models"`
+			ModelContext map[string]float64 `json:"modelContext"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range res.Models {
+			if m == "" {
+				t.Error("models list contains empty model ID")
+			}
+		}
+		if _, exists := res.ModelContext[""]; exists {
+			t.Error("modelContext contains empty model ID")
 		}
 	})
 }
@@ -1032,4 +1060,22 @@ func TestManagement_AccountLimits_WithClaudeCodeAccounts(t *testing.T) {
 	if !foundDisabled {
 		t.Errorf("claude-disabled@example.com account not found in response")
 	}
+}
+
+type emptyIDDiscoveryTestBackend struct{}
+
+func (m *emptyIDDiscoveryTestBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
+	return cloudcode.Response{
+		Body: []byte(`{
+			"models":{
+				"": {"displayName":"Empty","supportsThinking":false,"maxTokens":12345},
+				"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536}
+			},
+			"agentModelSorts":[{"groups":[{"modelIds":["","gemini-3.8-flash-high"]}]}]
+		}`),
+	}, nil
+}
+
+func (m *emptyIDDiscoveryTestBackend) StreamGenerateContent(ctx context.Context, req map[string]any, cb func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	return cloudcode.Response{Body: []byte(`{}`)}, nil
 }
