@@ -393,3 +393,34 @@ func TestDynamicScoringAndThresholds(t *testing.T) {
 		t.Errorf("expected default tokens 50, got %f", tokens)
 	}
 }
+func TestSelectStickyLocked_EmptyAccounts(t *testing.T) {
+	manager := &Manager{accounts: []*Account{}, now: time.Now}
+	selection := manager.selectStickyLocked("model")
+	if selection.Account != nil {
+		t.Error("expected nil account when empty")
+	}
+}
+
+func TestSelectRoundRobinLocked_EmptyAccounts(t *testing.T) {
+	manager := &Manager{accounts: []*Account{}, now: time.Now}
+	selection := manager.selectRoundRobinLocked("model")
+	if selection.Account != nil {
+		t.Error("expected nil account when empty")
+	}
+}
+
+func TestSelectHybridLocked_EmptyAccounts(t *testing.T) {
+	manager := &Manager{accounts: []*Account{}, now: time.Now}
+	selection := manager.selectHybridLocked("model")
+	if selection.Account != nil {
+		t.Error("expected nil account when empty")
+	}
+}
+
+func TestAvailable_EmptyAccounts(t *testing.T) {
+	manager := &Manager{accounts: []*Account{}, now: time.Now}
+	count := manager.Available("model")
+	if count != 0 {
+		t.Errorf("expected 0, got %d", count)
+	}
+}
