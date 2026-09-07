@@ -10,7 +10,7 @@
  * @param {string} labelKey - i18n key for the label
  * @param {string} accentColor - 'cyan' or 'purple' (maps to Tailwind border classes)
  *
- * Requires parent scope to provide: config, selectModel(), gemini1mSuffix
+ * Requires parent scope to provide: config, selectModel()
  */
 window.Components = window.Components || {};
 
@@ -129,7 +129,9 @@ window.Components.modelDropdown = (field, labelKey, accentColor) => ({
 
     isSelected(modelId) {
         const val = this.currentValue;
-        return val === modelId || val === modelId + '[1m]';
+        if (!val) return false;
+        const cleanVal = val.replace(/\s*\[1m\]$/i, '').trim();
+        return cleanVal === modelId;
     },
 
     onKeydown(event) {
