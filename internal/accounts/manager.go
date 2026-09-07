@@ -257,9 +257,6 @@ func New(options Options) (*Manager, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	// if len(options.Accounts) == 0 {
-	// 	return nil, errors.New("no accounts configured")
-	// }
 	for _, account := range options.Accounts {
 		if account == nil {
 			return nil, errors.New("account configuration contains a null account")
@@ -342,27 +339,11 @@ func NewDefault(path, strategy string, now func() time.Time) (*Manager, error) {
 	}
 
 	// No accounts found anywhere; start with an empty pool (allow web UI / API to add accounts)
-	return NewEmpty(configPath, strategy, now)
-}
-
-// NewEmpty creates a Manager with no accounts, allowing startup without configuration.
-func NewEmpty(path, strategy string, now func() time.Time) (*Manager, error) {
-	strategy = normalizeStrategy(strategy)
-	if now == nil {
-		now = time.Now
-	}
-	return &Manager{
-		configPath:           path,
-		accounts:             make([]*Account, 0),
-		settings:             make(map[string]any),
-		strategy:             strategy,
-		selectionConfig:      config.Get().AccountSelection,
-		globalQuotaThreshold: config.Get().GlobalQuotaThreshold,
-		now:                  now,
-		health:               make(map[string]healthRecord),
-		buckets:              make(map[string]tokenBucket),
-		projects:             make(map[string]string),
-	}, nil
+	return New(Options{
+		ConfigPath: configPath,
+		Strategy:   strategy,
+		Now:        now,
+	})
 }
 
 func (manager *Manager) Count() int {

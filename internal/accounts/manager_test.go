@@ -77,6 +77,25 @@ func TestNewDefaultUsesActiveAgyLoginWithoutAccountFile(t *testing.T) {
 	}
 }
 
+func TestNewDefaultEmptyPoolWithoutAnyAccount(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("HOME", directory)
+	t.Setenv("AGY_TOKEN_PATH", filepath.Join(directory, "missing-token"))
+	manager, err := NewDefault("", StrategyHybrid, nil)
+	if err != nil {
+		t.Fatalf("NewDefault with no accounts anywhere failed: %v", err)
+	}
+	if manager.Count() != 0 {
+		t.Fatalf("expected empty pool, got %d accounts", manager.Count())
+	}
+	if got := manager.Available("gemini"); got != 0 {
+		t.Fatalf("expected 0 available, got %d", got)
+	}
+	if selection := manager.Select("gemini"); selection.Account != nil {
+		t.Fatalf("expected nil selection, got %v", selection.Account)
+	}
+}
+
 func TestRoundRobinAndPerModelRateLimits(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
