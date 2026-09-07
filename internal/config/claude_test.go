@@ -60,3 +60,36 @@ func TestUpdateClaudeConfig_BareSuffixValueLeftAsIs(t *testing.T) {
 		t.Errorf("expected bare [1m] value left as-is, got %v", env["ANTHROPIC_MODEL"])
 	}
 }
+
+func TestRestoreClaudeConfig_CleansSmallFastModel(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_PATH", filepath.Join(tmpDir, "settings.json"))
+
+	updates := map[string]any{
+		"env": map[string]any{
+			"ANTHROPIC_SMALL_FAST_MODEL": "gemini-3.8-flash",
+			"CUSTOM_USER_VAR":           "keep-me",
+		},
+	}
+
+	if _, err := UpdateClaudeConfig(updates); err != nil {
+		t.Fatalf("UpdateClaudeConfig failed: %v", err)
+	}
+
+	restored, err := RestoreClaudeConfig()
+	if err != nil {
+		t.Fatalf("RestoreClaudeConfig failed: %v", err)
+	}
+
+	env, ok := restored["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected env map in restored config")
+	}
+
+	if _, exists := env["ANTHROPIC_SMALL_FAST_MODEL"]; exists {
+		t.Errorf("expected ANTHROPIC_SMALL_FAST_MODEL to be deleted on restore, but it was kept: %v", env["ANTHROPIC_SMALL_FAST_MODEL"])
+	}
+	if env["CUSTOM_USER_VAR"] != "keep-me" {
+		t.Errorf("expected CUSTOM_USER_VAR to be preserved, got %v", env["CUSTOM_USER_VAR"])
+	}
+}
