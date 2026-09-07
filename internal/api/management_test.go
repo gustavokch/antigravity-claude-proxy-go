@@ -222,6 +222,39 @@ func TestManagement_HealthAndLimits(t *testing.T) {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}
 	})
+
+	t.Run("GET /account-limits advertises modelContext", func(t *testing.T) {
+		server.backend = &geminiDiscoveryTestBackend{}
+		handler := server.Handler()
+
+		req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var res struct {
+			ModelContext map[string]float64 `json:"modelContext"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		if res.ModelContext == nil {
+			t.Fatal("expected modelContext map in response")
+		}
+		if cw := res.ModelContext["gemini-3.8-flash-high"]; cw != 1048576 {
+			t.Errorf("expected modelContext[gemini-3.8-flash-high] = 1048576, got %v", cw)
+		}
+		if cw := res.ModelContext["gemini-2.5-pro"]; cw != 1048576 {
+			t.Errorf("expected modelContext[gemini-2.5-pro] = 1048576, got %v", cw)
+		}
+		// claude-opus-4-6-thinking fixture has maxTokens 250000; models without
+		// a positive maxTokens must not appear in the map.
+		if _, exists := res.ModelContext["claude-opus-4-6-thinking"]; !exists {
+			t.Errorf("expected modelContext entry for claude-opus-4-6-thinking: %v", res.ModelContext)
+		}
+	})
 }
 
 func TestManagement_AccountsCRUD(t *testing.T) {

@@ -397,7 +397,7 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini'">
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
                                                                 <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
@@ -470,7 +470,7 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini'">
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
                                                                 <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
@@ -548,7 +548,7 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini'">
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
                                                                 <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
@@ -618,7 +618,7 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini'">
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
                                                                 <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
@@ -688,7 +688,7 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini'">
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
                                                                 <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>

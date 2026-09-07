@@ -193,9 +193,10 @@ func (m *geminiDiscoveryTestBackend) FetchAvailableModels(ctx context.Context) (
 		Body: []byte(`{
 			"models":{
 				"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
-				"gemini-2.5-pro":{"displayName":"Gemini 2.5 Pro","supportsThinking":true,"thinkingBudget":10000,"maxTokens":1048576,"maxOutputTokens":65536}
+				"gemini-2.5-pro":{"displayName":"Gemini 2.5 Pro","supportsThinking":true,"thinkingBudget":10000,"maxTokens":1048576,"maxOutputTokens":65536},
+				"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":250000,"maxOutputTokens":64000}
 			},
-			"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high","gemini-2.5-pro"]}]}]
+			"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high","gemini-2.5-pro","claude-opus-4-6-thinking"]}]}]
 		}`),
 	}, nil
 }
