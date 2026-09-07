@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,6 +182,64 @@ func TestClaudeCodeCustomAllowlistDiscovery(t *testing.T) {
 		}
 		if m["supports_thinking"] != true {
 			t.Errorf("expected supports_thinking=true for %q", expectedID)
+		}
+	}
+}
+
+type geminiDiscoveryTestBackend struct{}
+
+func (m *geminiDiscoveryTestBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
+	return cloudcode.Response{
+		Body: []byte(`{
+			"models":{
+				"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
+				"gemini-2.5-pro":{"displayName":"Gemini 2.5 Pro","supportsThinking":true,"thinkingBudget":10000,"maxTokens":1048576,"maxOutputTokens":65536}
+			},
+			"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high","gemini-2.5-pro"]}]}]
+		}`),
+	}, nil
+}
+
+func (m *geminiDiscoveryTestBackend) StreamGenerateContent(ctx context.Context, req map[string]any, cb func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	return cloudcode.Response{Body: []byte(`{}`)}, nil
+}
+
+func TestGeminiModels_AdvertiseMaxContextWindow(t *testing.T) {
+	server := &Server{
+		backend: &geminiDiscoveryTestBackend{},
+		logger:  slog.Default(),
+		now:     time.Now,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+
+	server.models(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	for _, m := range resp.Data {
+		id, _ := m["id"].(string)
+		if strings.HasPrefix(id, "gemini-") {
+			// Ensure no [1m] suffix in advertised model IDs
+			if strings.Contains(id, "[1m]") || strings.Contains(id, "[1M]") {
+				t.Errorf("model ID %q contains [1m] suffix", id)
+			}
+			// Verify context window is reported >= 1M
+			if cw, ok := m["context_window"].(int); ok && cw > 0 {
+				if cw < 1000000 {
+					t.Errorf("gemini model %q context_window = %v, expected >= 1M", id, cw)
+				}
+			}
 		}
 	}
 }
