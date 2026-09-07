@@ -501,3 +501,74 @@ func TestSelectionErrorSuggestions(t *testing.T) {
 		t.Fatalf("expected error to list available models, got: %s", err.Error())
 	}
 }
+
+func TestCatalogResolve_Strips1mSuffix(t *testing.T) {
+	t.Parallel()
+	raw := `{
+		"models":{
+			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-pro-agent":{"displayName":"Gemini 3.1 Pro (High)","supportsThinking":true,"thinkingBudget":10001,"maxTokens":1048576,"maxOutputTokens":65535},
+			"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":250000,"maxOutputTokens":64000}
+		},
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high","gemini-3.7-flash-high","gemini-pro-agent","claude-opus-4-6-thinking"]}]}]
+	}`
+
+	catalog, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	testCases := []struct {
+		input       string
+		expectedID  string
+		expectedMax int
+	}{
+		{"gemini-3.8-flash-high[1m]", "gemini-3.8-flash-high", 1048576},
+		{"gemini-3.8-flash-high[1M]", "gemini-3.8-flash-high", 1048576},
+		{"gemini-3.8-flash[1m]", "gemini-3.8-flash-high", 1048576},
+		{"gemini-3.7-flash-high[1m]", "gemini-3.7-flash-high", 1048576},
+		{"gemini-3.1-pro-high[1m]", "gemini-pro-agent", 1048576},
+		{"gemini-pro[1m]", "gemini-pro-agent", 1048576},
+		{"claude-opus-4-6[1m]", "claude-opus-4-6-thinking", 250000},
+	}
+
+	for _, tc := range testCases {
+		m, err := catalog.Resolve(tc.input)
+		if err != nil {
+			t.Errorf("Resolve(%q) unexpected error: %v", tc.input, err)
+			continue
+		}
+		if m.ID != tc.expectedID {
+			t.Errorf("Resolve(%q) ID = %q, expected %q", tc.input, m.ID, tc.expectedID)
+		}
+		if m.MaxTokens != tc.expectedMax {
+			t.Errorf("Resolve(%q) MaxTokens = %d, expected %d", tc.input, m.MaxTokens, tc.expectedMax)
+		}
+	}
+}
+
+func TestCleanModelIDAndName_Strips1mSuffix(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		id           string
+		name         string
+		expectedID   string
+		expectedName string
+	}{
+		{"gemini-3.8-flash[1m]", "Gemini 3.8 Flash[1m]", "gemini-3.8-flash", "Gemini 3.8 Flash"},
+		{"gemini-3.7-flash-high[1M]", "Gemini 3.7 Flash (High)[1M]", "gemini-3.7-flash", "Gemini 3.7 Flash"},
+		{"gemini-3.1-pro-high[1m]", "Gemini 3.1 Pro (High)[1m]", "gemini-3.1-pro", "Gemini 3.1 Pro"},
+		{"custom-model[1m]", "Custom Model [1M]", "custom-model", "Custom Model"},
+	}
+
+	for _, tc := range testCases {
+		cleanID, cleanName := CleanModelIDAndName(tc.id, tc.name)
+		if cleanID != tc.expectedID {
+			t.Errorf("CleanModelIDAndName(%q, %q) cleanID = %q, expected %q", tc.id, tc.name, cleanID, tc.expectedID)
+		}
+		if cleanName != tc.expectedName {
+			t.Errorf("CleanModelIDAndName(%q, %q) cleanName = %q, expected %q", tc.id, tc.name, cleanName, tc.expectedName)
+		}
+	}
+}
