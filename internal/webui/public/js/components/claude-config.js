@@ -43,7 +43,8 @@ window.Components.claudeConfig = () => ({
         'CLAUDE_CODE_SUBAGENT_MODEL',
         'ANTHROPIC_DEFAULT_OPUS_MODEL',
         'ANTHROPIC_DEFAULT_SONNET_MODEL',
-        'ANTHROPIC_DEFAULT_HAIKU_MODEL'
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+        'ANTHROPIC_SMALL_FAST_MODEL'
     ],
 
     init() {
@@ -216,6 +217,7 @@ window.Components.claudeConfig = () => ({
             'ANTHROPIC_DEFAULT_OPUS_MODEL',
             'ANTHROPIC_DEFAULT_SONNET_MODEL',
             'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+            'ANTHROPIC_SMALL_FAST_MODEL',
             'ENABLE_EXPERIMENTAL_MCP_CLI'
         ];
 
@@ -307,6 +309,7 @@ window.Components.claudeConfig = () => ({
                 'ANTHROPIC_DEFAULT_OPUS_MODEL',
                 'ANTHROPIC_DEFAULT_SONNET_MODEL',
                 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+                'ANTHROPIC_SMALL_FAST_MODEL',
                 'ENABLE_EXPERIMENTAL_MCP_CLI'
             ];
             const presetConfig = {};
