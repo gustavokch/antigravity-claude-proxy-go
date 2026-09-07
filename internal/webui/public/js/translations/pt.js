@@ -309,12 +309,9 @@ window.translations.pt = {
     oauthTimeout: "⏱️ Autorização OAuth expirou. Por favor, tente novamente.",
     oauthWindowClosed: "A janela OAuth foi fechada. A autorização pode estar incompleta.",
     cancelOAuth: "Cancelar",
-    // MCP CLI & Gemini 1M
+    // MCP CLI
     mcpCliExperimental: "CLI MCP Experimental",
     mcpCliDesc: "Habilita integração MCP experimental para uso confiável de ferramentas com consumo reduzido de contexto.",
-    gemini1mMode: "Modo de Contexto Gemini 1M",
-    gemini1mDesc: "Adiciona sufixo [1m] aos modelos Gemini para suporte a janela de contexto de 1M.",
-    gemini1mWarning: "⚠ Contexto grande pode reduzir o desempenho do Gemini.",
     clickToSet: "Clique para configurar...",
     none: "Nenhum",
     // Quota Distribution
