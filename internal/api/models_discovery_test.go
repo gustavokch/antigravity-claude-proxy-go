@@ -234,11 +234,15 @@ func TestGeminiModels_AdvertiseMaxContextWindow(t *testing.T) {
 			if strings.Contains(id, "[1m]") || strings.Contains(id, "[1M]") {
 				t.Errorf("model ID %q contains [1m] suffix", id)
 			}
-			// Verify context window is reported >= 1M
-			if cw, ok := m["context_window"].(int); ok && cw > 0 {
-				if cw < 1000000 {
-					t.Errorf("gemini model %q context_window = %v, expected >= 1M", id, cw)
-				}
+			// Verify context window is reported >= 1M. encoding/json decodes
+			// numbers into float64 inside map[string]any, so assert that type.
+			cw, ok := m["context_window"].(float64)
+			if !ok {
+				t.Errorf("gemini model %q missing or non-numeric context_window", id)
+				continue
+			}
+			if cw < 1000000 {
+				t.Errorf("gemini model %q context_window = %v, expected >= 1M", id, cw)
 			}
 		}
 	}
