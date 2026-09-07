@@ -130,7 +130,12 @@ func sanitizeModelValue(val any) any {
 	if s, ok := val.(string); ok {
 		s = strings.TrimSpace(s)
 		if strings.HasSuffix(strings.ToLower(s), "[1m]") {
-			return strings.TrimSpace(s[:len(s)-4])
+			stripped := strings.TrimSpace(s[:len(s)-4])
+			if stripped == "" {
+				// Value is only the suffix; keep it rather than storing an empty var.
+				return s
+			}
+			return stripped
 		}
 		return s
 	}
@@ -141,7 +146,7 @@ func isClaudeModelField(field string) bool {
 	switch field {
 	case "ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
 		"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL":
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL":
 		return true
 	default:
 		return false
