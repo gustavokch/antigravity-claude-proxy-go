@@ -148,28 +148,24 @@ func (r *ProviderRouter) FilterCapable(model string, candidates []string, need T
 	// within it. So a provider qualifies when ANY of its endpoints can serve the
 	// request; collapsing to a single endpoint would make the verdict depend on
 	// rank order and drop providers whose top variant is capable.
-	known := make(map[string][]ProviderEndpoint, len(ranks))
+	capable := make(map[string]bool, len(ranks))
 	for _, rk := range ranks {
 		name := rk.endpoint.ProviderName
-		known[name] = append(known[name], rk.endpoint)
+		if !capable[name] {
+			capable[name] = rk.endpoint.SupportsRequirements(need)
+		}
 	}
 
-	capable := func(p string) bool {
-		eps, ok := known[p]
-		if !ok {
-			return true // unknown provider: no basis to exclude it
+	isCapable := func(p string) bool {
+		if c, ok := capable[p]; ok {
+			return c
 		}
-		for i := range eps {
-			if eps[i].SupportsRequirements(need) {
-				return true
-			}
-		}
-		return false
+		return true // unknown provider: no basis to exclude it
 	}
 
 	out := make([]string, 0, len(candidates))
 	for _, p := range candidates {
-		if p == "" || capable(p) {
+		if p == "" || isCapable(p) {
 			out = append(out, p)
 		}
 	}
@@ -189,7 +185,7 @@ func (r *ProviderRouter) FilterCapable(model string, candidates []string, need T
 	seen := map[string]bool{}
 	for _, rk := range ranks {
 		p := rk.endpoint.ProviderName
-		if p == "" || seen[p] || !capable(p) {
+		if p == "" || seen[p] || !isCapable(p) {
 			continue
 		}
 		if allowed != nil && !allowed[p] {
