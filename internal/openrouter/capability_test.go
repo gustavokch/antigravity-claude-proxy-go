@@ -212,3 +212,28 @@ func TestProviderRouter_FilterCapableConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestProviderRouter_RankedAtTracksRefresh(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	if !r.RankedAt("m1").IsZero() {
+		t.Fatal("unranked model must report a zero rank time")
+	}
+	before := time.Now()
+	r.RefreshRanks("m1", toolCapableEndpoints())
+	if at := r.RankedAt("m1"); at.Before(before) {
+		t.Fatalf("RefreshRanks must record the rank time, got %v", at)
+	}
+}
+
+func TestEndpointsClient_CachedEndpointsAt(t *testing.T) {
+	c := NewEndpointsClient(time.Second, time.Hour)
+	if _, ok := c.CachedEndpointsAt("author/model", "https://openrouter.ai/api"); ok {
+		t.Fatal("empty cache must report no timestamp")
+	}
+	before := time.Now()
+	c.SaveEndpoints("author/model", "https://openrouter.ai/api", toolCapableEndpoints())
+	at, ok := c.CachedEndpointsAt("author/model", "https://openrouter.ai/api")
+	if !ok || at.Before(before) {
+		t.Fatalf("cached entry must report its fill time, got %v ok=%v", at, ok)
+	}
+}

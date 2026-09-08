@@ -318,6 +318,16 @@ func (r *ProviderRouter) scoreLocked(w RankWeights, ep ProviderEndpoint, stats m
 		w.Throughput*tpsPart
 }
 
+// RankedAt reports when the model's rank table was last refreshed. A zero time
+// means the model has never been ranked. Callers compare it against the
+// endpoints cache fill time to decide whether the ranks carry stale endpoint
+// metadata (capability flags in particular).
+func (r *ProviderRouter) RankedAt(model string) time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.rankedAt[model]
+}
+
 // GetRanks returns a copy of the rank list for a model.
 func (r *ProviderRouter) GetRanks(model string) []RankedProvider {
 	r.mu.RLock()

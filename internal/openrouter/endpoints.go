@@ -275,6 +275,19 @@ func (e *EndpointsClient) GetCachedEndpoints(modelID, baseURL string) ([]Provide
 	return out, true
 }
 
+// CachedEndpointsAt reports when the cached endpoints for a model were fetched.
+// It ignores the TTL: the timestamp is a freshness comparison point for derived
+// state (the router rank table), not a cache-hit decision.
+func (e *EndpointsClient) CachedEndpointsAt(modelID, baseURL string) (time.Time, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	entry, ok := e.cache[e.cacheKey(modelID, baseURL)]
+	if !ok || len(entry.endpoints) == 0 {
+		return time.Time{}, false
+	}
+	return entry.cachedAt, true
+}
+
 // SaveEndpoints stores the endpoints list in the cache.
 func (e *EndpointsClient) SaveEndpoints(modelID, baseURL string, endpoints []ProviderEndpoint) {
 	e.mu.Lock()
