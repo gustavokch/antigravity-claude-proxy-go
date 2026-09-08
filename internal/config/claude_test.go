@@ -93,3 +93,37 @@ func TestRestoreClaudeConfig_CleansSmallFastModel(t *testing.T) {
 		t.Errorf("expected CUSTOM_USER_VAR to be preserved, got %v", env["CUSTOM_USER_VAR"])
 	}
 }
+
+func TestUpdateClaudeConfig_DoesNotMutateUpdatesInput(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_PATH", filepath.Join(tmpDir, "settings.json"))
+
+	// Pre-existing settings.json without an "env" section forces UpdateClaudeConfig
+	// through the new-section merge path (the one that mutates the caller's map).
+	if err := ReplaceClaudeConfig(map[string]any{
+		"other": map[string]any{"key": "value"},
+	}); err != nil {
+		t.Fatalf("failed to seed settings.json: %v", err)
+	}
+
+	updates := map[string]any{
+		"env": map[string]any{
+			"ANTHROPIC_MODEL": "gemini-3.8-flash-high[1m]",
+		},
+	}
+
+	updated, err := UpdateClaudeConfig(updates)
+	if err != nil {
+		t.Fatalf("UpdateClaudeConfig failed: %v", err)
+	}
+
+	if env := updated["env"].(map[string]any); env["ANTHROPIC_MODEL"] != "gemini-3.8-flash-high" {
+		t.Errorf("expected persisted config sanitized, got %v", env["ANTHROPIC_MODEL"])
+	}
+
+	// The caller's input map must not be modified: the persisted map is a copy.
+	inputEnv := updates["env"].(map[string]any)
+	if inputEnv["ANTHROPIC_MODEL"] != "gemini-3.8-flash-high[1m]" {
+		t.Errorf("caller's updates map was mutated in place: got %v", inputEnv["ANTHROPIC_MODEL"])
+	}
+}

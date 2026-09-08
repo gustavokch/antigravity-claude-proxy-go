@@ -171,11 +171,14 @@ func UpdateClaudeConfig(updates map[string]any) (map[string]any, error) {
 				current[k] = existingMap
 				continue
 			} else {
+				sanitized := make(map[string]any, len(vMap))
 				for vk, vv := range vMap {
 					if isClaudeModelField(vk) {
-						vMap[vk] = sanitizeModelValue(vv)
+						vv = sanitizeModelValue(vv)
 					}
+					sanitized[vk] = vv
 				}
+				v = sanitized
 			}
 		}
 		current[k] = v
