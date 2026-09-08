@@ -44,18 +44,19 @@ func (m *P50Metric) UnmarshalJSON(data []byte) error {
 
 // ProviderEndpoint represents a single upstream provider serving a model on OpenRouter.
 type ProviderEndpoint struct {
-	ProviderName         string    `json:"provider_name"`
-	Tag                  string    `json:"tag,omitempty"`
-	ContextLength        int       `json:"context_length,omitempty"`
-	MaxCompletionTokens  int       `json:"max_completion_tokens,omitempty"`
-	UptimeLast5m         float64   `json:"uptime_last_5m,omitempty"`
-	UptimeLast30m        float64   `json:"uptime_last_30m,omitempty"`
-	UptimeLast1d         float64   `json:"uptime_last_1d,omitempty"`
-	LatencyLast30mMs     P50Metric `json:"latency_last_30m,omitempty"`
-	ThroughputLast30mTPS P50Metric `json:"throughput_last_30m,omitempty"`
-	Status               int       `json:"status,omitempty"`
-	SupportedParameters  []string  `json:"supported_parameters,omitempty"`
-	Pricing              *Pricing  `json:"pricing,omitempty"`
+	ProviderName         string             `json:"provider_name"`
+	Tag                  string             `json:"tag,omitempty"`
+	ContextLength        int                `json:"context_length,omitempty"`
+	MaxCompletionTokens  int                `json:"max_completion_tokens,omitempty"`
+	UptimeLast5m         float64            `json:"uptime_last_5m,omitempty"`
+	UptimeLast30m        float64            `json:"uptime_last_30m,omitempty"`
+	UptimeLast1d         float64            `json:"uptime_last_1d,omitempty"`
+	LatencyLast30mMs     P50Metric          `json:"latency_last_30m,omitempty"`
+	ThroughputLast30mTPS P50Metric          `json:"throughput_last_30m,omitempty"`
+	Status               int                `json:"status,omitempty"`
+	SupportedParameters  []string           `json:"supported_parameters,omitempty"`
+	SupportsToolChoice   *ToolChoiceSupport `json:"supports_tool_choice,omitempty"`
+	Pricing              *Pricing           `json:"pricing,omitempty"`
 }
 
 // BlendedUptime returns the weighted uptime signal (5m 50%, 30m 30%, 1d 20%),

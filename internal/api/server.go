@@ -72,19 +72,19 @@ type ConfigUpdater interface {
 }
 
 type Options struct {
-	APIKey         string
-	ProjectID      string
-	Credentials    func(context.Context) (auth.Credentials, error)
-	NewUpstream    func(string) Upstream
-	Backend        Backend
-	Builder        *proxyformat.Builder
-	Now            func() time.Time
-	Logger         *slog.Logger
-	AccountManager *accounts.Manager
-	Broadcaster    *logger.Broadcaster
-	WebUI          http.Handler
-	OAuthHandler   http.Handler
-	Tracker        *stats.Tracker
+	APIKey             string
+	ProjectID          string
+	Credentials        func(context.Context) (auth.Credentials, error)
+	NewUpstream        func(string) Upstream
+	Backend            Backend
+	Builder            *proxyformat.Builder
+	Now                func() time.Time
+	Logger             *slog.Logger
+	AccountManager     *accounts.Manager
+	Broadcaster        *logger.Broadcaster
+	WebUI              http.Handler
+	OAuthHandler       http.Handler
+	Tracker            *stats.Tracker
 	ClaudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 }
 
@@ -415,7 +415,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 		models = append(models, map[string]any{
 			"id": details.ID, "object": "model", "created": server.now().Unix(),
 			"owned_by": ownedBy, "description": description,
-			"display_name": details.DisplayName,
+			"display_name":   details.DisplayName,
 			"context_window": details.MaxTokens, "max_output_tokens": details.MaxOutputTokens,
 			"supports_thinking": details.SupportsThinking,
 		})
@@ -1189,19 +1189,35 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		Pin:   perModel.PinnedProvider,
 		Order: perModel.ProviderOrder,
 	}
-	// Build the ordered failover chain: a single provider for "pinned", the
-	// configured order for "custom", sticky-then-ranked for "auto".
-	candidates := openrouter.DefaultRouter.SelectChain(sessionID, model, order)
-
-	// Ensure endpoints are ranked. Cache hit refreshes ranks if missing; miss
-	// fires an async warmup (which refreshes ranks on success) and this request
-	// proceeds unpinned.
+	// Ensure endpoints are ranked before selection: both the auto chain and the
+	// capability filter below read the ranked endpoint metadata. Cache hit
+	// refreshes ranks if missing; miss fires an async warmup (which refreshes
+	// ranks on success) and this request proceeds unpinned.
 	if endpoints, ok := openrouter.DefaultEndpointsClient.GetCachedEndpoints(model, baseURL); ok {
 		if ranks := openrouter.DefaultRouter.GetRanks(model); len(ranks) == 0 {
 			openrouter.DefaultRouter.RefreshRanks(model, endpoints)
 		}
 	} else {
 		openrouter.DefaultEndpointsClient.WarmupEndpointsAsync(model, openRouterCfg.APIKey, baseURL)
+	}
+
+	// Build the ordered failover chain: a single provider for "pinned", the
+	// configured order for "custom", sticky-then-ranked for "auto".
+	candidates := openrouter.DefaultRouter.SelectChain(sessionID, model, order)
+
+	// Drop providers that cannot serve the request's tool requirements. The
+	// chain is injected as provider.order with allow_fallbacks:false, so a
+	// tool-incapable provider makes OpenRouter return 404 "No endpoints found"
+	// instead of routing elsewhere — a pinned provider without tool support
+	// fails every attempt for tool-carrying requests while plain completions
+	// keep working.
+	if need := openrouter.ToolRequirementsFromAnthropic(anthropicRequest); !need.Empty() {
+		if filtered := openrouter.DefaultRouter.FilterCapable(model, candidates, need); !sameProviderChain(filtered, candidates) {
+			server.logger.Info("provider chain narrowed to tool-capable endpoints",
+				"model", model, "toolChoice", need.ToolChoice,
+				"before", candidates, "after", filtered)
+			candidates = filtered
+		}
 	}
 
 	// Per-attempt classification: what should we do next on this provider?
@@ -1852,7 +1868,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	}
 	server.logger.Warn("OpenRouter forward exhausted",
 		"model", model, "status", status, "attempts", attempts, "tried", len(tried))
-	writeAPIError(writer, status, "api_error", fmt.Sprintf("OpenRouter upstream failed after %d attempt(s): %s", attempts, truncate(string(lastBody), 256)))
+	writeAPIError(writer, status, "api_error", fmt.Sprintf("OpenRouter upstream failed after %d attempt(s): %s", attempts, truncate(string(lastBody), upstreamErrorBodyLimit)))
 }
 
 // openRouterUpstreamClient returns the HTTP client for OpenRouter upstream
@@ -1928,6 +1944,19 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// sameProviderChain reports whether two candidate chains are identical.
+func sameProviderChain(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // extractServedProviderJSON returns the top-level "provider" field if present.
 func extractServedProviderJSON(body []byte) string {
 	var raw map[string]any
@@ -1979,12 +2008,18 @@ func computeBackoff(attempt int, base, cap time.Duration) time.Duration {
 	}
 	// ±25% jitter so concurrent clients do not retry a throttled provider in
 	// lockstep. Stays within [0.75d, 1.25d]; never negative.
-	d += time.Duration(rand.Int63n(int64(d)/2 + 1)) - d/4
+	d += time.Duration(rand.Int63n(int64(d)/2+1)) - d/4
 	if d > cap {
 		d = cap
 	}
 	return d
 }
+
+// upstreamErrorBodyLimit bounds the upstream error body echoed to the client.
+// OpenRouter appends a routing_funnel to routing failures that names the filter
+// step which emptied the endpoint list; 256 bytes cut it off and made a pinned
+// provider's capability rejection look like a model-wide outage.
+const upstreamErrorBodyLimit = 2048
 
 func truncate(s string, n int) string {
 	if len(s) <= n {

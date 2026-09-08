@@ -1,0 +1,141 @@
+package openrouter
+
+import "testing"
+
+func toolCapableEndpoints() []ProviderEndpoint {
+	return []ProviderEndpoint{
+		// Highest score, but cannot serve tools at all.
+		{ProviderName: "gmicloud", ContextLength: 1000000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99,
+			SupportedParameters: []string{"max_tokens", "temperature", "top_p"}},
+		// Tools, but no forced tool choice.
+		{ProviderName: "novita", ContextLength: 900000, UptimeLast5m: 0.98, UptimeLast30m: 0.98, UptimeLast1d: 0.98,
+			SupportedParameters: []string{"max_tokens", "tools", "tool_choice"},
+			SupportsToolChoice:  &ToolChoiceSupport{Auto: true}},
+		// Full tool support.
+		{ProviderName: "parasail", ContextLength: 800000, UptimeLast5m: 0.97, UptimeLast30m: 0.97, UptimeLast1d: 0.97,
+			SupportedParameters: []string{"max_tokens", "tools", "tool_choice"},
+			SupportsToolChoice:  &ToolChoiceSupport{None: true, Auto: true, Required: true, Function: true}},
+	}
+}
+
+func TestToolRequirementsFromAnthropic(t *testing.T) {
+	cases := []struct {
+		name string
+		req  map[string]any
+		want ToolRequirements
+	}{
+		{"no tools", map[string]any{"model": "m"}, ToolRequirements{}},
+		{"tools only", map[string]any{"tools": []any{map[string]any{"name": "x"}}}, ToolRequirements{Tools: true}},
+		{"empty tools list ignored", map[string]any{"tools": []any{}}, ToolRequirements{}},
+		{"choice any", map[string]any{"tools": []any{map[string]any{"name": "x"}},
+			"tool_choice": map[string]any{"type": "any"}}, ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}},
+		{"choice tool", map[string]any{"tools": []any{map[string]any{"name": "x"}},
+			"tool_choice": map[string]any{"type": "tool", "name": "x"}}, ToolRequirements{Tools: true, ToolChoice: ToolChoiceFunction}},
+		{"choice auto", map[string]any{"tools": []any{map[string]any{"name": "x"}},
+			"tool_choice": map[string]any{"type": "auto"}}, ToolRequirements{Tools: true, ToolChoice: ToolChoiceAuto}},
+		{"choice none", map[string]any{"tools": []any{map[string]any{"name": "x"}},
+			"tool_choice": map[string]any{"type": "none"}}, ToolRequirements{Tools: true, ToolChoice: ToolChoiceNone}},
+		{"string choice (openai shape)", map[string]any{"tools": []any{map[string]any{"name": "x"}},
+			"tool_choice": "required"}, ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ToolRequirementsFromAnthropic(tc.req); got != tc.want {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProviderEndpoint_SupportsRequirements(t *testing.T) {
+	eps := toolCapableEndpoints()
+	gmi, novita, parasail := &eps[0], &eps[1], &eps[2]
+
+	if !gmi.SupportsRequirements(ToolRequirements{}) {
+		t.Error("no requirements must always pass")
+	}
+	if gmi.SupportsRequirements(ToolRequirements{Tools: true}) {
+		t.Error("gmicloud has no tools parameter, must not pass")
+	}
+	if !novita.SupportsRequirements(ToolRequirements{Tools: true, ToolChoice: ToolChoiceAuto}) {
+		t.Error("novita supports auto tool choice")
+	}
+	if novita.SupportsRequirements(ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}) {
+		t.Error("novita does not support required tool choice")
+	}
+	if !parasail.SupportsRequirements(ToolRequirements{Tools: true, ToolChoice: ToolChoiceFunction}) {
+		t.Error("parasail supports named function tool choice")
+	}
+
+	// Unknown capability metadata fails open: an endpoint with tools listed and
+	// no supports_tool_choice object is assumed able to serve tool_choice.
+	unknown := ProviderEndpoint{ProviderName: "x", SupportedParameters: []string{"tools", "tool_choice"}}
+	if !unknown.SupportsRequirements(ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}) {
+		t.Error("missing supports_tool_choice must fail open")
+	}
+}
+
+func TestProviderRouter_FilterCapableDropsPinnedIncapableProvider(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", toolCapableEndpoints())
+
+	chain := r.SelectChain("s1", "m1", ProviderOrder{Mode: "pinned", Pin: "gmicloud"})
+	if len(chain) != 1 || chain[0] != "gmicloud" {
+		t.Fatalf("pinned chain = %v", chain)
+	}
+
+	got := r.FilterCapable("m1", chain, ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired})
+	if len(got) == 0 {
+		t.Fatal("filter must fall back to capable providers, got empty chain")
+	}
+	if got[0] != "parasail" {
+		t.Errorf("want parasail first, got %v", got)
+	}
+	for _, p := range got {
+		if p == "gmicloud" || p == "novita" {
+			t.Errorf("incapable provider %s in chain %v", p, got)
+		}
+	}
+}
+
+func TestProviderRouter_FilterCapableKeepsCapableCandidates(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", toolCapableEndpoints())
+
+	chain := r.SelectChain("s1", "m1", ProviderOrder{Mode: "auto"})
+	if chain[0] != "gmicloud" {
+		t.Fatalf("expected gmicloud ranked first, got %v", chain)
+	}
+
+	got := r.FilterCapable("m1", chain, ToolRequirements{Tools: true})
+	want := []string{"novita", "parasail"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestProviderRouter_FilterCapablePassthroughWithoutRequirements(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", toolCapableEndpoints())
+	chain := []string{"gmicloud", "novita"}
+
+	got := r.FilterCapable("m1", chain, ToolRequirements{})
+	if len(got) != 2 || got[0] != "gmicloud" {
+		t.Errorf("no requirements must pass the chain through unchanged, got %v", got)
+	}
+}
+
+func TestProviderRouter_FilterCapableUnknownModelFailsOpen(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	chain := []string{"gmicloud"}
+
+	got := r.FilterCapable("unranked", chain, ToolRequirements{Tools: true})
+	if len(got) != 1 || got[0] != "gmicloud" {
+		t.Errorf("unranked model has no capability data; want passthrough, got %v", got)
+	}
+}
