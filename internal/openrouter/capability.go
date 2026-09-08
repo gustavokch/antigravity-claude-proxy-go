@@ -32,6 +32,15 @@ type ToolRequirements struct {
 // Empty reports whether the request constrains provider choice at all.
 func (r ToolRequirements) Empty() bool { return !r.Tools && r.ToolChoice == "" }
 
+// ForcesTool reports whether the request obliges the model to call a tool,
+// either a named one or any of them. Only these requests are broken by an
+// endpoint that silently ignores tool_choice: with "auto", or with no
+// tool_choice at all, an endpoint that ignores the field still behaves the way
+// the caller asked.
+func (r ToolRequirements) ForcesTool() bool {
+	return r.ToolChoice == ToolChoiceFunction || r.ToolChoice == ToolChoiceRequired
+}
+
 // ToolRequirementsFromAnthropic derives requirements from a parsed request
 // body. It accepts the Anthropic tool_choice object and the OpenAI string form.
 func ToolRequirementsFromAnthropic(req map[string]any) ToolRequirements {
