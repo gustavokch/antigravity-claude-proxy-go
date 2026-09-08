@@ -337,3 +337,27 @@ func TestUnwrapStructuredOutput_EmptyArguments(t *testing.T) {
 		t.Errorf("message.content = %v, want empty string", msg["content"])
 	}
 }
+
+// TestTranslateAnthropicMessageToOpenAI_MalformedContent asserts that a nil or
+// non-slice content field does not panic and translates safely to an empty message.
+func TestTranslateAnthropicMessageToOpenAI_MalformedContent(t *testing.T) {
+	cases := []map[string]any{
+		{"id": "msg_nil", "stop_reason": "end_turn"},
+		{"id": "msg_null", "content": nil, "stop_reason": "end_turn"},
+		{"id": "msg_str", "content": "not-a-slice", "stop_reason": "end_turn"},
+	}
+	for _, tc := range cases {
+		out := translateAnthropicMessageToOpenAI(tc, "test-model", time.Now().Unix())
+		choices, _ := out["choices"].([]any)
+		if len(choices) != 1 {
+			t.Fatalf("choices = %v, want 1 choice", choices)
+		}
+		msg, _ := choices[0].(map[string]any)["message"].(map[string]any)
+		if msg == nil {
+			t.Fatalf("message missing in choices")
+		}
+		if msg["content"] != "" {
+			t.Errorf("content = %v, want empty string", msg["content"])
+		}
+	}
+}

@@ -14,31 +14,33 @@ func translateAnthropicMessageToOpenAI(message map[string]any, requestModel stri
 	var textParts []string
 	var reasoningParts []string
 	var toolCalls []any
-	for _, rawBlock := range message["content"].([]any) {
-		block, ok := rawBlock.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch stringFrom(block["type"]) {
-		case "text":
-			textParts = append(textParts, stringFrom(block["text"]))
-		case "thinking":
-			if thinking := stringFrom(block["thinking"]); thinking != "" {
-				reasoningParts = append(reasoningParts, thinking)
+	if rawBlocks, ok := message["content"].([]any); ok {
+		for _, rawBlock := range rawBlocks {
+			block, ok := rawBlock.(map[string]any)
+			if !ok {
+				continue
 			}
-		case "tool_use":
-			arguments, err := json.Marshal(block["input"])
-			if err != nil {
-				arguments = []byte("{}")
+			switch stringFrom(block["type"]) {
+			case "text":
+				textParts = append(textParts, stringFrom(block["text"]))
+			case "thinking":
+				if thinking := stringFrom(block["thinking"]); thinking != "" {
+					reasoningParts = append(reasoningParts, thinking)
+				}
+			case "tool_use":
+				arguments, err := json.Marshal(block["input"])
+				if err != nil {
+					arguments = []byte("{}")
+				}
+				toolCalls = append(toolCalls, map[string]any{
+					"id":   block["id"],
+					"type": "function",
+					"function": map[string]any{
+						"name":      block["name"],
+						"arguments": string(arguments),
+					},
+				})
 			}
-			toolCalls = append(toolCalls, map[string]any{
-				"id":   block["id"],
-				"type": "function",
-				"function": map[string]any{
-					"name":      block["name"],
-					"arguments": string(arguments),
-				},
-			})
 		}
 	}
 	if len(textParts) > 0 {
