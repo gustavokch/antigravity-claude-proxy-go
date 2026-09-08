@@ -296,6 +296,9 @@ func TestOpenAIStreamState_StructuredOutput(t *testing.T) {
 	if reason := stop[0]["choices"].([]any)[0].(map[string]any)["finish_reason"]; reason != "stop" {
 		t.Errorf("finish_reason = %v, want stop", reason)
 	}
+	if !state.done {
+		t.Errorf("state.done must be true after message_stop")
+	}
 }
 
 // TestUnwrapStructuredOutput_EmptyArguments ensures that even when the synthetic

@@ -221,6 +221,7 @@ func (s *openAIStreamState) HandleEvent(eventType string, data map[string]any) [
 		return nil
 
 	case "message_stop":
+		s.done = true
 		return []map[string]any{s.chunk(map[string]any{}, s.finishReason)}
 
 	default:
