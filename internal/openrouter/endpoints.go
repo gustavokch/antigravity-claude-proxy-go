@@ -261,31 +261,27 @@ func (e *EndpointsClient) cacheKey(modelID, baseURL string) string {
 
 // GetCachedEndpoints returns the cached endpoints list for a model if fresh.
 func (e *EndpointsClient) GetCachedEndpoints(modelID, baseURL string) ([]ProviderEndpoint, bool) {
+	eps, _, ok := e.GetCachedEndpointsWithTime(modelID, baseURL)
+	return eps, ok
+}
+
+// GetCachedEndpointsWithTime returns the cached endpoints list for a model if
+// fresh, together with the fill time, under one lock acquisition. Reading the
+// two separately lets a concurrent refill pair endpoints from one fetch with
+// the timestamp of another.
+func (e *EndpointsClient) GetCachedEndpointsWithTime(modelID, baseURL string) ([]ProviderEndpoint, time.Time, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	entry, ok := e.cache[e.cacheKey(modelID, baseURL)]
 	if !ok || len(entry.endpoints) == 0 {
-		return nil, false
+		return nil, time.Time{}, false
 	}
 	if time.Since(entry.cachedAt) > e.cacheTTL {
-		return nil, false
+		return nil, time.Time{}, false
 	}
 	out := make([]ProviderEndpoint, len(entry.endpoints))
 	copy(out, entry.endpoints)
-	return out, true
-}
-
-// CachedEndpointsAt reports when the cached endpoints for a model were fetched.
-// It ignores the TTL: the timestamp is a freshness comparison point for derived
-// state (the router rank table), not a cache-hit decision.
-func (e *EndpointsClient) CachedEndpointsAt(modelID, baseURL string) (time.Time, bool) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	entry, ok := e.cache[e.cacheKey(modelID, baseURL)]
-	if !ok || len(entry.endpoints) == 0 {
-		return time.Time{}, false
-	}
-	return entry.cachedAt, true
+	return out, entry.cachedAt, true
 }
 
 // SaveEndpoints stores the endpoints list in the cache.

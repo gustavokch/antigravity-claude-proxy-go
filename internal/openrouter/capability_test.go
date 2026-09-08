@@ -256,16 +256,20 @@ func TestProviderRouter_RankedAtTracksRefresh(t *testing.T) {
 	}
 }
 
-func TestEndpointsClient_CachedEndpointsAt(t *testing.T) {
+func TestEndpointsClient_GetCachedEndpointsWithTime(t *testing.T) {
 	c := NewEndpointsClient(time.Second, time.Hour)
-	if _, ok := c.CachedEndpointsAt("author/model", "https://openrouter.ai/api"); ok {
-		t.Fatal("empty cache must report no timestamp")
+	if _, _, ok := c.GetCachedEndpointsWithTime("author/model", "https://openrouter.ai/api"); ok {
+		t.Fatal("empty cache must report no entry")
 	}
 	before := time.Now()
 	c.SaveEndpoints("author/model", "https://openrouter.ai/api", toolCapableEndpoints())
-	at, ok := c.CachedEndpointsAt("author/model", "https://openrouter.ai/api")
-	if !ok || at.Before(before) {
-		t.Fatalf("cached entry must report its fill time, got %v ok=%v", at, ok)
+	eps, at, ok := c.GetCachedEndpointsWithTime("author/model", "https://openrouter.ai/api")
+	if !ok || len(eps) != len(toolCapableEndpoints()) || at.Before(before) {
+		t.Fatalf("entry must return endpoints and fill time together, ok=%v at=%v", ok, at)
+	}
+	c.SaveEndpoints("author/model", "https://openrouter.ai/api", nil)
+	if _, _, ok := c.GetCachedEndpointsWithTime("author/model", "https://openrouter.ai/api"); ok {
+		t.Fatal("empty endpoint list must report no entry")
 	}
 }
 

@@ -1194,16 +1194,18 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	// capability filter below read the ranked endpoint metadata. Cache hit
 	// refreshes ranks if missing; miss fires an async warmup (which refreshes
 	// ranks on success) and this request proceeds unpinned.
-	if endpoints, ok := openrouter.DefaultEndpointsClient.GetCachedEndpoints(model, baseURL); ok {
+	// Read the cached endpoints and their fill time in one acquisition: a
+	// concurrent refill must not pair endpoints from one fetch with the
+	// timestamp of another.
+	endpoints, cachedAt, haveCached := openrouter.DefaultEndpointsClient.GetCachedEndpointsWithTime(model, baseURL)
+	if haveCached {
 		// Re-rank when there are no ranks at all, and also when the cache has
 		// been refilled since the last refresh: a later fetch can carry changed
 		// capability metadata (supported_parameters, supports_tool_choice) that
 		// the capability filter below reads, and ranks are never re-derived
 		// otherwise for the process lifetime.
 		rankedAt := openrouter.DefaultRouter.RankedAt(model)
-		cachedAt, haveCachedAt := openrouter.DefaultEndpointsClient.CachedEndpointsAt(model, baseURL)
-		stale := haveCachedAt && rankedAt.Before(cachedAt)
-		if rankedAt.IsZero() || stale {
+		if rankedAt.IsZero() || rankedAt.Before(cachedAt) {
 			openrouter.DefaultRouter.RefreshRanks(model, endpoints)
 		}
 	} else {
