@@ -231,6 +231,13 @@ func TestOpenAIChatCompletions_StructuredOutputUnary(t *testing.T) {
 	if stringFrom(choice["type"]) != "tool" || stringFrom(choice["name"]) != "final_answer_mcq" {
 		t.Errorf("upstream tool_choice = %v, want forced tool", receivedBody["tool_choice"])
 	}
+	// The forced choice here is the proxy's own synthetic one, so the request
+	// must also carry provider.require_parameters — the fail-open capability
+	// filter would otherwise let it land on an endpoint that ignores it.
+	providerBlock, _ := receivedBody["provider"].(map[string]any)
+	if providerBlock == nil || providerBlock["require_parameters"] != true {
+		t.Errorf("provider.require_parameters = %v, want true on the response_format path", receivedBody["provider"])
+	}
 
 	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
