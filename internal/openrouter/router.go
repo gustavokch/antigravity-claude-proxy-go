@@ -481,15 +481,17 @@ func (r *ProviderRouter) providerHealthyUnderThresholdLocked(model, provider str
 	// table is unknown and must not pass vacuously.
 	if ranks, ok := r.ranks[model]; ok {
 		found := false
+		hasHealthy := false
 		for _, rk := range ranks {
 			if rk.endpoint.ProviderName == provider {
 				found = true
-				if !rk.endpoint.Healthy() {
-					return false
+				if rk.endpoint.Healthy() {
+					hasHealthy = true
+					break
 				}
 			}
 		}
-		if !found {
+		if !found || !hasHealthy {
 			return false
 		}
 	}

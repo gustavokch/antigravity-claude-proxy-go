@@ -254,3 +254,21 @@ func TestProviderEndpoint_NoAdvertisedParametersFailsOpen(t *testing.T) {
 		t.Error("no requirements must pass even for a nil endpoint")
 	}
 }
+
+func TestProviderRouter_SelectChainKeepsProviderWithHealthyVariant(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", []ProviderEndpoint{
+		{ProviderName: "deepinfra", Tag: "fp8", ContextLength: 900000,
+			UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99,
+			SupportedParameters: []string{"max_tokens", "tools", "tool_choice"},
+			SupportsToolChoice:  &ToolChoiceSupport{Auto: true, Required: true}},
+		{ProviderName: "deepinfra", Tag: "broken", ContextLength: 100000,
+			Status: 500, UptimeLast5m: 0, UptimeLast30m: 0, UptimeLast1d: 0},
+	})
+
+	chain := r.SelectChain("s1", "m1", ProviderOrder{Mode: "auto"})
+	if len(chain) == 0 || chain[0] != "deepinfra" {
+		t.Fatalf("provider with healthy primary variant must be selected in chain, got %v", chain)
+	}
+}
+
