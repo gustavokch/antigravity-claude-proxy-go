@@ -272,18 +272,20 @@ func unwrapStructuredOutput(completion map[string]any, toolName string) {
 		return
 	}
 
+	var found bool
 	var arguments string
 	kept := make([]any, 0, len(toolCalls))
 	for _, raw := range toolCalls {
 		call, _ := raw.(map[string]any)
 		function, _ := call["function"].(map[string]any)
-		if arguments == "" && stringFrom(function["name"]) == toolName {
+		if !found && stringFrom(function["name"]) == toolName {
 			arguments = stringFrom(function["arguments"])
+			found = true
 			continue
 		}
 		kept = append(kept, raw)
 	}
-	if arguments == "" {
+	if !found {
 		return
 	}
 

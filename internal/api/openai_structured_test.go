@@ -297,3 +297,40 @@ func TestOpenAIStreamState_StructuredOutput(t *testing.T) {
 		t.Errorf("finish_reason = %v, want stop", reason)
 	}
 }
+
+// TestUnwrapStructuredOutput_EmptyArguments ensures that even when the synthetic
+// tool call returns empty string arguments, it is unwrapped and removed from tool_calls.
+func TestUnwrapStructuredOutput_EmptyArguments(t *testing.T) {
+	completion := map[string]any{
+		"choices": []any{
+			map[string]any{
+				"finish_reason": "tool_calls",
+				"message": map[string]any{
+					"role": "assistant",
+					"tool_calls": []any{
+						map[string]any{
+							"id":   "toolu_1",
+							"type": "function",
+							"function": map[string]any{
+								"name":      "final_answer_mcq",
+								"arguments": "",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	unwrapStructuredOutput(completion, "final_answer_mcq")
+	choice := completion["choices"].([]any)[0].(map[string]any)
+	if reason := choice["finish_reason"]; reason != "stop" {
+		t.Errorf("finish_reason = %v, want stop", reason)
+	}
+	msg := choice["message"].(map[string]any)
+	if _, present := msg["tool_calls"]; present {
+		t.Errorf("tool_calls should be deleted, got %v", msg["tool_calls"])
+	}
+	if content, ok := msg["content"].(string); !ok || content != "" {
+		t.Errorf("message.content = %v, want empty string", msg["content"])
+	}
+}
