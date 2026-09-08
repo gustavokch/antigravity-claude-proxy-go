@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"antigravity-go-proxy/internal/openrouter"
 )
@@ -137,5 +138,20 @@ func TestOpenRouterRouting_UpstreamErrorBodyKeepsRoutingFunnel(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Supported Parameters") {
 		t.Errorf("routing_funnel step must survive truncation, got: %s", rec.Body.String())
+	}
+}
+
+func TestTruncateCutsOnRuneBoundary(t *testing.T) {
+	s := strings.Repeat("é", 10) // 2 bytes per rune, 20 bytes total
+	got := truncate(s, 5)        // byte offset 5 lands inside a rune
+	body := strings.TrimSuffix(got, "…")
+	if !utf8.ValidString(body) {
+		t.Errorf("truncate produced invalid UTF-8: %q", body)
+	}
+	if len(body) > 5 {
+		t.Errorf("truncate must not exceed the byte limit, got %d bytes", len(body))
+	}
+	if plain := truncate("abc", 5); plain != "abc" {
+		t.Errorf("short strings pass through unchanged, got %q", plain)
 	}
 }

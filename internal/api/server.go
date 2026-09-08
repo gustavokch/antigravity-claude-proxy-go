@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
@@ -1220,12 +1221,13 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	// fails every attempt for tool-carrying requests while plain completions
 	// keep working.
 	if need := openrouter.ToolRequirementsFromAnthropic(anthropicRequest); !need.Empty() {
-		if filtered := openrouter.DefaultRouter.FilterCapable(model, candidates, need, order); !sameProviderChain(filtered, candidates) {
+		filtered := openrouter.DefaultRouter.FilterCapable(model, candidates, need, order)
+		if !sameProviderChain(filtered, candidates) {
 			server.logger.Info("provider chain narrowed to tool-capable endpoints",
 				"model", model, "toolChoice", need.ToolChoice,
 				"before", candidates, "after", filtered)
-			candidates = filtered
 		}
+		candidates = filtered
 	}
 
 	// Per-attempt classification: what should we do next on this provider?
@@ -2029,11 +2031,18 @@ func computeBackoff(attempt int, base, cap time.Duration) time.Duration {
 // provider's capability rejection look like a model-wide outage.
 const upstreamErrorBodyLimit = 2048
 
+// truncate caps a string at n bytes. It backs off to the previous rune
+// boundary so a cut never lands mid-rune and puts invalid UTF-8 into a
+// client-facing error message.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // proxyStreamResponse streams a successful response to the client while

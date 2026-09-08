@@ -237,3 +237,20 @@ func TestEndpointsClient_CachedEndpointsAt(t *testing.T) {
 		t.Fatalf("cached entry must report its fill time, got %v ok=%v", at, ok)
 	}
 }
+
+func TestProviderEndpoint_NoAdvertisedParametersFailsOpen(t *testing.T) {
+	// An endpoint that advertises no parameters tells us nothing about its
+	// capabilities. Excluding it would strand requests on an incomplete catalog,
+	// so it must pass every requirement.
+	ep := ProviderEndpoint{ProviderName: "silent"}
+	if !ep.SupportsRequirements(ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}) {
+		t.Error("an endpoint advertising no parameters must fail open")
+	}
+	var nilEndpoint *ProviderEndpoint
+	if nilEndpoint.SupportsRequirements(ToolRequirements{Tools: true}) {
+		t.Error("a nil endpoint must not satisfy a tool requirement")
+	}
+	if !nilEndpoint.SupportsRequirements(ToolRequirements{}) {
+		t.Error("no requirements must pass even for a nil endpoint")
+	}
+}
