@@ -423,9 +423,9 @@ func TestTranslateOpenAIRequest(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
 				t.Fatalf("test fixture want is not valid JSON: %v", err)
 			}
-			// Round-trip got through JSON so both sides use the same numeric
+			// Round-trip got.Anthropic through JSON so both sides use the same numeric
 			// representation; the observable behavior is the encoded shape.
-			gotJSON, err := json.Marshal(got)
+			gotJSON, err := json.Marshal(got.Anthropic)
 			if err != nil {
 				t.Fatalf("marshal got: %v", err)
 			}

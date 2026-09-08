@@ -32,11 +32,12 @@ func (server *Server) chatCompletions(writer http.ResponseWriter, request *http.
 		writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid JSON request body: "+err.Error())
 		return
 	}
-	anthropicRequest, err := translateOpenAIRequest(openaiRequest)
+	translated, err := translateOpenAIRequest(openaiRequest)
 	if err != nil {
 		writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	anthropicRequest := translated.Anthropic
 	requestModel := stringFrom(openaiRequest["model"])
 
 	forwarded := request.Clone(request.Context())
@@ -50,8 +51,7 @@ func (server *Server) chatCompletions(writer http.ResponseWriter, request *http.
 	forwarded.Header = request.Header.Clone()
 	forwarded.Header.Set("Content-Type", "application/json")
 
-	structuredToolName, _ := structuredOutputEmulation(openaiRequest)
-	translator := newOpenAIResponseWriter(writer, requestModel, openAIUsageRequested(openaiRequest), structuredToolName)
+	translator := newOpenAIResponseWriter(writer, requestModel, openAIUsageRequested(openaiRequest), translated.StructuredToolName)
 	server.messages(translator, forwarded)
 	translator.finish()
 }

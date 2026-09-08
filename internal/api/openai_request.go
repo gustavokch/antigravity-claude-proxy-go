@@ -7,11 +7,24 @@ import (
 	"strings"
 )
 
+// translatedOpenAIRequest holds the translated Anthropic Messages payload and
+// metadata extracted during request translation (such as synthetic tools
+// injected for response_format emulation).
+type translatedOpenAIRequest struct {
+	Anthropic          map[string]any
+	StructuredToolName string
+}
+
 // translateOpenAIRequest converts a decoded OpenAI Chat Completions request
 // body into the Anthropic Messages shape the dispatch pipeline consumes. The
 // pipeline in server.messages() takes over from there (model mapping,
 // headroom, provider routing, retries, cost tracking).
-func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error) {
+//
+// Structured output emulation is backend-agnostic: response_format schemas are
+// injected as standard Anthropic tools and forced via tool_choice regardless of
+// the backend route (Cloud Code, OpenRouter, Custom Endpoints), and unwrapped
+// back into OpenAI content by openAIResponseWriter on the response side.
+func translateOpenAIRequest(openaiRequest map[string]any) (translatedOpenAIRequest, error) {
 	anthropic := map[string]any{}
 	if model := stringFrom(openaiRequest["model"]); model != "" {
 		anthropic["model"] = model
@@ -46,7 +59,7 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 					for _, rawToolCall := range toolCalls {
 						toolUse, err := openAIToolCallToToolUse(rawToolCall)
 						if err != nil {
-							return nil, err
+							return translatedOpenAIRequest{}, err
 						}
 						if toolUse != nil {
 							blocks = append(blocks, toolUse)
@@ -160,7 +173,10 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 		anthropic["stream"] = stream
 	}
 
-	return anthropic, nil
+	return translatedOpenAIRequest{
+		Anthropic:          anthropic,
+		StructuredToolName: structuredToolName,
+	}, nil
 }
 
 // appendMessage appends one translated message, merging into the previous

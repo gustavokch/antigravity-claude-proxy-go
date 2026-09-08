@@ -49,9 +49,12 @@ func TestTranslateOpenAIRequest_JSONSchemaForcesSyntheticTool(t *testing.T) {
 		t.Fatalf("translate: %v", err)
 	}
 
-	tools, _ := out["tools"].([]any)
+	if out.StructuredToolName != "final_answer_mcq" {
+		t.Errorf("out.StructuredToolName = %q, want final_answer_mcq", out.StructuredToolName)
+	}
+	tools, _ := out.Anthropic["tools"].([]any)
 	if len(tools) != 1 {
-		t.Fatalf("expected 1 synthetic tool, got %d (%v)", len(tools), out["tools"])
+		t.Fatalf("expected 1 synthetic tool, got %d (%v)", len(tools), out.Anthropic["tools"])
 	}
 	tool, _ := tools[0].(map[string]any)
 	if got := stringFrom(tool["name"]); got != "final_answer_mcq" {
@@ -69,9 +72,9 @@ func TestTranslateOpenAIRequest_JSONSchemaForcesSyntheticTool(t *testing.T) {
 		t.Errorf("schema properties lost: %v", schema)
 	}
 
-	choice, _ := out["tool_choice"].(map[string]any)
+	choice, _ := out.Anthropic["tool_choice"].(map[string]any)
 	if stringFrom(choice["type"]) != "tool" || stringFrom(choice["name"]) != "final_answer_mcq" {
-		t.Errorf("tool_choice = %v, want forced tool final_answer_mcq", out["tool_choice"])
+		t.Errorf("tool_choice = %v, want forced tool final_answer_mcq", out.Anthropic["tool_choice"])
 	}
 }
 
@@ -96,17 +99,20 @@ func TestTranslateOpenAIRequest_JSONSchemaWithClientTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
-	tools, _ := out["tools"].([]any)
+	if out.StructuredToolName != "" {
+		t.Errorf("StructuredToolName must be empty when client tools are present, got %q", out.StructuredToolName)
+	}
+	tools, _ := out.Anthropic["tools"].([]any)
 	if len(tools) != 1 {
-		t.Fatalf("client tools must be preserved untouched, got %v", out["tools"])
+		t.Fatalf("client tools must be preserved untouched, got %v", out.Anthropic["tools"])
 	}
 	if name := stringFrom(tools[0].(map[string]any)["name"]); name != "lookup" {
 		t.Errorf("tool name = %q, want lookup", name)
 	}
-	if _, forced := out["tool_choice"]; forced {
-		t.Errorf("must not force a tool when the client has its own tools: %v", out["tool_choice"])
+	if _, forced := out.Anthropic["tool_choice"]; forced {
+		t.Errorf("must not force a tool when the client has its own tools: %v", out.Anthropic["tool_choice"])
 	}
-	system := stringFrom(out["system"])
+	system := stringFrom(out.Anthropic["system"])
 	if !strings.Contains(system, "final_answer_mcq") || !strings.Contains(system, "\"answer\"") {
 		t.Errorf("system prompt must carry the schema, got %q", system)
 	}
@@ -125,10 +131,13 @@ func TestTranslateOpenAIRequest_JSONObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
-	if _, present := out["tools"]; present {
-		t.Errorf("json_object must not inject a tool: %v", out["tools"])
+	if out.StructuredToolName != "" {
+		t.Errorf("StructuredToolName must be empty for json_object, got %q", out.StructuredToolName)
 	}
-	if system := stringFrom(out["system"]); !strings.Contains(strings.ToLower(system), "json") {
+	if _, present := out.Anthropic["tools"]; present {
+		t.Errorf("json_object must not inject a tool: %v", out.Anthropic["tools"])
+	}
+	if system := stringFrom(out.Anthropic["system"]); !strings.Contains(strings.ToLower(system), "json") {
 		t.Errorf("json_object must add a JSON instruction, got %q", system)
 	}
 }
@@ -161,7 +170,7 @@ func TestTranslateOpenAIRequest_StripsAdditionalPropertiesFromClientTools(t *tes
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
-	encoded, _ := json.Marshal(out["tools"])
+	encoded, _ := json.Marshal(out.Anthropic["tools"])
 	if strings.Contains(string(encoded), "additionalProperties") {
 		t.Errorf("additionalProperties survived at some depth: %s", encoded)
 	}
@@ -386,9 +395,9 @@ func TestTranslateOpenAIRequest_ToolWithoutParameters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
-	tools, _ := out["tools"].([]any)
+	tools, _ := out.Anthropic["tools"].([]any)
 	if len(tools) != 2 {
-		t.Fatalf("expected both tools translated, got %v", out["tools"])
+		t.Fatalf("expected both tools translated, got %v", out.Anthropic["tools"])
 	}
 	for i, raw := range tools {
 		tool, _ := raw.(map[string]any)
