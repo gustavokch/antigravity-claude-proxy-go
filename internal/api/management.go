@@ -340,9 +340,15 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	}
 	for _, acc := range accountsList {
 		for m := range acc.Quota.Models {
+			if m == "" {
+				continue
+			}
 			modelSet[m] = true
 		}
 		for m := range acc.ModelRateLimits {
+			if m == "" {
+				continue
+			}
 			modelSet[m] = true
 		}
 	}

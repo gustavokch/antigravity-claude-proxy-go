@@ -61,6 +61,58 @@ func TestUpdateClaudeConfig_BareSuffixValueLeftAsIs(t *testing.T) {
 	}
 }
 
+func TestUpdateClaudeConfig_BareSuffixValueTrimmed(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_PATH", filepath.Join(tmpDir, "settings.json"))
+
+	updates := map[string]any{
+		"env": map[string]any{
+			"ANTHROPIC_MODEL": "  [1m]  ",
+		},
+	}
+
+	updated, err := UpdateClaudeConfig(updates)
+	if err != nil {
+		t.Fatalf("UpdateClaudeConfig failed: %v", err)
+	}
+
+	env := updated["env"].(map[string]any)
+	if env["ANTHROPIC_MODEL"] != "[1m]" {
+		t.Errorf("expected padded bare [1m] trimmed to [1m], got %q", env["ANTHROPIC_MODEL"])
+	}
+}
+
+func TestUpdateClaudeConfig_DoesNotAliasExistingEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_PATH", filepath.Join(tmpDir, "settings.json"))
+
+	if err := ReplaceClaudeConfig(map[string]any{
+		"env": map[string]any{"ANTHROPIC_MODEL": "old-model"},
+	}); err != nil {
+		t.Fatalf("failed to seed settings.json: %v", err)
+	}
+
+	before, err := ReadClaudeConfig()
+	if err != nil {
+		t.Fatalf("ReadClaudeConfig failed: %v", err)
+	}
+	heldEnv := before["env"].(map[string]any)
+
+	updated, err := UpdateClaudeConfig(map[string]any{
+		"env": map[string]any{"ANTHROPIC_MODEL": "new-model[1m]"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateClaudeConfig failed: %v", err)
+	}
+
+	if env := updated["env"].(map[string]any); env["ANTHROPIC_MODEL"] != "new-model" {
+		t.Errorf("expected persisted config sanitized, got %v", env["ANTHROPIC_MODEL"])
+	}
+	if heldEnv["ANTHROPIC_MODEL"] != "old-model" {
+		t.Errorf("prior ReadClaudeConfig env map was mutated via merge aliasing: got %v", heldEnv["ANTHROPIC_MODEL"])
+	}
+}
+
 func TestRestoreClaudeConfig_CleansSmallFastModel(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_PATH", filepath.Join(tmpDir, "settings.json"))

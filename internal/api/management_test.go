@@ -262,6 +262,35 @@ func TestManagement_HealthAndLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("GET /account-limits omits empty quota keys", func(t *testing.T) {
+		server.backend = &emptyIDDiscoveryTestBackend{}
+		handler := server.Handler()
+		server.accountManager.UpdateAccountQuota("test@example.com", accounts.Quota{
+			Models: map[string]accounts.ModelQuota{
+				"": {ResetTime: "2026-09-05T12:00:00Z"},
+			},
+		}, nil)
+
+		req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var res struct {
+			Models []string `json:"models"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range res.Models {
+			if m == "" {
+				t.Error("models list contains empty model ID from quota/ratelimit keys")
+			}
+		}
+	})
+
 	t.Run("GET /account-limits omits empty model IDs", func(t *testing.T) {
 		server.backend = &emptyIDDiscoveryTestBackend{}
 		handler := server.Handler()
