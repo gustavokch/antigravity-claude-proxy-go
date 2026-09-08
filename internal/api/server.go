@@ -1212,7 +1212,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	// fails every attempt for tool-carrying requests while plain completions
 	// keep working.
 	if need := openrouter.ToolRequirementsFromAnthropic(anthropicRequest); !need.Empty() {
-		if filtered := openrouter.DefaultRouter.FilterCapable(model, candidates, need); !sameProviderChain(filtered, candidates) {
+		if filtered := openrouter.DefaultRouter.FilterCapable(model, candidates, need, order); !sameProviderChain(filtered, candidates) {
 			server.logger.Info("provider chain narrowed to tool-capable endpoints",
 				"model", model, "toolChoice", need.ToolChoice,
 				"before", candidates, "after", filtered)

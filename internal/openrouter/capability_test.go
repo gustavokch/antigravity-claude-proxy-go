@@ -84,7 +84,7 @@ func TestProviderRouter_FilterCapableDropsPinnedIncapableProvider(t *testing.T) 
 		t.Fatalf("pinned chain = %v", chain)
 	}
 
-	got := r.FilterCapable("m1", chain, ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired})
+	got := r.FilterCapable("m1", chain, ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}, ProviderOrder{Mode: "pinned", Pin: "gmicloud"})
 	if len(got) == 0 {
 		t.Fatal("filter must fall back to capable providers, got empty chain")
 	}
@@ -107,7 +107,7 @@ func TestProviderRouter_FilterCapableKeepsCapableCandidates(t *testing.T) {
 		t.Fatalf("expected gmicloud ranked first, got %v", chain)
 	}
 
-	got := r.FilterCapable("m1", chain, ToolRequirements{Tools: true})
+	got := r.FilterCapable("m1", chain, ToolRequirements{Tools: true}, ProviderOrder{Mode: "auto"})
 	want := []string{"novita", "parasail"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -124,7 +124,7 @@ func TestProviderRouter_FilterCapablePassthroughWithoutRequirements(t *testing.T
 	r.RefreshRanks("m1", toolCapableEndpoints())
 	chain := []string{"gmicloud", "novita"}
 
-	got := r.FilterCapable("m1", chain, ToolRequirements{})
+	got := r.FilterCapable("m1", chain, ToolRequirements{}, ProviderOrder{Mode: "auto"})
 	if len(got) != 2 || got[0] != "gmicloud" {
 		t.Errorf("no requirements must pass the chain through unchanged, got %v", got)
 	}
@@ -134,7 +134,7 @@ func TestProviderRouter_FilterCapableUnknownModelFailsOpen(t *testing.T) {
 	r := NewProviderRouter(DefaultRoutingConfig())
 	chain := []string{"gmicloud"}
 
-	got := r.FilterCapable("unranked", chain, ToolRequirements{Tools: true})
+	got := r.FilterCapable("unranked", chain, ToolRequirements{Tools: true}, ProviderOrder{Mode: "auto"})
 	if len(got) != 1 || got[0] != "gmicloud" {
 		t.Errorf("unranked model has no capability data; want passthrough, got %v", got)
 	}
@@ -156,8 +156,36 @@ func TestProviderRouter_FilterCapableMergesProviderVariants(t *testing.T) {
 	})
 
 	got := r.FilterCapable("m1", []string{"deepinfra"},
-		ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired})
+		ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}, ProviderOrder{Mode: "auto"})
 	if len(got) != 1 || got[0] != "deepinfra" {
 		t.Errorf("a provider with one tool-capable variant must survive, got %v", got)
+	}
+}
+
+func TestProviderRouter_FilterCapableCustomModeKeepsAllowlist(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", toolCapableEndpoints())
+
+	order := ProviderOrder{Mode: "custom", Order: []string{"gmicloud", "novita"}}
+	chain := r.SelectChain("s1", "m1", order)
+
+	got := r.FilterCapable("m1", chain, ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}, order)
+	for _, p := range got {
+		if p == "parasail" {
+			t.Fatalf("custom mode must not route outside its allowlist, got %v", got)
+		}
+	}
+}
+
+func TestProviderRouter_FilterCapablePinnedModeSubstitutesFreely(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", toolCapableEndpoints())
+
+	order := ProviderOrder{Mode: "pinned", Pin: "gmicloud"}
+	chain := r.SelectChain("s1", "m1", order)
+
+	got := r.FilterCapable("m1", chain, ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}, order)
+	if len(got) == 0 || got[0] != "parasail" {
+		t.Errorf("pinned mode must substitute a capable provider, got %v", got)
 	}
 }

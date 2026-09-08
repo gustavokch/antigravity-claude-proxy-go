@@ -123,9 +123,11 @@ func (e *ProviderEndpoint) SupportsRequirements(need ToolRequirements) bool {
 // FilterCapable narrows a failover chain to providers whose endpoint metadata
 // can serve the request. When every candidate is incapable — the pinned-provider
 // case — it substitutes the ranked capable providers instead of letting the
-// request 404. Providers with no known endpoint, and models with no ranks, pass
-// through untouched.
-func (r *ProviderRouter) FilterCapable(model string, candidates []string, need ToolRequirements) []string {
+// request 404. In "custom" mode the substitution stays inside the configured
+// order: that list is an operator allowlist, and routing outside it would send
+// traffic to a provider they deliberately excluded. Providers with no known
+// endpoint, and models with no ranks, pass through untouched.
+func (r *ProviderRouter) FilterCapable(model string, candidates []string, need ToolRequirements, order ProviderOrder) []string {
 	if need.Empty() || len(candidates) == 0 {
 		return candidates
 	}
@@ -171,11 +173,22 @@ func (r *ProviderRouter) FilterCapable(model string, candidates []string, need T
 		return out
 	}
 
-	// Every candidate is incapable: fall back to ranked capable providers.
+	// Every candidate is incapable: fall back to ranked capable providers,
+	// bounded by the operator allowlist when one was configured.
+	var allowed map[string]bool
+	if order.Mode == "custom" {
+		allowed = make(map[string]bool, len(order.Order))
+		for _, p := range order.Order {
+			allowed[p] = true
+		}
+	}
 	seen := map[string]bool{}
 	for _, rk := range ranks {
 		p := rk.endpoint.ProviderName
 		if p == "" || seen[p] || !capable(p) {
+			continue
+		}
+		if allowed != nil && !allowed[p] {
 			continue
 		}
 		if !r.providerHealthyUnderThresholdLocked(model, p) {
