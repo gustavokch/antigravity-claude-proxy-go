@@ -404,3 +404,132 @@ func TestTranslateOpenAIRequest_ToolWithoutParameters(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenAIChatCompletions_StructuredOutputStreaming is the end-to-end
+// streaming proof: a client asking for json_schema with stream:true receives
+// the synthetic tool's arguments as content deltas over SSE, never as
+// tool_calls, and the stream terminates with finish_reason stop and [DONE].
+func TestOpenAIChatCompletions_StructuredOutputStreaming(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedBody map[string]any
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_sse\",\"usage\":{\"input_tokens\":4}}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"final_answer_mcq\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"answer\\\":\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"B\\\"}\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":6}}\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer mockOR.Close()
+
+	if _, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled":   true,
+			"apiKey":    "sk-or-v1-secret-123",
+			"baseUrl":   mockOR.URL,
+			"allowlist": []map[string]any{{"id": "inclusionai/ling-3.0-flash-sante:free", "enabled": true}},
+		},
+	}); err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"inclusionai/ling-3.0-flash-sante:free","max_tokens":256,"stream":true,` +
+		`"messages":[{"role":"user","content":"Which one?"}],` +
+		`"response_format":{"type":"json_schema","json_schema":{"name":"final_answer_mcq","strict":true,` +
+		`"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}}}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-proxy-key")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("content type = %q, want text/event-stream", ct)
+	}
+
+	// Upstream must have been asked to force the synthetic tool.
+	choice, _ := receivedBody["tool_choice"].(map[string]any)
+	if stringFrom(choice["type"]) != "tool" || stringFrom(choice["name"]) != "final_answer_mcq" {
+		t.Errorf("upstream tool_choice = %v, want forced tool", receivedBody["tool_choice"])
+	}
+
+	raw := rec.Body.String()
+	if !strings.Contains(raw, "data: [DONE]") {
+		t.Errorf("stream must end with a data: [DONE] sentinel, got %q", raw)
+	}
+
+	var content strings.Builder
+	finishReason := ""
+	sawRoleChunk := false
+	for _, frame := range strings.Split(raw, "\n\n") {
+		frame = strings.TrimSpace(frame)
+		if !strings.HasPrefix(frame, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(frame, "data: ")
+		if payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta        map[string]any `json:"delta"`
+				FinishReason any            `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			t.Fatalf("chunk not JSON (%q): %v", payload, err)
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		if _, hasRole := chunk.Choices[0].Delta["role"]; hasRole {
+			sawRoleChunk = true
+		}
+		if text, ok := chunk.Choices[0].Delta["content"].(string); ok {
+			content.WriteString(text)
+		}
+		if calls, ok := chunk.Choices[0].Delta["tool_calls"]; ok {
+			t.Errorf("structured stream must not emit tool_calls, got %v", calls)
+		}
+		if chunk.Choices[0].FinishReason != nil {
+			finishReason, _ = chunk.Choices[0].FinishReason.(string)
+		}
+	}
+	if !sawRoleChunk {
+		t.Errorf("stream must open with a role chunk")
+	}
+	if finishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", finishReason)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content.String()), &payload); err != nil {
+		t.Fatalf("assembled content is not valid JSON (%q): %v", content.String(), err)
+	}
+	if payload["answer"] != "B" {
+		t.Errorf("content = %v, want answer B", payload)
+	}
+}
