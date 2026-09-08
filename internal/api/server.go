@@ -1203,7 +1203,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		rankedAt := openrouter.DefaultRouter.RankedAt(model)
 		cachedAt, haveCachedAt := openrouter.DefaultEndpointsClient.CachedEndpointsAt(model, baseURL)
 		stale := haveCachedAt && rankedAt.Before(cachedAt)
-		if ranks := openrouter.DefaultRouter.GetRanks(model); len(ranks) == 0 || stale {
+		if rankedAt.IsZero() || stale {
 			openrouter.DefaultRouter.RefreshRanks(model, endpoints)
 		}
 	} else {
