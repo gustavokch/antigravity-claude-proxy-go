@@ -162,3 +162,74 @@ func TestOpenRouterForward_NoRequireParametersForAutoToolChoice(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenRouterForward_PreservesExistingProviderOptions asserts that
+// pre-existing fields in payload["provider"] (e.g. sort, ignore) are preserved
+// when require_parameters or pinned provider settings are injected.
+func TestOpenRouterForward_PreservesExistingProviderOptions(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedBody map[string]any
+	mockOR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer mockOR.Close()
+
+	if _, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled":   true,
+			"apiKey":    "sk-or-v1-secret-123",
+			"baseUrl":   mockOR.URL,
+			"allowlist": []map[string]any{{"id": "inclusionai/ling-3.0-flash-sante:free", "enabled": true}},
+		},
+	}); err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"inclusionai/ling-3.0-flash-sante:free","max_tokens":128,` +
+		`"messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"name":"lookup","input_schema":{"type":"object"}}],` +
+		`"tool_choice":{"type":"tool","name":"lookup"},` +
+		`"provider":{"sort":"throughput","ignore":["openai"]}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-proxy-key")
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	providerBlock, ok := receivedBody["provider"].(map[string]any)
+	if !ok || providerBlock == nil {
+		t.Fatalf("provider block missing: %v", receivedBody)
+	}
+	if providerBlock["require_parameters"] != true {
+		t.Errorf("require_parameters = %v, want true", providerBlock["require_parameters"])
+	}
+	if providerBlock["sort"] != "throughput" {
+		t.Errorf("sort = %v, want throughput", providerBlock["sort"])
+	}
+	if ignores, _ := providerBlock["ignore"].([]any); len(ignores) != 1 || ignores[0] != "openai" {
+		t.Errorf("ignore = %v, want [openai]", providerBlock["ignore"])
+	}
+}

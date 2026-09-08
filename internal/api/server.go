@@ -1362,6 +1362,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		body := reqBody
 		if bodyParsed && (provider != "" || need.ForcesTool()) {
 			providerBlock := map[string]any{}
+			if existing, ok := payload["provider"].(map[string]any); ok {
+				for k, v := range existing {
+					providerBlock[k] = v
+				}
+			}
 			if provider != "" {
 				providerBlock["order"] = []string{provider}
 				providerBlock["allow_fallbacks"] = false
