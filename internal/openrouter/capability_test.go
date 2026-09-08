@@ -139,3 +139,25 @@ func TestProviderRouter_FilterCapableUnknownModelFailsOpen(t *testing.T) {
 		t.Errorf("unranked model has no capability data; want passthrough, got %v", got)
 	}
 }
+
+func TestProviderRouter_FilterCapableMergesProviderVariants(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", []ProviderEndpoint{
+		// Same provider, two variants: the higher-scored one serves tools, the
+		// lower-scored one does not. provider.order names only the provider and
+		// OpenRouter picks a capable variant within it, so the provider stays.
+		{ProviderName: "deepinfra", Tag: "fp8", ContextLength: 900000,
+			UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99,
+			SupportedParameters: []string{"max_tokens", "tools", "tool_choice"},
+			SupportsToolChoice:  &ToolChoiceSupport{Auto: true, Required: true}},
+		{ProviderName: "deepinfra", Tag: "bf16", ContextLength: 100000,
+			UptimeLast5m: 0.90, UptimeLast30m: 0.90, UptimeLast1d: 0.90,
+			SupportedParameters: []string{"max_tokens"}},
+	})
+
+	got := r.FilterCapable("m1", []string{"deepinfra"},
+		ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired})
+	if len(got) != 1 || got[0] != "deepinfra" {
+		t.Errorf("a provider with one tool-capable variant must survive, got %v", got)
+	}
+}

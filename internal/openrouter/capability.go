@@ -137,17 +137,28 @@ func (r *ProviderRouter) FilterCapable(model string, candidates []string, need T
 	if len(ranks) == 0 {
 		return candidates
 	}
-	known := make(map[string]ProviderEndpoint, len(ranks))
+	// A provider can appear once per endpoint variant (quantization, tag), and
+	// provider.order names only the provider — OpenRouter then picks a variant
+	// within it. So a provider qualifies when ANY of its endpoints can serve the
+	// request; collapsing to a single endpoint would make the verdict depend on
+	// rank order and drop providers whose top variant is capable.
+	known := make(map[string][]ProviderEndpoint, len(ranks))
 	for _, rk := range ranks {
-		known[rk.endpoint.ProviderName] = rk.endpoint
+		name := rk.endpoint.ProviderName
+		known[name] = append(known[name], rk.endpoint)
 	}
 
 	capable := func(p string) bool {
-		ep, ok := known[p]
+		eps, ok := known[p]
 		if !ok {
 			return true // unknown provider: no basis to exclude it
 		}
-		return ep.SupportsRequirements(need)
+		for i := range eps {
+			if eps[i].SupportsRequirements(need) {
+				return true
+			}
+		}
+		return false
 	}
 
 	out := make([]string, 0, len(candidates))
