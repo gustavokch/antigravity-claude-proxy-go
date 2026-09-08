@@ -89,8 +89,15 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 			if description := stringFrom(function["description"]); description != "" {
 				anthropicTool["description"] = description
 			}
+			// parameters is optional on the OpenAI shape (it defaults to an
+			// empty object schema), but input_schema is required upstream.
 			if parameters, ok := function["parameters"]; ok && parameters != nil {
 				anthropicTool["input_schema"] = stripUnenforcedSchemaKeywords(parameters)
+			} else {
+				anthropicTool["input_schema"] = map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				}
 			}
 			anthropicTools = append(anthropicTools, anthropicTool)
 		}

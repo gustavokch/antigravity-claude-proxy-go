@@ -361,3 +361,39 @@ func TestTranslateAnthropicMessageToOpenAI_MalformedContent(t *testing.T) {
 		}
 	}
 }
+
+// TestTranslateOpenAIRequest_ToolWithoutParameters covers the OpenAI shape
+// where function.parameters is optional. The Anthropic tool shape requires
+// input_schema, so translation must substitute an empty object schema instead
+// of omitting the field — an omission the upstream rejects with 400.
+func TestTranslateOpenAIRequest_ToolWithoutParameters(t *testing.T) {
+	in := map[string]any{
+		"model":    "x/y",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools": []any{
+			map[string]any{"type": "function", "function": map[string]any{"name": "ping"}},
+			map[string]any{"type": "function", "function": map[string]any{"name": "lookup", "parameters": nil}},
+		},
+	}
+	out, err := translateOpenAIRequest(in)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	tools, _ := out["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("expected both tools translated, got %v", out["tools"])
+	}
+	for i, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		schema, ok := tool["input_schema"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool %d has no input_schema: %v", i, tool)
+		}
+		if schema["type"] != "object" {
+			t.Errorf("tool %d input_schema.type = %v, want object", i, schema["type"])
+		}
+		if props, ok := schema["properties"].(map[string]any); !ok || len(props) != 0 {
+			t.Errorf("tool %d input_schema.properties = %v, want empty object", i, schema["properties"])
+		}
+	}
+}
