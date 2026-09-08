@@ -1,6 +1,10 @@
 package openrouter
 
-import "testing"
+import (
+	"sync"
+	"testing"
+	"time"
+)
 
 func toolCapableEndpoints() []ProviderEndpoint {
 	return []ProviderEndpoint{
@@ -188,4 +192,23 @@ func TestProviderRouter_FilterCapablePinnedModeSubstitutesFreely(t *testing.T) {
 	if len(got) == 0 || got[0] != "parasail" {
 		t.Errorf("pinned mode must substitute a capable provider, got %v", got)
 	}
+}
+
+// TestProviderRouter_FilterCapableConcurrent guards the read-lock downgrade:
+// FilterCapable must stay safe against concurrent rank refreshes and result
+// recording. Run under -race.
+func TestProviderRouter_FilterCapableConcurrent(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", toolCapableEndpoints())
+
+	need := ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}
+	order := ProviderOrder{Mode: "auto"}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(3)
+		go func() { defer wg.Done(); r.FilterCapable("m1", []string{"gmicloud", "parasail"}, need, order) }()
+		go func() { defer wg.Done(); r.RefreshRanks("m1", toolCapableEndpoints()) }()
+		go func() { defer wg.Done(); r.RecordResult("m1", "parasail", true, time.Millisecond, 10) }()
+	}
+	wg.Wait()
 }

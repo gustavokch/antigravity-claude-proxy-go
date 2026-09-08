@@ -132,8 +132,12 @@ func (r *ProviderRouter) FilterCapable(model string, candidates []string, need T
 		return candidates
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// Read-only: the filter never mutates router state, and
+	// providerHealthyUnderThresholdLocked only reads ranks, stats and cfg.
+	// A write lock here would serialize every tool-carrying request against
+	// SelectChain and RecordResult.
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	ranks := r.ranks[model]
 	if len(ranks) == 0 {
