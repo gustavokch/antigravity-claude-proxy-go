@@ -148,7 +148,7 @@ dead_arms=0
 for arm in "${ARMS[@]}"; do
   body="$(payload "$arm")" || exit 1
   hits=0
-  declare -A reasons=()
+  misses_list=""
 
   printf '%-16s ' "$arm"
   for _ in $(seq 1 "$TRIALS"); do
@@ -161,20 +161,23 @@ for arm in "${ARMS[@]}"; do
 
     case "$result" in
       hit\ *) hits=$((hits + 1)); printf '.' ;;
-      *)      reasons["${result#miss }"]=$(( ${reasons["${result#miss }"]:-0} + 1 )); printf 'x' ;;
+      *)      reason="${result#miss }"
+              misses_list="${misses_list}${reason}"$'\n'
+              printf 'x' ;;
     esac
   done
 
   misses=$((TRIALS - hits))
   rate=$(awk -v m="$misses" -v t="$TRIALS" 'BEGIN{printf "%.1f", (m/t)*100}')
   printf '  bypass %s%% (%d/%d)\n' "$rate" "$misses" "$TRIALS"
-  for reason in "${!reasons[@]}"; do
-    printf '%-16s   %-32s %d\n' '' "$reason" "${reasons[$reason]}"
-  done
+  if [ -n "$misses_list" ]; then
+    printf '%s' "$misses_list" | grep -v '^$' | sort | uniq -c | while read -r count reason; do
+      [ -n "$reason" ] && printf '%-16s   %-32s %s\n' '' "$reason" "$count"
+    done
+  fi
   if [ "$hits" -eq 0 ]; then
     dead_arms=$((dead_arms + 1))
   fi
-  unset reasons
 done
 
 printf '\nLower bypass is better. Compare tools-plain against tools-strict to see\n'
