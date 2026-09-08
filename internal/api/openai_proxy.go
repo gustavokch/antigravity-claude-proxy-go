@@ -50,7 +50,8 @@ func (server *Server) chatCompletions(writer http.ResponseWriter, request *http.
 	forwarded.Header = request.Header.Clone()
 	forwarded.Header.Set("Content-Type", "application/json")
 
-	translator := newOpenAIResponseWriter(writer, requestModel, openAIUsageRequested(openaiRequest))
+	structuredToolName, _ := structuredOutputEmulation(openaiRequest)
+	translator := newOpenAIResponseWriter(writer, requestModel, openAIUsageRequested(openaiRequest), structuredToolName)
 	server.messages(translator, forwarded)
 	translator.finish()
 }
@@ -91,6 +92,10 @@ type openAIResponseWriter struct {
 	parser         sseLineParser
 	doneSent       bool
 	usageRequested bool
+	// structuredToolName is the synthetic tool injected to emulate
+	// response_format. Non-empty means its output is the client's message
+	// content and must never surface as a tool call.
+	structuredToolName string
 }
 
 type responseMode int
@@ -101,8 +106,13 @@ const (
 	responseModeSSE
 )
 
-func newOpenAIResponseWriter(inner http.ResponseWriter, model string, usageRequested bool) *openAIResponseWriter {
-	return &openAIResponseWriter{inner: inner, model: model, usageRequested: usageRequested}
+func newOpenAIResponseWriter(inner http.ResponseWriter, model string, usageRequested bool, structuredToolName string) *openAIResponseWriter {
+	return &openAIResponseWriter{
+		inner:              inner,
+		model:              model,
+		usageRequested:     usageRequested,
+		structuredToolName: structuredToolName,
+	}
 }
 
 func (w *openAIResponseWriter) Header() http.Header { return w.inner.Header() }
@@ -157,6 +167,7 @@ func (w *openAIResponseWriter) beginStream(statusCode int) {
 	}
 	w.sent = true
 	w.stream = newOpenAIStreamState(w.model)
+	w.stream.structuredToolName = w.structuredToolName
 	w.inner.Header().Del("Content-Length")
 	w.inner.WriteHeader(statusCode)
 }
@@ -269,7 +280,9 @@ func (w *openAIResponseWriter) translateJSONBody(raw []byte) []byte {
 		}
 		return out
 	}
-	out, err := json.Marshal(translateAnthropicMessageToOpenAI(body, w.model, time.Now().Unix()))
+	completion := translateAnthropicMessageToOpenAI(body, w.model, time.Now().Unix())
+	unwrapStructuredOutput(completion, w.structuredToolName)
+	out, err := json.Marshal(completion)
 	if err != nil {
 		return raw
 	}

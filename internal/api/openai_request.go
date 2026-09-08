@@ -62,6 +62,13 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 		}
 		anthropicMessages = appendMessage(anthropicMessages, role, blocks)
 	}
+	// response_format has no upstream counterpart and must be emulated here;
+	// the instruction form appends to the system prompt, so it is resolved
+	// before the system block is sealed.
+	structuredToolName, structuredInstruction := structuredOutputEmulation(openaiRequest)
+	if structuredInstruction != "" {
+		systemParts = append(systemParts, structuredInstruction)
+	}
 	if len(systemParts) > 0 {
 		anthropic["system"] = joinNonEmpty(systemParts, "\n\n")
 	}
@@ -83,7 +90,7 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 				anthropicTool["description"] = description
 			}
 			if parameters, ok := function["parameters"]; ok && parameters != nil {
-				anthropicTool["input_schema"] = parameters
+				anthropicTool["input_schema"] = stripUnenforcedSchemaKeywords(parameters)
 			}
 			anthropicTools = append(anthropicTools, anthropicTool)
 		}
@@ -94,6 +101,24 @@ func translateOpenAIRequest(openaiRequest map[string]any) (map[string]any, error
 
 	if toolChoice := translateOpenAIToolChoice(openaiRequest["tool_choice"]); toolChoice != nil {
 		anthropic["tool_choice"] = toolChoice
+	}
+
+	// The forced-tool emulation runs only when the client sent no tools of its
+	// own, so it can claim both the tools array and tool_choice outright.
+	if structuredToolName != "" {
+		format, _ := openaiRequest["response_format"].(map[string]any)
+		spec, _ := format["json_schema"].(map[string]any)
+		syntheticTool := map[string]any{
+			"name":         structuredToolName,
+			"input_schema": stripUnenforcedSchemaKeywords(spec["schema"]),
+		}
+		description := stringFrom(spec["description"])
+		if description == "" {
+			description = "Return the final answer as structured data matching this schema. You must call this tool."
+		}
+		syntheticTool["description"] = description
+		anthropic["tools"] = []any{syntheticTool}
+		anthropic["tool_choice"] = map[string]any{"type": "tool", "name": structuredToolName}
 	}
 
 	if rawMaxTokens, exists := openaiRequest["max_tokens"]; exists {
@@ -383,5 +408,123 @@ func numberToInt(value any) int {
 		return int(n)
 	default:
 		return 0
+	}
+}
+
+// --- response_format emulation ---
+//
+// The OpenAI `response_format` field has no counterpart on the Anthropic
+// Messages upstream this proxy forwards to (including OpenRouter's
+// Anthropic-compatible /v1/messages endpoint), so it cannot be passed through:
+// it has to be emulated at the edge or the constraint is simply lost.
+
+// defaultStructuredToolName names the synthetic tool when the client supplied
+// no usable json_schema name.
+const defaultStructuredToolName = "structured_output"
+
+// structuredOutputEmulation decides how one response_format request is
+// emulated, and is the single source of truth for that decision: the request
+// translator and the response translator both call it so they always agree on
+// whether a synthetic tool is in play.
+//
+// json_schema with no client tools returns a toolName. The schema is injected
+// as a synthetic tool and forced via tool_choice, so the model must emit it and
+// the answer arrives as structured tool_use input, which the response side
+// unwraps back into message.content. This is real enforcement wherever the
+// provider honours forced tool choice.
+//
+// json_schema alongside the client's own tools returns an instruction instead.
+// Forcing a synthetic tool there would make the client's tools unreachable and
+// break an agentic loop, so the schema is described in the system prompt. Best
+// effort, and weaker than the forced path.
+//
+// json_object carries no schema at all, so it is always an instruction.
+//
+// Both return values are empty when the request asks for no structured output.
+func structuredOutputEmulation(openaiRequest map[string]any) (toolName string, instruction string) {
+	format, ok := openaiRequest["response_format"].(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	switch stringFrom(format["type"]) {
+	case "json_object":
+		return "", "Respond with a single valid JSON object. Output the object only: no prose, no code fences."
+	case "json_schema":
+		break
+	default:
+		return "", ""
+	}
+
+	spec, _ := format["json_schema"].(map[string]any)
+	if spec == nil {
+		return "", ""
+	}
+	schema, hasSchema := spec["schema"]
+	if !hasSchema || schema == nil {
+		return "", ""
+	}
+	name := sanitizeToolName(stringFrom(spec["name"]))
+
+	if clientTools, ok := openaiRequest["tools"].([]any); ok && len(clientTools) > 0 {
+		encoded, err := json.Marshal(schema)
+		if err != nil {
+			return "", ""
+		}
+		return "", "Respond with a single JSON object that validates against the \"" + name +
+			"\" JSON Schema below. Output the object only: no prose, no code fences.\n\n" + string(encoded)
+	}
+	return name, ""
+}
+
+// sanitizeToolName coerces a json_schema name into the character set the
+// Anthropic tools API accepts (letters, digits, underscore, hyphen; 1-64
+// chars), falling back to the default when nothing usable survives.
+func sanitizeToolName(raw string) string {
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		}
+		if b.Len() >= 64 {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return defaultStructuredToolName
+	}
+	return b.String()
+}
+
+// stripUnenforcedSchemaKeywords removes JSON Schema keywords that OpenAI's
+// strict mode adds but that nothing downstream of this proxy enforces.
+//
+// `strict: true` lives on the OpenAI function object and is dropped by the
+// translation above, because the Anthropic tool shape has no such flag and no
+// grammar engine is engaged anywhere on this path. Its companion keyword
+// `additionalProperties: false` would otherwise survive into input_schema,
+// leaving the request paying the schema weight of a closed object with none of
+// the enforcement — measured as a raised tool-bypass rate on small models. The
+// Cloud Code path already strips it (format.SanitizeSchema); this does the same
+// for the OpenRouter path, narrowly, leaving every other keyword intact.
+func stripUnenforcedSchemaKeywords(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		cleaned := make(map[string]any, len(typed))
+		for key, raw := range typed {
+			if key == "additionalProperties" {
+				continue
+			}
+			cleaned[key] = stripUnenforcedSchemaKeywords(raw)
+		}
+		return cleaned
+	case []any:
+		cleaned := make([]any, 0, len(typed))
+		for _, item := range typed {
+			cleaned = append(cleaned, stripUnenforcedSchemaKeywords(item))
+		}
+		return cleaned
+	default:
+		return value
 	}
 }
