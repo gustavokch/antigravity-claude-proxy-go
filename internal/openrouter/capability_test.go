@@ -271,4 +271,3 @@ func TestProviderRouter_SelectChainKeepsProviderWithHealthyVariant(t *testing.T)
 		t.Fatalf("provider with healthy primary variant must be selected in chain, got %v", chain)
 	}
 }
-
