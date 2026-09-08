@@ -1222,7 +1222,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	// instead of routing elsewhere — a pinned provider without tool support
 	// fails every attempt for tool-carrying requests while plain completions
 	// keep working.
-	if need := openrouter.ToolRequirementsFromAnthropic(anthropicRequest); !need.Empty() {
+	need := openrouter.ToolRequirementsFromAnthropic(anthropicRequest)
+	if !need.Empty() {
 		filtered := openrouter.DefaultRouter.FilterCapable(model, candidates, need, order)
 		if !sameProviderChain(filtered, candidates) {
 			server.logger.Info("provider chain narrowed to tool-capable endpoints",
@@ -1343,12 +1344,37 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 
 		// Build body with provider injection (raw passthrough when the body
 		// is unpinned or unparseable).
+		//
+		// require_parameters is added only when the request forces a tool call.
+		// The proxy's capability filter deliberately fails open on endpoints
+		// with no advertised metadata, so a forced tool_choice can still land
+		// on a provider that silently ignores it — the model answers in prose
+		// and the tool is bypassed with no error anywhere. require_parameters
+		// hands that decision to OpenRouter's live catalog, which drops
+		// endpoints that cannot honour the parameters in the body; a request
+		// left with no endpoint 404s, which the failover loop classifies and
+		// retries. That is a visible failure instead of a silent one.
+		//
+		// Requests that merely carry tools with "auto" (the common agentic
+		// case) are left alone: an endpoint that ignores tool_choice there
+		// still behaves as asked, so narrowing them would only expose them to
+		// 404s from an incomplete catalog.
 		body := reqBody
-		if bodyParsed && provider != "" {
-			payload["provider"] = map[string]any{
-				"order":           []string{provider},
-				"allow_fallbacks": false,
+		if bodyParsed && (provider != "" || need.ForcesTool()) {
+			providerBlock := map[string]any{}
+			if existing, ok := payload["provider"].(map[string]any); ok {
+				for k, v := range existing {
+					providerBlock[k] = v
+				}
 			}
+			if provider != "" {
+				providerBlock["order"] = []string{provider}
+				providerBlock["allow_fallbacks"] = false
+			}
+			if need.ForcesTool() {
+				providerBlock["require_parameters"] = true
+			}
+			payload["provider"] = providerBlock
 			if out, err := json.Marshal(payload); err == nil {
 				body = out
 			}

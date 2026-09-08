@@ -14,31 +14,33 @@ func translateAnthropicMessageToOpenAI(message map[string]any, requestModel stri
 	var textParts []string
 	var reasoningParts []string
 	var toolCalls []any
-	for _, rawBlock := range message["content"].([]any) {
-		block, ok := rawBlock.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch stringFrom(block["type"]) {
-		case "text":
-			textParts = append(textParts, stringFrom(block["text"]))
-		case "thinking":
-			if thinking := stringFrom(block["thinking"]); thinking != "" {
-				reasoningParts = append(reasoningParts, thinking)
+	if rawBlocks, ok := message["content"].([]any); ok {
+		for _, rawBlock := range rawBlocks {
+			block, ok := rawBlock.(map[string]any)
+			if !ok {
+				continue
 			}
-		case "tool_use":
-			arguments, err := json.Marshal(block["input"])
-			if err != nil {
-				arguments = []byte("{}")
+			switch stringFrom(block["type"]) {
+			case "text":
+				textParts = append(textParts, stringFrom(block["text"]))
+			case "thinking":
+				if thinking := stringFrom(block["thinking"]); thinking != "" {
+					reasoningParts = append(reasoningParts, thinking)
+				}
+			case "tool_use":
+				arguments, err := json.Marshal(block["input"])
+				if err != nil {
+					arguments = []byte("{}")
+				}
+				toolCalls = append(toolCalls, map[string]any{
+					"id":   block["id"],
+					"type": "function",
+					"function": map[string]any{
+						"name":      block["name"],
+						"arguments": string(arguments),
+					},
+				})
 			}
-			toolCalls = append(toolCalls, map[string]any{
-				"id":   block["id"],
-				"type": "function",
-				"function": map[string]any{
-					"name":      block["name"],
-					"arguments": string(arguments),
-				},
-			})
 		}
 	}
 	if len(textParts) > 0 {
@@ -107,15 +109,22 @@ type openAIStreamState struct {
 	done             bool
 	promptTokens     int
 	completionTokens int
+	// structuredToolName is the synthetic tool injected to emulate
+	// response_format (see structuredOutputEmulation). Non-empty means the
+	// client asked for content, not a tool call: that tool's blocks are
+	// unwrapped into content deltas and never surface as tool_calls.
+	structuredToolName string
+	structuredBlocks   map[int]bool
 }
 
 func newOpenAIStreamState(model string) *openAIStreamState {
 	return &openAIStreamState{
-		model:          model,
-		created:        time.Now().Unix(),
-		toolIndexByBk:  map[int]int{},
-		finishReason:   "stop",
-		stopReasonSeen: false,
+		model:            model,
+		created:          time.Now().Unix(),
+		toolIndexByBk:    map[int]int{},
+		finishReason:     "stop",
+		stopReasonSeen:   false,
+		structuredBlocks: map[int]bool{},
 	}
 }
 
@@ -151,6 +160,13 @@ func (s *openAIStreamState) HandleEvent(eventType string, data map[string]any) [
 		if stringFrom(block["type"]) != "tool_use" {
 			return nil
 		}
+		// The synthetic response_format tool is the client's content, not a
+		// tool call: swallow the opening chunk and stream its arguments as
+		// content deltas instead.
+		if s.structuredToolName != "" && stringFrom(block["name"]) == s.structuredToolName {
+			s.structuredBlocks[index] = true
+			return nil
+		}
 		toolIndex := s.toolCount
 		s.toolCount++
 		s.toolIndexByBk[index] = toolIndex
@@ -174,11 +190,14 @@ func (s *openAIStreamState) HandleEvent(eventType string, data map[string]any) [
 			text, _ := delta["thinking"].(string)
 			return []map[string]any{s.chunk(map[string]any{"reasoning_content": text}, nil)}
 		case "input_json_delta":
+			partial, _ := delta["partial_json"].(string)
+			if s.structuredBlocks[index] {
+				return []map[string]any{s.chunk(map[string]any{"content": partial}, nil)}
+			}
 			toolIndex, ok := s.toolIndexByBk[index]
 			if !ok {
 				return nil
 			}
-			partial, _ := delta["partial_json"].(string)
 			return []map[string]any{s.chunk(map[string]any{
 				"tool_calls": []any{map[string]any{"index": toolIndex, "arguments": partial}},
 			}, nil)}
@@ -189,6 +208,12 @@ func (s *openAIStreamState) HandleEvent(eventType string, data map[string]any) [
 		if delta, ok := data["delta"].(map[string]any); ok {
 			if reason := stringFrom(delta["stop_reason"]); reason != "" {
 				s.finishReason = anthropicStopReasonToOpenAI(reason)
+				// The synthetic tool is the answer, so stopping to emit it is
+				// an ordinary stop from the client's point of view. Only
+				// rewrite when no real tool call was streamed.
+				if s.structuredToolName != "" && s.toolCount == 0 && s.finishReason == "tool_calls" {
+					s.finishReason = "stop"
+				}
 				s.stopReasonSeen = true
 			}
 		}
@@ -198,6 +223,7 @@ func (s *openAIStreamState) HandleEvent(eventType string, data map[string]any) [
 		return nil
 
 	case "message_stop":
+		s.done = true
 		return []map[string]any{s.chunk(map[string]any{}, s.finishReason)}
 
 	default:
@@ -217,5 +243,62 @@ func translateAnthropicErrorToOpenAI(anthropic map[string]any) map[string]any {
 			"type":    kind,
 			"code":    kind,
 		},
+	}
+}
+
+// unwrapStructuredOutput rewrites a translated chat.completion in place when
+// response_format was emulated with a forced synthetic tool.
+//
+// The client asked for a JSON message, not a tool call it never declared, so
+// the synthetic tool's arguments become message.content, the tool_calls array
+// disappears, and the tool_use stop reason becomes an ordinary "stop". A
+// response that did not call the tool (a bypass) is left exactly as it is, so
+// the caller still sees whatever the model actually produced.
+func unwrapStructuredOutput(completion map[string]any, toolName string) {
+	if toolName == "" {
+		return
+	}
+	choices, _ := completion["choices"].([]any)
+	if len(choices) == 0 {
+		return
+	}
+	choice, _ := choices[0].(map[string]any)
+	if choice == nil {
+		return
+	}
+	message, _ := choice["message"].(map[string]any)
+	if message == nil {
+		return
+	}
+	toolCalls, _ := message["tool_calls"].([]any)
+	if len(toolCalls) == 0 {
+		return
+	}
+
+	var found bool
+	var arguments string
+	kept := make([]any, 0, len(toolCalls))
+	for _, raw := range toolCalls {
+		call, _ := raw.(map[string]any)
+		function, _ := call["function"].(map[string]any)
+		if !found && stringFrom(function["name"]) == toolName {
+			arguments = stringFrom(function["arguments"])
+			found = true
+			continue
+		}
+		kept = append(kept, raw)
+	}
+	if !found {
+		return
+	}
+
+	message["content"] = arguments
+	if len(kept) > 0 {
+		message["tool_calls"] = kept
+	} else {
+		delete(message, "tool_calls")
+		if choice["finish_reason"] == "tool_calls" {
+			choice["finish_reason"] = "stop"
+		}
 	}
 }
