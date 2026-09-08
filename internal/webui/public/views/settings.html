@@ -397,8 +397,8 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -470,8 +470,8 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -548,8 +548,8 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -618,8 +618,8 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -688,8 +688,8 @@
                                                                     :class="$store.data.getModelFamily(modelId) === 'claude' ? 'bg-blue-400' : ($store.data.getModelFamily(modelId) === 'gemini' ? 'bg-emerald-400' : 'bg-zinc-600')"></span>
                                                                 <span x-text="modelId"></span>
                                                             </div>
-                                                            <template x-if="gemini1mSuffix && $store.data.getModelFamily(modelId) === 'gemini'">
-                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">[1M]</span>
+                                                            <template x-if="$store.data.getModelFamily(modelId) === 'gemini' && ($store.data.modelContext?.[modelId] || 0) >= 1000000">
+                                                                <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">1M</span>
                                                             </template>
                                                         </a>
                                                     </li>
@@ -724,31 +724,6 @@
                                 :checked="config.env.ENABLE_EXPERIMENTAL_MCP_CLI === 'true'"
                                 @change="config.env.ENABLE_EXPERIMENTAL_MCP_CLI = $event.target.checked ? 'true' : 'false'"
                                 aria-label="Experimental MCP CLI toggle">
-                            <div
-                                class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
-                            </div>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- Gemini 1M Context Suffix Toggle -->
-                <div x-show="currentMode === 'proxy'" class="card bg-space-900/30 border border-space-border/50 p-5">
-                    <div class="flex items-center justify-between">
-                        <div class="flex flex-col gap-1">
-                            <span class="text-sm font-medium transition-colors"
-                                :class="gemini1mSuffix ? 'text-neon-green' : 'text-gray-300'"
-                                x-text="$store.global.t('gemini1mMode')">Gemini 1M Context Mode</span>
-                            <span class="text-[11px] text-gray-500" x-text="$store.global.t('gemini1mDesc')">
-                                Appends [1m] suffix to Gemini models for 1M context window support.
-                            </span>
-                            <span class="text-[10px] text-yellow-500/80" x-text="$store.global.t('gemini1mWarning')">
-                                ⚠ Large context may reduce Gemini performance.
-                            </span>
-                        </div>
-                        <label class="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" class="sr-only peer" :checked="gemini1mSuffix"
-                                @change="toggleGemini1mSuffix($event.target.checked)"
-                                aria-label="Gemini 1M context mode toggle">
                             <div
                                 class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
                             </div>

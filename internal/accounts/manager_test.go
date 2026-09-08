@@ -77,6 +77,25 @@ func TestNewDefaultUsesActiveAgyLoginWithoutAccountFile(t *testing.T) {
 	}
 }
 
+func TestNewDefaultEmptyPoolWithoutAnyAccount(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("HOME", directory)
+	t.Setenv("AGY_TOKEN_PATH", filepath.Join(directory, "missing-token"))
+	manager, err := NewDefault("", StrategyHybrid, nil)
+	if err != nil {
+		t.Fatalf("NewDefault with no accounts anywhere failed: %v", err)
+	}
+	if manager.Count() != 0 {
+		t.Fatalf("expected empty pool, got %d accounts", manager.Count())
+	}
+	if got := manager.Available("gemini"); got != 0 {
+		t.Fatalf("expected 0 available, got %d", got)
+	}
+	if selection := manager.Select("gemini"); selection.Account != nil {
+		t.Fatalf("expected nil selection, got %v", selection.Account)
+	}
+}
+
 func TestRoundRobinAndPerModelRateLimits(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
@@ -391,5 +410,36 @@ func TestDynamicScoringAndThresholds(t *testing.T) {
 	}
 	if tokens != 50 {
 		t.Errorf("expected default tokens 50, got %f", tokens)
+	}
+}
+func TestSelectStickyLocked_EmptyAccounts(t *testing.T) {
+	manager := &Manager{accounts: []*Account{}, now: time.Now}
+	selection := manager.selectStickyLocked("model")
+	if selection.Account != nil {
+		t.Error("expected nil account when empty")
+	}
+}
+
+func TestSelectRoundRobinLocked_EmptyAccounts(t *testing.T) {
+	manager := &Manager{accounts: []*Account{}, now: time.Now}
+	selection := manager.selectRoundRobinLocked("model")
+	if selection.Account != nil {
+		t.Error("expected nil account when empty")
+	}
+}
+
+func TestSelectHybridLocked_EmptyAccounts(t *testing.T) {
+	manager := &Manager{accounts: []*Account{}, now: time.Now}
+	selection := manager.selectHybridLocked("model")
+	if selection.Account != nil {
+		t.Error("expected nil account when empty")
+	}
+}
+
+func TestAvailable_EmptyAccounts(t *testing.T) {
+	manager := &Manager{accounts: []*Account{}, now: time.Now}
+	count := manager.Available("model")
+	if count != 0 {
+		t.Errorf("expected 0, got %d", count)
 	}
 }

@@ -337,12 +337,9 @@ window.translations.en = {
     oauthTimeout: "⏱️ OAuth authorization timed out. Please try again.",
     oauthWindowClosed: "OAuth window was closed. Authorization may be incomplete.",
     cancelOAuth: "Cancel",
-    // MCP CLI & Gemini 1M
+    // MCP CLI
     mcpCliExperimental: "Experimental MCP CLI",
     mcpCliDesc: "Enables experimental MCP integration for reliable tool usage with reduced context consumption.",
-    gemini1mMode: "Gemini 1M Context Mode",
-    gemini1mDesc: "Appends [1m] suffix to Gemini models for 1M context window support.",
-    gemini1mWarning: "⚠ Large context may reduce Gemini performance.",
     clickToSet: "Click to configure...",
     none: "None",
     // Quota Distribution

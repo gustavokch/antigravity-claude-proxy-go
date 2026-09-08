@@ -10,6 +10,7 @@ document.addEventListener('alpine:init', () => {
     Alpine.store('data', {
         accounts: [],
         models: [], // Source of truth
+        modelContext: {}, // Model ID -> context window tokens (from /account-limits)
         modelConfig: {}, // Model metadata (hidden, pinned, alias)
         customEndpoints: {}, // Transparent forwarding custom endpoints
         openrouter: {}, // OpenRouter Gateway and allowlist configuration
@@ -83,6 +84,7 @@ document.addEventListener('alpine:init', () => {
                     if (data.accounts && data.models) {
                         this.accounts = data.accounts;
                         this.models = data.models;
+                        this.modelContext = data.modelContext || {};
                         this.modelConfig = data.modelConfig || {};
                         this.customEndpoints = data.customEndpoints || {};
                         this.openrouter = data.openrouter || {};
@@ -142,6 +144,7 @@ document.addEventListener('alpine:init', () => {
                 if (data.models && data.models.length > 0) {
                     this.models = data.models;
                 }
+                this.modelContext = data.modelContext || {};
                 this.modelConfig = data.modelConfig || {};
                 this.customEndpoints = data.customEndpoints || {};
                 this.openrouter = data.openrouter || {};

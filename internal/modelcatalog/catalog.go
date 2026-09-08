@@ -251,11 +251,21 @@ func (catalog *Catalog) Selectable() []Model {
 	return append([]Model(nil), catalog.selectable...)
 }
 
+func strip1mSuffix(s string) string {
+	trimmed := strings.TrimSpace(s)
+	lower := strings.ToLower(trimmed)
+	if strings.HasSuffix(lower, "[1m]") {
+		return strings.TrimSpace(trimmed[:len(trimmed)-4])
+	}
+	return trimmed
+}
+
 func (catalog *Catalog) Resolve(requested string) (Model, error) {
 	if catalog == nil {
 		return Model{}, errors.New("model catalog is unavailable")
 	}
-	key := strings.ToLower(strings.TrimSpace(requested))
+	cleaned := strip1mSuffix(requested)
+	key := strings.ToLower(strings.TrimSpace(cleaned))
 	if key == "" {
 		key = strings.ToLower(catalog.DefaultID())
 	}
@@ -432,6 +442,8 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 }
 
 func CleanModelIDAndName(id, displayName string) (string, string) {
+	id = strip1mSuffix(id)
+	displayName = strip1mSuffix(displayName)
 	lowerID := strings.ToLower(id)
 	cleanID := id
 	cleanName := displayName

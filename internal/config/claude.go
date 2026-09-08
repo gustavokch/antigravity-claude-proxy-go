@@ -126,6 +126,33 @@ func ReplaceClaudeConfig(newConfig map[string]any) error {
 	return os.Rename(tmpFile, path)
 }
 
+func sanitizeModelValue(val any) any {
+	if s, ok := val.(string); ok {
+		s = strings.TrimSpace(s)
+		if strings.HasSuffix(strings.ToLower(s), "[1m]") {
+			stripped := strings.TrimSpace(s[:len(s)-4])
+			if stripped == "" {
+				// Value is only the suffix; keep it rather than storing an empty var.
+				return s
+			}
+			return stripped
+		}
+		return s
+	}
+	return val
+}
+
+func isClaudeModelField(field string) bool {
+	switch field {
+	case "ANTHROPIC_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL":
+		return true
+	default:
+		return false
+	}
+}
+
 // UpdateClaudeConfig deep merges updates into existing Claude settings.json.
 func UpdateClaudeConfig(updates map[string]any) (map[string]any, error) {
 	current, err := ReadClaudeConfig()
@@ -136,10 +163,22 @@ func UpdateClaudeConfig(updates map[string]any) (map[string]any, error) {
 		if vMap, ok := v.(map[string]any); ok {
 			if existingMap, ok := current[k].(map[string]any); ok {
 				for vk, vv := range vMap {
+					if isClaudeModelField(vk) {
+						vv = sanitizeModelValue(vv)
+					}
 					existingMap[vk] = vv
 				}
 				current[k] = existingMap
 				continue
+			} else {
+				sanitized := make(map[string]any, len(vMap))
+				for vk, vv := range vMap {
+					if isClaudeModelField(vk) {
+						vv = sanitizeModelValue(vv)
+					}
+					sanitized[vk] = vv
+				}
+				v = sanitized
 			}
 		}
 		current[k] = v
@@ -160,6 +199,7 @@ func RestoreClaudeConfig() (map[string]any, error) {
 		"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL",
 		"CLAUDE_CODE_SUBAGENT_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
 		"ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+		"ANTHROPIC_SMALL_FAST_MODEL",
 		"ENABLE_EXPERIMENTAL_MCP_CLI",
 		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
 		"CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK",

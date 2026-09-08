@@ -257,9 +257,6 @@ func New(options Options) (*Manager, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	if len(options.Accounts) == 0 {
-		return nil, errors.New("no accounts configured")
-	}
 	for _, account := range options.Accounts {
 		if account == nil {
 			return nil, errors.New("account configuration contains a null account")
@@ -312,8 +309,8 @@ func NewFromFile(path, strategy string, now func() time.Time) (*Manager, error) 
 }
 
 // NewDefault uses the optional account-pool configuration when it exists.
-// Otherwise it creates a one-account pool from the active agy login, so a
-// normal logged-in CLI requires no proxy-specific account configuration.
+// Otherwise it creates a one-account pool from the active agy login, or
+// starts with an empty pool if no accounts are available anywhere.
 func NewDefault(path, strategy string, now func() time.Time) (*Manager, error) {
 	if path != "" {
 		return NewFromFile(path, strategy, now)
@@ -331,11 +328,18 @@ func NewDefault(path, strategy string, now func() time.Time) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(tokenPath); err != nil {
-		return nil, fmt.Errorf("no account configuration and no agy login token at %q: %w", tokenPath, err)
+	if _, err := os.Stat(tokenPath); err == nil {
+		// agy token exists; use it
+		return New(Options{
+			Accounts:   []*Account{{Email: "agy", Source: "agy", Enabled: true, AgyTokenPath: tokenPath}},
+			ConfigPath: configPath,
+			Strategy:   strategy,
+			Now:        now,
+		})
 	}
+
+	// No accounts found anywhere; start with an empty pool (allow web UI / API to add accounts)
 	return New(Options{
-		Accounts:   []*Account{{Email: "agy", Source: "agy", Enabled: true, AgyTokenPath: tokenPath}},
 		ConfigPath: configPath,
 		Strategy:   strategy,
 		Now:        now,
@@ -365,6 +369,9 @@ func (manager *Manager) Select(model string) Selection {
 func (manager *Manager) Available(model string) int {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
+	if len(manager.accounts) == 0 {
+		return 0 // No accounts available
+	}
 	manager.clearExpiredLocked()
 	count := 0
 	for _, account := range manager.accounts {
@@ -642,6 +649,9 @@ func (manager *Manager) Snapshot() []Snapshot {
 }
 
 func (manager *Manager) selectStickyLocked(model string) Selection {
+	if len(manager.accounts) == 0 {
+		return Selection{} // No accounts available
+	}
 	if manager.currentIndex < 0 || manager.currentIndex >= len(manager.accounts) {
 		manager.currentIndex = 0
 	}
@@ -668,6 +678,9 @@ func (manager *Manager) selectStickyLocked(model string) Selection {
 }
 
 func (manager *Manager) selectRoundRobinLocked(model string) Selection {
+	if len(manager.accounts) == 0 {
+		return Selection{} // No accounts available
+	}
 	if manager.cursor >= len(manager.accounts) {
 		manager.cursor = 0
 	}
@@ -1359,4 +1372,3 @@ func (manager *Manager) GetStrategyHealthData() map[string]any {
 		},
 	}
 }
-

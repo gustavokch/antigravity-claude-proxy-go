@@ -10,7 +10,6 @@ window.Components.claudeConfig = () => ({
     models: [],
     loading: false,
     restoring: false,
-    gemini1mSuffix: false,
 
     // Mode toggle state (proxy/paid)
     currentMode: 'proxy', // 'proxy' or 'paid'
@@ -44,7 +43,8 @@ window.Components.claudeConfig = () => ({
         'CLAUDE_CODE_SUBAGENT_MODEL',
         'ANTHROPIC_DEFAULT_OPUS_MODEL',
         'ANTHROPIC_DEFAULT_SONNET_MODEL',
-        'ANTHROPIC_DEFAULT_HAIKU_MODEL'
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+        'ANTHROPIC_SMALL_FAST_MODEL'
     ],
 
     init() {
@@ -71,53 +71,14 @@ window.Components.claudeConfig = () => ({
     },
 
     /**
-     * Detect if any Gemini model has [1m] suffix
-     */
-    detectGemini1mSuffix() {
-        for (const field of this.geminiModelFields) {
-            const val = this.config.env[field];
-            if (val && val.toLowerCase().includes('gemini') && val.includes('[1m]')) {
-                return true;
-            }
-        }
-        return false;
-    },
-
-    /**
-     * Toggle [1m] suffix for all Gemini models
-     */
-    toggleGemini1mSuffix(enabled) {
-        for (const field of this.geminiModelFields) {
-            const val = this.config.env[field];
-            // Fix: Case-insensitive check for gemini
-            if (val && /gemini/i.test(val)) {
-                if (enabled && !val.includes('[1m]')) {
-                    this.config.env[field] = val.trim() + '[1m]';
-                } else if (!enabled && val.includes('[1m]')) {
-                    this.config.env[field] = val.replace(/\s*\[1m\]$/i, '').trim();
-                }
-            }
-        }
-        this.gemini1mSuffix = enabled;
-    },
-
-    /**
      * Helper to select a model from the dropdown
      * @param {string} field - The config.env field to update
      * @param {string} modelId - The selected model ID
      */
     selectModel(field, modelId) {
         if (!this.config.env) this.config.env = {};
-
-        let finalModelId = modelId;
-        // If 1M mode is enabled and it's a Gemini model, append the suffix
-        if (this.gemini1mSuffix && modelId.toLowerCase().includes('gemini')) {
-            if (!finalModelId.includes('[1m]')) {
-                finalModelId = finalModelId.trim() + '[1m]';
-            }
-        }
-
-        this.config.env[field] = finalModelId;
+        if (!modelId) return;
+        this.config.env[field] = modelId.replace(/\s*\[1m\]$/i, '').trim();
     },
 
     async fetchConfig() {
@@ -137,17 +98,12 @@ window.Components.claudeConfig = () => ({
                 this.config.env.ENABLE_EXPERIMENTAL_MCP_CLI = 'true';
             }
 
-            // Detect existing [1m] suffix state, default to true
-            const hasExistingSuffix = this.detectGemini1mSuffix();
-            const hasGeminiModels = this.geminiModelFields.some(f =>
-                this.config.env[f]?.toLowerCase().includes('gemini')
-            );
-
-            // Default to enabled: if no suffix found but Gemini models exist, apply suffix
-            if (!hasExistingSuffix && hasGeminiModels) {
-                this.toggleGemini1mSuffix(true);
-            } else {
-                this.gemini1mSuffix = hasExistingSuffix || !hasGeminiModels;
+            // Clean any legacy [1m] suffixes from environment models
+            for (const field of this.geminiModelFields) {
+                const val = this.config.env[field];
+                if (val && typeof val === 'string' && /\[1m\]$/i.test(val)) {
+                    this.config.env[field] = val.replace(/\s*\[1m\]$/i, '').trim();
+                }
             }
         } catch (e) {
             console.error('Failed to fetch Claude config:', e);
@@ -242,9 +198,6 @@ window.Components.claudeConfig = () => ({
         // Merge preset config into current config.env
         this.config.env = { ...this.config.env, ...preset.config };
 
-        // Update Gemini 1M toggle based on merged config (not just preset)
-        this.gemini1mSuffix = this.detectGemini1mSuffix();
-
         Alpine.store('global').showToast(
             Alpine.store('global').t('presetLoaded') || `Preset "${preset.name}" loaded. Click "Apply to Claude CLI" to save.`,
             'success'
@@ -264,6 +217,7 @@ window.Components.claudeConfig = () => ({
             'ANTHROPIC_DEFAULT_OPUS_MODEL',
             'ANTHROPIC_DEFAULT_SONNET_MODEL',
             'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+            'ANTHROPIC_SMALL_FAST_MODEL',
             'ENABLE_EXPERIMENTAL_MCP_CLI'
         ];
 
@@ -355,6 +309,7 @@ window.Components.claudeConfig = () => ({
                 'ANTHROPIC_DEFAULT_OPUS_MODEL',
                 'ANTHROPIC_DEFAULT_SONNET_MODEL',
                 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+                'ANTHROPIC_SMALL_FAST_MODEL',
                 'ENABLE_EXPERIMENTAL_MCP_CLI'
             ];
             const presetConfig = {};
