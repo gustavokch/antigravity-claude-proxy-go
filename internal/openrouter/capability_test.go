@@ -181,6 +181,37 @@ func TestProviderRouter_FilterCapableCustomModeKeepsAllowlist(t *testing.T) {
 	}
 }
 
+func TestProviderRouter_FilterCapableCustomFallbackKeepsOperatorOrder(t *testing.T) {
+	r := NewProviderRouter(DefaultRoutingConfig())
+	r.RefreshRanks("m1", []ProviderEndpoint{
+		// Rank order: novita outranks parasail.
+		{ProviderName: "gmicloud", ContextLength: 1000000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99,
+			SupportedParameters: []string{"max_tokens"}},
+		{ProviderName: "novita", ContextLength: 900000, UptimeLast5m: 0.98, UptimeLast30m: 0.98, UptimeLast1d: 0.98,
+			SupportedParameters: []string{"max_tokens", "tools", "tool_choice"},
+			SupportsToolChoice:  &ToolChoiceSupport{Auto: true, Required: true}},
+		{ProviderName: "parasail", ContextLength: 800000, UptimeLast5m: 0.97, UptimeLast30m: 0.97, UptimeLast1d: 0.97,
+			SupportedParameters: []string{"max_tokens", "tools", "tool_choice"},
+			SupportsToolChoice:  &ToolChoiceSupport{None: true, Auto: true, Required: true, Function: true}},
+	})
+
+	// Operator allowlist puts parasail first, opposite of rank order. The only
+	// candidate is incapable, so the fallback substitutes — it must hand back
+	// the allowlist sequence, not the rank sequence.
+	order := ProviderOrder{Mode: "custom", Order: []string{"parasail", "novita"}}
+	got := r.FilterCapable("m1", []string{"gmicloud"},
+		ToolRequirements{Tools: true, ToolChoice: ToolChoiceRequired}, order)
+	want := []string{"parasail", "novita"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("fallback must follow operator order, got %v, want %v", got, want)
+		}
+	}
+}
+
 func TestProviderRouter_FilterCapablePinnedModeSubstitutesFreely(t *testing.T) {
 	r := NewProviderRouter(DefaultRoutingConfig())
 	r.RefreshRanks("m1", toolCapableEndpoints())

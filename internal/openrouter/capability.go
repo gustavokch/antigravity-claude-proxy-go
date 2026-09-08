@@ -174,21 +174,27 @@ func (r *ProviderRouter) FilterCapable(model string, candidates []string, need T
 	}
 
 	// Every candidate is incapable: fall back to ranked capable providers,
-	// bounded by the operator allowlist when one was configured.
-	var allowed map[string]bool
-	if order.Mode == "custom" {
-		allowed = make(map[string]bool, len(order.Order))
+	// bounded by the operator allowlist when one was configured. In "custom"
+	// mode walk the allowlist itself — the fallback must hand back the
+	// operator's precedence, not the rank order.
+	source := make([]string, 0, len(ranks))
+	for _, rk := range ranks {
+		source = append(source, rk.endpoint.ProviderName)
+	}
+	if order.Mode == "custom" && len(order.Order) > 0 {
+		ordered := make([]string, 0, len(order.Order))
+		seenOrder := map[string]bool{}
 		for _, p := range order.Order {
-			allowed[p] = true
+			if p != "" && !seenOrder[p] {
+				seenOrder[p] = true
+				ordered = append(ordered, p)
+			}
 		}
+		source = ordered
 	}
 	seen := map[string]bool{}
-	for _, rk := range ranks {
-		p := rk.endpoint.ProviderName
+	for _, p := range source {
 		if p == "" || seen[p] || !isCapable(p) {
-			continue
-		}
-		if allowed != nil && !allowed[p] {
 			continue
 		}
 		if !r.providerHealthyUnderThresholdLocked(model, p) {
