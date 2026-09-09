@@ -13,6 +13,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 type discoveryTestBackend struct{}
@@ -246,5 +247,62 @@ func TestGeminiModels_AdvertiseMaxContextWindow(t *testing.T) {
 				t.Errorf("gemini model %q context_window = %v, expected >= 1M", id, cw)
 			}
 		}
+	}
+}
+
+// TestOpenRouterModels_MaxOutputFallbackDoesNotEqualContextWindow guards the
+// discovery fallback that fires when the live catalog knows a model's context
+// window but not its max completion tokens. Equating the two advertises a
+// 1M-token max output for a 1M-context model, and clients that trust
+// /v1/models then send a max_tokens the provider rejects. The context window
+// must still report the real value.
+func TestOpenRouterModels_MaxOutputFallbackDoesNotEqualContextWindow(t *testing.T) {
+	prev := openrouter.DefaultClient.GetCachedModels()
+	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(prev) })
+	openrouter.DefaultClient.SaveCache([]openrouter.ModelItem{
+		// Context known, max completion tokens unknown: the exact shape that
+		// drives the fallback.
+		{ID: "vendor/huge-context", ContextLength: 1048576},
+	})
+
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.OpenRouter.Enabled = true
+	testCfg.OpenRouter.Allowlist = []config.OpenRouterModelConfig{
+		{ID: "vendor/huge-context", Enabled: true},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	var entry map[string]any
+	for _, m := range resp.Data {
+		if m["id"] == "vendor/huge-context" {
+			entry = m
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("allowlist model missing from discovery response")
+	}
+	if cw, _ := entry["context_window"].(float64); cw != 1048576 {
+		t.Errorf("context_window = %v, expected 1048576 from the live catalog", entry["context_window"])
+	}
+	if mo, _ := entry["max_output_tokens"].(float64); mo != float64(defaultDiscoveryMaxOutputTokens) {
+		t.Errorf("max_output_tokens = %v, expected %d (fallback must not equal the context window)",
+			entry["max_output_tokens"], defaultDiscoveryMaxOutputTokens)
 	}
 }

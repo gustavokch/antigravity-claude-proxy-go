@@ -391,6 +391,17 @@ func (server *Server) health(writer http.ResponseWriter) {
 	})
 }
 
+// defaultDiscoveryContextWindow is the context window /v1/models advertises for
+// an allowlist entry when neither the operator's config nor the live provider
+// catalog states one.
+const defaultDiscoveryContextWindow = 200000
+
+// defaultDiscoveryMaxOutputTokens caps the max_output_tokens that /v1/models
+// advertises when only the context window is known. A model's output cap is
+// always far below its context window, so reporting the context window as the
+// output cap invites clients to send a max_tokens the provider rejects.
+const defaultDiscoveryMaxOutputTokens = 200000
+
 func (server *Server) models(writer http.ResponseWriter, request *http.Request) {
 	catalog, err := server.fetchModelCatalog(request.Context())
 	if err != nil {
@@ -517,14 +528,20 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 				contextLen = catalogContext
 			}
 			if contextLen <= 0 {
-				contextLen = 200000
+				contextLen = defaultDiscoveryContextWindow
 			}
 			maxOutput := item.MaxOutputTokens
 			if maxOutput <= 0 && haveCatalog {
 				maxOutput = catalogMaxOutput
 			}
 			if maxOutput <= 0 {
+				// Nothing states the output cap. Fall back to the context
+				// window, but never above the conservative default: a large
+				// context says nothing about how much a model may emit.
 				maxOutput = contextLen
+				if maxOutput > defaultDiscoveryMaxOutputTokens {
+					maxOutput = defaultDiscoveryMaxOutputTokens
+				}
 			}
 			models = append(models, map[string]any{
 				"id":                item.ID,
