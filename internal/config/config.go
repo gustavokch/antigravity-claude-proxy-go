@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"antigravity-go-proxy/internal/claudecode"
@@ -127,6 +128,53 @@ type Config struct {
 	AccountSelection         AccountSelectionConfig    `json:"accountSelection,omitempty"`
 	Headroom                 HeadroomConfig            `json:"headroom,omitempty"`
 	ClaudeCode               claudecode.Config         `json:"claudecode,omitempty"`
+	CacheBump                CacheBumpConfig           `json:"cacheBump,omitempty"`
+}
+
+// CacheBumpRoutesConfig toggles cache bumping per route.
+type CacheBumpRoutesConfig struct {
+	ClaudeCode      bool `json:"claudecode"`
+	Kimi            bool `json:"kimi"`
+	CustomEndpoints bool `json:"customEndpoints"`
+}
+
+// CacheBumpConfig configures prompt-cache bumping: replaying a recorded
+// request body shortly before the upstream cache entry expires so idle
+// sessions keep a warm cache.
+type CacheBumpConfig struct {
+	Enabled             bool                  `json:"enabled"`
+	AllowHeaderOverride bool                  `json:"allowHeaderOverride"`
+	LeadSeconds         int                   `json:"leadSeconds"`
+	MaxBumpsPerSession  int                   `json:"maxBumpsPerSession"`
+	MaxIdleMinutes      int                   `json:"maxIdleMinutes"`
+	MaxSessions         int                   `json:"maxSessions"`
+	Routes              CacheBumpRoutesConfig `json:"routes"`
+}
+
+// EnabledFor resolves cache-bump enablement for one request. The
+// X-Cache-Bump header (on/off) decides when header overrides are allowed;
+// otherwise the per-route flag applies on top of the global switch.
+func (c CacheBumpConfig) EnabledFor(route, headerValue string) bool {
+	if c.AllowHeaderOverride {
+		switch strings.ToLower(strings.TrimSpace(headerValue)) {
+		case "on":
+			return true
+		case "off":
+			return false
+		}
+	}
+	if !c.Enabled {
+		return false
+	}
+	switch route {
+	case "claudecode":
+		return c.Routes.ClaudeCode
+	case "kimi":
+		return c.Routes.Kimi
+	case "custom":
+		return c.Routes.CustomEndpoints
+	}
+	return false
 }
 
 var (
@@ -154,6 +202,17 @@ func DefaultConfig() Config {
 		CapacityBackoffTiersMs: []int{5000, 10000, 20000, 30000, 60000},
 		CustomEndpoints:        make(map[string]EndpointConfig),
 		ModelMapping:           make(map[string]any),
+		CacheBump: CacheBumpConfig{
+			Enabled:             false,
+			AllowHeaderOverride: true,
+			LeadSeconds:         60,
+			MaxBumpsPerSession:  48,
+			MaxIdleMinutes:      240,
+			MaxSessions:         200,
+			Routes: CacheBumpRoutesConfig{
+				ClaudeCode: true,
+			},
+		},
 		OpenRouter: OpenRouterConfig{
 			Enabled:   false,
 			BaseURL:   "https://openrouter.ai/api",
@@ -407,66 +466,66 @@ func Save(updates map[string]any) (Config, error) {
 			continue
 		}
 		if k == "claudecode" {
-				if vMap, ok := v.(map[string]any); ok {
-					// Start from the persisted section so keys absent from the
-					// update (e.g. accounts on a settings-only save) survive.
-					ccCopy := make(map[string]any)
-					if exCC, ok := currentMap[k].(map[string]any); ok {
-						for ck, cv := range exCC {
-							ccCopy[ck] = cv
-						}
+			if vMap, ok := v.(map[string]any); ok {
+				// Start from the persisted section so keys absent from the
+				// update (e.g. accounts on a settings-only save) survive.
+				ccCopy := make(map[string]any)
+				if exCC, ok := currentMap[k].(map[string]any); ok {
+					for ck, cv := range exCC {
+						ccCopy[ck] = cv
 					}
-					for ck, cv := range vMap {
-						if ck == "accounts" {
-							newAccs, okNew := cv.([]any)
-							var existingAccs []any
-							if exMap, ok := currentMap["claudecode"].(map[string]any); ok {
-								existingAccs, _ = exMap["accounts"].([]any)
-							}
-							if okNew {
-								mergedAccs := make([]any, 0, len(newAccs))
-								for _, a := range newAccs {
-									if aMap, ok := a.(map[string]any); ok {
-										aCopy := make(map[string]any)
-										for ak, av := range aMap {
-											aCopy[ak] = av
-										}
-										hasToken, _ := aCopy["hasToken"].(bool)
-										token, _ := aCopy["token"].(string)
-										if hasToken && token == "" {
-											id, _ := aCopy["id"].(string)
-											for _, ea := range existingAccs {
-												if eaMap, ok := ea.(map[string]any); ok {
-													if existingID, ok := eaMap["id"].(string); ok && existingID == id {
-														if existingTok, ok := eaMap["token"].(string); ok && existingTok != "" {
-															aCopy["token"] = existingTok
-														}
+				}
+				for ck, cv := range vMap {
+					if ck == "accounts" {
+						newAccs, okNew := cv.([]any)
+						var existingAccs []any
+						if exMap, ok := currentMap["claudecode"].(map[string]any); ok {
+							existingAccs, _ = exMap["accounts"].([]any)
+						}
+						if okNew {
+							mergedAccs := make([]any, 0, len(newAccs))
+							for _, a := range newAccs {
+								if aMap, ok := a.(map[string]any); ok {
+									aCopy := make(map[string]any)
+									for ak, av := range aMap {
+										aCopy[ak] = av
+									}
+									hasToken, _ := aCopy["hasToken"].(bool)
+									token, _ := aCopy["token"].(string)
+									if hasToken && token == "" {
+										id, _ := aCopy["id"].(string)
+										for _, ea := range existingAccs {
+											if eaMap, ok := ea.(map[string]any); ok {
+												if existingID, ok := eaMap["id"].(string); ok && existingID == id {
+													if existingTok, ok := eaMap["token"].(string); ok && existingTok != "" {
+														aCopy["token"] = existingTok
 													}
 												}
 											}
 										}
-										delete(aCopy, "hasToken")
-										delete(aCopy, "maskedToken")
-										mergedAccs = append(mergedAccs, aCopy)
-									} else {
-										mergedAccs = append(mergedAccs, a)
 									}
+									delete(aCopy, "hasToken")
+									delete(aCopy, "maskedToken")
+									mergedAccs = append(mergedAccs, aCopy)
+								} else {
+									mergedAccs = append(mergedAccs, a)
 								}
-								ccCopy["accounts"] = mergedAccs
-							} else {
-								ccCopy[ck] = cv
 							}
+							ccCopy["accounts"] = mergedAccs
 						} else {
 							ccCopy[ck] = cv
 						}
+					} else {
+						ccCopy[ck] = cv
 					}
-					currentMap[k] = ccCopy
-				} else {
-					currentMap[k] = v
 				}
-				continue
+				currentMap[k] = ccCopy
+			} else {
+				currentMap[k] = v
 			}
-			if k == "modelMapping" {
+			continue
+		}
+		if k == "modelMapping" {
 			currentMap[k] = v
 			continue
 		}

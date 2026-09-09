@@ -120,7 +120,7 @@ func TestRestoreClaudeConfig_CleansSmallFastModel(t *testing.T) {
 	updates := map[string]any{
 		"env": map[string]any{
 			"ANTHROPIC_SMALL_FAST_MODEL": "gemini-3.8-flash",
-			"CUSTOM_USER_VAR":           "keep-me",
+			"CUSTOM_USER_VAR":            "keep-me",
 		},
 	}
 
