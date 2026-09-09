@@ -21,6 +21,7 @@ import (
 	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/logger"
+	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
 )
 
@@ -1083,5 +1084,33 @@ func TestApplyMaxTokensPolicy_DoesNotMutateCallerMap(t *testing.T) {
 	_ = applyMaxTokensPolicy(body, req, 1024, 0)
 	if _, present := req["max_tokens"]; present {
 		t.Errorf("caller map mutated: %v", req)
+	}
+}
+
+// TestDeriveOpenRouterMaxOutput_MatchesLikeGetModelPricing documents that
+// deriveOpenRouterMaxOutput must resolve a cached catalog entry the same way
+// GetModelPricing does: case-insensitively and tolerant of an "openrouter/"
+// prefix. The allowlist stores whatever ID the operator typed (often
+// "openrouter/vendor/model" or a differently-cased slug); the live catalog
+// stores the raw upstream ID. An exact Go string == leaves automatic
+// max_tokens/max_completion_tokens derivation permanently broken for any
+// allowlist entry not typed to match the catalog byte-for-byte.
+func TestDeriveOpenRouterMaxOutput_MatchesLikeGetModelPricing(t *testing.T) {
+	prev := openrouter.DefaultClient.GetCachedModels()
+	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(prev) })
+
+	maxOut := 65536
+	openrouter.DefaultClient.SaveCache([]openrouter.ModelItem{
+		{ID: "anthropic/claude-3.5-sonnet", ContextLength: 1048576, MaxCompletionTokens: maxOut},
+	})
+
+	cases := []string{
+		"openrouter/anthropic/claude-3.5-sonnet", // allowlist commonly prefixes with "openrouter/"
+		"Anthropic/Claude-3.5-Sonnet",             // allowlist entered with different casing
+	}
+	for _, requested := range cases {
+		if got := deriveOpenRouterMaxOutput(requested); got != maxOut {
+			t.Errorf("deriveOpenRouterMaxOutput(%q) = %d, expected %d (should match like GetModelPricing)", requested, got, maxOut)
+		}
 	}
 }

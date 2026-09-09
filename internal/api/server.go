@@ -507,11 +507,22 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			if desc == "" {
 				desc = item.ID
 			}
+			// Prefer the operator's manual override, then the live OpenRouter
+			// catalog (so context_window/max_output_tokens reflect a model's
+			// real capability, e.g. 1M context, automatically), then a
+			// conservative fallback when neither is known.
+			catalogContext, catalogMaxOutput, haveCatalog := openrouter.DefaultClient.GetModelLimits(item.ID)
 			contextLen := item.ContextLen
+			if contextLen <= 0 && haveCatalog {
+				contextLen = catalogContext
+			}
 			if contextLen <= 0 {
 				contextLen = 200000
 			}
 			maxOutput := item.MaxOutputTokens
+			if maxOutput <= 0 && haveCatalog {
+				maxOutput = catalogMaxOutput
+			}
 			if maxOutput <= 0 {
 				maxOutput = contextLen
 			}
@@ -1088,16 +1099,18 @@ func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, de
 }
 
 // deriveOpenRouterMaxOutput returns the model's advertised max output from
-// the cached OpenRouter model catalog, or 0 when unknown.
+// the cached OpenRouter model catalog, or 0 when unknown. Matching is
+// case-insensitive and tolerant of an "openrouter/" prefix (GetModelLimits
+// uses the same matching as GetModelPricing) because allowlist entries are
+// operator-typed and commonly differ from the catalog's raw ID in case or
+// prefix — an exact-string match here silently disables automatic
+// max_tokens derivation for any such entry.
 func deriveOpenRouterMaxOutput(model string) int {
-	models := openrouter.DefaultClient.GetCachedModels()
-	for i := range models {
-		item := models[i]
-		if item.ID == model || item.CanonicalSlug == model {
-			return item.GetMaxOutputTokens()
-		}
+	_, maxOutput, ok := openrouter.DefaultClient.GetModelLimits(model)
+	if !ok {
+		return 0
 	}
-	return 0
+	return maxOutput
 }
 
 // matchKimiModel returns the Kimi model ID if `model` matches an enabled
