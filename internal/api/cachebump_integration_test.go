@@ -425,18 +425,33 @@ func TestCacheBump_HeaderOverride(t *testing.T) {
 
 	srv, store, _ := newCacheBumpServer(t)
 
-	// X-Cache-Bump: on arms the session even with the global switch off.
+	// The global switch is a kill switch: X-Cache-Bump: on cannot arm a
+	// session while Cache Bump is off.
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(cacheBumpTurnBody))
-	req.Header.Set("x-session-id", "sess-hdr-on")
+	req.Header.Set("x-session-id", "sess-hdr-on-killed")
 	req.Header.Set("X-Cache-Bump", "on")
 	w := httptest.NewRecorder()
 	srv.forwardToClaudeCode(w, req, config.Get().ClaudeCode, []byte(cacheBumpTurnBody), "claude-sonnet-5")
+	if _, ok := store.Get(cachebump.RecordKey(cachebump.RouteClaudeCode, "sess-hdr-on-killed")); ok {
+		t.Error("expected header on to be ignored while the global switch is off")
+	}
+
+	// With the switch on, X-Cache-Bump: on arms a session on a route whose
+	// own flag is off.
+	cfg.CacheBump.Enabled = true
+	cfg.CacheBump.Routes.ClaudeCode = false
+	persistTestConfig(t, cfg)
+	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(cacheBumpTurnBody))
+	req.Header.Set("x-session-id", "sess-hdr-on")
+	req.Header.Set("X-Cache-Bump", "on")
+	w = httptest.NewRecorder()
+	srv.forwardToClaudeCode(w, req, config.Get().ClaudeCode, []byte(cacheBumpTurnBody), "claude-sonnet-5")
 	if _, ok := store.Get(cachebump.RecordKey(cachebump.RouteClaudeCode, "sess-hdr-on")); !ok {
-		t.Error("expected header on to arm session")
+		t.Error("expected header on to arm a route-disabled session")
 	}
 
 	// X-Cache-Bump: off suppresses recording even with the switch on.
-	cfg.CacheBump.Enabled = true
+	cfg.CacheBump.Routes.ClaudeCode = true
 	persistTestConfig(t, cfg)
 	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(cacheBumpTurnBody))
 	req.Header.Set("x-session-id", "sess-hdr-off")
