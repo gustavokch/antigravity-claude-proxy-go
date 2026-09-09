@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/cachebump"
+	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/openrouter"
@@ -182,9 +183,22 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	// A bump burns the same window a real turn does, so its outcome has to
+	// reach the pool: otherwise bump traffic silently drains an account the
+	// selector still believes is healthy.
+	rl := claudecode.ExtractRateLimits(resp.Header)
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+		return cachebump.BumpResult{}, &cachebump.UpstreamError{Status: resp.StatusCode}
+	case resp.StatusCode >= 500:
+		pool.RecordFailure(acc.ID, true, 30*time.Second)
+		return cachebump.BumpResult{}, &cachebump.UpstreamError{Status: resp.StatusCode}
+	case resp.StatusCode >= 400:
+		pool.RecordFailure(acc.ID, false, 0)
 		return cachebump.BumpResult{}, &cachebump.UpstreamError{Status: resp.StatusCode}
 	}
+	pool.UpdateAccountRateLimits(acc.ID, rl)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {

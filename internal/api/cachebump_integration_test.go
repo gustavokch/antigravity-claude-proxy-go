@@ -50,6 +50,17 @@ func (u *cacheBumpUpstream) handler() http.HandlerFunc {
 	}
 }
 
+func (u *cacheBumpUpstream) record(r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	token := r.Header.Get("x-api-key")
+	if token == "" {
+		token = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	u.requests = append(u.requests, upstreamRequest{authToken: token, body: string(body)})
+}
+
 func (u *cacheBumpUpstream) lenRequests() int {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -460,6 +471,92 @@ func TestCacheBump_HeaderOverride(t *testing.T) {
 	srv.forwardToClaudeCode(w, req, config.Get().ClaudeCode, []byte(cacheBumpTurnBody), "claude-sonnet-5")
 	if _, ok := store.Get(cachebump.RecordKey(cachebump.RouteClaudeCode, "sess-hdr-off")); ok {
 		t.Error("expected header off to suppress recording")
+	}
+}
+
+func TestCacheBump_BumpRateLimitCoolsRecordedAccount(t *testing.T) {
+	upstream := &cacheBumpUpstream{
+		status:   http.StatusOK,
+		respBody: `{"id":"m1","type":"message","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":1200}}`,
+	}
+	// The client turn succeeds; the bump that follows is rate limited.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstream.lenRequests() >= 1 {
+			w.Header().Set(claudecode.HeaderRetryAfter, "120")
+			w.Header().Set("Content-Type", "application/json")
+			upstream.record(r)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"type":"error"}`))
+			return
+		}
+		upstream.handler().ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	config.SetForTest(cacheBumpTestConfig(t, ts.URL))
+	resetCCPoolForTest()
+
+	srv, store, sched := newCacheBumpServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(cacheBumpTurnBody))
+	req.Header.Set("x-session-id", "sess-429")
+	w := httptest.NewRecorder()
+	srv.forwardToClaudeCode(w, req, config.Get().ClaudeCode, []byte(cacheBumpTurnBody), "claude-sonnet-5")
+
+	rec, ok := store.Get(cachebump.RecordKey(cachebump.RouteClaudeCode, "sess-429"))
+	if !ok {
+		t.Fatal("expected session recorded")
+	}
+
+	sched.Now = func() time.Time { return time.Now().Add(10 * time.Minute) }
+	sched.Tick(context.Background())
+
+	pool, _ := srv.getOrCreateCCPool(config.Get().ClaudeCode)
+	acc, ok := pool.GetAccount(rec.AccountID)
+	if !ok {
+		t.Fatalf("account %q missing from pool", rec.AccountID)
+	}
+	// A bump burns the same window a real turn does: a 429 it triggers must
+	// cool the account down instead of leaving the pool believing it is free.
+	if !acc.CooldownUntil.After(time.Now()) {
+		t.Errorf("expected bump 429 to cool the account down, CooldownUntil=%v", acc.CooldownUntil)
+	}
+}
+
+func TestCacheBump_BumpUpdatesAccountRateLimits(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(claudecode.HeaderRequestsLimit, "1000")
+		w.Header().Set(claudecode.HeaderRequestsRemaining, "42")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"m1","type":"message","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":1200}}`))
+	}))
+	defer ts.Close()
+
+	config.SetForTest(cacheBumpTestConfig(t, ts.URL))
+	resetCCPoolForTest()
+
+	srv, store, sched := newCacheBumpServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(cacheBumpTurnBody))
+	req.Header.Set("x-session-id", "sess-rl")
+	w := httptest.NewRecorder()
+	srv.forwardToClaudeCode(w, req, config.Get().ClaudeCode, []byte(cacheBumpTurnBody), "claude-sonnet-5")
+
+	rec, ok := store.Get(cachebump.RecordKey(cachebump.RouteClaudeCode, "sess-rl"))
+	if !ok {
+		t.Fatal("expected session recorded")
+	}
+
+	pool, _ := srv.getOrCreateCCPool(config.Get().ClaudeCode)
+	pool.UpdateAccountRateLimits(rec.AccountID, claudecode.RateLimits{RequestsRemaining: 999, LastUpdated: time.Now()})
+
+	sched.Now = func() time.Time { return time.Now().Add(10 * time.Minute) }
+	sched.Tick(context.Background())
+
+	acc, _ := pool.GetAccount(rec.AccountID)
+	if acc.RateLimits.RequestsRemaining != 42 {
+		t.Errorf("expected bump response rate limits recorded, got RequestsRemaining=%d", acc.RateLimits.RequestsRemaining)
 	}
 }
 
