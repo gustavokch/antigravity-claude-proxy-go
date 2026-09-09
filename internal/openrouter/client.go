@@ -276,4 +276,3 @@ func (c *Client) WarmupCacheAsync(apiKey, baseURL string) {
 		_, _ = c.ResolveModelPricing(ctx, "", apiKey, baseURL)
 	}()
 }
-
