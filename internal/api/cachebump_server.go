@@ -105,7 +105,11 @@ func (server *Server) maybeRecordCacheBump(route cachebump.Route, request *http.
 	if !cfg.EnabledFor(string(route), cacheBumpHeaderValue(request)) {
 		return
 	}
-	if sessionKey == "" || !cachebump.HasCacheControl(reqBody) {
+	if sessionKey == "" {
+		return
+	}
+	marker, _ := cachebump.InspectCacheControl(reqBody)
+	if !marker {
 		return
 	}
 
@@ -118,7 +122,9 @@ func (server *Server) maybeRecordCacheBump(route cachebump.Route, request *http.
 	}
 
 	now := time.Now()
-	ttl := cachebump.DetectTTL(reqBody)
+	// The 1h TTL is inert without the extended-cache-ttl beta, so compute it
+	// from the same beta the forward path sent, not from the body alone.
+	ttl := cachebump.DetectTTL(reqBody, request.Header.Get("anthropic-beta"))
 	store, _ := server.getCacheBump()
 	store.Upsert(cachebump.Record{
 		Key:        cachebump.RecordKey(route, sessionKey),
