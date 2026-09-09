@@ -670,7 +670,7 @@ window.translations.en = {
     cacheBumpEnabled: "Enable Cache Bump",
     cacheBumpEnabledDesc: "Keeps prompt caches warm across idle gaps.",
     cacheBumpHeaderOverride: "Allow per-request header override",
-    cacheBumpHeaderOverrideDesc: "Clients may arm or disarm bumping per session with X-Cache-Bump: on|off. The header is never forwarded upstream.",
+    cacheBumpHeaderOverrideDesc: "Clients may disarm bumping per session with X-Cache-Bump: off, or arm a disabled route with X-Cache-Bump: on. The header never overrides the switch above, and is never forwarded upstream.",
     cacheBumpLeadSeconds: "Lead seconds",
     cacheBumpRoutes: "Routes",
     cacheBumpRouteClaudeCode: "Claude Code",

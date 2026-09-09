@@ -151,20 +151,23 @@ type CacheBumpConfig struct {
 	Routes              CacheBumpRoutesConfig `json:"routes"`
 }
 
-// EnabledFor resolves cache-bump enablement for one request. The
-// X-Cache-Bump header (on/off) decides when header overrides are allowed;
-// otherwise the per-route flag applies on top of the global switch.
+// EnabledFor resolves cache-bump enablement for one request. The global
+// Enabled switch is a kill switch: the X-Cache-Bump header (on/off) may
+// always disarm a request, but it can only arm one on top of an already
+// enabled feature, where it overrides the per-route flag.
 func (c CacheBumpConfig) EnabledFor(route, headerValue string) bool {
+	header := ""
 	if c.AllowHeaderOverride {
-		switch strings.ToLower(strings.TrimSpace(headerValue)) {
-		case "on":
-			return true
-		case "off":
-			return false
-		}
+		header = strings.ToLower(strings.TrimSpace(headerValue))
+	}
+	if header == "off" {
+		return false
 	}
 	if !c.Enabled {
 		return false
+	}
+	if header == "on" {
+		return true
 	}
 	switch route {
 	case "claudecode":

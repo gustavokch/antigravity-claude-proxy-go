@@ -86,6 +86,12 @@ func TestCacheBumpConfig_EnabledFor(t *testing.T) {
 		}(), "kimi", "on", false},
 		{"unknown route", base.CacheBump, "openrouter", "", false},
 		{"header junk falls through to route", base.CacheBump, "claudecode", "maybe", true},
+		// The global switch is a kill switch: a header can never arm bumping
+		// while the feature is off, but it can always disarm it.
+		{"header on cannot bypass global off", DefaultConfig().CacheBump, "claudecode", "on", false},
+		{"header on cannot bypass global off, route off", DefaultConfig().CacheBump, "kimi", "on", false},
+		{"header off with global off", DefaultConfig().CacheBump, "claudecode", "off", false},
+		{"header case and space tolerated", base.CacheBump, "kimi", " ON ", true},
 	}
 
 	for _, tt := range tests {

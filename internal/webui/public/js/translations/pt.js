@@ -613,7 +613,7 @@ window.translations.pt = {
     cacheBumpEnabled: "Ativar Cache Bump",
     cacheBumpEnabledDesc: "Mantém os caches de prompt aquecidos durante períodos ociosos.",
     cacheBumpHeaderOverride: "Permitir override por cabeçalho",
-    cacheBumpHeaderOverrideDesc: "Clientes podem ativar ou desativar por sessão com X-Cache-Bump: on|off. O cabeçalho nunca é encaminhado ao upstream.",
+    cacheBumpHeaderOverrideDesc: "Clientes podem desativar por sessão com X-Cache-Bump: off, ou ativar uma rota desligada com X-Cache-Bump: on. O cabeçalho nunca sobrepõe o interruptor acima e nunca é encaminhado ao upstream.",
     cacheBumpLeadSeconds: "Segundos de antecedência",
     cacheBumpRoutes: "Rotas",
     cacheBumpRouteClaudeCode: "Claude Code",
