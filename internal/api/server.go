@@ -25,6 +25,7 @@ import (
 
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
+	"antigravity-go-proxy/internal/cachebump"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
@@ -106,6 +107,8 @@ type Server struct {
 	tracker            *stats.Tracker
 	headroom           *headroom.Engine
 	ccrStore           *ccr.CCRStore
+	cacheBumpStore     *cachebump.Store
+	cacheBumpSched     *cachebump.Scheduler
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -745,6 +748,7 @@ func (server *Server) fetchModelCatalog(ctx context.Context) (*modelcatalog.Cata
 }
 
 func (server *Server) messages(writer http.ResponseWriter, request *http.Request) {
+	request = server.consumeCacheBumpHeader(request)
 	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
 	decoder := json.NewDecoder(request.Body)
 	var anthropicRequest map[string]any
@@ -869,7 +873,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request: "+err.Error())
 			return
 		}
-		server.forwardToCustomEndpoint(writer, request, endpoint, reqBody)
+		server.forwardToCustomEndpoint(writer, request, endpoint, model, reqBody)
 		return
 	}
 
@@ -907,7 +911,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	server.unaryMessage(writer, request, send, anthropicRequest, model)
 }
 
-func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, reqBody []byte) {
+func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, model string, reqBody []byte) {
 	targetURL, err := url.Parse(endpoint.URL)
 	if err != nil {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid custom endpoint URL: "+err.Error())
@@ -920,6 +924,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	if server.isCCREnabled() {
 		var reqMap map[string]any
 		if err := json.Unmarshal(reqBody, &reqMap); err == nil {
+			customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
 			sender := func(ctx context.Context, bodyBytes []byte) (*http.Response, error) {
 				httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL.String(), bytes.NewReader(bodyBytes))
 				if err != nil {
@@ -937,7 +942,11 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 				if b := request.Header.Get("anthropic-beta"); b != "" {
 					httpReq.Header.Set("anthropic-beta", b)
 				}
-				return http.DefaultClient.Do(httpReq)
+				resp, err := http.DefaultClient.Do(httpReq)
+				if err == nil && resp.StatusCode < 400 {
+					server.maybeRecordCacheBump(cachebump.RouteCustom, request, bodyBytes, customSessionKey, model, "", model, minMaxTokensFloor)
+				}
+				return resp, err
 			}
 
 			opts := server.defaultCCROptions(sender)
@@ -951,8 +960,15 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		}
 	}
 
+	customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
+		ModifyResponse: func(resp *http.Response) error {
+			if resp.StatusCode < 400 {
+				server.maybeRecordCacheBump(cachebump.RouteCustom, request, reqBody, customSessionKey, model, "", model, minMaxTokensFloor)
+			}
+			return nil
+		},
 		Director: func(req *http.Request) {
 			req.URL.Scheme = targetURL.Scheme
 			req.URL.Host = targetURL.Host
@@ -990,7 +1006,10 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 	}
 
 	if !server.isCCREnabled() {
-		kimi.ForwardMessages(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body)
+		sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
+		kimi.ForwardMessagesWithHook(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body, func(int) {
+			server.maybeRecordCacheBump(cachebump.RouteKimi, request, body, sessionKey, model, "", "", minMaxTokensFloor)
+		})
 		return
 	}
 
@@ -1001,6 +1020,7 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 	}
 
 	targetURL := kimi.NormalizeBaseURL(kimiCfg.BaseURL) + "/v1/messages"
+	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
 	sender := func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBytes))
 		if err != nil {
@@ -1016,7 +1036,11 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 		if b := request.Header.Get("anthropic-beta"); b != "" {
 			httpReq.Header.Set("anthropic-beta", b)
 		}
-		return http.DefaultClient.Do(httpReq)
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err == nil && resp.StatusCode < 400 {
+			server.maybeRecordCacheBump(cachebump.RouteKimi, request, reqBytes, sessionKey, model, "", "", minMaxTokensFloor)
+		}
+		return resp, err
 	}
 
 	opts := server.defaultCCROptions(sender)

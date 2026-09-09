@@ -55,3 +55,62 @@ func TestForwardMessages_DirectorBehavior(t *testing.T) {
 		t.Errorf("client response code = %d, want 200", w.Code)
 	}
 }
+
+func TestForwardMessagesWithHook(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		wantCalled bool
+	}{
+		{"success calls hook", 200, true},
+		{"client error skips hook", 400, false},
+		{"server error skips hook", 502, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(`{"type":"message"}`))
+			}))
+			defer upstream.Close()
+
+			called := 0
+			hook := func(status int) { called++ }
+
+			body := []byte(`{"model":"kimi-k2-thinking","messages":[]}`)
+			req := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(body))
+			w := httptest.NewRecorder()
+
+			ForwardMessagesWithHook(w, req, upstream.URL, "sk-test", body, hook)
+
+			if tt.wantCalled && called != 1 {
+				t.Errorf("hook called %d times, want 1", called)
+			}
+			if !tt.wantCalled && called != 0 {
+				t.Errorf("hook called %d times, want 0", called)
+			}
+			if w.Code != tt.status {
+				t.Errorf("client code = %d, want %d", w.Code, tt.status)
+			}
+		})
+	}
+}
+
+func TestForwardMessages_NilHookDelegates(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"m","messages":[]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	ForwardMessagesWithHook(w, req, upstream.URL, "sk-test", body, nil)
+
+	if w.Code != 200 {
+		t.Errorf("client code = %d, want 200", w.Code)
+	}
+}

@@ -681,9 +681,6 @@ func TestForwardToClaudeCode_401RetryFailure_FailsOver(t *testing.T) {
 	}
 }
 
-
-
-
 func TestClaudeCodeEntryMaxOutput(t *testing.T) {
 	t.Run("configured allowlist entry wins", func(t *testing.T) {
 		cfg := claudecode.Config{
