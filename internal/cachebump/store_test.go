@@ -135,6 +135,40 @@ func TestStore_EvictOldestAtCapacity(t *testing.T) {
 	}
 }
 
+func TestStore_ReArmAtCapacityKeepsOtherSessions(t *testing.T) {
+	store := NewStore(time.Hour, 2)
+	now := time.Now()
+
+	for i, id := range []string{"a", "b"} {
+		store.Upsert(Record{
+			Key:       RecordKey(RouteCustom, id),
+			SessionID: id,
+			Route:     RouteCustom,
+			TTL:       5 * time.Minute,
+			LastSeen:  now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// Re-arming an already-recorded session does not grow the store, so it
+	// must not cost another live session its slot.
+	store.Upsert(Record{
+		Key:       RecordKey(RouteCustom, "b"),
+		SessionID: "b",
+		Route:     RouteCustom,
+		TTL:       5 * time.Minute,
+		LastSeen:  now.Add(2 * time.Minute),
+	})
+
+	if store.Len() != 2 {
+		t.Errorf("expected 2 records, got %d", store.Len())
+	}
+	for _, id := range []string{"a", "b"} {
+		if _, ok := store.Get(RecordKey(RouteCustom, id)); !ok {
+			t.Errorf("expected record %q to survive a re-arm at capacity", id)
+		}
+	}
+}
+
 func TestStore_Due(t *testing.T) {
 	store := NewStore(time.Hour, 100)
 	now := time.Now()

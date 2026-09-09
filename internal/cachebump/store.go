@@ -7,8 +7,8 @@ import (
 
 // Store holds recorded sessions in memory. It mirrors the shape of
 // openrouter.SessionTracker: prune expired entries on insert, evict the
-// oldest entry when still at capacity. A restart drops everything — after a
-// restart gap the upstream cache is cold anyway.
+// oldest entry when an insert would exceed capacity. A restart drops
+// everything — after a restart gap the upstream cache is cold anyway.
 type Store struct {
 	mu         sync.RWMutex
 	records    map[string]*Record
@@ -52,7 +52,9 @@ func (s *Store) Upsert(rec Record) {
 	if len(s.records) > 0 {
 		s.pruneLocked(now)
 	}
-	if len(s.records) >= s.maxEntries {
+	// Only an insert grows the store; re-arming an existing session must not
+	// cost another live session its slot.
+	if _, exists := s.records[rec.Key]; !exists && len(s.records) >= s.maxEntries {
 		s.evictOldestLocked()
 	}
 
