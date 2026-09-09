@@ -451,7 +451,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 			contextLen := item.ContextLen
 			if contextLen <= 0 {
-				contextLen = 200000
+				contextLen = defaultDiscoveryContextWindow
 			}
 			maxOutput := item.MaxOutputTokens
 			if maxOutput <= 0 {
@@ -587,7 +587,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 			contextLen := item.ContextLen
 			if contextLen <= 0 {
-				contextLen = 200000
+				contextLen = defaultDiscoveryContextWindow
 			}
 			maxOutput := item.MaxOutputTokens
 			if maxOutput <= 0 {
