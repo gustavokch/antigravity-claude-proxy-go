@@ -591,7 +591,13 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 			maxOutput := item.MaxOutputTokens
 			if maxOutput <= 0 {
+				// Nothing states the output cap. Fall back to the context
+				// window, but never above the conservative default: a large
+				// context says nothing about how much a model may emit.
 				maxOutput = contextLen
+				if maxOutput > defaultDiscoveryMaxOutputTokens {
+					maxOutput = defaultDiscoveryMaxOutputTokens
+				}
 			}
 			models = append(models, map[string]any{
 				"id":                item.ID,

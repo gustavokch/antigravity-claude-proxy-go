@@ -370,3 +370,53 @@ func TestOpenRouterModels_WarmsColdCatalogCache(t *testing.T) {
 	}
 	t.Fatalf("catalog cache still cold after discovery request (%d upstream fetches)", atomic.LoadInt32(&hits))
 }
+
+// TestKimiModels_MaxOutputFallbackDoesNotEqualContextWindow guards the Kimi
+// discovery fallback against the same failure the OpenRouter branch guards
+// against: a context-only allowlist entry must not advertise its context
+// window as the max output, or clients trust /v1/models and send a max_tokens
+// the provider rejects.
+func TestKimiModels_MaxOutputFallbackDoesNotEqualContextWindow(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.Kimi.Enabled = true
+	testCfg.Kimi.Allowlist = []config.KimiModelConfig{
+		// Context known, max output unknown: the exact shape that drives the
+		// fallback.
+		{ID: "kimi/huge-context", ContextLen: 1048576, Enabled: true},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	var entry map[string]any
+	for _, m := range resp.Data {
+		if m["id"] == "kimi/huge-context" {
+			entry = m
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("allowlist model missing from discovery response")
+	}
+	if cw, _ := entry["context_window"].(float64); cw != 1048576 {
+		t.Errorf("context_window = %v, expected 1048576 from the configured allowlist", entry["context_window"])
+	}
+	if mo, _ := entry["max_output_tokens"].(float64); mo != float64(defaultDiscoveryMaxOutputTokens) {
+		t.Errorf("max_output_tokens = %v, expected %d (fallback must not equal the context window)",
+			entry["max_output_tokens"], defaultDiscoveryMaxOutputTokens)
+	}
+}
