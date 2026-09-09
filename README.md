@@ -461,8 +461,8 @@ Bumping for a session stops automatically the moment it stops paying: a bump tha
 
 - **Routes**: Claude Code (bumps pinned to the account that owns the cache entry), Kimi, and custom endpoints. Not OpenRouter (provider failover can land the replay on a different provider) and not the Cloud Code / Gemini translation route (implicit caching).
 - **Enablement**: global switch plus per-route flags in the Web UI (Settings → Cache Bump), or per-session with the `X-Cache-Bump: on|off` request header when header overrides are allowed. `off` always disarms a request; `on` overrides the per-route flag but never the global switch, so turning Cache Bump off stops every route. The header is consumed by the proxy and never forwarded upstream.
-- **Safety**: request bodies live in memory only (a restart drops them), never touch disk, and are never exposed through the management API.
-- **Key settings** (`config.json` → `cacheBump`): `enabled`, `allowHeaderOverride`, `leadSeconds` (default 60), `maxBumpsPerSession` (default 48), `maxIdleMinutes` (default 240), `maxSessions` (default 200), `routes.claudecode` / `routes.kimi` / `routes.customEndpoints`.
+- **Safety**: request bodies live in memory only (a restart drops them), never touch disk, and are never exposed through the management API. Memory is bounded twice: by `maxSessions` and by a total body budget (`maxBodyMB`), so a handful of very long conversations cannot crowd out every other session.
+- **Key settings** (`config.json` → `cacheBump`): `enabled`, `allowHeaderOverride`, `leadSeconds` (default 60), `maxBumpsPerSession` (default 48), `maxIdleMinutes` (default 240), `maxSessions` (default 200), `maxBodyMB` (default 64), `routes.claudecode` / `routes.kimi` / `routes.customEndpoints`.
 
 ---
 

@@ -5,36 +5,57 @@ import (
 	"time"
 )
 
+// defaultMaxBytes is the total replay-body budget a Store holds when the
+// caller does not set one. A recorded body is a whole conversation, so the
+// record count alone is a poor bound: 200 long Claude Code turns can be
+// hundreds of megabytes.
+const defaultMaxBytes = 64 << 20
+
 // Store holds recorded sessions in memory. It mirrors the shape of
 // openrouter.SessionTracker: prune expired entries on insert, evict the
-// oldest entry when an insert would exceed capacity. A restart drops
-// everything — after a restart gap the upstream cache is cold anyway.
+// oldest entry when an insert would exceed capacity. Capacity is both a
+// record count and a total byte budget over the recorded bodies. A restart
+// drops everything — after a restart gap the upstream cache is cold anyway.
 type Store struct {
 	mu         sync.RWMutex
 	records    map[string]*Record
 	ttl        time.Duration
 	maxEntries int
+	maxBytes   int
+	bytes      int
 }
 
-// NewStore creates a Store. Non-positive ttl or maxEntries fall back to
-// sane defaults (24h, 200 entries).
+// NewStore creates a Store with the default byte budget. Non-positive ttl or
+// maxEntries fall back to sane defaults (24h, 200 entries).
 func NewStore(ttl time.Duration, maxEntries int) *Store {
+	return NewStoreWithLimits(ttl, maxEntries, defaultMaxBytes)
+}
+
+// NewStoreWithLimits creates a Store with an explicit total byte budget over
+// the recorded bodies. Non-positive values fall back to the defaults (24h,
+// 200 entries, 64 MiB).
+func NewStoreWithLimits(ttl time.Duration, maxEntries, maxBytes int) *Store {
 	if ttl <= 0 {
 		ttl = 24 * time.Hour
 	}
 	if maxEntries <= 0 {
 		maxEntries = 200
 	}
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxBytes
+	}
 	return &Store{
 		records:    make(map[string]*Record),
 		ttl:        ttl,
 		maxEntries: maxEntries,
+		maxBytes:   maxBytes,
 	}
 }
 
 // Upsert records a fresh body for a session. It re-arms a stopped record:
-// fresh body, Stopped=false, counters reset. Expired entries are pruned and
-// the oldest entry is evicted when the store is over capacity.
+// fresh body, Stopped=false, counters reset. Expired entries are pruned, and
+// the oldest entries are evicted until the insert fits both the record count
+// and the byte budget. A single body larger than the whole budget is refused.
 func (s *Store) Upsert(rec Record) {
 	if rec.Key == "" {
 		rec.Key = RecordKey(rec.Route, rec.SessionID)
@@ -49,12 +70,23 @@ func (s *Store) Upsert(rec Record) {
 	}
 	rec.LastSeen = now
 
+	size := len(rec.Body)
+	if size > s.maxBytes {
+		// Nothing can be evicted to make this fit; recording it would only
+		// starve every other session.
+		s.dropLocked(rec.Key)
+		return
+	}
+
 	if len(s.records) > 0 {
 		s.pruneLocked(now)
 	}
-	// Only an insert grows the store; re-arming an existing session must not
-	// cost another live session its slot.
-	if _, exists := s.records[rec.Key]; !exists && len(s.records) >= s.maxEntries {
+	// The record it replaces, if any, releases its bytes and its slot first.
+	s.dropLocked(rec.Key)
+	if len(s.records) >= s.maxEntries {
+		s.evictOldestLocked()
+	}
+	for s.bytes+size > s.maxBytes && len(s.records) > 0 {
 		s.evictOldestLocked()
 	}
 
@@ -67,6 +99,7 @@ func (s *Store) Upsert(rec Record) {
 	rec.LastCacheCreationTokens = 0
 
 	s.records[rec.Key] = &rec
+	s.bytes += size
 }
 
 // Get returns a copy of the record for a key, if present.
@@ -141,6 +174,7 @@ func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records = make(map[string]*Record)
+	s.bytes = 0
 }
 
 // Snapshot returns copies of all records, stopped ones included.
@@ -161,10 +195,36 @@ func (s *Store) Len() int {
 	return len(s.records)
 }
 
+// Bytes returns the total size of the recorded bodies currently held.
+func (s *Store) Bytes() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.bytes
+}
+
+// MaxBytes returns the store's total body budget.
+func (s *Store) MaxBytes() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.maxBytes
+}
+
+// dropLocked removes one record and releases its bytes. It is a no-op when
+// the key is absent.
+func (s *Store) dropLocked(key string) {
+	rec, ok := s.records[key]
+	if !ok {
+		return
+	}
+	s.bytes -= len(rec.Body)
+	delete(s.records, key)
+}
+
 func (s *Store) pruneLocked(now time.Time) {
 	cutoff := now.Add(-s.ttl)
 	for id, rec := range s.records {
 		if rec.LastSeen.Before(cutoff) {
+			s.bytes -= len(rec.Body)
 			delete(s.records, id)
 		}
 	}
@@ -179,7 +239,5 @@ func (s *Store) evictOldestLocked() {
 			oldestTime = rec.LastSeen
 		}
 	}
-	if oldestKey != "" {
-		delete(s.records, oldestKey)
-	}
+	s.dropLocked(oldestKey)
 }

@@ -142,13 +142,17 @@ type CacheBumpRoutesConfig struct {
 // request body shortly before the upstream cache entry expires so idle
 // sessions keep a warm cache.
 type CacheBumpConfig struct {
-	Enabled             bool                  `json:"enabled"`
-	AllowHeaderOverride bool                  `json:"allowHeaderOverride"`
-	LeadSeconds         int                   `json:"leadSeconds"`
-	MaxBumpsPerSession  int                   `json:"maxBumpsPerSession"`
-	MaxIdleMinutes      int                   `json:"maxIdleMinutes"`
-	MaxSessions         int                   `json:"maxSessions"`
-	Routes              CacheBumpRoutesConfig `json:"routes"`
+	Enabled             bool `json:"enabled"`
+	AllowHeaderOverride bool `json:"allowHeaderOverride"`
+	LeadSeconds         int  `json:"leadSeconds"`
+	MaxBumpsPerSession  int  `json:"maxBumpsPerSession"`
+	MaxIdleMinutes      int  `json:"maxIdleMinutes"`
+	MaxSessions         int  `json:"maxSessions"`
+	// MaxBodyMB caps the total size of every recorded replay body held in
+	// memory. A recorded body is a whole conversation, so the session count
+	// alone is a poor bound.
+	MaxBodyMB int                   `json:"maxBodyMB"`
+	Routes    CacheBumpRoutesConfig `json:"routes"`
 }
 
 // EnabledFor resolves cache-bump enablement for one request. The global
@@ -212,6 +216,7 @@ func DefaultConfig() Config {
 			MaxBumpsPerSession:  48,
 			MaxIdleMinutes:      240,
 			MaxSessions:         200,
+			MaxBodyMB:           64,
 			Routes: CacheBumpRoutesConfig{
 				ClaudeCode: true,
 			},

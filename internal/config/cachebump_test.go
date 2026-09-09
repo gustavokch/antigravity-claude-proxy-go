@@ -27,6 +27,9 @@ func TestDefaultConfig_CacheBump(t *testing.T) {
 	if cb.MaxSessions != 200 {
 		t.Errorf("expected MaxSessions 200, got %d", cb.MaxSessions)
 	}
+	if cb.MaxBodyMB != 64 {
+		t.Errorf("expected MaxBodyMB 64, got %d", cb.MaxBodyMB)
+	}
 	if !cb.Routes.ClaudeCode {
 		t.Error("expected claudecode route enabled by default")
 	}

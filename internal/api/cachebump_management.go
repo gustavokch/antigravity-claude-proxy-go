@@ -25,8 +25,10 @@ func (server *Server) handleCacheBumpGet(writer http.ResponseWriter, request *ht
 	}
 
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"records": out,
-		"stats":   stats,
+		"records":   out,
+		"stats":     stats,
+		"bytes":     store.Bytes(),
+		"max_bytes": store.MaxBytes(),
 	})
 }
 

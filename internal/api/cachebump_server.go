@@ -24,7 +24,8 @@ func (server *Server) getCacheBump() (*cachebump.Store, *cachebump.Scheduler) {
 	defer server.mu.Unlock()
 	if server.cacheBumpStore == nil {
 		cfg := config.Get().CacheBump
-		store := cachebump.NewStore(24*time.Hour, cfg.MaxSessions)
+		maxBytes := cfg.MaxBodyMB << 20
+		store := cachebump.NewStoreWithLimits(24*time.Hour, cfg.MaxSessions, maxBytes)
 		sched := cachebump.NewScheduler(store, server.cacheBumpSender(), cachebump.SchedulerConfig{
 			LeadSeconds:        cfg.LeadSeconds,
 			MaxBumpsPerSession: cfg.MaxBumpsPerSession,

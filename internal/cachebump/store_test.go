@@ -169,6 +169,102 @@ func TestStore_ReArmAtCapacityKeepsOtherSessions(t *testing.T) {
 	}
 }
 
+func TestStore_ByteBudgetEvictsOldest(t *testing.T) {
+	// 300 bytes of budget holds two 128-byte bodies, not three.
+	store := NewStoreWithLimits(time.Hour, 100, 300)
+	now := time.Now()
+	body := make([]byte, 128)
+
+	for i, id := range []string{"a", "b", "c"} {
+		store.Upsert(Record{
+			Key:       RecordKey(RouteCustom, id),
+			SessionID: id,
+			Route:     RouteCustom,
+			Body:      body,
+			TTL:       5 * time.Minute,
+			LastSeen:  now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	if _, ok := store.Get(RecordKey(RouteCustom, "a")); ok {
+		t.Error("expected oldest record evicted to fit the byte budget")
+	}
+	if store.Bytes() > 300 {
+		t.Errorf("expected Bytes() within budget, got %d", store.Bytes())
+	}
+	for _, id := range []string{"b", "c"} {
+		if _, ok := store.Get(RecordKey(RouteCustom, id)); !ok {
+			t.Errorf("expected record %q to survive", id)
+		}
+	}
+}
+
+func TestStore_RejectsBodyLargerThanBudget(t *testing.T) {
+	store := NewStoreWithLimits(time.Hour, 100, 64)
+	now := time.Now()
+
+	store.Upsert(Record{
+		Key:       RecordKey(RouteKimi, "huge"),
+		SessionID: "huge",
+		Route:     RouteKimi,
+		Body:      make([]byte, 65),
+		TTL:       5 * time.Minute,
+		LastSeen:  now,
+	})
+
+	if _, ok := store.Get(RecordKey(RouteKimi, "huge")); ok {
+		t.Error("expected a body larger than the whole budget to be refused")
+	}
+	if store.Bytes() != 0 {
+		t.Errorf("expected Bytes() 0, got %d", store.Bytes())
+	}
+}
+
+func TestStore_BytesTracksReplacementAndClear(t *testing.T) {
+	store := NewStoreWithLimits(time.Hour, 100, 1<<20)
+	now := time.Now()
+	key := RecordKey(RouteClaudeCode, "s1")
+
+	store.Upsert(Record{Key: key, SessionID: "s1", Route: RouteClaudeCode, Body: make([]byte, 500), LastSeen: now})
+	if store.Bytes() != 500 {
+		t.Fatalf("expected Bytes() 500, got %d", store.Bytes())
+	}
+
+	store.Upsert(Record{Key: key, SessionID: "s1", Route: RouteClaudeCode, Body: make([]byte, 40), LastSeen: now})
+	if store.Bytes() != 40 {
+		t.Errorf("expected Bytes() 40 after replacement, got %d", store.Bytes())
+	}
+
+	store.Clear()
+	if store.Bytes() != 0 {
+		t.Errorf("expected Bytes() 0 after Clear, got %d", store.Bytes())
+	}
+}
+
+func TestStore_BytesDropsWithPrunedRecords(t *testing.T) {
+	store := NewStoreWithLimits(time.Hour, 100, 1<<20)
+	now := time.Now()
+
+	store.Upsert(Record{
+		Key:       RecordKey(RouteKimi, "old"),
+		SessionID: "old",
+		Route:     RouteKimi,
+		Body:      make([]byte, 700),
+		LastSeen:  now.Add(-2 * time.Hour),
+	})
+	store.Upsert(Record{
+		Key:       RecordKey(RouteKimi, "new"),
+		SessionID: "new",
+		Route:     RouteKimi,
+		Body:      make([]byte, 300),
+		LastSeen:  now,
+	})
+
+	if store.Bytes() != 300 {
+		t.Errorf("expected pruned record's bytes released, got %d", store.Bytes())
+	}
+}
+
 func TestStore_Due(t *testing.T) {
 	store := NewStore(time.Hour, 100)
 	now := time.Now()
