@@ -168,7 +168,12 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
 	}
 
-	_ = pool.RefreshTokenIfNeeded(acc)
+	// A failed refresh would send a stale token, earn a 401 and stop the
+	// record for good ("upstream_rejected"). Treat it as an unavailable
+	// account instead, which is the recoverable stop.
+	if err := pool.RefreshTokenIfNeeded(acc); err != nil {
+		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
+	}
 	if refreshed, ok := pool.GetAccount(acc.ID); ok {
 		server.syncRefreshedAccountToConfig(acc.ID, refreshed.Token, refreshed.RefreshToken, refreshed.ExpiresAt)
 		acc = refreshed

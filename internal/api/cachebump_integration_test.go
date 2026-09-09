@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -557,6 +558,59 @@ func TestCacheBump_BumpUpdatesAccountRateLimits(t *testing.T) {
 	acc, _ := pool.GetAccount(rec.AccountID)
 	if acc.RateLimits.RequestsRemaining != 42 {
 		t.Errorf("expected bump response rate limits recorded, got RequestsRemaining=%d", acc.RateLimits.RequestsRemaining)
+	}
+}
+
+func TestCacheBump_TokenRefreshFailureStopsWithoutStaleToken(t *testing.T) {
+	upstream := &cacheBumpUpstream{
+		status:   http.StatusOK,
+		respBody: `{"id":"m1","type":"message","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":1200}}`,
+	}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+
+	config.SetForTest(cacheBumpTestConfig(t, ts.URL))
+	resetCCPoolForTest()
+
+	srv, store, sched := newCacheBumpServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(cacheBumpTurnBody))
+	req.Header.Set("x-session-id", "sess-refresh")
+	w := httptest.NewRecorder()
+	srv.forwardToClaudeCode(w, req, config.Get().ClaudeCode, []byte(cacheBumpTurnBody), "claude-sonnet-5")
+
+	rec, ok := store.Get(cachebump.RecordKey(cachebump.RouteClaudeCode, "sess-refresh"))
+	if !ok {
+		t.Fatal("expected session recorded")
+	}
+	turnRequests := upstream.lenRequests()
+
+	// The recorded account's token is about to expire and every refresh
+	// attempt fails.
+	pool, _ := srv.getOrCreateCCPool(config.Get().ClaudeCode)
+	pool.SetTokenRefresher(func(string) (string, string, int, error) {
+		return "", "", 0, errors.New("refresh endpoint down")
+	})
+	expired := time.Now().Add(-time.Minute)
+	pool.AddOrUpdateAccount(claudecode.AccountConfig{
+		ID:           rec.AccountID,
+		Token:        "tok-stale",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    &expired,
+		Type:         "oauth",
+		Enabled:      true,
+	})
+
+	sched.Now = func() time.Time { return time.Now().Add(10 * time.Minute) }
+	sched.Tick(context.Background())
+
+	if upstream.lenRequests() != turnRequests {
+		t.Errorf("expected no bump sent with a stale token, got %d extra requests",
+			upstream.lenRequests()-turnRequests)
+	}
+	got, _ := store.Get(rec.Key)
+	if !got.Stopped || got.StopReason != "account_unavailable" {
+		t.Errorf("expected account_unavailable stop, got %+v", got)
 	}
 }
 
