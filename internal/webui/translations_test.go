@@ -59,6 +59,18 @@ var commandCrusherKeys = []string{
 	"commandCrusherVCS",
 }
 
+// cacheBumpKeys are the i18n keys referenced by the Cache Bump panel in
+// views/settings.html. Every locale must define them.
+var cacheBumpKeys = []string{
+	"cacheBumpSettings", "cacheBumpDesc", "cacheBumpEnabled", "cacheBumpEnabledDesc",
+	"cacheBumpHeaderOverride", "cacheBumpHeaderOverrideDesc",
+	"cacheBumpLeadSeconds", "cacheBumpRoutes", "cacheBumpRouteClaudeCode",
+	"cacheBumpRouteKimi", "cacheBumpRouteCustom", "cacheBumpSessions",
+	"cacheBumpSession", "cacheBumpRoute", "cacheBumpModel", "cacheBumpBumps",
+	"cacheBumpNextBump", "cacheBumpStatus", "cacheBumpStop", "cacheBumpNoSessions",
+	"cacheBumpRefresh", "cacheBumpSaved",
+}
+
 var locales = []string{"en", "pt"}
 
 // quotaStatusKeys are the i18n keys used by the per-account status pill in
@@ -129,6 +141,18 @@ func TestTranslations_CommandCrusherKeys(t *testing.T) {
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		for _, key := range commandCrusherKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_CacheBumpKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range cacheBumpKeys {
 			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
 			if !re.MatchString(src) {
 				t.Errorf("locale %s missing key %q", locale, key)

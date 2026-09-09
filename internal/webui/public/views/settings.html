@@ -3149,6 +3149,147 @@
                     </div>
                 </div>
 
+                <!-- 🔁 Cache Bump (Prompt Cache Keep-Warm) -->
+                <div class="space-y-3" x-init="refreshCacheBumpSessions()">
+                    <div class="flex items-center gap-2 mb-1 px-1">
+                        <span class="text-[10px] uppercase text-gray-500 font-bold tracking-widest"
+                            x-text="$store.global.t('cacheBumpSettings')">Cache Bump</span>
+                        <div class="h-px flex-1 bg-space-border/30"></div>
+                    </div>
+
+                    <div class="form-control view-card border-space-border/50 hover:border-neon-purple/50"
+                        :class="serverConfig.cacheBump?.enabled ? 'border-neon-purple/50 bg-neon-purple/5' : ''">
+                        <!-- Master Toggle -->
+                        <div class="flex items-center justify-between">
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm font-medium text-gray-200"
+                                        :class="serverConfig.cacheBump?.enabled ? 'text-neon-purple' : ''"
+                                        x-text="$store.global.t('cacheBumpEnabled')">Enable Cache Bump</span>
+                                </div>
+                                <span class="text-[11px] text-gray-500" x-text="$store.global.t('cacheBumpDesc')">Replays a minimal version of each idle session's last request just before the prompt cache entry expires.</span>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer" :checked="serverConfig.cacheBump?.enabled === true"
+                                    @change="toggleCacheBumpMaster($el.checked)" aria-label="Cache bump master toggle">
+                                <div
+                                    class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- Sub-options -->
+                        <div x-show="serverConfig.cacheBump?.enabled" x-transition class="mt-4 pt-4 border-t border-neon-purple/20 space-y-4">
+                            <!-- Header Override Toggle -->
+                            <div class="flex items-center justify-between">
+                                <div class="flex flex-col gap-1 pr-4">
+                                    <span class="text-xs font-medium transition-colors"
+                                        :class="serverConfig.cacheBump?.allowHeaderOverride ? 'text-neon-purple' : 'text-gray-300'"
+                                        x-text="$store.global.t('cacheBumpHeaderOverride')">Allow per-request header override</span>
+                                    <span class="text-[11px] text-gray-500"
+                                        x-text="$store.global.t('cacheBumpHeaderOverrideDesc')">Clients may arm or disarm bumping per session with X-Cache-Bump: on|off.</span>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                    <input type="checkbox" class="sr-only peer"
+                                        :checked="serverConfig.cacheBump?.allowHeaderOverride === true"
+                                        @change="saveCacheBump({ allowHeaderOverride: $el.checked })"
+                                        aria-label="Cache bump header override toggle">
+                                    <div
+                                        class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-purple peer-checked:after:bg-white">
+                                    </div>
+                                </label>
+                            </div>
+
+                            <!-- Lead Seconds -->
+                            <div class="flex items-center justify-between pl-3 border-l-2 border-neon-purple/30">
+                                <div class="flex flex-col gap-0.5 pr-4">
+                                    <span class="text-xs font-medium text-gray-300"
+                                        x-text="$store.global.t('cacheBumpLeadSeconds')">Lead seconds</span>
+                                    <span class="text-[10px] text-gray-500">60s fires a minute before the 5 min entry expires.</span>
+                                </div>
+                                <input type="number" min="5" max="3600"
+                                    class="input input-xs bg-space-800 border-space-border text-white font-mono text-xs w-24"
+                                    :value="serverConfig.cacheBump?.leadSeconds || 60"
+                                    @change="saveCacheBump({ leadSeconds: parseInt($el.value) || 60 })">
+                            </div>
+
+                            <!-- Routes -->
+                            <div class="pl-3 border-l-2 border-neon-purple/30 space-y-2">
+                                <span class="text-xs font-medium text-gray-300" x-text="$store.global.t('cacheBumpRoutes')">Routes</span>
+                                <div class="flex flex-wrap gap-x-5 gap-y-2">
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
+                                            :checked="serverConfig.cacheBump?.routes?.claudecode === true"
+                                            @change="toggleCacheBumpRoute('claudecode', $el.checked)">
+                                        <span class="text-[11px] text-gray-400" x-text="$store.global.t('cacheBumpRouteClaudeCode')">Claude Code</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
+                                            :checked="serverConfig.cacheBump?.routes?.kimi === true"
+                                            @change="toggleCacheBumpRoute('kimi', $el.checked)">
+                                        <span class="text-[11px] text-gray-400" x-text="$store.global.t('cacheBumpRouteKimi')">Kimi</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
+                                            :checked="serverConfig.cacheBump?.routes?.customEndpoints === true"
+                                            @change="toggleCacheBumpRoute('customEndpoints', $el.checked)">
+                                        <span class="text-[11px] text-gray-400" x-text="$store.global.t('cacheBumpRouteCustom')">Custom endpoints</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <!-- Sessions Table -->
+                            <div class="pt-2 border-t border-space-border/20 space-y-2">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-xs font-medium text-gray-300" x-text="$store.global.t('cacheBumpSessions')">Recorded sessions</span>
+                                    <button class="btn btn-ghost btn-xs text-gray-400"
+                                        @click="refreshCacheBumpSessions()"
+                                        x-text="$store.global.t('cacheBumpRefresh')">Refresh</button>
+                                </div>
+                                <div class="overflow-x-auto rounded border border-space-border/40">
+                                    <table class="table table-xs">
+                                        <thead>
+                                            <tr class="text-[10px] uppercase text-gray-500">
+                                                <th x-text="$store.global.t('cacheBumpSession')">Session</th>
+                                                <th x-text="$store.global.t('cacheBumpRoute')">Route</th>
+                                                <th x-text="$store.global.t('cacheBumpModel')">Model</th>
+                                                <th x-text="$store.global.t('cacheBumpBumps')">Bumps</th>
+                                                <th x-text="$store.global.t('cacheBumpNextBump')">Next bump</th>
+                                                <th x-text="$store.global.t('cacheBumpStatus')">Status</th>
+                                                <th></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <template x-for="rec in cacheBumpSessions" :key="rec.key">
+                                                <tr class="text-[11px] text-gray-300">
+                                                    <td class="font-mono max-w-[180px] truncate" x-text="rec.session_id"></td>
+                                                    <td><span class="badge badge-ghost badge-xs" x-text="rec.route"></span></td>
+                                                    <td class="font-mono text-[10px] max-w-[140px] truncate" x-text="rec.model"></td>
+                                                    <td x-text="rec.bumps"></td>
+                                                    <td class="font-mono text-[10px]" x-text="formatCacheBumpTime(rec.next_bump)"></td>
+                                                    <td>
+                                                        <span class="badge badge-xs" :class="rec.stopped ? 'badge-warning' : 'badge-success'"
+                                                            x-text="rec.stopped ? (rec.stop_reason || 'stopped') : 'active'"></span>
+                                                    </td>
+                                                    <td class="text-right">
+                                                        <button class="btn btn-ghost btn-xs text-red-400" x-show="!rec.stopped"
+                                                            @click="stopCacheBumpRecord(rec.session_id)"
+                                                            x-text="$store.global.t('cacheBumpStop')">Stop</button>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                            <tr x-show="cacheBumpSessionsLoaded && cacheBumpSessions.length === 0">
+                                                <td colspan="7" class="text-center text-[11px] text-gray-500 py-3"
+                                                    x-text="$store.global.t('cacheBumpNoSessions')">No recorded sessions.</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ⚡ CommandCrusher (CLI Tool Output Optimization) -->
                 <div class="space-y-3">
                     <div class="flex items-center gap-2 mb-1 px-1">
