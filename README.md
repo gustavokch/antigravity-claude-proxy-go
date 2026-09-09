@@ -453,6 +453,19 @@ Route non-Google models to external providers or local mock endpoints without pa
 
 ---
 
+## Cache Bump (Prompt Cache Keep-Warm)
+
+Anthropic prompt cache entries expire five minutes after their last read (one hour with the `extended-cache-ttl-2025-04-11` beta). When a Claude Code session sits idle past that window, the next turn pays a full cache *write* over the entire conversation prefix instead of a cheap cache *read*. Cache Bump keeps those entries warm: the proxy remembers the last `/v1/messages` body of a recorded session and replays a minimal version of it (max_tokens clamped, `thinking` and `tool_choice` dropped, `stream: false` — `system`, `tools` and `messages` stay byte-identical, since they are the cached prefix) shortly before the entry expires.
+
+Bumping for a session stops automatically the moment it stops paying: a bump that reports `cache_creation_input_tokens > 0` with zero reads (`paid_write`), an upstream 4xx rejection, an unavailable recorded account, the per-session bump cap, or prolonged client idleness all end the schedule. A new real client turn re-arms the session.
+
+- **Routes**: Claude Code (bumps pinned to the account that owns the cache entry), Kimi, and custom endpoints. Not OpenRouter (provider failover can land the replay on a different provider) and not the Cloud Code / Gemini translation route (implicit caching).
+- **Enablement**: global switch plus per-route flags in the Web UI (Settings → Cache Bump), or per-session with the `X-Cache-Bump: on|off` request header when header overrides are allowed. The header is consumed by the proxy and never forwarded upstream.
+- **Safety**: request bodies live in memory only (a restart drops them), never touch disk, and are never exposed through the management API.
+- **Key settings** (`config.json` → `cacheBump`): `enabled`, `allowHeaderOverride`, `leadSeconds` (default 60), `maxBumpsPerSession` (default 48), `maxIdleMinutes` (default 240), `maxSessions` (default 200), `routes.claudecode` / `routes.kimi` / `routes.customEndpoints`.
+
+---
+
 ## Selectable Models & Server-Side Mapping
 
 `GET /v1/models` returns a unified catalog combining Google Cloud Code models and active allowlisted OpenRouter models.
@@ -581,6 +594,8 @@ All `/v1/*` routes accept authentication via `x-api-key` or `Authorization: Bear
 | `/api/claudecode/accounts/{email}` | `DELETE` | Remove a Claude Code account from pool |
 | `/api/claudecode/status` | `GET` | Retrieve Claude Code gateway and pool health status |
 | `/api/headroom/stats` | `GET` | Real-time Headroom compression and CCR dynamic retrieval statistics |
+| `/api/cache-bump` | `GET`/`DELETE` | List recorded cache-bump sessions with stats, or clear all records (bodies are never returned) |
+| `/api/cache-bump/{sessionID}/stop` | `POST` | Stop cache bumping for one session across all routes |
 | `/api/headroom/config` | `GET`/`POST` | Read or dynamically update Headroom compression and Output Shaper settings |
 
 ---
