@@ -251,6 +251,21 @@ func TestGeminiModels_AdvertiseMaxContextWindow(t *testing.T) {
 	}
 }
 
+// withOpenRouterCatalog swaps the package-global OpenRouter catalog cache for
+// the duration of one test and restores the previous contents afterwards.
+//
+// The cache timestamp cannot be restored exactly — SaveCache always stamps
+// time.Now() — but validity survives the round trip, because IsCacheValid
+// requires a non-empty cache: an empty cache stays invalid, and a populated
+// one that was valid stays valid. Tests using this helper must not call
+// t.Parallel: the cache is process-wide state.
+func withOpenRouterCatalog(t *testing.T, models []openrouter.ModelItem) {
+	t.Helper()
+	prev := openrouter.DefaultClient.GetCachedModels()
+	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(prev) })
+	openrouter.DefaultClient.SaveCache(models)
+}
+
 // TestOpenRouterModels_MaxOutputFallbackDoesNotEqualContextWindow guards the
 // discovery fallback that fires when the live catalog knows a model's context
 // window but not its max completion tokens. Equating the two advertises a
@@ -258,9 +273,7 @@ func TestGeminiModels_AdvertiseMaxContextWindow(t *testing.T) {
 // /v1/models then send a max_tokens the provider rejects. The context window
 // must still report the real value.
 func TestOpenRouterModels_MaxOutputFallbackDoesNotEqualContextWindow(t *testing.T) {
-	prev := openrouter.DefaultClient.GetCachedModels()
-	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(prev) })
-	openrouter.DefaultClient.SaveCache([]openrouter.ModelItem{
+	withOpenRouterCatalog(t, []openrouter.ModelItem{
 		// Context known, max completion tokens unknown: the exact shape that
 		// drives the fallback.
 		{ID: "vendor/huge-context", ContextLength: 1048576},
@@ -314,9 +327,7 @@ func TestOpenRouterModels_MaxOutputFallbackDoesNotEqualContextWindow(t *testing.
 // so a /v1/models request that arrives first — or after a failed startup
 // fetch — is the only chance to notice the cache is not there.
 func TestOpenRouterModels_WarmsColdCatalogCache(t *testing.T) {
-	prev := openrouter.DefaultClient.GetCachedModels()
-	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(prev) })
-	openrouter.DefaultClient.SaveCache(nil)
+	withOpenRouterCatalog(t, nil)
 
 	var hits int32
 	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

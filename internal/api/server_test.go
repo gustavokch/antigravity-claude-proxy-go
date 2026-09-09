@@ -1096,17 +1096,14 @@ func TestApplyMaxTokensPolicy_DoesNotMutateCallerMap(t *testing.T) {
 // max_tokens/max_completion_tokens derivation permanently broken for any
 // allowlist entry not typed to match the catalog byte-for-byte.
 func TestDeriveOpenRouterMaxOutput_MatchesLikeGetModelPricing(t *testing.T) {
-	prev := openrouter.DefaultClient.GetCachedModels()
-	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(prev) })
-
 	maxOut := 65536
-	openrouter.DefaultClient.SaveCache([]openrouter.ModelItem{
+	withOpenRouterCatalog(t, []openrouter.ModelItem{
 		{ID: "anthropic/claude-3.5-sonnet", ContextLength: 1048576, MaxCompletionTokens: maxOut},
 	})
 
 	cases := []string{
 		"openrouter/anthropic/claude-3.5-sonnet", // allowlist commonly prefixes with "openrouter/"
-		"Anthropic/Claude-3.5-Sonnet",             // allowlist entered with different casing
+		"Anthropic/Claude-3.5-Sonnet",            // allowlist entered with different casing
 	}
 	for _, requested := range cases {
 		if got := deriveOpenRouterMaxOutput(requested); got != maxOut {
