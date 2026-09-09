@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 type discoveryTestBackend struct{}
@@ -246,5 +248,175 @@ func TestGeminiModels_AdvertiseMaxContextWindow(t *testing.T) {
 				t.Errorf("gemini model %q context_window = %v, expected >= 1M", id, cw)
 			}
 		}
+	}
+}
+
+// withOpenRouterCatalog swaps the package-global OpenRouter catalog cache for
+// the duration of one test and restores the previous contents afterwards.
+//
+// The cache timestamp cannot be restored exactly — SaveCache always stamps
+// time.Now() — but validity survives the round trip, because IsCacheValid
+// requires a non-empty cache: an empty cache stays invalid, and a populated
+// one that was valid stays valid. Tests using this helper must not call
+// t.Parallel: the cache is process-wide state.
+func withOpenRouterCatalog(t *testing.T, models []openrouter.ModelItem) {
+	t.Helper()
+	prev := openrouter.DefaultClient.GetCachedModels()
+	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(prev) })
+	openrouter.DefaultClient.SaveCache(models)
+}
+
+// TestOpenRouterModels_MaxOutputFallbackDoesNotEqualContextWindow guards the
+// discovery fallback that fires when the live catalog knows a model's context
+// window but not its max completion tokens. Equating the two advertises a
+// 1M-token max output for a 1M-context model, and clients that trust
+// /v1/models then send a max_tokens the provider rejects. The context window
+// must still report the real value.
+func TestOpenRouterModels_MaxOutputFallbackDoesNotEqualContextWindow(t *testing.T) {
+	withOpenRouterCatalog(t, []openrouter.ModelItem{
+		// Context known, max completion tokens unknown: the exact shape that
+		// drives the fallback.
+		{ID: "vendor/huge-context", ContextLength: 1048576},
+	})
+
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.OpenRouter.Enabled = true
+	testCfg.OpenRouter.Allowlist = []config.OpenRouterModelConfig{
+		{ID: "vendor/huge-context", Enabled: true},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	var entry map[string]any
+	for _, m := range resp.Data {
+		if m["id"] == "vendor/huge-context" {
+			entry = m
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("allowlist model missing from discovery response")
+	}
+	if cw, _ := entry["context_window"].(float64); cw != 1048576 {
+		t.Errorf("context_window = %v, expected 1048576 from the live catalog", entry["context_window"])
+	}
+	if mo, _ := entry["max_output_tokens"].(float64); mo != float64(defaultDiscoveryMaxOutputTokens) {
+		t.Errorf("max_output_tokens = %v, expected %d (fallback must not equal the context window)",
+			entry["max_output_tokens"], defaultDiscoveryMaxOutputTokens)
+	}
+}
+
+// TestOpenRouterModels_WarmsColdCatalogCache pins that discovery repairs an
+// empty or expired catalog cache instead of silently serving the conservative
+// defaults forever. The startup warmup is asynchronous and silent on failure,
+// so a /v1/models request that arrives first — or after a failed startup
+// fetch — is the only chance to notice the cache is not there.
+func TestOpenRouterModels_WarmsColdCatalogCache(t *testing.T) {
+	withOpenRouterCatalog(t, nil)
+
+	var hits int32
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"vendor/cold","context_length":1048576,"max_completion_tokens":65536}]}`))
+	}))
+	t.Cleanup(catalog.Close)
+
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.OpenRouter.Enabled = true
+	testCfg.OpenRouter.APIKey = "test-key"
+	testCfg.OpenRouter.BaseURL = catalog.URL
+	testCfg.OpenRouter.Allowlist = []config.OpenRouterModelConfig{
+		{ID: "vendor/cold", Enabled: true},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+
+	// The fetch is asynchronous by design: this request may still answer from
+	// the defaults, but the cache must be filled for the next one.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, maxOut, ok := openrouter.DefaultClient.GetModelLimits("vendor/cold"); ok && maxOut == 65536 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("catalog cache still cold after discovery request (%d upstream fetches)", atomic.LoadInt32(&hits))
+}
+
+// TestKimiModels_MaxOutputFallbackDoesNotEqualContextWindow guards the Kimi
+// discovery fallback against the same failure the OpenRouter branch guards
+// against: a context-only allowlist entry must not advertise its context
+// window as the max output, or clients trust /v1/models and send a max_tokens
+// the provider rejects.
+func TestKimiModels_MaxOutputFallbackDoesNotEqualContextWindow(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.Kimi.Enabled = true
+	testCfg.Kimi.Allowlist = []config.KimiModelConfig{
+		// Context known, max output unknown: the exact shape that drives the
+		// fallback.
+		{ID: "kimi/huge-context", ContextLen: 1048576, Enabled: true},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	var entry map[string]any
+	for _, m := range resp.Data {
+		if m["id"] == "kimi/huge-context" {
+			entry = m
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("allowlist model missing from discovery response")
+	}
+	if cw, _ := entry["context_window"].(float64); cw != 1048576 {
+		t.Errorf("context_window = %v, expected 1048576 from the configured allowlist", entry["context_window"])
+	}
+	if mo, _ := entry["max_output_tokens"].(float64); mo != float64(defaultDiscoveryMaxOutputTokens) {
+		t.Errorf("max_output_tokens = %v, expected %d (fallback must not equal the context window)",
+			entry["max_output_tokens"], defaultDiscoveryMaxOutputTokens)
 	}
 }

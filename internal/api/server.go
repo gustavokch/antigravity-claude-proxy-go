@@ -391,6 +391,17 @@ func (server *Server) health(writer http.ResponseWriter) {
 	})
 }
 
+// defaultDiscoveryContextWindow is the context window /v1/models advertises for
+// an allowlist entry when neither the operator's config nor the live provider
+// catalog states one.
+const defaultDiscoveryContextWindow = 200000
+
+// defaultDiscoveryMaxOutputTokens caps the max_output_tokens that /v1/models
+// advertises when only the context window is known. A model's output cap is
+// always far below its context window, so reporting the context window as the
+// output cap invites clients to send a max_tokens the provider rejects.
+const defaultDiscoveryMaxOutputTokens = 200000
+
 func (server *Server) models(writer http.ResponseWriter, request *http.Request) {
 	catalog, err := server.fetchModelCatalog(request.Context())
 	if err != nil {
@@ -440,7 +451,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 			contextLen := item.ContextLen
 			if contextLen <= 0 {
-				contextLen = 200000
+				contextLen = defaultDiscoveryContextWindow
 			}
 			maxOutput := item.MaxOutputTokens
 			if maxOutput <= 0 {
@@ -499,6 +510,13 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	}
 
 	if cfg.OpenRouter.Enabled {
+		// The catalog lookups below read the cache without refreshing it. The
+		// startup warmup is asynchronous and silent on failure, so repair a
+		// cold or expired cache here: discovery is often the first request a
+		// client makes, and a miss otherwise pins every advertised limit to
+		// the conservative defaults. Returns immediately when the cache is
+		// valid.
+		openrouter.DefaultClient.WarmupCacheAsync(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL)
 		for _, item := range cfg.OpenRouter.Allowlist {
 			if !item.Enabled {
 				continue
@@ -507,13 +525,30 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			if desc == "" {
 				desc = item.ID
 			}
+			// Prefer the operator's manual override, then the live OpenRouter
+			// catalog (so context_window/max_output_tokens reflect a model's
+			// real capability, e.g. 1M context, automatically), then a
+			// conservative fallback when neither is known.
+			catalogContext, catalogMaxOutput, haveCatalog := openrouter.DefaultClient.GetModelLimits(item.ID)
 			contextLen := item.ContextLen
+			if contextLen <= 0 && haveCatalog {
+				contextLen = catalogContext
+			}
 			if contextLen <= 0 {
-				contextLen = 200000
+				contextLen = defaultDiscoveryContextWindow
 			}
 			maxOutput := item.MaxOutputTokens
+			if maxOutput <= 0 && haveCatalog {
+				maxOutput = catalogMaxOutput
+			}
 			if maxOutput <= 0 {
+				// Nothing states the output cap. Fall back to the context
+				// window, but never above the conservative default: a large
+				// context says nothing about how much a model may emit.
 				maxOutput = contextLen
+				if maxOutput > defaultDiscoveryMaxOutputTokens {
+					maxOutput = defaultDiscoveryMaxOutputTokens
+				}
 			}
 			models = append(models, map[string]any{
 				"id":                item.ID,
@@ -552,11 +587,17 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 			contextLen := item.ContextLen
 			if contextLen <= 0 {
-				contextLen = 200000
+				contextLen = defaultDiscoveryContextWindow
 			}
 			maxOutput := item.MaxOutputTokens
 			if maxOutput <= 0 {
+				// Nothing states the output cap. Fall back to the context
+				// window, but never above the conservative default: a large
+				// context says nothing about how much a model may emit.
 				maxOutput = contextLen
+				if maxOutput > defaultDiscoveryMaxOutputTokens {
+					maxOutput = defaultDiscoveryMaxOutputTokens
+				}
 			}
 			models = append(models, map[string]any{
 				"id":                item.ID,
@@ -1088,16 +1129,18 @@ func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, de
 }
 
 // deriveOpenRouterMaxOutput returns the model's advertised max output from
-// the cached OpenRouter model catalog, or 0 when unknown.
+// the cached OpenRouter model catalog, or 0 when unknown. Matching is
+// case-insensitive and tolerant of an "openrouter/" prefix (GetModelLimits
+// uses the same matching as GetModelPricing) because allowlist entries are
+// operator-typed and commonly differ from the catalog's raw ID in case or
+// prefix — an exact-string match here silently disables automatic
+// max_tokens derivation for any such entry.
 func deriveOpenRouterMaxOutput(model string) int {
-	models := openrouter.DefaultClient.GetCachedModels()
-	for i := range models {
-		item := models[i]
-		if item.ID == model || item.CanonicalSlug == model {
-			return item.GetMaxOutputTokens()
-		}
+	_, maxOutput, ok := openrouter.DefaultClient.GetModelLimits(model)
+	if !ok {
+		return 0
 	}
-	return 0
+	return maxOutput
 }
 
 // matchKimiModel returns the Kimi model ID if `model` matches an enabled

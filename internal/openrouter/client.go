@@ -196,6 +196,27 @@ func (c *Client) GetModelPricing(modelID string) (Pricing, bool) {
 	return Pricing{}, false
 }
 
+// GetModelLimits retrieves the cached context length and max output tokens
+// for a model ID, using the same tolerant matching as GetModelPricing
+// (case-insensitive, "openrouter/" prefix optional on either side). ok is
+// false only when no cache entry matches modelID at all; a matched entry
+// with unknown limits reports 0 with ok=true.
+//
+// Like GetModelPricing, this reads the cache directly and does not enforce
+// cacheTTL: an expired entry is still returned with ok=true, and a cold cache
+// is never filled as a side effect. Callers own freshness — pair it with
+// WarmupCacheAsync or ResolveModelPricing.
+func (c *Client) GetModelLimits(modelID string) (contextLength, maxOutputTokens int, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for i := range c.cache {
+		if matchModel(c.cache[i], modelID) {
+			return c.cache[i].ContextLength, c.cache[i].GetMaxOutputTokens(), true
+		}
+	}
+	return 0, 0, false
+}
+
 // ResolveModelPricing returns cached pricing if valid, or fetches fresh models from OpenRouter on-demand.
 func (c *Client) ResolveModelPricing(ctx context.Context, modelID string, apiKey, baseURL string) (Pricing, bool) {
 	// 1. Fast path: check valid cache
@@ -255,4 +276,3 @@ func (c *Client) WarmupCacheAsync(apiKey, baseURL string) {
 		_, _ = c.ResolveModelPricing(ctx, "", apiKey, baseURL)
 	}()
 }
-

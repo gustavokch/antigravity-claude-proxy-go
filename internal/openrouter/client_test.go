@@ -300,3 +300,59 @@ func TestResolveModelPricing_CallerContextCancellation(t *testing.T) {
 		t.Errorf("expected exactly 1 fetch, got %d", fetchCount)
 	}
 }
+
+// TestGetModelLimits covers both returns and the miss path. The context length
+// is read by /v1/models discovery, the max output tokens by the max_tokens
+// policy, and ok distinguishes "model not in the catalog" from "catalog knows
+// the model but states no limits" — the callers branch differently on each.
+func TestGetModelLimits(t *testing.T) {
+	maxCompletion := 65536
+	client := NewClient(time.Second, time.Hour)
+	client.SaveCache([]ModelItem{
+		{
+			ID:            "vendor/model-a",
+			CanonicalSlug: "vendor/model-a-2026",
+			ContextLength: 1048576,
+			TopProvider:   &TopProvider{MaxCompletionTokens: &maxCompletion},
+		},
+		{ID: "vendor/model-b", ContextLength: 200000},
+	})
+
+	// Same tolerant matching as GetModelPricing: exact ID, canonical slug,
+	// "openrouter/" prefix, and any casing all resolve to one entry.
+	for _, requested := range []string{
+		"vendor/model-a",
+		"vendor/model-a-2026",
+		"openrouter/vendor/model-a",
+		"Vendor/Model-A",
+	} {
+		contextLen, maxOut, ok := client.GetModelLimits(requested)
+		if !ok {
+			t.Errorf("GetModelLimits(%q): ok = false, expected a cache hit", requested)
+			continue
+		}
+		if contextLen != 1048576 {
+			t.Errorf("GetModelLimits(%q): contextLength = %d, expected 1048576", requested, contextLen)
+		}
+		if maxOut != maxCompletion {
+			t.Errorf("GetModelLimits(%q): maxOutputTokens = %d, expected %d", requested, maxOut, maxCompletion)
+		}
+	}
+
+	// A matched entry with no stated output cap reports 0 with ok=true, so
+	// callers can tell it apart from an unknown model.
+	contextLen, maxOut, ok := client.GetModelLimits("vendor/model-b")
+	if !ok || contextLen != 200000 || maxOut != 0 {
+		t.Errorf("GetModelLimits(vendor/model-b) = (%d, %d, %v), expected (200000, 0, true)", contextLen, maxOut, ok)
+	}
+
+	// A model absent from the catalog reports the zero value with ok=false.
+	if contextLen, maxOut, ok := client.GetModelLimits("vendor/absent"); ok || contextLen != 0 || maxOut != 0 {
+		t.Errorf("GetModelLimits(vendor/absent) = (%d, %d, %v), expected (0, 0, false)", contextLen, maxOut, ok)
+	}
+
+	// An empty model ID never matches, even against a populated cache.
+	if _, _, ok := client.GetModelLimits(""); ok {
+		t.Error("GetModelLimits(\"\"): ok = true, expected no match for an empty model ID")
+	}
+}
