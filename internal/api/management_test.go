@@ -50,13 +50,13 @@ func newTestServerWithManager(t *testing.T) (*Server, *accounts.Manager, *logger
 	tracker, _ := stats.NewTracker("")
 
 	server, err := New(Options{
-		APIKey:      "test-api-key",
-		Credentials: func(context.Context) (auth.Credentials, error) { return auth.Credentials{AccessToken: "token"}, nil },
-		NewUpstream: func(string) Upstream { return &mockUpstream{} },
-		Now:         now,
+		APIKey:         "test-api-key",
+		Credentials:    func(context.Context) (auth.Credentials, error) { return auth.Credentials{AccessToken: "token"}, nil },
+		NewUpstream:    func(string) Upstream { return &mockUpstream{} },
+		Now:            now,
 		AccountManager: mgr,
-		Broadcaster: broadcaster,
-		Tracker:     tracker,
+		Broadcaster:    broadcaster,
+		Tracker:        tracker,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -519,12 +519,12 @@ func TestManagement_StatsHistory(t *testing.T) {
 	_ = mgr.SaveToDisk()
 
 	server, err := New(Options{
-		APIKey:      "test-api-key",
-		Credentials: func(context.Context) (auth.Credentials, error) { return auth.Credentials{AccessToken: "token"}, nil },
-		NewUpstream: func(string) Upstream { return &mockUpstream{} },
-		Now:         now,
+		APIKey:         "test-api-key",
+		Credentials:    func(context.Context) (auth.Credentials, error) { return auth.Credentials{AccessToken: "token"}, nil },
+		NewUpstream:    func(string) Upstream { return &mockUpstream{} },
+		Now:            now,
 		AccountManager: mgr,
-		Tracker:     tracker,
+		Tracker:        tracker,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -921,7 +921,6 @@ func TestManagement_HeadroomStatsEndpoint(t *testing.T) {
 		}
 	}
 }
-
 
 // TestManagement_OpenRouterResponseCacheReplaceSemantics pins the whole-object
 // replace contract of POST /api/openrouter/config: a payload that omits

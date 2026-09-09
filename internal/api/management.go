@@ -153,6 +153,15 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	case path == "/api/headroom/stats" && method == http.MethodGet:
 		server.handleHeadroomStats(writer, request)
 		return true
+	case path == "/api/cache-bump" && method == http.MethodGet:
+		server.handleCacheBumpGet(writer, request)
+		return true
+	case path == "/api/cache-bump" && method == http.MethodDelete:
+		server.handleCacheBumpClear(writer, request)
+		return true
+	case strings.HasPrefix(path, "/api/cache-bump/") && strings.HasSuffix(path, "/stop") && method == http.MethodPost:
+		server.handleCacheBumpStop(writer, request, stopSessionID(path))
+		return true
 	case path == "/api/logs" && method == http.MethodGet:
 		server.handleLogsGet(writer, request)
 		return true
