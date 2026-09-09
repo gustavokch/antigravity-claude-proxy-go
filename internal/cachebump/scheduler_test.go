@@ -68,6 +68,34 @@ func TestScheduler_FiresDueBumpAndReschedules(t *testing.T) {
 	}
 }
 
+func TestScheduler_ZeroLeadStillSchedulesBeforeExpiry(t *testing.T) {
+	now := time.Now()
+	store := NewStore(time.Hour, 100)
+	store.Upsert(newTestRecord(now, 5*time.Minute, 0))
+
+	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
+		return BumpResult{CacheReadTokens: 100}, nil
+	}
+	sched := newTestScheduler(store, sender, 0, 0, 240)
+	sched.Now = func() time.Time { return now }
+	sched.Tick(context.Background())
+
+	rec, ok := store.Get(RecordKey(RouteClaudeCode, "s1"))
+	if !ok {
+		t.Fatal("record missing")
+	}
+	// A non-positive lead must fall back to the TTL/5 clamp, the same rule
+	// the recorder uses. Scheduling at now+TTL would land exactly on expiry
+	// and guarantee a paid write.
+	want := NextBumpTime(now, 5*time.Minute, 0)
+	if !rec.NextBump.Equal(want) {
+		t.Errorf("expected NextBump %v, got %v", want, rec.NextBump)
+	}
+	if !rec.NextBump.Before(now.Add(5 * time.Minute)) {
+		t.Errorf("NextBump %v is not before the cache expiry %v", rec.NextBump, now.Add(5*time.Minute))
+	}
+}
+
 func TestScheduler_SenderReceivesBodyAndAllowlistedHeaders(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)

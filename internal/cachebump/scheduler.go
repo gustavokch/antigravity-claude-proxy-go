@@ -186,10 +186,10 @@ func (s *Scheduler) bump(ctx context.Context, rec Record) {
 		return
 	}
 
-	next := now.Add(rec.TTL)
-	if s.cfg.LeadSeconds > 0 {
-		next = NextBumpTime(now, rec.TTL, s.cfg.LeadSeconds)
-	}
+	// NextBumpTime clamps a non-positive or oversized lead to TTL/5, so the
+	// next bump always lands strictly before the entry expires — the same
+	// rule the recorder used for the first bump.
+	next := NextBumpTime(now, rec.TTL, s.cfg.LeadSeconds)
 	s.store.MarkBumped(rec.Key, next, result.CacheReadTokens, result.CacheCreationTokens)
 
 	s.mu.Lock()
