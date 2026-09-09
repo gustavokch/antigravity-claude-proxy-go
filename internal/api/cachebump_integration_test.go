@@ -309,6 +309,70 @@ func TestCacheBump_CustomEndpointRecordsAndBumps(t *testing.T) {
 	}
 }
 
+func TestCacheBump_CustomEndpointHourMarkerWithoutBetaIsFiveMinutes(t *testing.T) {
+	upstream := &cacheBumpUpstream{
+		status:   http.StatusOK,
+		respBody: `{"id":"m1","type":"message","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":800}}`,
+	}
+	var gotBeta string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The plain reverse-proxy path must forward the client protocols so
+		// the cache entry the upstream honors matches the recorded TTL.
+		gotBeta = r.Header.Get("anthropic-beta")
+		upstream.handler().ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	cfg := cacheBumpTestConfig(t, ts.URL)
+	cfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"custom-hour": {URL: ts.URL + "/v1/messages", APIKey: "ep-key"},
+	}
+	cfg.CacheBump.Routes.CustomEndpoints = true
+	persistTestConfig(t, cfg)
+	resetCCPoolForTest()
+
+	srv, store, _ := newCacheBumpServer(t)
+
+	hourBody := `{"model":"custom-hour","max_tokens":16,"stream":false,
+	  "system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","ttl":"1h"}}],
+	  "messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(hourBody))
+	req.Header.Set("x-session-id", "sess-custom-hour")
+	req.Header.Set("anthropic-beta", "extended-cache-ttl-2025-04-11")
+	w := httptest.NewRecorder()
+	srv.forwardToCustomEndpoint(w, req, config.Get().CustomEndpoints["custom-hour"], "custom-hour", []byte(hourBody))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if gotBeta != "extended-cache-ttl-2025-04-11" {
+		t.Errorf("expected beta forwarded upstream, got %q", gotBeta)
+	}
+	rec, ok := store.Get(cachebump.RecordKey(cachebump.RouteCustom, "sess-custom-hour"))
+	if !ok {
+		t.Fatal("expected custom session recorded")
+	}
+	if rec.TTL != time.Hour {
+		t.Errorf("expected TTL 1h with the beta, got %v", rec.TTL)
+	}
+
+	// Same marker, no beta: the marker is inert upstream, so the TTL is 5m.
+	req = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(hourBody))
+	req.Header.Set("x-session-id", "sess-custom-nobeta")
+	w = httptest.NewRecorder()
+	srv.forwardToCustomEndpoint(w, req, config.Get().CustomEndpoints["custom-hour"], "custom-hour", []byte(hourBody))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	rec, ok = store.Get(cachebump.RecordKey(cachebump.RouteCustom, "sess-custom-nobeta"))
+	if !ok {
+		t.Fatal("expected custom session recorded")
+	}
+	if rec.TTL != 5*time.Minute {
+		t.Errorf("expected TTL 5m without the beta, got %v", rec.TTL)
+	}
+}
+
 func TestCacheBump_ClaudeCodeRecordsReplayBody(t *testing.T) {
 	upstream := &cacheBumpUpstream{
 		status:   http.StatusOK,

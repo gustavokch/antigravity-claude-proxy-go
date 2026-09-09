@@ -982,6 +982,18 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			if endpoint.APIKey != "" {
 				req.Header.Set("x-api-key", endpoint.APIKey)
 			}
+
+			// Match the CCR sender above: forward the client's Anthropic
+			// protocol headers so the recorded TTL (e.g. the 1h
+			// extended-cache-ttl beta) matches what the upstream honored.
+			if v := request.Header.Get("anthropic-version"); v != "" {
+				req.Header.Set("anthropic-version", v)
+			} else {
+				req.Header.Set("anthropic-version", "2023-06-01")
+			}
+			if b := request.Header.Get("anthropic-beta"); b != "" {
+				req.Header.Set("anthropic-beta", b)
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
 			server.logger.Error("custom endpoint proxy error", "error", proxyErr, "url", targetURL.String())
