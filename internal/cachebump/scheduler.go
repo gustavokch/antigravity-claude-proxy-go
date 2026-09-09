@@ -216,6 +216,13 @@ func (s *Scheduler) emit(rec Record, outcome string) {
 	}
 }
 
+// StopSession stops bumping one record and accounts the stop in
+// StopsByReason. Management handlers stop through here so manual stops are
+// counted like any other stop rule.
+func (s *Scheduler) StopSession(key, reason string) {
+	s.stop(key, reason)
+}
+
 func (s *Scheduler) stop(key, reason string) {
 	s.store.Stop(key, reason)
 	s.mu.Lock()

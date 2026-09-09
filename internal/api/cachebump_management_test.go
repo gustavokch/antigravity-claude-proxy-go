@@ -16,15 +16,15 @@ func seedCacheBumpRecord(t *testing.T, srv *Server, route cachebump.Route, sessi
 	store, _ := srv.getCacheBump()
 	now := time.Now()
 	rec := cachebump.Record{
-		Key:      cachebump.RecordKey(route, sessionID),
+		Key:       cachebump.RecordKey(route, sessionID),
 		SessionID: sessionID,
-		Route:    route,
-		Model:    "claude-sonnet-5",
-		Body:     []byte(`{"messages":[]}`),
-		Headers:  nil,
-		TTL:      5 * time.Minute,
-		LastSeen: now,
-		NextBump: now.Add(time.Minute),
+		Route:     route,
+		Model:     "claude-sonnet-5",
+		Body:      []byte(`{"messages":[]}`),
+		Headers:   nil,
+		TTL:       5 * time.Minute,
+		LastSeen:  now,
+		NextBump:  now.Add(time.Minute),
 	}
 	store.Upsert(rec)
 	return rec
@@ -95,13 +95,18 @@ func TestCacheBumpManagement_StopSession(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	store, _ := srv.getCacheBump()
+	store, sched := srv.getCacheBump()
 	got, ok := store.Get(cachebump.RecordKey(cachebump.RouteClaudeCode, "sess-stop"))
 	if !ok {
 		t.Fatal("record missing")
 	}
 	if !got.Stopped || got.StopReason != "manual" {
 		t.Errorf("expected manual stop, got %+v", got)
+	}
+	// Manual stops must be visible in the aggregate stats, not only on the
+	// record: the stop goes through the scheduler for that reason.
+	if got := sched.StatsSnapshot().StopsByReason["manual"]; got != 1 {
+		t.Errorf("expected stats to count the manual stop, got %d", got)
 	}
 }
 

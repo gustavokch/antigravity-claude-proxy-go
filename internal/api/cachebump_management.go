@@ -34,13 +34,17 @@ func (server *Server) handleCacheBumpGet(writer http.ResponseWriter, request *ht
 
 // handleCacheBumpStop stops bumping for one session across all routes.
 func (server *Server) handleCacheBumpStop(writer http.ResponseWriter, request *http.Request, sessionID string) {
-	store, _ := server.getCacheBump()
+	store, sched := server.getCacheBump()
 	stopped := 0
 	for _, rec := range store.Snapshot() {
 		if rec.SessionID != sessionID {
 			continue
 		}
-		store.Stop(rec.Key, "manual")
+		if sched != nil {
+			sched.StopSession(rec.Key, "manual")
+		} else {
+			store.Stop(rec.Key, "manual")
+		}
 		stopped++
 	}
 	if stopped == 0 {

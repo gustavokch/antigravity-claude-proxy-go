@@ -69,7 +69,3 @@ func AllowlistHeaders(hdr http.Header) http.Header {
 	}
 	return out
 }
-
-func bytesEqual(a, b []byte) bool {
-	return string(a) == string(b)
-}
