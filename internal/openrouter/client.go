@@ -201,6 +201,11 @@ func (c *Client) GetModelPricing(modelID string) (Pricing, bool) {
 // (case-insensitive, "openrouter/" prefix optional on either side). ok is
 // false only when no cache entry matches modelID at all; a matched entry
 // with unknown limits reports 0 with ok=true.
+//
+// Like GetModelPricing, this reads the cache directly and does not enforce
+// cacheTTL: an expired entry is still returned with ok=true, and a cold cache
+// is never filled as a side effect. Callers own freshness — pair it with
+// WarmupCacheAsync or ResolveModelPricing.
 func (c *Client) GetModelLimits(modelID string) (contextLength, maxOutputTokens int, ok bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
