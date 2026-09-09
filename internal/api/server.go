@@ -510,6 +510,13 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	}
 
 	if cfg.OpenRouter.Enabled {
+		// The catalog lookups below read the cache without refreshing it. The
+		// startup warmup is asynchronous and silent on failure, so repair a
+		// cold or expired cache here: discovery is often the first request a
+		// client makes, and a miss otherwise pins every advertised limit to
+		// the conservative defaults. Returns immediately when the cache is
+		// valid.
+		openrouter.DefaultClient.WarmupCacheAsync(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL)
 		for _, item := range cfg.OpenRouter.Allowlist {
 			if !item.Enabled {
 				continue

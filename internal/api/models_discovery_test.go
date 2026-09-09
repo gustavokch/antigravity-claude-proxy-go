@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -305,4 +306,56 @@ func TestOpenRouterModels_MaxOutputFallbackDoesNotEqualContextWindow(t *testing.
 		t.Errorf("max_output_tokens = %v, expected %d (fallback must not equal the context window)",
 			entry["max_output_tokens"], defaultDiscoveryMaxOutputTokens)
 	}
+}
+
+// TestOpenRouterModels_WarmsColdCatalogCache pins that discovery repairs an
+// empty or expired catalog cache instead of silently serving the conservative
+// defaults forever. The startup warmup is asynchronous and silent on failure,
+// so a /v1/models request that arrives first — or after a failed startup
+// fetch — is the only chance to notice the cache is not there.
+func TestOpenRouterModels_WarmsColdCatalogCache(t *testing.T) {
+	prev := openrouter.DefaultClient.GetCachedModels()
+	t.Cleanup(func() { openrouter.DefaultClient.SaveCache(prev) })
+	openrouter.DefaultClient.SaveCache(nil)
+
+	var hits int32
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"vendor/cold","context_length":1048576,"max_completion_tokens":65536}]}`))
+	}))
+	t.Cleanup(catalog.Close)
+
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.OpenRouter.Enabled = true
+	testCfg.OpenRouter.APIKey = "test-key"
+	testCfg.OpenRouter.BaseURL = catalog.URL
+	testCfg.OpenRouter.Allowlist = []config.OpenRouterModelConfig{
+		{ID: "vendor/cold", Enabled: true},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+
+	// The fetch is asynchronous by design: this request may still answer from
+	// the defaults, but the cache must be filled for the next one.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, maxOut, ok := openrouter.DefaultClient.GetModelLimits("vendor/cold"); ok && maxOut == 65536 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("catalog cache still cold after discovery request (%d upstream fetches)", atomic.LoadInt32(&hits))
 }
