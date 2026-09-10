@@ -1,21 +1,36 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"antigravity-go-proxy/internal/accounts"
+	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
+	proxyformat "antigravity-go-proxy/internal/format"
 )
 
 const classifierStage1Footer = "\nStage 1 does NOT apply user intent or ALLOW exceptions — stage 2 will handle those.\nRespond with <severity>N</severity> ONLY. Grade HARM ONLY — do NOT reduce for user intent. No other text.\n"
 
 const classifierBlockFooter = "\nErr on the side of blocking. Your ENTIRE response MUST begin with <block>. Do NOT output any analysis, reasoning, or commentary before <block>.\n"
 
+const classifierTestModel = "test-classifier-model"
+
 func classifierShapedBody(t *testing.T, model, footer string) []byte {
+	t.Helper()
+	return classifierShapedBodyWithExtras(t, model, footer, nil)
+}
+
+// classifierShapedBodyWithExtras builds a classifier-shaped request and
+// merges extras into the top level, so tests can add fields such as
+// "stream" without duplicating the fixture.
+func classifierShapedBodyWithExtras(t *testing.T, model, footer string, extras map[string]any) []byte {
 	t.Helper()
 	body := map[string]any{
 		"model": model,
@@ -34,6 +49,9 @@ func classifierShapedBody(t *testing.T, model, footer string) []byte {
 				},
 			},
 		},
+	}
+	for key, value := range extras {
+		body[key] = value
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -55,17 +73,47 @@ func ordinaryBody(t *testing.T, model string) []byte {
 	return raw
 }
 
-// newClassifierFallbackTestServer builds a Server routed at a custom
-// endpoint under model, backed by backendURL. accountManager is left nil,
-// which Server.messages treats as "no capacity" — the worst case for
-// gating, and the case that must never leak a dispatch when a stub applies.
-func newClassifierFallbackTestServer(model, backendURL string) *Server {
+// dispatchRecordingBackend stands in for the account-backed upstream and
+// records whether a request was ever dispatched to it.
+type dispatchRecordingBackend struct {
+	hit bool
+}
+
+func (b *dispatchRecordingBackend) FetchAvailableModels(context.Context) (cloudcode.Response, error) {
+	return cloudcode.Response{}, nil
+}
+
+func (b *dispatchRecordingBackend) StreamGenerateContent(context.Context, map[string]any, func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	b.hit = true
+	return cloudcode.Response{}, nil
+}
+
+// newAccountBackedTestServer builds a Server whose only route is the
+// account-backed dispatcher — the one path whose capacity the classifier
+// fallback is allowed to reason about. accountManager is left nil, which
+// Server.messages treats as "no capacity".
+func newAccountBackedTestServer() (*Server, *dispatchRecordingBackend) {
+	config.SetForTest(config.DefaultConfig())
+	backend := &dispatchRecordingBackend{}
+	server := &Server{
+		backend: backend,
+		builder: proxyformat.NewBuilder(),
+		logger:  slog.Default(),
+		now:     time.Now,
+	}
+	return server, backend
+}
+
+// newCustomEndpointTestServer routes model at a custom endpoint. Custom
+// endpoints carry their own credentials and never consume account capacity,
+// so classifier fallback must not gate them.
+func newCustomEndpointTestServer(model, backendURL string) *Server {
 	cfg := config.DefaultConfig()
 	cfg.CustomEndpoints = map[string]config.EndpointConfig{
 		model: {URL: backendURL},
 	}
 	config.SetForTest(cfg)
-	return &Server{}
+	return &Server{logger: slog.Default(), now: time.Now}
 }
 
 func postClassifierMessages(t *testing.T, server *Server, body []byte) *httptest.ResponseRecorder {
@@ -79,17 +127,10 @@ func postClassifierMessages(t *testing.T, server *Server, body []byte) *httptest
 
 func TestMessages_ClassifierFallback_StubsWhenNoCapacity(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
-	backendHit := false
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backendHit = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
+	server, backend := newAccountBackedTestServer()
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
 
-	server := newClassifierFallbackTestServer("test-classifier-model", backend.URL)
-	rec := postClassifierMessages(t, server, classifierShapedBody(t, "test-classifier-model", classifierStage1Footer))
-
-	if backendHit {
+	if backend.hit {
 		t.Fatal("backend was dispatched to; classifier fallback should have stubbed the response instead")
 	}
 	if rec.Code != http.StatusOK {
@@ -110,17 +151,10 @@ func TestMessages_ClassifierFallback_StubsWhenNoCapacity(t *testing.T) {
 
 func TestMessages_ClassifierFallback_FastFailsUnsupportedVariant(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
-	backendHit := false
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backendHit = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
+	server, backend := newAccountBackedTestServer()
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierBlockFooter))
 
-	server := newClassifierFallbackTestServer("test-classifier-model", backend.URL)
-	rec := postClassifierMessages(t, server, classifierShapedBody(t, "test-classifier-model", classifierBlockFooter))
-
-	if backendHit {
+	if backend.hit {
 		t.Fatal("backend was dispatched to; unsupported classifier variant should fast-fail instead")
 	}
 	if rec.Code != http.StatusTooManyRequests {
@@ -130,41 +164,43 @@ func TestMessages_ClassifierFallback_FastFailsUnsupportedVariant(t *testing.T) {
 
 func TestMessages_ClassifierFallback_NonClassifierRequestDispatchesNormally(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
-	backendHit := false
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backendHit = true
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"type":"message","content":[{"type":"text","text":"ok"}]}`))
-	}))
-	defer backend.Close()
+	server, backend := newAccountBackedTestServer()
+	rec := postClassifierMessages(t, server, ordinaryBody(t, classifierTestModel))
 
-	server := newClassifierFallbackTestServer("test-ordinary-model", backend.URL)
-	rec := postClassifierMessages(t, server, ordinaryBody(t, "test-ordinary-model"))
-
-	if !backendHit {
+	if !backend.hit {
 		t.Fatalf("backend was never dispatched to for a non-classifier request; status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestMessages_ClassifierFallback_FlagOffDispatchesNormally(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "")
-	backendHit := false
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backendHit = true
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"type":"message","content":[{"type":"text","text":"ok"}]}`))
-	}))
-	defer backend.Close()
+	server, backend := newAccountBackedTestServer()
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
 
-	server := newClassifierFallbackTestServer("test-classifier-model", backend.URL)
-	rec := postClassifierMessages(t, server, classifierShapedBody(t, "test-classifier-model", classifierStage1Footer))
-
-	if !backendHit {
+	if !backend.hit {
 		t.Fatalf("flag off: classifier-shaped request must dispatch normally (byte-identical to today); status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestMessages_ClassifierFallback_CapacityAvailableDispatchesNormally(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{{Email: "a@b.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
+
+	server, backend := newAccountBackedTestServer()
+	server.accountManager = manager
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+
+	if !backend.hit {
+		t.Fatalf("capacity available: classifier request must dispatch normally, not be stubbed; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMessages_ClassifierFallback_CustomEndpointRequestIsNeverStubbed(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
 	backendHit := false
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,18 +210,10 @@ func TestMessages_ClassifierFallback_CapacityAvailableDispatchesNormally(t *test
 	}))
 	defer backend.Close()
 
-	manager, err := accounts.New(accounts.Options{
-		Accounts: []*accounts.Account{{Email: "a@b.com", Enabled: true}},
-	})
-	if err != nil {
-		t.Fatalf("accounts.New: %v", err)
-	}
-
-	server := newClassifierFallbackTestServer("test-classifier-model", backend.URL)
-	server.accountManager = manager
-	rec := postClassifierMessages(t, server, classifierShapedBody(t, "test-classifier-model", classifierStage1Footer))
+	server := newCustomEndpointTestServer(classifierTestModel, backend.URL)
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
 
 	if !backendHit {
-		t.Fatalf("capacity available: classifier request must dispatch normally, not be stubbed; status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("custom endpoints do not consume account capacity; the classifier request must dispatch, not be stubbed; status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

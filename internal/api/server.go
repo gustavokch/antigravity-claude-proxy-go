@@ -822,21 +822,6 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 
 	model := stringFrom(anthropicRequest["model"])
-	if config.ClassifierFallbackEnabled() {
-		if kind, detected := classifier.Detect(rawBody); detected {
-			noCapacity := server.accountManager == nil || server.accountManager.Available(model) == 0
-			if noCapacity {
-				if stub, stubErr := classifier.Stub(kind, model); stubErr == nil {
-					writer.Header().Set("Content-Type", "application/json")
-					writer.WriteHeader(http.StatusOK)
-					_, _ = writer.Write(stub)
-					return
-				}
-				writeAPIError(writer, http.StatusTooManyRequests, "rate_limit_error", "No account capacity for model "+model+"; classifier fallback active, failing fast instead of retrying.")
-				return
-			}
-		}
-	}
 	if cfg.Kimi.Enabled {
 		if kimiEntry, ok := matchKimiModelEntry(cfg.Kimi, model); ok {
 			anthropicRequest["model"] = kimiEntry.ID
@@ -896,6 +881,28 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		}
 		server.forwardToCustomEndpoint(writer, request, endpoint, model, reqBody)
 		return
+	}
+
+	// Classifier fallback is decided here, after every alternate-backend
+	// route has had its chance to return: Kimi, Claude Code, OpenRouter and
+	// custom endpoints carry their own credentials and never consume account
+	// capacity, so account exhaustion says nothing about whether those
+	// requests would stall. Only the account-backed dispatch path below is
+	// gated.
+	if config.ClassifierFallbackEnabled() {
+		if kind, detected := classifier.Detect(rawBody); detected {
+			noCapacity := server.accountManager == nil || server.accountManager.Available(model) == 0
+			if noCapacity {
+				if stub, stubErr := classifier.Stub(kind, model); stubErr == nil {
+					writer.Header().Set("Content-Type", "application/json")
+					writer.WriteHeader(http.StatusOK)
+					_, _ = writer.Write(stub)
+					return
+				}
+				writeAPIError(writer, http.StatusTooManyRequests, "rate_limit_error", "No account capacity for model "+model+"; classifier fallback active, failing fast instead of retrying.")
+				return
+			}
+		}
 	}
 
 	var send streamSender
