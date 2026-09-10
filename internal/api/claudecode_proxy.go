@@ -387,6 +387,7 @@ func (server *Server) forwardToClaudeCode(
 							pool:        pool,
 							rateLimits:  rl,
 						})
+						server.ccMaybeRecordCacheBump(request, bodyBytes, sessionKey, model, acc.ID)
 					} else if resp.StatusCode >= 500 {
 						pool.RecordFailure(acc.ID, true, 30*time.Second)
 					} else {
@@ -498,6 +499,7 @@ func (server *Server) forwardToClaudeCode(
 				pool:        pool,
 				rateLimits:  rl,
 			})
+			server.ccMaybeRecordCacheBump(request, reqBody, sessionKey, model, acc.ID)
 		} else if resp.StatusCode >= 500 {
 			pool.RecordFailure(acc.ID, true, 30*time.Second)
 		} else {

@@ -34,6 +34,7 @@ window.Components.serverConfig = () => ({
         if (this.$store.global.settingsTab === 'server') {
             this.fetchServerConfig();
             this.fetchServerPresets();
+            this.refreshCacheBumpSessions();
         }
 
         // Watch settings sub-tab (skip initial trigger)
@@ -41,6 +42,7 @@ window.Components.serverConfig = () => ({
             if (tab === 'server' && oldTab !== undefined) {
                 this.fetchServerConfig();
                 this.fetchServerPresets();
+                this.refreshCacheBumpSessions();
             }
         });
 
@@ -506,6 +508,107 @@ window.Components.serverConfig = () => ({
 
     toggleCommandCrusher(enabled) {
         this.saveHeadroom({ commandCrusher: enabled });
+    },
+
+    // ==========================================
+    // Cache Bump (prompt cache keep-warm)
+    // ==========================================
+
+    cacheBumpSessions: [],
+    cacheBumpSessionsLoaded: false,
+
+    async saveCacheBump(patch) {
+        const store = Alpine.store('global');
+        if (!this.serverConfig.cacheBump) {
+            this.serverConfig.cacheBump = {
+                enabled: false,
+                allowHeaderOverride: true,
+                leadSeconds: 60,
+                maxBumpsPerSession: 48,
+                maxIdleMinutes: 240,
+                maxSessions: 200,
+                maxBodyMB: 64,
+                routes: { claudecode: true, kimi: false, customEndpoints: false }
+            };
+        }
+        const previousCacheBump = JSON.parse(JSON.stringify(this.serverConfig.cacheBump));
+
+        if (patch.routes) {
+            this.serverConfig.cacheBump.routes = { ...(this.serverConfig.cacheBump.routes || {}), ...patch.routes };
+            delete patch.routes;
+        }
+        Object.assign(this.serverConfig.cacheBump, patch);
+
+        try {
+            const { response, newPassword } = await window.utils.request('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cacheBump: this.serverConfig.cacheBump })
+            }, store.webuiPassword);
+
+            if (newPassword) store.webuiPassword = newPassword;
+
+            const data = await response.json();
+            if (data.status === 'ok') {
+                store.showToast(store.t('cacheBumpSaved') || 'Cache Bump settings saved', 'success');
+                await this.fetchServerConfig();
+            } else {
+                throw new Error(data.error || 'Failed to update Cache Bump settings');
+            }
+        } catch (e) {
+            this.serverConfig.cacheBump = previousCacheBump;
+            store.showToast('Failed to save Cache Bump settings: ' + e.message, 'error');
+        }
+    },
+
+    toggleCacheBumpMaster(enabled) {
+        this.saveCacheBump({ enabled });
+        this.refreshCacheBumpSessions();
+    },
+
+    toggleCacheBumpRoute(route, enabled) {
+        this.saveCacheBump({ routes: { [route]: enabled } });
+    },
+
+    async refreshCacheBumpSessions() {
+        try {
+            const store = Alpine.store('global');
+            const { response } = await window.utils.request('/api/cache-bump', {
+                method: 'GET'
+            }, store.webuiPassword);
+            if (response.ok) {
+                const data = await response.json();
+                this.cacheBumpSessions = data.records || [];
+                this.cacheBumpSessionsLoaded = true;
+            }
+        } catch (e) {
+            // Panel data is best-effort; config save still works without it.
+        }
+    },
+
+    async stopCacheBumpRecord(sessionID) {
+        const store = Alpine.store('global');
+        try {
+            const { response } = await window.utils.request(
+                `/api/cache-bump/${encodeURIComponent(sessionID)}/stop`,
+                { method: 'POST' },
+                store.webuiPassword
+            );
+            if (response.ok) {
+                this.refreshCacheBumpSessions();
+            } else {
+                store.showToast('Failed to stop session', 'error');
+            }
+        } catch (e) {
+            store.showToast('Failed to stop session: ' + e.message, 'error');
+        }
+    },
+
+    formatCacheBumpTime(value) {
+        if (!value) return '—';
+        const d = new Date(value);
+        if (isNaN(d.getTime())) return '—';
+        return d.toLocaleTimeString();
     },
 
     toggleHeadroomMaster(enabled) {

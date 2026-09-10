@@ -18,14 +18,33 @@ import (
 // On proxy error, it writes a 502 with an `api_error` body so the client
 // receives a structured response matching the rest of the proxy.
 func ForwardMessages(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte) {
+	ForwardMessagesWithHook(w, r, baseURL, apiKey, body, nil)
+}
+
+// ForwardMessagesWithHook behaves like ForwardMessages and additionally calls
+// onResponse with the upstream status code once a successful (status < 400)
+// response arrives, before the body is copied, so callers can observe
+// successful forwards. A nil hook is a plain forward.
+func ForwardMessagesWithHook(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, onResponse func(int)) {
 	target, err := url.Parse(NormalizeBaseURL(baseURL) + "/v1/messages")
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request_error", "Invalid Kimi target URL: "+err.Error())
 		return
 	}
 
+	var modify func(*http.Response) error
+	if onResponse != nil {
+		modify = func(resp *http.Response) error {
+			if resp.StatusCode < 400 {
+				onResponse(resp.StatusCode)
+			}
+			return nil
+		}
+	}
+
 	proxy := &httputil.ReverseProxy{
-		FlushInterval: -1,
+		FlushInterval:  -1,
+		ModifyResponse: modify,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host

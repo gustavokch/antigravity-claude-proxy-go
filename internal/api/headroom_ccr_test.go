@@ -138,7 +138,7 @@ func TestHeadroomCCR_CloudCodeUnaryHydration(t *testing.T) {
 		},
 		"messages": []any{
 			map[string]any{
-				"role": "user",
+				"role":    "user",
 				"content": fmt.Sprintf("[HEADROOM_CHUNK id=%q lines=10 preview=\"doc\"]", chunkID),
 			},
 		},
@@ -247,7 +247,7 @@ func TestHeadroomCCR_CloudCodeStreamHydration(t *testing.T) {
 		},
 		"messages": []any{
 			map[string]any{
-				"role": "user",
+				"role":    "user",
 				"content": fmt.Sprintf("[HEADROOM_CHUNK id=%q lines=5 preview=\"p\"]", chunkID),
 			},
 		},
@@ -760,7 +760,7 @@ func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
 	srv.ccrStore.Put(chunkPayload)
 
 	reqBody := map[string]any{
-		"model":  "anthropic/claude-3.7-sonnet", "max_tokens": 1024,
+		"model": "anthropic/claude-3.7-sonnet", "max_tokens": 1024,
 		"stream": true,
 		"tools":  []any{map[string]any{"name": "t"}},
 		"messages": []any{
@@ -824,7 +824,6 @@ func TestHeadroomCCR_OpenRouterStreamHydration(t *testing.T) {
 		t.Errorf("expected 1 CCRRetrieval in tracker, got %d", srv.tracker.GetHeadroomStats().CCRRetrievals)
 	}
 }
-
 
 // The OpenRouter streaming path must suppress headroom_retrieve exactly as the
 // shared CCR proxy does: the retrieve call is proxy-internal, and a client that
@@ -1200,7 +1199,7 @@ func TestHeadroomCCR_CloudCodeStreamHydration_ThinkingBlock(t *testing.T) {
 		"tools":  []any{map[string]any{"name": "search"}},
 		"messages": []any{
 			map[string]any{
-				"role": "user",
+				"role":    "user",
 				"content": fmt.Sprintf("[HEADROOM_CHUNK id=%q lines=5 preview=\"p\"]", chunkID),
 			},
 		},

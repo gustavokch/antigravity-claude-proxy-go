@@ -233,6 +233,7 @@ func runServer(args []string) {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
 	handler.StartClaudeCodeBackgroundWorker(bgCtx)
+	handler.StartCacheBumpScheduler(bgCtx)
 
 	httpServer := &http.Server{
 		Addr:              *listen,

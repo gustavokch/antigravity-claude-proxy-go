@@ -104,3 +104,9 @@ _Avoid_: Code cleaner, log summarizer.
 The stage that appends verbosity steering instructions to the system prompt and limits thinking budgets on mechanical continuation turns.
 _Avoid_: Prompt injector, reasoning clamper.
 
+### Cache Management
+
+**Cache Bump**:
+The scheduler that replays a minimal version of a recorded session's last request shortly before its prompt cache entry expires, refreshing the entry at read pricing so an idle session returns to a warm cache. Bumping stops the moment it pays a cache write instead of a read.
+_Avoid_: Cache warmer, cache keeper, TTL refresher, cache preheating.
+

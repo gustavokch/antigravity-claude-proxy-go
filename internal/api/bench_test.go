@@ -34,14 +34,14 @@ func (m *mockStreamSender) FetchAvailableModels(context.Context, string) (cloudc
 func BenchmarkStreamMessage(b *testing.B) {
 	payload1 := `{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"I should ","thoughtSignature":"claude-signature-0123456789012345678901234567890123456789"}]}}],"usageMetadata":{"promptTokenCount":120,"cachedContentTokenCount":20}}}`
 	payload2 := `{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"inspect.","thoughtSignature":"claude-signature-0123456789012345678901234567890123456789"},{"text":"Done."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":9,"cachedContentTokenCount":20}}}`
-	
+
 	sender := &mockStreamSender{
 		events: []cloudcode.SSEEvent{
 			{Event: "message", Data: []byte(payload1)},
 			{Event: "message", Data: []byte(payload2)},
 		},
 	}
-	
+
 	server, err := New(Options{
 		APIKey: "test",
 		Credentials: func(context.Context) (auth.Credentials, error) {
@@ -55,7 +55,7 @@ func BenchmarkStreamMessage(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	
+
 	req := httptest.NewRequest("POST", "/v1/messages", nil)
 
 	b.ResetTimer()

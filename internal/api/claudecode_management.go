@@ -488,4 +488,3 @@ func (server *Server) handleClaudeCodeAllRateLimits(writer http.ResponseWriter, 
 		"rate_limits": results,
 	})
 }
-
