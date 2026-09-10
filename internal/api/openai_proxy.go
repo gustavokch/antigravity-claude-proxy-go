@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"antigravity-go-proxy/internal/config"
 )
 
 // chatCompletions serves POST /v1/chat/completions by translating the OpenAI
@@ -32,13 +34,30 @@ func (server *Server) chatCompletions(writer http.ResponseWriter, request *http.
 		writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid JSON request body: "+err.Error())
 		return
 	}
+	requestModel := stringFrom(openaiRequest["model"])
+	model := server.resolveModelMapping(requestModel)
+
+	cfg := config.Get()
+	if endpoint, exists := cfg.CustomEndpoints[model]; exists && endpoint.URL != "" {
+		if !isAnthropicEndpoint(endpoint.URL) {
+			forwardBody := body
+			if model != requestModel {
+				openaiRequest["model"] = model
+				if updated, err := json.Marshal(openaiRequest); err == nil {
+					forwardBody = updated
+				}
+			}
+			server.forwardToCustomEndpoint(writer, request, endpoint, model, forwardBody)
+			return
+		}
+	}
+
 	translated, err := translateOpenAIRequest(openaiRequest)
 	if err != nil {
 		writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 	anthropicRequest := translated.Anthropic
-	requestModel := stringFrom(openaiRequest["model"])
 
 	forwarded := request.Clone(request.Context())
 	reqBody, err := json.Marshal(anthropicRequest)

@@ -628,6 +628,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 		}
 	}
+
 	writeJSON(writer, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
@@ -770,37 +771,12 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	if model, _ := anthropicRequest["model"].(string); model == "" {
 		anthropicRequest["model"] = "gemini-3.5-flash-low"
 	}
-	cfg := config.Get()
-	if cfg.ModelMapping != nil {
-		reqModel := stringFrom(anthropicRequest["model"])
-		current := reqModel
-		visited := make(map[string]bool)
-		for i := 0; i < maxMappingHops; i++ {
-			if visited[current] {
-				break
-			}
-			visited[current] = true
-			mappingVal, exists := cfg.ModelMapping[current]
-			if !exists {
-				break
-			}
-			var mappedModel string
-			switch v := mappingVal.(type) {
-			case string:
-				mappedModel = v
-			case map[string]any:
-				mappedModel, _ = v["mapping"].(string)
-			}
-			if mappedModel == "" || mappedModel == current {
-				break
-			}
-			current = mappedModel
-		}
-		if current != reqModel {
-			slog.Info(fmt.Sprintf("[Server] Mapping model %s -> %s", reqModel, current))
-			anthropicRequest["model"] = current
-		}
+	reqModel := stringFrom(anthropicRequest["model"])
+	if current := server.resolveModelMapping(reqModel); current != reqModel {
+		slog.Info(fmt.Sprintf("[Server] Mapping model %s -> %s", reqModel, current))
+		anthropicRequest["model"] = current
 	}
+	cfg := config.Get()
 	// max_tokens is no longer injected here. It is sent upstream only when
 	// the client supplied it or a per-model limit is known; see
 	// applyMaxTokensPolicy.
@@ -917,17 +893,77 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	server.unaryMessage(writer, request, send, anthropicRequest, model)
 }
 
+func (server *Server) resolveModelMapping(model string) string {
+	cfg := config.Get()
+	if cfg.ModelMapping == nil || model == "" {
+		return model
+	}
+	current := model
+	visited := make(map[string]bool)
+	for i := 0; i < maxMappingHops; i++ {
+		if visited[current] {
+			break
+		}
+		visited[current] = true
+		mappingVal, exists := cfg.ModelMapping[current]
+		if !exists {
+			break
+		}
+		var mappedModel string
+		switch v := mappingVal.(type) {
+		case string:
+			mappedModel = v
+		case map[string]any:
+			mappedModel, _ = v["mapping"].(string)
+		}
+		if mappedModel == "" || mappedModel == current {
+			break
+		}
+		current = mappedModel
+	}
+	return current
+}
+
+func isAnthropicEndpoint(endpointURL string) bool {
+	parsed, err := url.Parse(endpointURL)
+	if err != nil {
+		return false
+	}
+	clean := strings.TrimRight(parsed.Path, "/")
+	return clean == "/messages" || strings.HasSuffix(clean, "/messages")
+}
+
+func resolveCustomEndpointURL(endpointURL string, requestPath string) (*url.URL, error) {
+	targetURL, err := url.Parse(endpointURL)
+	if err != nil {
+		return nil, err
+	}
+	cleanPath := strings.TrimRight(targetURL.Path, "/")
+	if cleanPath == "" {
+		targetURL.Path = requestPath
+		return targetURL, nil
+	}
+	if cleanPath == "/v1" || strings.HasSuffix(cleanPath, "/v1") {
+		if strings.HasPrefix(requestPath, "/v1/") {
+			targetURL.Path = cleanPath + strings.TrimPrefix(requestPath, "/v1")
+		} else {
+			targetURL.Path = cleanPath + requestPath
+		}
+		return targetURL, nil
+	}
+	return targetURL, nil
+}
+
 func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, model string, reqBody []byte) {
-	targetURL, err := url.Parse(endpoint.URL)
+	targetURL, err := resolveCustomEndpointURL(endpoint.URL, request.URL.Path)
 	if err != nil {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid custom endpoint URL: "+err.Error())
 		return
 	}
-	if !strings.HasSuffix(targetURL.Path, "/v1/messages") {
-		targetURL.Path = strings.TrimSuffix(targetURL.Path, "/") + "/v1/messages"
-	}
 
-	if server.isCCREnabled() {
+	isMessagesRequest := strings.HasSuffix(targetURL.Path, "/messages") || request.URL.Path == "/v1/messages"
+
+	if server.isCCREnabled() && isMessagesRequest {
 		var reqMap map[string]any
 		if err := json.Unmarshal(reqBody, &reqMap); err == nil {
 			customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
@@ -938,6 +974,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 				}
 				httpReq.Header.Set("Content-Type", "application/json")
 				if endpoint.APIKey != "" {
+					httpReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 					httpReq.Header.Set("x-api-key", endpoint.APIKey)
 				}
 				if v := request.Header.Get("anthropic-version"); v != "" {
@@ -970,7 +1007,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
-			if resp.StatusCode < 400 {
+			if resp.StatusCode < 400 && isMessagesRequest {
 				server.maybeRecordCacheBump(cachebump.RouteCustom, request, reqBody, customSessionKey, model, "", model, minMaxTokensFloor)
 			}
 			return nil
@@ -986,15 +1023,13 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			req.ContentLength = int64(len(reqBody))
 
 			if endpoint.APIKey != "" {
+				req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 				req.Header.Set("x-api-key", endpoint.APIKey)
 			}
 
-			// Match the CCR sender above: forward the client's Anthropic
-			// protocol headers so the recorded TTL (e.g. the 1h
-			// extended-cache-ttl beta) matches what the upstream honored.
 			if v := request.Header.Get("anthropic-version"); v != "" {
 				req.Header.Set("anthropic-version", v)
-			} else {
+			} else if isMessagesRequest {
 				req.Header.Set("anthropic-version", "2023-06-01")
 			}
 			if b := request.Header.Get("anthropic-beta"); b != "" {
