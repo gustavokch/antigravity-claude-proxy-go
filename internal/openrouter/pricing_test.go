@@ -71,9 +71,9 @@ func TestPricing_UnmarshalJSON_FloatsAndEmpty(t *testing.T) {
 
 func TestCalculateCost(t *testing.T) {
 	p := Pricing{
-		Prompt:          0.000003, // $3/M
-		Completion:      0.000015, // $15/M
-		InputCacheRead:  0.0000003, // $0.30/M
+		Prompt:          0.000003,   // $3/M
+		Completion:      0.000015,   // $15/M
+		InputCacheRead:  0.0000003,  // $0.30/M
 		InputCacheWrite: 0.00000375, // $3.75/M
 		Request:         0.001,
 	}

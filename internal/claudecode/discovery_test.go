@@ -153,4 +153,3 @@ func TestDiscoverLocalCredentials_MillisecondTimestamp(t *testing.T) {
 		t.Errorf("expected year %d, got %d (raw: %v)", expectedYear, acc.ExpiresAt.Year(), acc.ExpiresAt)
 	}
 }
-

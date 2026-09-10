@@ -9,19 +9,19 @@ import (
 
 // Standard Anthropic rate-limit header keys (case-insensitive in http.Header).
 const (
-	HeaderRequestsLimit        = "anthropic-ratelimit-requests-limit"
-	HeaderRequestsRemaining    = "anthropic-ratelimit-requests-remaining"
-	HeaderRequestsReset        = "anthropic-ratelimit-requests-reset"
-	HeaderTokensLimit          = "anthropic-ratelimit-tokens-limit"
-	HeaderTokensRemaining      = "anthropic-ratelimit-tokens-remaining"
-	HeaderTokensReset          = "anthropic-ratelimit-tokens-reset"
-	HeaderInputTokensLimit     = "anthropic-ratelimit-input-tokens-limit"
-	HeaderInputTokensRemaining = "anthropic-ratelimit-input-tokens-remaining"
-	HeaderInputTokensReset     = "anthropic-ratelimit-input-tokens-reset"
-	HeaderOutputTokensLimit    = "anthropic-ratelimit-output-tokens-limit"
+	HeaderRequestsLimit         = "anthropic-ratelimit-requests-limit"
+	HeaderRequestsRemaining     = "anthropic-ratelimit-requests-remaining"
+	HeaderRequestsReset         = "anthropic-ratelimit-requests-reset"
+	HeaderTokensLimit           = "anthropic-ratelimit-tokens-limit"
+	HeaderTokensRemaining       = "anthropic-ratelimit-tokens-remaining"
+	HeaderTokensReset           = "anthropic-ratelimit-tokens-reset"
+	HeaderInputTokensLimit      = "anthropic-ratelimit-input-tokens-limit"
+	HeaderInputTokensRemaining  = "anthropic-ratelimit-input-tokens-remaining"
+	HeaderInputTokensReset      = "anthropic-ratelimit-input-tokens-reset"
+	HeaderOutputTokensLimit     = "anthropic-ratelimit-output-tokens-limit"
 	HeaderOutputTokensRemaining = "anthropic-ratelimit-output-tokens-remaining"
-	HeaderOutputTokensReset    = "anthropic-ratelimit-output-tokens-reset"
-	HeaderRetryAfter           = "retry-after"
+	HeaderOutputTokensReset     = "anthropic-ratelimit-output-tokens-reset"
+	HeaderRetryAfter            = "retry-after"
 )
 
 // ExtractRateLimits parses standard Anthropic rate-limit headers from an HTTP response header.
