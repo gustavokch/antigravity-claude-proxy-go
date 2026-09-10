@@ -1028,7 +1028,12 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			req.URL.Scheme = targetURL.Scheme
 			req.URL.Host = targetURL.Host
 			req.URL.Path = targetURL.Path
-			req.URL.RawQuery = targetURL.RawQuery
+			targetQuery := targetURL.RawQuery
+			if targetQuery == "" || req.URL.RawQuery == "" {
+				req.URL.RawQuery = targetQuery + req.URL.RawQuery
+			} else {
+				req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
+			}
 			req.Host = targetURL.Host
 
 			req.Body = io.NopCloser(bytes.NewReader(reqBody))

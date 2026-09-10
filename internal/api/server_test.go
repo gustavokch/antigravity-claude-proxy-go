@@ -1155,6 +1155,51 @@ func TestTransparentForwarding_StripsProxyAuthWhenNoAPIKey(t *testing.T) {
 	}
 }
 
+func TestTransparentForwarding_QueryStringPreserved(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedQuery string
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"query-model": map[string]any{
+				"url": mockTarget.URL + "?api-version=2024-02-15",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// Client sends query param
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?client_param=123", strings.NewReader(`{"model":"query-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	expected := "api-version=2024-02-15&client_param=123"
+	if receivedQuery != expected {
+		t.Errorf("expected merged query %q, got %q", expected, receivedQuery)
+	}
+}
+
 type testCustomEndpointBackend struct{}
 
 func (b *testCustomEndpointBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {

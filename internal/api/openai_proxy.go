@@ -43,9 +43,12 @@ func (server *Server) chatCompletions(writer http.ResponseWriter, request *http.
 			forwardBody := body
 			if model != requestModel {
 				openaiRequest["model"] = model
-				if updated, err := json.Marshal(openaiRequest); err == nil {
-					forwardBody = updated
+				updated, err := json.Marshal(openaiRequest)
+				if err != nil {
+					writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request with mapped model: "+err.Error())
+					return
 				}
+				forwardBody = updated
 			}
 			server.forwardToCustomEndpoint(writer, request, endpoint, model, forwardBody)
 			return
