@@ -1037,6 +1037,9 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			if endpoint.APIKey != "" {
 				req.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 				req.Header.Set("x-api-key", endpoint.APIKey)
+			} else {
+				req.Header.Del("Authorization")
+				req.Header.Del("x-api-key")
 			}
 
 			if v := request.Header.Get("anthropic-version"); v != "" {

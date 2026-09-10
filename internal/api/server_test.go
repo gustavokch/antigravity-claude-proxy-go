@@ -1085,6 +1085,76 @@ func TestTransparentForwarding_ChatCompletionsErrorFormat(t *testing.T) {
 	}
 }
 
+func TestTransparentForwarding_StripsProxyAuthWhenNoAPIKey(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedAuth string
+	var receivedAPIKey string
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		receivedAPIKey = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"no-key-model": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	// newTestHandler sets server.apiKey = "local-key"
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// 1. Test /v1/chat/completions
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"no-key-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedAuth != "" {
+		t.Errorf("expected empty Authorization header at upstream, got: %s", receivedAuth)
+	}
+	if receivedAPIKey != "" {
+		t.Errorf("expected empty x-api-key header at upstream, got: %s", receivedAPIKey)
+	}
+
+	// 2. Test /v1/messages
+	receivedAuth = ""
+	receivedAPIKey = ""
+	reqMsg := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"no-key-model","messages":[{"role":"user","content":"hi"}]}`))
+	reqMsg.Header.Set("Authorization", "Bearer local-key")
+	reqMsg.Header.Set("x-api-key", "local-key")
+	recMsg := httptest.NewRecorder()
+	handler.ServeHTTP(recMsg, reqMsg)
+
+	if recMsg.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recMsg.Code, recMsg.Body.String())
+	}
+	if receivedAuth != "" {
+		t.Errorf("expected empty Authorization header on /v1/messages, got: %s", receivedAuth)
+	}
+	if receivedAPIKey != "" {
+		t.Errorf("expected empty x-api-key header on /v1/messages, got: %s", receivedAPIKey)
+	}
+}
+
 type testCustomEndpointBackend struct{}
 
 func (b *testCustomEndpointBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
