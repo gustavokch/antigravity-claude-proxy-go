@@ -356,3 +356,137 @@ func TestGetModelLimits(t *testing.T) {
 		t.Error("GetModelLimits(\"\"): ok = true, expected no match for an empty model ID")
 	}
 }
+
+func TestFetchCredits_Success(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/credits" {
+			t.Errorf("expected path /v1/credits, got %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data": {"total_credits": 100.5, "total_usage": 25.75}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(5*time.Second, 10*time.Minute)
+	info, err := client.FetchCredits(context.Background(), "test-api-key", server.URL+"/v1")
+	if err != nil {
+		t.Fatalf("FetchCredits failed: %v", err)
+	}
+	if gotAuth != "Bearer test-api-key" {
+		t.Errorf("Authorization header = %q, expected %q", gotAuth, "Bearer test-api-key")
+	}
+	if info.TotalCredits != 100.5 || info.TotalUsage != 25.75 {
+		t.Errorf("unexpected totals: %+v", info)
+	}
+	if info.Balance != 74.75 {
+		t.Errorf("Balance = %v, expected 74.75", info.Balance)
+	}
+	if info.FetchedAt.IsZero() {
+		t.Error("FetchedAt not set")
+	}
+
+	// Fetch stores the result in the credits cache.
+	if cached := client.getCachedCredits(); cached == nil || cached.Balance != 74.75 {
+		t.Errorf("expected cached credits with balance 74.75, got %+v", cached)
+	}
+}
+
+func TestFetchCredits_403ManagementKeyRequired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error": {"message": "Management key required"}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(5*time.Second, 10*time.Minute)
+	_, err := client.FetchCredits(context.Background(), "standard-key", server.URL)
+	if !errors.Is(err, ErrManagementKeyRequired) {
+		t.Fatalf("expected ErrManagementKeyRequired, got %v", err)
+	}
+	// A rejected fetch must not populate the cache.
+	if cached := client.getCachedCredits(); cached != nil {
+		t.Errorf("expected empty credits cache after 403, got %+v", cached)
+	}
+}
+
+func TestResolveCredits_CacheTTLAndForce(t *testing.T) {
+	fetchCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetchCount++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data": {"total_credits": 50, "total_usage": 10}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(5*time.Second, 10*time.Minute)
+	client.creditsCacheTTL = 50 * time.Millisecond
+
+	if _, err := client.ResolveCredits(context.Background(), "key", server.URL, false); err != nil {
+		t.Fatalf("first ResolveCredits failed: %v", err)
+	}
+	// Warm cache: second call must not hit the network.
+	if _, err := client.ResolveCredits(context.Background(), "key", server.URL, false); err != nil {
+		t.Fatalf("cached ResolveCredits failed: %v", err)
+	}
+	if fetchCount != 1 {
+		t.Fatalf("expected 1 fetch with warm cache, got %d", fetchCount)
+	}
+
+	// force=true bypasses the cache.
+	if _, err := client.ResolveCredits(context.Background(), "key", server.URL, true); err != nil {
+		t.Fatalf("forced ResolveCredits failed: %v", err)
+	}
+	if fetchCount != 2 {
+		t.Fatalf("expected 2 fetches after force, got %d", fetchCount)
+	}
+
+	// Expired TTL allows a refresh.
+	time.Sleep(60 * time.Millisecond)
+	if _, err := client.ResolveCredits(context.Background(), "key", server.URL, false); err != nil {
+		t.Fatalf("post-TTL ResolveCredits failed: %v", err)
+	}
+	if fetchCount != 3 {
+		t.Fatalf("expected 3 fetches after TTL expiry, got %d", fetchCount)
+	}
+}
+
+func TestResolveCredits_SingleflightConcurrency(t *testing.T) {
+	fetchCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(20 * time.Millisecond) // simulate latency
+		fetchCount++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data": {"total_credits": 80, "total_usage": 30}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(5*time.Second, 10*time.Minute)
+	concurrency := 10
+	errChan := make(chan error, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			info, err := client.ResolveCredits(context.Background(), "key", server.URL, false)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if info.Balance != 50 {
+				errChan <- fmt.Errorf("balance = %v, want 50", info.Balance)
+				return
+			}
+			errChan <- nil
+		}()
+	}
+	for i := 0; i < concurrency; i++ {
+		if err := <-errChan; err != nil {
+			t.Errorf("concurrent credits resolution failed: %v", err)
+		}
+	}
+	if fetchCount != 1 {
+		t.Errorf("expected singleflight to ensure exactly 1 fetch, got %d", fetchCount)
+	}
+}

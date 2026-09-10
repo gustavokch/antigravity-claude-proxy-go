@@ -14,6 +14,8 @@ document.addEventListener('alpine:init', () => {
         modelConfig: {}, // Model metadata (hidden, pinned, alias)
         customEndpoints: {}, // Transparent forwarding custom endpoints
         openrouter: {}, // OpenRouter Gateway and allowlist configuration
+        openrouterCredits: null, // OpenRouter balance payload (from /api/openrouter/credits)
+        openrouterCreditsLoading: false,
         kimi: {}, // Kimi Code gateway configuration
         headroomStats: {}, // Headroom compression & shaping metrics
         quotaRows: [], // Filtered view
@@ -88,6 +90,7 @@ document.addEventListener('alpine:init', () => {
                         this.modelConfig = data.modelConfig || {};
                         this.customEndpoints = data.customEndpoints || {};
                         this.openrouter = data.openrouter || {};
+                        this.openrouterCredits = data.openrouterCredits || null;
                         this.kimi = data.kimi || {};
                         this.headroomStats = data.headroomStats || {};
                         this.usageHistory = data.usageHistory || {};
@@ -111,6 +114,7 @@ document.addEventListener('alpine:init', () => {
                     modelConfig: this.modelConfig,
                     customEndpoints: this.customEndpoints,
                     openrouter: this.openrouter,
+                    openrouterCredits: this.openrouterCredits,
                     kimi: this.kimi,
                     headroomStats: this.headroomStats,
                     usageHistory: this.usageHistory,
@@ -166,6 +170,9 @@ document.addEventListener('alpine:init', () => {
                     // non-fatal
                 }
 
+                // Fetch OpenRouter balance (non-fatal; server-side cached)
+                await this.fetchOpenRouterCredits();
+
                 this.saveToCache(); // Save fresh data
 
                 // Re-inject placeholder data if active
@@ -194,6 +201,26 @@ document.addEventListener('alpine:init', () => {
             } finally {
                 this.loading = false;
                 this.initialLoad = false; // Mark initial load as complete
+            }
+        },
+
+        async fetchOpenRouterCredits(force = false) {
+            if (!this.openrouter || !this.openrouter.enabled) {
+                this.openrouterCredits = null;
+                return;
+            }
+            this.openrouterCreditsLoading = true;
+            try {
+                const password = Alpine.store('global').webuiPassword;
+                const url = '/api/openrouter/credits' + (force ? '?force=true' : '');
+                const { response } = await window.utils.request(url, {}, password);
+                if (response.ok) {
+                    this.openrouterCredits = await response.json();
+                }
+            } catch (e) {
+                if (window.UILogger) window.UILogger.debug('Failed to fetch OpenRouter credits', e.message);
+            } finally {
+                this.openrouterCreditsLoading = false;
             }
         },
 
