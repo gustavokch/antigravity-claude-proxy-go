@@ -102,20 +102,7 @@ func Detect(body []byte) (Kind, bool) {
 	if len(req.Messages) == 0 {
 		return KindNone, false
 	}
-	footer, ok := lastBlockText(req.Messages[len(req.Messages)-1].Content)
-	if !ok {
-		return KindNone, false
-	}
-	switch {
-	case strings.Contains(footer, stage1FooterMarker):
-		return KindStage1Severity, true
-	case strings.Contains(footer, stage2FooterMarker):
-		return KindStage2Severity, true
-	case strings.Contains(footer, blockPrefilterFooterMarker):
-		return KindBlockPrefilter, true
-	default:
-		return KindNone, false
-	}
+	return detectFooterKind(req.Messages[len(req.Messages)-1].Content)
 }
 
 // hasMonitorPrompt reports whether any system block contains the shared
@@ -132,12 +119,27 @@ func hasMonitorPrompt(system []systemBlock) bool {
 	return false
 }
 
-func lastBlockText(raw json.RawMessage) (string, bool) {
+// detectFooterKind scans the content blocks of the final message in reverse
+// for variant-identifying footer markers. Inspecting in reverse finds the
+// footer immediately in standard requests while remaining resilient if an
+// auxiliary trailing block (e.g. whitespace, cache control) is appended.
+func detectFooterKind(raw json.RawMessage) (Kind, bool) {
 	var blocks []contentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil || len(blocks) == 0 {
-		return "", false
+		return KindNone, false
 	}
-	return blocks[len(blocks)-1].Text, true
+	for i := len(blocks) - 1; i >= 0; i-- {
+		text := blocks[i].Text
+		switch {
+		case strings.Contains(text, stage1FooterMarker):
+			return KindStage1Severity, true
+		case strings.Contains(text, stage2FooterMarker):
+			return KindStage2Severity, true
+		case strings.Contains(text, blockPrefilterFooterMarker):
+			return KindBlockPrefilter, true
+		}
+	}
+	return KindNone, false
 }
 
 // Stub builds a canned Anthropic Messages API 200 response (non-streaming)

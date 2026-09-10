@@ -96,6 +96,37 @@ func TestDetect(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			name: "stage 1 classifier call with trailing auxiliary block",
+			body: func() []byte {
+				body := map[string]any{
+					"model": "claude-sonnet-5",
+					"system": []map[string]any{
+						{"type": "text", "text": "x-anthropic-billing-header: ..."},
+						{"type": "text", "text": monitorSystemText},
+					},
+					"messages": []map[string]any{
+						{
+							"role": "user",
+							"content": []map[string]any{
+								{"type": "text", "text": "<transcript>"},
+								{"type": "text", "text": `{"Bash":"ls"}`},
+								{"type": "text", "text": "</transcript>"},
+								{"type": "text", "text": stage1Footer},
+								{"type": "text", "text": "\n"},
+							},
+						},
+					},
+				}
+				raw, err := json.Marshal(body)
+				if err != nil {
+					t.Fatalf("marshal sample body: %v", err)
+				}
+				return raw
+			}(),
+			wantKind: KindStage1Severity,
+			wantOK:   true,
+		},
+		{
 			name:     "malformed JSON",
 			body:     []byte("not json"),
 			wantKind: KindNone,
