@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -179,6 +180,9 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	case path == "/api/openrouter/models/cached" && method == http.MethodGet:
 		server.handleOpenRouterModelsCached(writer, request)
+		return true
+	case path == "/api/openrouter/credits" && method == http.MethodGet:
+		server.handleOpenRouterCredits(writer, request)
 		return true
 	case path == "/api/openrouter/providers" && method == http.MethodGet:
 		server.handleOpenRouterProvidersGet(writer, request)
@@ -1413,6 +1417,56 @@ func (server *Server) handleOpenRouterModelsCached(writer http.ResponseWriter, r
 		"status": "ok",
 		"models": models,
 		"total":  len(models),
+	})
+}
+
+// handleOpenRouterCredits reports OpenRouter prepaid credit totals, usage, and
+// the derived balance for the dashboard balance card. A 403 from OpenRouter
+// maps to requiresManagementKey instead of a generic error: standard API keys
+// lack the management permissions the credits endpoint requires.
+func (server *Server) handleOpenRouterCredits(writer http.ResponseWriter, request *http.Request) {
+	cfg := config.Get()
+	if !cfg.OpenRouter.Enabled {
+		writeJSON(writer, http.StatusOK, map[string]any{
+			"status":  "ok",
+			"enabled": false,
+		})
+		return
+	}
+	if strings.TrimSpace(cfg.OpenRouter.APIKey) == "" {
+		writeJSON(writer, http.StatusOK, map[string]any{
+			"status":    "ok",
+			"enabled":   true,
+			"hasApiKey": false,
+		})
+		return
+	}
+
+	force := request.URL.Query().Get("force") == "true"
+	credits, err := openrouter.DefaultClient.ResolveCredits(request.Context(), cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL, force)
+	if err != nil {
+		if errors.Is(err, openrouter.ErrManagementKeyRequired) {
+			writeJSON(writer, http.StatusOK, map[string]any{
+				"status":                "ok",
+				"enabled":               true,
+				"hasApiKey":             true,
+				"requiresManagementKey": true,
+				"error":                 "OpenRouter management API key required to view credits",
+			})
+			return
+		}
+		writeJSON(writer, http.StatusBadGateway, map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status":    "ok",
+		"enabled":   true,
+		"hasApiKey": true,
+		"credits":   credits,
 	})
 }
 

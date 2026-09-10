@@ -3,6 +3,7 @@ package openrouter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,46 @@ type call struct {
 	err error
 }
 
+// ErrManagementKeyRequired indicates the API key lacks the management
+// permissions OpenRouter requires for the credits endpoint.
+var ErrManagementKeyRequired = errors.New("openrouter management API key required to query credits")
+
+// CreditsData represents the payload of OpenRouter's GET /v1/credits response.
+type CreditsData struct {
+	TotalCredits float64 `json:"total_credits"`
+	TotalUsage   float64 `json:"total_usage"`
+}
+
+// CreditsResponse represents the response format of OpenRouter's GET /v1/credits.
+type CreditsResponse struct {
+	Data CreditsData `json:"data"`
+}
+
+// CreditsInfo holds resolved credit totals with a derived balance and fetch time.
+type CreditsInfo struct {
+	TotalCredits float64   `json:"total_credits"`
+	TotalUsage   float64   `json:"total_usage"`
+	Balance      float64   `json:"balance"`
+	FetchedAt    time.Time `json:"fetched_at"`
+}
+
+// creditsCall tracks an in-flight singleflight request for credits.
+type creditsCall struct {
+	wg  sync.WaitGroup
+	val *CreditsInfo
+	err error
+}
+
+// creditsCacheEntry stores cached credits with the timestamp it was fetched.
+type creditsCacheEntry struct {
+	info     *CreditsInfo
+	cachedAt time.Time
+}
+
+func creditsKey(cleanBase, apiKey string) string {
+	return cleanBase + "\x00" + strings.TrimSpace(apiKey)
+}
+
 // Client manages OpenRouter catalog discovery and caching.
 type Client struct {
 	httpClient *http.Client
@@ -61,6 +102,12 @@ type Client struct {
 
 	flightMu  sync.Mutex
 	flightMap map[string]*call
+
+	creditsMu       sync.RWMutex
+	creditsCache    map[string]*creditsCacheEntry
+	creditsCacheTTL time.Duration
+
+	creditsFlightMap map[string]*creditsCall
 }
 
 // DefaultClient is a shared package-level client instance.
@@ -75,9 +122,12 @@ func NewClient(timeout time.Duration, cacheTTL time.Duration) *Client {
 		cacheTTL = 1 * time.Hour
 	}
 	return &Client{
-		httpClient: &http.Client{Timeout: timeout},
-		cacheTTL:   cacheTTL,
-		flightMap:  make(map[string]*call),
+		httpClient:       &http.Client{Timeout: timeout},
+		cacheTTL:         cacheTTL,
+		flightMap:        make(map[string]*call),
+		creditsCache:     make(map[string]*creditsCacheEntry),
+		creditsCacheTTL:  60 * time.Second,
+		creditsFlightMap: make(map[string]*creditsCall),
 	}
 }
 
@@ -275,4 +325,130 @@ func (c *Client) WarmupCacheAsync(apiKey, baseURL string) {
 		defer cancel()
 		_, _ = c.ResolveModelPricing(ctx, "", apiKey, baseURL)
 	}()
+}
+
+// FetchCredits queries GET <baseURL>/v1/credits with the given API key. A 403
+// response maps to ErrManagementKeyRequired because OpenRouter reserves the
+// credits endpoint for management keys.
+func (c *Client) FetchCredits(ctx context.Context, apiKey, baseURL string) (*CreditsInfo, error) {
+	cleanBase := NormalizeBaseURL(baseURL)
+	url := cleanBase + "/v1/credits"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create credits request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch credits from openrouter: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Bound the read so a hostile or broken upstream cannot exhaust memory.
+	const maxCreditsBody = 1 << 20 // 1MiB
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxCreditsBody))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, ErrManagementKeyRequired
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openrouter API error (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var parsed CreditsResponse
+	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("decode openrouter credits json: %w", err)
+	}
+
+	info := &CreditsInfo{
+		TotalCredits: parsed.Data.TotalCredits,
+		TotalUsage:   parsed.Data.TotalUsage,
+		Balance:      parsed.Data.TotalCredits - parsed.Data.TotalUsage,
+		FetchedAt:    time.Now(),
+	}
+
+	key := creditsKey(cleanBase, apiKey)
+	c.creditsMu.Lock()
+	if c.creditsCache == nil {
+		c.creditsCache = make(map[string]*creditsCacheEntry)
+	}
+	c.creditsCache[key] = &creditsCacheEntry{
+		info:     info,
+		cachedAt: info.FetchedAt,
+	}
+	c.creditsMu.Unlock()
+
+	return info, nil
+}
+
+// getCachedCredits returns a copy of cached credits for the given apiKey and
+// baseURL while the TTL holds, and nil otherwise.
+func (c *Client) getCachedCredits(apiKey, baseURL string) *CreditsInfo {
+	cleanBase := NormalizeBaseURL(baseURL)
+	key := creditsKey(cleanBase, apiKey)
+	c.creditsMu.RLock()
+	defer c.creditsMu.RUnlock()
+	entry := c.creditsCache[key]
+	if entry == nil || entry.cachedAt.IsZero() || time.Since(entry.cachedAt) >= c.creditsCacheTTL {
+		return nil
+	}
+	info := *entry.info
+	return &info
+}
+
+// ResolveCredits returns cached credits while fresh, otherwise fetches fresh
+// credits with singleflight deduplication. force bypasses the cache.
+func (c *Client) ResolveCredits(ctx context.Context, apiKey, baseURL string, force bool) (*CreditsInfo, error) {
+	cleanBase := NormalizeBaseURL(baseURL)
+	key := creditsKey(cleanBase, apiKey)
+	if !force {
+		if cached := c.getCachedCredits(apiKey, cleanBase); cached != nil {
+			return cached, nil
+		}
+	}
+
+	c.flightMu.Lock()
+	if c.creditsFlightMap == nil {
+		c.creditsFlightMap = make(map[string]*creditsCall)
+	}
+	cCall, inFlight := c.creditsFlightMap[key]
+	if !inFlight {
+		cCall = &creditsCall{}
+		cCall.wg.Add(1)
+		c.creditsFlightMap[key] = cCall
+		c.flightMu.Unlock()
+
+		func() {
+			defer func() {
+				c.flightMu.Lock()
+				delete(c.creditsFlightMap, key)
+				c.flightMu.Unlock()
+				cCall.wg.Done()
+			}()
+
+			// Decouple from caller context so a single client abort does not cancel the shared credits fetch.
+			fetchCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			info, err := c.FetchCredits(fetchCtx, apiKey, baseURL)
+			cCall.val = info
+			cCall.err = err
+		}()
+	} else {
+		c.flightMu.Unlock()
+	}
+	cCall.wg.Wait()
+
+	if cCall.err != nil {
+		return nil, cCall.err
+	}
+	return cCall.val, nil
 }

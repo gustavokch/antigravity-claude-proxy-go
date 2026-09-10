@@ -208,6 +208,54 @@ window.Components.dashboard = () => ({
         return window.DashboardFilters.getTimeRangeLabel(this);
     },
 
+    // OpenRouter balance card helpers: derive value, color, and description
+    // from the store payload instead of embedding the logic in the template.
+    openrouterBalanceText() {
+        const credits = this.$store.data.openrouterCredits;
+        if (this.$store.data.openrouterCreditsLoading) return '—';
+        if (!credits) return '—';
+        if (credits.status === 'error') return '—';
+        if (credits.requiresManagementKey) return this.$store.global.t('mgmtKeyRequired');
+        if (credits.hasApiKey === false) return this.$store.global.t('noApiKeyConfigured');
+        if (credits.credits) return '$' + Number(credits.credits.balance).toFixed(2);
+        return '—';
+    },
+
+    openrouterBalanceClass() {
+        const credits = this.$store.data.openrouterCredits;
+        if (!credits) return 'text-white';
+        if (credits.status === 'error') return 'text-zinc-500';
+        if (credits.requiresManagementKey) return 'text-amber-400';
+        if (credits.hasApiKey === false) return 'text-zinc-400';
+        if (credits.credits) {
+            if (credits.credits.balance < 1) return 'text-rose-400';
+            if (credits.credits.balance < 5) return 'text-amber-400';
+        }
+        return 'text-white';
+    },
+
+    openrouterBalanceDesc() {
+        const credits = this.$store.data.openrouterCredits;
+        if (credits && credits.credits) {
+            const fmt = (v) => '$' + Number(v).toFixed(2);
+            return this.$store.global.t('openrouterCreditsUsed', {
+                used: fmt(credits.credits.total_usage),
+                total: fmt(credits.credits.total_credits)
+            });
+        }
+        if (credits && credits.status === 'error') return this.$store.global.t('creditsUnavailable');
+        if (credits && credits.requiresManagementKey) return this.$store.global.t('mgmtKeyRequired');
+        if (credits && credits.hasApiKey === false) return this.$store.global.t('noApiKeyConfigured');
+        return '';
+    },
+
+    // Refresh stays available whenever an API key may be configured, so users
+    // can retry after an upstream failure or add a management key.
+    openrouterCreditsAvailable() {
+        const credits = this.$store.data.openrouterCredits;
+        return !!(credits && credits.hasApiKey !== false);
+    },
+
     toggleFamily(family) {
         window.DashboardFilters.toggleFamily(this, family);
     },
