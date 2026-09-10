@@ -1000,6 +1000,91 @@ func TestIsAnthropicEndpoint(t *testing.T) {
 	}
 }
 
+func TestTransparentForwarding_ChatCompletionsErrorFormat(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Create a mock server and immediately close it so connection fails
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	mockURL := mockTarget.URL
+	mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"unreachable-model": map[string]any{
+				"url": mockURL,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"unreachable-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var errResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Must have OpenAI envelope: {"error": {"message": ..., "type": ...}}
+	errObj, ok := errResp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected OpenAI error object under 'error' key, got: %v", errResp)
+	}
+	if errObj["type"] == "" || errObj["message"] == "" {
+		t.Errorf("expected non-empty type and message in error object, got: %v", errObj)
+	}
+	// Must not have Anthropic top-level "type": "error"
+	if errResp["type"] == "error" {
+		t.Errorf("expected no Anthropic top-level 'type': 'error', got: %v", errResp)
+	}
+
+	// Also test invalid custom endpoint URL
+	_, err = config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"bad-url-model": map[string]any{
+				"url": "http://[::1]:namedport",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	reqBad := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"bad-url-model","messages":[{"role":"user","content":"hi"}]}`))
+	reqBad.Header.Set("x-api-key", "local-key")
+	recBad := httptest.NewRecorder()
+	handler.ServeHTTP(recBad, reqBad)
+
+	if recBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d: %s", recBad.Code, recBad.Body.String())
+	}
+	var errBadResp map[string]any
+	if err := json.Unmarshal(recBad.Body.Bytes(), &errBadResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if _, ok := errBadResp["error"].(map[string]any); !ok {
+		t.Fatalf("expected OpenAI error object under 'error' key for bad URL, got: %v", errBadResp)
+	}
+	if errBadResp["type"] == "error" {
+		t.Errorf("expected no Anthropic top-level 'type': 'error' for bad URL, got: %v", errBadResp)
+	}
+}
+
 type testCustomEndpointBackend struct{}
 
 func (b *testCustomEndpointBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {

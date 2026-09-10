@@ -959,13 +959,21 @@ func resolveCustomEndpointURL(endpointURL string, requestPath string) (*url.URL,
 }
 
 func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, model string, reqBody []byte) {
+	isMessagesRequest := request.URL.Path == "/v1/messages" || strings.HasSuffix(request.URL.Path, "/messages")
+
 	targetURL, err := resolveCustomEndpointURL(endpoint.URL, request.URL.Path)
 	if err != nil {
+		if !isMessagesRequest {
+			writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid custom endpoint URL: "+err.Error())
+			return
+		}
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid custom endpoint URL: "+err.Error())
 		return
 	}
 
-	isMessagesRequest := strings.HasSuffix(targetURL.Path, "/messages") || request.URL.Path == "/v1/messages"
+	if strings.HasSuffix(targetURL.Path, "/messages") {
+		isMessagesRequest = true
+	}
 
 	if server.isCCREnabled() && isMessagesRequest {
 		var reqMap map[string]any
@@ -1042,6 +1050,10 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
 			server.logger.Error("custom endpoint proxy error", "error", proxyErr, "url", targetURL.String())
+			if !isMessagesRequest {
+				writeOpenAIError(w, http.StatusBadGateway, "api_error", "Custom endpoint forwarding error: "+proxyErr.Error())
+				return
+			}
 			writeAPIError(w, http.StatusBadGateway, "api_error", "Custom endpoint forwarding error: "+proxyErr.Error())
 		},
 	}
