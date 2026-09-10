@@ -90,6 +90,12 @@ func TestDetect(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			name:     "monitor prompt with leading newline and markdown header",
+			body:     sampleBody(t, "claude-sonnet-5", []string{"x-anthropic-billing-header: ...", "\n# Security Monitor\n" + monitorSystemText}, stage1Footer),
+			wantKind: KindStage1Severity,
+			wantOK:   true,
+		},
+		{
 			name:     "malformed JSON",
 			body:     []byte("not json"),
 			wantKind: KindNone,

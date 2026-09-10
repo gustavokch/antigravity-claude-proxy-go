@@ -118,13 +118,14 @@ func Detect(body []byte) (Kind, bool) {
 	}
 }
 
-// hasMonitorPrompt reports whether any system block opens with the shared
+// hasMonitorPrompt reports whether any system block contains the shared
 // monitor prompt. Live capture put it at system[1], behind the billing
-// header, but indexing that position would let one extra or reordered block
-// upstream silently disable detection.
+// header, but indexing that position or matching exact prefix would let
+// an extra/reordered block or leading whitespace/heading upstream silently
+// disable detection.
 func hasMonitorPrompt(system []systemBlock) bool {
 	for _, block := range system {
-		if strings.HasPrefix(block.Text, monitorPromptPrefix) {
+		if strings.Contains(block.Text, monitorPromptPrefix) {
 			return true
 		}
 	}
