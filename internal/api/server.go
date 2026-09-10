@@ -893,7 +893,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	streamRequested, _ := anthropicRequest["stream"].(bool)
 	if config.ClassifierFallbackEnabled() && !streamRequested {
 		if kind, detected := classifier.Detect(rawBody); detected {
-			noCapacity := server.accountManager == nil || server.accountManager.Available(model) == 0
+			noCapacity := server.accountManager != nil && server.accountManager.Available(model) == 0
 			if noCapacity {
 				if stub, stubErr := classifier.Stub(kind, model); stubErr == nil {
 					slog.Warn("[Server] classifier fallback: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",

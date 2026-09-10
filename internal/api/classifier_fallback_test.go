@@ -90,16 +90,24 @@ func (b *dispatchRecordingBackend) StreamGenerateContent(context.Context, map[st
 
 // newAccountBackedTestServer builds a Server whose only route is the
 // account-backed dispatcher — the one path whose capacity the classifier
-// fallback is allowed to reason about. accountManager is left nil, which
-// Server.messages treats as "no capacity".
-func newAccountBackedTestServer() (*Server, *dispatchRecordingBackend) {
+// fallback is allowed to reason about. accountManager is wired with zero
+// available accounts to represent quota exhaustion.
+func newAccountBackedTestServer(t *testing.T) (*Server, *dispatchRecordingBackend) {
+	t.Helper()
 	config.SetForTest(config.DefaultConfig())
 	backend := &dispatchRecordingBackend{}
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
 	server := &Server{
-		backend: backend,
-		builder: proxyformat.NewBuilder(),
-		logger:  slog.Default(),
-		now:     time.Now,
+		backend:        backend,
+		builder:        proxyformat.NewBuilder(),
+		logger:         slog.Default(),
+		now:            time.Now,
+		accountManager: manager,
 	}
 	return server, backend
 }
@@ -127,7 +135,7 @@ func postClassifierMessages(t *testing.T, server *Server, body []byte) *httptest
 
 func TestMessages_ClassifierFallback_StubsWhenNoCapacity(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
-	server, backend := newAccountBackedTestServer()
+	server, backend := newAccountBackedTestServer(t)
 	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
 
 	if backend.hit {
@@ -151,7 +159,7 @@ func TestMessages_ClassifierFallback_StubsWhenNoCapacity(t *testing.T) {
 
 func TestMessages_ClassifierFallback_FastFailsUnsupportedVariant(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
-	server, backend := newAccountBackedTestServer()
+	server, backend := newAccountBackedTestServer(t)
 	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierBlockFooter))
 
 	if backend.hit {
@@ -175,7 +183,7 @@ func TestMessages_ClassifierFallback_FastFailsUnsupportedVariant(t *testing.T) {
 
 func TestMessages_ClassifierFallback_NonClassifierRequestDispatchesNormally(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
-	server, backend := newAccountBackedTestServer()
+	server, backend := newAccountBackedTestServer(t)
 	rec := postClassifierMessages(t, server, ordinaryBody(t, classifierTestModel))
 
 	if !backend.hit {
@@ -185,7 +193,7 @@ func TestMessages_ClassifierFallback_NonClassifierRequestDispatchesNormally(t *t
 
 func TestMessages_ClassifierFallback_FlagOffDispatchesNormally(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "")
-	server, backend := newAccountBackedTestServer()
+	server, backend := newAccountBackedTestServer(t)
 	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
 
 	if !backend.hit {
@@ -202,7 +210,7 @@ func TestMessages_ClassifierFallback_CapacityAvailableDispatchesNormally(t *test
 		t.Fatalf("accounts.New: %v", err)
 	}
 
-	server, backend := newAccountBackedTestServer()
+	server, backend := newAccountBackedTestServer(t)
 	server.accountManager = manager
 	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
 
@@ -211,9 +219,49 @@ func TestMessages_ClassifierFallback_CapacityAvailableDispatchesNormally(t *test
 	}
 }
 
+func TestMessages_ClassifierFallback_RateLimitedAccountStubs(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
+	acc := &accounts.Account{Email: "exhausted@b.com", Enabled: true}
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{acc},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
+	manager.MarkRateLimited(acc, classifierTestModel, time.Hour)
+
+	server, backend := newAccountBackedTestServer(t)
+	server.accountManager = manager
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+
+	if backend.hit {
+		t.Fatal("backend was dispatched to; rate-limited account should have stubbed the response instead")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMessages_ClassifierFallback_NilAccountManagerDispatchesNormally(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
+	config.SetForTest(config.DefaultConfig())
+	backend := &dispatchRecordingBackend{}
+	server := &Server{
+		backend: backend,
+		builder: proxyformat.NewBuilder(),
+		logger:  slog.Default(),
+		now:     time.Now,
+	}
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+
+	if !backend.hit {
+		t.Fatalf("nil accountManager: request must dispatch normally, not be stubbed; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMessages_ClassifierFallback_StreamingRequestIsNeverStubbed(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
-	server, backend := newAccountBackedTestServer()
+	server, backend := newAccountBackedTestServer(t)
 	body := classifierShapedBodyWithExtras(t, classifierTestModel, classifierStage1Footer, map[string]any{"stream": true})
 	rec := postClassifierMessages(t, server, body)
 
