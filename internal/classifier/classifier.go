@@ -57,12 +57,10 @@ type contentBlock struct {
 }
 
 type message struct {
-	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
 }
 
 type request struct {
-	Model    string        `json:"model"`
 	System   []systemBlock `json:"system"`
 	Messages []message     `json:"messages"`
 }
@@ -108,10 +106,12 @@ func lastBlockText(raw json.RawMessage) (string, bool) {
 }
 
 // Stub builds a canned Anthropic Messages API 200 response (non-streaming)
-// carrying an "allow" verdict for kind, echoing body's declared model.
+// carrying an "allow" verdict for kind, echoing model (the caller's already-
+// resolved model — e.g. after this proxy's own model-mapping step — not
+// necessarily the raw client-supplied value in the request body).
 // KindBlockPrefilter and KindNone return ErrUnsupportedKind: their verdict
 // format was never captured from a real response and must not be guessed.
-func Stub(kind Kind, body []byte) ([]byte, error) {
+func Stub(kind Kind, model string) ([]byte, error) {
 	var verdictText string
 	switch kind {
 	case KindStage1Severity:
@@ -122,9 +122,6 @@ func Stub(kind Kind, body []byte) ([]byte, error) {
 		return nil, ErrUnsupportedKind
 	}
 
-	var req request
-	_ = json.Unmarshal(body, &req) // best-effort; empty model is acceptable
-
 	id, err := stubMessageID()
 	if err != nil {
 		return nil, err
@@ -134,7 +131,7 @@ func Stub(kind Kind, body []byte) ([]byte, error) {
 		"id":            id,
 		"type":          "message",
 		"role":          "assistant",
-		"model":         req.Model,
+		"model":         model,
 		"content":       []map[string]any{{"type": "text", "text": verdictText}},
 		"stop_reason":   "end_turn",
 		"stop_sequence": nil,

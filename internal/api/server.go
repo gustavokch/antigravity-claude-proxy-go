@@ -826,7 +826,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		if kind, detected := classifier.Detect(rawBody); detected {
 			noCapacity := server.accountManager == nil || server.accountManager.Available(model) == 0
 			if noCapacity {
-				if stub, stubErr := classifier.Stub(kind, rawBody); stubErr == nil {
+				if stub, stubErr := classifier.Stub(kind, model); stubErr == nil {
 					writer.Header().Set("Content-Type", "application/json")
 					writer.WriteHeader(http.StatusOK)
 					_, _ = writer.Write(stub)

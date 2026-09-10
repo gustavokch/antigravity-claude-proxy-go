@@ -103,8 +103,7 @@ func TestDetect(t *testing.T) {
 
 func TestStub(t *testing.T) {
 	t.Run("stage 1 produces bare severity tag", func(t *testing.T) {
-		body := sampleBody(t, "claude-sonnet-5", nil, "")
-		out, err := Stub(KindStage1Severity, body)
+		out, err := Stub(KindStage1Severity, "claude-sonnet-5")
 		if err != nil {
 			t.Fatalf("Stub() error = %v", err)
 		}
@@ -114,8 +113,7 @@ func TestStub(t *testing.T) {
 	})
 
 	t.Run("stage 2 produces thinking plus severity, no category", func(t *testing.T) {
-		body := sampleBody(t, "claude-sonnet-5", nil, "")
-		out, err := Stub(KindStage2Severity, body)
+		out, err := Stub(KindStage2Severity, "claude-sonnet-5")
 		if err != nil {
 			t.Fatalf("Stub() error = %v", err)
 		}
@@ -127,15 +125,13 @@ func TestStub(t *testing.T) {
 	})
 
 	t.Run("block prefilter is unsupported", func(t *testing.T) {
-		body := sampleBody(t, "gemini-3.8-flash-medium", nil, "")
-		if _, err := Stub(KindBlockPrefilter, body); err != ErrUnsupportedKind {
+		if _, err := Stub(KindBlockPrefilter, "gemini-3.8-flash-medium"); err != ErrUnsupportedKind {
 			t.Fatalf("Stub() error = %v, want ErrUnsupportedKind", err)
 		}
 	})
 
 	t.Run("none is unsupported", func(t *testing.T) {
-		body := sampleBody(t, "claude-sonnet-5", nil, "")
-		if _, err := Stub(KindNone, body); err != ErrUnsupportedKind {
+		if _, err := Stub(KindNone, "claude-sonnet-5"); err != ErrUnsupportedKind {
 			t.Fatalf("Stub() error = %v, want ErrUnsupportedKind", err)
 		}
 	})
