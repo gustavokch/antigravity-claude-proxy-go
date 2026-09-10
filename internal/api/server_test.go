@@ -585,6 +585,9 @@ func TestModelMappingRedirection(t *testing.T) {
 }
 
 func TestTransparentForwardingToCustomEndpoint(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
@@ -660,6 +663,690 @@ func TestTransparentForwardingToCustomEndpoint(t *testing.T) {
 	}
 	if upstream.streamCalls != 1 {
 		t.Errorf("expected normal request to use fakeUpstream, streamCalls=%d", upstream.streamCalls)
+	}
+}
+
+// TestCustomEndpoint_ForwardsRawBodyByteForByte asserts that an unmutated
+// /v1/messages request reaches the custom endpoint byte-for-byte identical to
+// what the client sent. Key order and number formatting (1.0 vs 1) must
+// survive; a decode+re-marshal cycle destroys both.
+func TestCustomEndpoint_ForwardsRawBodyByteForByte(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedBody []byte
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_raw","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer mockTarget.Close()
+
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"claude-custom-model": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// Key order (messages before model), float formatting (1.0), and unicode
+	// are all mangled by a Go map re-marshal. None may change in transit.
+	clientBody := `{"messages":[{"role":"user","content":"héllo raw"}],"temperature":1.0,"max_tokens":100,"model":"claude-custom-model"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(clientBody))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if string(receivedBody) != clientBody {
+		t.Errorf("upstream body must be byte-identical to client body\nsent:     %s\nreceived: %s", clientBody, receivedBody)
+	}
+}
+
+// TestCustomEndpoint_DoesNotForwardXForwardedFor asserts the custom endpoint
+// proxy neither forwards a client-supplied X-Forwarded-For nor injects one
+// from the proxy's own view of the client address.
+func TestCustomEndpoint_DoesNotForwardXForwardedFor(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedXFF string
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedXFF = r.Header.Get("X-Forwarded-For")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_no_xff","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer mockTarget.Close()
+
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"claude-custom-model": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-custom-model","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedXFF != "" {
+		t.Errorf("X-Forwarded-For must not reach the custom endpoint, got %q", receivedXFF)
+	}
+}
+
+// TestCustomEndpoint_MutatedModelStillRewritten guards the re-marshal branch:
+// when the model is rewritten via modelMapping, the upstream body must carry
+// the mapped model (raw passthrough must not bypass the rewrite).
+func TestCustomEndpoint_MutatedModelStillRewritten(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedBody []byte
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_mapped","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer mockTarget.Close()
+
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"claude-custom-model": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+		"modelMapping": map[string]any{
+			"claude-source-model": map[string]any{"mapping": "claude-custom-model"},
+		},
+	}); err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-source-model","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(receivedBody, &got); err != nil {
+		t.Fatalf("failed to decode upstream body: %v", err)
+	}
+	if got["model"] != "claude-custom-model" {
+		t.Errorf("expected mapped model claude-custom-model upstream, got %v", got["model"])
+	}
+}
+
+func TestTransparentForwarding_ChatCompletions(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedPath string
+	var receivedAuth string
+	var receivedAPIKey string
+	var receivedBody []byte
+	var receivedAnthropicVersion string
+
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedAuth = r.Header.Get("Authorization")
+		receivedAPIKey = r.Header.Get("x-api-key")
+		receivedAnthropicVersion = r.Header.Get("anthropic-version")
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-custom","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"openai_ok"}}]}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"gpt-6-astra": map[string]any{
+				"url":    mockTarget.URL,
+				"apiKey": "packy-secret-key",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// Send POST /v1/chat/completions with OpenAI body
+	clientBody := `{"model":"gpt-6-astra","messages":[{"role":"user","content":"hello astra"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(clientBody))
+	req.Header.Set("Authorization", "Bearer local-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from transparent proxy, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedPath != "/v1/chat/completions" {
+		t.Errorf("expected target path /v1/chat/completions, got %s", receivedPath)
+	}
+	if receivedAuth != "Bearer packy-secret-key" {
+		t.Errorf("expected Authorization Bearer packy-secret-key, got %s", receivedAuth)
+	}
+	if receivedAPIKey != "packy-secret-key" {
+		t.Errorf("expected x-api-key packy-secret-key, got %s", receivedAPIKey)
+	}
+	if receivedAnthropicVersion != "" {
+		t.Errorf("expected no anthropic-version header on chat/completions request, got %s", receivedAnthropicVersion)
+	}
+
+	// Verify body was NOT translated to Anthropic format
+	var gotOpenAIReq map[string]any
+	if err := json.Unmarshal(receivedBody, &gotOpenAIReq); err != nil {
+		t.Fatalf("failed to decode received body: %v", err)
+	}
+	if gotOpenAIReq["model"] != "gpt-6-astra" {
+		t.Errorf("expected model gpt-6-astra, got %v", gotOpenAIReq["model"])
+	}
+	// Anthropic translation produces {"model":..., "messages":..., "max_tokens":...} or similar.
+	// In pure OpenAI body, "content" in user message is string "hello astra", NOT [{"type":"text", ...}]
+	msgs := gotOpenAIReq["messages"].([]any)
+	firstMsg := msgs[0].(map[string]any)
+	if firstMsg["content"] != "hello astra" {
+		t.Errorf("expected unmodified string content 'hello astra', got %v", firstMsg["content"])
+	}
+
+	// Verify response was NOT translated, but passed through directly
+	if !strings.Contains(rec.Body.String(), "chatcmpl-custom") {
+		t.Errorf("expected raw OpenAI response to be passed through, got: %s", rec.Body.String())
+	}
+}
+
+func TestTransparentForwarding_CustomPathPreserved(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedPath string
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"custom-chat-model": map[string]any{
+				"url": mockTarget.URL + "/v1/chat/completions",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"custom-chat-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedPath != "/v1/chat/completions" {
+		t.Errorf("expected exact path /v1/chat/completions, got %s", receivedPath)
+	}
+}
+
+func TestTransparentForwarding_BaseURLWithV1(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedPath string
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"v1-model": map[string]any{
+				"url": mockTarget.URL + "/v1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// 1. /v1/chat/completions with base URL /v1
+	reqChat := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"v1-model","messages":[{"role":"user","content":"hi"}]}`))
+	reqChat.Header.Set("x-api-key", "local-key")
+	recChat := httptest.NewRecorder()
+	handler.ServeHTTP(recChat, reqChat)
+	if recChat.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recChat.Code, recChat.Body.String())
+	}
+	if receivedPath != "/v1/chat/completions" {
+		t.Errorf("expected path /v1/chat/completions, got %s", receivedPath)
+	}
+
+	// 2. /v1/messages with base URL /v1
+	reqMsg := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"v1-model","messages":[{"role":"user","content":"hi"}]}`))
+	reqMsg.Header.Set("x-api-key", "local-key")
+	recMsg := httptest.NewRecorder()
+	handler.ServeHTTP(recMsg, reqMsg)
+	if recMsg.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recMsg.Code, recMsg.Body.String())
+	}
+	if receivedPath != "/v1/messages" {
+		t.Errorf("expected path /v1/messages, got %s", receivedPath)
+	}
+}
+
+func TestTransparentForwarding_ModelMapping(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedBody []byte
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-map","object":"chat.completion","choices":[]}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"modelMapping": map[string]any{
+			"alias-astra": "gpt-6-astra",
+		},
+		"customEndpoints": map[string]any{
+			"gpt-6-astra": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"alias-astra","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var reqData map[string]any
+	if err := json.Unmarshal(receivedBody, &reqData); err != nil {
+		t.Fatalf("failed to unmarshal received body: %v", err)
+	}
+	if reqData["model"] != "gpt-6-astra" {
+		t.Errorf("expected model to be mapped to gpt-6-astra, got %v", reqData["model"])
+	}
+}
+
+func TestTransparentForwarding_ChatCompletionsToAnthropicEndpoint(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedPath string
+	var receivedAnthropicVersion string
+	var receivedBody []byte
+
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedAnthropicVersion = r.Header.Get("anthropic-version")
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_anthropic_custom","type":"message","role":"assistant","content":[{"type":"text","text":"anthropic_reply"}]}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"custom-anthropic-model": map[string]any{
+				"url": mockTarget.URL + "/v1/messages",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// Client sends POST /v1/chat/completions (OpenAI format) to custom endpoint that is Anthropic (/v1/messages)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"custom-anthropic-model","messages":[{"role":"user","content":"hi anthropic"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedPath != "/v1/messages" {
+		t.Errorf("expected target path /v1/messages, got %s", receivedPath)
+	}
+	if receivedAnthropicVersion != "2023-06-01" {
+		t.Errorf("expected anthropic-version 2023-06-01, got %s", receivedAnthropicVersion)
+	}
+
+	// Received body upstream should be translated Anthropic body
+	var anthropicReq map[string]any
+	if err := json.Unmarshal(receivedBody, &anthropicReq); err != nil {
+		t.Fatalf("failed to unmarshal upstream body: %v", err)
+	}
+	if anthropicReq["model"] != "custom-anthropic-model" {
+		t.Errorf("expected model custom-anthropic-model, got %v", anthropicReq["model"])
+	}
+
+	// Downstream response should be translated back to OpenAI chat.completion format
+	var openAIResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &openAIResp); err != nil {
+		t.Fatalf("failed to unmarshal client response: %v", err)
+	}
+	if !strings.HasPrefix(stringFrom(openAIResp["id"]), "chatcmpl-") {
+		t.Errorf("expected chatcmpl- prefix in OpenAI response id, got %v", openAIResp["id"])
+	}
+}
+
+func TestIsAnthropicEndpoint(t *testing.T) {
+	cases := []struct {
+		url      string
+		expected bool
+	}{
+		{"https://api.anthropic.com", true},
+		{"https://api.anthropic.com/", true},
+		{"https://api.anthropic.com/v1", true},
+		{"https://api.anthropic.com/v1/messages", true},
+		{"https://custom.anthropic.com/messages", true},
+		{"https://my-proxy.com/v1/messages", true},
+		{"https://my-proxy.com/messages", true},
+		{"https://api.openai.com/v1", false},
+		{"https://api.openai.com/v1/chat/completions", false},
+		{"https://api.packyapi.com", false},
+		{"http://localhost:11434/v1", false},
+		{"http://localhost:8080/v1/chat/completions", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.url, func(t *testing.T) {
+			got := isAnthropicEndpoint(tc.url)
+			if got != tc.expected {
+				t.Errorf("isAnthropicEndpoint(%q) = %v, expected %v", tc.url, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestTransparentForwarding_ChatCompletionsErrorFormat(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Create a mock server and immediately close it so connection fails
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	mockURL := mockTarget.URL
+	mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"unreachable-model": map[string]any{
+				"url": mockURL,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"unreachable-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var errResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// Must have OpenAI envelope: {"error": {"message": ..., "type": ...}}
+	errObj, ok := errResp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected OpenAI error object under 'error' key, got: %v", errResp)
+	}
+	if errObj["type"] == "" || errObj["message"] == "" {
+		t.Errorf("expected non-empty type and message in error object, got: %v", errObj)
+	}
+	// Must not have Anthropic top-level "type": "error"
+	if errResp["type"] == "error" {
+		t.Errorf("expected no Anthropic top-level 'type': 'error', got: %v", errResp)
+	}
+
+	// Also test invalid custom endpoint URL
+	_, err = config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"bad-url-model": map[string]any{
+				"url": "http://[::1]:namedport",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	reqBad := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"bad-url-model","messages":[{"role":"user","content":"hi"}]}`))
+	reqBad.Header.Set("x-api-key", "local-key")
+	recBad := httptest.NewRecorder()
+	handler.ServeHTTP(recBad, reqBad)
+
+	if recBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d: %s", recBad.Code, recBad.Body.String())
+	}
+	var errBadResp map[string]any
+	if err := json.Unmarshal(recBad.Body.Bytes(), &errBadResp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if _, ok := errBadResp["error"].(map[string]any); !ok {
+		t.Fatalf("expected OpenAI error object under 'error' key for bad URL, got: %v", errBadResp)
+	}
+	if errBadResp["type"] == "error" {
+		t.Errorf("expected no Anthropic top-level 'type': 'error' for bad URL, got: %v", errBadResp)
+	}
+}
+
+func TestTransparentForwarding_StripsProxyAuthWhenNoAPIKey(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedAuth string
+	var receivedAPIKey string
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		receivedAPIKey = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"no-key-model": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	// newTestHandler sets server.apiKey = "local-key"
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// 1. Test /v1/chat/completions
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"no-key-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedAuth != "" {
+		t.Errorf("expected empty Authorization header at upstream, got: %s", receivedAuth)
+	}
+	if receivedAPIKey != "" {
+		t.Errorf("expected empty x-api-key header at upstream, got: %s", receivedAPIKey)
+	}
+
+	// 2. Test /v1/messages
+	receivedAuth = ""
+	receivedAPIKey = ""
+	reqMsg := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"no-key-model","messages":[{"role":"user","content":"hi"}]}`))
+	reqMsg.Header.Set("Authorization", "Bearer local-key")
+	reqMsg.Header.Set("x-api-key", "local-key")
+	recMsg := httptest.NewRecorder()
+	handler.ServeHTTP(recMsg, reqMsg)
+
+	if recMsg.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recMsg.Code, recMsg.Body.String())
+	}
+	if receivedAuth != "" {
+		t.Errorf("expected empty Authorization header on /v1/messages, got: %s", receivedAuth)
+	}
+	if receivedAPIKey != "" {
+		t.Errorf("expected empty x-api-key header on /v1/messages, got: %s", receivedAPIKey)
+	}
+}
+
+func TestTransparentForwarding_QueryStringPreserved(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	var receivedQuery string
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockTarget.Close()
+
+	_, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"query-model": map[string]any{
+				"url": mockTarget.URL + "?api-version=2024-02-15",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// Client sends query param
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?client_param=123", strings.NewReader(`{"model":"query-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	expected := "api-version=2024-02-15&client_param=123"
+	if receivedQuery != expected {
+		t.Errorf("expected merged query %q, got %q", expected, receivedQuery)
 	}
 }
 

@@ -628,6 +628,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 		}
 	}
+
 	writeJSON(writer, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
@@ -756,12 +757,20 @@ func (server *Server) fetchModelCatalog(ctx context.Context) (*modelcatalog.Cata
 func (server *Server) messages(writer http.ResponseWriter, request *http.Request) {
 	request = server.consumeCacheBumpHeader(request)
 	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
-	decoder := json.NewDecoder(request.Body)
+	// Keep the raw bytes: when nothing rewrites the request, custom-endpoint
+	// forwarding passes them through byte-for-byte instead of re-marshaling
+	// the decoded map (which reorders keys and reformats numbers).
+	rawBody, err := io.ReadAll(request.Body)
+	if err != nil {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to read request body: "+err.Error())
+		return
+	}
 	var anthropicRequest map[string]any
-	if err := decoder.Decode(&anthropicRequest); err != nil {
+	if err := json.Unmarshal(rawBody, &anthropicRequest); err != nil {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid JSON request body: "+err.Error())
 		return
 	}
+	bodyMutated := false
 	messages, ok := anthropicRequest["messages"].([]any)
 	if !ok {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "messages is required and must be an array")
@@ -769,38 +778,15 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 	if model, _ := anthropicRequest["model"].(string); model == "" {
 		anthropicRequest["model"] = "gemini-3.5-flash-low"
+		bodyMutated = true
+	}
+	reqModel := stringFrom(anthropicRequest["model"])
+	if current := server.resolveModelMapping(reqModel); current != reqModel {
+		slog.Info(fmt.Sprintf("[Server] Mapping model %s -> %s", reqModel, current))
+		anthropicRequest["model"] = current
+		bodyMutated = true
 	}
 	cfg := config.Get()
-	if cfg.ModelMapping != nil {
-		reqModel := stringFrom(anthropicRequest["model"])
-		current := reqModel
-		visited := make(map[string]bool)
-		for i := 0; i < maxMappingHops; i++ {
-			if visited[current] {
-				break
-			}
-			visited[current] = true
-			mappingVal, exists := cfg.ModelMapping[current]
-			if !exists {
-				break
-			}
-			var mappedModel string
-			switch v := mappingVal.(type) {
-			case string:
-				mappedModel = v
-			case map[string]any:
-				mappedModel, _ = v["mapping"].(string)
-			}
-			if mappedModel == "" || mappedModel == current {
-				break
-			}
-			current = mappedModel
-		}
-		if current != reqModel {
-			slog.Info(fmt.Sprintf("[Server] Mapping model %s -> %s", reqModel, current))
-			anthropicRequest["model"] = current
-		}
-	}
 	// max_tokens is no longer injected here. It is sent upstream only when
 	// the client supplied it or a per-model limit is known; see
 	// applyMaxTokensPolicy.
@@ -813,14 +799,23 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 
 	if server.headroom != nil {
 		if hrCtx, err := server.headroom.Process(request.Context(), anthropicRequest); err != nil {
-			server.logger.Warn("headroom pipeline failed; forwarding request unmodified", "error", err)
-		} else if hrCtx.BytesBefore > 0 || hrCtx.EffortClamped {
-			if server.tracker != nil {
-				server.tracker.RecordHeadroom(stats.HeadroomSample{
-					BytesBefore:           hrCtx.BytesBefore,
-					BytesAfter:            hrCtx.BytesAfter,
-					ThinkingTokensClamped: hrCtx.OriginalThinking - hrCtx.ClampedThinking,
-				})
+			server.logger.Warn("headroom pipeline failed; forwarding request as decoded", "error", err)
+			// The pipeline mutates in place and may have half-applied before
+			// failing, so the map can no longer be proven identical to the
+			// raw client bytes.
+			bodyMutated = true
+		} else {
+			if hrCtx.BytesBefore > 0 || hrCtx.EffortClamped {
+				if server.tracker != nil {
+					server.tracker.RecordHeadroom(stats.HeadroomSample{
+						BytesBefore:           hrCtx.BytesBefore,
+						BytesAfter:            hrCtx.BytesAfter,
+						ThinkingTokensClamped: hrCtx.OriginalThinking - hrCtx.ClampedThinking,
+					})
+				}
+			}
+			if hrCtx.BytesBefore > 0 || hrCtx.EffortClamped || hrCtx.RewritesCount > 0 || hrCtx.ChunksStored > 0 {
+				bodyMutated = true
 			}
 		}
 	}
@@ -879,6 +874,10 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request: "+err.Error())
 			return
 		}
+		if !bodyMutated {
+			// Nothing rewrote the request — forward the client's exact bytes.
+			reqBody = rawBody
+		}
 		server.forwardToCustomEndpoint(writer, request, endpoint, model, reqBody)
 		return
 	}
@@ -917,17 +916,89 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	server.unaryMessage(writer, request, send, anthropicRequest, model)
 }
 
-func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, model string, reqBody []byte) {
-	targetURL, err := url.Parse(endpoint.URL)
+func (server *Server) resolveModelMapping(model string) string {
+	cfg := config.Get()
+	if cfg.ModelMapping == nil || model == "" {
+		return model
+	}
+	current := model
+	visited := make(map[string]bool)
+	for i := 0; i < maxMappingHops; i++ {
+		if visited[current] {
+			break
+		}
+		visited[current] = true
+		mappingVal, exists := cfg.ModelMapping[current]
+		if !exists {
+			break
+		}
+		var mappedModel string
+		switch v := mappingVal.(type) {
+		case string:
+			mappedModel = v
+		case map[string]any:
+			mappedModel, _ = v["mapping"].(string)
+		}
+		if mappedModel == "" || mappedModel == current {
+			break
+		}
+		current = mappedModel
+	}
+	return current
+}
+
+func isAnthropicEndpoint(endpointURL string) bool {
+	parsed, err := url.Parse(endpointURL)
 	if err != nil {
+		return false
+	}
+	clean := strings.TrimRight(parsed.Path, "/")
+	if clean == "/messages" || strings.HasSuffix(clean, "/messages") {
+		return true
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "api.anthropic.com" || host == "anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
+}
+
+func resolveCustomEndpointURL(endpointURL string, requestPath string) (*url.URL, error) {
+	targetURL, err := url.Parse(endpointURL)
+	if err != nil {
+		return nil, err
+	}
+	cleanPath := strings.TrimRight(targetURL.Path, "/")
+	if cleanPath == "" {
+		targetURL.Path = requestPath
+		return targetURL, nil
+	}
+	if cleanPath == "/v1" || strings.HasSuffix(cleanPath, "/v1") {
+		if strings.HasPrefix(requestPath, "/v1/") {
+			targetURL.Path = cleanPath + strings.TrimPrefix(requestPath, "/v1")
+		} else {
+			targetURL.Path = cleanPath + requestPath
+		}
+		return targetURL, nil
+	}
+	return targetURL, nil
+}
+
+func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, model string, reqBody []byte) {
+	isMessagesRequest := request.URL.Path == "/v1/messages" || strings.HasSuffix(request.URL.Path, "/messages")
+
+	targetURL, err := resolveCustomEndpointURL(endpoint.URL, request.URL.Path)
+	if err != nil {
+		if !isMessagesRequest {
+			writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid custom endpoint URL: "+err.Error())
+			return
+		}
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Invalid custom endpoint URL: "+err.Error())
 		return
 	}
-	if !strings.HasSuffix(targetURL.Path, "/v1/messages") {
-		targetURL.Path = strings.TrimSuffix(targetURL.Path, "/") + "/v1/messages"
+
+	if strings.HasSuffix(targetURL.Path, "/messages") {
+		isMessagesRequest = true
 	}
 
-	if server.isCCREnabled() {
+	if server.isCCREnabled() && isMessagesRequest {
 		var reqMap map[string]any
 		if err := json.Unmarshal(reqBody, &reqMap); err == nil {
 			customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
@@ -938,6 +1009,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 				}
 				httpReq.Header.Set("Content-Type", "application/json")
 				if endpoint.APIKey != "" {
+					httpReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 					httpReq.Header.Set("x-api-key", endpoint.APIKey)
 				}
 				if v := request.Header.Get("anthropic-version"); v != "" {
@@ -967,42 +1039,59 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	}
 
 	customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
+	// Rewrite (not Director): the stdlib strips Forwarded/X-Forwarded-* before
+	// the hook and does not re-add them, so the custom endpoint never sees
+	// proxy or client forwarding headers. It also closes the Director
+	// hop-by-hop header hole. Header names still pass through net/http
+	// canonicalization (X-Stainless-OS -> X-Stainless-Os); irrelevant over
+	// HTTP/2, which lowercases everything on the wire.
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
-			if resp.StatusCode < 400 {
+			if resp.StatusCode < 400 && isMessagesRequest {
 				server.maybeRecordCacheBump(cachebump.RouteCustom, request, reqBody, customSessionKey, model, "", model, minMaxTokensFloor)
 			}
 			return nil
 		},
-		Director: func(req *http.Request) {
-			req.URL.Scheme = targetURL.Scheme
-			req.URL.Host = targetURL.Host
-			req.URL.Path = targetURL.Path
-			req.URL.RawQuery = targetURL.RawQuery
-			req.Host = targetURL.Host
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			out := pr.Out
+			out.URL.Scheme = targetURL.Scheme
+			out.URL.Host = targetURL.Host
+			out.URL.Path = targetURL.Path
+			targetQuery := targetURL.RawQuery
+			if targetQuery == "" || out.URL.RawQuery == "" {
+				out.URL.RawQuery = targetQuery + out.URL.RawQuery
+			} else {
+				out.URL.RawQuery = targetQuery + "&" + out.URL.RawQuery
+			}
+			out.Host = targetURL.Host
 
-			req.Body = io.NopCloser(bytes.NewReader(reqBody))
-			req.ContentLength = int64(len(reqBody))
+			out.Body = io.NopCloser(bytes.NewReader(reqBody))
+			out.ContentLength = int64(len(reqBody))
 
 			if endpoint.APIKey != "" {
-				req.Header.Set("x-api-key", endpoint.APIKey)
+				out.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
+				out.Header.Set("x-api-key", endpoint.APIKey)
+			} else {
+				out.Header.Del("Authorization")
+				out.Header.Del("x-api-key")
 			}
 
-			// Match the CCR sender above: forward the client's Anthropic
-			// protocol headers so the recorded TTL (e.g. the 1h
-			// extended-cache-ttl beta) matches what the upstream honored.
 			if v := request.Header.Get("anthropic-version"); v != "" {
-				req.Header.Set("anthropic-version", v)
-			} else {
-				req.Header.Set("anthropic-version", "2023-06-01")
+				out.Header.Set("anthropic-version", v)
+			} else if isMessagesRequest {
+				out.Header.Set("anthropic-version", "2023-06-01")
 			}
 			if b := request.Header.Get("anthropic-beta"); b != "" {
-				req.Header.Set("anthropic-beta", b)
+				out.Header.Set("anthropic-beta", b)
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
 			server.logger.Error("custom endpoint proxy error", "error", proxyErr, "url", targetURL.String())
+			if !isMessagesRequest {
+				writeOpenAIError(w, http.StatusBadGateway, "api_error", "Custom endpoint forwarding error: "+proxyErr.Error())
+				return
+			}
 			writeAPIError(w, http.StatusBadGateway, "api_error", "Custom endpoint forwarding error: "+proxyErr.Error())
 		},
 	}
