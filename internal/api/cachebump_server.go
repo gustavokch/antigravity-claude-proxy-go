@@ -49,24 +49,28 @@ func (server *Server) getCacheBump() (*cachebump.Store, *cachebump.Scheduler) {
 }
 
 // StartCacheBumpScheduler drives the bump loop until ctx is done, beside
-// StartClaudeCodeBackgroundWorker. A tick is skipped while the feature is
+// StartClaudeCodeBackgroundWorker. It spawns the loop internally and returns
+// immediately: a synchronous call parks the startup goroutine here forever
+// and ListenAndServe never runs. A tick is skipped while the feature is
 // disabled so flipping the WebUI switch stops bumps without deleting
 // recorded sessions.
 func (server *Server) StartCacheBumpScheduler(ctx context.Context) {
-	_, sched := server.getCacheBump()
-	ticker := time.NewTicker(cacheBumpTickingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !config.Get().CacheBump.Enabled {
-				continue
+	go func() {
+		_, sched := server.getCacheBump()
+		ticker := time.NewTicker(cacheBumpTickingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !config.Get().CacheBump.Enabled {
+					continue
+				}
+				sched.Tick(ctx)
 			}
-			sched.Tick(ctx)
 		}
-	}
+	}()
 }
 
 // cacheBumpHeaderKey carries the X-Cache-Bump value through the request
