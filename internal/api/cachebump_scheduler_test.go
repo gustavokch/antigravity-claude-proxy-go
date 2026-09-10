@@ -35,3 +35,34 @@ func TestStartCacheBumpSchedulerDoesNotBlockCaller(t *testing.T) {
 		t.Fatal("StartCacheBumpScheduler blocked the caller; startup would never reach ListenAndServe")
 	}
 }
+
+// A disabled feature must cost nothing at startup: the loop resolves the
+// store and scheduler per tick, after the Enabled check, so the WebUI switch
+// also decides whether they are ever built. Resolving them once when the
+// goroutine starts would allocate a store the proxy never uses and freeze the
+// scheduler knobs at their startup values.
+func TestStartCacheBumpSchedulerAllocatesNothingWhileDisabled(t *testing.T) {
+	original := config.Get()
+	defer config.SetForTest(original)
+
+	cfg := original
+	cfg.CacheBump.Enabled = false
+	config.SetForTest(cfg)
+
+	server := &Server{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server.StartCacheBumpScheduler(ctx)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		store := server.cacheBumpStore
+		server.mu.Unlock()
+		if store != nil {
+			t.Fatal("scheduler built the cache bump store while the feature is disabled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

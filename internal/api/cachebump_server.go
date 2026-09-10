@@ -53,10 +53,12 @@ func (server *Server) getCacheBump() (*cachebump.Store, *cachebump.Scheduler) {
 // immediately: a synchronous call parks the startup goroutine here forever
 // and ListenAndServe never runs. A tick is skipped while the feature is
 // disabled so flipping the WebUI switch stops bumps without deleting
-// recorded sessions.
+// recorded sessions, and the store and scheduler are resolved per tick, after
+// that check: a disabled feature then builds nothing, and an enabled one
+// picks up WebUI knob edits on the next tick instead of holding the values
+// captured at startup.
 func (server *Server) StartCacheBumpScheduler(ctx context.Context) {
 	go func() {
-		_, sched := server.getCacheBump()
 		ticker := time.NewTicker(cacheBumpTickingInterval)
 		defer ticker.Stop()
 		for {
@@ -67,6 +69,7 @@ func (server *Server) StartCacheBumpScheduler(ctx context.Context) {
 				if !config.Get().CacheBump.Enabled {
 					continue
 				}
+				_, sched := server.getCacheBump()
 				sched.Tick(ctx)
 			}
 		}
