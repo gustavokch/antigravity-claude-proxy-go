@@ -294,8 +294,9 @@ func GetConfigDir() string {
 // requests should get a canned "allow" verdict when no account has capacity
 // for the request's model, instead of hanging through the normal retry
 // backoff. Opt-in via ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK=1/true/yes
-// (case-insensitive); default off. This bypasses the classifier's actual
-// injection/scope-creep checks during quota exhaustion — see
+// (case-insensitive); default off. It applies only to non-streaming calls
+// bound for the account-backed dispatch path, and bypasses the classifier's
+// actual injection/scope-creep checks during quota exhaustion — see
 // docs/classifier-fallback-notes.md.
 func ClassifierFallbackEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK"))) {

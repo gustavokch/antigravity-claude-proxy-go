@@ -128,3 +128,18 @@ the fingerprint (content varies per user), safe to ignore for detection.
   need its own capacity check if Task 2 chooses to handle it).
 - Scope: stub Variants A and B (confirmed formats). Variant C: fail-fast (429, no backoff)
   rather than stub, until its response format is confirmed by a follow-up capture.
+
+## As shipped (amended after the PR #68 review)
+
+The recommendations above are the capture's own conclusions. Three of them changed
+during review; the notes are kept as written and corrected here rather than rewritten.
+
+- Detection does **not** index `system[1]`. It scans every system block for the monitor
+  prefix, so an extra or reordered block upstream cannot silently disable the feature.
+- Variant C fast-fails with a non-retryable **400**, not a 429. A 429 invites the
+  caller's own retry/backoff, which is the stall the fallback exists to remove.
+- The capacity gate runs **after** the Kimi / Claude Code / OpenRouter / custom-endpoint
+  routes. Those backends carry their own credentials and never consume account capacity,
+  so account exhaustion says nothing about whether their requests would hang. Streaming
+  requests are excluded for the same class of reason: the canned verdict is a JSON body
+  and a caller awaiting `text/event-stream` could not parse it.

@@ -433,14 +433,22 @@ retrying, once no account has capacity for its model:
 |---|---|---|
 | Ordinary chat/tool traffic | unchanged | unchanged — normal retry/backoff |
 | Recognized classifier call, supported variant | unchanged | instant canned 200 "allow" verdict |
-| Recognized classifier call, unsupported variant | unchanged | fast 429, no retry/backoff |
+| Recognized classifier call, unsupported variant | unchanged | non-retryable 400, no retry/backoff |
+
+The gate applies only to requests bound for the account-backed dispatch path.
+Traffic routed to Kimi, Claude Code, OpenRouter or a custom endpoint carries
+its own credentials and never consumes account capacity, so it is never
+stubbed or failed by this flag. Streaming requests are also left alone: the
+canned verdict is a plain JSON body, which a caller awaiting
+`text/event-stream` could not parse.
 
 **Security tradeoff:** while this flag is on and an account is out of
 capacity, recognized classifier calls skip their actual injection/scope-creep
 check and are answered "allow" unconditionally. It only ever affects requests
 that match a captured classifier fingerprint (see
 `docs/classifier-fallback-notes.md`) — ordinary chat and tool-use traffic is
-never stubbed or fast-failed by this flag, regardless of capacity.
+never stubbed or fast-failed by this flag, regardless of capacity. Every stub
+and fast-fail is logged at warning level with the detected variant and model.
 
 ---
 
