@@ -339,6 +339,56 @@ func TestStore_Due(t *testing.T) {
 	}
 }
 
+func TestStore_StopReleasesBodyBytes(t *testing.T) {
+	store := NewStore(time.Hour, 100)
+	now := time.Now()
+	key := RecordKey(RouteClaudeCode, "s1")
+
+	store.Upsert(Record{
+		Key:       key,
+		SessionID: "s1",
+		Route:     RouteClaudeCode,
+		Body:      make([]byte, 500),
+		TTL:       5 * time.Minute,
+		LastSeen:  now,
+	})
+	if store.Bytes() != 500 {
+		t.Fatalf("expected Bytes() 500, got %d", store.Bytes())
+	}
+
+	store.Stop(key, "manual")
+
+	// A stopped session is never replayed, so its body is dead weight: the
+	// record stays visible for the management API, but the bytes go back.
+	if store.Bytes() != 0 {
+		t.Errorf("expected Bytes() 0 after Stop, got %d", store.Bytes())
+	}
+	got, ok := store.Get(key)
+	if !ok || !got.Stopped || got.StopReason != "manual" {
+		t.Fatalf("expected stopped record still visible, got %+v", got)
+	}
+	if got.Body != nil {
+		t.Errorf("expected body released, got %d bytes", len(got.Body))
+	}
+
+	// A re-arm supplies a fresh body and restores normal accounting.
+	store.Upsert(Record{
+		Key:       key,
+		SessionID: "s1",
+		Route:     RouteClaudeCode,
+		Body:      make([]byte, 300),
+		TTL:       5 * time.Minute,
+		LastSeen:  now.Add(time.Minute),
+	})
+	if store.Bytes() != 300 {
+		t.Errorf("expected Bytes() 300 after re-arm, got %d", store.Bytes())
+	}
+	got, _ = store.Get(key)
+	if got.Stopped || got.Body == nil {
+		t.Errorf("expected re-armed record with body, got %+v", got.Stopped)
+	}
+}
+
 func TestStore_StopAndClear(t *testing.T) {
 	store := NewStore(time.Hour, 100)
 	now := time.Now()

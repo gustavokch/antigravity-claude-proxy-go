@@ -157,7 +157,9 @@ func (s *Store) ScheduleRetry(key string, next time.Time) {
 }
 
 // Stop marks a record stopped with a reason. It stays visible in the store
-// until the TTL prune.
+// until the TTL prune. The replay body is released: a stopped session is
+// never replayed, so holding its body would only pin byte budget that live
+// sessions need. A later Upsert re-arm supplies a fresh body.
 func (s *Store) Stop(key string, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,6 +169,9 @@ func (s *Store) Stop(key string, reason string) {
 	}
 	rec.Stopped = true
 	rec.StopReason = reason
+	s.bytes -= len(rec.Body)
+	rec.Body = nil
+	rec.Headers = nil
 }
 
 // Clear removes every record.
