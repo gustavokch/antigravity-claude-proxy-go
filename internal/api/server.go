@@ -896,12 +896,18 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			noCapacity := server.accountManager == nil || server.accountManager.Available(model) == 0
 			if noCapacity {
 				if stub, stubErr := classifier.Stub(kind, model); stubErr == nil {
+					slog.Warn("[Server] classifier fallback: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
+						"kind", kind, "model", model)
 					writer.Header().Set("Content-Type", "application/json")
 					writer.WriteHeader(http.StatusOK)
 					_, _ = writer.Write(stub)
 					return
 				}
-				writeAPIError(writer, http.StatusTooManyRequests, "rate_limit_error", "No account capacity for model "+model+"; classifier fallback active, failing fast instead of retrying.")
+				// 400, not 429: a 429 invites the caller's own retry/backoff,
+				// which is exactly the stall this fallback exists to remove.
+				slog.Warn("[Server] classifier fallback: no canned verdict for this variant; failing fast instead of retrying",
+					"kind", kind, "model", model)
+				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No account capacity for model "+model+"; classifier fallback active and this classifier variant has no canned verdict, so the request fails fast instead of retrying.")
 				return
 			}
 		}

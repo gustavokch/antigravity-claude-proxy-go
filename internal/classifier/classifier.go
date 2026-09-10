@@ -31,6 +31,21 @@ const (
 	KindBlockPrefilter
 )
 
+// String names the variant for logs. Without it a Kind prints as a bare
+// integer, which tells an operator nothing about what was stubbed.
+func (k Kind) String() string {
+	switch k {
+	case KindStage1Severity:
+		return "stage1-severity"
+	case KindStage2Severity:
+		return "stage2-severity"
+	case KindBlockPrefilter:
+		return "block-prefilter"
+	default:
+		return "none"
+	}
+}
+
 // ErrUnsupportedKind is returned by Stub for kinds whose verdict format is
 // not confirmed (currently KindBlockPrefilter and KindNone).
 var ErrUnsupportedKind = errors.New("classifier: no canned verdict for this kind")
@@ -155,8 +170,11 @@ func Stub(kind Kind, model string) ([]byte, error) {
 		"stop_reason":   "end_turn",
 		"stop_sequence": nil,
 		"usage": map[string]any{
+			// The stub never reached a model, so it consumed nothing. Reporting
+			// len(verdictText) here would pass a byte count off as a token count
+			// to downstream usage accounting.
 			"input_tokens":  0,
-			"output_tokens": len(verdictText),
+			"output_tokens": 0,
 		},
 	}
 	return json.Marshal(resp)

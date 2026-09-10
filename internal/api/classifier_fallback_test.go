@@ -157,8 +157,19 @@ func TestMessages_ClassifierFallback_FastFailsUnsupportedVariant(t *testing.T) {
 	if backend.hit {
 		t.Fatal("backend was dispatched to; unsupported classifier variant should fast-fail instead")
 	}
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (a 429 invites the caller's own backoff, which is the stall this feature removes); body: %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("fast-fail body is not valid JSON: %v; body: %s", err, rec.Body.String())
+	}
+	if payload.Error.Type != "invalid_request_error" {
+		t.Fatalf("error.type = %q, want invalid_request_error (non-retryable)", payload.Error.Type)
 	}
 }
 

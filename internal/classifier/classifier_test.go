@@ -143,6 +143,42 @@ func TestStub(t *testing.T) {
 	})
 }
 
+func TestKindString(t *testing.T) {
+	tests := []struct {
+		kind Kind
+		want string
+	}{
+		{KindNone, "none"},
+		{KindStage1Severity, "stage1-severity"},
+		{KindStage2Severity, "stage2-severity"},
+		{KindBlockPrefilter, "block-prefilter"},
+	}
+	for _, tt := range tests {
+		if got := tt.kind.String(); got != tt.want {
+			t.Errorf("Kind(%d).String() = %q, want %q", int(tt.kind), got, tt.want)
+		}
+	}
+}
+
+func TestStubReportsNoTokenUsage(t *testing.T) {
+	out, err := Stub(KindStage1Severity, "claude-sonnet-5")
+	if err != nil {
+		t.Fatalf("Stub() error = %v", err)
+	}
+	var resp struct {
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("Stub() output does not parse as JSON: %v", err)
+	}
+	if resp.Usage.InputTokens != 0 || resp.Usage.OutputTokens != 0 {
+		t.Fatalf("Stub() usage = %+v, want zeros: the stub never reached a model", resp.Usage)
+	}
+}
+
 func assertVerdictText(t *testing.T, raw []byte, wantModel string, check func(string) bool) {
 	t.Helper()
 	var resp struct {
