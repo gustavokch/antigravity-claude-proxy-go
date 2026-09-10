@@ -27,6 +27,7 @@ import (
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/cachebump"
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
@@ -821,6 +822,21 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 
 	model := stringFrom(anthropicRequest["model"])
+	if config.ClassifierFallbackEnabled() {
+		if kind, detected := classifier.Detect(rawBody); detected {
+			noCapacity := server.accountManager == nil || server.accountManager.Available(model) == 0
+			if noCapacity {
+				if stub, stubErr := classifier.Stub(kind, rawBody); stubErr == nil {
+					writer.Header().Set("Content-Type", "application/json")
+					writer.WriteHeader(http.StatusOK)
+					_, _ = writer.Write(stub)
+					return
+				}
+				writeAPIError(writer, http.StatusTooManyRequests, "rate_limit_error", "No account capacity for model "+model+"; classifier fallback active, failing fast instead of retrying.")
+				return
+			}
+		}
+	}
 	if cfg.Kimi.Enabled {
 		if kimiEntry, ok := matchKimiModelEntry(cfg.Kimi, model); ok {
 			anthropicRequest["model"] = kimiEntry.ID
