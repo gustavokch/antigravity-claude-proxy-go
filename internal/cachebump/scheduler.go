@@ -106,6 +106,23 @@ func NewScheduler(store *Store, sender Sender, cfg SchedulerConfig) *Scheduler {
 	}
 }
 
+// Reconfigure swaps the scheduler knobs on a live scheduler. The WebUI can
+// edit leadSeconds and the idle/cap limits while the proxy runs; without
+// this, rescheduled bumps would keep the values captured at startup while
+// the recorder already uses the fresh ones.
+func (s *Scheduler) Reconfigure(cfg SchedulerConfig) {
+	s.mu.Lock()
+	s.cfg = cfg
+	s.mu.Unlock()
+}
+
+// config returns a consistent snapshot of the scheduler knobs.
+func (s *Scheduler) config() SchedulerConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
 // Run drives Tick on a ticker until ctx is done. Ticks never overlap: if a
 // pass is still running (a slow upstream), the next tick is skipped.
 func (s *Scheduler) Run(ctx context.Context, interval time.Duration) {
@@ -145,10 +162,11 @@ func (s *Scheduler) Tick(ctx context.Context) {
 
 func (s *Scheduler) bump(ctx context.Context, rec Record) {
 	now := s.Now()
+	cfg := s.config()
 
 	// Idle sessions are stopped before firing — a bump for a session the
 	// client abandoned is wasted traffic.
-	if s.cfg.MaxIdleMinutes > 0 && now.Sub(rec.LastSeen) > time.Duration(s.cfg.MaxIdleMinutes)*time.Minute {
+	if cfg.MaxIdleMinutes > 0 && now.Sub(rec.LastSeen) > time.Duration(cfg.MaxIdleMinutes)*time.Minute {
 		s.stop(rec.Key, "idle")
 		return
 	}
@@ -189,7 +207,7 @@ func (s *Scheduler) bump(ctx context.Context, rec Record) {
 	// NextBumpTime clamps a non-positive or oversized lead to TTL/5, so the
 	// next bump always lands strictly before the entry expires — the same
 	// rule the recorder used for the first bump.
-	next := NextBumpTime(now, rec.TTL, s.cfg.LeadSeconds)
+	next := NextBumpTime(now, rec.TTL, cfg.LeadSeconds)
 	s.store.MarkBumped(rec.Key, next, result.CacheReadTokens, result.CacheCreationTokens)
 
 	s.mu.Lock()
@@ -200,7 +218,7 @@ func (s *Scheduler) bump(ctx context.Context, rec Record) {
 	var fired Record
 	if updated, ok := s.store.Get(rec.Key); ok {
 		fired = updated
-		if s.cfg.MaxBumpsPerSession > 0 && updated.Bumps >= s.cfg.MaxBumpsPerSession {
+		if cfg.MaxBumpsPerSession > 0 && updated.Bumps >= cfg.MaxBumpsPerSession {
 			s.stop(rec.Key, "bump_cap")
 			return
 		}

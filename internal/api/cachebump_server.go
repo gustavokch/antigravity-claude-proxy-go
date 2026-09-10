@@ -35,6 +35,15 @@ func (server *Server) getCacheBump() (*cachebump.Store, *cachebump.Scheduler) {
 		sched.OnEvent = server.logCacheBumpEvent
 		server.cacheBumpStore = store
 		server.cacheBumpSched = sched
+	} else {
+		// The WebUI can edit the knobs while the proxy runs; the live
+		// scheduler must track them, not the values captured at startup.
+		cfg := config.Get().CacheBump
+		server.cacheBumpSched.Reconfigure(cachebump.SchedulerConfig{
+			LeadSeconds:        cfg.LeadSeconds,
+			MaxBumpsPerSession: cfg.MaxBumpsPerSession,
+			MaxIdleMinutes:     cfg.MaxIdleMinutes,
+		})
 	}
 	return server.cacheBumpStore, server.cacheBumpSched
 }

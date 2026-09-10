@@ -858,3 +858,47 @@ func TestCacheBump_NewTurnRearmsSession(t *testing.T) {
 		t.Errorf("expected record re-armed, got %+v", rec)
 	}
 }
+
+func TestCacheBump_ConfigEditReachesRunningScheduler(t *testing.T) {
+	upstream := &cacheBumpUpstream{
+		status:   http.StatusOK,
+		respBody: `{"id":"m1","type":"message","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":1200}}`,
+	}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+
+	cfg := cacheBumpTestConfig(t, ts.URL)
+	cfg.Kimi = config.KimiConfig{Enabled: true, BaseURL: ts.URL, APIKey: "kimi-key"}
+	cfg.CacheBump.Routes.Kimi = true
+	persistTestConfig(t, cfg)
+	resetCCPoolForTest()
+
+	srv, store, sched := newCacheBumpServer(t)
+
+	now := time.Now()
+	rec := cachebump.Record{
+		Key:       cachebump.RecordKey(cachebump.RouteKimi, "sess-cfgedit"),
+		SessionID: "sess-cfgedit",
+		Route:     cachebump.RouteKimi,
+		Body:      []byte(`{"messages":[]}`),
+		TTL:       5 * time.Minute,
+		LastSeen:  now,
+		NextBump:  now, // due immediately
+	}
+	store.Upsert(rec)
+
+	// The operator edits maxIdleMinutes in the WebUI; a fresh getCacheBump
+	// (every recorded turn calls it) must push the new knob into the live
+	// scheduler instead of leaving the startup snapshot in charge.
+	cfg.CacheBump.MaxIdleMinutes = 1
+	persistTestConfig(t, cfg)
+	srv.getCacheBump()
+
+	sched.Now = func() time.Time { return now.Add(2 * time.Minute) }
+	sched.Tick(context.Background())
+
+	got, _ := store.Get(rec.Key)
+	if !got.Stopped || got.StopReason != "idle" {
+		t.Errorf("expected idle stop from the edited maxIdleMinutes, got %+v", got)
+	}
+}

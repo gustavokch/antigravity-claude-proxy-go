@@ -96,6 +96,58 @@ func TestScheduler_ZeroLeadStillSchedulesBeforeExpiry(t *testing.T) {
 	}
 }
 
+func TestScheduler_ReconfigureChangesReschedule(t *testing.T) {
+	now := time.Now()
+	store := NewStore(time.Hour, 100)
+	store.Upsert(newTestRecord(now, time.Hour, 60))
+
+	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
+		return BumpResult{CacheReadTokens: 100}, nil
+	}
+	sched := newTestScheduler(store, sender, 60, 0, 0)
+	sched.Now = func() time.Time { return now }
+
+	// The operator edits the config; the running scheduler must pick it up
+	// instead of rescheduling with the value captured at construction.
+	sched.Reconfigure(SchedulerConfig{LeadSeconds: 600})
+	sched.Tick(context.Background())
+
+	rec, ok := store.Get(RecordKey(RouteClaudeCode, "s1"))
+	if !ok {
+		t.Fatal("record missing")
+	}
+	// 1h TTL, lead 600s (within the TTL/5 clamp of 12m): bump+50m.
+	want := now.Add(time.Hour - 600*time.Second)
+	if !rec.NextBump.Equal(want) {
+		t.Errorf("expected NextBump %v after reconfigure, got %v", want, rec.NextBump)
+	}
+}
+
+func TestScheduler_ReconfigureConcurrentWithTick(t *testing.T) {
+	now := time.Now()
+	store := NewStore(time.Hour, 100)
+	store.Upsert(newTestRecord(now, time.Hour, 60))
+
+	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
+		return BumpResult{CacheReadTokens: 1}, nil
+	}
+	sched := newTestScheduler(store, sender, 60, 0, 240)
+	sched.Now = func() time.Time { return now }
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			sched.Reconfigure(SchedulerConfig{LeadSeconds: 60 + i, MaxIdleMinutes: 240})
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		store.Upsert(newTestRecord(now, time.Hour, 60))
+		sched.Tick(context.Background())
+	}
+	<-done
+}
+
 func TestScheduler_SenderReceivesBodyAndAllowlistedHeaders(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
