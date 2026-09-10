@@ -416,6 +416,32 @@ The proxy provides native support for official Anthropic Claude Code accounts, i
   - Exposes official Anthropic Claude models (`claude-3-7-sonnet-20250219`, `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`, etc.) through the catalog and allows custom model aliasing.
   - Includes multi-hop loop protection to prevent recursive model mapping chains.
 
+### Bash-Classifier Fallback on Quota Exhaustion
+
+Claude Code runs a background security-monitor call before executing most bash
+actions (injection detection, scope-creep checks). That call reuses whatever
+model the session's own chat traffic uses — when every account is out of
+capacity for that model, the classifier call hangs through the normal
+retry/backoff and the whole session stalls, even though the user's actual
+request could otherwise proceed.
+
+Setting `ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK=1` (default off) answers a
+recognized classifier call with a canned "allow" verdict instantly instead of
+retrying, once no account has capacity for its model:
+
+| Request | Capacity available | No account has capacity |
+|---|---|---|
+| Ordinary chat/tool traffic | unchanged | unchanged — normal retry/backoff |
+| Recognized classifier call, supported variant | unchanged | instant canned 200 "allow" verdict |
+| Recognized classifier call, unsupported variant | unchanged | fast 429, no retry/backoff |
+
+**Security tradeoff:** while this flag is on and an account is out of
+capacity, recognized classifier calls skip their actual injection/scope-creep
+check and are answered "allow" unconditionally. It only ever affects requests
+that match a captured classifier fingerprint (see
+`docs/classifier-fallback-notes.md`) — ordinary chat and tool-use traffic is
+never stubbed or fast-failed by this flag, regardless of capacity.
+
 ---
 
 ## OpenRouter Gateway & Model Discovery
