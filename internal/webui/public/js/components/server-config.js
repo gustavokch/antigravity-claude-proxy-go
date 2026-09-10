@@ -527,6 +527,7 @@ window.Components.serverConfig = () => ({
                 maxBumpsPerSession: 48,
                 maxIdleMinutes: 240,
                 maxSessions: 200,
+                maxBodyMB: 64,
                 routes: { claudecode: true, kimi: false, customEndpoints: false }
             };
         }

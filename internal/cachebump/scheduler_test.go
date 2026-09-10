@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func newTestRecord(now time.Time, ttl time.Duration, lead int) Record {
+func newTestRecord(now time.Time, ttl time.Duration) Record {
 	rec := Record{
 		Key:       RecordKey(RouteClaudeCode, "s1"),
 		SessionID: "s1",
@@ -33,7 +33,7 @@ func newTestScheduler(store *Store, sender Sender, lead, maxBumps, maxIdle int) 
 func TestScheduler_FiresDueBumpAndReschedules(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	var gotRec Record
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
@@ -71,7 +71,7 @@ func TestScheduler_FiresDueBumpAndReschedules(t *testing.T) {
 func TestScheduler_ZeroLeadStillSchedulesBeforeExpiry(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 0))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
 		return BumpResult{CacheReadTokens: 100}, nil
@@ -99,7 +99,7 @@ func TestScheduler_ZeroLeadStillSchedulesBeforeExpiry(t *testing.T) {
 func TestScheduler_ReconfigureChangesReschedule(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, time.Hour, 60))
+	store.Upsert(newTestRecord(now, time.Hour))
 
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
 		return BumpResult{CacheReadTokens: 100}, nil
@@ -126,7 +126,7 @@ func TestScheduler_ReconfigureChangesReschedule(t *testing.T) {
 func TestScheduler_ReconfigureConcurrentWithTick(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, time.Hour, 60))
+	store.Upsert(newTestRecord(now, time.Hour))
 
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
 		return BumpResult{CacheReadTokens: 1}, nil
@@ -142,7 +142,7 @@ func TestScheduler_ReconfigureConcurrentWithTick(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 200; i++ {
-		store.Upsert(newTestRecord(now, time.Hour, 60))
+		store.Upsert(newTestRecord(now, time.Hour))
 		sched.Tick(context.Background())
 	}
 	<-done
@@ -152,7 +152,7 @@ func TestScheduler_SenderReceivesBodyAndAllowlistedHeaders(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
 
-	rec := newTestRecord(now, 5*time.Minute, 60)
+	rec := newTestRecord(now, 5*time.Minute)
 	hdr := http.Header{}
 	hdr.Set("anthropic-version", "2023-06-01")
 	hdr.Set("anthropic-beta", "extended-cache-ttl-2025-04-11")
@@ -185,7 +185,7 @@ func TestScheduler_SenderReceivesBodyAndAllowlistedHeaders(t *testing.T) {
 func TestScheduler_PaidWriteStops(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
 		return BumpResult{CacheReadTokens: 0, CacheCreationTokens: 9000}, nil
@@ -206,7 +206,7 @@ func TestScheduler_PaidWriteStops(t *testing.T) {
 func TestScheduler_UpstreamRejected4xxStops(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
 		return BumpResult{}, &UpstreamError{Status: 400}
@@ -224,7 +224,7 @@ func TestScheduler_UpstreamRejected4xxStops(t *testing.T) {
 func TestScheduler_429RetriesOnceThenStops(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	attempts := 0
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
@@ -262,7 +262,7 @@ func TestScheduler_429RetriesOnceThenStops(t *testing.T) {
 func TestScheduler_5xxRecoversAfterRetry(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	attempts := 0
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
@@ -291,7 +291,7 @@ func TestScheduler_5xxRecoversAfterRetry(t *testing.T) {
 func TestScheduler_NetworkErrorRetriesLike5xx(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	attempts := 0
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
@@ -318,7 +318,7 @@ func TestScheduler_NetworkErrorRetriesLike5xx(t *testing.T) {
 func TestScheduler_BumpCapStops(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
 		return BumpResult{CacheReadTokens: 100}, nil
@@ -344,7 +344,7 @@ func TestScheduler_BumpCapStops(t *testing.T) {
 func TestScheduler_IdleStops(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	fired := false
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
@@ -370,7 +370,7 @@ func TestScheduler_IdleStops(t *testing.T) {
 func TestScheduler_StaleResultAfterRearmIgnored(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	rearmed := now.Add(30 * time.Second)
 	freshNext := rearmed.Add(time.Hour)
@@ -415,7 +415,7 @@ func TestScheduler_StaleResultAfterRearmIgnored(t *testing.T) {
 func TestScheduler_AccountUnavailableStops(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
 		return BumpResult{}, ErrAccountUnavailable
@@ -433,7 +433,7 @@ func TestScheduler_AccountUnavailableStops(t *testing.T) {
 func TestScheduler_SkipsStoppedRecords(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	rec := newTestRecord(now, 5*time.Minute, 60)
+	rec := newTestRecord(now, 5*time.Minute)
 	store.Upsert(rec)
 	store.Stop(rec.Key, "paid_write")
 
@@ -454,7 +454,7 @@ func TestScheduler_SkipsStoppedRecords(t *testing.T) {
 func TestScheduler_OnEventReportsBumpsAndStops(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)
-	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+	store.Upsert(newTestRecord(now, 5*time.Minute))
 
 	var events []string
 	sender := func(ctx context.Context, rec Record) (BumpResult, error) {

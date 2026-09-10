@@ -232,4 +232,3 @@ func TestTranslations_StoreFallbackSafety(t *testing.T) {
 		t.Errorf("store.js unconditionally indexes this.translations[this.lang][key]; must provide safe fallback")
 	}
 }
-

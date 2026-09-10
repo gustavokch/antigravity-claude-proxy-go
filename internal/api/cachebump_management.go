@@ -14,18 +14,13 @@ func (server *Server) handleCacheBumpGet(writer http.ResponseWriter, request *ht
 	store, sched := server.getCacheBump()
 	records := store.Snapshot()
 
-	out := make([]cachebump.Record, 0, len(records))
-	for _, rec := range records {
-		out = append(out, rec)
-	}
-
 	stats := cachebump.Stats{StopsByReason: map[string]int64{}}
 	if sched != nil {
 		stats = sched.StatsSnapshot()
 	}
 
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"records":   out,
+		"records":   records,
 		"stats":     stats,
 		"bytes":     store.Bytes(),
 		"max_bytes": store.MaxBytes(),

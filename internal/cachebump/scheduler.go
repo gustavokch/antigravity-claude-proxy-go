@@ -123,21 +123,6 @@ func (s *Scheduler) config() SchedulerConfig {
 	return s.cfg
 }
 
-// Run drives Tick on a ticker until ctx is done. Ticks never overlap: if a
-// pass is still running (a slow upstream), the next tick is skipped.
-func (s *Scheduler) Run(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.Tick(ctx)
-		}
-	}
-}
-
 // Tick runs one scheduling pass: collect due records, fire each through the
 // Sender, classify, reschedule or stop.
 func (s *Scheduler) Tick(ctx context.Context) {
