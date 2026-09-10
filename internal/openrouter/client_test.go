@@ -390,7 +390,7 @@ func TestFetchCredits_Success(t *testing.T) {
 	}
 
 	// Fetch stores the result in the credits cache.
-	if cached := client.getCachedCredits(); cached == nil || cached.Balance != 74.75 {
+	if cached := client.getCachedCredits("test-api-key", server.URL+"/v1"); cached == nil || cached.Balance != 74.75 {
 		t.Errorf("expected cached credits with balance 74.75, got %+v", cached)
 	}
 }
@@ -408,7 +408,7 @@ func TestFetchCredits_403ManagementKeyRequired(t *testing.T) {
 		t.Fatalf("expected ErrManagementKeyRequired, got %v", err)
 	}
 	// A rejected fetch must not populate the cache.
-	if cached := client.getCachedCredits(); cached != nil {
+	if cached := client.getCachedCredits("standard-key", server.URL); cached != nil {
 		t.Errorf("expected empty credits cache after 403, got %+v", cached)
 	}
 }
@@ -488,5 +488,40 @@ func TestResolveCredits_SingleflightConcurrency(t *testing.T) {
 	}
 	if fetchCount != 1 {
 		t.Errorf("expected singleflight to ensure exactly 1 fetch, got %d", fetchCount)
+	}
+}
+
+func TestResolveCredits_APIKeyIsolation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		switch auth {
+		case "Bearer key-a":
+			_, _ = w.Write([]byte(`{"data": {"total_credits": 100, "total_usage": 10}}`))
+		case "Bearer key-b":
+			_, _ = w.Write([]byte(`{"data": {"total_credits": 50, "total_usage": 5}}`))
+		default:
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(5*time.Second, 10*time.Minute)
+
+	infoA, err := client.ResolveCredits(context.Background(), "key-a", server.URL, false)
+	if err != nil {
+		t.Fatalf("ResolveCredits key-a failed: %v", err)
+	}
+	if infoA.Balance != 90 {
+		t.Errorf("key-a balance = %v, expected 90", infoA.Balance)
+	}
+
+	// key-b must not hit key-a's cached credits even with same base URL
+	infoB, err := client.ResolveCredits(context.Background(), "key-b", server.URL, false)
+	if err != nil {
+		t.Fatalf("ResolveCredits key-b failed: %v", err)
+	}
+	if infoB.Balance != 45 {
+		t.Errorf("key-b balance = %v, expected 45 (got cached value from key-a)", infoB.Balance)
 	}
 }

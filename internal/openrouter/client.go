@@ -82,6 +82,16 @@ type creditsCall struct {
 	err error
 }
 
+// creditsCacheEntry stores cached credits with the timestamp it was fetched.
+type creditsCacheEntry struct {
+	info     *CreditsInfo
+	cachedAt time.Time
+}
+
+func creditsKey(cleanBase, apiKey string) string {
+	return cleanBase + "\x00" + strings.TrimSpace(apiKey)
+}
+
 // Client manages OpenRouter catalog discovery and caching.
 type Client struct {
 	httpClient *http.Client
@@ -94,8 +104,7 @@ type Client struct {
 	flightMap map[string]*call
 
 	creditsMu       sync.RWMutex
-	creditsCache    *CreditsInfo
-	creditsCachedAt time.Time
+	creditsCache    map[string]*creditsCacheEntry
 	creditsCacheTTL time.Duration
 
 	creditsFlightMap map[string]*creditsCall
@@ -116,6 +125,7 @@ func NewClient(timeout time.Duration, cacheTTL time.Duration) *Client {
 		httpClient:       &http.Client{Timeout: timeout},
 		cacheTTL:         cacheTTL,
 		flightMap:        make(map[string]*call),
+		creditsCache:     make(map[string]*creditsCacheEntry),
 		creditsCacheTTL:  60 * time.Second,
 		creditsFlightMap: make(map[string]*creditsCall),
 	}
@@ -364,51 +374,61 @@ func (c *Client) FetchCredits(ctx context.Context, apiKey, baseURL string) (*Cre
 		FetchedAt:    time.Now(),
 	}
 
+	key := creditsKey(cleanBase, apiKey)
 	c.creditsMu.Lock()
-	c.creditsCache = info
-	c.creditsCachedAt = info.FetchedAt
+	if c.creditsCache == nil {
+		c.creditsCache = make(map[string]*creditsCacheEntry)
+	}
+	c.creditsCache[key] = &creditsCacheEntry{
+		info:     info,
+		cachedAt: info.FetchedAt,
+	}
 	c.creditsMu.Unlock()
 
 	return info, nil
 }
 
-// getCachedCredits returns a copy of cached credits while the TTL holds, and
-// nil otherwise.
-func (c *Client) getCachedCredits() *CreditsInfo {
+// getCachedCredits returns a copy of cached credits for the given apiKey and
+// baseURL while the TTL holds, and nil otherwise.
+func (c *Client) getCachedCredits(apiKey, baseURL string) *CreditsInfo {
+	cleanBase := NormalizeBaseURL(baseURL)
+	key := creditsKey(cleanBase, apiKey)
 	c.creditsMu.RLock()
 	defer c.creditsMu.RUnlock()
-	if c.creditsCache == nil || c.creditsCachedAt.IsZero() || time.Since(c.creditsCachedAt) >= c.creditsCacheTTL {
+	entry := c.creditsCache[key]
+	if entry == nil || entry.cachedAt.IsZero() || time.Since(entry.cachedAt) >= c.creditsCacheTTL {
 		return nil
 	}
-	info := *c.creditsCache
+	info := *entry.info
 	return &info
 }
 
 // ResolveCredits returns cached credits while fresh, otherwise fetches fresh
 // credits with singleflight deduplication. force bypasses the cache.
 func (c *Client) ResolveCredits(ctx context.Context, apiKey, baseURL string, force bool) (*CreditsInfo, error) {
+	cleanBase := NormalizeBaseURL(baseURL)
+	key := creditsKey(cleanBase, apiKey)
 	if !force {
-		if cached := c.getCachedCredits(); cached != nil {
+		if cached := c.getCachedCredits(apiKey, cleanBase); cached != nil {
 			return cached, nil
 		}
 	}
 
-	cleanBase := NormalizeBaseURL(baseURL)
 	c.flightMu.Lock()
 	if c.creditsFlightMap == nil {
 		c.creditsFlightMap = make(map[string]*creditsCall)
 	}
-	cCall, inFlight := c.creditsFlightMap[cleanBase]
+	cCall, inFlight := c.creditsFlightMap[key]
 	if !inFlight {
 		cCall = &creditsCall{}
 		cCall.wg.Add(1)
-		c.creditsFlightMap[cleanBase] = cCall
+		c.creditsFlightMap[key] = cCall
 		c.flightMu.Unlock()
 
 		func() {
 			defer func() {
 				c.flightMu.Lock()
-				delete(c.creditsFlightMap, cleanBase)
+				delete(c.creditsFlightMap, key)
 				c.flightMu.Unlock()
 				cCall.wg.Done()
 			}()
