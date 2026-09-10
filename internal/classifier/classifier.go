@@ -5,6 +5,7 @@
 package classifier
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -71,11 +72,16 @@ type request struct {
 // model the session's main chat traffic uses, so model id is not a usable
 // signal (see docs/classifier-fallback-notes.md).
 func Detect(body []byte) (Kind, bool) {
+	// Cheap gate first: ordinary traffic pays only a substring scan instead
+	// of unmarshaling a body whose monitor prompt alone runs to ~125KB.
+	if !bytes.Contains(body, []byte(monitorPromptPrefix)) {
+		return KindNone, false
+	}
 	var req request
 	if err := json.Unmarshal(body, &req); err != nil {
 		return KindNone, false
 	}
-	if len(req.System) < 2 || !strings.HasPrefix(req.System[1].Text, monitorPromptPrefix) {
+	if !hasMonitorPrompt(req.System) {
 		return KindNone, false
 	}
 	if len(req.Messages) == 0 {
@@ -95,6 +101,19 @@ func Detect(body []byte) (Kind, bool) {
 	default:
 		return KindNone, false
 	}
+}
+
+// hasMonitorPrompt reports whether any system block opens with the shared
+// monitor prompt. Live capture put it at system[1], behind the billing
+// header, but indexing that position would let one extra or reordered block
+// upstream silently disable detection.
+func hasMonitorPrompt(system []systemBlock) bool {
+	for _, block := range system {
+		if strings.HasPrefix(block.Text, monitorPromptPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func lastBlockText(raw json.RawMessage) (string, bool) {

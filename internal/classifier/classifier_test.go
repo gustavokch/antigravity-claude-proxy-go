@@ -84,6 +84,12 @@ func TestDetect(t *testing.T) {
 			wantOK:   false,
 		},
 		{
+			name:     "monitor prompt at a different system index",
+			body:     sampleBody(t, "claude-sonnet-5", []string{"x-anthropic-billing-header: ...", "some future preamble block", monitorSystemText}, stage1Footer),
+			wantKind: KindStage1Severity,
+			wantOK:   true,
+		},
+		{
 			name:     "malformed JSON",
 			body:     []byte("not json"),
 			wantKind: KindNone,
