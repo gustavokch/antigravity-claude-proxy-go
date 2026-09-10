@@ -888,8 +888,10 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	// custom endpoints carry their own credentials and never consume account
 	// capacity, so account exhaustion says nothing about whether those
 	// requests would stall. Only the account-backed dispatch path below is
-	// gated.
-	if config.ClassifierFallbackEnabled() {
+	// gated, and only for non-streaming callers: the stub is a plain JSON
+	// body, which a caller awaiting text/event-stream would never parse.
+	streamRequested, _ := anthropicRequest["stream"].(bool)
+	if config.ClassifierFallbackEnabled() && !streamRequested {
 		if kind, detected := classifier.Detect(rawBody); detected {
 			noCapacity := server.accountManager == nil || server.accountManager.Available(model) == 0
 			if noCapacity {

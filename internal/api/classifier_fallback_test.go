@@ -200,6 +200,18 @@ func TestMessages_ClassifierFallback_CapacityAvailableDispatchesNormally(t *test
 	}
 }
 
+func TestMessages_ClassifierFallback_StreamingRequestIsNeverStubbed(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
+	server, backend := newAccountBackedTestServer()
+	body := classifierShapedBodyWithExtras(t, classifierTestModel, classifierStage1Footer, map[string]any{"stream": true})
+	rec := postClassifierMessages(t, server, body)
+
+	if !backend.hit {
+		t.Fatalf("a streaming caller awaits text/event-stream; the JSON stub would hang it, so the request must dispatch; status=%d content-type=%q body=%s",
+			rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+}
+
 func TestMessages_ClassifierFallback_CustomEndpointRequestIsNeverStubbed(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
 	backendHit := false
