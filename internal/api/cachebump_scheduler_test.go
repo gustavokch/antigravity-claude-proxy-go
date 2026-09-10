@@ -19,6 +19,12 @@ func TestStartCacheBumpSchedulerDoesNotBlockCaller(t *testing.T) {
 	original := config.Get()
 	defer config.SetForTest(original)
 
+	// Pin the enabled path: a disabled feature would skip every tick, so the
+	// blocking loop this guards against is only reachable with bumps on.
+	cfg := original
+	cfg.CacheBump.Enabled = true
+	config.SetForTest(cfg)
+
 	server := &Server{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
