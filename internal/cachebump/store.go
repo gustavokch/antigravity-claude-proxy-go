@@ -73,8 +73,8 @@ func (s *Store) Upsert(rec Record) {
 	size := len(rec.Body)
 	if size > s.maxBytes {
 		// Nothing can be evicted to make this fit; recording it would only
-		// starve every other session.
-		s.dropLocked(rec.Key)
+		// starve every other session. The record already held for this
+		// session — if any — is still good, so it stays.
 		return
 	}
 

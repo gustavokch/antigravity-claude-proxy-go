@@ -199,6 +199,41 @@ func TestStore_ByteBudgetEvictsOldest(t *testing.T) {
 	}
 }
 
+func TestStore_OversizedUpsertKeepsExistingRecord(t *testing.T) {
+	store := NewStoreWithLimits(time.Hour, 100, 64)
+	now := time.Now()
+
+	// A session with a good small record must keep it when one oversized
+	// turn arrives: refusing the new body must not destroy the old one.
+	store.Upsert(Record{
+		Key:       RecordKey(RouteKimi, "mixed"),
+		SessionID: "mixed",
+		Route:     RouteKimi,
+		Body:      make([]byte, 10),
+		TTL:       5 * time.Minute,
+		LastSeen:  now,
+	})
+	store.Upsert(Record{
+		Key:       RecordKey(RouteKimi, "mixed"),
+		SessionID: "mixed",
+		Route:     RouteKimi,
+		Body:      make([]byte, 100),
+		TTL:       5 * time.Minute,
+		LastSeen:  now.Add(time.Minute),
+	})
+
+	got, ok := store.Get(RecordKey(RouteKimi, "mixed"))
+	if !ok {
+		t.Fatal("expected the existing record to survive an oversized upsert")
+	}
+	if len(got.Body) != 10 {
+		t.Errorf("expected original 10-byte body kept, got %d bytes", len(got.Body))
+	}
+	if store.Bytes() != 10 {
+		t.Errorf("expected Bytes() 10, got %d", store.Bytes())
+	}
+}
+
 func TestStore_RejectsBodyLargerThanBudget(t *testing.T) {
 	store := NewStoreWithLimits(time.Hour, 100, 64)
 	now := time.Now()
