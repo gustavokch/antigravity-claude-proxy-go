@@ -27,9 +27,9 @@ func BenchmarkConvertGoogleToAnthropic(b *testing.B) {
 func BenchmarkStreamConverterConsume(b *testing.B) {
 	payload1 := `{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"I should ","thoughtSignature":"claude-signature-0123456789012345678901234567890123456789"}]}}],"usageMetadata":{"promptTokenCount":120,"cachedContentTokenCount":20}}}`
 	payload2 := `{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"inspect.","thoughtSignature":"claude-signature-0123456789012345678901234567890123456789"},{"text":"Done."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":9,"cachedContentTokenCount":20}}}`
-	
+
 	cache := NewSignatureCache()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		stream := NewStreamConverter("claude-sonnet-4-6-thinking", cache, "msg_bench")
@@ -42,9 +42,9 @@ func BenchmarkStreamConverterConsume(b *testing.B) {
 func BenchmarkThinkingAccumulator(b *testing.B) {
 	payload1 := `{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"I should ","thoughtSignature":"claude-signature-0123456789012345678901234567890123456789"}]}}],"usageMetadata":{"promptTokenCount":120,"cachedContentTokenCount":20}}}`
 	payload2 := `{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"inspect.","thoughtSignature":"claude-signature-0123456789012345678901234567890123456789"},{"text":"Done."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":9,"cachedContentTokenCount":20}}}`
-	
+
 	cache := NewSignatureCache()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		acc := NewThinkingAccumulator()
@@ -72,7 +72,7 @@ func BenchmarkSanitizeSchema(b *testing.B) {
 		},
 		"required": []any{"todos", "optional", "missing"},
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		SanitizeSchema(schema)
@@ -98,7 +98,7 @@ func BenchmarkCleanSchema(b *testing.B) {
 		"required": []any{"todos", "optional", "missing"},
 	}
 	sanitized := SanitizeSchema(schema)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		CleanSchema(sanitized)

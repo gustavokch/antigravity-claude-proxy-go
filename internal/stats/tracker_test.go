@@ -294,4 +294,3 @@ func TestTracker_ConcurrentRecordHeadroom(t *testing.T) {
 		t.Errorf("lost updates under concurrency: %+v", got)
 	}
 }
-

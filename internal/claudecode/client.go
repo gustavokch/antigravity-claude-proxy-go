@@ -458,4 +458,3 @@ func (c *Client) FetchRateLimits(ctx context.Context, token string) (RateLimits,
 
 	return rl, nil
 }
-
