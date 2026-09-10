@@ -666,6 +666,156 @@ func TestTransparentForwardingToCustomEndpoint(t *testing.T) {
 	}
 }
 
+// TestCustomEndpoint_ForwardsRawBodyByteForByte asserts that an unmutated
+// /v1/messages request reaches the custom endpoint byte-for-byte identical to
+// what the client sent. Key order and number formatting (1.0 vs 1) must
+// survive; a decode+re-marshal cycle destroys both.
+func TestCustomEndpoint_ForwardsRawBodyByteForByte(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedBody []byte
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_raw","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer mockTarget.Close()
+
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"claude-custom-model": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	// Key order (messages before model), float formatting (1.0), and unicode
+	// are all mangled by a Go map re-marshal. None may change in transit.
+	clientBody := `{"messages":[{"role":"user","content":"héllo raw"}],"temperature":1.0,"max_tokens":100,"model":"claude-custom-model"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(clientBody))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if string(receivedBody) != clientBody {
+		t.Errorf("upstream body must be byte-identical to client body\nsent:     %s\nreceived: %s", clientBody, receivedBody)
+	}
+}
+
+// TestCustomEndpoint_DoesNotForwardXForwardedFor asserts the custom endpoint
+// proxy neither forwards a client-supplied X-Forwarded-For nor injects one
+// from the proxy's own view of the client address.
+func TestCustomEndpoint_DoesNotForwardXForwardedFor(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedXFF string
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedXFF = r.Header.Get("X-Forwarded-For")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_no_xff","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer mockTarget.Close()
+
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"claude-custom-model": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-custom-model","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedXFF != "" {
+		t.Errorf("X-Forwarded-For must not reach the custom endpoint, got %q", receivedXFF)
+	}
+}
+
+// TestCustomEndpoint_MutatedModelStillRewritten guards the re-marshal branch:
+// when the model is rewritten via modelMapping, the upstream body must carry
+// the mapped model (raw passthrough must not bypass the rewrite).
+func TestCustomEndpoint_MutatedModelStillRewritten(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var receivedBody []byte
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_mapped","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer mockTarget.Close()
+
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"claude-custom-model": map[string]any{
+				"url": mockTarget.URL,
+			},
+		},
+		"modelMapping": map[string]any{
+			"claude-source-model": map[string]any{"mapping": "claude-custom-model"},
+		},
+	}); err != nil {
+		t.Fatalf("failed to save custom endpoint config: %v", err)
+	}
+
+	upstream := &fakeUpstream{streamData: standardStream()}
+	handler := newTestHandler(t, upstream, "test-proj")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-source-model","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(receivedBody, &got); err != nil {
+		t.Fatalf("failed to decode upstream body: %v", err)
+	}
+	if got["model"] != "claude-custom-model" {
+		t.Errorf("expected mapped model claude-custom-model upstream, got %v", got["model"])
+	}
+}
+
 func TestTransparentForwarding_ChatCompletions(t *testing.T) {
 	origCfg := config.Get()
 	defer config.SetForTest(origCfg)
