@@ -971,6 +971,35 @@ func TestTransparentForwarding_ChatCompletionsToAnthropicEndpoint(t *testing.T) 
 	}
 }
 
+func TestIsAnthropicEndpoint(t *testing.T) {
+	cases := []struct {
+		url      string
+		expected bool
+	}{
+		{"https://api.anthropic.com", true},
+		{"https://api.anthropic.com/", true},
+		{"https://api.anthropic.com/v1", true},
+		{"https://api.anthropic.com/v1/messages", true},
+		{"https://custom.anthropic.com/messages", true},
+		{"https://my-proxy.com/v1/messages", true},
+		{"https://my-proxy.com/messages", true},
+		{"https://api.openai.com/v1", false},
+		{"https://api.openai.com/v1/chat/completions", false},
+		{"https://api.packyapi.com", false},
+		{"http://localhost:11434/v1", false},
+		{"http://localhost:8080/v1/chat/completions", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.url, func(t *testing.T) {
+			got := isAnthropicEndpoint(tc.url)
+			if got != tc.expected {
+				t.Errorf("isAnthropicEndpoint(%q) = %v, expected %v", tc.url, got, tc.expected)
+			}
+		})
+	}
+}
+
 type testCustomEndpointBackend struct{}
 
 func (b *testCustomEndpointBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {

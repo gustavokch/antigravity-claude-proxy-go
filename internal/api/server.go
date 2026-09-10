@@ -930,7 +930,11 @@ func isAnthropicEndpoint(endpointURL string) bool {
 		return false
 	}
 	clean := strings.TrimRight(parsed.Path, "/")
-	return clean == "/messages" || strings.HasSuffix(clean, "/messages")
+	if clean == "/messages" || strings.HasSuffix(clean, "/messages") {
+		return true
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "api.anthropic.com" || host == "anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
 }
 
 func resolveCustomEndpointURL(endpointURL string, requestPath string) (*url.URL, error) {
