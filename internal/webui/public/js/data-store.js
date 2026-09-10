@@ -216,9 +216,14 @@ document.addEventListener('alpine:init', () => {
                 const { response } = await window.utils.request(url, {}, password);
                 if (response.ok) {
                     this.openrouterCredits = await response.json();
+                } else {
+                    // Surface upstream failures instead of silently keeping stale data.
+                    const body = await response.text().catch(() => '');
+                    this.openrouterCredits = { status: 'error', error: body || ('HTTP ' + response.status) };
                 }
             } catch (e) {
                 if (window.UILogger) window.UILogger.debug('Failed to fetch OpenRouter credits', e.message);
+                this.openrouterCredits = { status: 'error', error: e.message };
             } finally {
                 this.openrouterCreditsLoading = false;
             }

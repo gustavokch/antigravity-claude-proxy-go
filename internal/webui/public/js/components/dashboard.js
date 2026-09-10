@@ -214,6 +214,7 @@ window.Components.dashboard = () => ({
         const credits = this.$store.data.openrouterCredits;
         if (this.$store.data.openrouterCreditsLoading) return '—';
         if (!credits) return '—';
+        if (credits.status === 'error') return '—';
         if (credits.requiresManagementKey) return this.$store.global.t('mgmtKeyRequired');
         if (credits.hasApiKey === false) return this.$store.global.t('noApiKeyConfigured');
         if (credits.credits) return '$' + Number(credits.credits.balance).toFixed(2);
@@ -222,9 +223,11 @@ window.Components.dashboard = () => ({
 
     openrouterBalanceClass() {
         const credits = this.$store.data.openrouterCredits;
-        if (credits && credits.requiresManagementKey) return 'text-amber-400';
-        if (credits && credits.hasApiKey === false) return 'text-zinc-400';
-        if (credits && credits.credits) {
+        if (!credits) return 'text-white';
+        if (credits.status === 'error') return 'text-zinc-500';
+        if (credits.requiresManagementKey) return 'text-amber-400';
+        if (credits.hasApiKey === false) return 'text-zinc-400';
+        if (credits.credits) {
             if (credits.credits.balance < 1) return 'text-rose-400';
             if (credits.credits.balance < 5) return 'text-amber-400';
         }
@@ -240,14 +243,17 @@ window.Components.dashboard = () => ({
                 total: fmt(credits.credits.total_credits)
             });
         }
+        if (credits && credits.status === 'error') return this.$store.global.t('creditsUnavailable');
         if (credits && credits.requiresManagementKey) return this.$store.global.t('mgmtKeyRequired');
         if (credits && credits.hasApiKey === false) return this.$store.global.t('noApiKeyConfigured');
         return '';
     },
 
+    // Refresh stays available whenever an API key may be configured, so users
+    // can retry after an upstream failure or add a management key.
     openrouterCreditsAvailable() {
         const credits = this.$store.data.openrouterCredits;
-        return !!(credits && credits.credits);
+        return !!(credits && credits.hasApiKey !== false);
     },
 
     toggleFamily(family) {

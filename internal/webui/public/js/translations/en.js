@@ -25,6 +25,7 @@ window.translations.en = {
     globalQuota: "GLOBAL QUOTA",
     openrouterBalance: "OPENROUTER BALANCE",
     openrouterCreditsUsed: "Used {used} / {total}",
+    creditsUnavailable: "Balance unavailable",
     mgmtKeyRequired: "Management key required",
     noApiKeyConfigured: "No API key configured",
     clickToManageOpenRouter: "Click to manage OpenRouter settings",

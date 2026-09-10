@@ -26,6 +26,7 @@ window.translations.pt = {
     globalQuota: "COTA GLOBAL",
     openrouterBalance: "SALDO OPENROUTER",
     openrouterCreditsUsed: "Usado {used} / {total}",
+    creditsUnavailable: "Saldo indisponível",
     mgmtKeyRequired: "Chave de gerenciamento necessária",
     noApiKeyConfigured: "Nenhuma chave configurada",
     clickToManageOpenRouter: "Clique para gerenciar configurações do OpenRouter",
