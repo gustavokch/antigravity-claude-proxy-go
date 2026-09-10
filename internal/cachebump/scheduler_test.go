@@ -367,6 +367,51 @@ func TestScheduler_IdleStops(t *testing.T) {
 	}
 }
 
+func TestScheduler_StaleResultAfterRearmIgnored(t *testing.T) {
+	now := time.Now()
+	store := NewStore(time.Hour, 100)
+	store.Upsert(newTestRecord(now, 5*time.Minute, 60))
+
+	rearmed := now.Add(30 * time.Second)
+	freshNext := rearmed.Add(time.Hour)
+	sender := func(ctx context.Context, rec Record) (BumpResult, error) {
+		// A real client turn re-arms the record while this stale bump is in
+		// flight: newer LastSeen, 1h TTL, a fresh schedule.
+		store.Upsert(Record{
+			Key:       rec.Key,
+			SessionID: rec.SessionID,
+			Route:     rec.Route,
+			Body:      []byte(`{"messages":["new"]}`),
+			TTL:       time.Hour,
+			LastSeen:  rearmed,
+			NextBump:  freshNext,
+		})
+		// The stale attempt paid a write: without a guard it would stop the
+		// just-re-armed session.
+		return BumpResult{CacheReadTokens: 0, CacheCreationTokens: 9000}, nil
+	}
+	sched := newTestScheduler(store, sender, 60, 0, 240)
+	sched.Now = func() time.Time { return now }
+	sched.Tick(context.Background())
+
+	got, ok := store.Get(RecordKey(RouteClaudeCode, "s1"))
+	if !ok {
+		t.Fatal("record missing")
+	}
+	if got.Stopped {
+		t.Errorf("expected re-armed record to survive a stale paid_write, got %+v", got)
+	}
+	if got.Bumps != 0 {
+		t.Errorf("expected stale result not counted, Bumps=%d", got.Bumps)
+	}
+	if !got.NextBump.Equal(freshNext) {
+		t.Errorf("expected fresh NextBump %v kept, got %v", freshNext, got.NextBump)
+	}
+	if !got.LastSeen.Equal(rearmed) {
+		t.Errorf("expected re-armed LastSeen kept, got %v", got.LastSeen)
+	}
+}
+
 func TestScheduler_AccountUnavailableStops(t *testing.T) {
 	now := time.Now()
 	store := NewStore(time.Hour, 100)

@@ -179,6 +179,14 @@ func (s *Scheduler) bump(ctx context.Context, rec Record) {
 	defer cancel()
 	result, err := s.sender(sendCtx, rec)
 
+	// A real client turn may have re-armed the record while this bump was
+	// in flight. The stale result must not touch the fresh state: a stale
+	// paid_write or 4xx would stop a session that just re-armed, and a
+	// stale MarkBumped would overwrite its schedule with the old TTL.
+	if cur, ok := s.store.Get(rec.Key); !ok || cur.LastSeen.After(rec.LastSeen) {
+		return
+	}
+
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAccountUnavailable):
