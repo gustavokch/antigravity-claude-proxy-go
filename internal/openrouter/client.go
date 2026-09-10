@@ -350,7 +350,9 @@ func (c *Client) FetchCredits(ctx context.Context, apiKey, baseURL string) (*Cre
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// Bound the read so a hostile or broken upstream cannot exhaust memory.
+	const maxCreditsBody = 1 << 20 // 1MiB
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxCreditsBody))
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}

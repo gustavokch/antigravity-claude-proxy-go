@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -523,5 +524,33 @@ func TestResolveCredits_APIKeyIsolation(t *testing.T) {
 	}
 	if infoB.Balance != 45 {
 		t.Errorf("key-b balance = %v, expected 45 (got cached value from key-a)", infoB.Balance)
+	}
+}
+
+func TestFetchCredits_OversizedBodyBounded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		chunk := make([]byte, 1024*1024)
+		for i := range chunk {
+			chunk[i] = 'a'
+		}
+		_, _ = w.Write(chunk)
+		_, _ = w.Write(chunk)
+	}))
+	defer server.Close()
+
+	client := NewClient(5*time.Second, 10*time.Minute)
+	_, err := client.FetchCredits(context.Background(), "test-key", server.URL)
+	if err == nil {
+		t.Fatalf("expected error from 500 status")
+	}
+	prefix := "openrouter API error (status 500): "
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, prefix) {
+		t.Fatalf("unexpected error format: %v", errMsg)
+	}
+	bodyInErr := errMsg[strings.Index(errMsg, prefix)+len(prefix):]
+	if len(bodyInErr) != 1<<20 {
+		t.Errorf("expected read body length to be bounded to %d bytes (1MB), got %d", 1<<20, len(bodyInErr))
 	}
 }
