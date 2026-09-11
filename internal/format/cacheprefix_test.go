@@ -178,3 +178,39 @@ func TestClaudeThinkingBlockIsStillDroppedForGemini(t *testing.T) {
 		}
 	}
 }
+
+// TestUnknownThinkingSignatureReachesGeminiVerbatim documents what
+// scripts/verify-gemini-cache-prefix.sh turn 3 actually exercises. A signature
+// the proxy has never issued resolves to FamilyUnknown, and the keep-on-unknown
+// rule forwards it to the backend untouched. The script probes whether Gemini
+// rejects that; if it does, provenance has to travel in the value rather than in
+// the process-local cache.
+func TestUnknownThinkingSignatureReachesGeminiVerbatim(t *testing.T) {
+	t.Parallel()
+	foreign := strings.Repeat("F", MinSignatureLength)
+	request := map[string]any{
+		"model": "gemini-3.0-flash-high",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "start"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "thinking", "thinking": "prior reasoning", "signature": foreign},
+				map[string]any{"type": "text", "text": "done"},
+			}},
+			map[string]any{"role": "user", "content": "continue"},
+		},
+	}
+	contents := asSlice(ConvertAnthropicToGoogle(request, NewSignatureCache())["contents"])
+	for _, rawContent := range contents {
+		for _, rawPart := range asSlice(asMap(rawContent)["parts"]) {
+			part := asMap(rawPart)
+			if part["thought"] != true {
+				continue
+			}
+			if part["thoughtSignature"] != foreign {
+				t.Fatalf("thoughtSignature = %#v, want the client value verbatim", part["thoughtSignature"])
+			}
+			return
+		}
+	}
+	t.Fatal("no thought part survived conversion; the script probe would test nothing")
+}
