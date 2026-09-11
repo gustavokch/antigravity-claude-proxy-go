@@ -2,7 +2,6 @@ package format
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -75,13 +74,12 @@ func TestGeminiToolLoopPrefixIsStableAcrossTurns(t *testing.T) {
 }
 
 // TestGeminiToolSignatureIsIndependentOfSignatureCache asserts conversion does
-// not depend on process-local ephemeral state: a warm and a cold signature cache
+// not depend on process-local ephemeral state: two separate signature caches
 // must produce the same historical functionCall part.
 func TestGeminiToolSignatureIsIndependentOfSignatureCache(t *testing.T) {
 	t.Parallel()
-	signature := strings.Repeat("g", MinSignatureLength)
-	warm := NewSignatureCache()
-	warm.CacheTool("toolu_a", signature)
+	first := NewSignatureCache()
+	second := NewSignatureCache()
 
 	history := []any{
 		map[string]any{"role": "user", "content": "start"},
@@ -98,8 +96,8 @@ func TestGeminiToolSignatureIsIndependentOfSignatureCache(t *testing.T) {
 		}, cache)
 		return mustJSON(t, asSlice(converted["contents"])[1])
 	}
-	withCache := convert(warm)
-	withoutCache := convert(NewSignatureCache())
+	withCache := convert(first)
+	withoutCache := convert(second)
 	if withCache != withoutCache {
 		t.Fatalf("history part changed when the signature cache expired\n warm: %s\n cold: %s", withCache, withoutCache)
 	}

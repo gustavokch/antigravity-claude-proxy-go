@@ -60,9 +60,6 @@ func TestResponseConversionMatchesParityFixture(t *testing.T) {
 	if family := cache.ThinkingFamily("claude-signature-0123456789012345678901234567890123456789"); family != FamilyClaude {
 		t.Fatalf("thinking signature family = %q", family)
 	}
-	if signature := cache.Tool("tool-1"); signature != "tool-signature-012345678901234567890123456789012345678901" {
-		t.Fatalf("cached tool signature = %q", signature)
-	}
 }
 
 func TestCloudCodeSSEStreamingAndNonStreamingRoundTrip(t *testing.T) {
@@ -186,7 +183,6 @@ func TestBuilderUsesStablePerAccountSessionAndExactEnvelope(t *testing.T) {
 func TestGeminiToolSignatureFallsBackToSkipSentinel(t *testing.T) {
 	t.Parallel()
 	cache := NewSignatureCache()
-	cache.CacheTool("tool-1", strings.Repeat("c", MinSignatureLength))
 	request := map[string]any{
 		"model":      "gemini-2.5-flash-thinking",
 		"max_tokens": 100,
@@ -213,12 +209,16 @@ func TestGeminiToolSignatureFallsBackToSkipSentinel(t *testing.T) {
 func TestSignatureCacheExpires(t *testing.T) {
 	t.Parallel()
 	cache := NewSignatureCache()
-	now := time.Unix(100, 0)
+	now := time.Now()
 	cache.now = func() time.Time { return now }
-	cache.CacheTool("tool", "signature")
-	now = now.Add(signatureCacheTTL + time.Millisecond)
-	if got := cache.Tool("tool"); got != "" {
-		t.Fatalf("expired signature = %q", got)
+	signature := strings.Repeat("e", MinSignatureLength)
+	cache.CacheThinking(signature, FamilyGemini)
+	if got := cache.ThinkingFamily(signature); got != FamilyGemini {
+		t.Fatalf("family before expiry = %#v", got)
+	}
+	now = now.Add(3 * time.Hour)
+	if got := cache.ThinkingFamily(signature); got != FamilyUnknown {
+		t.Fatalf("family after expiry = %#v", got)
 	}
 }
 

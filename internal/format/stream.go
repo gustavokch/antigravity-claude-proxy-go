@@ -120,7 +120,6 @@ func (converter *StreamConverter) Consume(data []byte) ([]map[string]any, error)
 			signature := stringValue(part["thoughtSignature"])
 			if len(signature) >= MinSignatureLength {
 				block["thoughtSignature"] = signature
-				converter.cache.CacheTool(toolID, signature)
 			}
 			encoded, _ := json.Marshal(mapOrEmpty(call["args"]))
 			events = append(events,

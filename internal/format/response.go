@@ -51,7 +51,6 @@ func ConvertGoogleToAnthropicWithID(googleResponse map[string]any, model string,
 			signature := stringValue(part["thoughtSignature"])
 			if len(signature) >= MinSignatureLength {
 				block["thoughtSignature"] = signature
-				cache.CacheTool(toolID, signature)
 			}
 			blocks = append(blocks, block)
 			hasTools = true
