@@ -1052,6 +1052,30 @@ func TestClassifierConfigAPI(t *testing.T) {
 			t.Errorf("expected error message mentioning maxTokens, got: %s", errMsg)
 		}
 	})
+
+	t.Run("POST /api/config with out of range temperature returns HTTP 400", func(t *testing.T) {
+		payload := `{
+			"classifier": {
+				"defaultTemperature": 2.5
+			}
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		errMsg, _ := errResp["error"].(string)
+		if !strings.Contains(strings.ToLower(errMsg), "temperature") {
+			t.Errorf("expected error message mentioning temperature, got: %s", errMsg)
+		}
+	})
 }
 
 func TestManagement_HeadroomStatsEndpoint(t *testing.T) {

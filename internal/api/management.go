@@ -944,9 +944,18 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 			return
 		}
 
+		if classifierReq.DefaultTemp != nil && (*classifierReq.DefaultTemp < 0.0 || *classifierReq.DefaultTemp > 2.0) {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier defaultTemperature must be between 0.0 and 2.0"})
+			return
+		}
+
 		for variantKey, variant := range classifierReq.Variants {
 			if variant.MaxTokens < 0 {
 				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier variant %q maxTokens must be non-negative", variantKey)})
+				return
+			}
+			if variant.Temperature != nil && (*variant.Temperature < 0.0 || *variant.Temperature > 2.0) {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier variant %q temperature must be between 0.0 and 2.0", variantKey)})
 				return
 			}
 		}
