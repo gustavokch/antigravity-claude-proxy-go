@@ -918,6 +918,40 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 		return
 	}
 
+	if rawClassifier, ok := updates["classifier"]; ok && rawClassifier != nil {
+		classifierBytes, err := json.Marshal(rawClassifier)
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid classifier configuration format"})
+			return
+		}
+
+		var classifierReq config.ClassifierConfig
+		if err := json.Unmarshal(classifierBytes, &classifierReq); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid classifier configuration: " + err.Error()})
+			return
+		}
+
+		switch classifierReq.Action {
+		case "", config.ActionAlwaysStub, config.ActionFallbackOnExhaustion, config.ActionRerouteOnly, config.ActionPassthrough:
+			// valid
+		default:
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("Invalid classifier action %q: must be empty or one of always_stub, fallback_on_exhaustion, reroute_only, passthrough", classifierReq.Action)})
+			return
+		}
+
+		if classifierReq.DefaultMaxTokens < 0 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier defaultMaxTokens must be non-negative"})
+			return
+		}
+
+		for variantKey, variant := range classifierReq.Variants {
+			if variant.MaxTokens < 0 {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier variant %q maxTokens must be non-negative", variantKey)})
+				return
+			}
+		}
+	}
+
 	updated, err := config.Save(updates)
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": err.Error()})
