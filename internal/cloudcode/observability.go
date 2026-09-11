@@ -229,6 +229,8 @@ func (m *RequestMetrics) ComputeFinalMetrics(sessionTracker *SessionTracker, now
 }
 
 // LogObservability emits structured and human-readable logs for Antigravity requests.
+// Retail cost is labeled as saved dollars in human-readable output because
+// Cloud Code requests consume bundled quota without direct per-token billing.
 func LogObservability(logger *slog.Logger, m RequestMetrics) {
 	if logger == nil {
 		logger = slog.Default()
