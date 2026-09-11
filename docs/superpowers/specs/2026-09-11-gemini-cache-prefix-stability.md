@@ -138,6 +138,21 @@ tool calls. Formally: `contents(turn N)` must be an exact prefix of
 `contents(turn N+1)` across tool-use loops. This invariant holds for
 `functionCall` parts. It does NOT yet hold for thinking parts (see E8).
 
+## Measured outcome
+
+Recorded run of `scripts/verify-gemini-cache-prefix.sh`, `gemini-3.0-flash-high`,
+2026-09-11:
+
+```
+turn 1: HTTP 200  input_tokens=112691  cache_read_input_tokens=0
+turn 2: HTTP 200  input_tokens=2194    cache_read_input_tokens=110529
+turn 3: HTTP 200  (provenance probe)
+```
+
+Turn 2 reused 110529 of the 112691 prompt tokens turn 1 paid for, so the prefix
+survives a tool-loop round and the core goal of this spec is met on a live
+backend.
+
 ## Open question gating the fix
 
 Does the Cloud Code / Antigravity backend honor
@@ -146,6 +161,11 @@ Gemini docs say yes; some Vertex surfaces reportedly reject it. Removing the
 synthetic recovery pair moves the real unsigned `functionCall` into the current
 turn, so this must be probed live before the change is trusted. A kill switch
 restores the old behavior if the probe fails.
+
+**Resolved for this backend.** Turns 1 and 2 above are exactly that shape — a
+tool loop with no thought signatures, so every `functionCall` carries the bypass
+sentinel, including the one in the current turn. Both returned 200. The kill
+switch stays for other backends.
 
 ## Non-goals
 
@@ -159,3 +179,12 @@ restores the old behavior if the probe fails.
   derivable from the request itself rather than process-local `SignatureCache` state.
   Tag the signature at emission or key off the request family so the family travels
   in the block the client echoes back.
+
+  **Deprioritized, not closed.** The drop rule now fires only on an explicit
+  family mismatch, so a `FamilyUnknown` result keeps the block and an expired
+  cache entry no longer shortens `contents`. That makes the emitted array stable,
+  at the cost of forwarding an unknown signature to the backend. Turn 3 of the
+  verification script probes exactly that: a signature this proxy never issued,
+  sitting in history, drew a 200. So the remaining impurity cannot produce a 400
+  on this backend and tagging buys correctness rather than safety. Revisit if a
+  backend ever rejects turn 3, which the script reports with exit code 2.
