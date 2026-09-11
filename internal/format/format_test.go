@@ -222,7 +222,7 @@ func TestSignatureCacheExpires(t *testing.T) {
 	if got := cache.ThinkingFamily(signature); got != FamilyGemini {
 		t.Fatalf("family before expiry = %#v", got)
 	}
-	now = now.Add(3 * time.Hour)
+	now = now.Add(signatureCacheTTL + time.Millisecond)
 	if got := cache.ThinkingFamily(signature); got != FamilyUnknown {
 		t.Fatalf("family after expiry = %#v", got)
 	}
