@@ -26,6 +26,7 @@ import (
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/cachebump"
+	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
@@ -880,6 +881,40 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		}
 		server.forwardToCustomEndpoint(writer, request, endpoint, model, reqBody)
 		return
+	}
+
+	// Classifier fallback is decided here, after every alternate-backend
+	// route has had its chance to return: Kimi, Claude Code, OpenRouter and
+	// custom endpoints carry their own credentials and never consume account
+	// capacity, so account exhaustion says nothing about whether those
+	// requests would stall. Only the account-backed dispatch path below is
+	// gated, and only for non-streaming callers: the stub is a plain JSON
+	// body, which a caller awaiting text/event-stream would never parse.
+	streamRequested, _ := anthropicRequest["stream"].(bool)
+	if config.ClassifierFallbackEnabled() && !streamRequested {
+		if kind, detected := classifier.Detect(rawBody); detected {
+			noCapacity := server.accountManager != nil && server.accountManager.Available(model) == 0
+			if noCapacity {
+				logger := server.logger
+				if logger == nil {
+					logger = slog.Default()
+				}
+				if stub, stubErr := classifier.Stub(kind, model); stubErr == nil {
+					logger.Warn("[Server] classifier fallback: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
+						"kind", kind, "model", model)
+					writer.Header().Set("Content-Type", "application/json")
+					writer.WriteHeader(http.StatusOK)
+					_, _ = writer.Write(stub)
+					return
+				}
+				// 400, not 429: a 429 invites the caller's own retry/backoff,
+				// which is exactly the stall this fallback exists to remove.
+				logger.Warn("[Server] classifier fallback: no canned verdict for this variant; failing fast instead of retrying",
+					"kind", kind, "model", model)
+				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No account capacity for model "+model+"; classifier fallback active and this classifier variant has no canned verdict, so the request fails fast instead of retrying.")
+				return
+			}
+		}
 	}
 
 	var send streamSender

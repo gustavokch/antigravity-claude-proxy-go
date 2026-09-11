@@ -189,6 +189,30 @@ func TestGetConfigDirEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestClassifierFallbackEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want bool
+	}{
+		{"unset defaults false", "", false},
+		{"1", "1", true},
+		{"true", "true", true},
+		{"yes", "yes", true},
+		{"uppercase TRUE", "TRUE", true},
+		{"0 is false", "0", false},
+		{"garbage is false", "maybe", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", tt.env)
+			if got := ClassifierFallbackEnabled(); got != tt.want {
+				t.Errorf("ClassifierFallbackEnabled() with env %q = %v, want %v", tt.env, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenRouterConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)

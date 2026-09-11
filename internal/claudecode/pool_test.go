@@ -304,4 +304,3 @@ func TestAccountPool_RefreshAllExpiringTokens_Errors(t *testing.T) {
 		t.Errorf("expected 0 refreshed IDs, got %d", len(refreshedIDs))
 	}
 }
-
