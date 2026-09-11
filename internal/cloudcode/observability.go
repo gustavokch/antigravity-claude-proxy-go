@@ -41,6 +41,11 @@ func NewSessionTracker() *SessionTracker {
 
 // Record records a request outcome into the session stats and returns the updated state.
 func (st *SessionTracker) Record(sessionID string, inTokens, outTokens, cacheRead int, cost float64) SessionStats {
+	return st.RecordWithTime(sessionID, inTokens, outTokens, cacheRead, cost, time.Now())
+}
+
+// RecordWithTime records a request outcome using the provided timestamp for LastActive.
+func (st *SessionTracker) RecordWithTime(sessionID string, inTokens, outTokens, cacheRead int, cost float64, now time.Time) SessionStats {
 	if sessionID == "" {
 		sessionID = "default"
 	}
@@ -62,7 +67,7 @@ func (st *SessionTracker) Record(sessionID string, inTokens, outTokens, cacheRea
 	stats.OutputTokens += outTokens
 	stats.CacheRead += cacheRead
 	stats.TotalCost += cost
-	stats.LastActive = time.Now()
+	stats.LastActive = now
 
 	return *stats
 }
@@ -141,6 +146,11 @@ var basePricingTable = map[string]ModelPricing{
 		Completion: 0.60 / 1e6,
 		CacheRead:  0.0375 / 1e6,
 	},
+	"claude-haiku-4-5": {
+		Prompt:     0.80 / 1e6,
+		Completion: 4.00 / 1e6,
+		CacheRead:  0.08 / 1e6,
+	},
 }
 
 func lookupModelPricing(model string, now time.Time) ModelPricing {
@@ -158,6 +168,8 @@ func lookupModelPricing(model string, now time.Time) ModelPricing {
 		return basePricingTable["gemini-3.1-pro-high"]
 	case strings.Contains(norm, "gpt-oss"):
 		return basePricingTable["gpt-oss-120b-medium"]
+	case strings.Contains(norm, "haiku"):
+		return basePricingTable["claude-haiku-4-5"]
 	case strings.Contains(norm, "sonnet") || strings.Contains(norm, "claude"):
 		return basePricingTable["claude-sonnet-4-6"]
 	default:
@@ -212,7 +224,7 @@ func (m *RequestMetrics) ComputeFinalMetrics(sessionTracker *SessionTracker, now
 	if sessionTracker == nil {
 		sessionTracker = DefaultSessionTracker
 	}
-	sStats := sessionTracker.Record(m.SessionID, m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.RetailCostUSD)
+	sStats := sessionTracker.RecordWithTime(m.SessionID, m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.RetailCostUSD, now)
 	m.SessionRetailUSD = sStats.TotalCost
 }
 

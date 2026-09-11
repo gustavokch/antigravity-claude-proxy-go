@@ -34,6 +34,16 @@ func TestSessionTracker(t *testing.T) {
 	}
 }
 
+func TestSessionTracker_RecordWithTime(t *testing.T) {
+	tracker := NewSessionTracker()
+	fixedTime := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+
+	s := tracker.RecordWithTime("sess-fixed", 50, 25, 10, 0.0005, fixedTime)
+	if !s.LastActive.Equal(fixedTime) {
+		t.Errorf("LastActive = %v, want %v", s.LastActive, fixedTime)
+	}
+}
+
 func TestSessionTracker_CapacityBounds(t *testing.T) {
 	tracker := NewSessionTracker()
 
@@ -181,6 +191,24 @@ func TestCalculateRetailCost_Models(t *testing.T) {
 			cr:       1000000,
 			now:      t2026,
 			expected: 0.15 + 0.60 + 0.0375, // 0.7875
+		},
+		{
+			name:     "claude-haiku-4-5",
+			model:    "claude-haiku-4-5",
+			in:       1000000,
+			out:      1000000,
+			cr:       1000000,
+			now:      t2026,
+			expected: 0.80 + 4.00 + 0.08, // 4.88
+		},
+		{
+			name:     "claude-3-5-haiku-20241022",
+			model:    "claude-3-5-haiku-20241022",
+			in:       1000000,
+			out:      1000000,
+			cr:       1000000,
+			now:      t2026,
+			expected: 0.80 + 4.00 + 0.08, // 4.88
 		},
 	}
 
