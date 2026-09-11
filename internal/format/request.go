@@ -81,7 +81,14 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 
 	processedMessages := messages
 	if family == FamilyGemini && isThinking && needsThinkingRecovery(messages) {
-		processedMessages = closeToolLoopForThinking(messages, FamilyGemini, cache)
+		if geminiThinkingRecoveryEnabled() {
+			processedMessages = closeToolLoopForThinking(messages, FamilyGemini, cache)
+		} else {
+			// Strip thinking blocks the backend would reject, but leave the real
+			// tool turns in place: appending synthetic turns the client cannot
+			// echo back breaks Gemini implicit context caching every turn.
+			processedMessages = stripInvalidThinkingBlocks(messages, FamilyGemini, cache)
+		}
 	}
 	if family == FamilyClaude && isThinking && (hasGeminiHistory(messages) || hasUnsignedThinkingBlocks(messages)) && needsThinkingRecovery(messages) {
 		processedMessages = closeToolLoopForThinking(messages, FamilyClaude, cache)

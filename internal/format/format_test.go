@@ -244,9 +244,8 @@ func TestLiveModelOptionsCapOutputAndApplyDefaultThinkingBudget(t *testing.T) {
 	}
 }
 
-func TestGeminiToolLoopWithoutThinkingGetsRecoveryTurn(t *testing.T) {
-	t.Parallel()
-	request := map[string]any{
+func geminiToolLoopRequest() map[string]any {
+	return map[string]any{
 		"model": "gemini-3.5-flash-low",
 		"messages": []any{
 			map[string]any{"role": "user", "content": "use a tool"},
@@ -265,7 +264,36 @@ func TestGeminiToolLoopWithoutThinkingGetsRecoveryTurn(t *testing.T) {
 			},
 		},
 	}
-	converted := ConvertAnthropicToGoogle(request, NewSignatureCache())
+}
+
+// TestGeminiToolLoopKeepsRealToolTurns pins the new default: no synthetic turns
+// are appended, so the tool call and its result stay at stable indices and the
+// tool call keeps the signature the client sent.
+func TestGeminiToolLoopKeepsRealToolTurns(t *testing.T) {
+	t.Parallel()
+	converted := ConvertAnthropicToGoogle(geminiToolLoopRequest(), NewSignatureCache())
+	contents := asSlice(converted["contents"])
+	if len(contents) != 3 {
+		t.Fatalf("contents = %#v", contents)
+	}
+	call := asMap(asSlice(asMap(contents[1])["parts"])[0])
+	if asMap(call["functionCall"])["name"] != "read" {
+		t.Fatalf("tool turn = %#v", contents[1])
+	}
+	if call["thoughtSignature"] != strings.Repeat("s", MinSignatureLength) {
+		t.Fatalf("thoughtSignature = %#v", call["thoughtSignature"])
+	}
+	response := asMap(asSlice(asMap(contents[2])["parts"])[0])
+	if response["functionResponse"] == nil {
+		t.Fatalf("tool result turn = %#v", contents[2])
+	}
+}
+
+// TestGeminiToolLoopRecoveryKillSwitchRestoresSyntheticTurns proves the rollback
+// path still works. No t.Parallel: t.Setenv forbids it.
+func TestGeminiToolLoopRecoveryKillSwitchRestoresSyntheticTurns(t *testing.T) {
+	t.Setenv(geminiThinkingRecoveryEnv, "1")
+	converted := ConvertAnthropicToGoogle(geminiToolLoopRequest(), NewSignatureCache())
 	contents := asSlice(converted["contents"])
 	if len(contents) != 5 {
 		t.Fatalf("contents = %#v", contents)
