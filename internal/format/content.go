@@ -63,6 +63,9 @@ func convertContentToParts(content any, family ModelFamily, cache *SignatureCach
 				// cache prefix at the first tool call.
 				signature := stringValue(block["thoughtSignature"])
 				if signature == "" {
+					signature = stringValue(block["thought_signature"])
+				}
+				if signature == "" {
 					signature = GeminiSkipSignature
 				}
 				part["thoughtSignature"] = signature

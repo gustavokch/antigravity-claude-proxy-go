@@ -214,3 +214,33 @@ func TestUnknownThinkingSignatureReachesGeminiVerbatim(t *testing.T) {
 	}
 	t.Fatal("no thought part survived conversion; the script probe would test nothing")
 }
+
+func TestGeminiToolSignaturePreservesSnakeCaseClientSignature(t *testing.T) {
+	t.Parallel()
+	cache := NewSignatureCache()
+	signature := "custom-signature-12345678901234567890123456789012345678901234567890"
+	request := map[string]any{
+		"model": "gemini-3.0-flash-high",
+		"messages": []any{
+			map[string]any{
+				"role": "assistant",
+				"content": []any{
+					map[string]any{
+						"type":              "tool_use",
+						"id":                "t1",
+						"name":              "read",
+						"input":             map[string]any{"path": "file.go"},
+						"thought_signature": signature,
+					},
+				},
+			},
+		},
+	}
+	converted := ConvertAnthropicToGoogle(request, cache)
+	contents := asSlice(converted["contents"])
+	part := asMap(asSlice(asMap(contents[len(contents)-1])["parts"])[0])
+	if part["thoughtSignature"] != signature {
+		t.Fatalf("thoughtSignature = %#v, want %#v", part["thoughtSignature"], signature)
+	}
+}
+
