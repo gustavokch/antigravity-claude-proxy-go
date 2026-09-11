@@ -86,18 +86,22 @@ window.Components.classifierConfig = () => ({
                     defaultMaxTokens: Number(this.config.defaultMaxTokens) || 0,
                     defaultTemperature: this.config.defaultTemperature !== null && this.config.defaultTemperature !== '' && !isNaN(Number(this.config.defaultTemperature)) ? Number(this.config.defaultTemperature) : null,
                     variants: {
+                        ...(this.config.variants || {}),
                         'stage1-severity': {
-                            maxTokens: Number(this.config.variants['stage1-severity']?.maxTokens) || 0,
-                            cannedVerdict: this.config.variants['stage1-severity']?.cannedVerdict || ''
+                            ...(this.config.variants?.['stage1-severity'] || {}),
+                            maxTokens: Number(this.config.variants?.['stage1-severity']?.maxTokens) || 0,
+                            cannedVerdict: this.config.variants?.['stage1-severity']?.cannedVerdict || ''
                         },
                         'stage2-severity': {
-                            maxTokens: Number(this.config.variants['stage2-severity']?.maxTokens) || 0,
-                            thinkingText: this.config.variants['stage2-severity']?.thinkingText || '',
-                            cannedVerdict: this.config.variants['stage2-severity']?.cannedVerdict || ''
+                            ...(this.config.variants?.['stage2-severity'] || {}),
+                            maxTokens: Number(this.config.variants?.['stage2-severity']?.maxTokens) || 0,
+                            thinkingText: this.config.variants?.['stage2-severity']?.thinkingText || '',
+                            cannedVerdict: this.config.variants?.['stage2-severity']?.cannedVerdict || ''
                         },
                         'block-prefilter': {
-                            targetModel: this.config.variants['block-prefilter']?.targetModel || '',
-                            cannedVerdict: this.config.variants['block-prefilter']?.cannedVerdict || ''
+                            ...(this.config.variants?.['block-prefilter'] || {}),
+                            targetModel: this.config.variants?.['block-prefilter']?.targetModel || '',
+                            cannedVerdict: this.config.variants?.['block-prefilter']?.cannedVerdict || ''
                         }
                     }
                 }
