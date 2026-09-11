@@ -18,6 +18,7 @@ type StreamConverter struct {
 	inputTokens              int
 	outputTokens             int
 	cacheReadTokens          int
+	thinkingTokens           int
 	stopReason               string
 }
 
@@ -43,6 +44,13 @@ func (converter *StreamConverter) Consume(data []byte) ([]map[string]any, error)
 		}
 		if value := intValue(usage["cachedContentTokenCount"], 0); value != 0 {
 			converter.cacheReadTokens = value
+		}
+		if value := intValue(usage["thoughtsTokenCount"], 0); value != 0 {
+			converter.thinkingTokens = value
+		} else if value := intValue(usage["thinkingTokenCount"], 0); value != 0 {
+			converter.thinkingTokens = value
+		} else if value := intValue(usage["thinkingTokens"], 0); value != 0 {
+			converter.thinkingTokens = value
 		}
 	}
 	candidate := firstCandidate(inner)
@@ -215,6 +223,10 @@ func (converter *StreamConverter) OutputTokens() int {
 
 func (converter *StreamConverter) CacheReadTokens() int {
 	return converter.cacheReadTokens
+}
+
+func (converter *StreamConverter) ThinkingTokens() int {
+	return converter.thinkingTokens
 }
 
 func decodeCloudCodeEvent(data []byte) (map[string]any, error) {

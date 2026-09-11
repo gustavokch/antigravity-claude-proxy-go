@@ -180,6 +180,19 @@ func (accumulator *ThinkingAccumulator) CacheReadTokens() int {
 	return intValue(accumulator.usage["cachedContentTokenCount"], 0)
 }
 
+func (accumulator *ThinkingAccumulator) ThinkingTokens() int {
+	if v := intValue(accumulator.usage["thoughtsTokenCount"], 0); v > 0 {
+		return v
+	}
+	if v := intValue(accumulator.usage["thinkingTokenCount"], 0); v > 0 {
+		return v
+	}
+	if v := intValue(accumulator.usage["thinkingTokens"], 0); v > 0 {
+		return v
+	}
+	return 0
+}
+
 func (accumulator *ThinkingAccumulator) flushThinking() {
 	if accumulator.thinkingText == "" {
 		return
