@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -527,5 +528,56 @@ func TestSave_HeadroomRoundTrip(t *testing.T) {
 	}
 	if reloaded.Headroom.PreserveVerbatimReads {
 		t.Error("preserveVerbatimReads: false must survive a save/load cycle over the true default")
+	}
+}
+
+func TestClassifierConfigDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Classifier.Action != ActionFallbackOnExhaustion {
+		t.Errorf("expected default action %q, got %q", ActionFallbackOnExhaustion, cfg.Classifier.Action)
+	}
+	if cfg.Classifier.DefaultVerdict != "<severity>0</severity>" {
+		t.Errorf("expected default verdict <severity>0</severity>, got %q", cfg.Classifier.DefaultVerdict)
+	}
+	if cfg.Classifier.DefaultThinking != "Routine action, no policy match." {
+		t.Errorf("expected default thinking, got %q", cfg.Classifier.DefaultThinking)
+	}
+	if stage1, ok := cfg.Classifier.Variants["stage1-severity"]; !ok || stage1.MaxTokens != 64 {
+		t.Errorf("expected stage1-severity variant max_tokens 64, got %+v", stage1)
+	}
+	if stage2, ok := cfg.Classifier.Variants["stage2-severity"]; !ok || stage2.MaxTokens != 8192 {
+		t.Errorf("expected stage2-severity variant max_tokens 8192, got %+v", stage2)
+	}
+}
+
+func TestClassifierConfigJSONRoundtrip(t *testing.T) {
+	rawJSON := `{
+		"classifier": {
+			"enabled": true,
+			"action": "always_stub",
+			"defaultModel": "claude-haiku-4-5-20251001",
+			"defaultMaxTokens": 128,
+			"compactTranscript": true,
+			"defaultVerdict": "<severity>10</severity>",
+			"variants": {
+				"stage1-severity": {
+					"maxTokens": 32,
+					"cannedVerdict": "<severity>0</severity>"
+				}
+			}
+		}
+	}`
+	var cfg Config
+	if err := json.Unmarshal([]byte(rawJSON), &cfg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !cfg.Classifier.Enabled || cfg.Classifier.Action != ActionAlwaysStub {
+		t.Errorf("unexpected unmarshaled classifier config: %+v", cfg.Classifier)
+	}
+	if cfg.Classifier.DefaultModel != "claude-haiku-4-5-20251001" {
+		t.Errorf("expected defaultModel claude-haiku-4-5-20251001, got %q", cfg.Classifier.DefaultModel)
+	}
+	if stage1 := cfg.Classifier.Variants["stage1-severity"]; stage1.MaxTokens != 32 || stage1.CannedVerdict != "<severity>0</severity>" {
+		t.Errorf("unexpected stage1 override: %+v", stage1)
 	}
 }
