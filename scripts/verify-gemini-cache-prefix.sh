@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Two-turn Gemini tool loop with no thought signatures, the shape a strict
 # Anthropic client sends. Turn 1 must return 200. Turn 2 must return 200 and
-# should report a non-zero cache_read_input_tokens once the prompt clears the
-# ~32k implicit-cache floor.
+# must report a non-zero cache_read_input_tokens; the script exits non-zero
+# otherwise, so it can gate a release. Raise the padding first if the prompt
+# sits below the ~32k implicit-cache floor.
 set -euo pipefail
 
 PROXY_URL="${PROXY_URL:-http://127.0.0.1:8080}"
@@ -12,8 +13,8 @@ body=""
 trap 'rm -f "${body:-}"' EXIT
 
 turn() {
-  local payload="$1" label="$2"
-  local status
+  local payload="$1" label="$2" require_cache_read="${3:-0}"
+  local status cache_read
   body="$(mktemp)"
   status="$(curl -sS -o "$body" -w '%{http_code}' \
     -X POST "$PROXY_URL/v1/messages" \
@@ -30,9 +31,24 @@ turn() {
     body=""
     return 1
   fi
-  grep -o '"usage":{[^}]*}' "$body" || echo "-- no usage block in response"
+  grep -oE '"usage"[[:space:]]*:[[:space:]]*\{[^}]*\}' "$body" || echo "-- no usage block in response"
+  cache_read="$(grep -oE '"cache_read_input_tokens"[[:space:]]*:[[:space:]]*[0-9]+' "$body" |
+    head -1 | grep -oE '[0-9]+$' || true)"
   rm -f "$body"
   body=""
+  if [ "$require_cache_read" = "1" ]; then
+    if [ -z "$cache_read" ]; then
+      echo "-- FAIL: response carried no cache_read_input_tokens field"
+      return 1
+    fi
+    if [ "$cache_read" -eq 0 ]; then
+      echo "-- FAIL: cache_read_input_tokens is 0, so the prefix was not reused."
+      echo "   A benign cause is a prompt below the ~32k implicit-cache floor:"
+      echo "   raise the padding and retry before treating this as a regression."
+      return 1
+    fi
+    echo "-- OK: cache_read_input_tokens = $cache_read"
+  fi
 }
 
 read -r -d '' TURN1 <<JSON || true
@@ -55,4 +71,4 @@ JSON
 
 turn "$TURN1" "turn 1"
 sleep 2
-turn "$TURN2" "turn 2 (prefix of turn 1 must be reused)"
+turn "$TURN2" "turn 2 (prefix of turn 1 must be reused)" 1
