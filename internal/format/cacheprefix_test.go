@@ -244,6 +244,41 @@ func TestGeminiToolSignaturePreservesSnakeCaseClientSignature(t *testing.T) {
 	}
 }
 
+// TestGeminiToolSignatureBelowMinLengthFallsBackToSkip pins the tool_use path to
+// the same length floor the thinking path applies. A client that sends a stub
+// value must not have it forwarded to the backend verbatim. The substitution is
+// a pure function of the block, so the cache prefix stays stable either way.
+func TestGeminiToolSignatureBelowMinLengthFallsBackToSkip(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"thoughtSignature", "thought_signature"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			request := map[string]any{
+				"model": "gemini-3.0-flash-high",
+				"messages": []any{
+					map[string]any{
+						"role": "assistant",
+						"content": []any{
+							map[string]any{
+								"type":  "tool_use",
+								"id":    "t1",
+								"name":  "read",
+								"input": map[string]any{"path": "file.go"},
+								key:     "short",
+							},
+						},
+					},
+				},
+			}
+			contents := asSlice(ConvertAnthropicToGoogle(request, NewSignatureCache())["contents"])
+			part := asMap(asSlice(asMap(contents[len(contents)-1])["parts"])[0])
+			if part["thoughtSignature"] != GeminiSkipSignature {
+				t.Fatalf("thoughtSignature = %#v, want %#v", part["thoughtSignature"], GeminiSkipSignature)
+			}
+		})
+	}
+}
+
 // assertToolSignatures checks that every functionCall part in the converted
 // contents carries the signature the client supplied for that loop round, in
 // order. Without this the prefix assertions alone are satisfied by a conversion

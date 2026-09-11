@@ -65,7 +65,12 @@ func convertContentToParts(content any, family ModelFamily, cache *SignatureCach
 				if signature == "" {
 					signature = stringValue(block["thought_signature"])
 				}
-				if signature == "" {
+				// Same floor the thinking path applies. A value this short was
+				// never issued by a backend, so forwarding it verbatim only
+				// exposes the backend validator to client noise. The
+				// substitution reads nothing but the block, so an identical
+				// history still converts identically.
+				if len(signature) < MinSignatureLength {
 					signature = GeminiSkipSignature
 				}
 				part["thoughtSignature"] = signature
