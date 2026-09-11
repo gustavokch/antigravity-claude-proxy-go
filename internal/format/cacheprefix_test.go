@@ -58,11 +58,14 @@ func mustJSON(t *testing.T, value any) string {
 // TestGeminiToolLoopPrefixIsStableAcrossTurns asserts the invariant implicit
 // context caching depends on: the contents array produced for turn N must be an
 // exact prefix of the contents array produced for turn N+1.
+//
+// Each turn gets its own SignatureCache. Sharing one would hide exactly the
+// class of bug this test exists to catch, because a conversion that reads
+// process-local state would still agree with itself.
 func TestGeminiToolLoopPrefixIsStableAcrossTurns(t *testing.T) {
 	t.Parallel()
-	cache := NewSignatureCache()
-	previous := convertPiTurn(t, 3, cache)
-	next := convertPiTurn(t, 4, cache)
+	previous := convertPiTurn(t, 3, NewSignatureCache())
+	next := convertPiTurn(t, 4, NewSignatureCache())
 
 	if len(next) < len(previous) {
 		t.Fatalf("turn N+1 shrank: %d < %d", len(next), len(previous))
