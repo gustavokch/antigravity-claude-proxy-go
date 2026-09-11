@@ -1213,6 +1213,9 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 		}
 		metrics.ComputeFinalMetrics()
 		kimi.LogObservability(server.logger, metrics)
+		if server.tracker != nil {
+			server.tracker.TrackRequest(model, latency, in, out, cr)
+		}
 	}
 
 	isStreaming, _ := reqMap["stream"].(bool)
@@ -1237,6 +1240,9 @@ func (server *Server) kimiInstrumentResponse(resp *http.Response, model, session
 		}
 		metrics.ComputeFinalMetrics()
 		kimi.LogObservability(server.logger, metrics)
+		if server.tracker != nil {
+			server.tracker.TrackRequest(model, latency, in, out, cr)
+		}
 	}
 	if ccIsSSEResponse(resp.Header) {
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)

@@ -22,6 +22,7 @@ import (
 	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/logger"
+	"antigravity-go-proxy/internal/stats"
 )
 
 type agyFakeResolver struct{}
@@ -340,10 +341,12 @@ func TestKimiObservability_Unary(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	tracker, _ := stats.NewTracker("")
 
 	srv := &Server{
-		logger: log,
-		now:    time.Now,
+		logger:  log,
+		tracker: tracker,
+		now:     time.Now,
 	}
 
 	kimiCfg := config.KimiConfig{
@@ -391,6 +394,10 @@ func TestKimiObservability_Unary(t *testing.T) {
 	if rec["level_tag"] != "SUCCESS" {
 		t.Errorf("level_tag = %v, want SUCCESS", rec["level_tag"])
 	}
+
+	if history := tracker.GetHistory(); len(history) == 0 {
+		t.Errorf("expected request recorded in stats tracker")
+	}
 }
 
 func TestKimiObservability_Streaming(t *testing.T) {
@@ -415,10 +422,12 @@ func TestKimiObservability_Streaming(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	tracker, _ := stats.NewTracker("")
 
 	srv := &Server{
-		logger: log,
-		now:    time.Now,
+		logger:  log,
+		tracker: tracker,
+		now:     time.Now,
 	}
 
 	kimiCfg := config.KimiConfig{
@@ -466,6 +475,10 @@ func TestKimiObservability_Streaming(t *testing.T) {
 	if rec["level_tag"] != "SUCCESS" {
 		t.Errorf("level_tag = %v, want SUCCESS", rec["level_tag"])
 	}
+
+	if history := tracker.GetHistory(); len(history) == 0 {
+		t.Errorf("expected request recorded in stats tracker")
+	}
 }
 
 func TestKimiObservability_CCRStreaming(t *testing.T) {
@@ -496,11 +509,13 @@ func TestKimiObservability_CCRStreaming(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	tracker, _ := stats.NewTracker("")
 
 	srv := &Server{
 		headroom: engine,
 		ccrStore: store,
 		logger:   log,
+		tracker:  tracker,
 		now:      time.Now,
 	}
 
@@ -539,6 +554,10 @@ func TestKimiObservability_CCRStreaming(t *testing.T) {
 	}
 	if rec["output_tokens"] != float64(50) {
 		t.Errorf("output_tokens = %v, want 50", rec["output_tokens"])
+	}
+
+	if history := tracker.GetHistory(); len(history) == 0 {
+		t.Errorf("expected request recorded in stats tracker")
 	}
 }
 
