@@ -183,12 +183,13 @@ func BuildStub(kind Kind, model, verdictTmpl, thinkingTmpl string) ([]byte, erro
 	}
 
 	resp := map[string]any{
-		"id":          id,
-		"type":        "message",
-		"role":        "assistant",
-		"model":       model,
-		"content":     []map[string]any{{"type": "text", "text": verdictText}},
-		"stop_reason": "end_turn",
+		"id":            id,
+		"type":          "message",
+		"role":          "assistant",
+		"model":         model,
+		"content":       []map[string]any{{"type": "text", "text": verdictText}},
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
 		"usage": map[string]any{
 			"input_tokens":  0,
 			"output_tokens": 0,
@@ -204,30 +205,58 @@ func CompactTranscript(raw json.RawMessage) (json.RawMessage, bool) {
 		return raw, false
 	}
 	changed := false
-	const maxOutputRunes = 500
+	const (
+		maxOutputRunes = 500
+		openTag        = "<transcript>"
+		closeTag       = "</transcript>"
+	)
 	for i := range blocks {
 		text := blocks[i].Text
-		start := strings.Index(text, "<transcript>")
-		end := strings.Index(text, "</transcript>")
-		if start == -1 || end == -1 || end <= start {
-			continue
-		}
-		transcriptContent := text[start+len("<transcript>") : end]
-		lines := strings.Split(transcriptContent, "\n")
-		var compactedLines []string
-		mutated := false
-		for _, line := range lines {
-			if len(line) > maxOutputRunes {
-				truncated := line[:maxOutputRunes/2] + "\n[...truncated...]\n" + line[len(line)-maxOutputRunes/2:]
-				compactedLines = append(compactedLines, truncated)
-				mutated = true
-			} else {
-				compactedLines = append(compactedLines, line)
+		var builder strings.Builder
+		idx := 0
+		mutatedAny := false
+		for {
+			start := strings.Index(text[idx:], openTag)
+			if start == -1 {
+				builder.WriteString(text[idx:])
+				break
 			}
+			start += idx
+			builder.WriteString(text[idx : start+len(openTag)])
+
+			contentStart := start + len(openTag)
+			end := strings.Index(text[contentStart:], closeTag)
+			if end == -1 {
+				builder.WriteString(text[contentStart:])
+				break
+			}
+			end += contentStart
+			transcriptContent := text[contentStart:end]
+			lines := strings.Split(transcriptContent, "\n")
+			var compactedLines []string
+			mutated := false
+			for _, line := range lines {
+				runes := []rune(line)
+				if len(runes) > maxOutputRunes {
+					half := maxOutputRunes / 2
+					truncated := string(runes[:half]) + "\n[...truncated...]\n" + string(runes[len(runes)-half:])
+					compactedLines = append(compactedLines, truncated)
+					mutated = true
+				} else {
+					compactedLines = append(compactedLines, line)
+				}
+			}
+			if mutated {
+				builder.WriteString(strings.Join(compactedLines, "\n"))
+				mutatedAny = true
+			} else {
+				builder.WriteString(transcriptContent)
+			}
+			builder.WriteString(closeTag)
+			idx = end + len(closeTag)
 		}
-		if mutated {
-			newTranscript := strings.Join(compactedLines, "\n")
-			blocks[i].Text = text[:start+len("<transcript>")] + newTranscript + text[end:]
+		if mutatedAny {
+			blocks[i].Text = builder.String()
 			changed = true
 		}
 	}

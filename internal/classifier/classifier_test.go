@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const monitorSystemText = monitorPromptPrefix + " ... (truncated body of the real prompt, ~125KB in production) ..."
@@ -301,6 +302,68 @@ func TestCompactTranscript(t *testing.T) {
 	}
 	if !strings.Contains(compactStr, "[...truncated") {
 		t.Errorf("expected truncation marker in compacted string")
+	}
+}
+
+func TestCompactTranscript_UTF8MultiByte(t *testing.T) {
+	// 3-byte UTF-8 characters. 8 * 80 = 640 runes > 500 runes limit.
+	// Byte slicing at 250 runes boundary tests rune integrity.
+	multibyteLine := strings.Repeat("日本語テスト文字", 80)
+	raw := fmt.Sprintf(`[
+		{"type": "text", "text": "<transcript>\n%s\n</transcript>"}
+	]`, multibyteLine)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Fatalf("expected compaction for multibyte UTF-8 line")
+	}
+
+	var blocks []contentBlock
+	if err := json.Unmarshal(compacted, &blocks); err != nil {
+		t.Fatalf("compacted JSON must be valid JSON: %v", err)
+	}
+	for _, b := range blocks {
+		if !strings.Contains(b.Text, "[...truncated...]") {
+			t.Errorf("expected truncation marker in compacted block text")
+		}
+		if strings.ContainsRune(b.Text, '�') || !utf8.ValidString(b.Text) {
+			t.Errorf("compacted text contains invalid UTF-8 encoding or replacement character")
+		}
+	}
+}
+
+func TestCompactTranscript_MultipleBlocks(t *testing.T) {
+	longLine1 := strings.Repeat("A", 600)
+	longLine2 := strings.Repeat("B", 600)
+	raw := fmt.Sprintf(`[
+		{"type": "text", "text": "<transcript>\n%s\n</transcript>\nmiddle text\n<transcript>\n%s\n</transcript>"}
+	]`, longLine1, longLine2)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Fatalf("expected compaction for multiple transcript blocks")
+	}
+	compactStr := string(compacted)
+	if strings.Count(compactStr, "[...truncated...]") != 2 {
+		t.Errorf("expected 2 truncated markers for 2 blocks, got: %d", strings.Count(compactStr, "[...truncated...]"))
+	}
+}
+
+func TestBuildStub_StopSequencePresent(t *testing.T) {
+	data, err := BuildStub(KindStage1Severity, "test-model", "", "")
+	if err != nil {
+		t.Fatalf("BuildStub error: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	val, exists := raw["stop_sequence"]
+	if !exists {
+		t.Errorf("expected 'stop_sequence' key in response JSON")
+	}
+	if val != nil {
+		t.Errorf("expected 'stop_sequence' to be null/nil, got: %v", val)
 	}
 }
 
