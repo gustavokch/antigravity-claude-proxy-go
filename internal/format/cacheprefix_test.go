@@ -244,3 +244,72 @@ func TestGeminiToolSignaturePreservesSnakeCaseClientSignature(t *testing.T) {
 	}
 }
 
+func TestGeminiToolLoopPrefixIsStableWithClientSignatures(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		snakeCase bool
+	}{
+		{name: "camelCase thoughtSignature", snakeCase: false},
+		{name: "snake_case thought_signature", snakeCase: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cache := NewSignatureCache()
+
+			makeReq := func(turns int) []any {
+				messages := []any{map[string]any{"role": "user", "content": "start the loop"}}
+				for i := 0; i < turns; i++ {
+					toolID := "toolu_" + strconv.Itoa(i)
+					sigKey := "thoughtSignature"
+					if tc.snakeCase {
+						sigKey = "thought_signature"
+					}
+					sigVal := "custom-signature-" + strconv.Itoa(i) + "-1234567890123456789012345678901234567890"
+					messages = append(messages,
+						map[string]any{
+							"role": "assistant",
+							"content": []any{map[string]any{
+								"type":  "tool_use",
+								"id":    toolID,
+								"name":  "read",
+								"input": map[string]any{"path": "file.go"},
+								sigKey:  sigVal,
+							}},
+						},
+						map[string]any{
+							"role": "user",
+							"content": []any{map[string]any{
+								"type":        "tool_result",
+								"tool_use_id": toolID,
+								"content":     "file body",
+							}},
+						},
+					)
+				}
+				req := map[string]any{
+					"model":    "gemini-3.0-flash-high",
+					"messages": messages,
+				}
+				return asSlice(ConvertAnthropicToGoogle(req, cache)["contents"])
+			}
+
+			prev := makeReq(3)
+			next := makeReq(4)
+
+			if len(next) < len(prev) {
+				t.Fatalf("turn N+1 shrank: %d < %d", len(next), len(prev))
+			}
+			for i := range prev {
+				want := mustJSON(t, prev[i])
+				got := mustJSON(t, next[i])
+				if want != got {
+					t.Fatalf("prefix diverged at %d\nwant: %s\ngot:  %s", i, want, got)
+				}
+			}
+		})
+	}
+}
+
+
