@@ -7,16 +7,19 @@ set -euo pipefail
 
 PROXY_URL="${PROXY_URL:-http://127.0.0.1:8080}"
 MODEL="${MODEL:-gemini-3.0-flash-high}"
-PAD="$(head -c 60000 /dev/urandom | base64 | tr -d '\n' | head -c 60000)"
+PAD="$(head -c 120000 /dev/urandom | base64 | tr -d '\n')"
+body=""
+trap 'rm -f "${body:-}"' EXIT
 
 turn() {
   local payload="$1" label="$2"
-  local body status
+  local status
   body="$(mktemp)"
   status="$(curl -sS -o "$body" -w '%{http_code}' \
     -X POST "$PROXY_URL/v1/messages" \
     -H 'content-type: application/json' \
     -H 'anthropic-version: 2023-06-01' \
+    -H "x-api-key: ${ANTIGRAVITY_PROXY_API_KEY:-}" \
     --data-binary "$payload")"
   echo "== $label: HTTP $status"
   if [ "$status" != "200" ]; then
@@ -24,10 +27,12 @@ turn() {
     head -c 2000 "$body"
     echo
     rm -f "$body"
+    body=""
     return 1
   fi
   grep -o '"usage":{[^}]*}' "$body" || echo "-- no usage block in response"
   rm -f "$body"
+  body=""
 }
 
 read -r -d '' TURN1 <<JSON || true

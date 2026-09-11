@@ -94,13 +94,49 @@ a lie.** Only documentation and small hardening apply.
 Turn 64 at 02:45:31.822Z, turn 66 at 02:52:08.965Z — 6m37s apart against a
 5-minute implicit-cache TTL. Not a defect.
 
+### E8 — open V1 violation: thinking parts still depend on process-local cache state
+
+`internal/format/content.go:105-119`, specifically the `cache.ThinkingFamily`
+read at `:110` and the drop at `:114-116` (mirrored at
+`internal/format/thinking.go:244-252`).
+
+A `thinking` block with a valid signature is emitted into `contents` only if
+`SignatureCache` still vouches that a Gemini model produced that signature.
+The cache is process-local with a 2-hour TTL (`signature_cache.go:8`) and no
+persistence.
+
+Reproduced warm-vs-cold divergence:
+
+```
+warm: [{"parts":[{"text":"hi"}],"role":"user"},
+       {"parts":[{"text":"reasoning text","thought":true,"thoughtSignature":"zzz…"},
+                 {"functionCall":{…},"thoughtSignature":"skip_thought_signature_validator"}],"role":"model"},
+       {"parts":[{"functionResponse":…}],"role":"user"}]
+cold: [{"parts":[{"text":"hi"}],"role":"user"},
+       {"parts":[{"functionCall":{…},"thoughtSignature":"skip_thought_signature_validator"}],"role":"model"},
+       {"parts":[{"functionResponse":…}],"role":"user"}]
+```
+
+Affected client class: any client that echoes `signature` back on thinking blocks
+(Claude Code does; the Pi client studied in E1 does not, sending `thinkingSignature: ""`).
+Turn N served from a warm cache carries the thought part. Two hours later, or
+after proxy restart or redeploy, turn N+1 drops it. The prefix breaks at the
+first thinking block, and the model loses its prior reasoning from history.
+
+Why not fixed here: the family decision must travel in the block the client
+echoes back rather than live in process state. That is a design change with its
+own spec. A naive deletion of the lookup would let a Claude-originated signature
+be posted to Gemini.
+
 ## Invariant to establish
 
-**V1.** For a fixed client-visible message history, the Google `contents` array
-produced by `ConvertAnthropicToGoogle` must be a pure function of that history:
-no synthetic messages the client cannot echo back, and no dependence on
-process-local ephemeral state. Formally: `contents(turn N)` must be an exact
-prefix of `contents(turn N+1)`.
+**V1 (narrowed to tool calls).** For a fixed client-visible message history, the
+Google `contents` array produced by `ConvertAnthropicToGoogle` must be a pure
+function of that history for all `functionCall` parts: no synthetic messages the
+client cannot echo back, and no dependence on process-local ephemeral state for
+tool calls. Formally: `contents(turn N)` must be an exact prefix of
+`contents(turn N+1)` across tool-use loops. This invariant holds for
+`functionCall` parts. It does NOT yet hold for thinking parts (see E8).
 
 ## Open question gating the fix
 
@@ -116,3 +152,10 @@ restores the old behavior if the probe fails.
 - Explicit (paid) Gemini context caching.
 - Changing how `cache_read_input_tokens` is computed.
 - Fixing Pi's miss formula.
+
+## Follow-up work
+
+- **Thinking signature statelessness (E8):** Make the thinking-block family decision
+  derivable from the request itself rather than process-local `SignatureCache` state.
+  Tag the signature at emission or key off the request family so the family travels
+  in the block the client echoes back.

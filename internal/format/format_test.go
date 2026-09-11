@@ -180,12 +180,15 @@ func TestBuilderUsesStablePerAccountSessionAndExactEnvelope(t *testing.T) {
 // TestGeminiToolSignatureFallsBackToSkipSentinel pins that a tool call whose
 // signature the client stripped converts to the documented bypass sentinel and
 // never to a value recovered from process-local state.
+// Note: With respect to the removed cache lookup this test is tautological because
+// the cache is not seeded; the invariant is enforced at compile time because
+// CacheTool/Tool no longer exist on SignatureCache.
 func TestGeminiToolSignatureFallsBackToSkipSentinel(t *testing.T) {
 	t.Parallel()
 	cache := NewSignatureCache()
 	request := map[string]any{
 		"model":      "gemini-2.5-flash-thinking",
-		"max_tokens": 100,
+		"max_tokens": 100000,
 		"thinking":   map[string]any{"budget_tokens": 999999},
 		"messages": []any{
 			map[string]any{"role": "assistant", "content": []any{map[string]any{
@@ -200,6 +203,9 @@ func TestGeminiToolSignatureFallsBackToSkipSentinel(t *testing.T) {
 		t.Fatalf("thoughtSignature = %#v", part["thoughtSignature"])
 	}
 	generation := asMap(converted["generationConfig"])
+	if intValue(generation["maxOutputTokens"], 0) != GeminiMaxOutputTokens {
+		t.Fatalf("maxOutputTokens = %#v, want %d", generation["maxOutputTokens"], GeminiMaxOutputTokens)
+	}
 	thinkingConfig := asMap(generation["thinkingConfig"])
 	if intValue(thinkingConfig["thinkingBudget"], 0) != 24576 {
 		t.Fatalf("thinkingBudget = %#v", thinkingConfig["thinkingBudget"])

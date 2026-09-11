@@ -194,6 +194,7 @@ Proxy settings can be configured via flags, environment variables, or `~/.config
 | `-upstream-timeout` | - | `5m` | Upstream Cloud Code request timeout |
 | `-pprof` | - | `false` | Enable pprof server on `localhost:6060` |
 | `-daemon` | - | `false` | Run proxy process in background |
+| - | `ANTIGRAVITY_GEMINI_THINKING_RECOVERY` | `0` (off) | Restores legacy synthetic Gemini tool-loop turns, which break implicit prompt caching; exists only as a rollback if a backend rejects `skip_thought_signature_validator` on a current-turn function call |
 
 Additional environment controls:
 - `AGY_TOKEN_PATH`: Path to default `agy` token file.
