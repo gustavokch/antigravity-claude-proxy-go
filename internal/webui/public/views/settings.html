@@ -3879,16 +3879,16 @@
                         </div>
                         <div class="text-xs text-gray-400 flex items-center pt-4 md:pt-0">
                             <template x-if="config.action === 'always_stub'">
-                                <span class="text-amber-400/90 text-[11px] leading-relaxed">Instant allow: intercepts requests and returns mock verdict without burning upstream quota.</span>
+                                <span class="text-amber-400/90 text-[11px] leading-relaxed" x-text="$store.global.t('classifierActionAlwaysStubDesc')">Instant allow: intercepts requests and returns mock verdict without burning upstream quota.</span>
                             </template>
                             <template x-if="config.action === 'fallback_on_exhaustion'">
-                                <span class="text-neon-cyan/90 text-[11px] leading-relaxed">Normal upstream forwarding; returns canned pass verdict only when quotas are exhausted.</span>
+                                <span class="text-neon-cyan/90 text-[11px] leading-relaxed" x-text="$store.global.t('classifierActionFallbackDesc')">Normal upstream forwarding; returns canned pass verdict only when quotas are exhausted.</span>
                             </template>
                             <template x-if="config.action === 'reroute_only'">
-                                <span class="text-purple-400/90 text-[11px] leading-relaxed">Forwards classifier prompts to the designated target model/endpoint.</span>
+                                <span class="text-purple-400/90 text-[11px] leading-relaxed" x-text="$store.global.t('classifierActionRerouteDesc')">Forwards classifier prompts to the designated target model/endpoint.</span>
                             </template>
                             <template x-if="config.action === 'passthrough'">
-                                <span class="text-gray-400 text-[11px] leading-relaxed">Audits and passes through directly to original Claude model unmodified.</span>
+                                <span class="text-gray-400 text-[11px] leading-relaxed" x-text="$store.global.t('classifierActionPassthroughDesc')">Audits and passes through directly to original Claude model unmodified.</span>
                             </template>
                         </div>
                     </div>
@@ -3897,8 +3897,8 @@
                 <!-- Global Parameters Card -->
                 <div class="card bg-space-900/30 border border-space-border/50 p-6 space-y-4">
                     <div class="flex items-center justify-between border-b border-space-border/40 pb-3">
-                        <h5 class="text-xs font-bold text-gray-200 uppercase tracking-wider">Global Parameters</h5>
-                        <span class="text-[10px] text-gray-500 font-mono">Applies to all variants unless overridden</span>
+                        <h5 class="text-xs font-bold text-gray-200 uppercase tracking-wider" x-text="$store.global.t('classifierGlobalParams')">Global Parameters</h5>
+                        <span class="text-[10px] text-gray-500 font-mono" x-text="$store.global.t('classifierGlobalParamsDesc')">Applies to all variants unless overridden</span>
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -3926,7 +3926,7 @@
                             <input type="number" min="0" max="2" step="0.1" x-model.number="config.defaultTemperature"
                                 class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
                                 placeholder="Default (e.g. 0.0)">
-                            <span class="text-[10px] text-gray-500 mt-1">Sampling temperature (leave blank for model default).</span>
+                            <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierTemperatureDesc')">Sampling temperature (leave blank for model default).</span>
                         </div>
                     </div>
 
@@ -3951,7 +3951,7 @@
                             <textarea x-model="config.defaultVerdict" rows="3"
                                 class="textarea textarea-sm textarea-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
                                 placeholder="<severity>0</severity>"></textarea>
-                            <span class="text-[10px] text-gray-500 mt-1">Default XML verdict returned when stubbing is active.</span>
+                            <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierCannedVerdictDesc')">Default XML verdict returned when stubbing is active.</span>
                         </div>
 
                         <!-- Default Thinking Text -->
@@ -3960,7 +3960,7 @@
                             <textarea x-model="config.defaultThinking" rows="3"
                                 class="textarea textarea-sm textarea-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
                                 placeholder="Routine action, no policy match."></textarea>
-                            <span class="text-[10px] text-gray-500 mt-1">Thinking block content injected before the verdict text.</span>
+                            <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierThinkingTextDesc')">Thinking block content injected before the verdict text.</span>
                         </div>
                     </div>
                 </div>
@@ -3975,7 +3975,7 @@
                                 </svg>
                                 <span class="text-xs font-bold text-gray-200 uppercase tracking-wider" x-text="$store.global.t('classifierVariants')">Variant Overrides</span>
                             </div>
-                            <span class="badge badge-xs bg-space-800 text-gray-400 border-space-border font-mono text-[9px]">3 Variants</span>
+                            <span class="badge badge-xs bg-space-800 text-gray-400 border-space-border font-mono text-[9px]" x-text="$store.global.t('classifierVariantsCount')">3 Variants</span>
                         </summary>
 
                         <div class="pt-4 space-y-4 border-t border-space-border/40 mt-3">
@@ -4072,7 +4072,7 @@
 
                 <!-- Save Action Bar -->
                 <div class="flex items-center justify-between p-4 bg-space-900/60 border border-space-border/60 rounded-xl">
-                    <span class="text-xs text-gray-400">Apply safety classification settings to the live proxy.</span>
+                    <span class="text-xs text-gray-400" x-text="$store.global.t('classifierSaveNotice')">Apply safety classification settings to the live proxy.</span>
                     <button class="btn btn-sm bg-neon-cyan hover:bg-cyan-600 border-none text-black font-semibold px-5 gap-2"
                         @click="saveConfig()" :disabled="saving" :class="{ 'loading': saving }">
                         <span x-show="!saving" x-text="$store.global.t('save') || 'Save Changes'">Save Changes</span>

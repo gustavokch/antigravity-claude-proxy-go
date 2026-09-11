@@ -86,10 +86,17 @@ var classifierKeys = []string{
 	"tabClassifier", "classifierSettingsTitle", "classifierSettingsDesc",
 	"classifierEnabled", "classifierAction", "classifierActionAlwaysStub",
 	"classifierActionFallback", "classifierActionReroute", "classifierActionPassthrough",
+	"classifierActionAlwaysStubDesc", "classifierActionFallbackDesc",
+	"classifierActionRerouteDesc", "classifierActionPassthroughDesc",
+	"classifierGlobalParams", "classifierGlobalParamsDesc",
 	"classifierTargetModel", "classifierTargetModelDesc", "classifierMaxTokens", "classifierMaxTokensDesc",
-	"classifierTemperature", "classifierCompactTranscript", "classifierCompactTranscriptDesc",
-	"classifierCannedVerdict", "classifierThinkingText",
-	"classifierVariants", "classifierVariantStage1", "classifierVariantStage2", "classifierVariantBlock",
+	"classifierTemperature", "classifierTemperatureDesc",
+	"classifierCompactTranscript", "classifierCompactTranscriptDesc",
+	"classifierCannedVerdict", "classifierCannedVerdictDesc",
+	"classifierThinkingText", "classifierThinkingTextDesc",
+	"classifierVariants", "classifierVariantsCount",
+	"classifierVariantStage1", "classifierVariantStage2", "classifierVariantBlock",
+	"classifierSaveNotice",
 }
 
 func loadLocale(t *testing.T, locale string) string {
