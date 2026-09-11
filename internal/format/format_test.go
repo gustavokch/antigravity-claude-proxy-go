@@ -558,3 +558,50 @@ func assertJSONEqual(t *testing.T, got, want any) {
 		t.Fatalf("JSON mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
 	}
 }
+
+func TestCandidatesTokensDetails_ThinkingTokens(t *testing.T) {
+	t.Parallel()
+
+	accumulator := NewThinkingAccumulator()
+	payload := []byte(`{
+		"response": {
+			"candidates": [
+				{
+					"content": {
+						"role": "model",
+						"parts": [
+							{"thought": true, "text": "let me think"}
+						]
+					}
+				}
+			],
+			"usageMetadata": {
+				"promptTokenCount": 100,
+				"candidatesTokenCount": 80,
+				"totalTokenCount": 180,
+				"cachedContentTokenCount": 20,
+				"candidatesTokensDetails": [
+					{"modality": "THOUGHTS", "tokenCount": 55},
+					{"modality": "TEXT", "tokenCount": 25}
+				]
+			}
+		}
+	}`)
+
+	if err := accumulator.Consume(payload); err != nil {
+		t.Fatalf("accumulator.Consume failed: %v", err)
+	}
+
+	if thinking := accumulator.ThinkingTokens(); thinking != 55 {
+		t.Errorf("accumulator.ThinkingTokens() = %d, want 55", thinking)
+	}
+
+	converter := NewStreamConverter("gemini-2.5-flash", NewSignatureCache(), "msg_test_thinking")
+	if _, err := converter.Consume(payload); err != nil {
+		t.Fatalf("converter.Consume failed: %v", err)
+	}
+
+	if thinking := converter.ThinkingTokens(); thinking != 55 {
+		t.Errorf("converter.ThinkingTokens() = %d, want 55", thinking)
+	}
+}

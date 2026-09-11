@@ -3,6 +3,7 @@ package format
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 var ErrEmptyResponse = errors.New("no content parts received from Cloud Code")
@@ -51,6 +52,15 @@ func (converter *StreamConverter) Consume(data []byte) ([]map[string]any, error)
 			converter.thinkingTokens = value
 		} else if value := intValue(usage["thinkingTokens"], 0); value != 0 {
 			converter.thinkingTokens = value
+		} else if details := asSlice(usage["candidatesTokensDetails"]); len(details) > 0 {
+			for _, d := range details {
+				dm := asMap(d)
+				if strings.EqualFold(stringValue(dm["modality"]), "THOUGHTS") {
+					if v := intValue(dm["tokenCount"], 0); v > 0 {
+						converter.thinkingTokens = v
+					}
+				}
+			}
 		}
 	}
 	candidate := firstCandidate(inner)
