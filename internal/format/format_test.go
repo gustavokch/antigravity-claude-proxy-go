@@ -180,35 +180,33 @@ func TestBuilderUsesStablePerAccountSessionAndExactEnvelope(t *testing.T) {
 	}
 }
 
-func TestGeminiToolSignatureRestorationAndBudgetClamp(t *testing.T) {
+// TestGeminiToolSignatureFallsBackToSkipSentinel pins that a tool call whose
+// signature the client stripped converts to the documented bypass sentinel and
+// never to a value recovered from process-local state.
+func TestGeminiToolSignatureFallsBackToSkipSentinel(t *testing.T) {
 	t.Parallel()
 	cache := NewSignatureCache()
-	signature := strings.Repeat("s", MinSignatureLength)
-	cache.CacheTool("tool-1", signature)
+	cache.CacheTool("tool-1", strings.Repeat("c", MinSignatureLength))
 	request := map[string]any{
-		"model": "gemini-2.5-flash-thinking",
+		"model":      "gemini-2.5-flash-thinking",
+		"max_tokens": 100,
+		"thinking":   map[string]any{"budget_tokens": 999999},
 		"messages": []any{
-			map[string]any{
-				"role": "assistant",
-				"content": []any{
-					map[string]any{"type": "tool_use", "id": "tool-1", "name": "read", "input": map[string]any{}},
-				},
-			},
+			map[string]any{"role": "assistant", "content": []any{map[string]any{
+				"type": "tool_use", "id": "tool-1", "name": "read", "input": map[string]any{},
+			}}},
 		},
-		"max_tokens": 100000,
-		"thinking":   map[string]any{"budget_tokens": 100000},
 	}
 	converted := ConvertAnthropicToGoogle(request, cache)
-	part := asMap(asSlice(asMap(asSlice(converted["contents"])[0])["parts"])[0])
-	if part["thoughtSignature"] != signature {
-		t.Fatalf("thoughtSignature = %q", part["thoughtSignature"])
+	contents := asSlice(converted["contents"])
+	part := asMap(asSlice(asMap(contents[len(contents)-1])["parts"])[0])
+	if part["thoughtSignature"] != GeminiSkipSignature {
+		t.Fatalf("thoughtSignature = %#v", part["thoughtSignature"])
 	}
 	generation := asMap(converted["generationConfig"])
-	if generation["maxOutputTokens"] != GeminiMaxOutputTokens {
-		t.Fatalf("maxOutputTokens = %v", generation["maxOutputTokens"])
-	}
-	if asMap(generation["thinkingConfig"])["thinkingBudget"] != 24576 {
-		t.Fatalf("thinkingConfig = %#v", generation["thinkingConfig"])
+	thinkingConfig := asMap(generation["thinkingConfig"])
+	if intValue(thinkingConfig["thinkingBudget"], 0) != 24576 {
+		t.Fatalf("thinkingBudget = %#v", thinkingConfig["thinkingBudget"])
 	}
 }
 

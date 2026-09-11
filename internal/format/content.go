@@ -57,10 +57,11 @@ func convertContentToParts(content any, family ModelFamily, cache *SignatureCach
 			}
 			part := map[string]any{"functionCall": call}
 			if family == FamilyGemini {
+				// Only the client's own value is used. Recovering a signature from
+				// process-local state makes the same history convert differently
+				// after a TTL expiry or a restart, which breaks the Gemini implicit
+				// cache prefix at the first tool call.
 				signature := stringValue(block["thoughtSignature"])
-				if signature == "" {
-					signature = cache.Tool(stringValue(block["id"]))
-				}
 				if signature == "" {
 					signature = GeminiSkipSignature
 				}
