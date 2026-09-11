@@ -214,3 +214,249 @@ func TestUnknownThinkingSignatureReachesGeminiVerbatim(t *testing.T) {
 	}
 	t.Fatal("no thought part survived conversion; the script probe would test nothing")
 }
+
+func TestGeminiToolSignaturePreservesSnakeCaseClientSignature(t *testing.T) {
+	t.Parallel()
+	cache := NewSignatureCache()
+	signature := "custom-signature-12345678901234567890123456789012345678901234567890"
+	request := map[string]any{
+		"model": "gemini-3.0-flash-high",
+		"messages": []any{
+			map[string]any{
+				"role": "assistant",
+				"content": []any{
+					map[string]any{
+						"type":              "tool_use",
+						"id":                "t1",
+						"name":              "read",
+						"input":             map[string]any{"path": "file.go"},
+						"thought_signature": signature,
+					},
+				},
+			},
+		},
+	}
+	converted := ConvertAnthropicToGoogle(request, cache)
+	contents := asSlice(converted["contents"])
+	part := asMap(asSlice(asMap(contents[len(contents)-1])["parts"])[0])
+	if part["thoughtSignature"] != signature {
+		t.Fatalf("thoughtSignature = %#v, want %#v", part["thoughtSignature"], signature)
+	}
+}
+
+func TestGeminiToolSignaturePreservedInMultiBlockAssistant(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"thoughtSignature", "thought_signature"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			cache := NewSignatureCache()
+			signature := "custom-signature-12345678901234567890123456789012345678901234567890"
+			request := map[string]any{
+				"model": "gemini-3.0-flash-high",
+				"messages": []any{
+					map[string]any{
+						"role": "assistant",
+						"content": []any{
+							map[string]any{
+								"type": "text",
+								"text": "I will read the file now.",
+							},
+							map[string]any{
+								"type":  "tool_use",
+								"id":    "t1",
+								"name":  "read",
+								"input": map[string]any{"path": "file.go"},
+								key:     signature,
+							},
+						},
+					},
+				},
+			}
+			converted := ConvertAnthropicToGoogle(request, cache)
+			contents := asSlice(converted["contents"])
+			parts := asSlice(asMap(contents[len(contents)-1])["parts"])
+			var found bool
+			for _, p := range parts {
+				part := asMap(p)
+				if part["functionCall"] != nil {
+					found = true
+					if part["thoughtSignature"] != signature {
+						t.Fatalf("%s in multi-block: thoughtSignature = %#v, want %#v", key, part["thoughtSignature"], signature)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("%s in multi-block: no functionCall part found", key)
+			}
+		})
+	}
+}
+
+func TestHasGeminiHistoryWithSnakeCaseSignature(t *testing.T) {
+	t.Parallel()
+	signature := "custom-signature-12345678901234567890123456789012345678901234567890"
+	messages := []any{
+		map[string]any{
+			"role": "assistant",
+			"content": []any{
+				map[string]any{
+					"type":              "tool_use",
+					"id":                "t1",
+					"name":              "read",
+					"input":             map[string]any{"path": "file.go"},
+					"thought_signature": signature,
+				},
+			},
+		},
+	}
+	if !hasGeminiHistory(messages) {
+		t.Fatal("hasGeminiHistory returned false for message with thought_signature")
+	}
+}
+
+// TestGeminiToolSignatureBelowMinLengthFallsBackToSkip pins the tool_use path to
+// the same length floor the thinking path applies. A client that sends a stub
+// value must not have it forwarded to the backend verbatim. The substitution is
+// a pure function of the block, so the cache prefix stays stable either way.
+func TestGeminiToolSignatureBelowMinLengthFallsBackToSkip(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"thoughtSignature", "thought_signature"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			request := map[string]any{
+				"model": "gemini-3.0-flash-high",
+				"messages": []any{
+					map[string]any{
+						"role": "assistant",
+						"content": []any{
+							map[string]any{
+								"type":  "tool_use",
+								"id":    "t1",
+								"name":  "read",
+								"input": map[string]any{"path": "file.go"},
+								key:     "short",
+							},
+						},
+					},
+				},
+			}
+			contents := asSlice(ConvertAnthropicToGoogle(request, NewSignatureCache())["contents"])
+			part := asMap(asSlice(asMap(contents[len(contents)-1])["parts"])[0])
+			if part["thoughtSignature"] != GeminiSkipSignature {
+				t.Fatalf("thoughtSignature = %#v, want %#v", part["thoughtSignature"], GeminiSkipSignature)
+			}
+		})
+	}
+}
+
+// assertToolSignatures checks that every functionCall part in the converted
+// contents carries the signature the client supplied for that loop round, in
+// order. Without this the prefix assertions alone are satisfied by a conversion
+// that drops every client signature, since dropping them is also stable.
+func assertToolSignatures(t *testing.T, contents []any, sigValue func(int) string, turns int) {
+	t.Helper()
+	round := 0
+	for _, rawContent := range contents {
+		for _, rawPart := range asSlice(asMap(rawContent)["parts"]) {
+			part := asMap(rawPart)
+			if part == nil || part["functionCall"] == nil {
+				continue
+			}
+			want := sigValue(round)
+			if got := part["thoughtSignature"]; got != want {
+				t.Fatalf("round %d thoughtSignature = %#v, want %#v", round, got, want)
+			}
+			round++
+		}
+	}
+	if round != turns {
+		t.Fatalf("saw %d functionCall parts, want %d", round, turns)
+	}
+}
+
+func TestGeminiToolLoopPrefixIsStableWithClientSignatures(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		snakeCase bool
+	}{
+		{name: "camelCase thoughtSignature", snakeCase: false},
+		{name: "snake_case thought_signature", snakeCase: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cache := NewSignatureCache()
+
+			sigKey := "thoughtSignature"
+			if tc.snakeCase {
+				sigKey = "thought_signature"
+			}
+			sigValue := func(turn int) string {
+				return "custom-signature-" + strconv.Itoa(turn) + "-1234567890123456789012345678901234567890"
+			}
+
+			makeReq := func(turns int) []any {
+				messages := []any{map[string]any{"role": "user", "content": "start the loop"}}
+				for i := 0; i < turns; i++ {
+					toolID := "toolu_" + strconv.Itoa(i)
+					sigVal := sigValue(i)
+					messages = append(messages,
+						map[string]any{
+							"role": "assistant",
+							"content": []any{
+								map[string]any{
+									"type": "text",
+									"text": "Reading turn " + strconv.Itoa(i),
+								},
+								map[string]any{
+									"type":  "tool_use",
+									"id":    toolID,
+									"name":  "read",
+									"input": map[string]any{"path": "file.go"},
+									sigKey:  sigVal,
+								},
+							},
+						},
+						map[string]any{
+							"role": "user",
+							"content": []any{map[string]any{
+								"type":        "tool_result",
+								"tool_use_id": toolID,
+								"content":     "file body",
+							}},
+						},
+					)
+				}
+				req := map[string]any{
+					"model":    "gemini-3.0-flash-high",
+					"messages": messages,
+				}
+				return asSlice(ConvertAnthropicToGoogle(req, cache)["contents"])
+			}
+
+			prev := makeReq(3)
+			next := makeReq(4)
+
+			// Each extra loop round adds an assistant message and a tool_result
+			// message. An exact count also catches a conversion that collapses the
+			// history, which a "did not shrink" check would pass.
+			if len(next) != len(prev)+2 {
+				t.Fatalf("turn N+1 has %d contents, want %d", len(next), len(prev)+2)
+			}
+			for i := range prev {
+				want := mustJSON(t, prev[i])
+				got := mustJSON(t, next[i])
+				if want != got {
+					t.Fatalf("prefix diverged at %d\nwant: %s\ngot:  %s", i, want, got)
+				}
+			}
+
+			// A stable prefix on its own is not the property under test: two turns
+			// that both discard the client signature are also stable. Assert the
+			// client value reached the backend verbatim, so removing the
+			// conversion fallback fails this test instead of passing it.
+			assertToolSignatures(t, next, sigValue, 4)
+		})
+	}
+}
