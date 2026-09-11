@@ -244,6 +244,31 @@ func TestGeminiToolSignaturePreservesSnakeCaseClientSignature(t *testing.T) {
 	}
 }
 
+// assertToolSignatures checks that every functionCall part in the converted
+// contents carries the signature the client supplied for that loop round, in
+// order. Without this the prefix assertions alone are satisfied by a conversion
+// that drops every client signature, since dropping them is also stable.
+func assertToolSignatures(t *testing.T, contents []any, sigValue func(int) string, turns int) {
+	t.Helper()
+	round := 0
+	for _, rawContent := range contents {
+		for _, rawPart := range asSlice(asMap(rawContent)["parts"]) {
+			part := asMap(rawPart)
+			if part == nil || part["functionCall"] == nil {
+				continue
+			}
+			want := sigValue(round)
+			if got := part["thoughtSignature"]; got != want {
+				t.Fatalf("round %d thoughtSignature = %#v, want %#v", round, got, want)
+			}
+			round++
+		}
+	}
+	if round != turns {
+		t.Fatalf("saw %d functionCall parts, want %d", round, turns)
+	}
+}
+
 func TestGeminiToolLoopPrefixIsStableWithClientSignatures(t *testing.T) {
 	t.Parallel()
 
@@ -258,15 +283,19 @@ func TestGeminiToolLoopPrefixIsStableWithClientSignatures(t *testing.T) {
 			t.Parallel()
 			cache := NewSignatureCache()
 
+			sigKey := "thoughtSignature"
+			if tc.snakeCase {
+				sigKey = "thought_signature"
+			}
+			sigValue := func(turn int) string {
+				return "custom-signature-" + strconv.Itoa(turn) + "-1234567890123456789012345678901234567890"
+			}
+
 			makeReq := func(turns int) []any {
 				messages := []any{map[string]any{"role": "user", "content": "start the loop"}}
 				for i := 0; i < turns; i++ {
 					toolID := "toolu_" + strconv.Itoa(i)
-					sigKey := "thoughtSignature"
-					if tc.snakeCase {
-						sigKey = "thought_signature"
-					}
-					sigVal := "custom-signature-" + strconv.Itoa(i) + "-1234567890123456789012345678901234567890"
+					sigVal := sigValue(i)
 					messages = append(messages,
 						map[string]any{
 							"role": "assistant",
@@ -298,8 +327,11 @@ func TestGeminiToolLoopPrefixIsStableWithClientSignatures(t *testing.T) {
 			prev := makeReq(3)
 			next := makeReq(4)
 
-			if len(next) < len(prev) {
-				t.Fatalf("turn N+1 shrank: %d < %d", len(next), len(prev))
+			// Each extra loop round adds an assistant message and a tool_result
+			// message. An exact count also catches a conversion that collapses the
+			// history, which a "did not shrink" check would pass.
+			if len(next) != len(prev)+2 {
+				t.Fatalf("turn N+1 has %d contents, want %d", len(next), len(prev)+2)
 			}
 			for i := range prev {
 				want := mustJSON(t, prev[i])
@@ -308,8 +340,12 @@ func TestGeminiToolLoopPrefixIsStableWithClientSignatures(t *testing.T) {
 					t.Fatalf("prefix diverged at %d\nwant: %s\ngot:  %s", i, want, got)
 				}
 			}
+
+			// A stable prefix on its own is not the property under test: two turns
+			// that both discard the client signature are also stable. Assert the
+			// client value reached the backend verbatim, so removing the
+			// conversion fallback fails this test instead of passing it.
+			assertToolSignatures(t, next, sigValue, 4)
 		})
 	}
 }
-
-
