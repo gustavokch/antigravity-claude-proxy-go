@@ -288,3 +288,109 @@ func TestUpdateAccountQuotaPopulatesGemini38FlashFamily(t *testing.T) {
 		}
 	})
 }
+
+func TestStreamGenerateContent_ExecutionMetadataUpdatedOnSuccess(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	client := &blockingModelsClient{release: release}
+	manager, err := New(Options{
+		Accounts: []*Account{
+			{Email: "acc1@example.com", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return client },
+		ProjectID: "test-proj-123",
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+
+	ctx, meta := cloudcode.WithExecutionMetadata(context.Background())
+	req := map[string]any{
+		"model": "gemini-2.5-pro",
+	}
+
+	_, err = dispatcher.StreamGenerateContent(ctx, req, func(cloudcode.SSEEvent) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerateContent failed: %v", err)
+	}
+
+	if meta.Account != "acc1@example.com" {
+		t.Errorf("meta.Account = %q, want %q", meta.Account, "acc1@example.com")
+	}
+	if meta.ProjectID != "test-proj-123" {
+		t.Errorf("meta.ProjectID = %q, want %q", meta.ProjectID, "test-proj-123")
+	}
+}
+
+type failoverClient struct {
+	blockingModelsClient
+	email string
+}
+
+func (c *failoverClient) StreamGenerateContent(ctx context.Context, request any, options cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	if c.email == "acc1@example.com" {
+		return cloudcode.Response{}, &cloudcode.HTTPError{
+			StatusCode: 429,
+			Body:       `{"error":{"message":"quota exceeded"}}`,
+		}
+	}
+	return cloudcode.Response{}, nil
+}
+
+func TestStreamGenerateContent_ExecutionMetadataUpdatedOnFailover(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	manager, err := New(Options{
+		Accounts: []*Account{
+			{Email: "acc1@example.com", Enabled: true},
+			{Email: "acc2@example.com", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:  manager,
+		Resolver: stubResolver{},
+		NewClient: func(email string) CloudClient {
+			return &failoverClient{
+				blockingModelsClient: blockingModelsClient{release: release},
+				email:                email,
+			}
+		},
+		ProjectID: "test-proj-456",
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+
+	ctx, meta := cloudcode.WithExecutionMetadata(context.Background())
+	req := map[string]any{
+		"model": "gemini-2.5-pro",
+	}
+
+	_, err = dispatcher.StreamGenerateContent(ctx, req, func(cloudcode.SSEEvent) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerateContent failed: %v", err)
+	}
+
+	if meta.Account != "acc2@example.com" {
+		t.Errorf("meta.Account = %q, want %q", meta.Account, "acc2@example.com")
+	}
+	if meta.ProjectID != "test-proj-456" {
+		t.Errorf("meta.ProjectID = %q, want %q", meta.ProjectID, "test-proj-456")
+	}
+}
