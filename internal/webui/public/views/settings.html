@@ -53,6 +53,14 @@
                     </svg>
                     <span x-text="$store.global.t('tabServer')">Server</span>
                 </button>
+                <button @click="$store.global.settingsTab = 'classifier'"
+                    class="transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
+                    :class="$store.global.settingsTab === 'classifier' ? 'text-white' : 'text-gray-500 hover:text-gray-300'">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                    </svg>
+                    <span x-text="$store.global.t('tabClassifier')">Security Monitor</span>
+                </button>
             </div>
         </div>
 
@@ -3823,6 +3831,253 @@
                             </button>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Tab 5: Security Monitor (Classifier) Configuration -->
+            <div x-show="$store.global.settingsTab === 'classifier'" x-data="classifierConfig"
+                class="space-y-6 animate-fade-in pb-10">
+
+                <!-- Header & Master Toggle Card -->
+                <div class="card bg-space-900/30 border border-neon-cyan/40 p-6 space-y-5">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div class="space-y-1">
+                            <div class="flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-neon-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                </svg>
+                                <h4 class="text-sm font-bold text-white uppercase tracking-wider" x-text="$store.global.t('classifierSettingsTitle')">Security Monitor Configuration</h4>
+                                <span class="badge badge-xs bg-neon-cyan/10 text-neon-cyan border-neon-cyan/30 text-[9px] font-mono uppercase tracking-wider">Safety</span>
+                            </div>
+                            <p class="text-xs text-gray-400" x-text="$store.global.t('classifierSettingsDesc')">
+                                Interception, rerouting, parameter tuning, and stubbing for Claude Code safety classification requests.
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer"
+                                    x-model="config.enabled"
+                                    aria-label="Enable classifier interception toggle">
+                                <div class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black"></div>
+                            </label>
+                            <span class="text-xs font-semibold" :class="config.enabled ? 'text-neon-cyan' : 'text-gray-500'"
+                                x-text="config.enabled ? ($store.global.t('enabled') || 'Enabled') : ($store.global.t('disabled') || 'Disabled')"></span>
+                        </div>
+                    </div>
+
+                    <!-- Action Mode Dropdown -->
+                    <div class="pt-3 border-t border-space-border/40 grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierAction')">Action Mode</label>
+                            <select x-model="config.action"
+                                class="select select-sm select-bordered bg-space-800 border-space-border text-white text-xs w-full focus:border-neon-cyan">
+                                <option value="fallback_on_exhaustion" x-text="$store.global.t('classifierActionFallback')">Fallback on Quota Exhaustion</option>
+                                <option value="always_stub" x-text="$store.global.t('classifierActionAlwaysStub')">Always Return Canned Stub (Fast Allow)</option>
+                                <option value="reroute_only" x-text="$store.global.t('classifierActionReroute')">Reroute Only (Custom Model/Endpoint)</option>
+                                <option value="passthrough" x-text="$store.global.t('classifierActionPassthrough')">Passthrough (Audit/Original)</option>
+                            </select>
+                        </div>
+                        <div class="text-xs text-gray-400 flex items-center pt-4 md:pt-0">
+                            <template x-if="config.action === 'always_stub'">
+                                <span class="text-amber-400/90 text-[11px] leading-relaxed" x-text="$store.global.t('classifierActionAlwaysStubDesc')">Instant allow: intercepts requests and returns mock verdict without burning upstream quota.</span>
+                            </template>
+                            <template x-if="config.action === 'fallback_on_exhaustion'">
+                                <span class="text-neon-cyan/90 text-[11px] leading-relaxed" x-text="$store.global.t('classifierActionFallbackDesc')">Normal upstream forwarding; returns canned pass verdict only when quotas are exhausted.</span>
+                            </template>
+                            <template x-if="config.action === 'reroute_only'">
+                                <span class="text-purple-400/90 text-[11px] leading-relaxed" x-text="$store.global.t('classifierActionRerouteDesc')">Forwards classifier prompts to the designated target model/endpoint.</span>
+                            </template>
+                            <template x-if="config.action === 'passthrough'">
+                                <span class="text-gray-400 text-[11px] leading-relaxed" x-text="$store.global.t('classifierActionPassthroughDesc')">Audits and passes through directly to original Claude model unmodified.</span>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Global Parameters Card -->
+                <div class="card bg-space-900/30 border border-space-border/50 p-6 space-y-4">
+                    <div class="flex items-center justify-between border-b border-space-border/40 pb-3">
+                        <h5 class="text-xs font-bold text-gray-200 uppercase tracking-wider" x-text="$store.global.t('classifierGlobalParams')">Global Parameters</h5>
+                        <span class="text-[10px] text-gray-500 font-mono" x-text="$store.global.t('classifierGlobalParamsDesc')">Applies to all variants unless overridden</span>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <!-- Target Model -->
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierTargetModel')">Target Model</label>
+                            <input type="text" x-model="config.defaultModel"
+                                class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                placeholder="e.g. gemini-2.5-flash">
+                            <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierTargetModelDesc')">Model to reroute classifier prompts to. Leave empty to keep original model.</span>
+                        </div>
+
+                        <!-- Max Tokens -->
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierMaxTokens')">Max Tokens</label>
+                            <input type="number" min="0" x-model.number="config.defaultMaxTokens"
+                                class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                placeholder="0">
+                            <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierMaxTokensDesc')">Cap max tokens (0 = use prompt default).</span>
+                        </div>
+
+                        <!-- Temperature -->
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierTemperature')">Temperature</label>
+                            <input type="number" min="0" max="2" step="0.1" x-model.number="config.defaultTemperature"
+                                class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                placeholder="Default (e.g. 0.0)">
+                            <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierTemperatureDesc')">Sampling temperature (leave blank for model default).</span>
+                        </div>
+                    </div>
+
+                    <!-- Compact Transcript Toggle -->
+                    <div class="flex items-center justify-between p-3 bg-space-800/40 rounded-lg border border-space-border/40 mt-2">
+                        <div class="flex flex-col gap-0.5">
+                            <span class="text-xs font-medium text-gray-200" x-text="$store.global.t('classifierCompactTranscript')">Compact Transcript</span>
+                            <span class="text-[11px] text-gray-500" x-text="$store.global.t('classifierCompactTranscriptDesc')">Truncate oversized tool result outputs in &lt;transcript&gt; tags to preserve context and quota.</span>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                            <input type="checkbox" class="sr-only peer"
+                                x-model="config.compactTranscript"
+                                aria-label="Compact transcript toggle">
+                            <div class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black"></div>
+                        </label>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                        <!-- Default Canned Verdict Template -->
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCannedVerdict')">Canned Verdict Template</label>
+                            <textarea x-model="config.defaultVerdict" rows="3"
+                                class="textarea textarea-sm textarea-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                placeholder="<severity>0</severity>"></textarea>
+                            <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierCannedVerdictDesc')">Default XML verdict returned when stubbing is active.</span>
+                        </div>
+
+                        <!-- Default Thinking Text -->
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierThinkingText')">Thinking Text</label>
+                            <textarea x-model="config.defaultThinking" rows="3"
+                                class="textarea textarea-sm textarea-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                placeholder="Routine action, no policy match."></textarea>
+                            <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierThinkingTextDesc')">Thinking block content injected before the verdict text.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Variant Overrides Accordion -->
+                <div class="card bg-space-900/30 border border-space-border/50 p-6 space-y-4">
+                    <details class="group" open>
+                        <summary class="cursor-pointer flex items-center justify-between select-none py-1">
+                            <div class="flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-gray-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                                </svg>
+                                <span class="text-xs font-bold text-gray-200 uppercase tracking-wider" x-text="$store.global.t('classifierVariants')">Variant Overrides</span>
+                            </div>
+                            <span class="badge badge-xs bg-space-800 text-gray-400 border-space-border font-mono text-[9px]" x-text="$store.global.t('classifierVariantsCount')">3 Variants</span>
+                        </summary>
+
+                        <div class="pt-4 space-y-4 border-t border-space-border/40 mt-3">
+                            <!-- Stage 1 (Harm-Only Severity) -->
+                            <div class="p-4 bg-space-850/60 rounded-lg border border-space-border/40 space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-2">
+                                        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                                        <span class="text-xs font-bold text-gray-200" x-text="$store.global.t('classifierVariantStage1')">Stage 1 (Harm-Only Severity)</span>
+                                    </div>
+                                    <span class="font-mono text-[10px] text-gray-500">stage1-severity</span>
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierMaxTokens')">Max Tokens</label>
+                                        <input type="number" min="0"
+                                            x-model.number="config.variants['stage1-severity'].maxTokens"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                            placeholder="64">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierCannedVerdict')">Canned Verdict Template</label>
+                                        <input type="text"
+                                            x-model="config.variants['stage1-severity'].cannedVerdict"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                            placeholder="<severity>0</severity> (Leave blank to use default)">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Stage 2 (Full Verdict & Reasoning) -->
+                            <div class="p-4 bg-space-850/60 rounded-lg border border-space-border/40 space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-2">
+                                        <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                                        <span class="text-xs font-bold text-gray-200" x-text="$store.global.t('classifierVariantStage2')">Stage 2 (Full Verdict & Reasoning)</span>
+                                    </div>
+                                    <span class="font-mono text-[10px] text-gray-500">stage2-severity</span>
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierMaxTokens')">Max Tokens</label>
+                                        <input type="number" min="0"
+                                            x-model.number="config.variants['stage2-severity'].maxTokens"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                            placeholder="8192">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierThinkingText')">Thinking Text</label>
+                                        <input type="text"
+                                            x-model="config.variants['stage2-severity'].thinkingText"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                            placeholder="Leave blank to use default">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierCannedVerdict')">Canned Verdict Template</label>
+                                        <input type="text"
+                                            x-model="config.variants['stage2-severity'].cannedVerdict"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                            placeholder="Leave blank to use default">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Block Pre-filter -->
+                            <div class="p-4 bg-space-850/60 rounded-lg border border-space-border/40 space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-2">
+                                        <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                                        <span class="text-xs font-bold text-gray-200" x-text="$store.global.t('classifierVariantBlock')">Block Pre-filter</span>
+                                    </div>
+                                    <span class="font-mono text-[10px] text-gray-500">block-prefilter</span>
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierTargetModel')">Target Model</label>
+                                        <input type="text"
+                                            x-model="config.variants['block-prefilter'].targetModel"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                            placeholder="Target model override (e.g. gemini-2.5-flash)">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierCannedVerdict')">Canned Verdict Template</label>
+                                        <input type="text"
+                                            x-model="config.variants['block-prefilter'].cannedVerdict"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                                            placeholder="e.g. <block>false</block> (No default; blank disables stubbing)">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+
+                <!-- Save Action Bar -->
+                <div class="flex items-center justify-between p-4 bg-space-900/60 border border-space-border/60 rounded-xl">
+                    <span class="text-xs text-gray-400" x-text="$store.global.t('classifierSaveNotice')">Apply safety classification settings to the live proxy.</span>
+                    <button class="btn btn-sm bg-neon-cyan hover:bg-cyan-600 border-none text-black font-semibold px-5 gap-2"
+                        @click="saveConfig()" :disabled="saving" :class="{ 'loading': saving }">
+                        <span x-show="!saving" x-text="$store.global.t('save') || 'Save Changes'">Save Changes</span>
+                        <span x-show="saving" class="loading loading-spinner loading-xs"></span>
+                    </button>
                 </div>
             </div>
 

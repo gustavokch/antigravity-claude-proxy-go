@@ -822,6 +822,125 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 
 	model := stringFrom(anthropicRequest["model"])
+
+	var (
+		isClassifierFallback           bool
+		classifierFallbackKind         classifier.Kind
+		classifierFallbackVerdictTmpl  string
+		classifierFallbackThinkingTmpl string
+	)
+
+	streamRequested, _ := anthropicRequest["stream"].(bool)
+	if (cfg.Classifier.Enabled || config.ClassifierFallbackEnabled()) && !streamRequested {
+		if kind, detected := classifier.Detect(rawBody); detected {
+			effectiveAction := cfg.Classifier.Action
+			if effectiveAction == "" {
+				effectiveAction = config.ActionFallbackOnExhaustion
+			}
+			targetModel := cfg.Classifier.DefaultModel
+			maxTokens := cfg.Classifier.DefaultMaxTokens
+			temp := cfg.Classifier.DefaultTemp
+			compact := cfg.Classifier.CompactTranscript
+			verdictTmpl := ""
+			if kind != classifier.KindBlockPrefilter {
+				verdictTmpl = cfg.Classifier.DefaultVerdict
+			}
+			thinkingTmpl := cfg.Classifier.DefaultThinking
+
+			if variant, exists := cfg.Classifier.Variants[kind.String()]; exists {
+				if variant.TargetModel != "" {
+					targetModel = variant.TargetModel
+				}
+				if variant.MaxTokens > 0 {
+					maxTokens = variant.MaxTokens
+				}
+				if variant.Temperature != nil {
+					temp = variant.Temperature
+				}
+				if variant.CompactTranscript != nil {
+					compact = *variant.CompactTranscript
+				}
+				if variant.CannedVerdict != "" {
+					verdictTmpl = variant.CannedVerdict
+				}
+				if variant.ThinkingText != "" {
+					thinkingTmpl = variant.ThinkingText
+				}
+			}
+
+			if effectiveAction == config.ActionAlwaysStub {
+				logger := server.logger
+				if logger == nil {
+					logger = slog.Default()
+				}
+				stubModel := model
+				if targetModel != "" {
+					stubModel = targetModel
+				}
+				if stub, stubErr := classifier.BuildStub(kind, stubModel, verdictTmpl, thinkingTmpl); stubErr == nil {
+					logger.Warn("[Server] classifier interception: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
+						"kind", kind, "model", stubModel)
+					writer.Header().Set("Content-Type", "application/json")
+					writer.WriteHeader(http.StatusOK)
+					_, _ = writer.Write(stub)
+					return
+				}
+				logger.Warn("[Server] classifier interception: no canned verdict for this variant; failing fast instead of retrying",
+					"kind", kind, "model", stubModel)
+				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No canned verdict for this classifier variant, so the request fails fast instead of retrying.")
+				return
+			}
+
+			if effectiveAction == config.ActionRerouteOnly || effectiveAction == config.ActionFallbackOnExhaustion {
+				if targetModel != "" {
+					anthropicRequest["model"] = targetModel
+					model = targetModel
+					bodyMutated = true
+				}
+				if maxTokens > 0 {
+					anthropicRequest["max_tokens"] = maxTokens
+					bodyMutated = true
+				}
+				if temp != nil {
+					anthropicRequest["temperature"] = *temp
+					bodyMutated = true
+				}
+				if compact {
+					if msgs, ok := anthropicRequest["messages"].([]any); ok {
+						for i, msg := range msgs {
+							if m, ok := msg.(map[string]any); ok {
+								if content, ok := m["content"]; ok {
+									rawContent, err := json.Marshal(content)
+									if err == nil {
+										if compacted, changed := classifier.CompactTranscript(rawContent); changed {
+											var newContent any
+											if err := json.Unmarshal(compacted, &newContent); err == nil {
+												m["content"] = newContent
+												msgs[i] = m
+												bodyMutated = true
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				if bodyMutated {
+					newBody, err := json.Marshal(anthropicRequest)
+					if err == nil {
+						rawBody = newBody
+					}
+				}
+				if effectiveAction == config.ActionFallbackOnExhaustion {
+					isClassifierFallback = true
+					classifierFallbackKind = kind
+					classifierFallbackVerdictTmpl = verdictTmpl
+					classifierFallbackThinkingTmpl = thinkingTmpl
+				}
+			}
+		}
+	}
 	if cfg.Kimi.Enabled {
 		if kimiEntry, ok := matchKimiModelEntry(cfg.Kimi, model); ok {
 			anthropicRequest["model"] = kimiEntry.ID
@@ -883,37 +1002,33 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		return
 	}
 
-	// Classifier fallback is decided here, after every alternate-backend
-	// route has had its chance to return: Kimi, Claude Code, OpenRouter and
-	// custom endpoints carry their own credentials and never consume account
-	// capacity, so account exhaustion says nothing about whether those
-	// requests would stall. Only the account-backed dispatch path below is
-	// gated, and only for non-streaming callers: the stub is a plain JSON
-	// body, which a caller awaiting text/event-stream would never parse.
-	streamRequested, _ := anthropicRequest["stream"].(bool)
-	if config.ClassifierFallbackEnabled() && !streamRequested {
-		if kind, detected := classifier.Detect(rawBody); detected {
-			noCapacity := server.accountManager != nil && server.accountManager.Available(model) == 0
-			if noCapacity {
-				logger := server.logger
-				if logger == nil {
-					logger = slog.Default()
-				}
-				if stub, stubErr := classifier.Stub(kind, model); stubErr == nil {
-					logger.Warn("[Server] classifier fallback: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
-						"kind", kind, "model", model)
-					writer.Header().Set("Content-Type", "application/json")
-					writer.WriteHeader(http.StatusOK)
-					_, _ = writer.Write(stub)
-					return
-				}
-				// 400, not 429: a 429 invites the caller's own retry/backoff,
-				// which is exactly the stall this fallback exists to remove.
-				logger.Warn("[Server] classifier fallback: no canned verdict for this variant; failing fast instead of retrying",
-					"kind", kind, "model", model)
-				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No account capacity for model "+model+"; classifier fallback active and this classifier variant has no canned verdict, so the request fails fast instead of retrying.")
+	// Classifier fallback on exhaustion is evaluated here, after every
+	// alternate-backend route has had its chance to return: Kimi, Claude Code,
+	// OpenRouter and custom endpoints carry their own credentials and never
+	// consume account capacity, so account exhaustion says nothing about
+	// whether those requests would stall. Only the account-backed dispatch path
+	// below is gated.
+	if isClassifierFallback {
+		noCapacity := server.accountManager != nil && server.accountManager.Available(model) == 0
+		if noCapacity {
+			logger := server.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			if stub, stubErr := classifier.BuildStub(classifierFallbackKind, model, classifierFallbackVerdictTmpl, classifierFallbackThinkingTmpl); stubErr == nil {
+				logger.Warn("[Server] classifier fallback: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
+					"kind", classifierFallbackKind, "model", model)
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusOK)
+				_, _ = writer.Write(stub)
 				return
 			}
+			// 400, not 429: a 429 invites the caller's own retry/backoff,
+			// which is exactly the stall this fallback exists to remove.
+			logger.Warn("[Server] classifier fallback: no canned verdict for this variant; failing fast instead of retrying",
+				"kind", classifierFallbackKind, "model", model)
+			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No account capacity for model "+model+"; classifier fallback active and this classifier variant has no canned verdict, so the request fails fast instead of retrying.")
+			return
 		}
 	}
 

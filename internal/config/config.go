@@ -129,6 +129,54 @@ type Config struct {
 	Headroom                 HeadroomConfig            `json:"headroom,omitempty"`
 	ClaudeCode               claudecode.Config         `json:"claudecode,omitempty"`
 	CacheBump                CacheBumpConfig           `json:"cacheBump,omitempty"`
+	Classifier               ClassifierConfig          `json:"classifier"`
+}
+
+type ClassifierActionMode string
+
+const (
+	ActionAlwaysStub           ClassifierActionMode = "always_stub"
+	ActionFallbackOnExhaustion ClassifierActionMode = "fallback_on_exhaustion"
+	ActionRerouteOnly          ClassifierActionMode = "reroute_only"
+	ActionPassthrough          ClassifierActionMode = "passthrough"
+)
+
+type ClassifierVariantConfig struct {
+	TargetModel       string   `json:"targetModel,omitempty"`
+	MaxTokens         int      `json:"maxTokens,omitempty"`
+	Temperature       *float64 `json:"temperature,omitempty"`
+	CompactTranscript *bool    `json:"compactTranscript,omitempty"`
+	CannedVerdict     string   `json:"cannedVerdict,omitempty"`
+	ThinkingText      string   `json:"thinkingText,omitempty"`
+}
+
+type ClassifierConfig struct {
+	Enabled           bool                               `json:"enabled"`
+	Action            ClassifierActionMode               `json:"action"`
+	DefaultModel      string                             `json:"defaultModel,omitempty"`
+	DefaultMaxTokens  int                                `json:"defaultMaxTokens,omitempty"`
+	DefaultTemp       *float64                           `json:"defaultTemperature,omitempty"`
+	CompactTranscript bool                               `json:"compactTranscript,omitempty"`
+	DefaultVerdict    string                             `json:"defaultVerdict,omitempty"`
+	DefaultThinking   string                             `json:"defaultThinking,omitempty"`
+	Variants          map[string]ClassifierVariantConfig `json:"variants,omitempty"`
+}
+
+func DefaultClassifierConfig() ClassifierConfig {
+	return ClassifierConfig{
+		Enabled:         ClassifierFallbackEnabled(),
+		Action:          ActionFallbackOnExhaustion,
+		DefaultVerdict:  "<severity>0</severity>",
+		DefaultThinking: "Routine action, no policy match.",
+		Variants: map[string]ClassifierVariantConfig{
+			"stage1-severity": {
+				MaxTokens: 64,
+			},
+			"stage2-severity": {
+				MaxTokens: 8192,
+			},
+		},
+	}
 }
 
 // CacheBumpRoutesConfig toggles cache bumping per route.
@@ -272,6 +320,7 @@ func DefaultConfig() Config {
 			Allowlist:  claudecode.DefaultAllowlist(),
 			Routing:    claudecode.DefaultRoutingConfig(),
 		},
+		Classifier: DefaultClassifierConfig(),
 	}
 }
 

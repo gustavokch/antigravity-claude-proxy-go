@@ -2,8 +2,10 @@ package classifier
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const monitorSystemText = monitorPromptPrefix + " ... (truncated body of the real prompt, ~125KB in production) ..."
@@ -247,3 +249,175 @@ func assertVerdictText(t *testing.T, raw []byte, wantModel string, check func(st
 		t.Fatalf("Stub() verdict text = %q, failed check", resp.Content[0].Text)
 	}
 }
+
+func TestBuildStubCustomTemplates(t *testing.T) {
+	// Custom verdict override for Stage 1
+	data, err := BuildStub(KindStage1Severity, "custom-model", "<severity>5</severity>", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	content := resp["content"].([]any)[0].(map[string]any)["text"].(string)
+	if content != "<severity>5</severity>" {
+		t.Errorf("expected <severity>5</severity>, got %q", content)
+	}
+
+	// Custom thinking + verdict override for Stage 2
+	data, err = BuildStub(KindStage2Severity, "custom-model", "<severity>10</severity>", "Safe custom check.")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	content = resp["content"].([]any)[0].(map[string]any)["text"].(string)
+	expected := "<thinking>Safe custom check.</thinking><severity>10</severity>"
+	if content != expected {
+		t.Errorf("expected %q, got %q", expected, content)
+	}
+
+	// Custom template on BlockPrefilter enables stubbing
+	data, err = BuildStub(KindBlockPrefilter, "custom-model", "<block>false</block>", "")
+	if err != nil {
+		t.Fatalf("unexpected error for block-prefilter with custom verdict: %v", err)
+	}
+}
+
+func TestCompactTranscript(t *testing.T) {
+	longOutput := strings.Repeat("line of very verbose output ", 50)
+	raw := fmt.Sprintf(`[
+		{"type": "text", "text": "<transcript>\n{\"user\":\"run tests\"}\n{\"Bash\":\"%s\"}\n</transcript>\nFinal instruction"}
+	]`, longOutput)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Errorf("expected compaction to occur")
+	}
+	compactStr := string(compacted)
+	if len(compactStr) >= len(raw) {
+		t.Errorf("expected compacted string to be smaller: len(compacted)=%d, len(raw)=%d", len(compactStr), len(raw))
+	}
+	if !strings.Contains(compactStr, "[...truncated") {
+		t.Errorf("expected truncation marker in compacted string")
+	}
+}
+
+func TestCompactTranscript_UTF8MultiByte(t *testing.T) {
+	// 3-byte UTF-8 characters. 8 * 80 = 640 runes > 500 runes limit.
+	// Byte slicing at 250 runes boundary tests rune integrity.
+	multibyteLine := strings.Repeat("日本語テスト文字", 80)
+	raw := fmt.Sprintf(`[
+		{"type": "text", "text": "<transcript>\n%s\n</transcript>"}
+	]`, multibyteLine)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Fatalf("expected compaction for multibyte UTF-8 line")
+	}
+
+	var blocks []contentBlock
+	if err := json.Unmarshal(compacted, &blocks); err != nil {
+		t.Fatalf("compacted JSON must be valid JSON: %v", err)
+	}
+	for _, b := range blocks {
+		if !strings.Contains(b.Text, "[...truncated...]") {
+			t.Errorf("expected truncation marker in compacted block text")
+		}
+		if strings.ContainsRune(b.Text, '�') || !utf8.ValidString(b.Text) {
+			t.Errorf("compacted text contains invalid UTF-8 encoding or replacement character")
+		}
+	}
+}
+
+func TestCompactTranscript_MultipleBlocks(t *testing.T) {
+	longLine1 := strings.Repeat("A", 600)
+	longLine2 := strings.Repeat("B", 600)
+	raw := fmt.Sprintf(`[
+		{"type": "text", "text": "<transcript>\n%s\n</transcript>\nmiddle text\n<transcript>\n%s\n</transcript>"}
+	]`, longLine1, longLine2)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Fatalf("expected compaction for multiple transcript blocks")
+	}
+	compactStr := string(compacted)
+	if strings.Count(compactStr, "[...truncated...]") != 2 {
+		t.Errorf("expected 2 truncated markers for 2 blocks, got: %d", strings.Count(compactStr, "[...truncated...]"))
+	}
+}
+
+func TestCompactTranscript_PreservesAuxiliaryProperties(t *testing.T) {
+	longLine := strings.Repeat("X", 600)
+	raw := fmt.Sprintf(`[
+		{
+			"type": "text",
+			"text": "<transcript>\n%s\n</transcript>",
+			"cache_control": {"type": "ephemeral"},
+			"custom_meta": 123
+		}
+	]`, longLine)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Fatalf("expected compaction to occur")
+	}
+
+	var parsed []map[string]any
+	if err := json.Unmarshal(compacted, &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(parsed))
+	}
+	block := parsed[0]
+	if !strings.Contains(block["text"].(string), "[...truncated...]") {
+		t.Errorf("expected text to be truncated")
+	}
+	cc, ok := block["cache_control"].(map[string]any)
+	if !ok || cc["type"] != "ephemeral" {
+		t.Errorf("expected cache_control to be preserved, got: %+v", block["cache_control"])
+	}
+	if block["custom_meta"] != float64(123) {
+		t.Errorf("expected custom_meta to be preserved, got: %+v", block["custom_meta"])
+	}
+}
+
+func TestCompactTranscript_StringContent(t *testing.T) {
+	longLine := strings.Repeat("Y", 600)
+	raw := fmt.Sprintf(`"<transcript>\n%s\n</transcript>"`, longLine)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Fatalf("expected compaction to occur for string content")
+	}
+
+	var parsed string
+	if err := json.Unmarshal(compacted, &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !strings.Contains(parsed, "[...truncated...]") {
+		t.Errorf("expected parsed string to contain truncation marker")
+	}
+}
+
+func TestBuildStub_StopSequencePresent(t *testing.T) {
+	data, err := BuildStub(KindStage1Severity, "test-model", "", "")
+	if err != nil {
+		t.Fatalf("BuildStub error: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	val, exists := raw["stop_sequence"]
+	if !exists {
+		t.Errorf("expected 'stop_sequence' key in response JSON")
+	}
+	if val != nil {
+		t.Errorf("expected 'stop_sequence' to be null/nil, got: %v", val)
+	}
+}
+

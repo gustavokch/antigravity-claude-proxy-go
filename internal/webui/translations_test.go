@@ -80,6 +80,25 @@ var quotaStatusKeys = []string{
 	"invalidStatus",
 }
 
+// classifierKeys are the i18n keys referenced by the Security Monitor (Classifier)
+// panel in views/settings.html. Every locale must define them.
+var classifierKeys = []string{
+	"tabClassifier", "classifierSettingsTitle", "classifierSettingsDesc",
+	"classifierEnabled", "classifierAction", "classifierActionAlwaysStub",
+	"classifierActionFallback", "classifierActionReroute", "classifierActionPassthrough",
+	"classifierActionAlwaysStubDesc", "classifierActionFallbackDesc",
+	"classifierActionRerouteDesc", "classifierActionPassthroughDesc",
+	"classifierGlobalParams", "classifierGlobalParamsDesc",
+	"classifierTargetModel", "classifierTargetModelDesc", "classifierMaxTokens", "classifierMaxTokensDesc",
+	"classifierTemperature", "classifierTemperatureDesc",
+	"classifierCompactTranscript", "classifierCompactTranscriptDesc",
+	"classifierCannedVerdict", "classifierCannedVerdictDesc",
+	"classifierThinkingText", "classifierThinkingTextDesc",
+	"classifierVariants", "classifierVariantsCount",
+	"classifierVariantStage1", "classifierVariantStage2", "classifierVariantBlock",
+	"classifierSaveNotice",
+}
+
 func loadLocale(t *testing.T, locale string) string {
 	t.Helper()
 	b, err := Assets.ReadFile(fmt.Sprintf("public/js/translations/%s.js", locale))
@@ -165,6 +184,18 @@ func TestTranslations_QuotaStatusKeys(t *testing.T) {
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		for _, key := range quotaStatusKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_ClassifierKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range classifierKeys {
 			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
 			if !re.MatchString(src) {
 				t.Errorf("locale %s missing key %q", locale, key)

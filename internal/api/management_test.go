@@ -902,6 +902,182 @@ func TestManagement_ConfigGetExposesHeadroom(t *testing.T) {
 	}
 }
 
+func TestClassifierConfigAPI(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+
+	t.Run("POST /api/config with valid classifier config updates in-memory config and GET returns it", func(t *testing.T) {
+		payload := `{
+			"classifier": {
+				"enabled": true,
+				"action": "always_stub",
+				"defaultModel": "custom-classifier-model",
+				"defaultMaxTokens": 256,
+				"defaultVerdict": "<custom>allowed</custom>",
+				"defaultThinking": "all clear",
+				"variants": {
+					"stage1-severity": {
+						"maxTokens": 128,
+						"cannedVerdict": "<sev>0</sev>"
+					}
+				}
+			}
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		// Verify in-memory config updated
+		cfg := config.Get()
+		if !cfg.Classifier.Enabled {
+			t.Errorf("expected classifier.enabled = true")
+		}
+		if cfg.Classifier.Action != config.ActionAlwaysStub {
+			t.Errorf("expected action %q, got %q", config.ActionAlwaysStub, cfg.Classifier.Action)
+		}
+		if cfg.Classifier.DefaultModel != "custom-classifier-model" {
+			t.Errorf("expected defaultModel custom-classifier-model, got %q", cfg.Classifier.DefaultModel)
+		}
+		if cfg.Classifier.DefaultMaxTokens != 256 {
+			t.Errorf("expected defaultMaxTokens 256, got %d", cfg.Classifier.DefaultMaxTokens)
+		}
+		if v, ok := cfg.Classifier.Variants["stage1-severity"]; !ok || v.MaxTokens != 128 {
+			t.Errorf("expected variant stage1-severity with maxTokens 128, got %+v", v)
+		}
+
+		// Verify GET /api/config returns it
+		getReq := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+		getRec := httptest.NewRecorder()
+		handler.ServeHTTP(getRec, getReq)
+
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", getRec.Code, getRec.Body.String())
+		}
+
+		var getResp struct {
+			Config map[string]any `json:"config"`
+		}
+		if err := json.Unmarshal(getRec.Body.Bytes(), &getResp); err != nil {
+			t.Fatalf("unmarshal GET /api/config: %v", err)
+		}
+		classifierRaw, ok := getResp.Config["classifier"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected classifier object in GET /api/config response, got %v", getResp.Config["classifier"])
+		}
+		if classifierRaw["action"] != "always_stub" {
+			t.Errorf("expected action always_stub in GET response, got %v", classifierRaw["action"])
+		}
+		if classifierRaw["defaultModel"] != "custom-classifier-model" {
+			t.Errorf("expected defaultModel custom-classifier-model, got %v", classifierRaw["defaultModel"])
+		}
+	})
+
+	t.Run("POST /api/config with invalid action returns HTTP 400", func(t *testing.T) {
+		payload := `{
+			"classifier": {
+				"action": "invalid_action"
+			}
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		errMsg, _ := errResp["error"].(string)
+		if !strings.Contains(strings.ToLower(errMsg), "action") {
+			t.Errorf("expected error message mentioning action, got: %s", errMsg)
+		}
+	})
+
+	t.Run("POST /api/config with negative defaultMaxTokens returns HTTP 400", func(t *testing.T) {
+		payload := `{
+			"classifier": {
+				"defaultMaxTokens": -1
+			}
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		errMsg, _ := errResp["error"].(string)
+		if !strings.Contains(strings.ToLower(errMsg), "maxtokens") {
+			t.Errorf("expected error message mentioning maxTokens, got: %s", errMsg)
+		}
+	})
+
+	t.Run("POST /api/config with negative variant maxTokens returns HTTP 400", func(t *testing.T) {
+		payload := `{
+			"classifier": {
+				"variants": {
+					"stage1-severity": {
+						"maxTokens": -5
+					}
+				}
+			}
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		errMsg, _ := errResp["error"].(string)
+		if !strings.Contains(strings.ToLower(errMsg), "maxtokens") {
+			t.Errorf("expected error message mentioning maxTokens, got: %s", errMsg)
+		}
+	})
+
+	t.Run("POST /api/config with out of range temperature returns HTTP 400", func(t *testing.T) {
+		payload := `{
+			"classifier": {
+				"defaultTemperature": 2.5
+			}
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		errMsg, _ := errResp["error"].(string)
+		if !strings.Contains(strings.ToLower(errMsg), "temperature") {
+			t.Errorf("expected error message mentioning temperature, got: %s", errMsg)
+		}
+	})
+}
+
 func TestManagement_HeadroomStatsEndpoint(t *testing.T) {
 	srv, _, _ := newTestServerWithManager(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/headroom/stats", nil)

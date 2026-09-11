@@ -76,15 +76,17 @@ func ordinaryBody(t *testing.T, model string) []byte {
 // dispatchRecordingBackend stands in for the account-backed upstream and
 // records whether a request was ever dispatched to it.
 type dispatchRecordingBackend struct {
-	hit bool
+	hit     bool
+	lastReq map[string]any
 }
 
 func (b *dispatchRecordingBackend) FetchAvailableModels(context.Context) (cloudcode.Response, error) {
 	return cloudcode.Response{}, nil
 }
 
-func (b *dispatchRecordingBackend) StreamGenerateContent(context.Context, map[string]any, func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+func (b *dispatchRecordingBackend) StreamGenerateContent(ctx context.Context, req map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
 	b.hit = true
+	b.lastReq = req
 	return cloudcode.Response{}, nil
 }
 
@@ -288,3 +290,231 @@ func TestMessages_ClassifierFallback_CustomEndpointRequestIsNeverStubbed(t *test
 		t.Fatalf("custom endpoints do not consume account capacity; the classifier request must dispatch, not be stubbed; status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestClassifierAlwaysStub(t *testing.T) {
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{{Email: "plenty@capacity.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
+
+	server, backend := newAccountBackedTestServer(t)
+	server.accountManager = manager
+
+	cfg := config.DefaultConfig()
+	cfg.Classifier.Enabled = true
+	cfg.Classifier.Action = config.ActionAlwaysStub
+	config.SetForTest(cfg)
+
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+
+	if backend.hit {
+		t.Fatal("backend was dispatched to; ActionAlwaysStub should have stubbed the response immediately")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	var stub struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stub); err != nil {
+		t.Fatalf("stub response is not valid JSON: %v; body: %s", err, rec.Body.String())
+	}
+	if len(stub.Content) != 1 || stub.Content[0].Text != "<severity>0</severity>" {
+		t.Fatalf("stub content = %+v, want <severity>0</severity>", stub.Content)
+	}
+}
+
+func TestClassifierReroute(t *testing.T) {
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{{Email: "cap@a.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
+
+	server, backend := newAccountBackedTestServer(t)
+	server.accountManager = manager
+
+	cfg := config.DefaultConfig()
+	cfg.Classifier.Enabled = true
+	cfg.Classifier.Action = config.ActionRerouteOnly
+	cfg.Classifier.DefaultModel = "rerouted-model"
+	config.SetForTest(cfg)
+
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+
+	if !backend.hit {
+		t.Fatalf("backend was not hit; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if backend.lastReq == nil {
+		t.Fatal("backend.lastReq is nil")
+	}
+	if gotModel, _ := backend.lastReq["model"].(string); gotModel != "rerouted-model" {
+		t.Fatalf("dispatched model = %q, want %q", gotModel, "rerouted-model")
+	}
+}
+
+func TestClassifierParamOverrides(t *testing.T) {
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{{Email: "cap@a.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
+
+	server, backend := newAccountBackedTestServer(t)
+	server.accountManager = manager
+
+	temp := 0.2
+	cfg := config.DefaultConfig()
+	cfg.Classifier.Enabled = true
+	cfg.Classifier.Action = config.ActionRerouteOnly
+	cfg.Classifier.DefaultMaxTokens = 120
+	cfg.Classifier.DefaultTemp = &temp
+	cfg.Classifier.Variants = map[string]config.ClassifierVariantConfig{
+		"stage1-severity": {MaxTokens: 120},
+	}
+	config.SetForTest(cfg)
+
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+
+	if !backend.hit {
+		t.Fatalf("backend was not hit; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if backend.lastReq == nil {
+		t.Fatal("backend.lastReq is nil")
+	}
+	mt := backend.lastReq["max_tokens"]
+	switch v := mt.(type) {
+	case int:
+		if v != 120 {
+			t.Fatalf("max_tokens = %d, want 120", v)
+		}
+	case float64:
+		if int(v) != 120 {
+			t.Fatalf("max_tokens = %v, want 120", v)
+		}
+	default:
+		t.Fatalf("unexpected max_tokens type %T: %v", mt, mt)
+	}
+	if gotTemp, ok := backend.lastReq["temperature"].(float64); !ok || gotTemp != 0.2 {
+		t.Fatalf("temperature = %v, want 0.2", backend.lastReq["temperature"])
+	}
+}
+
+func TestClassifierCompactTranscript(t *testing.T) {
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{{Email: "cap@a.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
+
+	server, backend := newAccountBackedTestServer(t)
+	server.accountManager = manager
+
+	cfg := config.DefaultConfig()
+	cfg.Classifier.Enabled = true
+	cfg.Classifier.Action = config.ActionRerouteOnly
+	cfg.Classifier.CompactTranscript = true
+	config.SetForTest(cfg)
+
+	longOutput := strings.Repeat("a very long tool execution line that exceeds 500 runes ", 20)
+	body := map[string]any{
+		"model": classifierTestModel,
+		"system": []map[string]any{
+			{"type": "text", "text": "x-anthropic-billing-header: ..."},
+			{"type": "text", "text": "You are a security monitor for autonomous AI coding agents. (rest of prompt)"},
+		},
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "text", "text": "<transcript>\n{\"Bash\":\"" + longOutput + "\"}\n</transcript>\n" + classifierStage1Footer},
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	rec := postClassifierMessages(t, server, raw)
+
+	if !backend.hit {
+		t.Fatalf("backend was not hit; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	msgs := backend.lastReq["messages"].([]any)
+	content := msgs[0].(map[string]any)["content"].([]any)
+	text := content[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "[...truncated...]") {
+		t.Fatalf("expected transcript to be compacted with [...truncated...], got: %s", text)
+	}
+}
+
+func TestClassifierBlockPrefilterCustomVerdict(t *testing.T) {
+	server, backend := newAccountBackedTestServer(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Classifier.Enabled = true
+	cfg.Classifier.Action = config.ActionFallbackOnExhaustion
+	cfg.Classifier.Variants = map[string]config.ClassifierVariantConfig{
+		"block-prefilter": {
+			CannedVerdict: "<block>false</block>",
+		},
+	}
+	config.SetForTest(cfg)
+
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierBlockFooter))
+
+	if backend.hit {
+		t.Fatal("backend was dispatched to; custom verdict should have stubbed response")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	var stub struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stub); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(stub.Content) != 1 || stub.Content[0].Text != "<block>false</block>" {
+		t.Fatalf("stub content = %+v, want <block>false</block>", stub.Content)
+	}
+}
+
+func TestClassifierPassthrough(t *testing.T) {
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{{Email: "cap@a.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
+
+	server, backend := newAccountBackedTestServer(t)
+	server.accountManager = manager
+
+	cfg := config.DefaultConfig()
+	cfg.Classifier.Enabled = true
+	cfg.Classifier.Action = config.ActionPassthrough
+	cfg.Classifier.DefaultModel = "rerouted-model"
+	config.SetForTest(cfg)
+
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+
+	if !backend.hit {
+		t.Fatalf("backend was not hit; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotModel, _ := backend.lastReq["model"].(string); gotModel != classifierTestModel {
+		t.Fatalf("model should not be mutated in passthrough mode, got: %q", gotModel)
+	}
+}
+
