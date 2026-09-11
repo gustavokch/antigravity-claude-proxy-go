@@ -15,15 +15,20 @@
 # process-local cache.
 #
 # Exit codes: 0 all good. 1 the cache-prefix gate failed. 2 the gate passed but
-# the probe shows Gemini rejects foreign history signatures.
+# the probe shows Gemini rejects foreign history signatures. 3 the proxy was not
+# reachable, so nothing was measured. 3 is kept distinct from 1 so a caller can
+# tell a missing environment from a real prefix regression.
 set -euo pipefail
 
 PROXY_URL="${PROXY_URL:-http://127.0.0.1:8080}"
 MODEL="${MODEL:-gemini-3.0-flash-high}"
 
-if ! curl -s -m 2 "$PROXY_URL/" >/dev/null 2>&1; then
+# /v1/models is a route this proxy actually serves, so a reply here means the
+# proxy answered rather than some unrelated listener holding the port. Any HTTP
+# status counts: the check is for reachability, not for authorisation.
+if ! curl -s -o /dev/null -m 10 "$PROXY_URL/v1/models"; then
   echo "Error: proxy not reachable at $PROXY_URL. Start proxy first." >&2
-  exit 1
+  exit 3
 fi
 
 PAD="$(head -c 120000 /dev/urandom | base64 | tr -d '\n')"
