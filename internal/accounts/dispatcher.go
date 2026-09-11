@@ -322,7 +322,6 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			lastError = err
 			continue
 		}
-		cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 		payload := dispatcher.builder.BuildCloudCodeRequestWithModel(request, project, credentials.Email, proxyformat.ModelOptions{
 			SupportsThinking: modelDetails.SupportsThinking, ThinkingBudget: modelDetails.ThinkingBudget,
 			MinThinkingBudget: modelDetails.MinThinkingBudget, MaxOutputTokens: modelDetails.MaxOutputTokens,
@@ -352,10 +351,12 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			})
 			if requestErr == nil {
 				dispatcher.manager.MarkSuccess(account, model)
+				cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 				return response, nil
 			}
 			lastError = requestErr
 			if eventCount > 0 {
+				cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 				return response, requestErr
 			}
 			upstreamError := findHTTPError(requestErr)
