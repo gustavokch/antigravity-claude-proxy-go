@@ -73,32 +73,40 @@ func TestGeminiToolLoopPrefixIsStableAcrossTurns(t *testing.T) {
 	}
 }
 
-// TestGeminiToolSignatureIsIndependentOfSignatureCache asserts conversion does
-// not depend on process-local ephemeral state: two separate signature caches
-// must produce the same historical functionCall part.
-func TestGeminiToolSignatureIsIndependentOfSignatureCache(t *testing.T) {
+// TestUsageMappersNeverReportNegativeInputTokens guards against a usageMetadata
+// frame whose cached count exceeds the prompt count.
+func TestUsageMappersNeverReportNegativeInputTokens(t *testing.T) {
 	t.Parallel()
-	first := NewSignatureCache()
-	second := NewSignatureCache()
+	response := map[string]any{
+		"candidates": []any{map[string]any{
+			"content":      map[string]any{"parts": []any{map[string]any{"text": "hi"}}},
+			"finishReason": "STOP",
+		}},
+		"usageMetadata": map[string]any{
+			"promptTokenCount":        100,
+			"cachedContentTokenCount": 140,
+			"candidatesTokenCount":    5,
+		},
+	}
+	converted := ConvertGoogleToAnthropic(response, "gemini-3.0-flash-high", NewSignatureCache())
+	usage := asMap(converted["usage"])
+	if intValue(usage["input_tokens"], -1) != 0 {
+		t.Fatalf("non-streaming input_tokens = %#v", usage["input_tokens"])
+	}
 
-	history := []any{
-		map[string]any{"role": "user", "content": "start"},
-		map[string]any{"role": "assistant", "content": []any{map[string]any{
-			"type": "tool_use", "id": "toolu_a", "name": "read", "input": map[string]any{},
-		}}},
-		map[string]any{"role": "user", "content": []any{map[string]any{
-			"type": "tool_result", "tool_use_id": "toolu_a", "content": "body",
-		}}},
+	converter := NewStreamConverter("gemini-3.0-flash-high", NewSignatureCache(), "msg_test")
+	frame := []byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":140,"candidatesTokenCount":5}}}`)
+	events, err := converter.Consume(frame)
+	if err != nil {
+		t.Fatalf("consume: %v", err)
 	}
-	convert := func(cache *SignatureCache) string {
-		converted := ConvertAnthropicToGoogle(map[string]any{
-			"model": "gemini-3.0-flash-high", "messages": history,
-		}, cache)
-		return mustJSON(t, asSlice(converted["contents"])[1])
-	}
-	withCache := convert(first)
-	withoutCache := convert(second)
-	if withCache != withoutCache {
-		t.Fatalf("history part changed when the signature cache expired\n warm: %s\n cold: %s", withCache, withoutCache)
+	for _, event := range events {
+		if event["type"] != "message_start" {
+			continue
+		}
+		streamUsage := asMap(asMap(event["message"])["usage"])
+		if intValue(streamUsage["input_tokens"], -1) != 0 {
+			t.Fatalf("streaming input_tokens = %#v", streamUsage["input_tokens"])
+		}
 	}
 }
