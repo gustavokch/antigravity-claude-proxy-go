@@ -128,8 +128,9 @@ window.Components.classifierConfig = () => ({
                 const errText = await res.text();
                 throw new Error(errText);
             }
+            this.config = JSON.parse(JSON.stringify(payload.classifier));
             if (Alpine.store('settings')?.config) {
-                Alpine.store('settings').config.classifier = JSON.parse(JSON.stringify(this.config));
+                Alpine.store('settings').config.classifier = JSON.parse(JSON.stringify(payload.classifier));
             }
             Alpine.store('global').showToast(Alpine.store('global').t('configSaved') || 'Config saved', 'success');
         } catch (err) {

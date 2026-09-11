@@ -65,6 +65,9 @@ func TestHandler(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "classifierConfig") {
 			t.Errorf("expected classifier-config.js to contain 'classifierConfig'")
 		}
+		if !strings.Contains(rec.Body.String(), "payload.classifier") {
+			t.Errorf("expected classifier-config.js to synchronize payload.classifier into store")
+		}
 
 		// Test settings.html contains classifier panel
 		req = httptest.NewRequest(http.MethodGet, "/views/settings.html", nil)
@@ -79,6 +82,9 @@ func TestHandler(t *testing.T) {
 		}
 		if !strings.Contains(body, "classifierConfig") {
 			t.Errorf("expected settings.html to contain 'classifierConfig'")
+		}
+		if strings.Contains(body, "Leave blank to use empty string (allow)") {
+			t.Errorf("misleading placeholder for block-prefilter must be corrected")
 		}
 
 		// Test index.html includes script tag
