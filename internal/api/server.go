@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -1247,9 +1248,20 @@ func (server *Server) kimiInstrumentResponse(resp *http.Response, model, session
 		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
 		return
 	}
-	in, out, cr, cw := openrouter.ParseUsageFromJSON(respBytes)
+	payloadBytes := respBytes
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
+			if decompressed, err := io.ReadAll(gz); err == nil {
+				payloadBytes = decompressed
+			}
+			_ = gz.Close()
+		}
+	}
+	in, out, cr, cw := openrouter.ParseUsageFromJSON(payloadBytes)
 	onComplete(in, out, cr, cw)
 	resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+	resp.ContentLength = int64(len(respBytes))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(respBytes)))
 }
 
 func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {

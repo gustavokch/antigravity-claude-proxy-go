@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -538,5 +539,72 @@ func TestKimiObservability_CCRStreaming(t *testing.T) {
 	}
 	if rec["output_tokens"] != float64(50) {
 		t.Errorf("output_tokens = %v, want 50", rec["output_tokens"])
+	}
+}
+
+func TestKimiObservability_GzipResponse(t *testing.T) {
+	const jsonBody = `{"id":"msg_kimi_gz","type":"message","model":"moonshot-v1-8k",` +
+		`"content":[{"type":"text","text":"gzipped response"}],` +
+		`"usage":{"input_tokens":550,"output_tokens":130,"cache_read_input_tokens":220,"cache_creation_input_tokens":60}}`
+
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	_, _ = gw.Write([]byte(jsonBody))
+	_ = gw.Close()
+
+	kimiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(gzBuf.Bytes())
+	}))
+	defer kimiServer.Close()
+
+	var logBuf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	srv := &Server{
+		logger: log,
+		now:    time.Now,
+	}
+
+	kimiCfg := config.KimiConfig{
+		Enabled: true,
+		BaseURL: kimiServer.URL,
+		APIKey:  "kimi-key-gzip",
+	}
+
+	reqBody := `{"model":"moonshot-v1-8k","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("x-session-id", "sess-kimi-gzip")
+	w := httptest.NewRecorder()
+
+	srv.forwardToKimi(w, req, kimiCfg, []byte(reqBody), "moonshot-v1-8k")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Verify Content-Length header is set and matches gzipped body size
+	if cl := w.Header().Get("Content-Length"); cl != fmt.Sprintf("%d", gzBuf.Len()) {
+		t.Errorf("Content-Length = %q, want %d", cl, gzBuf.Len())
+	}
+
+	recs := agyObservabilityRecords(&logBuf, "[Kimi]")
+	if len(recs) == 0 {
+		t.Fatalf("expected [Kimi] log record, got:\n%s", logBuf.String())
+	}
+	rec := recs[0]
+
+	if rec["input_tokens"] != float64(550) {
+		t.Errorf("input_tokens = %v, want 550", rec["input_tokens"])
+	}
+	if rec["output_tokens"] != float64(130) {
+		t.Errorf("output_tokens = %v, want 130", rec["output_tokens"])
+	}
+	if rec["cache_read_tokens"] != float64(220) {
+		t.Errorf("cache_read_tokens = %v, want 220", rec["cache_read_tokens"])
 	}
 }
