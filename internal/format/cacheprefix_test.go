@@ -2,7 +2,10 @@ package format
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 // buildPiStyleHistory reproduces what a strict Anthropic client (the Pi coding
@@ -13,7 +16,7 @@ func buildPiStyleHistory(turns int) []any {
 		map[string]any{"role": "user", "content": "start the loop"},
 	}
 	for index := 0; index < turns; index++ {
-		toolID := "toolu_" + string(rune('a'+index))
+		toolID := "toolu_" + strconv.Itoa(index)
 		messages = append(messages,
 			map[string]any{
 				"role": "assistant",
@@ -107,6 +110,68 @@ func TestUsageMappersNeverReportNegativeInputTokens(t *testing.T) {
 		streamUsage := asMap(asMap(event["message"])["usage"])
 		if intValue(streamUsage["input_tokens"], -1) != 0 {
 			t.Fatalf("streaming input_tokens = %#v", streamUsage["input_tokens"])
+		}
+	}
+}
+
+// TestThinkingBlockConversionSurvivesCacheExpiry pins the same invariant for
+// thinking blocks that TestGeminiToolLoopPrefixIsStableAcrossTurns pins for tool
+// calls: an identical client history must convert identically regardless of what
+// the process-local signature cache happens to remember. A cache entry that has
+// aged past signatureCacheTTL — or a proxy restart, which is indistinguishable
+// from expiry — must not silently drop the thinking part and shift every later
+// index in the contents array.
+func TestThinkingBlockConversionSurvivesCacheExpiry(t *testing.T) {
+	t.Parallel()
+	signature := strings.Repeat("g", MinSignatureLength)
+	history := []any{
+		map[string]any{"role": "user", "content": "start"},
+		map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "thinking", "thinking": "plan", "signature": signature},
+			map[string]any{"type": "text", "text": "done"},
+		}},
+		map[string]any{"role": "user", "content": "continue"},
+	}
+	convert := func(cache *SignatureCache) []any {
+		request := map[string]any{"model": "gemini-3.0-flash-high", "messages": history}
+		return asSlice(ConvertAnthropicToGoogle(request, cache)["contents"])
+	}
+
+	warm := NewSignatureCache()
+	warm.CacheThinking(signature, FamilyGemini)
+
+	expired := NewSignatureCache()
+	expired.CacheThinking(signature, FamilyGemini)
+	start := expired.now()
+	expired.now = func() time.Time { return start.Add(signatureCacheTTL + time.Millisecond) }
+
+	if want, got := mustJSON(t, convert(warm)), mustJSON(t, convert(expired)); want != got {
+		t.Fatalf("cache age changed the conversion\n warm:    %s\n expired: %s", want, got)
+	}
+}
+
+// TestClaudeThinkingBlockIsStillDroppedForGemini pins the other half of the
+// rule: an explicit family mismatch is still a drop, so a Claude-origin
+// signature is never forwarded to a Gemini backend while the cache remembers it.
+func TestClaudeThinkingBlockIsStillDroppedForGemini(t *testing.T) {
+	t.Parallel()
+	signature := strings.Repeat("c", MinSignatureLength)
+	cache := NewSignatureCache()
+	cache.CacheThinking(signature, FamilyClaude)
+	request := map[string]any{
+		"model": "gemini-3.0-flash-high",
+		"messages": []any{
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "thinking", "thinking": "plan", "signature": signature},
+				map[string]any{"type": "text", "text": "done"},
+			}},
+		},
+	}
+	contents := asSlice(ConvertAnthropicToGoogle(request, cache)["contents"])
+	parts := asSlice(asMap(contents[len(contents)-1])["parts"])
+	for _, rawPart := range parts {
+		if asMap(rawPart)["thought"] == true {
+			t.Fatalf("claude thinking part reached a gemini request: %#v", parts)
 		}
 	}
 }

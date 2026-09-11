@@ -107,11 +107,16 @@ func convertContentToParts(content any, family ModelFamily, cache *SignatureCach
 			if len(signature) < MinSignatureLength {
 				continue
 			}
+			// Drop only on an explicit family mismatch. A FamilyUnknown result
+			// means the cache entry aged out of its TTL, or the proxy restarted,
+			// neither of which the client can observe: treating that as a drop
+			// would make the same history convert to a shorter contents array and
+			// break the Gemini implicit cache prefix at the first thinking block.
 			sourceFamily := cache.ThinkingFamily(signature)
-			if family == FamilyClaude && sourceFamily != FamilyClaude {
+			if family == FamilyClaude && sourceFamily == FamilyGemini {
 				continue
 			}
-			if family == FamilyGemini && sourceFamily != FamilyGemini {
+			if family == FamilyGemini && sourceFamily == FamilyClaude {
 				continue
 			}
 			parts = append(parts, map[string]any{
