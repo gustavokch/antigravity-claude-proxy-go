@@ -20,6 +20,12 @@ set -euo pipefail
 
 PROXY_URL="${PROXY_URL:-http://127.0.0.1:8080}"
 MODEL="${MODEL:-gemini-3.0-flash-high}"
+
+if ! curl -s -m 2 "$PROXY_URL/" >/dev/null 2>&1; then
+  echo "Error: proxy not reachable at $PROXY_URL. Start proxy first." >&2
+  exit 1
+fi
+
 PAD="$(head -c 120000 /dev/urandom | base64 | tr -d '\n')"
 # 64 chars, comfortably over MinSignatureLength (50), and self-describing in a
 # backend log if one ever surfaces it.
