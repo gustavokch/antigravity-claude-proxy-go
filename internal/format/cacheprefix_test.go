@@ -244,6 +244,76 @@ func TestGeminiToolSignaturePreservesSnakeCaseClientSignature(t *testing.T) {
 	}
 }
 
+func TestGeminiToolSignaturePreservedInMultiBlockAssistant(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"thoughtSignature", "thought_signature"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			cache := NewSignatureCache()
+			signature := "custom-signature-12345678901234567890123456789012345678901234567890"
+			request := map[string]any{
+				"model": "gemini-3.0-flash-high",
+				"messages": []any{
+					map[string]any{
+						"role": "assistant",
+						"content": []any{
+							map[string]any{
+								"type": "text",
+								"text": "I will read the file now.",
+							},
+							map[string]any{
+								"type":  "tool_use",
+								"id":    "t1",
+								"name":  "read",
+								"input": map[string]any{"path": "file.go"},
+								key:     signature,
+							},
+						},
+					},
+				},
+			}
+			converted := ConvertAnthropicToGoogle(request, cache)
+			contents := asSlice(converted["contents"])
+			parts := asSlice(asMap(contents[len(contents)-1])["parts"])
+			var found bool
+			for _, p := range parts {
+				part := asMap(p)
+				if part["functionCall"] != nil {
+					found = true
+					if part["thoughtSignature"] != signature {
+						t.Fatalf("%s in multi-block: thoughtSignature = %#v, want %#v", key, part["thoughtSignature"], signature)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("%s in multi-block: no functionCall part found", key)
+			}
+		})
+	}
+}
+
+func TestHasGeminiHistoryWithSnakeCaseSignature(t *testing.T) {
+	t.Parallel()
+	signature := "custom-signature-12345678901234567890123456789012345678901234567890"
+	messages := []any{
+		map[string]any{
+			"role": "assistant",
+			"content": []any{
+				map[string]any{
+					"type":              "tool_use",
+					"id":                "t1",
+					"name":              "read",
+					"input":             map[string]any{"path": "file.go"},
+					"thought_signature": signature,
+				},
+			},
+		},
+	}
+	if !hasGeminiHistory(messages) {
+		t.Fatal("hasGeminiHistory returned false for message with thought_signature")
+	}
+}
+
 // TestGeminiToolSignatureBelowMinLengthFallsBackToSkip pins the tool_use path to
 // the same length floor the thinking path applies. A client that sends a stub
 // value must not have it forwarded to the backend verbatim. The substitution is
@@ -334,13 +404,19 @@ func TestGeminiToolLoopPrefixIsStableWithClientSignatures(t *testing.T) {
 					messages = append(messages,
 						map[string]any{
 							"role": "assistant",
-							"content": []any{map[string]any{
-								"type":  "tool_use",
-								"id":    toolID,
-								"name":  "read",
-								"input": map[string]any{"path": "file.go"},
-								sigKey:  sigVal,
-							}},
+							"content": []any{
+								map[string]any{
+									"type": "text",
+									"text": "Reading turn " + strconv.Itoa(i),
+								},
+								map[string]any{
+									"type":  "tool_use",
+									"id":    toolID,
+									"name":  "read",
+									"input": map[string]any{"path": "file.go"},
+									sigKey:  sigVal,
+								},
+							},
 						},
 						map[string]any{
 							"role": "user",

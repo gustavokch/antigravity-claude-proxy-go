@@ -38,6 +38,9 @@ func hasGeminiHistory(messages []any) bool {
 				if _, exists := block["thoughtSignature"]; exists {
 					return true
 				}
+				if _, exists := block["thought_signature"]; exists {
+					return true
+				}
 			}
 		}
 	}
@@ -110,7 +113,7 @@ func reorderAssistantContent(content []any) []any {
 		case "thinking", "redacted_thinking":
 			thinking = append(thinking, sanitizeThinkingBlock(block))
 		case "tool_use":
-			tools = append(tools, copyFields(block, "type", "id", "name", "input", "thoughtSignature"))
+			tools = append(tools, copyFields(block, "type", "id", "name", "input", "thoughtSignature", "thought_signature"))
 		case "text":
 			if strings.TrimSpace(stringValue(block["text"])) != "" {
 				text = append(text, copyFields(block, "type", "text"))
