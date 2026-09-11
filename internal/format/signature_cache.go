@@ -8,55 +8,23 @@ import (
 const signatureCacheTTL = 2 * time.Hour
 
 type signatureEntry struct {
-	signature string
 	family    ModelFamily
 	createdAt time.Time
 }
 
-// SignatureCache retains Gemini tool-call signatures and records the model
-// family that produced thinking signatures. It is process-local for two hours
-// because Claude clients may strip these fields.
+// SignatureCache records the model family that produced a thinking signature.
+// It is process-local for two hours because Claude clients may strip these fields.
 type SignatureCache struct {
 	mu       sync.RWMutex
 	now      func() time.Time
-	tools    map[string]signatureEntry
 	thinking map[string]signatureEntry
 }
 
 func NewSignatureCache() *SignatureCache {
 	return &SignatureCache{
 		now:      time.Now,
-		tools:    make(map[string]signatureEntry),
 		thinking: make(map[string]signatureEntry),
 	}
-}
-
-func (cache *SignatureCache) CacheTool(toolID, signature string) {
-	if cache == nil || toolID == "" || signature == "" {
-		return
-	}
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	cache.tools[toolID] = signatureEntry{signature: signature, createdAt: cache.now()}
-}
-
-func (cache *SignatureCache) Tool(toolID string) string {
-	if cache == nil || toolID == "" {
-		return ""
-	}
-	cache.mu.RLock()
-	entry, ok := cache.tools[toolID]
-	cache.mu.RUnlock()
-	if !ok {
-		return ""
-	}
-	if cache.now().Sub(entry.createdAt) > signatureCacheTTL {
-		cache.mu.Lock()
-		delete(cache.tools, toolID)
-		cache.mu.Unlock()
-		return ""
-	}
-	return entry.signature
 }
 
 func (cache *SignatureCache) CacheThinking(signature string, family ModelFamily) {
@@ -93,6 +61,5 @@ func (cache *SignatureCache) Clear() {
 	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	clear(cache.tools)
 	clear(cache.thinking)
 }

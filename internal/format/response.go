@@ -53,7 +53,6 @@ func ConvertGoogleToAnthropicWithID(googleResponse map[string]any, model string,
 			signature := stringValue(part["thoughtSignature"])
 			if len(signature) >= MinSignatureLength {
 				block["thoughtSignature"] = signature
-				cache.CacheTool(toolID, signature)
 			}
 			blocks = append(blocks, block)
 			hasTools = true
@@ -90,7 +89,7 @@ func ConvertGoogleToAnthropicWithID(googleResponse map[string]any, model string,
 		"id": messageID, "type": "message", "role": "assistant", "content": blocks,
 		"model": model, "stop_reason": stopReason, "stop_sequence": nil,
 		"usage": map[string]any{
-			"input_tokens":                promptTokens - cachedTokens,
+			"input_tokens":                nonNegative(promptTokens - cachedTokens),
 			"output_tokens":               intValue(usage["candidatesTokenCount"], 0),
 			"cache_read_input_tokens":     cachedTokens,
 			"cache_creation_input_tokens": 0,
@@ -221,4 +220,11 @@ func (accumulator *ThinkingAccumulator) flushText() {
 	}
 	accumulator.parts = append(accumulator.parts, map[string]any{"text": accumulator.text})
 	accumulator.text = ""
+}
+
+func nonNegative(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
 }

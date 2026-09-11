@@ -60,9 +60,6 @@ func TestResponseConversionMatchesParityFixture(t *testing.T) {
 	if family := cache.ThinkingFamily("claude-signature-0123456789012345678901234567890123456789"); family != FamilyClaude {
 		t.Fatalf("thinking signature family = %q", family)
 	}
-	if signature := cache.Tool("tool-1"); signature != "tool-signature-012345678901234567890123456789012345678901" {
-		t.Fatalf("cached tool signature = %q", signature)
-	}
 }
 
 func TestCloudCodeSSEStreamingAndNonStreamingRoundTrip(t *testing.T) {
@@ -180,47 +177,54 @@ func TestBuilderUsesStablePerAccountSessionAndExactEnvelope(t *testing.T) {
 	}
 }
 
-func TestGeminiToolSignatureRestorationAndBudgetClamp(t *testing.T) {
+// TestGeminiToolSignatureFallsBackToSkipSentinel pins that a tool call whose
+// signature the client stripped converts to the documented bypass sentinel and
+// never to a value recovered from process-local state.
+// Note: With respect to the removed cache lookup this test is tautological because
+// the cache is not seeded; the invariant is enforced at compile time because
+// CacheTool/Tool no longer exist on SignatureCache.
+func TestGeminiToolSignatureFallsBackToSkipSentinel(t *testing.T) {
 	t.Parallel()
 	cache := NewSignatureCache()
-	signature := strings.Repeat("s", MinSignatureLength)
-	cache.CacheTool("tool-1", signature)
 	request := map[string]any{
-		"model": "gemini-2.5-flash-thinking",
-		"messages": []any{
-			map[string]any{
-				"role": "assistant",
-				"content": []any{
-					map[string]any{"type": "tool_use", "id": "tool-1", "name": "read", "input": map[string]any{}},
-				},
-			},
-		},
+		"model":      "gemini-2.5-flash-thinking",
 		"max_tokens": 100000,
-		"thinking":   map[string]any{"budget_tokens": 100000},
+		"thinking":   map[string]any{"budget_tokens": 999999},
+		"messages": []any{
+			map[string]any{"role": "assistant", "content": []any{map[string]any{
+				"type": "tool_use", "id": "tool-1", "name": "read", "input": map[string]any{},
+			}}},
+		},
 	}
 	converted := ConvertAnthropicToGoogle(request, cache)
-	part := asMap(asSlice(asMap(asSlice(converted["contents"])[0])["parts"])[0])
-	if part["thoughtSignature"] != signature {
-		t.Fatalf("thoughtSignature = %q", part["thoughtSignature"])
+	contents := asSlice(converted["contents"])
+	part := asMap(asSlice(asMap(contents[len(contents)-1])["parts"])[0])
+	if part["thoughtSignature"] != GeminiSkipSignature {
+		t.Fatalf("thoughtSignature = %#v", part["thoughtSignature"])
 	}
 	generation := asMap(converted["generationConfig"])
-	if generation["maxOutputTokens"] != GeminiMaxOutputTokens {
-		t.Fatalf("maxOutputTokens = %v", generation["maxOutputTokens"])
+	if intValue(generation["maxOutputTokens"], 0) != GeminiMaxOutputTokens {
+		t.Fatalf("maxOutputTokens = %#v, want %d", generation["maxOutputTokens"], GeminiMaxOutputTokens)
 	}
-	if asMap(generation["thinkingConfig"])["thinkingBudget"] != 24576 {
-		t.Fatalf("thinkingConfig = %#v", generation["thinkingConfig"])
+	thinkingConfig := asMap(generation["thinkingConfig"])
+	if intValue(thinkingConfig["thinkingBudget"], 0) != 24576 {
+		t.Fatalf("thinkingBudget = %#v", thinkingConfig["thinkingBudget"])
 	}
 }
 
 func TestSignatureCacheExpires(t *testing.T) {
 	t.Parallel()
 	cache := NewSignatureCache()
-	now := time.Unix(100, 0)
+	now := time.Now()
 	cache.now = func() time.Time { return now }
-	cache.CacheTool("tool", "signature")
+	signature := strings.Repeat("e", MinSignatureLength)
+	cache.CacheThinking(signature, FamilyGemini)
+	if got := cache.ThinkingFamily(signature); got != FamilyGemini {
+		t.Fatalf("family before expiry = %#v", got)
+	}
 	now = now.Add(signatureCacheTTL + time.Millisecond)
-	if got := cache.Tool("tool"); got != "" {
-		t.Fatalf("expired signature = %q", got)
+	if got := cache.ThinkingFamily(signature); got != FamilyUnknown {
+		t.Fatalf("family after expiry = %#v", got)
 	}
 }
 
@@ -244,9 +248,8 @@ func TestLiveModelOptionsCapOutputAndApplyDefaultThinkingBudget(t *testing.T) {
 	}
 }
 
-func TestGeminiToolLoopWithoutThinkingGetsRecoveryTurn(t *testing.T) {
-	t.Parallel()
-	request := map[string]any{
+func geminiToolLoopRequest() map[string]any {
+	return map[string]any{
 		"model": "gemini-3.5-flash-low",
 		"messages": []any{
 			map[string]any{"role": "user", "content": "use a tool"},
@@ -265,7 +268,36 @@ func TestGeminiToolLoopWithoutThinkingGetsRecoveryTurn(t *testing.T) {
 			},
 		},
 	}
-	converted := ConvertAnthropicToGoogle(request, NewSignatureCache())
+}
+
+// TestGeminiToolLoopKeepsRealToolTurns pins the new default: no synthetic turns
+// are appended, so the tool call and its result stay at stable indices and the
+// tool call keeps the signature the client sent.
+func TestGeminiToolLoopKeepsRealToolTurns(t *testing.T) {
+	t.Parallel()
+	converted := ConvertAnthropicToGoogle(geminiToolLoopRequest(), NewSignatureCache())
+	contents := asSlice(converted["contents"])
+	if len(contents) != 3 {
+		t.Fatalf("contents = %#v", contents)
+	}
+	call := asMap(asSlice(asMap(contents[1])["parts"])[0])
+	if asMap(call["functionCall"])["name"] != "read" {
+		t.Fatalf("tool turn = %#v", contents[1])
+	}
+	if call["thoughtSignature"] != strings.Repeat("s", MinSignatureLength) {
+		t.Fatalf("thoughtSignature = %#v", call["thoughtSignature"])
+	}
+	response := asMap(asSlice(asMap(contents[2])["parts"])[0])
+	if response["functionResponse"] == nil {
+		t.Fatalf("tool result turn = %#v", contents[2])
+	}
+}
+
+// TestGeminiToolLoopRecoveryKillSwitchRestoresSyntheticTurns proves the rollback
+// path still works. No t.Parallel: t.Setenv forbids it.
+func TestGeminiToolLoopRecoveryKillSwitchRestoresSyntheticTurns(t *testing.T) {
+	t.Setenv(geminiThinkingRecoveryEnv, "1")
+	converted := ConvertAnthropicToGoogle(geminiToolLoopRequest(), NewSignatureCache())
 	contents := asSlice(converted["contents"])
 	if len(contents) != 5 {
 		t.Fatalf("contents = %#v", contents)

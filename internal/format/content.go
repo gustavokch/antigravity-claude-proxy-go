@@ -57,10 +57,11 @@ func convertContentToParts(content any, family ModelFamily, cache *SignatureCach
 			}
 			part := map[string]any{"functionCall": call}
 			if family == FamilyGemini {
+				// Only the client's own value is used. Recovering a signature from
+				// process-local state makes the same history convert differently
+				// after a TTL expiry or a restart, which breaks the Gemini implicit
+				// cache prefix at the first tool call.
 				signature := stringValue(block["thoughtSignature"])
-				if signature == "" {
-					signature = cache.Tool(stringValue(block["id"]))
-				}
 				if signature == "" {
 					signature = GeminiSkipSignature
 				}
@@ -106,11 +107,23 @@ func convertContentToParts(content any, family ModelFamily, cache *SignatureCach
 			if len(signature) < MinSignatureLength {
 				continue
 			}
+			// Drop only on an explicit family mismatch. A FamilyUnknown result
+			// means the cache entry aged out of its TTL, or the proxy restarted,
+			// neither of which the client can observe: treating that as a drop
+			// would make the same history convert to a shorter contents array and
+			// break the Gemini implicit cache prefix at the first thinking block.
+			//
+			// Keeping an unknown signature forwards it to the backend verbatim, so
+			// this is only safe if the backend ignores thought signatures that sit
+			// in history. Measured, not assumed: scripts/verify-gemini-cache-prefix.sh
+			// turn 3 sends a signature this proxy never issued and Gemini answered
+			// 200 (gemini-3.0-flash-high, 2026-09-11). Re-run that probe before
+			// trusting this on another backend.
 			sourceFamily := cache.ThinkingFamily(signature)
-			if family == FamilyClaude && sourceFamily != FamilyClaude {
+			if family == FamilyClaude && sourceFamily == FamilyGemini {
 				continue
 			}
-			if family == FamilyGemini && sourceFamily != FamilyGemini {
+			if family == FamilyGemini && sourceFamily == FamilyClaude {
 				continue
 			}
 			parts = append(parts, map[string]any{

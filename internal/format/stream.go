@@ -74,7 +74,7 @@ func (converter *StreamConverter) Consume(data []byte) ([]map[string]any, error)
 				"id": converter.messageID, "type": "message", "role": "assistant",
 				"content": []any{}, "model": converter.model, "stop_reason": nil, "stop_sequence": nil,
 				"usage": map[string]any{
-					"input_tokens":                converter.inputTokens - converter.cacheReadTokens,
+					"input_tokens":                nonNegative(converter.inputTokens - converter.cacheReadTokens),
 					"output_tokens":               0,
 					"cache_read_input_tokens":     converter.cacheReadTokens,
 					"cache_creation_input_tokens": 0,
@@ -138,7 +138,6 @@ func (converter *StreamConverter) Consume(data []byte) ([]map[string]any, error)
 			signature := stringValue(part["thoughtSignature"])
 			if len(signature) >= MinSignatureLength {
 				block["thoughtSignature"] = signature
-				converter.cache.CacheTool(toolID, signature)
 			}
 			encoded, _ := json.Marshal(mapOrEmpty(call["args"]))
 			events = append(events,
