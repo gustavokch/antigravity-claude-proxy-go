@@ -2,6 +2,7 @@ package classifier
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -247,3 +248,59 @@ func assertVerdictText(t *testing.T, raw []byte, wantModel string, check func(st
 		t.Fatalf("Stub() verdict text = %q, failed check", resp.Content[0].Text)
 	}
 }
+
+func TestBuildStubCustomTemplates(t *testing.T) {
+	// Custom verdict override for Stage 1
+	data, err := BuildStub(KindStage1Severity, "custom-model", "<severity>5</severity>", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	content := resp["content"].([]any)[0].(map[string]any)["text"].(string)
+	if content != "<severity>5</severity>" {
+		t.Errorf("expected <severity>5</severity>, got %q", content)
+	}
+
+	// Custom thinking + verdict override for Stage 2
+	data, err = BuildStub(KindStage2Severity, "custom-model", "<severity>10</severity>", "Safe custom check.")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	content = resp["content"].([]any)[0].(map[string]any)["text"].(string)
+	expected := "<thinking>Safe custom check.</thinking><severity>10</severity>"
+	if content != expected {
+		t.Errorf("expected %q, got %q", expected, content)
+	}
+
+	// Custom template on BlockPrefilter enables stubbing
+	data, err = BuildStub(KindBlockPrefilter, "custom-model", "<block>false</block>", "")
+	if err != nil {
+		t.Fatalf("unexpected error for block-prefilter with custom verdict: %v", err)
+	}
+}
+
+func TestCompactTranscript(t *testing.T) {
+	longOutput := strings.Repeat("line of very verbose output ", 50)
+	raw := fmt.Sprintf(`[
+		{"type": "text", "text": "<transcript>\n{\"user\":\"run tests\"}\n{\"Bash\":\"%s\"}\n</transcript>\nFinal instruction"}
+	]`, longOutput)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Errorf("expected compaction to occur")
+	}
+	compactStr := string(compacted)
+	if len(compactStr) >= len(raw) {
+		t.Errorf("expected compacted string to be smaller: len(compacted)=%d, len(raw)=%d", len(compactStr), len(raw))
+	}
+	if !strings.Contains(compactStr, "[...truncated") {
+		t.Errorf("expected truncation marker in compacted string")
+	}
+}
+
