@@ -349,6 +349,60 @@ func TestCompactTranscript_MultipleBlocks(t *testing.T) {
 	}
 }
 
+func TestCompactTranscript_PreservesAuxiliaryProperties(t *testing.T) {
+	longLine := strings.Repeat("X", 600)
+	raw := fmt.Sprintf(`[
+		{
+			"type": "text",
+			"text": "<transcript>\n%s\n</transcript>",
+			"cache_control": {"type": "ephemeral"},
+			"custom_meta": 123
+		}
+	]`, longLine)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Fatalf("expected compaction to occur")
+	}
+
+	var parsed []map[string]any
+	if err := json.Unmarshal(compacted, &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(parsed))
+	}
+	block := parsed[0]
+	if !strings.Contains(block["text"].(string), "[...truncated...]") {
+		t.Errorf("expected text to be truncated")
+	}
+	cc, ok := block["cache_control"].(map[string]any)
+	if !ok || cc["type"] != "ephemeral" {
+		t.Errorf("expected cache_control to be preserved, got: %+v", block["cache_control"])
+	}
+	if block["custom_meta"] != float64(123) {
+		t.Errorf("expected custom_meta to be preserved, got: %+v", block["custom_meta"])
+	}
+}
+
+func TestCompactTranscript_StringContent(t *testing.T) {
+	longLine := strings.Repeat("Y", 600)
+	raw := fmt.Sprintf(`"<transcript>\n%s\n</transcript>"`, longLine)
+
+	compacted, changed := CompactTranscript(json.RawMessage(raw))
+	if !changed {
+		t.Fatalf("expected compaction to occur for string content")
+	}
+
+	var parsed string
+	if err := json.Unmarshal(compacted, &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !strings.Contains(parsed, "[...truncated...]") {
+		t.Errorf("expected parsed string to contain truncation marker")
+	}
+}
+
 func TestBuildStub_StopSequencePresent(t *testing.T) {
 	data, err := BuildStub(KindStage1Severity, "test-model", "", "")
 	if err != nil {
