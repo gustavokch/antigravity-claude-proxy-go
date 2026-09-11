@@ -1,5 +1,7 @@
 package format
 
+import "strings"
+
 // ConvertGoogleToAnthropic converts the inner Cloud Code response (or its
 // {response: ...} wrapper) into an Anthropic Messages response.
 func ConvertGoogleToAnthropic(googleResponse map[string]any, model string, cache *SignatureCache) map[string]any {
@@ -178,6 +180,29 @@ func (accumulator *ThinkingAccumulator) OutputTokens() int {
 
 func (accumulator *ThinkingAccumulator) CacheReadTokens() int {
 	return intValue(accumulator.usage["cachedContentTokenCount"], 0)
+}
+
+func (accumulator *ThinkingAccumulator) ThinkingTokens() int {
+	if v := intValue(accumulator.usage["thoughtsTokenCount"], 0); v > 0 {
+		return v
+	}
+	if v := intValue(accumulator.usage["thinkingTokenCount"], 0); v > 0 {
+		return v
+	}
+	if v := intValue(accumulator.usage["thinkingTokens"], 0); v > 0 {
+		return v
+	}
+	if details := asSlice(accumulator.usage["candidatesTokensDetails"]); len(details) > 0 {
+		for _, d := range details {
+			dm := asMap(d)
+			if strings.EqualFold(stringValue(dm["modality"]), "THOUGHTS") {
+				if v := intValue(dm["tokenCount"], 0); v > 0 {
+					return v
+				}
+			}
+		}
+	}
+	return 0
 }
 
 func (accumulator *ThinkingAccumulator) flushThinking() {

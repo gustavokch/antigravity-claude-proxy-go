@@ -26,12 +26,6 @@ func ForwardMessages(w http.ResponseWriter, r *http.Request, baseURL, apiKey str
 // response arrives, before the body is copied, so callers can observe
 // successful forwards. A nil hook is a plain forward.
 func ForwardMessagesWithHook(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, onResponse func(int)) {
-	target, err := url.Parse(NormalizeBaseURL(baseURL) + "/v1/messages")
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request_error", "Invalid Kimi target URL: "+err.Error())
-		return
-	}
-
 	var modify func(*http.Response) error
 	if onResponse != nil {
 		modify = func(resp *http.Response) error {
@@ -40,6 +34,17 @@ func ForwardMessagesWithHook(w http.ResponseWriter, r *http.Request, baseURL, ap
 			}
 			return nil
 		}
+	}
+	ForwardMessagesWithModify(w, r, baseURL, apiKey, body, modify)
+}
+
+// ForwardMessagesWithModify behaves like ForwardMessages and accepts a custom
+// ModifyResponse function.
+func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
+	target, err := url.Parse(NormalizeBaseURL(baseURL) + "/v1/messages")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request_error", "Invalid Kimi target URL: "+err.Error())
+		return
 	}
 
 	proxy := &httputil.ReverseProxy{

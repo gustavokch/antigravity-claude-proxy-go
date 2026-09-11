@@ -3,6 +3,7 @@ package format
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 var ErrEmptyResponse = errors.New("no content parts received from Cloud Code")
@@ -18,6 +19,7 @@ type StreamConverter struct {
 	inputTokens              int
 	outputTokens             int
 	cacheReadTokens          int
+	thinkingTokens           int
 	stopReason               string
 }
 
@@ -43,6 +45,22 @@ func (converter *StreamConverter) Consume(data []byte) ([]map[string]any, error)
 		}
 		if value := intValue(usage["cachedContentTokenCount"], 0); value != 0 {
 			converter.cacheReadTokens = value
+		}
+		if value := intValue(usage["thoughtsTokenCount"], 0); value != 0 {
+			converter.thinkingTokens = value
+		} else if value := intValue(usage["thinkingTokenCount"], 0); value != 0 {
+			converter.thinkingTokens = value
+		} else if value := intValue(usage["thinkingTokens"], 0); value != 0 {
+			converter.thinkingTokens = value
+		} else if details := asSlice(usage["candidatesTokensDetails"]); len(details) > 0 {
+			for _, d := range details {
+				dm := asMap(d)
+				if strings.EqualFold(stringValue(dm["modality"]), "THOUGHTS") {
+					if v := intValue(dm["tokenCount"], 0); v > 0 {
+						converter.thinkingTokens = v
+					}
+				}
+			}
 		}
 	}
 	candidate := firstCandidate(inner)
@@ -215,6 +233,10 @@ func (converter *StreamConverter) OutputTokens() int {
 
 func (converter *StreamConverter) CacheReadTokens() int {
 	return converter.cacheReadTokens
+}
+
+func (converter *StreamConverter) ThinkingTokens() int {
+	return converter.thinkingTokens
 }
 
 func decodeCloudCodeEvent(data []byte) (map[string]any, error) {

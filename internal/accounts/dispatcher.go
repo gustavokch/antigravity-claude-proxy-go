@@ -15,7 +15,6 @@ import (
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
-	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/modelcatalog"
 )
 
@@ -352,11 +351,12 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			})
 			if requestErr == nil {
 				dispatcher.manager.MarkSuccess(account, model)
-				logger.LogSuccess(fmt.Sprintf("[API] Request succeeded using account %s for %s", account.Email, model))
+				cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 				return response, nil
 			}
 			lastError = requestErr
 			if eventCount > 0 {
+				cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 				return response, requestErr
 			}
 			upstreamError := findHTTPError(requestErr)

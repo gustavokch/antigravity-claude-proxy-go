@@ -19,6 +19,7 @@ type CCRProxyOptions struct {
 	IsCCREnabled   func() bool
 	GetChunk       func(chunkID string) (payload string, isError bool)
 	RecordHeadroom func(count int)
+	OnUsage        func(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int)
 	Sender         CCRSender
 	MaxHydrations  int
 }
@@ -298,6 +299,9 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 			}
 			writeSSEEvent(evName, []byte(evData))
 		}
+		if opts.OnUsage != nil {
+			opts.OnUsage(totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens)
+		}
 		return nil
 	}
 
@@ -453,6 +457,9 @@ func ProxyAnthropicJSONWithCCR(ctx context.Context, writer http.ResponseWriter, 
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write(finalBytes)
+		if opts.OnUsage != nil {
+			opts.OnUsage(totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens)
+		}
 		return nil
 	}
 

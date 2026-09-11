@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -1054,6 +1055,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			options.Headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
 		}
 		send = func(ctx context.Context, req map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+			cloudcode.SetExecutionMetadata(ctx, credentials.Email, projectID)
 			dynPayload := server.builder.BuildCloudCodeRequest(req, projectID, credentials.Email)
 			return upstream.StreamGenerateContent(ctx, dynPayload, options, consume)
 		}
@@ -1262,22 +1264,34 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 		server.logger.Info("kimi forward", "model", model)
 	}
 
+	startTime := server.nowTime()
+	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
+
 	if !server.isCCREnabled() {
-		sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
-		kimi.ForwardMessagesWithHook(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body, func(int) {
-			server.maybeRecordCacheBump(cachebump.RouteKimi, request, body, sessionKey, model, "", "", minMaxTokensFloor)
-		})
+		modify := func(resp *http.Response) error {
+			if resp.StatusCode < 400 {
+				server.maybeRecordCacheBump(cachebump.RouteKimi, request, body, sessionKey, model, "", "", minMaxTokensFloor)
+				server.kimiInstrumentResponse(resp, model, sessionKey, startTime)
+			}
+			return nil
+		}
+		kimi.ForwardMessagesWithModify(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body, modify)
 		return
 	}
 
 	var reqMap map[string]any
 	if err := json.Unmarshal(body, &reqMap); err != nil {
-		kimi.ForwardMessages(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body)
+		modify := func(resp *http.Response) error {
+			if resp.StatusCode < 400 {
+				server.kimiInstrumentResponse(resp, model, sessionKey, startTime)
+			}
+			return nil
+		}
+		kimi.ForwardMessagesWithModify(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body, modify)
 		return
 	}
 
 	targetURL := kimi.NormalizeBaseURL(kimiCfg.BaseURL) + "/v1/messages"
-	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
 	sender := func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBytes))
 		if err != nil {
@@ -1301,12 +1315,74 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 	}
 
 	opts := server.defaultCCROptions(sender)
+	opts.OnUsage = func(in, out, cr, cw int) {
+		latency := server.nowTime().Sub(startTime)
+		metrics := kimi.RequestMetrics{
+			Model:               model,
+			SessionID:           sessionKey,
+			InputTokens:         in,
+			OutputTokens:        out,
+			CacheReadTokens:     cr,
+			CacheCreationTokens: cw,
+			Latency:             latency,
+		}
+		metrics.ComputeFinalMetrics()
+		kimi.LogObservability(server.logger, metrics)
+		if server.tracker != nil {
+			server.tracker.TrackRequest(model, latency, in, out, cr)
+		}
+	}
+
 	isStreaming, _ := reqMap["stream"].(bool)
 	if isStreaming {
 		_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
 	} else {
 		_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
 	}
+}
+
+func (server *Server) kimiInstrumentResponse(resp *http.Response, model, sessionID string, startTime time.Time) {
+	onComplete := func(in, out, cr, cw int) {
+		latency := server.nowTime().Sub(startTime)
+		metrics := kimi.RequestMetrics{
+			Model:               model,
+			SessionID:           sessionID,
+			InputTokens:         in,
+			OutputTokens:        out,
+			CacheReadTokens:     cr,
+			CacheCreationTokens: cw,
+			Latency:             latency,
+		}
+		metrics.ComputeFinalMetrics()
+		kimi.LogObservability(server.logger, metrics)
+		if server.tracker != nil {
+			server.tracker.TrackRequest(model, latency, in, out, cr)
+		}
+	}
+	if ccIsSSEResponse(resp.Header) {
+		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
+		return
+	}
+	respBytes, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+		return
+	}
+	payloadBytes := respBytes
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
+			if decompressed, err := io.ReadAll(gz); err == nil {
+				payloadBytes = decompressed
+			}
+			_ = gz.Close()
+		}
+	}
+	in, out, cr, cw := openrouter.ParseUsageFromJSON(payloadBytes)
+	onComplete(in, out, cr, cw)
+	resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+	resp.ContentLength = int64(len(respBytes))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(respBytes)))
 }
 
 func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {
@@ -2589,6 +2665,13 @@ type streamSender func(context.Context, map[string]any, func(cloudcode.SSEEvent)
 
 const maxCCRHydrations = 3
 
+func (server *Server) nowTime() time.Time {
+	if server != nil && server.now != nil {
+		return server.now()
+	}
+	return time.Now()
+}
+
 func (server *Server) isCCREnabled() bool {
 	if server.headroom == nil {
 		return false
@@ -2648,13 +2731,14 @@ func mapOrEmpty(v any) map[string]any {
 }
 
 func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Request, send streamSender, anthropicRequest map[string]any, model string) {
-	startTime := server.now()
+	startTime := server.nowTime()
+	reqCtx, meta := cloudcode.WithExecutionMetadata(request.Context())
 	totalCCRRetrievals := 0
-	var totalInput, totalOutput, totalCacheRead int
+	var totalInput, totalOutput, totalCacheRead, totalThinking int
 
 	for iter := 0; iter <= maxCCRHydrations; iter++ {
 		accumulator := proxyformat.NewThinkingAccumulator()
-		_, err := send(request.Context(), anthropicRequest, func(event cloudcode.SSEEvent) error {
+		_, err := send(reqCtx, anthropicRequest, func(event cloudcode.SSEEvent) error {
 			return accumulator.Consume(event.Data)
 		})
 		if err != nil {
@@ -2665,6 +2749,7 @@ func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Req
 		totalInput += accumulator.InputTokens()
 		totalOutput += accumulator.OutputTokens()
 		totalCacheRead += accumulator.CacheReadTokens()
+		totalThinking += accumulator.ThinkingTokens()
 
 		response := accumulator.Response(model, server.builder.Cache, "")
 		retrieveCalls := findRetrieveToolUsesFromResponse(response)
@@ -2676,13 +2761,29 @@ func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Req
 				usage["output_tokens"] = totalOutput
 				usage["cache_read_input_tokens"] = totalCacheRead
 			}
-			latency := server.now().Sub(startTime)
+			latency := server.nowTime().Sub(startTime)
 			if server.tracker != nil {
 				server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
 				if totalCCRRetrievals > 0 {
 					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
 				}
 			}
+			sessionID := ccExtractSessionID(request, anthropicRequest)
+			metrics := cloudcode.RequestMetrics{
+				Model:           model,
+				Account:         meta.Account,
+				ProjectID:       meta.ProjectID,
+				SessionID:       sessionID,
+				InputTokens:     totalInput,
+				OutputTokens:    totalOutput,
+				CacheReadTokens: totalCacheRead,
+				ThinkingTokens:  totalThinking,
+				CCRRetrievals:   totalCCRRetrievals,
+				Latency:         latency,
+			}
+			metrics.ComputeFinalMetrics(cloudcode.DefaultSessionTracker, server.nowTime())
+			cloudcode.LogObservability(server.logger, metrics)
+
 			writeJSON(writer, http.StatusOK, response)
 			return
 		}
@@ -2715,7 +2816,8 @@ func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Req
 }
 
 func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Request, send streamSender, anthropicRequest map[string]any, model string) {
-	startTime := server.now()
+	startTime := server.nowTime()
+	reqCtx, meta := cloudcode.WithExecutionMetadata(request.Context())
 	started := false
 	flusher, hasFlusher := writer.(http.Flusher)
 	bw := bufio.NewWriterSize(writer, 4096)
@@ -2758,7 +2860,7 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 
 	baseBlockIndex := 0
 	totalCCRRetrievals := 0
-	var totalInput, totalOutput, totalCacheRead int
+	var totalInput, totalOutput, totalCacheRead, totalThinking int
 
 	for iter := 0; iter <= maxCCRHydrations; iter++ {
 		converter := proxyformat.NewStreamConverter(model, server.builder.Cache, "")
@@ -2827,7 +2929,7 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 			}
 		}
 
-		_, err := send(request.Context(), anthropicRequest, func(event cloudcode.SSEEvent) error {
+		_, err := send(reqCtx, anthropicRequest, func(event cloudcode.SSEEvent) error {
 			events, err := converter.Consume(event.Data)
 			if err != nil {
 				return err
@@ -2862,6 +2964,7 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 		totalInput += converter.InputTokens()
 		totalOutput += converter.OutputTokens()
 		totalCacheRead += converter.CacheReadTokens()
+		totalThinking += converter.ThinkingTokens()
 
 		retrieveCalls := state.Finalize()
 
@@ -2882,13 +2985,28 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 			}
 			_ = writeEvents(pendingTerminalEvents)
 
+			latency := server.nowTime().Sub(startTime)
 			if server.tracker != nil {
-				latency := server.now().Sub(startTime)
 				server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
 				if totalCCRRetrievals > 0 {
 					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
 				}
 			}
+			sessionID := ccExtractSessionID(request, anthropicRequest)
+			metrics := cloudcode.RequestMetrics{
+				Model:           model,
+				Account:         meta.Account,
+				ProjectID:       meta.ProjectID,
+				SessionID:       sessionID,
+				InputTokens:     totalInput,
+				OutputTokens:    totalOutput,
+				CacheReadTokens: totalCacheRead,
+				ThinkingTokens:  totalThinking,
+				CCRRetrievals:   totalCCRRetrievals,
+				Latency:         latency,
+			}
+			metrics.ComputeFinalMetrics(cloudcode.DefaultSessionTracker, server.nowTime())
+			cloudcode.LogObservability(server.logger, metrics)
 			return
 		}
 
