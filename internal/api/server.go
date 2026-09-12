@@ -944,14 +944,15 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 	if cfg.Kimi.Enabled {
 		if kimiEntry, ok := matchKimiModelEntry(cfg.Kimi, model); ok {
-			anthropicRequest["model"] = kimiEntry.ID
+			targetModel := stripKimi1mSuffix(kimiEntry.ID)
+			anthropicRequest["model"] = targetModel
 			reqBody, err := json.Marshal(anthropicRequest)
 			if err != nil {
 				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Kimi request: "+err.Error())
 				return
 			}
 			reqBody = applyMaxTokensPolicy(reqBody, anthropicRequest, kimiEntry.MaxOutputTokens, 0)
-			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, kimiEntry.ID)
+			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, targetModel)
 			return
 		}
 	}
@@ -1501,7 +1502,7 @@ func matchKimiModel(cfg config.KimiConfig, model string) string {
 	if !ok {
 		return ""
 	}
-	return item.ID
+	return stripKimi1mSuffix(item.ID)
 }
 
 // matchKimiModelEntry returns the enabled allowlist entry matching `model` by
@@ -1509,16 +1510,21 @@ func matchKimiModel(cfg config.KimiConfig, model string) string {
 // Suffixes such as "[1m]" (used by Claude Code for 1M context models) are normalized
 // during matching.
 func matchKimiModelEntry(cfg config.KimiConfig, model string) (config.KimiModelConfig, bool) {
-	if model == "" {
+	if strings.TrimSpace(model) == "" {
 		return config.KimiModelConfig{}, false
 	}
 	cleanModel := stripKimi1mSuffix(model)
+	if cleanModel == "" {
+		return config.KimiModelConfig{}, false
+	}
 	for _, item := range cfg.Allowlist {
 		if !item.Enabled {
 			continue
 		}
-		if (item.ID != "" && (item.ID == model || item.ID == cleanModel || stripKimi1mSuffix(item.ID) == cleanModel)) ||
-			(item.Alias != "" && (item.Alias == model || item.Alias == cleanModel || stripKimi1mSuffix(item.Alias) == cleanModel)) {
+		itemIDClean := stripKimi1mSuffix(item.ID)
+		itemAliasClean := stripKimi1mSuffix(item.Alias)
+		if (item.ID != "" && (strings.EqualFold(item.ID, model) || strings.EqualFold(item.ID, cleanModel) || strings.EqualFold(itemIDClean, cleanModel))) ||
+			(item.Alias != "" && (strings.EqualFold(item.Alias, model) || strings.EqualFold(item.Alias, cleanModel) || strings.EqualFold(itemAliasClean, cleanModel))) {
 			return item, true
 		}
 	}
@@ -1528,7 +1534,7 @@ func matchKimiModelEntry(cfg config.KimiConfig, model string) (config.KimiModelC
 func stripKimi1mSuffix(s string) string {
 	trimmed := strings.TrimSpace(s)
 	lower := strings.ToLower(trimmed)
-	if strings.HasSuffix(lower, "[1m]") {
+	if len(trimmed) > 4 && strings.HasSuffix(lower, "[1m]") {
 		return strings.TrimSpace(trimmed[:len(trimmed)-4])
 	}
 	return trimmed

@@ -294,8 +294,92 @@ func TestMatchKimiModel_EdgeCases(t *testing.T) {
 	if got := matchKimiModel(cfg, "k2[1m]"); got != "kimi-k2-thinking" {
 		t.Errorf("matchKimiModel(k2[1m]) = %q, want kimi-k2-thinking", got)
 	}
+	if got := matchKimiModel(cfg, "k2[1M]"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(k2[1M]) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfg, "K2"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(K2) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfg, "KIMI-K2-THINKING"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(KIMI-K2-THINKING) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfg, "kimi-k2-thinking[1M]"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(id[1M]) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfg, "[1m]"); got != "" {
+		t.Errorf("matchKimiModel([1m]) = %q, want empty", got)
+	}
+	if got := matchKimiModel(cfg, "   [1m]   "); got != "" {
+		t.Errorf("matchKimiModel(padded [1m]) = %q, want empty", got)
+	}
 	if got := matchKimiModel(cfg, "unknown"); got != "" {
 		t.Errorf("matchKimiModel(unknown) = %q, want empty", got)
+	}
+
+	// Allowlist item configured with [1m] in ID/Alias
+	cfgWith1m := config.KimiConfig{
+		Enabled: true,
+		Allowlist: []config.KimiModelConfig{
+			{ID: "kimi-k2-thinking[1m]", Alias: "k2[1m]", Enabled: true},
+		},
+	}
+	if got := matchKimiModel(cfgWith1m, "kimi-k2-thinking"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(id against [1m] item) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfgWith1m, "k2"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(alias against [1m] item) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfgWith1m, "[1m]"); got != "" {
+		t.Errorf("matchKimiModel([1m] against [1m] item) = %q, want empty", got)
+	}
+}
+
+func TestServer_ForwardToKimi_Strips1mInPayload(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var gotBody []byte
+	kimid := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"))
+	}))
+	defer kimid.Close()
+
+	_, err := config.Save(map[string]any{
+		"kimi": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-kimi-test",
+			"baseUrl": kimid.URL,
+			"allowlist": []map[string]any{
+				{"id": "kimi-k2-thinking[1m]", "alias": "k2", "enabled": true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	server := newKimiTestServer(t)
+
+	// Send request with [1m] suffix in requested model
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"kimi-k2-thinking[1m]","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var forwarded map[string]any
+	if err := json.Unmarshal(gotBody, &forwarded); err != nil {
+		t.Fatalf("unmarshal forwarded body: %v", err)
+	}
+	if forwarded["model"] != "kimi-k2-thinking" {
+		t.Errorf("forwarded model = %v, want kimi-k2-thinking (stripped)", forwarded["model"])
 	}
 }
 
