@@ -330,7 +330,7 @@ window.Components.models = () => ({
     // Kimi Code Gateway State & Methods
     kimiConfig: {
         enabled: false,
-        baseUrl: 'https://api.kimi.com/coding',
+        baseUrl: 'https://api.moonshot.ai/anthropic',
         apiKey: '',
         hasApiKey: false,
         allowlist: []
@@ -585,7 +585,7 @@ window.Components.models = () => ({
             if (data.config) {
                 this.kimiConfig = {
                     enabled: !!data.config.enabled,
-                    baseUrl: data.config.baseUrl || 'https://api.kimi.com/coding',
+                    baseUrl: data.config.baseUrl || 'https://api.moonshot.ai/anthropic',
                     apiKey: '',
                     hasApiKey: !!data.config.hasApiKey,
                     allowlist: data.config.allowlist || []
@@ -605,7 +605,7 @@ window.Components.models = () => ({
         try {
             const payload = {
                 enabled: this.kimiConfig.enabled,
-                baseUrl: this.kimiConfig.baseUrl || 'https://api.kimi.com/coding',
+                baseUrl: this.kimiConfig.baseUrl || 'https://api.moonshot.ai/anthropic',
                 hasApiKey: this.kimiConfig.hasApiKey,
                 allowlist: this.kimiConfig.allowlist || []
             };

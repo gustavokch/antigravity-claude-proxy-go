@@ -28,7 +28,7 @@ func TestClient_FetchModels_ParsesResponse(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{}
-	got, err := c.FetchModels(context.Background(), "test-key", srv.URL)
+	got, err := c.FetchModels(context.Background(), "test-key", srv.URL+"/anthropic")
 	if err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}

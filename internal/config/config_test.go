@@ -419,8 +419,8 @@ func TestRankWeightsToOpenRouter_SingleSourceDefaults(t *testing.T) {
 
 func TestDefaultConfig_KimiBaseURL(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.Kimi.BaseURL != "https://api.kimi.com/coding" {
-		t.Fatalf("default Kimi base URL = %q, want %q", cfg.Kimi.BaseURL, "https://api.kimi.com/coding")
+	if cfg.Kimi.BaseURL != "https://api.moonshot.ai/anthropic" {
+		t.Fatalf("default Kimi base URL = %q, want %q", cfg.Kimi.BaseURL, "https://api.moonshot.ai/anthropic")
 	}
 	if cfg.Kimi.Enabled {
 		t.Fatal("Kimi should be disabled by default")
@@ -439,7 +439,7 @@ func TestGetPublicConfig_KimiRedactsAPIKey(t *testing.T) {
 		"kimi": map[string]any{
 			"enabled": true,
 			"apiKey":  "sk-kimi-secret-123",
-			"baseUrl": "https://api.kimi.com/coding",
+			"baseUrl": "https://api.moonshot.ai/anthropic",
 			"allowlist": []map[string]any{
 				{"id": "kimi-k2-thinking", "alias": "k2", "enabled": true},
 			},
@@ -460,7 +460,7 @@ func TestGetPublicConfig_KimiRedactsAPIKey(t *testing.T) {
 	if has, _ := kimi["hasApiKey"].(bool); !has {
 		t.Fatal("public config should expose hasApiKey=true")
 	}
-	if kimi["baseUrl"] != "https://api.kimi.com/coding" {
+	if kimi["baseUrl"] != "https://api.moonshot.ai/anthropic" {
 		t.Fatalf("public config should preserve baseUrl, got %v", kimi["baseUrl"])
 	}
 

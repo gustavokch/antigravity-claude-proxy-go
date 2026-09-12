@@ -217,7 +217,7 @@ func TestServer_ModelsList_IncludesKimi(t *testing.T) {
 		"kimi": map[string]any{
 			"enabled": true,
 			"apiKey":  "sk-kimi-test",
-			"baseUrl": "https://api.kimi.com/coding",
+			"baseUrl": "https://api.moonshot.ai/anthropic",
 			"allowlist": []map[string]any{
 				{"id": "kimi-k2-thinking", "alias": "k2", "displayName": "Kimi K2", "contextLength": 200000, "maxOutputTokens": 8000, "enabled": true},
 			},
@@ -287,6 +287,12 @@ func TestMatchKimiModel_EdgeCases(t *testing.T) {
 	}
 	if got := matchKimiModel(cfg, "kimi-k2-thinking"); got != "kimi-k2-thinking" {
 		t.Errorf("matchKimiModel(id) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfg, "kimi-k2-thinking[1m]"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(id[1m]) = %q, want kimi-k2-thinking", got)
+	}
+	if got := matchKimiModel(cfg, "k2[1m]"); got != "kimi-k2-thinking" {
+		t.Errorf("matchKimiModel(k2[1m]) = %q, want kimi-k2-thinking", got)
 	}
 	if got := matchKimiModel(cfg, "unknown"); got != "" {
 		t.Errorf("matchKimiModel(unknown) = %q, want empty", got)

@@ -1600,7 +1600,7 @@ func (server *Server) handleKimiConfigGet(writer http.ResponseWriter, request *h
 	if kimiMap == nil {
 		kimiMap = map[string]any{
 			"enabled":   false,
-			"baseUrl":   "https://api.kimi.com/coding",
+			"baseUrl":   "https://api.moonshot.ai/anthropic",
 			"hasApiKey": false,
 			"allowlist": []any{},
 		}
@@ -1658,7 +1658,7 @@ func (server *Server) handleKimiModelsFetch(writer http.ResponseWriter, request 
 		baseURL = cfg.Kimi.BaseURL
 	}
 	if baseURL == "" {
-		baseURL = "https://api.kimi.com/coding"
+		baseURL = "https://api.moonshot.ai/anthropic"
 	}
 	models, err := kimi.DefaultClient.FetchModels(request.Context(), apiKey, baseURL)
 	if err != nil {

@@ -1506,19 +1506,32 @@ func matchKimiModel(cfg config.KimiConfig, model string) string {
 
 // matchKimiModelEntry returns the enabled allowlist entry matching `model` by
 // either ID or alias. Returns ok=false if no match.
+// Suffixes such as "[1m]" (used by Claude Code for 1M context models) are normalized
+// during matching.
 func matchKimiModelEntry(cfg config.KimiConfig, model string) (config.KimiModelConfig, bool) {
 	if model == "" {
 		return config.KimiModelConfig{}, false
 	}
+	cleanModel := stripKimi1mSuffix(model)
 	for _, item := range cfg.Allowlist {
 		if !item.Enabled {
 			continue
 		}
-		if (item.ID != "" && item.ID == model) || (item.Alias != "" && item.Alias == model) {
+		if (item.ID != "" && (item.ID == model || item.ID == cleanModel || stripKimi1mSuffix(item.ID) == cleanModel)) ||
+			(item.Alias != "" && (item.Alias == model || item.Alias == cleanModel || stripKimi1mSuffix(item.Alias) == cleanModel)) {
 			return item, true
 		}
 	}
 	return config.KimiModelConfig{}, false
+}
+
+func stripKimi1mSuffix(s string) string {
+	trimmed := strings.TrimSpace(s)
+	lower := strings.ToLower(trimmed)
+	if strings.HasSuffix(lower, "[1m]") {
+		return strings.TrimSpace(trimmed[:len(trimmed)-4])
+	}
+	return trimmed
 }
 
 // claudeCodeEntryMaxOutput returns the allowlist entry's MaxOutputTokens for
