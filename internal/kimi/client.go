@@ -55,7 +55,10 @@ type kimiModelsResponse struct {
 // it. The cache is consulted by GetCachedModels.
 func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string) ([]ModelItem, error) {
 	base := NormalizeBaseURL(baseURL)
-	base = strings.TrimSuffix(base, "/anthropic")
+	if strings.HasSuffix(strings.ToLower(base), "/anthropic") {
+		base = base[:len(base)-len("/anthropic")]
+	}
+	base = strings.TrimRight(base, "/")
 	url := base + "/v1/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

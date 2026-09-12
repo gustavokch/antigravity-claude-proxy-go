@@ -40,6 +40,46 @@ func TestClient_FetchModels_ParsesResponse(t *testing.T) {
 	}
 }
 
+func TestClient_FetchModels_BaseURLVariations(t *testing.T) {
+	var requestedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"id": "kimi-k2-thinking", "display_name": "Kimi K2 Thinking", "context_length": 200000, "max_tokens": 8000},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	variations := []string{
+		srv.URL + "/Anthropic",
+		srv.URL + "/ANTHROPIC",
+		srv.URL + "/anthropic/",
+		srv.URL + "/Anthropic/",
+		srv.URL + "/anthropic/v1",
+		srv.URL + "/anthropic/v1/",
+		srv.URL,
+		srv.URL + "/",
+	}
+
+	c := &Client{}
+	for _, base := range variations {
+		requestedPath = ""
+		got, err := c.FetchModels(context.Background(), "test-key", base)
+		if err != nil {
+			t.Fatalf("FetchModels(%q): %v", base, err)
+		}
+		if requestedPath != "/v1/models" {
+			t.Errorf("base %q led to path %q, want /v1/models", base, requestedPath)
+		}
+		if len(got) != 1 || got[0].ID != "kimi-k2-thinking" {
+			t.Errorf("base %q failed to parse models: %+v", base, got)
+		}
+	}
+}
+
 func TestClient_GetCachedModels_EmptyByDefault(t *testing.T) {
 	c := &Client{}
 	if got := c.GetCachedModels(); len(got) != 0 {
