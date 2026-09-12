@@ -506,7 +506,7 @@ window.translations.pt = {
     pinnedTo: "Fixado em",
     openRouterBadge: "OpenRouter",
     kimiGateway: "Gateway Kimi Code",
-    kimiDesc: "Encaminhe modelos da allowlist de forma transparente para api.kimi.com/coding usando autenticação Bearer.",
+    kimiDesc: "Encaminhe modelos da allowlist de forma transparente para api.moonshot.ai/anthropic usando autenticação Bearer.",
     kimiBaseUrl: "URL Base",
     kimiApiKey: "Chave de API",
     kimiDiscover: "Descobrir Modelos",

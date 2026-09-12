@@ -29,7 +29,7 @@ func TestServer_HandleKimiConfigGet_RedactsAPIKey(t *testing.T) {
 	seed := `{
 		"enabled": true,
 		"apiKey": "sk-secret",
-		"baseUrl": "https://api.kimi.com/coding",
+		"baseUrl": "https://api.moonshot.ai/anthropic",
 		"allowlist": [
 			{"id": "kimi-k2-thinking", "alias": "k2", "enabled": true}
 		]
@@ -75,7 +75,7 @@ func TestServer_HandleKimiConfigSave_StoresConfig(t *testing.T) {
 	payload := `{
 		"enabled": true,
 		"apiKey": "sk-saved",
-		"baseUrl": "https://api.kimi.com/coding",
+		"baseUrl": "https://api.moonshot.ai/anthropic",
 		"allowlist": [
 			{"id": "kimi-k2-thinking", "alias": "k2", "enabled": true}
 		]

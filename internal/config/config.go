@@ -276,7 +276,7 @@ func DefaultConfig() Config {
 			Routing:   DefaultRoutingConfig(),
 		},
 		Kimi: KimiConfig{
-			BaseURL:   "https://api.kimi.com/coding",
+			BaseURL:   "https://api.moonshot.ai/anthropic",
 			Allowlist: []KimiModelConfig{},
 		},
 		AccountSelection: AccountSelectionConfig{

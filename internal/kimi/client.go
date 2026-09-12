@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -53,7 +54,12 @@ type kimiModelsResponse struct {
 // FetchModels GETs /v1/models from Kimi, returns the parsed list, and caches
 // it. The cache is consulted by GetCachedModels.
 func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string) ([]ModelItem, error) {
-	url := NormalizeBaseURL(baseURL) + "/v1/models"
+	base := NormalizeBaseURL(baseURL)
+	if strings.HasSuffix(strings.ToLower(base), "/anthropic") {
+		base = base[:len(base)-len("/anthropic")]
+	}
+	base = strings.TrimRight(base, "/")
+	url := base + "/v1/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build Kimi models request: %w", err)
