@@ -3,6 +3,8 @@ package modelcatalog
 import (
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/claudecode"
 )
 
 func TestParseUsesAgyAgentModelOrderAndResolvesRoutingAlias(t *testing.T) {
@@ -226,8 +228,7 @@ func TestClaudeRoutingAliases(t *testing.T) {
 	}
 
 	sonnetAliases := []string{
-		"claude-sonnet-5", "sonnet-5", "sonnet",
-		"claude-fable-5", "fable-5", "fable",
+		"sonnet", "fable",
 		"claude-haiku-4-5-20251001", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4-5", "haiku-4.5", "haiku",
 		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet", "claude-3.7-sonnet", "sonnet-3-7", "sonnet-3.7",
 		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet", "claude-3.5-sonnet", "sonnet-3-5", "sonnet-3.5",
@@ -247,7 +248,7 @@ func TestClaudeRoutingAliases(t *testing.T) {
 	}
 
 	opusAliases := []string{
-		"claude-opus-5", "opus-5", "opus",
+		"opus",
 		"claude-3-opus-20240229", "claude-3-opus", "claude-3.0-opus", "opus-3",
 		"claude-opus-4-6-thinking", "claude-opus-4-6",
 	}
@@ -260,6 +261,52 @@ func TestClaudeRoutingAliases(t *testing.T) {
 		}
 		if resolved.ID != "claude-opus-agent" {
 			t.Errorf("Resolve(%q): expected ID claude-opus-agent, got %q", alias, resolved.ID)
+		}
+	}
+}
+
+func TestClaude5ModelsDoNotRouteTo46Upstreams(t *testing.T) {
+	t.Parallel()
+	// The Claude Code allowlist advertises 1M-token Claude 5 / Fable models.
+	// routingAliases must not silently downgrade those requests to the 200k
+	// Claude 4.6 upstreams (PR #75 review): names that the upstream account
+	// does not publish must fail resolution honestly instead.
+	var wideNames []string
+	for _, entry := range claudecode.DefaultAllowlist() {
+		if entry.ContextLen <= 200000 {
+			continue
+		}
+		for _, name := range append([]string{entry.ID, entry.Alias}, entry.Aliases...) {
+			if name == "" {
+				continue
+			}
+			wideNames = append(wideNames, name)
+			key := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), ".", "-"))
+			if target, ok := routingAliases[key]; ok {
+				t.Errorf("routingAliases[%q] = %q silently downgrades 1M model %q", key, target, entry.ID)
+			}
+		}
+	}
+	if len(wideNames) == 0 {
+		t.Fatal("no >200k Claude Code allowlist entries found; test is vacuous")
+	}
+
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"claude-sonnet-agent",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"claude-sonnet-agent","claude-opus-agent"
+		]}]}],
+		"models":{
+			"claude-sonnet-agent":{"displayName":"Claude Sonnet 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":4000,"maxTokens":200000,"maxOutputTokens":8192},
+			"claude-opus-agent":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":4000,"maxTokens":200000,"maxOutputTokens":8192}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range wideNames {
+		if resolved, err := catalog.Resolve(name); err == nil {
+			t.Errorf("Resolve(%q) = %q on a 4.6-only account; expected SelectionError for 1M-advertised model", name, resolved.ID)
 		}
 	}
 }

@@ -114,21 +114,18 @@ var routingAliases = map[string]string{
 	"gemini-3.7-flash-medium":    "Gemini 3.7 Flash (Medium)",
 	"gemini-3.7-flash-low":       "Gemini 3.7 Flash (Low)",
 
-	// Claude Models & Aliases mapped to Cloud Code display names
+	// Claude Models & Aliases mapped to Cloud Code display names.
+	// Claude 5 / Fable IDs are deliberately absent: the Claude Code allowlist
+	// advertises them with a 1M context window, and silently routing them to
+	// the 200k Claude 4.6 upstreams would oversell the capability (PR #75
+	// review). Accounts whose upstream publishes real Claude 5 models resolve
+	// them via byID/byDisplay; everyone else gets an honest SelectionError.
 	"claude-sonnet-4-6-thinking": "Claude Sonnet 4.6 (Thinking)",
 	"claude-sonnet-4-6":          "Claude Sonnet 4.6 (Thinking)",
 	"claude-opus-4-6":            "Claude Opus 4.6 (Thinking)",
 	"claude-opus-4-6-thinking":   "Claude Opus 4.6 (Thinking)",
-	"claude-sonnet-5":            "Claude Sonnet 4.6 (Thinking)",
-	"sonnet-5":                   "Claude Sonnet 4.6 (Thinking)",
 	"sonnet":                     "Claude Sonnet 4.6 (Thinking)",
-	"claude-opus-5":              "Claude Opus 4.6 (Thinking)",
-	"opus-5":                     "Claude Opus 4.6 (Thinking)",
 	"opus":                       "Claude Opus 4.6 (Thinking)",
-	"claude-fable-5":             "Claude Sonnet 4.6 (Thinking)",
-	"claude-fable-5-1":           "Claude Sonnet 4.6 (Thinking)",
-	"fable-5-1":                  "Claude Sonnet 4.6 (Thinking)",
-	"fable-5":                    "Claude Sonnet 4.6 (Thinking)",
 	"fable":                      "Claude Sonnet 4.6 (Thinking)",
 	"claude-haiku-4-5-20251001":  "Claude Sonnet 4.6 (Thinking)",
 	"claude-haiku-4-5":           "Claude Sonnet 4.6 (Thinking)",
