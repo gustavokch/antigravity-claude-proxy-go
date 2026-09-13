@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -125,3 +126,53 @@ func TestDefaultAllowlist_Claude5Limits(t *testing.T) {
 	}
 }
 
+
+func TestDefaultAllowlist_Fable51AliasesMatchCatalogue(t *testing.T) {
+	normalize := func(names ...string) map[string]bool {
+		set := make(map[string]bool, len(names))
+		for _, n := range names {
+			// Compare spellings as written (lowercased only). Dot-to-hyphen
+			// normalization would collapse the very drift this test guards
+			// against: the router must list dotted aliases explicitly instead
+			// of relying on the resolve-time fallback.
+			n = strings.ToLower(strings.TrimSpace(n))
+			if n != "" {
+				set[n] = true
+			}
+		}
+		return set
+	}
+
+	var routerEntry *ModelConfig
+	for i, m := range DefaultAllowlist() {
+		if m.ID == "claude-fable-5-1" {
+			routerEntry = &DefaultAllowlist()[i]
+		}
+	}
+	if routerEntry == nil {
+		t.Fatal("claude-fable-5-1 missing from DefaultAllowlist")
+	}
+	routerSet := normalize(append([]string{routerEntry.ID, routerEntry.Alias}, routerEntry.Aliases...)...)
+
+	var catalogueEntry *DiscoveredModel
+	for i, m := range DefaultClaudeCatalogue() {
+		if m.ID == "claude-fable-5-1" {
+			catalogueEntry = &DefaultClaudeCatalogue()[i]
+		}
+	}
+	if catalogueEntry == nil {
+		t.Fatal("claude-fable-5-1 missing from DefaultClaudeCatalogue")
+	}
+	catalogueSet := normalize(append([]string{catalogueEntry.ID}, catalogueEntry.Aliases...)...)
+
+	for name := range catalogueSet {
+		if !routerSet[name] {
+			t.Errorf("alias %q in catalogue but not in router default allowlist", name)
+		}
+	}
+	for name := range routerSet {
+		if !catalogueSet[name] {
+			t.Errorf("alias %q in router default allowlist but not in catalogue", name)
+		}
+	}
+}

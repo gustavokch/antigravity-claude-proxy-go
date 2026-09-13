@@ -22,7 +22,7 @@ func DefaultAllowlist() []ModelConfig {
 		{
 			ID:              "claude-fable-5-1",
 			Alias:           "fable-5-1",
-			Aliases:         []string{"fable-5-1", "claude-fable-5-1"},
+			Aliases:         []string{"fable-5-1", "claude-fable-5-1", "claude-fable-5.1", "fable-5.1"},
 			DisplayName:     "Claude Fable 5.1",
 			ContextLen:      1000000,
 			MaxOutputTokens: 128000,
