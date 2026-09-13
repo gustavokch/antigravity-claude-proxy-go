@@ -703,3 +703,27 @@ func TestClaudeCodeEntryMaxOutput(t *testing.T) {
 		}
 	})
 }
+
+func TestClaudeCodeForwarding_128KMaxTokens(t *testing.T) {
+	cfg := claudecode.Config{}
+	limit := claudeCodeEntryMaxOutput(cfg, "claude-opus-5")
+	if limit != 128000 {
+		t.Fatalf("expected limit 128000, got %d", limit)
+	}
+
+	body := []byte(`{"model":"claude-opus-5","max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}`)
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+
+	out := applyMaxTokensPolicy(body, req, 0, limit)
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	if mt, _ := parsed["max_tokens"].(float64); int(mt) != 128000 {
+		t.Errorf("expected max_tokens 128000 preserved, got %v", parsed["max_tokens"])
+	}
+}
