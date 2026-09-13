@@ -115,43 +115,17 @@ var routingAliases = map[string]string{
 	"gemini-3.7-flash-low":       "Gemini 3.7 Flash (Low)",
 
 	// Claude Models & Aliases mapped to Cloud Code display names.
-	// Claude 5 / Fable IDs are deliberately absent: the Claude Code allowlist
-	// advertises them with a 1M context window, and silently routing them to
-	// the 200k Claude 4.6 upstreams would oversell the capability (PR #75
-	// review). Accounts whose upstream publishes real Claude 5 models resolve
-	// them via byID/byDisplay; everyone else gets an honest SelectionError.
+	// Only real Cloud Code Claude IDs belong here. Names agy/Cloud Code never
+	// publishes (Anthropic API spellings like claude-3-5-sonnet, generic names
+	// like sonnet/opus/fable, and the 1M-advertised Claude 5 / Fable IDs) are
+	// deliberately absent: hard-mapping them would silently change which model
+	// serves the request (PR #75 review). Accounts whose upstream publishes a
+	// requested model resolve it via byID/byDisplay; everyone else gets an
+	// honest SelectionError.
 	"claude-sonnet-4-6-thinking": "Claude Sonnet 4.6 (Thinking)",
 	"claude-sonnet-4-6":          "Claude Sonnet 4.6 (Thinking)",
 	"claude-opus-4-6":            "Claude Opus 4.6 (Thinking)",
 	"claude-opus-4-6-thinking":   "Claude Opus 4.6 (Thinking)",
-	"sonnet":                     "Claude Sonnet 4.6 (Thinking)",
-	"opus":                       "Claude Opus 4.6 (Thinking)",
-	"fable":                      "Claude Sonnet 4.6 (Thinking)",
-	"claude-haiku-4-5-20251001":  "Claude Sonnet 4.6 (Thinking)",
-	"claude-haiku-4-5":           "Claude Sonnet 4.6 (Thinking)",
-	"claude-haiku-4.5":           "Claude Sonnet 4.6 (Thinking)",
-	"haiku-4-5":                  "Claude Sonnet 4.6 (Thinking)",
-	"haiku-4.5":                  "Claude Sonnet 4.6 (Thinking)",
-	"haiku":                      "Claude Sonnet 4.6 (Thinking)",
-	"claude-3-7-sonnet-20250219": "Claude Sonnet 4.6 (Thinking)",
-	"claude-3-7-sonnet":          "Claude Sonnet 4.6 (Thinking)",
-	"claude-3.7-sonnet":          "Claude Sonnet 4.6 (Thinking)",
-	"sonnet-3-7":                 "Claude Sonnet 4.6 (Thinking)",
-	"sonnet-3.7":                 "Claude Sonnet 4.6 (Thinking)",
-	"claude-3-5-sonnet-20241022": "Claude Sonnet 4.6 (Thinking)",
-	"claude-3-5-sonnet":          "Claude Sonnet 4.6 (Thinking)",
-	"claude-3.5-sonnet":          "Claude Sonnet 4.6 (Thinking)",
-	"sonnet-3-5":                 "Claude Sonnet 4.6 (Thinking)",
-	"sonnet-3.5":                 "Claude Sonnet 4.6 (Thinking)",
-	"claude-3-5-haiku-20241022":  "Claude Sonnet 4.6 (Thinking)",
-	"claude-3-5-haiku":           "Claude Sonnet 4.6 (Thinking)",
-	"claude-3.5-haiku":           "Claude Sonnet 4.6 (Thinking)",
-	"haiku-3-5":                  "Claude Sonnet 4.6 (Thinking)",
-	"haiku-3.5":                  "Claude Sonnet 4.6 (Thinking)",
-	"claude-3-opus-20240229":     "Claude Opus 4.6 (Thinking)",
-	"claude-3-opus":              "Claude Opus 4.6 (Thinking)",
-	"claude-3.0-opus":            "Claude Opus 4.6 (Thinking)",
-	"opus-3":                     "Claude Opus 4.6 (Thinking)",
 }
 
 const gemini37TieredID = "gemini-3.7-flash-tiered"

@@ -228,11 +228,6 @@ func TestClaudeRoutingAliases(t *testing.T) {
 	}
 
 	sonnetAliases := []string{
-		"sonnet", "fable",
-		"claude-haiku-4-5-20251001", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4-5", "haiku-4.5", "haiku",
-		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet", "claude-3.7-sonnet", "sonnet-3-7", "sonnet-3.7",
-		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet", "claude-3.5-sonnet", "sonnet-3-5", "sonnet-3.5",
-		"claude-3-5-haiku-20241022", "claude-3-5-haiku", "claude-3.5-haiku", "haiku-3-5", "haiku-3.5",
 		"claude-sonnet-4-6-thinking", "claude-sonnet-4-6",
 	}
 
@@ -248,8 +243,6 @@ func TestClaudeRoutingAliases(t *testing.T) {
 	}
 
 	opusAliases := []string{
-		"opus",
-		"claude-3-opus-20240229", "claude-3-opus", "claude-3.0-opus", "opus-3",
 		"claude-opus-4-6-thinking", "claude-opus-4-6",
 	}
 
@@ -261,6 +254,18 @@ func TestClaudeRoutingAliases(t *testing.T) {
 		}
 		if resolved.ID != "claude-opus-agent" {
 			t.Errorf("Resolve(%q): expected ID claude-opus-agent, got %q", alias, resolved.ID)
+		}
+	}
+
+	// Names Cloud Code does not publish must fail honestly, not downgrade.
+	unpublished := []string{
+		"sonnet", "opus", "fable", "haiku",
+		"claude-haiku-4-5", "claude-3-7-sonnet", "claude-3-5-sonnet",
+		"claude-3-5-haiku", "claude-3-opus",
+	}
+	for _, alias := range unpublished {
+		if resolved, err := catalog.Resolve(alias); err == nil {
+			t.Errorf("Resolve(%q) = %q; expected SelectionError for a name Cloud Code does not publish", alias, resolved.ID)
 		}
 	}
 }
@@ -307,6 +312,30 @@ func TestClaude5ModelsDoNotRouteTo46Upstreams(t *testing.T) {
 	for _, name := range wideNames {
 		if resolved, err := catalog.Resolve(name); err == nil {
 			t.Errorf("Resolve(%q) = %q on a 4.6-only account; expected SelectionError for 1M-advertised model", name, resolved.ID)
+		}
+	}
+}
+
+func TestNonCloudCodeModelsHaveNoFixedRoutingAliases(t *testing.T) {
+	t.Parallel()
+	// routingAliases exists to repair mismatches between IDs Cloud Code
+	// publishes and the routes agy selects. Model names agy/Cloud Code never
+	// publishes (Anthropic API spellings, generic family names) must not be
+	// hard-mapped to an upstream: that silently changes the model the user
+	// asked for. They either resolve via byID/byDisplay on accounts that
+	// really serve them, or fail with an honest SelectionError.
+	synthetic := []string{
+		"sonnet", "opus", "fable",
+		"claude-haiku-4-5-20251001", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4-5", "haiku-4.5", "haiku",
+		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet", "claude-3.7-sonnet", "sonnet-3-7", "sonnet-3.7",
+		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet", "claude-3.5-sonnet", "sonnet-3-5", "sonnet-3.5",
+		"claude-3-5-haiku-20241022", "claude-3-5-haiku", "claude-3.5-haiku", "haiku-3-5", "haiku-3.5",
+		"claude-3-opus-20240229", "claude-3-opus", "claude-3.0-opus", "opus-3",
+	}
+	for _, name := range synthetic {
+		key := strings.ToLower(strings.ReplaceAll(name, ".", "-"))
+		if target, ok := routingAliases[key]; ok {
+			t.Errorf("routingAliases[%q] = %q hard-maps a name Cloud Code does not publish", key, target)
 		}
 	}
 }
