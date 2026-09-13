@@ -889,6 +889,7 @@ window.Components.models = () => ({
     importCCDefaults() {
         const defaults = [
             { id: 'claude-fable-5', displayName: 'Claude Fable 5', alias: 'claude-fable-5, fable, claude-fable', enabled: true },
+            { id: 'claude-fable-5-1', displayName: 'Claude Fable 5.1', alias: 'claude-fable-5-1, fable-5-1, claude-fable-5.1', enabled: true },
             { id: 'claude-opus-5', displayName: 'Claude Opus 5', alias: 'claude-opus-5, opus, claude-5-opus', enabled: true },
             { id: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', alias: 'claude-sonnet-5, sonnet, claude-5-sonnet', enabled: true },
             { id: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', alias: 'claude-haiku-4-5, claude-haiku-4.5, haiku', enabled: true },
