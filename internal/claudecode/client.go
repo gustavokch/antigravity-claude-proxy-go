@@ -87,7 +87,7 @@ func DefaultClaudeCatalogue() []DiscoveredModel {
 			ID:           "claude-fable-5",
 			DisplayName:  "Claude Fable 5",
 			Capabilities: []string{"thinking", "vision", "tools"},
-			Aliases:      []string{"claude-fable-5", "fable", "claude-fable"},
+			Aliases:      []string{"claude-fable-5", "fable-5", "fable", "claude-fable"},
 			Family:       "fable",
 		},
 		{
@@ -101,14 +101,14 @@ func DefaultClaudeCatalogue() []DiscoveredModel {
 			ID:           "claude-opus-5",
 			DisplayName:  "Claude Opus 5",
 			Capabilities: []string{"thinking", "vision", "tools"},
-			Aliases:      []string{"claude-opus-5", "opus", "claude-5-opus"},
+			Aliases:      []string{"claude-opus-5", "opus-5", "opus", "claude-5-opus"},
 			Family:       "opus",
 		},
 		{
 			ID:           "claude-sonnet-5",
 			DisplayName:  "Claude Sonnet 5",
 			Capabilities: []string{"thinking", "vision", "tools"},
-			Aliases:      []string{"claude-sonnet-5", "sonnet", "claude-5-sonnet"},
+			Aliases:      []string{"claude-sonnet-5", "sonnet-5", "sonnet", "claude-5-sonnet"},
 			Family:       "sonnet",
 		},
 		{

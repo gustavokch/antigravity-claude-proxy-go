@@ -12,7 +12,7 @@ func DefaultAllowlist() []ModelConfig {
 		{
 			ID:              "claude-fable-5",
 			Alias:           "fable-5",
-			Aliases:         []string{"fable-5", "claude-fable-5"},
+			Aliases:         []string{"fable-5", "claude-fable-5", "fable", "claude-fable"},
 			DisplayName:     "Claude Fable 5",
 			ContextLen:      1000000,
 			MaxOutputTokens: 128000,
@@ -32,7 +32,7 @@ func DefaultAllowlist() []ModelConfig {
 		{
 			ID:              "claude-opus-5",
 			Alias:           "opus-5",
-			Aliases:         []string{"opus-5", "claude-opus-5"},
+			Aliases:         []string{"opus-5", "claude-opus-5", "opus", "claude-5-opus"},
 			DisplayName:     "Claude Opus 5",
 			ContextLen:      1000000,
 			MaxOutputTokens: 128000,
@@ -42,7 +42,7 @@ func DefaultAllowlist() []ModelConfig {
 		{
 			ID:              "claude-sonnet-5",
 			Alias:           "sonnet-5",
-			Aliases:         []string{"sonnet-5", "claude-sonnet-5"},
+			Aliases:         []string{"sonnet-5", "claude-sonnet-5", "sonnet", "claude-5-sonnet"},
 			DisplayName:     "Claude Sonnet 5",
 			ContextLen:      1000000,
 			MaxOutputTokens: 128000,
