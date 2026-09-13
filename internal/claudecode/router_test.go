@@ -127,7 +127,7 @@ func TestDefaultAllowlist_Claude5Limits(t *testing.T) {
 }
 
 
-func TestDefaultAllowlist_Fable51AliasesMatchCatalogue(t *testing.T) {
+func TestDefaultAllowlist_Claude5AliasesMatchCatalogue(t *testing.T) {
 	normalize := func(names ...string) map[string]bool {
 		set := make(map[string]bool, len(names))
 		for _, n := range names {
@@ -143,36 +143,40 @@ func TestDefaultAllowlist_Fable51AliasesMatchCatalogue(t *testing.T) {
 		return set
 	}
 
-	var routerEntry *ModelConfig
-	for i, m := range DefaultAllowlist() {
-		if m.ID == "claude-fable-5-1" {
-			routerEntry = &DefaultAllowlist()[i]
-		}
-	}
-	if routerEntry == nil {
-		t.Fatal("claude-fable-5-1 missing from DefaultAllowlist")
-	}
-	routerSet := normalize(append([]string{routerEntry.ID, routerEntry.Alias}, routerEntry.Aliases...)...)
+	for _, id := range []string{"claude-fable-5", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5"} {
+		t.Run(id, func(t *testing.T) {
+			var routerEntry *ModelConfig
+			for i, m := range DefaultAllowlist() {
+				if m.ID == id {
+					routerEntry = &DefaultAllowlist()[i]
+				}
+			}
+			if routerEntry == nil {
+				t.Fatalf("%s missing from DefaultAllowlist", id)
+			}
+			routerSet := normalize(append([]string{routerEntry.ID, routerEntry.Alias}, routerEntry.Aliases...)...)
 
-	var catalogueEntry *DiscoveredModel
-	for i, m := range DefaultClaudeCatalogue() {
-		if m.ID == "claude-fable-5-1" {
-			catalogueEntry = &DefaultClaudeCatalogue()[i]
-		}
-	}
-	if catalogueEntry == nil {
-		t.Fatal("claude-fable-5-1 missing from DefaultClaudeCatalogue")
-	}
-	catalogueSet := normalize(append([]string{catalogueEntry.ID}, catalogueEntry.Aliases...)...)
+			var catalogueEntry *DiscoveredModel
+			for i, m := range DefaultClaudeCatalogue() {
+				if m.ID == id {
+					catalogueEntry = &DefaultClaudeCatalogue()[i]
+				}
+			}
+			if catalogueEntry == nil {
+				t.Fatalf("%s missing from DefaultClaudeCatalogue", id)
+			}
+			catalogueSet := normalize(append([]string{catalogueEntry.ID}, catalogueEntry.Aliases...)...)
 
-	for name := range catalogueSet {
-		if !routerSet[name] {
-			t.Errorf("alias %q in catalogue but not in router default allowlist", name)
-		}
-	}
-	for name := range routerSet {
-		if !catalogueSet[name] {
-			t.Errorf("alias %q in router default allowlist but not in catalogue", name)
-		}
+			for name := range catalogueSet {
+				if !routerSet[name] {
+					t.Errorf("alias %q in catalogue but not in router default allowlist", name)
+				}
+			}
+			for name := range routerSet {
+				if !catalogueSet[name] {
+					t.Errorf("alias %q in router default allowlist but not in catalogue", name)
+				}
+			}
+		})
 	}
 }
