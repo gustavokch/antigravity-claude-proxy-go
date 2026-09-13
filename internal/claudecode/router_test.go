@@ -102,3 +102,26 @@ func TestRouter_UpdateAllowlist(t *testing.T) {
 		t.Errorf("expected 1 enabled model, got %d", len(models))
 	}
 }
+
+func TestDefaultAllowlist_Claude5Limits(t *testing.T) {
+	models := DefaultAllowlist()
+	byID := make(map[string]ModelConfig)
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+
+	targets := []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-fable-5-1"}
+	for _, id := range targets {
+		m, ok := byID[id]
+		if !ok {
+			t.Fatalf("expected model %s in DefaultAllowlist", id)
+		}
+		if m.ContextLen != 1000000 {
+			t.Errorf("model %s ContextLen = %d, want 1000000", id, m.ContextLen)
+		}
+		if m.MaxOutputTokens != 128000 {
+			t.Errorf("model %s MaxOutputTokens = %d, want 128000", id, m.MaxOutputTokens)
+		}
+	}
+}
+

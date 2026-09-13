@@ -126,6 +126,8 @@ var routingAliases = map[string]string{
 	"opus-5":                     "Claude Opus 4.6 (Thinking)",
 	"opus":                       "Claude Opus 4.6 (Thinking)",
 	"claude-fable-5":             "Claude Sonnet 4.6 (Thinking)",
+	"claude-fable-5-1":           "Claude Sonnet 4.6 (Thinking)",
+	"fable-5-1":                  "Claude Sonnet 4.6 (Thinking)",
 	"fable-5":                    "Claude Sonnet 4.6 (Thinking)",
 	"fable":                      "Claude Sonnet 4.6 (Thinking)",
 	"claude-haiku-4-5-20251001":  "Claude Sonnet 4.6 (Thinking)",

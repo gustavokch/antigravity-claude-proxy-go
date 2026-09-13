@@ -91,6 +91,13 @@ func DefaultClaudeCatalogue() []DiscoveredModel {
 			Family:       "fable",
 		},
 		{
+			ID:           "claude-fable-5-1",
+			DisplayName:  "Claude Fable 5.1",
+			Capabilities: []string{"thinking", "vision", "tools"},
+			Aliases:      []string{"claude-fable-5-1", "fable-5-1", "claude-fable-5.1", "fable-5.1"},
+			Family:       "fable",
+		},
+		{
 			ID:           "claude-opus-5",
 			DisplayName:  "Claude Opus 5",
 			Capabilities: []string{"thinking", "vision", "tools"},
