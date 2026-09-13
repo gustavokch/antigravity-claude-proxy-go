@@ -89,6 +89,7 @@ func TestClaudeCodeModelDiscovery(t *testing.T) {
 			"claude-sonnet-5", "sonnet-5",
 			"claude-opus-5", "opus-5",
 			"claude-fable-5", "fable-5",
+			"claude-fable-5-1", "fable-5-1",
 			"claude-haiku-4-5-20251001", "haiku-4-5", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4.5",
 			"claude-3-7-sonnet-20250219", "claude-3-7-sonnet", "sonnet-3-7", "claude-3.7-sonnet", "sonnet-3.7",
 			"claude-3-5-sonnet-20241022", "claude-3-5-sonnet", "sonnet-3-5", "claude-3.5-sonnet", "sonnet-3.5",
@@ -109,6 +110,17 @@ func TestClaudeCodeModelDiscovery(t *testing.T) {
 			}
 			if m["object"] != "model" {
 				t.Errorf("%s model %q: expected object=model, got %v", path, id, m["object"])
+			}
+		}
+
+		targets := []string{"claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-fable-5-1"}
+		for _, id := range targets {
+			m := byID[id]
+			if cw, _ := m["context_window"].(float64); int(cw) != 1000000 {
+				t.Errorf("%s expected context_window 1000000 for %s, got %v", path, id, m["context_window"])
+			}
+			if mo, _ := m["max_output_tokens"].(float64); int(mo) != 128000 {
+				t.Errorf("%s expected max_output_tokens 128000 for %s, got %v", path, id, m["max_output_tokens"])
 			}
 		}
 

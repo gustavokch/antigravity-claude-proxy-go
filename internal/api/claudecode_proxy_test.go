@@ -693,8 +693,8 @@ func TestClaudeCodeEntryMaxOutput(t *testing.T) {
 		}
 	})
 	t.Run("empty allowlist falls back to defaults", func(t *testing.T) {
-		if got := claudeCodeEntryMaxOutput(claudecode.Config{}, "claude-sonnet-5"); got != 8192 {
-			t.Errorf("got %d, want 8192 (default allowlist)", got)
+		if got := claudeCodeEntryMaxOutput(claudecode.Config{}, "claude-sonnet-5"); got != 128000 {
+			t.Errorf("got %d, want 128000 (default allowlist)", got)
 		}
 	})
 	t.Run("unknown model returns 0", func(t *testing.T) {
