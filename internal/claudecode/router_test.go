@@ -204,3 +204,23 @@ func TestExpandAliases(t *testing.T) {
 		})
 	}
 }
+
+func TestRouter_UpdateAllowlist_CommaSeparatedAlias(t *testing.T) {
+	// Shape produced by the WebUI importCCDefaults button before the fix:
+	// all aliases comma-joined into the Alias string, Aliases empty.
+	router := NewRouter([]ModelConfig{{
+		ID:      "claude-fable-5",
+		Alias:   "claude-fable-5, fable-5, fable, claude-fable",
+		Enabled: true,
+	}})
+	for _, req := range []string{"fable-5", "fable", "claude-fable", "FABLE-5"} {
+		got, ok := router.ResolveModel(req)
+		if !ok || got != "claude-fable-5" {
+			t.Errorf("ResolveModel(%q) = %q, %v; want claude-fable-5, true", req, got, ok)
+		}
+	}
+	// Dated suffix resolves through the per-alias prefix mapping.
+	if got, ok := router.ResolveModel("fable-5-20260101"); !ok || got != "claude-fable-5" {
+		t.Errorf("prefix ResolveModel(fable-5-20260101) = %q, %v; want claude-fable-5, true", got, ok)
+	}
+}
