@@ -125,8 +125,151 @@ func TestForwardToClaudeCode_RateLimitFailover(t *testing.T) {
 	}
 }
 
-func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {
+// When every account fails with an upstream 429, the client must see the
+// upstream rate_limit_error (HTTP 429), not a generic 503 that hides the
+// root cause. Regression test for the 2026-09-14 outage where an exhausted
+// account quota surfaced as "No Claude Code accounts available".
+func TestForwardToClaudeCode_Upstream429SurfacesRateLimitError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "17")
+		w.Header().Set("Anthropic-Ratelimit-Requests-Remaining", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Error"}}`))
+	}))
+	defer upstream.Close()
+
 	cfg := claudecode.Config{
+		Enabled: true,
+		BaseURL: upstream.URL,
+		Mode:    "pool",
+		Accounts: []claudecode.AccountConfig{
+			{ID: "acc1", Token: "sk-ant-test", Enabled: true},
+		},
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	reqBody := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	srv := &Server{}
+	srv.forwardToClaudeCode(w, req, cfg, []byte(reqBody), "claude-sonnet-5")
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 mirroring upstream, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "rate_limit_error") {
+		t.Errorf("expected rate_limit_error in body, got %s", w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "17" {
+		t.Errorf("expected Retry-After 17 forwarded, got %q", got)
+	}
+	if got := w.Header().Get("Anthropic-Ratelimit-Requests-Remaining"); got != "0" {
+		t.Errorf("expected Anthropic-Ratelimit-Requests-Remaining 0 forwarded, got %q", got)
+	}
+}
+
+// When the CCR path is enabled and every account fails with an upstream 429,
+// the wrapped sender error must carry the upstream rate_limit_error body so
+// the client sees the real cause instead of a bare "accounts unavailable".
+func TestForwardToClaudeCode_CCRUpstream429SurfacesBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Error"}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := claudecode.Config{
+		Enabled:   true,
+		BaseURL:   upstream.URL,
+		Mode:      "pool",
+		Accounts:  []claudecode.AccountConfig{{ID: "acc1", Token: "sk-ant-test", Enabled: true}},
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	store := ccr.NewCCRStore(1024 * 1024)
+	headroomEngine := headroom.NewEngine(headroom.Config{
+		Enabled: true,
+		CCR:     headroom.CCRConfig{Enabled: true},
+	}, nil, ccr.NewStage(store))
+
+	srv := &Server{headroom: headroomEngine, ccrStore: store}
+
+	reqBody := `{"model":"claude-sonnet-5","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	srv.forwardToClaudeCode(w, req, cfg, []byte(reqBody), "claude-sonnet-5")
+
+	if !strings.Contains(w.Body.String(), "rate_limit_error") {
+		t.Errorf("expected rate_limit_error in body, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// With one account, the 429 mirror path runs via the SelectAccount-error
+// branch. With exactly maxAttempts accounts, the failover loop consumes every
+// attempt and exits normally, covering the loop-exhaustion mirror branch
+// (the last 429 body must still reach the client).
+func TestForwardToClaudeCode_Upstream429LoopExhaustion(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "9")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Error"}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := claudecode.Config{
+		Enabled: true,
+		BaseURL: upstream.URL,
+		Mode:    "pool",
+		Accounts: []claudecode.AccountConfig{
+			{ID: "acc1", Token: "sk-ant-a", Enabled: true},
+			{ID: "acc2", Token: "sk-ant-b", Enabled: true},
+			{ID: "acc3", Token: "sk-ant-c", Enabled: true},
+		},
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	reqBody := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	srv := &Server{}
+	srv.forwardToClaudeCode(w, req, cfg, []byte(reqBody), "claude-sonnet-5")
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 mirroring upstream, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "rate_limit_error") {
+		t.Errorf("expected rate_limit_error in body, got %s", w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "9" {
+		t.Errorf("expected Retry-After 9 forwarded, got %q", got)
+	}
+}
+
+func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {	cfg := claudecode.Config{
 		Allowlist: claudecode.DefaultAllowlist(),
 	}
 
