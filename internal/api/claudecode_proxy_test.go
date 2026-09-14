@@ -125,8 +125,50 @@ func TestForwardToClaudeCode_RateLimitFailover(t *testing.T) {
 	}
 }
 
-func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {
+// When every account fails with an upstream 429, the client must see the
+// upstream rate_limit_error (HTTP 429), not a generic 503 that hides the
+// root cause. Regression test for the 2026-09-14 outage where an exhausted
+// account quota surfaced as "No Claude Code accounts available".
+func TestForwardToClaudeCode_Upstream429SurfacesRateLimitError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Error"}}`))
+	}))
+	defer upstream.Close()
+
 	cfg := claudecode.Config{
+		Enabled: true,
+		BaseURL: upstream.URL,
+		Mode:    "pool",
+		Accounts: []claudecode.AccountConfig{
+			{ID: "acc1", Token: "sk-ant-test", Enabled: true},
+		},
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+
+	ccPoolMu.Lock()
+	ccPoolInst = nil
+	ccHTTPClient = nil
+	ccPoolMu.Unlock()
+
+	reqBody := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	w := httptest.NewRecorder()
+
+	srv := &Server{}
+	srv.forwardToClaudeCode(w, req, cfg, []byte(reqBody), "claude-sonnet-5")
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 mirroring upstream, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "rate_limit_error") {
+		t.Errorf("expected rate_limit_error in body, got %s", w.Body.String())
+	}
+}
+
+func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {	cfg := claudecode.Config{
 		Allowlist: claudecode.DefaultAllowlist(),
 	}
 

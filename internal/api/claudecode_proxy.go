@@ -421,10 +421,15 @@ func (server *Server) forwardToClaudeCode(
 
 	const maxAttempts = 3
 	excluded := make(map[string]bool)
+	var last429Body []byte
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		acc, err := pool.SelectAccount(sessionKey, excluded)
 		if err != nil {
+			if last429Body != nil {
+				writeCCUpstream429(writer, last429Body)
+				return
+			}
 			writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "No Claude Code accounts available: "+err.Error())
 			return
 		}
@@ -477,12 +482,12 @@ func (server *Server) forwardToClaudeCode(
 		rl := claudecode.ExtractRateLimits(resp.Header)
 
 		if resp.StatusCode == http.StatusTooManyRequests {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			last429Body, _ = io.ReadAll(io.LimitReader(resp.Body, 8192))
 			resp.Body.Close()
 			pool.Release(acc.ID)
 			pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
 			if server.logger != nil {
-				server.logger.Warn("claudecode 429, failing over", "account", acc.ID)
+				server.logger.Warn("claudecode 429, failing over", "account", acc.ID, "body", strings.TrimSpace(string(last429Body)))
 			}
 			excluded[acc.ID] = true
 			continue
@@ -517,7 +522,22 @@ func (server *Server) forwardToClaudeCode(
 		return
 	}
 
+	if last429Body != nil {
+		writeCCUpstream429(writer, last429Body)
+		return
+	}
 	writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "All Claude Code accounts rate-limited or unavailable")
+}
+
+// writeCCUpstream429 mirrors an upstream rate-limit rejection to the client
+// instead of the generic 503, so callers (and humans) see the real cause.
+func writeCCUpstream429(w http.ResponseWriter, body []byte) {
+	if !json.Valid(body) || len(body) == 0 {
+		body = []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"upstream rate limit exceeded"}}`)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = w.Write(body)
 }
 
 // ccCopyResponseHeaders forwards relevant upstream headers to the downstream response.
