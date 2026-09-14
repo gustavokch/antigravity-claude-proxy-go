@@ -371,7 +371,7 @@ func (server *Server) forwardToClaudeCode(
 
 					if resp.StatusCode == http.StatusTooManyRequests {
 						last429Body, _ = io.ReadAll(io.LimitReader(resp.Body, 8192))
-						resp.Body.Close()
+						_ = resp.Body.Close()
 						pool.Release(acc.ID)
 						pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
 						if server.logger != nil {
@@ -492,7 +492,7 @@ func (server *Server) forwardToClaudeCode(
 		if resp.StatusCode == http.StatusTooManyRequests {
 			last429Body, _ = io.ReadAll(io.LimitReader(resp.Body, 8192))
 			last429Header = resp.Header.Clone()
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			pool.Release(acc.ID)
 			pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
 			if server.logger != nil {
