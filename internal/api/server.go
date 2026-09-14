@@ -1550,7 +1550,18 @@ func claudeCodeEntryMaxOutput(cfg claudecode.Config, canonicalID string) int {
 	}
 	for _, item := range allowlist {
 		if item.ID == canonicalID {
-			return item.MaxOutputTokens
+			if item.MaxOutputTokens > 0 {
+				return item.MaxOutputTokens
+			}
+			// Zero-limit entry (e.g. WebUI-imported row): inherit the
+			// built-in default for the same ID so the max_tokens policy
+			// still applies.
+			for _, d := range claudecode.DefaultAllowlist() {
+				if d.ID == canonicalID {
+					return d.MaxOutputTokens
+				}
+			}
+			return 0
 		}
 	}
 	return 0

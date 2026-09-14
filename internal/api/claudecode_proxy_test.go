@@ -704,6 +704,22 @@ func TestClaudeCodeEntryMaxOutput(t *testing.T) {
 	})
 }
 
+func TestClaudeCodeEntryMaxOutput_ZeroLimitFallsBackToDefault(t *testing.T) {
+	cfg := claudecode.Config{Allowlist: []claudecode.ModelConfig{{
+		ID:      "claude-opus-5",
+		Enabled: true,
+		// MaxOutputTokens: 0 — as produced by WebUI importCCDefaults
+	}}}
+	if got := claudeCodeEntryMaxOutput(cfg, "claude-opus-5"); got != 128000 {
+		t.Errorf("got %d, want 128000 (default fallback for zero limit)", got)
+	}
+
+	cfg.Allowlist[0].MaxOutputTokens = 64000
+	if got := claudeCodeEntryMaxOutput(cfg, "claude-opus-5"); got != 64000 {
+		t.Errorf("got %d, want 64000 (explicit cap preserved)", got)
+	}
+}
+
 func TestClaudeCodeForwarding_128KMaxTokens(t *testing.T) {
 	cfg := claudecode.Config{}
 	limit := claudeCodeEntryMaxOutput(cfg, "claude-opus-5")
