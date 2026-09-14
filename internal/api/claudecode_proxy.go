@@ -429,12 +429,13 @@ func (server *Server) forwardToClaudeCode(
 	const maxAttempts = 3
 	excluded := make(map[string]bool)
 	var last429Body []byte
+	var last429Header http.Header
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		acc, err := pool.SelectAccount(sessionKey, excluded)
 		if err != nil {
 			if last429Body != nil {
-				writeCCUpstream429(writer, last429Body)
+				writeCCUpstream429(writer, last429Body, last429Header)
 				return
 			}
 			writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "No Claude Code accounts available: "+err.Error())
@@ -490,6 +491,7 @@ func (server *Server) forwardToClaudeCode(
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			last429Body, _ = io.ReadAll(io.LimitReader(resp.Body, 8192))
+			last429Header = resp.Header.Clone()
 			resp.Body.Close()
 			pool.Release(acc.ID)
 			pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
@@ -530,7 +532,7 @@ func (server *Server) forwardToClaudeCode(
 	}
 
 	if last429Body != nil {
-		writeCCUpstream429(writer, last429Body)
+		writeCCUpstream429(writer, last429Body, last429Header)
 		return
 	}
 	writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "All Claude Code accounts rate-limited or unavailable")
@@ -538,9 +540,29 @@ func (server *Server) forwardToClaudeCode(
 
 // writeCCUpstream429 mirrors an upstream rate-limit rejection to the client
 // instead of the generic 503, so callers (and humans) see the real cause.
-func writeCCUpstream429(w http.ResponseWriter, body []byte) {
-	if !json.Valid(body) || len(body) == 0 {
+// Retry guidance (Retry-After, Anthropic-Ratelimit-*) is forwarded when the
+// upstream supplied it.
+func writeCCUpstream429(w http.ResponseWriter, body []byte, header http.Header) {
+	if !json.Valid(body) {
 		body = []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"upstream rate limit exceeded"}}`)
+	}
+	if header != nil {
+		for _, k := range []string{
+			"Retry-After",
+			"Anthropic-Ratelimit-Input-Tokens-Limit",
+			"Anthropic-Ratelimit-Input-Tokens-Remaining",
+			"Anthropic-Ratelimit-Input-Tokens-Reset",
+			"Anthropic-Ratelimit-Output-Tokens-Limit",
+			"Anthropic-Ratelimit-Output-Tokens-Remaining",
+			"Anthropic-Ratelimit-Output-Tokens-Reset",
+			"Anthropic-Ratelimit-Requests-Limit",
+			"Anthropic-Ratelimit-Requests-Remaining",
+			"Anthropic-Ratelimit-Requests-Reset",
+		} {
+			if v := header.Get(k); v != "" {
+				w.Header().Set(k, v)
+			}
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusTooManyRequests)

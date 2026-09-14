@@ -132,6 +132,8 @@ func TestForwardToClaudeCode_RateLimitFailover(t *testing.T) {
 func TestForwardToClaudeCode_Upstream429SurfacesRateLimitError(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "17")
+		w.Header().Set("Anthropic-Ratelimit-Requests-Remaining", "0")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Error"}}`))
 	}))
@@ -165,6 +167,12 @@ func TestForwardToClaudeCode_Upstream429SurfacesRateLimitError(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "rate_limit_error") {
 		t.Errorf("expected rate_limit_error in body, got %s", w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "17" {
+		t.Errorf("expected Retry-After 17 forwarded, got %q", got)
+	}
+	if got := w.Header().Get("Anthropic-Ratelimit-Requests-Remaining"); got != "0" {
+		t.Errorf("expected Anthropic-Ratelimit-Requests-Remaining 0 forwarded, got %q", got)
 	}
 }
 
