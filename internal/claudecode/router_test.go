@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -175,6 +176,30 @@ func TestDefaultAllowlist_Claude5AliasesMatchCatalogue(t *testing.T) {
 				if !catalogueSet[name] {
 					t.Errorf("alias %q in router default allowlist but not in catalogue", name)
 				}
+			}
+		})
+	}
+}
+
+
+func TestExpandAliases(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ModelConfig
+		want []string
+	}{
+		{"comma separated alias", ModelConfig{Alias: "a, b ,c"}, []string{"a", "b", "c"}},
+		{"single alias", ModelConfig{Alias: "a"}, []string{"a"}},
+		{"aliases list", ModelConfig{Aliases: []string{"x", "y"}}, []string{"x", "y"}},
+		{"both merged and deduped", ModelConfig{Alias: "a, b", Aliases: []string{"B", "c"}}, []string{"a", "b", "c"}},
+		{"empty", ModelConfig{}, nil},
+		{"whitespace only", ModelConfig{Alias: "  ,"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExpandAliases(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ExpandAliases(%+v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
 	}
