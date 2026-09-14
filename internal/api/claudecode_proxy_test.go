@@ -693,8 +693,8 @@ func TestClaudeCodeEntryMaxOutput(t *testing.T) {
 		}
 	})
 	t.Run("empty allowlist falls back to defaults", func(t *testing.T) {
-		if got := claudeCodeEntryMaxOutput(claudecode.Config{}, "claude-sonnet-5"); got != 8192 {
-			t.Errorf("got %d, want 8192 (default allowlist)", got)
+		if got := claudeCodeEntryMaxOutput(claudecode.Config{}, "claude-sonnet-5"); got != 128000 {
+			t.Errorf("got %d, want 128000 (default allowlist)", got)
 		}
 	})
 	t.Run("unknown model returns 0", func(t *testing.T) {
@@ -702,4 +702,67 @@ func TestClaudeCodeEntryMaxOutput(t *testing.T) {
 			t.Errorf("got %d, want 0", got)
 		}
 	})
+}
+
+func TestClaudeCodeEntryMaxOutput_ZeroLimitFallsBackToDefault(t *testing.T) {
+	cfg := claudecode.Config{Allowlist: []claudecode.ModelConfig{{
+		ID:      "claude-opus-5",
+		Enabled: true,
+		// MaxOutputTokens: 0 — as produced by WebUI importCCDefaults
+	}}}
+	if got := claudeCodeEntryMaxOutput(cfg, "claude-opus-5"); got != 128000 {
+		t.Errorf("got %d, want 128000 (default fallback for zero limit)", got)
+	}
+
+	cfg.Allowlist[0].MaxOutputTokens = 64000
+	if got := claudeCodeEntryMaxOutput(cfg, "claude-opus-5"); got != 64000 {
+		t.Errorf("got %d, want 64000 (explicit cap preserved)", got)
+	}
+}
+
+func TestClaudeCodeForwarding_128KMaxTokens(t *testing.T) {
+	cfg := claudecode.Config{}
+	limit := claudeCodeEntryMaxOutput(cfg, "claude-opus-5")
+	if limit != 128000 {
+		t.Fatalf("expected limit 128000, got %d", limit)
+	}
+
+	body := []byte(`{"model":"claude-opus-5","max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}`)
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+
+	out := applyMaxTokensPolicy(body, req, 0, limit)
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	if mt, _ := parsed["max_tokens"].(float64); int(mt) != 128000 {
+		t.Errorf("expected max_tokens 128000 preserved, got %v", parsed["max_tokens"])
+	}
+}
+
+func TestClaudeCodeForwarding_ClampsAbove128K(t *testing.T) {
+	limit := claudeCodeEntryMaxOutput(claudecode.Config{}, "claude-opus-5")
+	if limit != 128000 {
+		t.Fatalf("expected limit 128000, got %d", limit)
+	}
+
+	body := []byte(`{"model":"claude-opus-5","max_tokens":200000,"messages":[{"role":"user","content":"hi"}]}`)
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+
+	out := applyMaxTokensPolicy(body, req, 0, limit)
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	if mt, _ := parsed["max_tokens"].(float64); int(mt) != 128000 {
+		t.Errorf("expected clamp to 128000, got %v", parsed["max_tokens"])
+	}
 }
