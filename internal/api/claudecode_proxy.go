@@ -311,10 +311,14 @@ func (server *Server) forwardToClaudeCode(
 			sender := func(ctx context.Context, bodyBytes []byte) (*http.Response, error) {
 				const maxAttempts = 3
 				excluded := make(map[string]bool)
+				var last429Body []byte
 
 				for attempt := 0; attempt < maxAttempts; attempt++ {
 					acc, err := pool.SelectAccount(sessionKey, excluded)
 					if err != nil {
+						if last429Body != nil {
+							return nil, fmt.Errorf("upstream rate limit: %s", strings.TrimSpace(string(last429Body)))
+						}
 						return nil, fmt.Errorf("no Claude Code accounts available: %w", err)
 					}
 
@@ -366,12 +370,12 @@ func (server *Server) forwardToClaudeCode(
 					rl := claudecode.ExtractRateLimits(resp.Header)
 
 					if resp.StatusCode == http.StatusTooManyRequests {
-						_, _ = io.Copy(io.Discard, resp.Body)
+						last429Body, _ = io.ReadAll(io.LimitReader(resp.Body, 8192))
 						resp.Body.Close()
 						pool.Release(acc.ID)
 						pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
 						if server.logger != nil {
-							server.logger.Warn("claudecode 429, failing over", "account", acc.ID)
+							server.logger.Warn("claudecode 429, failing over", "account", acc.ID, "body", strings.TrimSpace(string(last429Body)))
 						}
 						excluded[acc.ID] = true
 						continue
@@ -405,6 +409,9 @@ func (server *Server) forwardToClaudeCode(
 					return resp, nil
 				}
 
+				if last429Body != nil {
+					return nil, fmt.Errorf("upstream rate limit: %s", strings.TrimSpace(string(last429Body)))
+				}
 				return nil, errors.New("all Claude Code accounts rate-limited or unavailable")
 			}
 
