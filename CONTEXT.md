@@ -58,6 +58,10 @@ _Avoid_: Internal model name, backend ID, Google model tag.
 A model entry actively exposed and supported in the live Cloud Code catalog.
 _Avoid_: Available model, active model, supported model.
 
+**Alias Set**:
+The collection of alternative names a client may use for one Selectable Model, all resolving to a single Upstream ID.
+_Avoid_: Model mapping, nickname, shorthand.
+
 ### Format & Reasoning Adaptation
 
 **Thinking Adaptation**:
