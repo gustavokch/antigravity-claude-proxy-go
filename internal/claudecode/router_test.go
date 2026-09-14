@@ -181,7 +181,6 @@ func TestDefaultAllowlist_Claude5AliasesMatchCatalogue(t *testing.T) {
 	}
 }
 
-
 func TestExpandAliases(t *testing.T) {
 	cases := []struct {
 		name string
@@ -197,9 +196,9 @@ func TestExpandAliases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ExpandAliases(tc.in)
+			got := tc.in.ExpandAliases()
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("ExpandAliases(%+v) = %v, want %v", tc.in, got, tc.want)
+				t.Errorf("tc.in.ExpandAliases(%+v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
 	}

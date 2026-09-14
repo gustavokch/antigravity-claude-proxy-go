@@ -169,7 +169,7 @@ func (r *Router) UpdateAllowlist(models []ModelConfig) {
 			seenPrefix[id] = true
 		}
 
-		for _, a := range ExpandAliases(m) {
+		for _, a := range m.ExpandAliases() {
 			alias := strings.ToLower(a)
 			r.aliases[alias] = id
 			if !seenPrefix[alias] {

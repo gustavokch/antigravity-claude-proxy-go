@@ -41,7 +41,7 @@ type ModelConfig struct {
 // Alias field split into individual entries, followed by the explicit
 // Aliases list. Entries are trimmed, empty entries dropped, and duplicates
 // removed case-insensitively (first occurrence wins, original case kept).
-func ExpandAliases(m ModelConfig) []string {
+func (m ModelConfig) ExpandAliases() []string {
 	seen := make(map[string]struct{})
 	var out []string
 	add := func(a string) {
