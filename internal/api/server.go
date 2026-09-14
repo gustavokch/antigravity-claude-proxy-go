@@ -462,19 +462,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			if maxOutput <= 0 {
 				maxOutput = 8192
 			}
-			aliases := item.Aliases
-			if item.Alias != "" {
-				hasAlias := false
-				for _, a := range aliases {
-					if a == item.Alias {
-						hasAlias = true
-						break
-					}
-				}
-				if !hasAlias {
-					aliases = append(aliases, item.Alias)
-				}
-			}
+			aliases := item.ExpandAliases()
 
 			if !seen[item.ID] {
 				entry := map[string]any{

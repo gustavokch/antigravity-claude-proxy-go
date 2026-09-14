@@ -1575,7 +1575,7 @@
                                             <td>
                                                 <input class="input input-xs bg-space-800 border-space-border text-purple-300 font-mono text-[11px] w-full focus:border-purple-400"
                                                     x-model="m.alias"
-                                                    @change="saveCCConfig()"
+                                                    @change="normalizeCCAliases(m); saveCCConfig()"
                                                     :aria-label="'Aliases for ' + m.id"
                                                     placeholder="e.g. sonnet, claude-3.7-sonnet">
                                             </td>

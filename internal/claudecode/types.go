@@ -37,6 +37,34 @@ type ModelConfig struct {
 	Enabled         bool     `json:"enabled"`
 }
 
+// ExpandAliases returns every alias configured on m: the comma-separated
+// Alias field split into individual entries, followed by the explicit
+// Aliases list. Entries are trimmed, empty entries dropped, and duplicates
+// removed case-insensitively (first occurrence wins, original case kept).
+func (m ModelConfig) ExpandAliases() []string {
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(a string) {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			return
+		}
+		key := strings.ToLower(a)
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, a)
+	}
+	for _, part := range strings.Split(m.Alias, ",") {
+		add(part)
+	}
+	for _, a := range m.Aliases {
+		add(a)
+	}
+	return out
+}
+
 // RoutingConfig holds resilience, backoff, and retry parameters.
 type RoutingConfig struct {
 	Retry429Max      int `json:"retry429Max,omitempty"`      // Default: 5

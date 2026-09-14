@@ -169,22 +169,12 @@ func (r *Router) UpdateAllowlist(models []ModelConfig) {
 			seenPrefix[id] = true
 		}
 
-		if m.Alias != "" {
-			alias := strings.ToLower(strings.TrimSpace(m.Alias))
+		for _, a := range m.ExpandAliases() {
+			alias := strings.ToLower(a)
 			r.aliases[alias] = id
 			if !seenPrefix[alias] {
 				prefixes = append(prefixes, prefixMapping{prefix: alias, canonicalID: id})
 				seenPrefix[alias] = true
-			}
-		}
-		for _, a := range m.Aliases {
-			alias := strings.ToLower(strings.TrimSpace(a))
-			if alias != "" {
-				r.aliases[alias] = id
-				if !seenPrefix[alias] {
-					prefixes = append(prefixes, prefixMapping{prefix: alias, canonicalID: id})
-					seenPrefix[alias] = true
-				}
 			}
 		}
 	}

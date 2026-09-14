@@ -233,7 +233,7 @@ func isClaudeModel(modelId string, allowlist []claudecode.ModelConfig) bool {
 		if strings.EqualFold(m.ID, modelId) {
 			return true
 		}
-		for _, a := range m.Aliases {
+		for _, a := range m.ExpandAliases() {
 			if strings.EqualFold(a, modelId) {
 				return true
 			}
@@ -375,12 +375,10 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 						modelContext[m.ID] = m.ContextLen
 					}
 				}
-				for _, alias := range m.Aliases {
-					if alias != "" {
-						modelSet[alias] = true
-						if m.ContextLen > 0 {
-							modelContext[alias] = m.ContextLen
-						}
+				for _, alias := range m.ExpandAliases() {
+					modelSet[alias] = true
+					if m.ContextLen > 0 {
+						modelContext[alias] = m.ContextLen
 					}
 				}
 			}

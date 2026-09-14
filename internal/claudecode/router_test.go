@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -177,5 +178,48 @@ func TestDefaultAllowlist_Claude5AliasesMatchCatalogue(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExpandAliases(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ModelConfig
+		want []string
+	}{
+		{"comma separated alias", ModelConfig{Alias: "a, b ,c"}, []string{"a", "b", "c"}},
+		{"single alias", ModelConfig{Alias: "a"}, []string{"a"}},
+		{"aliases list", ModelConfig{Aliases: []string{"x", "y"}}, []string{"x", "y"}},
+		{"both merged and deduped", ModelConfig{Alias: "a, b", Aliases: []string{"B", "c"}}, []string{"a", "b", "c"}},
+		{"empty", ModelConfig{}, nil},
+		{"whitespace only", ModelConfig{Alias: "  ,"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.in.ExpandAliases()
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("tc.in.ExpandAliases(%+v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRouter_UpdateAllowlist_CommaSeparatedAlias(t *testing.T) {
+	// Shape produced by the WebUI importCCDefaults button before the fix:
+	// all aliases comma-joined into the Alias string, Aliases empty.
+	router := NewRouter([]ModelConfig{{
+		ID:      "claude-fable-5",
+		Alias:   "claude-fable-5, fable-5, fable, claude-fable",
+		Enabled: true,
+	}})
+	for _, req := range []string{"fable-5", "fable", "claude-fable", "FABLE-5"} {
+		got, ok := router.ResolveModel(req)
+		if !ok || got != "claude-fable-5" {
+			t.Errorf("ResolveModel(%q) = %q, %v; want claude-fable-5, true", req, got, ok)
+		}
+	}
+	// Dated suffix resolves through the per-alias prefix mapping.
+	if got, ok := router.ResolveModel("fable-5-20260101"); !ok || got != "claude-fable-5" {
+		t.Errorf("prefix ResolveModel(fable-5-20260101) = %q, %v; want claude-fable-5, true", got, ok)
 	}
 }

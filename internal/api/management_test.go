@@ -1283,3 +1283,20 @@ func (m *emptyIDDiscoveryTestBackend) FetchAvailableModels(ctx context.Context) 
 func (m *emptyIDDiscoveryTestBackend) StreamGenerateContent(ctx context.Context, req map[string]any, cb func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
 	return cloudcode.Response{Body: []byte(`{}`)}, nil
 }
+
+func TestIsClaudeModel_CommaSeparatedAlias(t *testing.T) {
+	// Shape produced by the WebUI importCCDefaults button before the fix.
+	allowlist := []claudecode.ModelConfig{{
+		ID:    "custom-proxy-model",
+		Alias: "my-alias, my-other-alias",
+	}}
+	if !isClaudeModel("my-alias", allowlist) {
+		t.Error("expected first comma-separated alias entry to match")
+	}
+	if !isClaudeModel("my-other-alias", allowlist) {
+		t.Error("expected second comma-separated alias entry to match")
+	}
+	if isClaudeModel("unrelated-model", allowlist) {
+		t.Error("unexpected match for unrelated model")
+	}
+}
