@@ -126,7 +126,6 @@ func TestDefaultAllowlist_Claude5Limits(t *testing.T) {
 	}
 }
 
-
 func TestDefaultAllowlist_Claude5AliasesMatchCatalogue(t *testing.T) {
 	normalize := func(names ...string) map[string]bool {
 		set := make(map[string]bool, len(names))

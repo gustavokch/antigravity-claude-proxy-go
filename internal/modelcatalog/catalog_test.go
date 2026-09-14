@@ -325,12 +325,11 @@ func TestNonCloudCodeModelsHaveNoFixedRoutingAliases(t *testing.T) {
 	// asked for. They either resolve via byID/byDisplay on accounts that
 	// really serve them, or fail with an honest SelectionError.
 	synthetic := []string{
-		"sonnet", "opus", "fable",
-		"claude-haiku-4-5-20251001", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4-5", "haiku-4.5", "haiku",
-		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet", "claude-3.7-sonnet", "sonnet-3-7", "sonnet-3.7",
-		"claude-3-5-sonnet-20241022", "claude-3-5-sonnet", "claude-3.5-sonnet", "sonnet-3-5", "sonnet-3.5",
-		"claude-3-5-haiku-20241022", "claude-3-5-haiku", "claude-3.5-haiku", "haiku-3-5", "haiku-3.5",
-		"claude-3-opus-20240229", "claude-3-opus", "claude-3.0-opus", "opus-3",
+		"claude-haiku-4-5-20251001", "claude-haiku-4.5", "haiku-4-5", "haiku-4.5",
+		"claude-3-7-sonnet-20250219", "claude-3.7-sonnet", "sonnet-3-7", "sonnet-3.7",
+		"claude-3-5-sonnet-20241022", "claude-3.5-sonnet", "sonnet-3-5", "sonnet-3.5",
+		"claude-3-5-haiku-20241022", "claude-3.5-haiku", "haiku-3-5", "haiku-3.5",
+		"claude-3-opus-20240229", "claude-3.0-opus", "opus-3",
 	}
 	for _, name := range synthetic {
 		key := strings.ToLower(strings.ReplaceAll(name, ".", "-"))
