@@ -888,25 +888,29 @@ window.Components.models = () => ({
 
     importCCDefaults() {
         const defaults = [
-            { id: 'claude-fable-5', displayName: 'Claude Fable 5', alias: 'claude-fable-5, fable-5, fable, claude-fable', contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
-            { id: 'claude-fable-5-1', displayName: 'Claude Fable 5.1', alias: 'claude-fable-5-1, fable-5-1, claude-fable-5.1, fable-5.1', contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
-            { id: 'claude-opus-5', displayName: 'Claude Opus 5', alias: 'claude-opus-5, opus-5, opus, claude-5-opus', contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
-            { id: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', alias: 'claude-sonnet-5, sonnet-5, sonnet, claude-5-sonnet', contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
-            { id: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', alias: 'claude-haiku-4-5, claude-haiku-4.5, haiku', enabled: true },
-            { id: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', alias: 'claude-opus-4.8', enabled: true },
-            { id: 'claude-opus-4-7', displayName: 'Claude Opus 4.7', alias: 'claude-opus-4.7', enabled: true },
-            { id: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', alias: 'claude-sonnet-4.6', enabled: true },
-            { id: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', alias: 'claude-opus-4.6', enabled: true },
-            { id: 'claude-3-7-sonnet-20250219', displayName: 'Claude 3.7 Sonnet', alias: 'claude-3.7-sonnet, claude-3-7-sonnet, claude-3-7-sonnet-thinking', enabled: true },
-            { id: 'claude-3-5-sonnet-20241022', displayName: 'Claude 3.5 Sonnet v2', alias: 'claude-3.5-sonnet, claude-3-5-sonnet', enabled: true },
-            { id: 'claude-3-5-haiku-20241022', displayName: 'Claude 3.5 Haiku', alias: 'claude-3.5-haiku, claude-3-5-haiku', enabled: true },
-            { id: 'claude-3-opus-20240229', displayName: 'Claude 3 Opus', alias: 'claude-3-opus', enabled: true }
+            { id: 'claude-fable-5', displayName: 'Claude Fable 5', aliases: ['claude-fable-5', 'fable-5', 'fable', 'claude-fable'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
+            { id: 'claude-fable-5-1', displayName: 'Claude Fable 5.1', aliases: ['claude-fable-5-1', 'fable-5-1', 'claude-fable-5.1', 'fable-5.1'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
+            { id: 'claude-opus-5', displayName: 'Claude Opus 5', aliases: ['claude-opus-5', 'opus-5', 'opus', 'claude-5-opus'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
+            { id: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', aliases: ['claude-sonnet-5', 'sonnet-5', 'sonnet', 'claude-5-sonnet'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
+            { id: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', aliases: ['claude-haiku-4-5', 'claude-haiku-4.5', 'haiku'], enabled: true },
+            { id: 'claude-opus-4-8', displayName: 'Claude Opus 4.8', aliases: ['claude-opus-4.8'], enabled: true },
+            { id: 'claude-opus-4-7', displayName: 'Claude Opus 4.7', aliases: ['claude-opus-4.7'], enabled: true },
+            { id: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', aliases: ['claude-sonnet-4.6'], enabled: true },
+            { id: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', aliases: ['claude-opus-4.6'], enabled: true },
+            { id: 'claude-3-7-sonnet-20250219', displayName: 'Claude 3.7 Sonnet', aliases: ['claude-3.7-sonnet', 'claude-3-7-sonnet', 'claude-3-7-sonnet-thinking'], enabled: true },
+            { id: 'claude-3-5-sonnet-20241022', displayName: 'Claude 3.5 Sonnet v2', aliases: ['claude-3.5-sonnet', 'claude-3-5-sonnet'], enabled: true },
+            { id: 'claude-3-5-haiku-20241022', displayName: 'Claude 3.5 Haiku', aliases: ['claude-3.5-haiku', 'claude-3-5-haiku'], enabled: true },
+            { id: 'claude-3-opus-20240229', displayName: 'Claude 3 Opus', aliases: ['claude-3-opus'], enabled: true }
         ];
         if (!this.ccConfig.allowlist) this.ccConfig.allowlist = [];
         const existing = new Set(this.ccConfig.allowlist.map(m => m.id));
         defaults.forEach(d => {
             if (!existing.has(d.id)) {
-                this.ccConfig.allowlist.push(d);
+                this.ccConfig.allowlist.push({
+                    ...d,
+                    alias: d.aliases.join(', '),
+                    aliases: d.aliases
+                });
                 existing.add(d.id);
             }
         });
