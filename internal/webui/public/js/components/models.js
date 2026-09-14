@@ -840,6 +840,25 @@ window.Components.models = () => ({
         }
     },
 
+    normalizeCCAliases(item) {
+        const raw = (item && item.alias != null) ? String(item.alias) : '';
+        const seen = new Set();
+        const aliases = [];
+        raw.split(',').forEach(part => {
+            const trimmed = part.trim();
+            if (!trimmed) return;
+            const key = trimmed.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            aliases.push(trimmed);
+        });
+        if (item) {
+            item.aliases = aliases;
+            item.alias = aliases.join(', ');
+        }
+        return aliases;
+    },
+
     importSelectedClaudeCodeModels() {
         if (!this.ccConfig.allowlist) {
             this.ccConfig.allowlist = [];
@@ -850,13 +869,14 @@ window.Components.models = () => ({
 
         selected.forEach(m => {
             if (!existing.has(m.id)) {
-                this.ccConfig.allowlist.push({
+                const item = {
                     id: m.id,
                     alias: (m.aliases && m.aliases.length > 0) ? m.aliases.join(', ') : '',
                     displayName: m.display_name || '',
-                    enabled: true,
-                    aliases: m.aliases || []
-                });
+                    enabled: true
+                };
+                this.normalizeCCAliases(item);
+                this.ccConfig.allowlist.push(item);
                 existing.add(m.id);
                 addedCount++;
             }
@@ -874,12 +894,14 @@ window.Components.models = () => ({
     addCCAllowlistRow() {
         if (!this.ccNewModelId) return;
         if (!this.ccConfig.allowlist) this.ccConfig.allowlist = [];
-        this.ccConfig.allowlist.push({
+        const item = {
             id: this.ccNewModelId,
             alias: this.ccNewModelAlias || '',
             displayName: this.ccNewModelDisplay || '',
             enabled: true
-        });
+        };
+        this.normalizeCCAliases(item);
+        this.ccConfig.allowlist.push(item);
         this.ccNewModelId = '';
         this.ccNewModelAlias = '';
         this.ccNewModelDisplay = '';
@@ -906,11 +928,12 @@ window.Components.models = () => ({
         const existing = new Set(this.ccConfig.allowlist.map(m => m.id));
         defaults.forEach(d => {
             if (!existing.has(d.id)) {
-                this.ccConfig.allowlist.push({
+                const item = {
                     ...d,
-                    alias: d.aliases.join(', '),
-                    aliases: d.aliases
-                });
+                    alias: d.aliases.join(', ')
+                };
+                this.normalizeCCAliases(item);
+                this.ccConfig.allowlist.push(item);
                 existing.add(d.id);
             }
         });
