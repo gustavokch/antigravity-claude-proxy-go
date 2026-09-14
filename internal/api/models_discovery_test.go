@@ -200,6 +200,64 @@ func TestClaudeCodeCustomAllowlistDiscovery(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeModels_CommaSeparatedAliasDiscovery(t *testing.T) {
+	origCfg := config.Get()
+	defer config.SetForTest(origCfg)
+
+	testCfg := origCfg
+	testCfg.ClaudeCode.Enabled = true
+	testCfg.ClaudeCode.Allowlist = []claudecode.ModelConfig{
+		{
+			ID:              "claude-fable-5",
+			Alias:           "claude-fable-5, fable-5, fable, claude-fable",
+			DisplayName:     "Claude Fable 5",
+			ContextLen:      200000,
+			MaxOutputTokens: 8192,
+			Thinking:        true,
+			Enabled:         true,
+		},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{
+		backend: &discoveryTestBackend{},
+		logger:  slog.Default(),
+		now:     time.Now,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+
+	server.models(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	byID := make(map[string]map[string]any)
+	for _, m := range resp.Data {
+		if id, ok := m["id"].(string); ok {
+			byID[id] = m
+			if strings.Contains(id, ",") {
+				t.Errorf("advertised model id %q contains comma", id)
+			}
+		}
+	}
+
+	for _, expectedID := range []string{"claude-fable-5", "fable-5", "fable", "claude-fable"} {
+		if _, ok := byID[expectedID]; !ok {
+			t.Errorf("expected model %q in response", expectedID)
+		}
+	}
+}
+
 type geminiDiscoveryTestBackend struct{}
 
 func (m *geminiDiscoveryTestBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
