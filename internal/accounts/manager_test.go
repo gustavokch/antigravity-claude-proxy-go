@@ -498,3 +498,31 @@ func TestAvailable_EmptyAccounts(t *testing.T) {
 		t.Errorf("expected 0, got %d", count)
 	}
 }
+
+func TestMarkRateLimited_EmptyModelWritesListingNamespace(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	account := testAccount("listing-429@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "" is the deliberate model-listing namespace written by rotateForError
+	// (dispatcher.go:257 -> MarkRateLimited(account, "", wait)). Dropping the
+	// write leaves the account selectable after a listing 429.
+	manager.MarkRateLimited(account, "", time.Hour)
+	if limit := account.ModelRateLimits[""]; limit == nil || !limit.IsRateLimited {
+		t.Fatalf("MarkRateLimited(account, \"\") must write the listing namespace: %#v", account.ModelRateLimits[""])
+	}
+
+	// A non-blank string that normalizes to blank is a malformed model, not
+	// the listing namespace, and must still be rejected.
+	manager.MarkRateLimited(account, "[1m]", time.Hour)
+	manager.MarkRateLimited(account, "   ", time.Hour)
+	for key := range account.ModelRateLimits {
+		if key != "" {
+			t.Fatalf("unexpected key %q written by a blank-normalizing model", key)
+		}
+	}
+}

@@ -438,13 +438,18 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 	if wait <= 0 {
 		wait = 10 * time.Second
 	}
-	// Guard on the normalized key: a model string that strips to empty
-	// (suffix only, whitespace) must not write into the empty-model
-	// namespace that model listing uses deliberately.
-	if key := rateLimitModelKey(model); key != "" {
-		account.ModelRateLimits[key] = &RateLimit{
-			IsRateLimited: true, ResetTimeMS: manager.now().Add(wait).UnixMilli(), ActualResetMS: wait.Milliseconds(),
-		}
+	// Guard on the raw input, not the normalized key: a non-blank model
+	// string that strips to empty (suffix only, e.g. "[1m]") must not write
+	// into the empty-model namespace that model listing uses deliberately.
+	// An actual "" caller means the listing namespace and must be recorded.
+	key := rateLimitModelKey(model)
+	if key == "" && strings.TrimSpace(model) != "" {
+		account.ConsecutiveFailure++
+		manager.recordRateLimitLocked(account.Email)
+		return
+	}
+	account.ModelRateLimits[key] = &RateLimit{
+		IsRateLimited: true, ResetTimeMS: manager.now().Add(wait).UnixMilli(), ActualResetMS: wait.Milliseconds(),
 	}
 	account.ConsecutiveFailure++
 	manager.recordRateLimitLocked(account.Email)
