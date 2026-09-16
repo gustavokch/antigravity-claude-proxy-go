@@ -28,7 +28,7 @@ window.Components.dashboard = () => ({
     showClearMenu: false,
     clearConfirm: {
         open: false,
-        scope: null,       // 'model' | 'view' | 'all'
+        scope: null,       // 'model' | 'all'
         family: null,
         model: null,
         includeHeadroom: false,
@@ -435,22 +435,6 @@ window.Components.dashboard = () => ({
         });
     },
 
-    /** Confirm dialog: clear every model currently listed in the table */
-    requestClearView() {
-        const t = this.$store.global.t.bind(this.$store.global);
-        const rows = (this.modelPerformance && this.modelPerformance.rows) || [];
-        const requests = rows.reduce((sum, row) => sum + (row.requests || 0), 0);
-        this._openClearConfirm({
-            scope: 'view',
-            includeHeadroom: false,
-            title: t('clearViewTitle', { count: rows.length }),
-            body: t('clearModelBody', {
-                requests: requests.toLocaleString(),
-                buckets: Object.keys(this.historyData || {}).length
-            })
-        });
-    },
-
     /** Confirm dialog: clear all usage data (optionally + compression counters) */
     requestClearAll(includeHeadroom) {
         const t = this.$store.global.t.bind(this.$store.global);
@@ -480,12 +464,6 @@ window.Components.dashboard = () => ({
             if (confirm.scope === 'model') {
                 const cleared = await store.clearModelStats(confirm.family, confirm.model);
                 discarded = cleared.models;
-            } else if (confirm.scope === 'view') {
-                const rows = (this.modelPerformance && this.modelPerformance.rows) || [];
-                for (const row of rows) {
-                    const cleared = await store.clearModelStats(row.family, row.modelName);
-                    discarded += cleared.models;
-                }
             } else {
                 const cleared = await store.clearAllStats(confirm.includeHeadroom);
                 discarded = cleared.models;

@@ -431,8 +431,6 @@
                             x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95"
                             class="absolute left-0 mt-1 w-60 bg-space-900 border border-space-border rounded-lg shadow-xl z-50 py-1"
                             style="display: none;">
-                            <button @click="requestClearView()" class="filter-control-item text-gray-400"
-                                x-text="$store.global.t('clearScopeView')">This view's models</button>
                             <button @click="requestClearAll(false)" class="filter-control-item text-gray-400"
                                 x-text="$store.global.t('clearScopeAll')">All usage data</button>
                             <button @click="requestClearAll(true)" class="filter-control-item text-amber-400"
