@@ -647,3 +647,32 @@ func TestCleanModelIDAndName_Strips1mSuffix(t *testing.T) {
 		}
 	}
 }
+
+// TestCatalogByIDKeysAreLowercase pins the precondition the rate-limit
+// normalization relies on: accounts.rateLimitModelKey lowercases on every
+// read and write, so an uppercase catalog ID would make persisted limits
+// invisible and duplicate dashboard rows. Parse already lowercases upstream
+// IDs (byID[strings.ToLower(id)]); this guards the invariant against a
+// future writer that skips it.
+func TestCatalogByIDKeysAreLowercase(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-medium",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":["gemini-3.8-flash-medium","Gemini-3.1-Pro-High"]}]}],
+		"models":{
+			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)"},
+			"Gemini-3.1-Pro-High":{"displayName":"Gemini 3.1 Pro (High)"}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key := range catalog.byID {
+		if key != strings.ToLower(key) {
+			t.Fatalf("byID key %q is not lowercase", key)
+		}
+	}
+	if _, ok := catalog.byID["gemini-3.1-pro-high"]; !ok {
+		t.Fatal("uppercase upstream ID was not lowercased into byID")
+	}
+}
