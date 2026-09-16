@@ -192,6 +192,39 @@ func TestMarkFailure_SuffixOnlyModelDoesNotCreateEmptyKey(t *testing.T) {
 	}
 }
 
+// TestRateLimitKeyNamespaceIsSuffixAndCaseInsensitive pins the contract that
+// ModelRateLimits has a single canonical key namespace: writers and readers
+// agree regardless of "[1m]" suffix, case, or whitespace in the argument.
+func TestRateLimitKeyNamespaceIsSuffixAndCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	account := testAccount("namespace@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager.MarkRateLimited(account, "gemini-3.8-flash-medium", time.Hour)
+
+	if got := manager.Available("gemini-3.8-flash-medium[1m]"); got != 0 {
+		t.Fatalf("suffixed lookup should see the limit: Available=%d", got)
+	}
+	if got := manager.Available("GEMINI-3.8-Flash-Medium[1M]"); got != 0 {
+		t.Fatalf("case/suffix-insensitive lookup should see the limit: Available=%d", got)
+	}
+	if got := manager.MinWait("gemini-3.8-flash-medium[1m]"); got <= 0 {
+		t.Fatalf("MinWait should report the remaining wait: %v", got)
+	}
+	if got := manager.Available("gemini-3.8-flash-low[1m]"); got != 1 {
+		t.Fatalf("a different model must be unaffected: Available=%d", got)
+	}
+
+	manager.MarkSuccess(account, "gemini-3.8-flash-medium[1m]")
+	if got := manager.Available("gemini-3.8-flash-medium"); got != 1 {
+		t.Fatalf("success via suffixed string should clear the limit: Available=%d", got)
+	}
+}
+
 func TestAccountCloningAndConcurrency(t *testing.T) {
 	t.Parallel()
 	account := testAccount("concurrent@example.com")
