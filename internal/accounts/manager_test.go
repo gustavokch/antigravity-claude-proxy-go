@@ -526,3 +526,26 @@ func TestMarkRateLimited_EmptyModelWritesListingNamespace(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkSuccess_EmptyModelClearsListingNamespace(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	account := testAccount("listing-clear@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager.MarkRateLimited(account, "", time.Hour)
+	manager.MarkSuccess(account, "")
+	if account.ModelRateLimits[""] != nil {
+		t.Fatalf("MarkSuccess(account, \"\") must clear the listing namespace: %#v", account.ModelRateLimits[""])
+	}
+
+	// A blank-normalizing non-blank string must not touch the namespace.
+	manager.MarkRateLimited(account, "", time.Hour)
+	manager.MarkSuccess(account, "[1m]")
+	if account.ModelRateLimits[""] == nil {
+		t.Fatal("MarkSuccess(account, \"[1m]\") cleared the listing namespace")
+	}
+}

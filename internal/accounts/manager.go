@@ -485,9 +485,10 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	account.ConsecutiveFailure = 0
-	// Skip the delete when the key is empty: a suffix-only success must not
-	// clear a legitimate empty-model entry.
-	if key := rateLimitModelKey(model); key != "" {
+	// Delete the namespace only for a real key or an actual "" caller (the
+	// listing namespace): a suffix-only success like "[1m]" normalizes to ""
+	// and must not clear a legitimate empty-model entry.
+	if key := rateLimitModelKey(model); key != "" || strings.TrimSpace(model) == "" {
 		delete(account.ModelRateLimits, key)
 	}
 	manager.recordSuccessLocked(account.Email)
