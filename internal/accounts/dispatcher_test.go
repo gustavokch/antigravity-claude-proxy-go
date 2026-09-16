@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -392,5 +393,62 @@ func TestStreamGenerateContent_ExecutionMetadataUpdatedOnFailover(t *testing.T) 
 	}
 	if meta.ProjectID != "test-proj-456" {
 		t.Errorf("meta.ProjectID = %q, want %q", meta.ProjectID, "test-proj-456")
+	}
+}
+
+// alwaysRateLimitedModelsClient fails every FetchAvailableModels call with a
+// 429 HTTPError and counts the calls so tests can prove the dispatcher
+// rotated across accounts instead of retrying the same one.
+type alwaysRateLimitedModelsClient struct {
+	calls atomic.Int32
+}
+
+func (c *alwaysRateLimitedModelsClient) LoadCodeAssist(ctx context.Context, project string) (cloudcode.Response, error) {
+	return cloudcode.Response{Body: []byte(`{"cloudaicompanionProject":{"id":"project"}}`)}, nil
+}
+
+func (c *alwaysRateLimitedModelsClient) FetchAvailableModels(ctx context.Context, project string) (cloudcode.Response, error) {
+	c.calls.Add(1)
+	return cloudcode.Response{}, &cloudcode.HTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Status:     "429 Too Many Requests",
+		Body:       `{"error":{"code":429,"message":"quota exceeded","status":"RESOURCE_EXHAUSTED"}}`,
+	}
+}
+
+func (c *alwaysRateLimitedModelsClient) StreamGenerateContent(ctx context.Context, request any, options cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	return cloudcode.Response{}, nil
+}
+
+func TestFetchAvailableModels_RateLimitedAccountRotates(t *testing.T) {
+	client := &alwaysRateLimitedModelsClient{}
+	manager, err := New(Options{Accounts: []*Account{
+		{Email: "first@example.com", Enabled: true},
+		{Email: "second@example.com", Enabled: true},
+	}, Strategy: StrategySticky})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return client },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = dispatcher.FetchAvailableModels(context.Background())
+	if err == nil {
+		t.Fatal("want error after both accounts 429")
+	}
+	// The first account's 429 must mark it so the retry goes to the second;
+	// pre-fix, the write is dropped and the loop retries the same account
+	// (or, with maxRetries < Count()+1, never reaches the second).
+	if got := client.calls.Load(); got < 2 {
+		t.Fatalf("upstream calls = %d, want >= 2 (rotation across accounts)", got)
+	}
+	if limit := manager.accounts[0].ModelRateLimits[""]; limit == nil {
+		t.Fatal("the 429 on the listing path must write the empty-model namespace")
 	}
 }
