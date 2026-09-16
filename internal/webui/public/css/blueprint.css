@@ -390,10 +390,12 @@ body {
 }
 
 .bp-gauge > div {
+  width: 100%;
   height: 100%;
   border-radius: 999px;
   background: var(--bp-trace);
-  transition: width 0.4s ease;
+  /* clip-path animates on the paint step only — no layout thrash */
+  transition: clip-path 0.4s ease;
 }
 
 /* Performance table: quiet rows, hairline rules, row-scoped clear action */
