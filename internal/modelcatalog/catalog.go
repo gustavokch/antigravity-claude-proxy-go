@@ -225,9 +225,11 @@ func (catalog *Catalog) Selectable() []Model {
 }
 
 // Strip1mSuffix drops the "[1m]" context-window marker clients append to a
-// model ID. Exported because the catalog ID namespace (which rate limits are
-// keyed by) never carries the marker, so any lookup with a client-facing
-// string must strip it first.
+// model ID. Exported because the rate-limit map's key namespace (see
+// accounts.rateLimitModelKey) never carries the marker, so rate-limit
+// lookups with a client-facing string must strip it first. Note this covers
+// only the rate-limit namespace; quota and threshold lookups remain
+// catalog-ID-only.
 func Strip1mSuffix(s string) string {
 	trimmed := strings.TrimSpace(s)
 	lower := strings.ToLower(trimmed)

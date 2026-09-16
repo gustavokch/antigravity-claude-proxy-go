@@ -269,6 +269,17 @@ func TestMessages_ClassifierFallback_RateLimitedSuffixedModelStubs(t *testing.T)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
+	var stub struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stub); err != nil {
+		t.Fatalf("stub response is not valid JSON: %v; body: %s", err, rec.Body.String())
+	}
+	if len(stub.Content) != 1 || stub.Content[0].Text != "<severity>0</severity>" {
+		t.Fatalf("stub content = %+v, want a single block with <severity>0</severity>", stub.Content)
+	}
 }
 
 func TestMessages_ClassifierFallback_NilAccountManagerDispatchesNormally(t *testing.T) {

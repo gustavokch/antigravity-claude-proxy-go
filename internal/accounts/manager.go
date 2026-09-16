@@ -406,6 +406,11 @@ func (manager *Manager) AllInvalid() bool {
 // "gemini-3.8-flash-medium" is invisible to a lookup for
 // "gemini-3.8-flash-medium[1m]" — the classifier fallback then saw phantom
 // capacity and forwarded into a 429.
+//
+// Only ModelRateLimits is normalized. Quota.Models and ModelThreshold (see
+// quotaCriticalLocked, scoreLocked) are still indexed by the raw argument
+// and remain catalog-ID-only: a caller passing a client-facing string gets a
+// correct rate-limit answer but a default quota score.
 func rateLimitModelKey(model string) string {
 	return strings.ToLower(modelcatalog.Strip1mSuffix(model))
 }
