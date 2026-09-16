@@ -371,6 +371,32 @@ func TestTracker_ResetModelUnknownModel(t *testing.T) {
 	}
 }
 
+// A non-map family value cannot be produced by Track or survive normalizeHistory
+// today; this pins ResetModel against a future writer or hand-edited stats file.
+func TestTracker_ResetModelSkipsNonMapFamilyValue(t *testing.T) {
+	tracker, err := NewTracker("")
+	if err != nil {
+		t.Fatalf("NewTracker failed: %v", err)
+	}
+	tracker.Track("claude-opus-4-6")
+
+	tracker.mu.Lock()
+	for _, hourMap := range tracker.history {
+		hourMap["legacy"] = 42 // int where a family map is expected
+	}
+	tracker.mu.Unlock()
+
+	requests, _, err := tracker.ResetModel("claude", "opus-4-6")
+	if err != nil {
+		t.Fatalf("ResetModel failed: %v", err)
+	}
+	if requests != 1 {
+		t.Errorf("Expected 1 request discarded, got %d", requests)
+	}
+	// Mutex must be usable afterwards — this blocks forever if a panic leaked it.
+	tracker.Track("gemini-2.5-flash")
+}
+
 func TestTracker_ResetAllHonorsHeadroomFlag(t *testing.T) {
 	tracker, err := NewTracker("")
 	if err != nil {

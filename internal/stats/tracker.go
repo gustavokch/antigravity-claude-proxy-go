@@ -323,7 +323,17 @@ func (t *Tracker) ResetModel(family, model string) (requests int, buckets int, e
 		return 0, 0, nil
 	}
 
+	requests, buckets = t.removeModelFromHistory(family, model)
+	return requests, buckets, t.Save()
+}
+
+// removeModelFromHistory takes t.mu itself; the deferred Unlock keeps the
+// mutex recoverable if anything inside panics. Save() must be called by the
+// caller after this returns, because Save takes t.mu too.
+func (t *Tracker) removeModelFromHistory(family, model string) (requests int, buckets int) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	for hourKey, hourMap := range t.history {
 		famMap, ok := hourMap[family].(map[string]any)
 		if !ok {
@@ -358,9 +368,14 @@ func (t *Tracker) ResetModel(family, model string) (requests int, buckets int, e
 
 		total := 0
 		for k, v := range hourMap {
-			if k != "_total" {
-				total += requestsOf(v.(map[string]any)["_subtotal"])
+			if k == "_total" {
+				continue
 			}
+			fam, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			total += requestsOf(fam["_subtotal"])
 		}
 		hourMap["_total"] = total
 
@@ -376,9 +391,8 @@ func (t *Tracker) ResetModel(family, model string) (requests int, buckets int, e
 		}
 		t.dirty = true
 	}
-	t.mu.Unlock()
 
-	return requests, buckets, t.Save()
+	return requests, buckets
 }
 
 // GetHistory returns a deep clone of the tracked usage history.
