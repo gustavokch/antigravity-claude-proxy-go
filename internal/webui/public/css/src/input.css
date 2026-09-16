@@ -3,31 +3,34 @@
 @tailwind utilities;
 
 :root {
-  /* === Background Layers (Flat Dark Palette) === */
-  --color-space-950: #09090b;
-  --color-space-900: #121215;
-  --color-space-850: #151518;
-  --color-space-800: #18181b;
-  --color-space-border: #27272a;
-  --color-space-border-hover: #3f3f46;
+  /* === Blueprint palette (dashboard revamp) ===
+     Discipline: signal (amber) = warnings/destructive only;
+     trace (teal) = single data hue; everything else is structure. */
+  --color-space-950: #0e1b2a; /* ink: page ground */
+  --color-space-900: #152740; /* sheet: panels, navbar */
+  --color-space-850: #17283f;
+  --color-space-800: #1a2e4a; /* raised: inputs, hover */
+  --color-space-700: #22395c;
+  --color-space-border: #2a4566; /* rule: hairlines, dividers */
+  --color-space-border-hover: #3d6088;
 
-  /* === Restrained Solid Accents (No Neon/Glows) === */
-  --color-neon-purple: #3b82f6; /* Flat Primary Blue */
-  --color-neon-green: #10b981;  /* Flat Emerald */
-  --color-neon-cyan: #0ea5e9;   /* Flat Sky Blue */
-  --color-neon-yellow: #f59e0b; /* Flat Amber */
-  --color-neon-red: #ef4444;    /* Flat Crimson */
+  /* === Structural accents === */
+  --color-neon-purple: #8fb8dc; /* steel: primary structure */
+  --color-neon-green: #5ec8d8;  /* trace: success/live */
+  --color-neon-cyan: #5ec8d8;   /* trace: data */
+  --color-neon-yellow: #f0a032; /* signal: warnings */
+  --color-neon-red: #e0705c;    /* alert: errors */
 
   /* === Soft Neutral Accents === */
-  --color-neon-purple-soft: #2563eb;
-  --color-neon-green-soft: #059669;
-  --color-neon-cyan-soft: #0284c7;
+  --color-neon-purple-soft: #7ba7cf;
+  --color-neon-green-soft: #4fb3c4;
+  --color-neon-cyan-soft: #4fb3c4;
 
   /* === Text Hierarchy === */
-  --color-text-primary: #f4f4f5;   /* Title / High Contrast */
-  --color-text-secondary: #d4d4d8; /* Body Content */
-  --color-text-tertiary: #a1a1aa;  /* Metadata / Labels */
-  --color-text-quaternary: #71717a;/* Subtle / Disabled */
+  --color-text-primary: #e8f0f7;   /* chalk: titles, key figures */
+  --color-text-secondary: #b9c9da; /* body */
+  --color-text-tertiary: #9fb4c9;  /* metadata */
+  --color-text-quaternary: #7c97b4;/* fade: labels */
 
   /* === Legacy Aliases === */
   --color-text-main: var(--color-text-secondary);
@@ -36,27 +39,29 @@
   --color-text-bright: var(--color-text-primary);
 
   /* Status Fills */
-  --color-green-400: #34d399;
-  --color-yellow-400: #fbbf24;
-  --color-red-400: #f87171;
+  --color-green-400: #5ec8d8;
+  --color-yellow-400: #f0a032;
+  --color-red-400: #e0705c;
 
-  /* Chart Colors (Flat Distinct Palette) */
-  --color-chart-1: #3b82f6;
-  --color-chart-2: #10b981;
-  --color-chart-3: #8b5cf6;
-  --color-chart-4: #f59e0b;
-  --color-chart-5: #0ea5e9;
-  --color-chart-6: #ec4899;
-  --color-chart-7: #6366f1;
-  --color-chart-8: #14b8a6;
-  --color-chart-9: #f97316;
-  --color-chart-10: #a855f7;
-  --color-chart-11: #ef4444;
-  --color-chart-12: #84cc16;
-  --color-chart-13: #06b6d4;
-  --color-chart-14: #64748b;
-  --color-chart-15: #d97706;
-  --color-chart-16: #475569;
+  /* Chart Colors: single trace hue with lightness ramp; families
+     distinguished by dash pattern, not color. All 16 slots stay in-hue
+     because the ramp cycles on multi-model charts. */
+  --color-chart-1: #5ec8d8;
+  --color-chart-2: #4fb3c4;
+  --color-chart-3: #8fb8dc;
+  --color-chart-4: #7c97b4;
+  --color-chart-5: #3e97a8;
+  --color-chart-6: #9fb4c9;
+  --color-chart-7: #2f7e8f;
+  --color-chart-8: #b9c9da;
+  --color-chart-9: #6fb7c5;
+  --color-chart-10: #a5dbe4;
+  --color-chart-11: #627e9b;
+  --color-chart-12: #3d6088;
+  --color-chart-13: #86accc;
+  --color-chart-14: #57aebe;
+  --color-chart-15: #76a9cf;
+  --color-chart-16: #22395c;
 }
 
 [x-cloak] {

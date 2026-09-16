@@ -40,8 +40,18 @@ const MODEL_COLORS = Array.from({ length: 16 }, (_, i) =>
   getThemeColor(`--color-chart-${i + 1}`)
 );
 
+// Blueprint discipline: one trace hue on the trend chart; families are
+// split by dash pattern (solid = claude, dashed = gemini, dotted = other),
+// never by color.
+const TRACE_COLOR = () => getThemeColor("--color-neon-green") || "#5ec8d8";
+const FAMILY_DASH = {
+  claude: [],
+  gemini: [6, 4],
+  other: [2, 3],
+};
+
 // Export constants for filter module
-window.DashboardConstants = { FAMILY_COLORS, MODEL_COLORS };
+window.DashboardConstants = { FAMILY_COLORS, MODEL_COLORS, FAMILY_DASH, TRACE_COLOR };
 
 // Module-level lock to prevent concurrent chart updates (fixes race condition)
 let _trendChartUpdateLock = false;
@@ -86,9 +96,10 @@ function isCanvasReady(canvas) {
  * @param {Array} data - Data points
  * @param {string} color - Line color
  * @param {HTMLCanvasElement} canvas - Canvas element
+ * @param {Array} [dash] - borderDash pattern (empty = solid)
  * @returns {object} Chart.js dataset configuration
  */
-window.DashboardCharts.createDataset = function (label, data, color, canvas) {
+window.DashboardCharts.createDataset = function (label, data, color, canvas, dash) {
   let gradient;
 
   try {
@@ -119,13 +130,14 @@ window.DashboardCharts.createDataset = function (label, data, color, canvas) {
     data,
     borderColor: color,
     backgroundColor: backgroundColor,
-    borderWidth: 2.5,
+    borderWidth: 1.5,
+    borderDash: dash || [],
     tension: 0.35,
     fill: true,
     pointRadius: 2.5,
     pointHoverRadius: 6,
     pointBackgroundColor: color,
-    pointBorderColor: "rgba(9, 9, 11, 0.8)",
+    pointBorderColor: "rgba(14, 27, 42, 0.9)",
     pointBorderWidth: 1.5,
   };
 };
@@ -213,10 +225,12 @@ window.DashboardCharts.updateCharts = function (component) {
     ? Math.round(totalHealthSum / totalModelCount)
     : 0;
 
+  // Quota gauge segments: active quota uses the trace hue per family
+  // (claude/gemini distinguishable), depleted quota fades the same hue out.
   const familyColors = {
-    claude: getThemeColor("--color-neon-purple") || "#3b82f6",
-    gemini: getThemeColor("--color-neon-green") || "#10b981",
-    unknown: getThemeColor("--color-neon-cyan") || "#0ea5e9",
+    claude: TRACE_COLOR(),
+    gemini: getThemeColor("--color-neon-purple") || "#8fb8dc",
+    unknown: getThemeColor("--color-text-tertiary") || "#9fb4c9",
   };
 
   const data = [];
@@ -261,9 +275,8 @@ window.DashboardCharts.updateCharts = function (component) {
 
     // Inactive segment
     data.push(inactiveVal);
-    // Use higher opacity (0.6) to ensure the ring color matches the legend more closely
-    // while still differentiating "depleted" from "active" (1.0 opacity)
-    colors.push(window.DashboardCharts.hexToRgba(familyColor, 0.6));
+    // Depleted quota fades the family hue almost into the sheet ground.
+    colors.push(window.DashboardCharts.hexToRgba(familyColor, 0.25));
     labels.push(depletedLabel);
   });
 
@@ -461,9 +474,8 @@ window.DashboardCharts.updateTrendChart = function (component) {
       });
     });
 
-    // Build datasets for families
+    // Build datasets for families — single trace hue, dash pattern per family
     component.selectedFamilies.forEach((family) => {
-      const color = window.DashboardFilters.getFamilyColor(family);
       const familyKey =
         "family" + family.charAt(0).toUpperCase() + family.slice(1);
       const label = Alpine.store("global").t(familyKey);
@@ -471,8 +483,9 @@ window.DashboardCharts.updateTrendChart = function (component) {
         window.DashboardCharts.createDataset(
           label,
           dataByFamily[family],
-          color,
-          canvas
+          TRACE_COLOR(),
+          canvas,
+          FAMILY_DASH[family] || FAMILY_DASH.other
         )
       );
     });

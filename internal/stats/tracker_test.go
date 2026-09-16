@@ -279,6 +279,181 @@ func TestTracker_HeadroomStatsPersistAndReload(t *testing.T) {
 	}
 }
 
+func TestTracker_ResetModelLeavesOthers(t *testing.T) {
+	tracker, err := NewTracker("")
+	if err != nil {
+		t.Fatalf("NewTracker failed: %v", err)
+	}
+
+	tracker.Track("claude-opus-4-6")
+	tracker.Track("claude-opus-4-6")
+	tracker.Track("claude-3-5-sonnet")
+	tracker.Track("gemini-2.5-flash")
+
+	requests, buckets, err := tracker.ResetModel("claude", "opus-4-6")
+	if err != nil {
+		t.Fatalf("ResetModel failed: %v", err)
+	}
+	if requests != 2 {
+		t.Errorf("Expected 2 requests discarded, got %d", requests)
+	}
+	if buckets != 1 {
+		t.Errorf("Expected 1 bucket touched, got %d", buckets)
+	}
+
+	history := tracker.GetHistory()
+	if len(history) != 1 {
+		t.Fatalf("Expected bucket to survive, got %d buckets", len(history))
+	}
+	var hourMap map[string]any
+	for _, v := range history {
+		hourMap = v.(map[string]any)
+	}
+
+	if hourMap["_total"] != 2 {
+		t.Errorf("Expected _total 2 after reset, got %v", hourMap["_total"])
+	}
+	claudeMap, ok := hourMap["claude"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected claude family to survive, got %v", hourMap["claude"])
+	}
+	if claudeMap["_subtotal"] != 1 {
+		t.Errorf("Expected claude _subtotal 1, got %v", claudeMap["_subtotal"])
+	}
+	if _, exists := claudeMap["opus-4-6"]; exists {
+		t.Error("Expected opus-4-6 to be removed from claude family")
+	}
+	if _, exists := claudeMap["3-5-sonnet"]; !exists {
+		t.Error("Expected 3-5-sonnet to survive in claude family")
+	}
+	geminiMap, ok := hourMap["gemini"].(map[string]any)
+	if !ok || geminiMap["_subtotal"] != 1 {
+		t.Errorf("Expected gemini family untouched, got %v", hourMap["gemini"])
+	}
+}
+
+func TestTracker_ResetModelDropsEmptyBucket(t *testing.T) {
+	tracker, err := NewTracker("")
+	if err != nil {
+		t.Fatalf("NewTracker failed: %v", err)
+	}
+
+	tracker.Track("gemini-2.5-flash")
+
+	requests, buckets, err := tracker.ResetModel("gemini", "2.5-flash")
+	if err != nil {
+		t.Fatalf("ResetModel failed: %v", err)
+	}
+	if requests != 1 || buckets != 1 {
+		t.Errorf("Expected 1 request / 1 bucket, got %d / %d", requests, buckets)
+	}
+	if history := tracker.GetHistory(); len(history) != 0 {
+		t.Errorf("Expected empty history after clearing only model, got %d buckets", len(history))
+	}
+}
+
+func TestTracker_ResetModelUnknownModel(t *testing.T) {
+	tracker, err := NewTracker("")
+	if err != nil {
+		t.Fatalf("NewTracker failed: %v", err)
+	}
+	tracker.Track("claude-opus-4-6")
+
+	requests, buckets, err := tracker.ResetModel("claude", "nonexistent")
+	if err != nil {
+		t.Fatalf("ResetModel failed: %v", err)
+	}
+	if requests != 0 || buckets != 0 {
+		t.Errorf("Expected 0/0 for unknown model, got %d/%d", requests, buckets)
+	}
+	if history := tracker.GetHistory(); len(history) != 1 {
+		t.Errorf("Expected history untouched, got %d buckets", len(history))
+	}
+}
+
+func TestTracker_ResetAllHonorsHeadroomFlag(t *testing.T) {
+	tracker, err := NewTracker("")
+	if err != nil {
+		t.Fatalf("NewTracker failed: %v", err)
+	}
+	tracker.Track("claude-opus-4-6")
+	tracker.Track("gemini-2.5-flash")
+	tracker.RecordHeadroom(HeadroomSample{BytesBefore: 100, BytesAfter: 60})
+
+	requests, buckets, err := tracker.ResetAll(false)
+	if err != nil {
+		t.Fatalf("ResetAll failed: %v", err)
+	}
+	if requests != 2 || buckets != 1 {
+		t.Errorf("Expected 2 requests / 1 bucket, got %d / %d", requests, buckets)
+	}
+	if history := tracker.GetHistory(); len(history) != 0 {
+		t.Errorf("Expected empty history after ResetAll, got %d buckets", len(history))
+	}
+	if got := tracker.GetHeadroomStats(); got.BytesBefore != 100 {
+		t.Errorf("Expected headroom preserved when flag false, got %+v", got)
+	}
+
+	requests, buckets, err = tracker.ResetAll(true)
+	if err != nil {
+		t.Fatalf("ResetAll failed: %v", err)
+	}
+	if requests != 0 || buckets != 0 {
+		t.Errorf("Expected 0/0 clearing already-empty history, got %d / %d", requests, buckets)
+	}
+	if got := tracker.GetHeadroomStats(); got.BytesBefore != 0 || got.RequestsCompressed != 0 {
+		t.Errorf("Expected headroom cleared when flag true, got %+v", got)
+	}
+}
+
+func TestTracker_ResetPersistsToDisk(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "usage-history.json")
+
+	tracker, err := NewTracker(filePath)
+	if err != nil {
+		t.Fatalf("NewTracker failed: %v", err)
+	}
+	tracker.Track("claude-opus-4-6")
+	tracker.Track("gemini-2.5-flash")
+	if err := tracker.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	if _, _, err := tracker.ResetModel("claude", "opus-4-6"); err != nil {
+		t.Fatalf("ResetModel failed: %v", err)
+	}
+
+	reloaded, err := NewTracker(filePath)
+	if err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	history := reloaded.GetHistory()
+	if len(history) != 1 {
+		t.Fatalf("Expected 1 bucket after reload, got %d", len(history))
+	}
+	var hourMap map[string]any
+	for _, v := range history {
+		hourMap = v.(map[string]any)
+	}
+	if _, exists := hourMap["claude"]; exists {
+		t.Error("Expected claude family gone from persisted file")
+	}
+	if _, exists := hourMap["gemini"]; !exists {
+		t.Error("Expected gemini family persisted")
+	}
+
+	if _, _, err := reloaded.ResetAll(false); err != nil {
+		t.Fatalf("ResetAll failed: %v", err)
+	}
+	again, err := NewTracker(filePath)
+	if err != nil {
+		t.Fatalf("Second reload failed: %v", err)
+	}
+	if history := again.GetHistory(); len(history) != 0 {
+		t.Errorf("Expected empty persisted history after ResetAll, got %d buckets", len(history))
+	}
+}
+
 func TestTracker_ConcurrentRecordHeadroom(t *testing.T) {
 	tracker, _ := NewTracker("")
 	var wg sync.WaitGroup

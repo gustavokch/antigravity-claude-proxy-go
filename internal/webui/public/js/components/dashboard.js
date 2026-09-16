@@ -24,6 +24,18 @@ window.Components.dashboard = () => ({
         lastCheckedAt: 0
     },
 
+    // Clear-stats state
+    showClearMenu: false,
+    clearConfirm: {
+        open: false,
+        scope: null,       // 'model' | 'view' | 'all'
+        family: null,
+        model: null,
+        includeHeadroom: false,
+        title: '',
+        body: ''
+    },
+
     // Filter state (from module)
     ...window.DashboardFilters.getInitialState(),
 
@@ -374,5 +386,123 @@ window.Components.dashboard = () => ({
     goToClaudeSettings() {
         this.$store.global.activeTab = 'settings';
         this.$store.global.settingsTab = 'claude';
+    },
+
+    /**
+     * Live requests per minute for the current hour (header flow figure)
+     */
+    requestsPerMinute() {
+        const now = new Date();
+        const elapsedMinutes = Math.max(1, now.getMinutes() + now.getSeconds() / 60);
+        return Math.round((this.usageStats.thisHour || 0) / elapsedMinutes);
+    },
+
+    /**
+     * Count hourly buckets in historyData that record a given model
+     */
+    countBucketsFor(family, model) {
+        let buckets = 0;
+        Object.values(this.historyData || {}).forEach((hourData) => {
+            const famData = hourData?.[family];
+            if (famData && typeof famData === 'object' && famData[model] !== undefined) {
+                buckets++;
+            }
+        });
+        return buckets;
+    },
+
+    _openClearConfirm(config) {
+        this.showClearMenu = false;
+        this.clearConfirm = { open: true, ...config };
+        this.$nextTick(() => {
+            if (this.$refs.clearKeep) this.$refs.clearKeep.focus();
+        });
+    },
+
+    /** Confirm dialog: clear one model's stats (per-row ⟲ action) */
+    requestClearModel(row) {
+        const t = this.$store.global.t.bind(this.$store.global);
+        this._openClearConfirm({
+            scope: 'model',
+            family: row.family,
+            model: row.modelName,
+            includeHeadroom: false,
+            title: t('clearModelTitle', { model: row.fullModelName }),
+            body: t('clearModelBody', {
+                requests: (row.requests || 0).toLocaleString(),
+                buckets: this.countBucketsFor(row.family, row.modelName)
+            })
+        });
+    },
+
+    /** Confirm dialog: clear every model currently listed in the table */
+    requestClearView() {
+        const t = this.$store.global.t.bind(this.$store.global);
+        const rows = (this.modelPerformance && this.modelPerformance.rows) || [];
+        const requests = rows.reduce((sum, row) => sum + (row.requests || 0), 0);
+        this._openClearConfirm({
+            scope: 'view',
+            includeHeadroom: false,
+            title: t('clearViewTitle', { count: rows.length }),
+            body: t('clearModelBody', {
+                requests: requests.toLocaleString(),
+                buckets: Object.keys(this.historyData || {}).length
+            })
+        });
+    },
+
+    /** Confirm dialog: clear all usage data (optionally + compression counters) */
+    requestClearAll(includeHeadroom) {
+        const t = this.$store.global.t.bind(this.$store.global);
+        this._openClearConfirm({
+            scope: 'all',
+            includeHeadroom: !!includeHeadroom,
+            title: t(includeHeadroom ? 'clearAllHeadroomTitle' : 'clearAllTitle'),
+            body: t(includeHeadroom ? 'clearAllHeadroomBody' : 'clearAllBody', {
+                requests: (this.usageStats.total || 0).toLocaleString(),
+                buckets: Object.keys(this.historyData || {}).length
+            })
+        });
+    },
+
+    cancelClear() {
+        this.clearConfirm.open = false;
+    },
+
+    async confirmClear() {
+        const confirm = { ...this.clearConfirm };
+        this.clearConfirm.open = false;
+        const t = this.$store.global.t.bind(this.$store.global);
+        const store = this.$store.data;
+
+        try {
+            let discarded = 0;
+            if (confirm.scope === 'model') {
+                const cleared = await store.clearModelStats(confirm.family, confirm.model);
+                discarded = cleared.models;
+            } else if (confirm.scope === 'view') {
+                const rows = (this.modelPerformance && this.modelPerformance.rows) || [];
+                for (const row of rows) {
+                    const cleared = await store.clearModelStats(row.family, row.modelName);
+                    discarded += cleared.models;
+                }
+            } else {
+                const cleared = await store.clearAllStats(confirm.includeHeadroom);
+                discarded = cleared.models;
+            }
+
+            // Recompute locally first so an emptied history still refreshes
+            // the UI (the usageHistory watcher ignores empty payloads).
+            this.historyData = {};
+            this.processHistory({});
+            this.stats.hasTrendData = true;
+            await store.fetchData();
+
+            this.$store.global.showToast(
+                t('statsCleared', { requests: discarded.toLocaleString() }), 'success');
+        } catch (e) {
+            console.error('Failed to clear stats:', e);
+            this.$store.global.showToast(t('clearFailed'), 'error');
+        }
     }
 });

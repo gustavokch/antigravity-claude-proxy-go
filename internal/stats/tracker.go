@@ -278,6 +278,109 @@ func (t *Tracker) TrackRequest(modelID string, latency time.Duration, inputToken
 	t.dirty = true
 }
 
+// requestsOf extracts a request count from a model metrics value regardless of
+// its stored representation (ModelMetrics, legacy int/float64, or raw map).
+func requestsOf(v any) int {
+	switch m := v.(type) {
+	case ModelMetrics:
+		return m.Requests
+	case int:
+		return m
+	case float64:
+		return int(m)
+	case map[string]any:
+		return parseModelMetrics(m).Requests
+	}
+	return 0
+}
+
+// ResetAll clears all hourly history, discarding every recorded request.
+// Headroom counters are cleared only when includeHeadroom is true. Persists
+// synchronously so a clear survives an immediate process kill. Returns the
+// number of requests discarded and the number of buckets cleared.
+func (t *Tracker) ResetAll(includeHeadroom bool) (requests int, buckets int, err error) {
+	t.mu.Lock()
+	for _, hourMap := range t.history {
+		requests += requestsOf(hourMap["_total"])
+		buckets++
+	}
+	t.history = make(map[string]map[string]any)
+	if includeHeadroom {
+		t.headroom = HeadroomStats{}
+	}
+	t.dirty = true
+	t.mu.Unlock()
+
+	return requests, buckets, t.Save()
+}
+
+// ResetModel removes one model's entries from every hourly bucket, leaving
+// other models untouched. Buckets left without any model are dropped.
+// Persists synchronously. Returns the number of requests discarded for the
+// model and the number of buckets it was removed from.
+func (t *Tracker) ResetModel(family, model string) (requests int, buckets int, err error) {
+	if model == "" {
+		return 0, 0, nil
+	}
+
+	t.mu.Lock()
+	for hourKey, hourMap := range t.history {
+		famMap, ok := hourMap[family].(map[string]any)
+		if !ok {
+			continue
+		}
+		metricsRaw, ok := famMap[model]
+		if !ok {
+			continue
+		}
+		requests += requestsOf(metricsRaw)
+		buckets++
+		delete(famMap, model)
+
+		subtotal := 0
+		for mk, mv := range famMap {
+			if mk != "_subtotal" {
+				subtotal += requestsOf(mv)
+			}
+		}
+		famMap["_subtotal"] = subtotal
+
+		hasModels := false
+		for mk := range famMap {
+			if mk != "_subtotal" {
+				hasModels = true
+				break
+			}
+		}
+		if !hasModels {
+			delete(hourMap, family)
+		}
+
+		total := 0
+		for k, v := range hourMap {
+			if k != "_total" {
+				total += requestsOf(v.(map[string]any)["_subtotal"])
+			}
+		}
+		hourMap["_total"] = total
+
+		hasFamilies := false
+		for k := range hourMap {
+			if k != "_total" {
+				hasFamilies = true
+				break
+			}
+		}
+		if !hasFamilies {
+			delete(t.history, hourKey)
+		}
+		t.dirty = true
+	}
+	t.mu.Unlock()
+
+	return requests, buckets, t.Save()
+}
+
 // GetHistory returns a deep clone of the tracked usage history.
 func (t *Tracker) GetHistory() map[string]any {
 	t.mu.RLock()

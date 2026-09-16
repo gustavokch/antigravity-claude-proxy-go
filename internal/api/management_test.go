@@ -1300,3 +1300,83 @@ func TestIsClaudeModel_CommaSeparatedAlias(t *testing.T) {
 		t.Error("unexpected match for unrelated model")
 	}
 }
+
+func TestManagement_ClearStatsRoutes(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+
+	server.tracker.Track("claude-opus-4-6")
+	server.tracker.Track("claude-opus-4-6")
+	server.tracker.Track("gemini-2.5-flash")
+
+	t.Run("DELETE /api/stats/history/{family}/{model}", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/stats/history/claude/opus-4-6", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		cleared, ok := res["cleared"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected cleared object, got %v", res["cleared"])
+		}
+		if cleared["models"] != float64(2) || cleared["buckets"] != float64(1) {
+			t.Errorf("expected models:2 buckets:1, got %v", cleared)
+		}
+
+		history := server.tracker.GetHistory()
+		var hourMap map[string]any
+		for _, v := range history {
+			hourMap = v.(map[string]any)
+		}
+		if _, exists := hourMap["claude"]; exists {
+			t.Error("expected claude family cleared")
+		}
+		if _, exists := hourMap["gemini"]; !exists {
+			t.Error("expected gemini family to survive")
+		}
+	})
+
+	t.Run("DELETE /api/stats/history rejects malformed model path", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/stats/history/claude", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", rec.Code)
+		}
+	})
+
+	t.Run("DELETE /api/stats/history clears all", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/stats/history", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if history := server.tracker.GetHistory(); len(history) != 0 {
+			t.Errorf("expected empty history, got %d buckets", len(history))
+		}
+	})
+
+	t.Run("DELETE /api/stats/history?headroom=true clears headroom", func(t *testing.T) {
+		server.tracker.Track("claude-opus-4-6")
+		server.tracker.RecordHeadroom(stats.HeadroomSample{BytesBefore: 100, BytesAfter: 60})
+
+		req := httptest.NewRequest(http.MethodDelete, "/api/stats/history?headroom=true", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := server.tracker.GetHeadroomStats(); got.BytesBefore != 0 {
+			t.Errorf("expected headroom cleared, got %+v", got)
+		}
+	})
+}

@@ -151,6 +151,18 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	case path == "/api/stats/history" && method == http.MethodGet:
 		server.handleStatsHistory(writer, request)
 		return true
+	case path == "/api/stats/history" && method == http.MethodDelete:
+		server.handleStatsHistoryClear(writer, request)
+		return true
+	case strings.HasPrefix(path, "/api/stats/history/") && method == http.MethodDelete:
+		rest := strings.TrimPrefix(path, "/api/stats/history/")
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Expected /api/stats/history/{family}/{model}"})
+			return true
+		}
+		server.handleStatsModelClear(writer, request, parts[0], parts[1])
+		return true
 	case path == "/api/headroom/stats" && method == http.MethodGet:
 		server.handleHeadroomStats(writer, request)
 		return true
@@ -1351,6 +1363,39 @@ func (server *Server) handleStatsHistory(writer http.ResponseWriter, request *ht
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"history": server.tracker.GetHistory(),
+	})
+}
+
+func (server *Server) handleStatsHistoryClear(writer http.ResponseWriter, request *http.Request) {
+	if server.tracker == nil {
+		writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "cleared": map[string]any{"models": 0, "buckets": 0}})
+		return
+	}
+	includeHeadroom := request.URL.Query().Get("headroom") == "true"
+	requests, buckets, err := server.tracker.ResetAll(includeHeadroom)
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"cleared": map[string]any{"models": requests, "buckets": buckets},
+	})
+}
+
+func (server *Server) handleStatsModelClear(writer http.ResponseWriter, request *http.Request, family, model string) {
+	if server.tracker == nil {
+		writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "cleared": map[string]any{"models": 0, "buckets": 0}})
+		return
+	}
+	requests, buckets, err := server.tracker.ResetModel(family, model)
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"cleared": map[string]any{"models": requests, "buckets": buckets},
 	})
 }
 
