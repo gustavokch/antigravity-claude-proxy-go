@@ -244,6 +244,33 @@ func TestMessages_ClassifierFallback_RateLimitedAccountStubs(t *testing.T) {
 	}
 }
 
+// The dispatcher records rate limits under the catalog-resolved model ID
+// (strip1mSuffix in modelcatalog.Resolve drops the "[1m]" context-window
+// marker), while the client-facing request model keeps it. The capacity
+// check must still see the exhaustion, or the fallback never fires.
+func TestMessages_ClassifierFallback_RateLimitedSuffixedModelStubs(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
+	acc := &accounts.Account{Email: "exhausted@b.com", Enabled: true}
+	manager, err := accounts.New(accounts.Options{
+		Accounts: []*accounts.Account{acc},
+	})
+	if err != nil {
+		t.Fatalf("accounts.New: %v", err)
+	}
+	manager.MarkRateLimited(acc, "gemini-3.8-flash-medium", time.Hour)
+
+	server, backend := newAccountBackedTestServer(t)
+	server.accountManager = manager
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, "gemini-3.8-flash-medium[1m]", classifierStage1Footer))
+
+	if backend.hit {
+		t.Fatal("backend was dispatched to; account exhausted under the catalog ID should have stubbed the [1m]-suffixed request instead")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMessages_ClassifierFallback_NilAccountManagerDispatchesNormally(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
 	config.SetForTest(config.DefaultConfig())

@@ -224,7 +224,11 @@ func (catalog *Catalog) Selectable() []Model {
 	return append([]Model(nil), catalog.selectable...)
 }
 
-func strip1mSuffix(s string) string {
+// Strip1mSuffix drops the "[1m]" context-window marker clients append to a
+// model ID. Exported because the catalog ID namespace (which rate limits are
+// keyed by) never carries the marker, so any lookup with a client-facing
+// string must strip it first.
+func Strip1mSuffix(s string) string {
 	trimmed := strings.TrimSpace(s)
 	lower := strings.ToLower(trimmed)
 	if strings.HasSuffix(lower, "[1m]") {
@@ -237,7 +241,7 @@ func (catalog *Catalog) Resolve(requested string) (Model, error) {
 	if catalog == nil {
 		return Model{}, errors.New("model catalog is unavailable")
 	}
-	cleaned := strip1mSuffix(requested)
+	cleaned := Strip1mSuffix(requested)
 	key := strings.ToLower(strings.TrimSpace(cleaned))
 	if key == "" {
 		key = strings.ToLower(catalog.DefaultID())
@@ -415,8 +419,8 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 }
 
 func CleanModelIDAndName(id, displayName string) (string, string) {
-	id = strip1mSuffix(id)
-	displayName = strip1mSuffix(displayName)
+	id = Strip1mSuffix(id)
+	displayName = Strip1mSuffix(displayName)
 	lowerID := strings.ToLower(id)
 	cleanID := id
 	cleanName := displayName

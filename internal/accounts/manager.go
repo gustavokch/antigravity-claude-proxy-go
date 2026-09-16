@@ -14,6 +14,7 @@ import (
 
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/modelcatalog"
 )
 
 const (
@@ -398,13 +399,25 @@ func (manager *Manager) AllInvalid() bool {
 	return enabled > 0 && enabled == invalid
 }
 
+// rateLimitModelKey normalizes a model string into the rate-limit map's key
+// namespace. Writers pass catalog-resolved IDs; readers may pass raw
+// client-facing strings carrying the "[1m]" context-window marker or
+// different case/whitespace. Without this, exhaustion recorded under
+// "gemini-3.8-flash-medium" is invisible to a lookup for
+// "gemini-3.8-flash-medium[1m]" — the classifier fallback then saw phantom
+// capacity and forwarded into a 429.
+func rateLimitModelKey(model string) string {
+	return strings.ToLower(modelcatalog.Strip1mSuffix(model))
+}
+
 func (manager *Manager) MinWait(model string) time.Duration {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	now := manager.now().UnixMilli()
 	minimum := int64(0)
+	key := rateLimitModelKey(model)
 	for _, account := range manager.accounts {
-		if limit := account.ModelRateLimits[model]; limit != nil && limit.IsRateLimited && limit.ResetTimeMS > now {
+		if limit := account.ModelRateLimits[key]; limit != nil && limit.IsRateLimited && limit.ResetTimeMS > now {
 			wait := limit.ResetTimeMS - now
 			if minimum == 0 || wait < minimum {
 				minimum = wait
@@ -420,7 +433,7 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 	if wait <= 0 {
 		wait = 10 * time.Second
 	}
-	account.ModelRateLimits[model] = &RateLimit{
+	account.ModelRateLimits[rateLimitModelKey(model)] = &RateLimit{
 		IsRateLimited: true, ResetTimeMS: manager.now().Add(wait).UnixMilli(), ActualResetMS: wait.Milliseconds(),
 	}
 	account.ConsecutiveFailure++
@@ -443,7 +456,7 @@ func (manager *Manager) MarkFailure(account *Account, model string) {
 	account.ConsecutiveFailure++
 	manager.recordFailureLocked(account.Email)
 	if model != "" && account.ConsecutiveFailure >= 3 {
-		account.ModelRateLimits[model] = &RateLimit{
+		account.ModelRateLimits[rateLimitModelKey(model)] = &RateLimit{
 			IsRateLimited: true, ResetTimeMS: manager.now().Add(time.Minute).UnixMilli(), ActualResetMS: time.Minute.Milliseconds(),
 		}
 	}
@@ -453,7 +466,7 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	account.ConsecutiveFailure = 0
-	delete(account.ModelRateLimits, model)
+	delete(account.ModelRateLimits, rateLimitModelKey(model))
 	manager.recordSuccessLocked(account.Email)
 }
 
@@ -668,7 +681,7 @@ func (manager *Manager) selectStickyLocked(model string) Selection {
 			return Selection{Account: manager.accounts[index]}
 		}
 	}
-	if limit := current.ModelRateLimits[model]; current.Enabled && !current.IsInvalid && limit != nil {
+	if limit := current.ModelRateLimits[rateLimitModelKey(model)]; current.Enabled && !current.IsInvalid && limit != nil {
 		wait := time.Duration(limit.ResetTimeMS-manager.now().UnixMilli()) * time.Millisecond
 		if wait > 0 && wait <= maxStickyWait {
 			return Selection{Wait: wait}
@@ -741,7 +754,7 @@ func (manager *Manager) usableLocked(account *Account, model string) bool {
 	if account.CoolingDownUntilMS > now {
 		return false
 	}
-	if limit := account.ModelRateLimits[model]; limit != nil && limit.IsRateLimited && limit.ResetTimeMS > now {
+	if limit := account.ModelRateLimits[rateLimitModelKey(model)]; limit != nil && limit.IsRateLimited && limit.ResetTimeMS > now {
 		return false
 	}
 	return true
