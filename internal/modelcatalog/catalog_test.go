@@ -651,17 +651,18 @@ func TestCleanModelIDAndName_Strips1mSuffix(t *testing.T) {
 // TestCatalogByIDKeysAreLowercase pins the precondition the rate-limit
 // normalization relies on: accounts.rateLimitModelKey lowercases on every
 // read and write, so an uppercase catalog ID would make persisted limits
-// invisible and duplicate dashboard rows. Parse already lowercases upstream
-// IDs (byID[strings.ToLower(id)]); this guards the invariant against a
-// future writer that skips it.
+// invisible and duplicate dashboard rows. Parse lowercases the byID map key
+// but keeps the upstream case in Model.ID, and every real upstream ID is
+// lowercase — so the fixture uses lowercase IDs and the Selectable loop
+// below genuinely pins the contract a mixed-case upstream would break.
 func TestCatalogByIDKeysAreLowercase(t *testing.T) {
 	t.Parallel()
 	catalog, err := Parse([]byte(`{
 		"defaultAgentModelId":"gemini-3.8-flash-medium",
-		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":["gemini-3.8-flash-medium","Gemini-3.1-Pro-High"]}]}],
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":["gemini-3.8-flash-medium","gemini-3.1-pro-high"]}]}],
 		"models":{
 			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)"},
-			"Gemini-3.1-Pro-High":{"displayName":"Gemini 3.1 Pro (High)"}
+			"gemini-3.1-pro-high":{"displayName":"Gemini 3.1 Pro (High)"}
 		}
 	}`))
 	if err != nil {
@@ -672,7 +673,9 @@ func TestCatalogByIDKeysAreLowercase(t *testing.T) {
 			t.Fatalf("byID key %q is not lowercase", key)
 		}
 	}
-	if _, ok := catalog.byID["gemini-3.1-pro-high"]; !ok {
-		t.Fatal("uppercase upstream ID was not lowercased into byID")
+	for _, m := range catalog.Selectable() {
+		if m.ID != strings.ToLower(m.ID) {
+			t.Fatalf("Selectable model ID %q is not lowercase; rate-limit keys are lowercased on read, so a limit recorded under this ID would be invisible", m.ID)
+		}
 	}
 }
