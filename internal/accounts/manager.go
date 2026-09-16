@@ -433,8 +433,13 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 	if wait <= 0 {
 		wait = 10 * time.Second
 	}
-	account.ModelRateLimits[rateLimitModelKey(model)] = &RateLimit{
-		IsRateLimited: true, ResetTimeMS: manager.now().Add(wait).UnixMilli(), ActualResetMS: wait.Milliseconds(),
+	// Guard on the normalized key: a model string that strips to empty
+	// (suffix only, whitespace) must not write into the empty-model
+	// namespace that model listing uses deliberately.
+	if key := rateLimitModelKey(model); key != "" {
+		account.ModelRateLimits[key] = &RateLimit{
+			IsRateLimited: true, ResetTimeMS: manager.now().Add(wait).UnixMilli(), ActualResetMS: wait.Milliseconds(),
+		}
 	}
 	account.ConsecutiveFailure++
 	manager.recordRateLimitLocked(account.Email)
@@ -455,8 +460,12 @@ func (manager *Manager) MarkFailure(account *Account, model string) {
 	defer manager.mu.Unlock()
 	account.ConsecutiveFailure++
 	manager.recordFailureLocked(account.Email)
-	if model != "" && account.ConsecutiveFailure >= 3 {
-		account.ModelRateLimits[rateLimitModelKey(model)] = &RateLimit{
+	// Guard on the normalized key, not the raw argument: "[1m]" or whitespace
+	// passes a raw != "" check but normalizes to "", which would collide with
+	// the empty-model namespace model listing uses.
+	key := rateLimitModelKey(model)
+	if key != "" && account.ConsecutiveFailure >= 3 {
+		account.ModelRateLimits[key] = &RateLimit{
 			IsRateLimited: true, ResetTimeMS: manager.now().Add(time.Minute).UnixMilli(), ActualResetMS: time.Minute.Milliseconds(),
 		}
 	}
@@ -466,7 +475,11 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	account.ConsecutiveFailure = 0
-	delete(account.ModelRateLimits, rateLimitModelKey(model))
+	// Skip the delete when the key is empty: a suffix-only success must not
+	// clear a legitimate empty-model entry.
+	if key := rateLimitModelKey(model); key != "" {
+		delete(account.ModelRateLimits, key)
+	}
 	manager.recordSuccessLocked(account.Email)
 }
 

@@ -170,6 +170,28 @@ func TestMarkFailureDoesNotRateLimitEmptyModel(t *testing.T) {
 	}
 }
 
+func TestMarkFailure_SuffixOnlyModelDoesNotCreateEmptyKey(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	account := testAccount("suffix-only@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A model string that normalizes to empty (suffix only, whitespace only)
+	// must not write into the empty-model namespace used by model listing.
+	for _, model := range []string{"[1m]", "   "} {
+		account.ConsecutiveFailure = 0
+		for i := 0; i < 3; i++ {
+			manager.MarkFailure(account, model)
+		}
+		if account.ModelRateLimits[""] != nil {
+			t.Fatalf("MarkFailure(%q) created an empty-key rate limit: %#v", model, account.ModelRateLimits[""])
+		}
+	}
+}
+
 func TestAccountCloningAndConcurrency(t *testing.T) {
 	t.Parallel()
 	account := testAccount("concurrent@example.com")
