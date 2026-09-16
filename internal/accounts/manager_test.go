@@ -170,6 +170,61 @@ func TestMarkFailureDoesNotRateLimitEmptyModel(t *testing.T) {
 	}
 }
 
+func TestMarkFailure_SuffixOnlyModelDoesNotCreateEmptyKey(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	account := testAccount("suffix-only@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A model string that normalizes to empty (suffix only, whitespace only)
+	// must not write into the empty-model namespace used by model listing.
+	for _, model := range []string{"[1m]", "   "} {
+		account.ConsecutiveFailure = 0
+		for i := 0; i < 3; i++ {
+			manager.MarkFailure(account, model)
+		}
+		if account.ModelRateLimits[""] != nil {
+			t.Fatalf("MarkFailure(%q) created an empty-key rate limit: %#v", model, account.ModelRateLimits[""])
+		}
+	}
+}
+
+// TestRateLimitKeyNamespaceIsSuffixAndCaseInsensitive pins the contract that
+// ModelRateLimits has a single canonical key namespace: writers and readers
+// agree regardless of "[1m]" suffix, case, or whitespace in the argument.
+func TestRateLimitKeyNamespaceIsSuffixAndCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	account := testAccount("namespace@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager.MarkRateLimited(account, "gemini-3.8-flash-medium", time.Hour)
+
+	if got := manager.Available("gemini-3.8-flash-medium[1m]"); got != 0 {
+		t.Fatalf("suffixed lookup should see the limit: Available=%d", got)
+	}
+	if got := manager.Available("GEMINI-3.8-Flash-Medium[1M]"); got != 0 {
+		t.Fatalf("case/suffix-insensitive lookup should see the limit: Available=%d", got)
+	}
+	if got := manager.MinWait("gemini-3.8-flash-medium[1m]"); got <= 0 {
+		t.Fatalf("MinWait should report the remaining wait: %v", got)
+	}
+	if got := manager.Available("gemini-3.8-flash-low[1m]"); got != 1 {
+		t.Fatalf("a different model must be unaffected: Available=%d", got)
+	}
+
+	manager.MarkSuccess(account, "gemini-3.8-flash-medium[1m]")
+	if got := manager.Available("gemini-3.8-flash-medium"); got != 1 {
+		t.Fatalf("success via suffixed string should clear the limit: Available=%d", got)
+	}
+}
+
 func TestAccountCloningAndConcurrency(t *testing.T) {
 	t.Parallel()
 	account := testAccount("concurrent@example.com")
@@ -441,5 +496,56 @@ func TestAvailable_EmptyAccounts(t *testing.T) {
 	count := manager.Available("model")
 	if count != 0 {
 		t.Errorf("expected 0, got %d", count)
+	}
+}
+
+func TestMarkRateLimited_EmptyModelWritesListingNamespace(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	account := testAccount("listing-429@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "" is the deliberate model-listing namespace written by rotateForError
+	// (dispatcher.go:257 -> MarkRateLimited(account, "", wait)). Dropping the
+	// write leaves the account selectable after a listing 429.
+	manager.MarkRateLimited(account, "", time.Hour)
+	if limit := account.ModelRateLimits[""]; limit == nil || !limit.IsRateLimited {
+		t.Fatalf("MarkRateLimited(account, \"\") must write the listing namespace: %#v", account.ModelRateLimits[""])
+	}
+
+	// A non-blank string that normalizes to blank is a malformed model, not
+	// the listing namespace, and must still be rejected.
+	manager.MarkRateLimited(account, "[1m]", time.Hour)
+	manager.MarkRateLimited(account, "   ", time.Hour)
+	for key := range account.ModelRateLimits {
+		if key != "" {
+			t.Fatalf("unexpected key %q written by a blank-normalizing model", key)
+		}
+	}
+}
+
+func TestMarkSuccess_EmptyModelClearsListingNamespace(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	account := testAccount("listing-clear@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager.MarkRateLimited(account, "", time.Hour)
+	manager.MarkSuccess(account, "")
+	if account.ModelRateLimits[""] != nil {
+		t.Fatalf("MarkSuccess(account, \"\") must clear the listing namespace: %#v", account.ModelRateLimits[""])
+	}
+
+	// A blank-normalizing non-blank string must not touch the namespace.
+	manager.MarkRateLimited(account, "", time.Hour)
+	manager.MarkSuccess(account, "[1m]")
+	if account.ModelRateLimits[""] == nil {
+		t.Fatal("MarkSuccess(account, \"[1m]\") cleared the listing namespace")
 	}
 }
