@@ -690,3 +690,46 @@ func TestSharedThrottleBlocksSelectionAfterTwoAccountsWithIntermediateSelect(t *
 	}
 }
 
+// SharedThrottles reports active throttled models and remaining durations,
+// and returns an empty map when throttles are cleared or expired.
+func TestSharedThrottles(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	if got := manager.SharedThrottles(); len(got) != 0 {
+		t.Fatalf("SharedThrottles initially = %v, want empty map", got)
+	}
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+
+	throttles := manager.SharedThrottles()
+	if len(throttles) != 1 {
+		t.Fatalf("SharedThrottles count = %d, want 1; got %v", len(throttles), throttles)
+	}
+	wait, ok := throttles["gemini-3.8-flash-high"]
+	if !ok {
+		t.Fatalf("SharedThrottles missing model gemini-3.8-flash-high; got %v", throttles)
+	}
+	if wait != 30*time.Second {
+		t.Fatalf("SharedThrottles wait = %v, want %v", wait, 30*time.Second)
+	}
+
+	// Cleared via MarkSuccess
+	manager.MarkSuccess(manager.GetAllAccounts()[0], "gemini-3.8-flash-high")
+	if got := manager.SharedThrottles(); len(got) != 0 {
+		t.Fatalf("SharedThrottles after MarkSuccess = %v, want empty map", got)
+	}
+
+	// Re-triggered and then expired
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+	if got := manager.SharedThrottles(); len(got) != 1 {
+		t.Fatalf("SharedThrottles re-triggered count = %d, want 1", len(got))
+	}
+
+	clock = clock.Add(31 * time.Second)
+	if got := manager.SharedThrottles(); len(got) != 0 {
+		t.Fatalf("SharedThrottles after expiry = %v, want empty map", got)
+	}
+}
