@@ -20,6 +20,7 @@ import (
 func main() {
 	model := flag.String("model", "gemini-3.8-flash-high", "upstream model ID")
 	promptKB := flag.Int("kb", 0, "pad the prompt to this many KB to emulate a large context")
+	thinkingLevel := flag.String("thinking", "", "emit generationConfig.thinkingConfig with this thinkingLevel (e.g. HIGH)")
 	flag.Parse()
 
 	path, err := accounts.DefaultConfigPath()
@@ -48,15 +49,24 @@ func main() {
 		if *promptKB > 0 {
 			text = strings.Repeat("lorem ipsum dolor sit amet ", *promptKB*1024/27) + " Say OK"
 		}
+		request := map[string]any{
+			"contents": []any{map[string]any{
+				"role":  "user",
+				"parts": []any{map[string]any{"text": text}},
+			}},
+		}
+		if *thinkingLevel != "" {
+			request["generationConfig"] = map[string]any{
+				"thinkingConfig": map[string]any{
+					"includeThoughts": true,
+					"thinkingLevel":   *thinkingLevel,
+				},
+			}
+		}
 		payload := map[string]any{
 			"project": account.ProjectID,
 			"model":   *model,
-			"request": map[string]any{
-				"contents": []any{map[string]any{
-					"role":  "user",
-					"parts": []any{map[string]any{"text": text}},
-				}},
-			},
+			"request": request,
 		}
 		_, requestErr := client.StreamGenerateContent(ctx, payload, cloudcode.RequestOptions{}, func(event cloudcode.SSEEvent) error { return nil })
 		if requestErr == nil {
