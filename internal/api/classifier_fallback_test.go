@@ -159,27 +159,27 @@ func TestMessages_ClassifierFallback_StubsWhenNoCapacity(t *testing.T) {
 	}
 }
 
-func TestMessages_ClassifierFallback_FastFailsUnsupportedVariant(t *testing.T) {
+func TestMessages_ClassifierFallback_PrefilterStubsOnExhaustion(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
 	server, backend := newAccountBackedTestServer(t)
 	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierBlockFooter))
 
 	if backend.hit {
-		t.Fatal("backend was dispatched to; unsupported classifier variant should fast-fail instead")
+		t.Fatal("backend was dispatched to; block-prefilter has a canned verdict and must be stubbed on exhaustion")
 	}
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (a 429 invites the caller's own backoff, which is the stall this feature removes); body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	var payload struct {
-		Error struct {
-			Type string `json:"type"`
-		} `json:"error"`
+	var stub struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("fast-fail body is not valid JSON: %v; body: %s", err, rec.Body.String())
+	if err := json.Unmarshal(rec.Body.Bytes(), &stub); err != nil {
+		t.Fatalf("stub response is not valid JSON: %v; body: %s", err, rec.Body.String())
 	}
-	if payload.Error.Type != "invalid_request_error" {
-		t.Fatalf("error.type = %q, want invalid_request_error (non-retryable)", payload.Error.Type)
+	if len(stub.Content) != 1 || stub.Content[0].Text != "<block>no</block>" {
+		t.Fatalf("stub content = %+v, want a single block with <block>no</block>", stub.Content)
 	}
 }
 
@@ -495,35 +495,47 @@ func TestClassifierCompactTranscript(t *testing.T) {
 	}
 }
 
-func TestClassifierAlwaysStub_UnsupportedKindReroutesToTargetModel(t *testing.T) {
+func TestClassifierAlwaysStub_PrefilterStubsWithTargetModel(t *testing.T) {
 	server, backend := newAccountBackedTestServer(t)
 
 	cfg := config.DefaultConfig()
 	cfg.Classifier.Enabled = true
 	cfg.Classifier.Action = config.ActionAlwaysStub
 	cfg.Classifier.Variants = map[string]config.ClassifierVariantConfig{
-		// No CannedVerdict: block-prefilter has no captured response format,
-		// so BuildStub cannot answer it. A configured targetModel must turn
-		// the fail-fast 400 into a reroute, or every auto-mode permission
-		// check errors out in the client.
+		// No CannedVerdict: the built-in block-prefilter allow verdict
+		// ("<block>no</block>", confirmed against the client binary) answers
+		// the call. The variant's targetModel still names the stub's model
+		// field; the backend must not be hit.
 		"block-prefilter": {TargetModel: "rerouted-prefilter-model"},
 	}
 	config.SetForTest(cfg)
 
 	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierBlockFooter))
 
-	if rec.Code == http.StatusBadRequest {
-		t.Fatalf("block-prefilter has no canned verdict; expected reroute to targetModel, got fail-fast 400: %s", rec.Body.String())
+	if backend.hit {
+		t.Fatalf("backend was dispatched to; block-prefilter now has a canned verdict and must be stubbed; status=%d", rec.Code)
 	}
-	if !backend.hit {
-		t.Fatalf("backend was not hit; unsupported kinds must reroute to targetModel; status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	if gotModel, _ := backend.lastReq["model"].(string); gotModel != "rerouted-prefilter-model" {
-		t.Fatalf("dispatched model = %q, want %q", gotModel, "rerouted-prefilter-model")
+	var stub struct {
+		Model   string `json:"model"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stub); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if stub.Model != "rerouted-prefilter-model" {
+		t.Fatalf("stub model = %q, want variant targetModel %q", stub.Model, "rerouted-prefilter-model")
+	}
+	if len(stub.Content) != 1 || stub.Content[0].Text != "<block>no</block>" {
+		t.Fatalf("stub content = %+v, want <block>no</block>", stub.Content)
 	}
 }
 
-func TestClassifierAlwaysStub_UnsupportedKindNoTargetFailsFast(t *testing.T) {
+func TestClassifierAlwaysStub_PrefilterStubsWithoutTargetModel(t *testing.T) {
 	server, backend := newAccountBackedTestServer(t)
 
 	cfg := config.DefaultConfig()
@@ -534,10 +546,25 @@ func TestClassifierAlwaysStub_UnsupportedKindNoTargetFailsFast(t *testing.T) {
 	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierBlockFooter))
 
 	if backend.hit {
-		t.Fatal("backend was dispatched to; without a targetModel the unsupported kind must fail fast")
+		t.Fatal("backend was dispatched to; without a targetModel the built-in verdict must still stub the call")
 	}
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	var stub struct {
+		Model   string `json:"model"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stub); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if stub.Model != classifierTestModel {
+		t.Fatalf("stub model = %q, want request model %q", stub.Model, classifierTestModel)
+	}
+	if len(stub.Content) != 1 || stub.Content[0].Text != "<block>no</block>" {
+		t.Fatalf("stub content = %+v, want <block>no</block>", stub.Content)
 	}
 }
 
@@ -549,7 +576,7 @@ func TestClassifierBlockPrefilterCustomVerdict(t *testing.T) {
 	cfg.Classifier.Action = config.ActionFallbackOnExhaustion
 	cfg.Classifier.Variants = map[string]config.ClassifierVariantConfig{
 		"block-prefilter": {
-			CannedVerdict: "<block>false</block>",
+			CannedVerdict: "<block>no</block>",
 		},
 	}
 	config.SetForTest(cfg)
@@ -570,8 +597,8 @@ func TestClassifierBlockPrefilterCustomVerdict(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &stub); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if len(stub.Content) != 1 || stub.Content[0].Text != "<block>false</block>" {
-		t.Fatalf("stub content = %+v, want <block>false</block>", stub.Content)
+	if len(stub.Content) != 1 || stub.Content[0].Text != "<block>no</block>" {
+		t.Fatalf("stub content = %+v, want <block>no</block>", stub.Content)
 	}
 }
 

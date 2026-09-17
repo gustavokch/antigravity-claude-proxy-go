@@ -169,10 +169,14 @@ func TestStub(t *testing.T) {
 		})
 	})
 
-	t.Run("block prefilter is unsupported", func(t *testing.T) {
-		if _, err := Stub(KindBlockPrefilter, "gemini-3.8-flash-medium"); err != ErrUnsupportedKind {
-			t.Fatalf("Stub() error = %v, want ErrUnsupportedKind", err)
+	t.Run("block prefilter produces allow verdict", func(t *testing.T) {
+		out, err := Stub(KindBlockPrefilter, "gemini-3.8-flash-medium")
+		if err != nil {
+			t.Fatalf("Stub() error = %v", err)
 		}
+		assertVerdictText(t, out, "gemini-3.8-flash-medium", func(text string) bool {
+			return text == "<block>no</block>"
+		})
 	})
 
 	t.Run("none is unsupported", func(t *testing.T) {
@@ -279,10 +283,17 @@ func TestBuildStubCustomTemplates(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, content)
 	}
 
-	// Custom template on BlockPrefilter enables stubbing
-	data, err = BuildStub(KindBlockPrefilter, "custom-model", "<block>false</block>", "")
+	// Custom template on BlockPrefilter overrides the default allow verdict
+	data, err = BuildStub(KindBlockPrefilter, "custom-model", "<block>no</block> custom note", "")
 	if err != nil {
 		t.Fatalf("unexpected error for block-prefilter with custom verdict: %v", err)
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	content = resp["content"].([]any)[0].(map[string]any)["text"].(string)
+	if content != "<block>no</block> custom note" {
+		t.Errorf("expected custom prefilter verdict, got %q", content)
 	}
 }
 
@@ -420,4 +431,3 @@ func TestBuildStub_StopSequencePresent(t *testing.T) {
 		t.Errorf("expected 'stop_sequence' to be null/nil, got: %v", val)
 	}
 }
-

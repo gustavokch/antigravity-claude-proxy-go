@@ -103,15 +103,15 @@ exhaustion, fail fast otherwise) survives; the mechanism changes.
   ```
 
 - Required output format: response **must begin with** the literal token `<block>`.
-  **Unconfirmed**: the exact boolean/close-tag schema (e.g. `<block>false</block>` vs a
-  bare `<block>` sentinel followed by reasoning) — no completed response was captured
-  (only requests were logged; the live classifier's own answers were not instrumented).
-  Do not guess this format for Task 2 — mark it lower-confidence than Variant A/B.
-- Safe canned stub: **not proposed here** — format unconfirmed; Task 2 should either
-  extend capture to log responses too before stubbing this variant, or scope Task 2/3 to
-  Variants A and B only (the two that reuse the session's own model, and thus are the two
-  that actually hang during quota exhaustion of the user's own account — Variant C's
-  fixed small model may have independent capacity).
+- **Schema confirmed** (2026-09-17, against the Claude Code client binary v2.1.267 —
+  the consumer's own prompt/parsing strings, so this is ground truth, not inference):
+  - ALLOW: exactly `<block>no</block>`.
+  - BLOCK: `<block>yes</block>` followed by `<category>Exact BLOCK Rule Name</category>`
+    and `<reason>[Exact BLOCK Rule Name] one short sentence</reason>`. The prompt
+    explicitly instructs `<block>no</block>` when no BLOCK rule matches or an
+    ALLOW-exception covers the action.
+- Safe canned stub: `<block>no</block>` (no `<category>`/`<reason>` — both are
+  block-only, and omitted on allow).
 
 ## Session context block
 
@@ -126,8 +126,8 @@ the fingerprint (content varies per user), safe to ignore for detection.
 - Gate stubbing on capacity for the request's own declared `model` field (works correctly
   for A/B since that field is genuinely the model that would be dispatched; C's model may
   need its own capacity check if Task 2 chooses to handle it).
-- Scope: stub Variants A and B (confirmed formats). Variant C: fail-fast (429, no backoff)
-  rather than stub, until its response format is confirmed by a follow-up capture.
+- Scope: stub all three variants — A and B (live-captured formats) plus C
+  (format confirmed from the client binary; stub `<block>no</block>`).
 
 ## As shipped (amended after the PR #68 review)
 
