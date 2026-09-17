@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -163,6 +164,13 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 		dispatcher.requestDelay = time.Duration(cfg.RequestDelayMs) * time.Millisecond
 	} else {
 		dispatcher.requestDelay = 0
+	}
+	if cfg.Upstream429ForensicsEnabled {
+		if dispatcher.forensics429 == nil || !dispatcher.forensics429.Enabled() {
+			dispatcher.forensics429 = NewForensics429Recorder(filepath.Join(config.GetConfigDir(), "forensics", "upstream-429.jsonl"))
+		}
+	} else {
+		dispatcher.forensics429 = nil
 	}
 }
 
@@ -703,14 +711,17 @@ func truncateBodyForLog(body string) string {
 // record429 persists one upstream 429 verbatim for later throttle-dimension
 // analysis. No-op when forensics is disabled.
 func (dispatcher *Dispatcher) record429(account *Account, project, model string, upstreamError *cloudcode.HTTPError, wait time.Duration, failures int) {
-	if dispatcher.forensics429 == nil || !dispatcher.forensics429.Enabled() {
+	dispatcher.mu.RLock()
+	recorder := dispatcher.forensics429
+	dispatcher.mu.RUnlock()
+	if recorder == nil || !recorder.Enabled() {
 		return
 	}
 	email := ""
 	if account != nil {
 		email = account.Email
 	}
-	dispatcher.forensics429.Record(Forensics429Entry{
+	recorder.Record(Forensics429Entry{
 		Timestamp:   dispatcher.now(),
 		Account:     email,
 		Project:     project,

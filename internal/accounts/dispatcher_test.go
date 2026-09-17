@@ -16,6 +16,7 @@ import (
 
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/cloudcode"
+	"antigravity-go-proxy/internal/config"
 )
 
 const testCatalogBody = `{"models":{"gemini-2.5-pro":{"displayName":"Gemini 2.5 Pro"}},"agentModelSorts":[{"groups":[{"modelIds":["gemini-2.5-pro"]}]}]}`
@@ -553,5 +554,36 @@ func TestStreamRecords429Forensics(t *testing.T) {
 	}
 	if strings.Contains(string(contents), `"token"`) {
 		t.Fatal("forensics record must never contain credential material")
+	}
+}
+
+// The WebUI config save reaches the dispatcher through UpdateConfig: the
+// toggle must arm and disarm the recorder at runtime, without a restart.
+func TestUpdateConfigToggles429Forensics(t *testing.T) {
+	manager, err := New(Options{Accounts: []*Account{{Email: "a@example.com", Enabled: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return &scriptedClient{} },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher.UpdateConfig(config.Config{Upstream429ForensicsEnabled: true})
+	dispatcher.mu.RLock()
+	armed := dispatcher.forensics429 != nil && dispatcher.forensics429.Enabled()
+	dispatcher.mu.RUnlock()
+	if !armed {
+		t.Fatal("enabling upstream429ForensicsEnabled must arm the recorder at runtime")
+	}
+	dispatcher.UpdateConfig(config.Config{Upstream429ForensicsEnabled: false})
+	dispatcher.mu.RLock()
+	disarmed := dispatcher.forensics429 == nil
+	dispatcher.mu.RUnlock()
+	if !disarmed {
+		t.Fatal("disabling upstream429ForensicsEnabled must disarm the recorder at runtime")
 	}
 }
