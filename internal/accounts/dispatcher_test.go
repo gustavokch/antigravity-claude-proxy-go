@@ -1,9 +1,15 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -450,5 +456,102 @@ func TestFetchAvailableModels_RateLimitedAccountRotates(t *testing.T) {
 	}
 	if limit := manager.accounts[0].ModelRateLimits[""]; limit == nil {
 		t.Fatal("the 429 on the listing path must write the empty-model namespace")
+	}
+}
+
+// The 429 warn log must carry the raw upstream body (truncated): the body
+// holds the quota dimension (user vs project) that the classified fields
+// alone cannot show.
+func TestStreamLogsUpstreamBodyOn429(t *testing.T) {
+	var logBuffer bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	client := &scriptedClient{
+		modelsBody: []byte(testCatalogBody),
+		results: []scriptedResult{{
+			err: &cloudcode.HTTPError{StatusCode: 429, Status: "429", Body: `{"error":{"code":429,"message":"Quota exceeded for aicode-consumers per project per minute","status":"RESOURCE_EXHAUSTED"}}`},
+		}},
+	}
+	manager, err := New(Options{Accounts: []*Account{{Email: "a@example.com", Enabled: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return client },
+		MaxWait:   time.Millisecond,
+		Sleep:     func(context.Context, time.Duration) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatcher.StreamGenerateContent(context.Background(), map[string]any{"model": "gemini-2.5-pro"}, func(cloudcode.SSEEvent) error { return nil }); err == nil {
+		t.Fatal("want error after upstream 429")
+	}
+	if !strings.Contains(logBuffer.String(), "aicode-consumers per project per minute") {
+		t.Fatalf("429 warn log must include the upstream body; got %q", logBuffer.String())
+	}
+}
+
+// Bodies longer than the log cap must be truncated so a multi-KB error page
+// cannot flood the log.
+func TestTruncateBodyForLog(t *testing.T) {
+	long := strings.Repeat("x", maxLoggedBodyLen+100)
+	if got := truncateBodyForLog(long); len(got) > maxLoggedBodyLen {
+		t.Fatalf("truncateBodyForLog len = %d, want <= %d", len(got), maxLoggedBodyLen)
+	}
+	if got := truncateBodyForLog("short"); got != "short" {
+		t.Fatalf("truncateBodyForLog altered a short body: %q", got)
+	}
+}
+
+// With forensics enabled, one upstream 429 must land verbatim in the JSONL
+// record; the record must not contain any credential material.
+func TestStreamRecords429Forensics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upstream-429.jsonl")
+	body := `{"error":{"code":429,"message":"Quota exceeded for aicode-consumers per project per minute","status":"RESOURCE_EXHAUSTED"}}`
+	client := &scriptedClient{
+		modelsBody: []byte(testCatalogBody),
+		results: []scriptedResult{{
+			err: &cloudcode.HTTPError{StatusCode: 429, Status: "429", Endpoint: "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse", Body: body},
+		}},
+	}
+	manager, err := New(Options{Accounts: []*Account{{Email: "a@example.com", Enabled: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:      manager,
+		Resolver:     stubResolver{},
+		NewClient:    func(string) CloudClient { return client },
+		MaxWait:      time.Millisecond,
+		Sleep:        func(context.Context, time.Duration) error { return nil },
+		Forensics429: NewForensics429Recorder(path),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatcher.StreamGenerateContent(context.Background(), map[string]any{"model": "gemini-2.5-pro"}, func(cloudcode.SSEEvent) error { return nil }); err == nil {
+		t.Fatal("want error after upstream 429")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("forensics record missing: %v", err)
+	}
+	var entry Forensics429Entry
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(contents))), &entry); err != nil {
+		t.Fatalf("forensics line is not valid JSON: %v", err)
+	}
+	if entry.Body != body {
+		t.Fatalf("forensics body = %q, want verbatim upstream body", entry.Body)
+	}
+	if entry.Account != "a@example.com" || entry.Status != 429 || entry.Model != "gemini-2.5-pro" {
+		t.Fatalf("forensics metadata mismatch: %+v", entry)
+	}
+	if strings.Contains(string(contents), `"token"`) {
+		t.Fatal("forensics record must never contain credential material")
 	}
 }

@@ -190,6 +190,12 @@ func runServer(args []string) {
 	}
 
 	builder := proxyformat.NewBuilder()
+	var forensics429 *accounts.Forensics429Recorder
+	if cfg.Upstream429ForensicsEnabled {
+		forensicsPath := filepath.Join(config.GetConfigDir(), "forensics", "upstream-429.jsonl")
+		forensics429 = accounts.NewForensics429Recorder(forensicsPath)
+		slogger.Info("upstream 429 forensics enabled", "path", forensicsPath)
+	}
 	dispatcher, err := accounts.NewDispatcher(accounts.DispatcherOptions{
 		Manager:                  accountManager,
 		Resolver:                 accounts.NewCredentialResolver(auth.Manager{}, nil),
@@ -202,6 +208,7 @@ func runServer(args []string) {
 		SwitchDelay:              switchDelay,
 		RequestThrottlingEnabled: cfg.RequestThrottlingEnabled,
 		RequestDelay:             requestDelay,
+		Forensics429:             forensics429,
 		NewClient: func(accessToken string) accounts.CloudClient {
 			return cloudcode.New(cloudcode.Options{AccessToken: accessToken, Timeout: *upstreamTimeout})
 		},

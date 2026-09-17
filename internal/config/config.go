@@ -115,6 +115,10 @@ type Config struct {
 	GlobalQuotaThreshold     float64                   `json:"globalQuotaThreshold,omitempty"`
 	RequestThrottlingEnabled bool                      `json:"requestThrottlingEnabled,omitempty"`
 	RequestDelayMs           int                       `json:"requestDelayMs,omitempty"`
+	// Upstream429ForensicsEnabled persists every upstream 429 verbatim to
+	// <configDir>/forensics/upstream-429.jsonl (R1 of the
+	// cloudcode-429-throttle-dimension spec). Off by default.
+	Upstream429ForensicsEnabled bool `json:"upstream429ForensicsEnabled,omitempty"`
 	RateLimitDedupWindowMs   int                       `json:"rateLimitDedupWindowMs,omitempty"`
 	MaxConsecutiveFailures   int                       `json:"maxConsecutiveFailures,omitempty"`
 	ExtendedCooldownMs       int                       `json:"extendedCooldownMs,omitempty"`

@@ -47,6 +47,9 @@ type DispatcherOptions struct {
 	Sleep                    SleepFunc
 	Now                      func() time.Time
 	ModelCacheTTL            time.Duration
+	// Forensics429 records every upstream 429 verbatim (append-only JSONL)
+	// when non-nil and enabled. Nil disables recording.
+	Forensics429 *Forensics429Recorder
 }
 
 type accountClient struct {
@@ -70,6 +73,7 @@ type Dispatcher struct {
 	sleep                    SleepFunc
 	now                      func() time.Time
 	modelCacheTTL            time.Duration
+	forensics429             *Forensics429Recorder
 
 	mu        sync.RWMutex
 	clients   map[string]accountClient
@@ -126,6 +130,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		sleep:                    options.Sleep,
 		now:                      options.Now,
 		modelCacheTTL:            options.ModelCacheTTL,
+		forensics429:             options.Forensics429,
 		clients:                  make(map[string]accountClient),
 	}, nil
 }
@@ -393,7 +398,8 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 						return cloudcode.Response{}, err
 					}
 				}
-				slog.Warn("upstream 429", "model", model, "reason", reason, "wait", wait.Round(time.Second), "serverReset", reset, "failures", failures)
+				slog.Warn("upstream 429", "model", model, "reason", reason, "wait", wait.Round(time.Second), "serverReset", reset, "failures", failures, "body", truncateBodyForLog(upstreamError.Body))
+				dispatcher.record429(account, project, model, upstreamError, wait, failures)
 				dispatcher.manager.MarkRateLimited(account, model, wait)
 				break
 			}
@@ -606,6 +612,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 		return false
 	case http.StatusTooManyRequests:
 		wait := SmartBackoff(ClassifyError(body, upstreamError.StatusCode), ParseResetTime(upstreamError.Header, body, dispatcher.now()), dispatcher.manager.FailureCount(account))
+		dispatcher.record429(account, "", model, upstreamError, wait, dispatcher.manager.FailureCount(account))
 		dispatcher.manager.MarkRateLimited(account, model, wait)
 		return true
 	default:
@@ -678,6 +685,43 @@ func findHTTPError(err error) *cloudcode.HTTPError {
 		return upstreamError
 	}
 	return nil
+}
+
+// maxLoggedBodyLen caps upstream error bodies in logs: enough to keep the
+// quota dimension and message, short enough that an error page cannot flood
+// the log.
+const maxLoggedBodyLen = 512
+
+func truncateBodyForLog(body string) string {
+	compact := strings.Join(strings.Fields(body), " ")
+	if len(compact) <= maxLoggedBodyLen {
+		return compact
+	}
+	return compact[:maxLoggedBodyLen]
+}
+
+// record429 persists one upstream 429 verbatim for later throttle-dimension
+// analysis. No-op when forensics is disabled.
+func (dispatcher *Dispatcher) record429(account *Account, project, model string, upstreamError *cloudcode.HTTPError, wait time.Duration, failures int) {
+	if dispatcher.forensics429 == nil || !dispatcher.forensics429.Enabled() {
+		return
+	}
+	email := ""
+	if account != nil {
+		email = account.Email
+	}
+	dispatcher.forensics429.Record(Forensics429Entry{
+		Timestamp:   dispatcher.now(),
+		Account:     email,
+		Project:     project,
+		Model:       model,
+		Endpoint:    upstreamError.Endpoint,
+		Status:      upstreamError.StatusCode,
+		Headers:     forensicsHeaders(upstreamError.Header),
+		Body:        upstreamError.Body,
+		AppliedWait: wait.Round(time.Second).String(),
+		Failures:    failures,
+	})
 }
 
 func isCanceled(err error) bool {
