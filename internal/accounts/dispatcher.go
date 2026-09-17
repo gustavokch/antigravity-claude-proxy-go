@@ -321,7 +321,11 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				continue
 			}
 			if wait > dispatcher.maxWait {
-				return cloudcode.Response{}, fmt.Errorf("RESOURCE_EXHAUSTED: rate limited on %s; quota resets after %s", model, wait.Round(time.Second))
+				return cloudcode.Response{}, &RateLimitError{
+					Model:      model,
+					RetryAfter: wait,
+					Shared:     dispatcher.manager.SharedThrottleWait(model) > 0,
+				}
 			}
 			return cloudcode.Response{}, errors.New("no accounts available")
 		}

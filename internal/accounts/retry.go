@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -196,4 +197,23 @@ func containsAny(value string, candidates ...string) bool {
 		}
 	}
 	return false
+}
+
+// RateLimitError reports that the pool cannot serve a model right now and
+// cannot wait the throttle out inside maxWait. It carries the reset so the
+// API layer can answer 429 + Retry-After: a bare 400 tells Claude Code the
+// request is permanently invalid and it never retries.
+type RateLimitError struct {
+	Model      string
+	RetryAfter time.Duration
+	Shared     bool
+}
+
+func (err *RateLimitError) Error() string {
+	scope := "account"
+	if err.Shared {
+		scope = "pool-wide"
+	}
+	return fmt.Sprintf("RESOURCE_EXHAUSTED: %s rate limit on %s; retry after %s",
+		scope, err.Model, err.RetryAfter.Round(time.Second))
 }
