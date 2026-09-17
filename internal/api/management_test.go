@@ -1330,15 +1330,24 @@ func TestManagement_ClearStatsRoutes(t *testing.T) {
 		}
 
 		history := server.tracker.GetHistory()
-		var hourMap map[string]any
-		for _, v := range history {
-			hourMap = v.(map[string]any)
+		if len(history) == 0 {
+			t.Fatal("expected history to survive a single-model clear, got 0 buckets")
 		}
-		if _, exists := hourMap["claude"]; exists {
-			t.Error("expected claude family cleared")
+		geminiSeen := false
+		for hourKey, v := range history {
+			hourMap, ok := v.(map[string]any)
+			if !ok {
+				t.Fatalf("bucket %s is not a map: %T", hourKey, v)
+			}
+			if _, exists := hourMap["claude"]; exists {
+				t.Errorf("bucket %s: expected claude family cleared", hourKey)
+			}
+			if _, exists := hourMap["gemini"]; exists {
+				geminiSeen = true
+			}
 		}
-		if _, exists := hourMap["gemini"]; !exists {
-			t.Error("expected gemini family to survive")
+		if !geminiSeen {
+			t.Error("expected gemini family to survive in some bucket")
 		}
 	})
 
