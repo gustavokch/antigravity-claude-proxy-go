@@ -229,6 +229,40 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        /**
+         * Clear recorded stats for a single model.
+         * Returns { requests, buckets } discarded, or throws on failure.
+         */
+        async clearModelStats(family, model) {
+            const password = Alpine.store('global').webuiPassword;
+            const url = '/api/stats/history/' + encodeURIComponent(family) + '/' + encodeURIComponent(model);
+            const { response, newPassword } = await window.utils.request(url, { method: 'DELETE' }, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) {
+                const body = await response.text().catch(() => '');
+                throw new Error('HTTP ' + response.status + (body ? ': ' + body : ''));
+            }
+            const data = await response.json().catch(() => ({}));
+            return (data && data.cleared) || { models: 0, buckets: 0 };
+        },
+
+        /**
+         * Clear all usage history; includeHeadroom also resets compression counters.
+         * Returns { requests, buckets } discarded, or throws on failure.
+         */
+        async clearAllStats(includeHeadroom = false) {
+            const password = Alpine.store('global').webuiPassword;
+            const url = '/api/stats/history' + (includeHeadroom ? '?headroom=true' : '');
+            const { response, newPassword } = await window.utils.request(url, { method: 'DELETE' }, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) {
+                const body = await response.text().catch(() => '');
+                throw new Error('HTTP ' + response.status + (body ? ': ' + body : ''));
+            }
+            const data = await response.json().catch(() => ({}));
+            return (data && data.cleared) || { models: 0, buckets: 0 };
+        },
+
         async performHealthCheck() {
             try {
                 // Get password from global store

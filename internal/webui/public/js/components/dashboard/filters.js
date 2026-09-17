@@ -258,6 +258,19 @@ window.DashboardFilters.getModelColor = function(family, modelIndex) {
 };
 
 /**
+ * Get dash pattern style for a family (solid/dashed/dotted) for legend marks
+ * @param {string} family - Family name
+ * @returns {string} CSS border-top-style value
+ */
+window.DashboardFilters.getFamilyDashStyle = function(family) {
+    const FAMILY_DASH = window.DashboardConstants?.FAMILY_DASH || { other: [2, 3] };
+    const dash = FAMILY_DASH[family] || FAMILY_DASH.other;
+    if (!dash || dash.length === 0) return 'solid';
+    if (dash[0] <= 3) return 'dotted';
+    return 'dashed';
+};
+
+/**
  * Get count of selected items for display
  * @param {object} component - Dashboard component instance
  * @returns {string} Selected count string (e.g., "3/5")

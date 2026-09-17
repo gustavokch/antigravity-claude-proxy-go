@@ -1,0 +1,594 @@
+/* ==========================================================================
+   Blueprint theme — antigravity-claude-proxy-go
+   The compiled Tailwind + DaisyUI layer in style.css bakes palette values at
+   build time, so the blueprint palette is applied here as explicit rule
+   overrides loaded after style.css. Canonical token values also live in
+   css/src/input.css for future rebuilds.
+
+   Discipline:
+   - signal (amber) appears only on warnings and destructive actions
+   - trace (teal) is the single data hue
+   - everything else is structure (ink / sheet / rule / chalk / fade)
+   ========================================================================== */
+
+:root {
+  /* Blueprint tokens */
+  --bp-ink: #0e1b2a;
+  --bp-sheet: #152740;
+  --bp-raised: #1a2e4a;
+  --bp-hover: #22395c;
+  --bp-rule: #2a4566;
+  --bp-rule-strong: #3d6088;
+  --bp-chalk: #e8f0f7;
+  --bp-body: #b9c9da;
+  --bp-dim: #9fb4c9;
+  --bp-fade: #7c97b4;
+  --bp-faint: #627e9b;
+  --bp-steel: #8fb8dc;
+  --bp-trace: #5ec8d8;
+  --bp-trace-fill: #4fb3c4;
+  --bp-signal: #f0a032;
+  --bp-signal-fill: #d98a2b;
+  --bp-alert: #e0705c;
+  --bp-alert-fill: #c85a48;
+  --bp-violet: #a793db;
+  --bp-violet-fill: #7761b8;
+
+  --card-radius: 0;
+
+  /* Raw palette vars the compiled stylesheet also defines — charts.js reads
+     these at runtime via getComputedStyle, so they must be restated here. */
+  --color-space-950: #0e1b2a;
+  --color-space-900: #152740;
+  --color-space-850: #17283f;
+  --color-space-800: #1a2e4a;
+  --color-space-700: #22395c;
+  --color-space-border: #2a4566;
+  --color-space-border-hover: #3d6088;
+
+  --color-neon-purple: #8fb8dc; /* steel: structural accent */
+  --color-neon-purple-soft: #7ba7cf;
+  --color-neon-green: #5ec8d8; /* trace: single data hue */
+  --color-neon-green-soft: #4fb3c4;
+  --color-neon-cyan: #5ec8d8;
+  --color-neon-cyan-soft: #4fb3c4;
+  --color-neon-yellow: #f0a032; /* signal */
+  --color-neon-red: #e0705c; /* alert */
+
+  --color-text-primary: #e8f0f7;
+  --color-text-secondary: #b9c9da;
+  --color-text-tertiary: #9fb4c9;
+  --color-text-quaternary: #7c97b4;
+  --color-text-main: #b9c9da;
+  --color-text-dim: #9fb4c9;
+  --color-text-muted: #9fb4c9;
+  --color-text-bright: #e8f0f7;
+
+  /* Chart ramp: single trace hue with lightness spread (all 16 — the ramp
+     cycles on multi-model charts, so signal/alert hues must not appear). */
+  --color-chart-1: #5ec8d8;
+  --color-chart-2: #4fb3c4;
+  --color-chart-3: #8fb8dc;
+  --color-chart-4: #7c97b4;
+  --color-chart-5: #3e97a8;
+  --color-chart-6: #9fb4c9;
+  --color-chart-7: #2f7e8f;
+  --color-chart-8: #b9c9da;
+  --color-chart-9: #6fb7c5;
+  --color-chart-10: #a5dbe4;
+  --color-chart-11: #627e9b;
+  --color-chart-12: #3d6088;
+  --color-chart-13: #86accc;
+  --color-chart-14: #57aebe;
+  --color-chart-15: #76a9cf;
+  --color-chart-16: #22395c;
+
+  /* DaisyUI runtime palette (oklch triplets) */
+  --b1: 21.84% 0.034919 252.87;
+  --b2: 27.09% 0.052610 256.86;
+  --b3: 29.92% 0.057425 257.00;
+  --bc: 95.11% 0.012740 244.26;
+  --p: 95.11% 0.012740 244.26;
+  --pc: 21.84% 0.034919 252.87;
+  --s: 27.09% 0.052610 256.86;
+  --sc: 95.11% 0.012740 244.26;
+  --a: 77.64% 0.099767 208.56;
+  --ac: 21.84% 0.034919 252.87;
+  --n: 29.92% 0.057425 257.00;
+  --nc: 95.11% 0.012740 244.26;
+  --in: 76.57% 0.068050 245.35;
+  --inc: 21.84% 0.034919 252.87;
+  --su: 77.64% 0.099767 208.56;
+  --suc: 21.84% 0.034919 252.87;
+  --wa: 76.78% 0.150473 69.59;
+  --wac: 21.84% 0.034919 252.87;
+  --er: 67.18% 0.143893 31.59;
+  --erc: 21.84% 0.034919 252.87;
+  --rounded-box: 0rem;
+}
+
+/* === Type: IBM Plex === */
+
+/* Self-hosted latin subsets; licence in ../fonts/LICENSE.txt (OFL-1.1) */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-sans-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-sans-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-sans-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-mono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-mono-500.woff2") format("woff2");
+}
+
+html,
+.font-sans {
+  font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+}
+
+code,
+kbd,
+pre,
+samp,
+.font-mono {
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+}
+
+body {
+  color: var(--bp-chalk);
+}
+
+::selection {
+  background: var(--bp-trace);
+  color: var(--bp-ink);
+}
+
+/* === Surfaces (space-* utilities, baked at compile time) === */
+
+.bg-space-950 { background-color: var(--bp-ink); }
+.bg-space-900 { background-color: var(--bp-sheet); }
+.bg-space-850 { background-color: #17283f; }
+.bg-space-800 { background-color: var(--bp-raised); }
+.bg-space-700 { background-color: var(--bp-hover); }
+.bg-space-border { background-color: var(--bp-rule); }
+.bg-space-600 { background-color: var(--bp-faint); }
+
+.hover\:bg-space-900:hover { background-color: var(--bp-sheet); }
+.hover\:bg-space-850:hover { background-color: #1e3350; }
+.hover\:bg-space-800:hover { background-color: var(--bp-raised); }
+.hover\:bg-space-700:hover { background-color: var(--bp-hover); }
+
+.border-space-border { border-color: var(--bp-rule); }
+.hover\:border-space-border:hover { border-color: var(--bp-rule); }
+.border-space-border-hover { border-color: var(--bp-rule-strong); }
+.hover\:border-space-border-hover:hover { border-color: var(--bp-rule-strong); }
+
+.divide-space-border > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--bp-rule);
+}
+
+/* Baked opacity variants (Tailwind compiles these to literal colors) */
+.bg-space-900\/40 { background-color: rgba(21, 39, 64, 0.4); }
+.bg-space-900\/50 { background-color: rgba(21, 39, 64, 0.5); }
+.bg-space-850\/50 { background-color: rgba(23, 40, 63, 0.5); }
+.bg-space-850\/60 { background-color: rgba(23, 40, 63, 0.6); }
+.bg-space-800\/50 { background-color: rgba(26, 46, 74, 0.5); }
+.border-space-border\/30 { border-color: rgba(42, 69, 102, 0.3); }
+.border-space-border\/40 { border-color: rgba(42, 69, 102, 0.4); }
+.border-space-border\/50 { border-color: rgba(42, 69, 102, 0.5); }
+.border-space-border\/60 { border-color: rgba(42, 69, 102, 0.6); }
+.divide-space-border\/30 > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(42, 69, 102, 0.3);
+}
+.hover\:bg-space-850\/50:hover { background-color: rgba(23, 40, 63, 0.5); }
+.hover\:bg-space-850\/60:hover { background-color: rgba(23, 40, 63, 0.6); }
+
+/* Zero border-radius on structure (dots, pills and the gauge keep round caps) */
+.rounded,
+.rounded-sm,
+.rounded-md,
+.rounded-lg,
+.rounded-xl { border-radius: 0; }
+
+/* Utilities the precompiled style.css lacks (Tailwind JIT baked only what the
+   old templates used) — restated here so the revamped markup renders. */
+.gap-x-4 { column-gap: 1rem; }
+.gap-x-5 { column-gap: 1.25rem; }
+.gap-x-6 { column-gap: 1.5rem; }
+.gap-y-1 { row-gap: 0.25rem; }
+.gap-y-2 { row-gap: 0.5rem; }
+.gap-y-3 { row-gap: 0.75rem; }
+.gap-y-4 { row-gap: 1rem; }
+.text-\[11px\] { font-size: 11px; }
+.text-\[13px\] { font-size: 13px; }
+.h-\[3px\] { height: 3px; }
+.items-baseline { align-items: baseline; }
+.hover\:opacity-80:hover { opacity: 0.8; }
+@media (min-width: 768px) {
+  .md\:block { display: block; }
+}
+
+/* === Neutral text ramp === */
+
+.text-white { color: var(--bp-chalk); }
+.text-gray-200 { color: #cbd8e6; }
+.text-gray-300 { color: var(--bp-body); }
+.text-gray-400,
+.text-zinc-400 { color: var(--bp-dim); }
+.text-gray-500 { color: var(--bp-fade); }
+.text-gray-600,
+.text-zinc-600 { color: var(--bp-faint); }
+.text-gray-700 { color: #4c6683; }
+
+.hover\:text-white:hover { color: var(--bp-chalk); }
+.hover\:text-gray-200:hover { color: #cbd8e6; }
+.hover\:text-gray-300:hover { color: var(--bp-body); }
+.hover\:text-gray-400:hover,
+.hover\:text-zinc-400:hover { color: var(--bp-dim); }
+
+.border-gray-700 { border-color: var(--bp-rule); }
+.border-gray-800 { border-color: var(--bp-rule); }
+
+.bg-gray-600 { background-color: var(--bp-faint); }
+.bg-gray-700 { background-color: #4c6683; }
+.bg-zinc-600 { background-color: var(--bp-faint); }
+
+/* === Structural accents === */
+
+.text-blue-400 { color: var(--bp-steel); }
+.text-blue-500 { color: var(--bp-steel); }
+.text-sky-400 { color: var(--bp-steel); }
+.bg-blue-400 { background-color: var(--bp-steel); }
+.bg-blue-500 { background-color: var(--bp-steel); }
+.bg-blue-600 { background-color: #34618c; }
+.hover\:bg-blue-600:hover { background-color: #34618c; }
+.hover\:bg-blue-700:hover { background-color: #3d729e; }
+.focus\:border-blue-500:focus { border-color: var(--bp-steel); }
+
+.text-neon-purple { color: var(--bp-steel); }
+.bg-neon-purple { background-color: var(--bp-steel); }
+.border-neon-purple { border-color: var(--bp-steel); }
+.hover\:text-neon-purple:hover { color: var(--bp-steel); }
+.hover\:bg-neon-purple:hover { background-color: var(--bp-steel); }
+.hover\:border-neon-purple:hover { border-color: var(--bp-steel); }
+
+/* === Data / success: single trace hue === */
+
+.text-neon-cyan { color: var(--bp-trace); }
+.bg-neon-cyan { background-color: var(--bp-trace); }
+.border-neon-cyan { border-color: var(--bp-trace); }
+.hover\:text-neon-cyan:hover { color: var(--bp-trace); }
+.hover\:bg-neon-cyan:hover { background-color: var(--bp-trace); }
+.hover\:border-neon-cyan:hover { border-color: var(--bp-trace); }
+.ring-neon-cyan { --tw-ring-color: var(--bp-trace); }
+
+.text-neon-green { color: var(--bp-trace); }
+.bg-neon-green { background-color: var(--bp-trace); }
+.border-neon-green { border-color: var(--bp-trace); }
+.hover\:text-neon-green:hover { color: var(--bp-trace); }
+.hover\:bg-neon-green:hover { background-color: var(--bp-trace); }
+.hover\:border-neon-green:hover { border-color: var(--bp-trace); }
+
+.text-cyan-400 { color: var(--bp-trace); }
+.text-emerald-400 { color: var(--bp-trace); }
+.text-green-400 { color: var(--bp-trace); }
+.text-green-400\/70 { color: rgba(94, 200, 216, 0.7); }
+.bg-emerald-400 { background-color: var(--bp-trace); }
+.bg-emerald-500 { background-color: var(--bp-trace-fill); }
+.bg-emerald-600 { background-color: #3e97a8; }
+.hover\:bg-emerald-600:hover { background-color: #3e97a8; }
+.bg-emerald-500\/10 { background-color: rgba(94, 200, 216, 0.1); }
+.bg-emerald-400\/10 { background-color: rgba(94, 200, 216, 0.1); }
+.border-emerald-500\/20 { border-color: rgba(94, 200, 216, 0.2); }
+.border-emerald-500\/30 { border-color: rgba(94, 200, 216, 0.3); }
+
+/* === Signal: warnings + destructive only === */
+
+.text-neon-yellow { color: var(--bp-signal); }
+.bg-neon-yellow { background-color: var(--bp-signal); }
+.border-neon-yellow { border-color: var(--bp-signal); }
+.hover\:text-neon-yellow:hover { color: var(--bp-signal); }
+.hover\:bg-neon-yellow:hover { background-color: var(--bp-signal); }
+
+.text-amber-400 { color: var(--bp-signal); }
+.text-yellow-400 { color: var(--bp-signal); }
+.bg-amber-500 { background-color: var(--bp-signal-fill); }
+.bg-yellow-500 { background-color: var(--bp-signal-fill); }
+.bg-amber-500\/10 { background-color: rgba(240, 160, 50, 0.1); }
+.border-amber-500\/20 { border-color: rgba(240, 160, 50, 0.2); }
+.border-amber-500\/30 { border-color: rgba(240, 160, 50, 0.3); }
+
+/* === Errors === */
+
+.text-red-300 { color: #e99585; }
+.text-red-400 { color: var(--bp-alert); }
+.text-red-500 { color: var(--bp-alert-fill); }
+.text-rose-400 { color: var(--bp-alert); }
+.bg-red-400 { background-color: var(--bp-alert); }
+.bg-red-500 { background-color: var(--bp-alert-fill); }
+.bg-red-500\/10 { background-color: rgba(224, 112, 92, 0.1); }
+.hover\:text-red-400:hover { color: var(--bp-alert); }
+.hover\:bg-red-500:hover { background-color: var(--bp-alert-fill); }
+.hover\:bg-red-500\/10:hover { background-color: rgba(224, 112, 92, 0.1); }
+.border-red-500\/30 { border-color: rgba(224, 112, 92, 0.3); }
+.border-red-500\/50 { border-color: rgba(224, 112, 92, 0.5); }
+
+/* === Family violet (Claude family identity, non-dashboard views) === */
+
+.text-purple-300 { color: #c3b5e6; }
+.text-purple-400 { color: var(--bp-violet); }
+.text-purple-400\/70 { color: rgba(167, 147, 219, 0.7); }
+.bg-purple-500 { background-color: var(--bp-violet); }
+.bg-purple-600 { background-color: var(--bp-violet-fill); }
+.hover\:bg-purple-500:hover { background-color: var(--bp-violet); }
+.hover\:bg-purple-600:hover { background-color: var(--bp-violet-fill); }
+.border-purple-500\/30 { border-color: rgba(167, 147, 219, 0.3); }
+
+/* === Card chrome: flat sheet, hairline rule, zero radius === */
+
+.view-card {
+  background-color: var(--bp-sheet);
+  border: 1px solid var(--bp-rule);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.view-card:hover {
+  border-color: var(--bp-rule-strong);
+}
+
+.view-card-header {
+  border-color: var(--bp-rule);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar-track {
+  background: var(--bp-ink);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bp-rule);
+  border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--bp-rule-strong);
+}
+
+/* === Dashboard: blueprint instrument panel === */
+
+.bp-section {
+  border-top: 1px solid var(--bp-rule);
+  padding-top: 0.75rem;
+}
+
+.bp-section-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--bp-fade);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.bp-num {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Header flow diagram: client -> proxy -> providers */
+.bp-flow-dash {
+  stroke-dasharray: 4 4;
+  animation: bp-flow 2s linear infinite;
+}
+
+@keyframes bp-flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bp-flow-dash {
+    animation: none;
+  }
+}
+
+/* Quota gauge: dimension-line bar, rounded caps */
+.bp-gauge {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bp-rule);
+  overflow: hidden;
+}
+
+.bp-gauge > div {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--bp-trace);
+  /* clip-path animates on the paint step only — no layout thrash */
+  transition: clip-path 0.4s ease;
+}
+
+/* Performance table: quiet rows, hairline rules, row-scoped clear action */
+.bp-model-table tbody tr {
+  border-bottom: 1px solid var(--bp-rule);
+}
+
+.bp-model-table tbody tr:last-child {
+  border-bottom: 0;
+}
+
+.bp-row-clear {
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.bp-model-table tbody tr:hover .bp-row-clear,
+.bp-row-clear:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .bp-row-clear {
+    opacity: 1;
+  }
+}
+
+.bp-row-clear {
+  color: var(--bp-signal);
+}
+
+.bp-row-clear:hover {
+  color: #ffc063;
+}
+
+/* Clear-stats confirm dialog */
+.bp-confirm-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--bp-chalk);
+}
+
+.bp-confirm-body {
+  font-size: 13px;
+  color: var(--bp-fade);
+  line-height: 1.5;
+}
+
+.bp-btn-signal {
+  background-color: var(--bp-signal);
+  color: var(--bp-ink);
+  border: none;
+  font-weight: 500;
+}
+
+.bp-btn-signal:hover {
+  background-color: #ffc063;
+}
+
+/* Page ground (index.html body uses bg-zinc-950) */
+.bg-zinc-950 { background-color: var(--bp-ink); }
+
+/* Accounts summary strip figure */
+.bp-fig {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+/* Legend dash samples: families are split by dash pattern, not color */
+.bp-mark {
+  display: inline-block;
+  width: 14px;
+  height: 0;
+  border-top: 2px solid var(--bp-trace);
+}
+
+/* Quota gauge numeral: the single 40px mono figure on the page */
+.bp-gauge-num {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 40px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--bp-chalk);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Confirm dialog */
+.bp-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(14, 27, 42, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.bp-modal-box {
+  background: var(--bp-sheet);
+  border: 1px solid var(--bp-rule-strong);
+  width: 100%;
+  max-width: 26rem;
+  padding: 1.25rem 1.5rem 1.5rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+.bp-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.bp-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--bp-rule-strong);
+  color: var(--bp-body);
+  font-weight: 500;
+  padding: 0.4rem 0.9rem;
+  font-size: 13px;
+}
+
+.bp-btn-ghost:hover {
+  border-color: var(--bp-chalk);
+  color: var(--bp-chalk);
+}
+
+.bp-modal-overlay .bp-btn-signal,
+.bp-modal-actions .bp-btn-signal {
+  padding: 0.4rem 0.9rem;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Performance table chrome (sentence-case, hairline rules) */
+.bp-model-table {
+  font-size: 13px;
+}
+
+.bp-model-table thead th {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--bp-fade);
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--bp-rule-strong);
+  background: transparent;
+}
+
+.bp-model-table tbody td {
+  padding: 0.5rem 0.75rem;
+}
