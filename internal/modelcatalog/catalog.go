@@ -538,13 +538,13 @@ func applyGemini37(catalog *Catalog, models map[string]modelDetails) {
 	var prepend []Model
 	for _, variant := range variants {
 		var model Model
-		if hasTiered {
+		if _, ok := catalog.byID[variant.id]; ok {
+			// Upstream publishes this tier directly; keep it verbatim.
+			continue
+		} else if hasTiered {
 			model = modelFromDetails(gemini37TieredID, tiered)
 			model.UpstreamID = gemini37TieredID
 			model.ThinkingLevel = variant.level
-		} else if _, ok := catalog.byID[variant.id]; ok {
-			// Upstream publishes this tier directly; keep it verbatim.
-			continue
 		} else if base, ok := catalog.byID["gemini-3.7-flash"]; ok {
 			// Send the tier ID verbatim, not the bare base: upstream accepts
 			// gemini-3.x-flash-{high,medium,low} and throttles per model-ID
@@ -599,13 +599,13 @@ func applyGemini38(catalog *Catalog, models map[string]modelDetails) {
 	var prepend []Model
 	for _, variant := range variants {
 		var model Model
-		if hasTiered {
+		if _, ok := catalog.byID[variant.id]; ok {
+			// Upstream publishes this tier directly; keep it verbatim.
+			continue
+		} else if hasTiered {
 			model = modelFromDetails(gemini38TieredID, tiered)
 			model.UpstreamID = gemini38TieredID
 			model.ThinkingLevel = variant.level
-		} else if _, ok := catalog.byID[variant.id]; ok {
-			// Upstream publishes this tier directly; keep it verbatim.
-			continue
 		} else if base, ok := catalog.byID["gemini-3.8-flash"]; ok {
 			// Same verbatim-tier rule as applyGemini37: never collapse tiers
 			// into the shared bare-base throttle bucket.

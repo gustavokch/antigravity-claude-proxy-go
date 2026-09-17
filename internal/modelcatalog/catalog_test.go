@@ -735,3 +735,52 @@ func TestGemini37FlashBaseFallbackSendsTierVerbatim(t *testing.T) {
 		t.Fatalf("3.7 high base fallback: UpstreamID=%q, want verbatim tier ID", model.GetUpstreamID())
 	}
 }
+
+// When upstream publishes BOTH direct tier IDs (gemini-3.8-flash-high) AND
+// the tiered entry (gemini-3.8-flash-tiered), the direct tier ID must take
+// precedence and be kept verbatim. Collapsing direct tiers into the tiered
+// entry causes all traffic across tiers to saturate a single upstream quota bucket.
+func TestDirectTierTakesPrecedenceOverTieredWhenBothPresent(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low",
+			"gemini-3.7-flash-high","gemini-3.7-flash-medium","gemini-3.7-flash-low"
+		]}]}],
+		"models":{
+			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-tiered":{"supportsThinking":true,"thinkingBudget":-1,"minThinkingBudget":32,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.7-flash-high":{"displayName":"Gemini 3.7 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.7-flash-tiered":{"supportsThinking":true,"thinkingBudget":-1,"minThinkingBudget":32,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		requested  string
+		wantID     string
+		wantUpstream string
+	}{
+		{"gemini-3.8-flash-high", "gemini-3.8-flash-high", "gemini-3.8-flash-high"},
+		{"gemini-3.8-flash-medium", "gemini-3.8-flash-medium", "gemini-3.8-flash-medium"},
+		{"gemini-3.8-flash-low", "gemini-3.8-flash-low", "gemini-3.8-flash-low"},
+		{"gemini-3.7-flash-high", "gemini-3.7-flash-high", "gemini-3.7-flash-high"},
+	} {
+		model, err := catalog.Resolve(tc.requested)
+		if err != nil {
+			t.Fatalf("Resolve(%q) failed: %v", tc.requested, err)
+		}
+		if model.ID != tc.wantID {
+			t.Errorf("Resolve(%q).ID = %q, want %q", tc.requested, model.ID, tc.wantID)
+		}
+		if model.GetUpstreamID() != tc.wantUpstream {
+			t.Errorf("Resolve(%q).GetUpstreamID() = %q, want direct tier %q", tc.requested, model.GetUpstreamID(), tc.wantUpstream)
+		}
+	}
+}
+
