@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,9 @@ type DispatcherOptions struct {
 	// Forensics429 records every upstream 429 verbatim (append-only JSONL)
 	// when non-nil and enabled. Nil disables recording.
 	Forensics429 *Forensics429Recorder
+	// Random supplies the jitter fraction for Decorrelate. Nil uses
+	// math/rand/v2, which is safe for concurrent use. Tests inject a constant.
+	Random func() float64
 }
 
 type accountClient struct {
@@ -73,6 +77,7 @@ type Dispatcher struct {
 	requestDelay             time.Duration
 	sleep                    SleepFunc
 	now                      func() time.Time
+	random                   func() float64
 	modelCacheTTL            time.Duration
 	forensics429             *Forensics429Recorder
 
@@ -115,6 +120,9 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 	if options.ModelCacheTTL <= 0 {
 		options.ModelCacheTTL = 5 * time.Minute
 	}
+	if options.Random == nil {
+		options.Random = rand.Float64
+	}
 	return &Dispatcher{
 		manager:                  options.Manager,
 		resolver:                 options.Resolver,
@@ -130,6 +138,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		requestDelay:             options.RequestDelay,
 		sleep:                    options.Sleep,
 		now:                      options.Now,
+		random:                   options.Random,
 		modelCacheTTL:            options.ModelCacheTTL,
 		forensics429:             options.Forensics429,
 		clients:                  make(map[string]accountClient),
@@ -389,7 +398,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				reason := ClassifyError(upstreamError.Body, upstreamError.StatusCode)
 				reset := ParseResetTime(upstreamError.Header, upstreamError.Body, dispatcher.now())
 				failures := dispatcher.manager.FailureCount(account)
-				wait := SmartBackoff(reason, reset, failures)
+				wait := Decorrelate(SmartBackoff(reason, reset, failures), dispatcher.random)
 				if reason == ReasonCapacity && capacityAttempt >= dispatcher.maxCapacityRetries {
 					dispatcher.manager.MarkRateLimited(account, model, 15*time.Second)
 					break
@@ -619,7 +628,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 	case http.StatusBadRequest, http.StatusNotFound:
 		return false
 	case http.StatusTooManyRequests:
-		wait := SmartBackoff(ClassifyError(body, upstreamError.StatusCode), ParseResetTime(upstreamError.Header, body, dispatcher.now()), dispatcher.manager.FailureCount(account))
+		wait := Decorrelate(SmartBackoff(ClassifyError(body, upstreamError.StatusCode), ParseResetTime(upstreamError.Header, body, dispatcher.now()), dispatcher.manager.FailureCount(account)), dispatcher.random)
 		dispatcher.record429(account, "", model, upstreamError, wait, dispatcher.manager.FailureCount(account))
 		dispatcher.manager.MarkRateLimited(account, model, wait)
 		return true
