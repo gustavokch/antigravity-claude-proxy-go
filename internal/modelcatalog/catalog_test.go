@@ -679,3 +679,59 @@ func TestCatalogByIDKeysAreLowercase(t *testing.T) {
 		}
 	}
 }
+
+// When upstream lists only the bare base (no tiered entry, no direct tier
+// entries), the tiers must still go upstream under their own IDs: upstream
+// accepts gemini-3.x-flash-{high,medium,low} verbatim and throttles per
+// model-ID bucket, so collapsing every tier into the bare base ID sends all
+// tier traffic into the one saturated bucket (the 2026-09-17 429 waves).
+func TestGemini38FlashBaseFallbackSendsTierVerbatim(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash",
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash"]}]}],
+		"models":{
+			"gemini-3.8-flash":{"displayName":"Gemini 3.8 Flash","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, level := range map[string]string{
+		"gemini-3.8-flash-high":   "HIGH",
+		"gemini-3.8-flash-medium": "MEDIUM",
+		"gemini-3.8-flash-low":    "LOW",
+	} {
+		model, err := catalog.Resolve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if model.GetUpstreamID() != id {
+			t.Fatalf("%s: UpstreamID=%q, want verbatim tier ID", id, model.GetUpstreamID())
+		}
+		if model.ThinkingLevel != level {
+			t.Fatalf("%s: ThinkingLevel=%q, want %q", id, model.ThinkingLevel, level)
+		}
+	}
+}
+
+func TestGemini37FlashBaseFallbackSendsTierVerbatim(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.7-flash",
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.7-flash"]}]}],
+		"models":{
+			"gemini-3.7-flash":{"displayName":"Gemini 3.7 Flash","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := catalog.Resolve("gemini-3.7-flash-high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.GetUpstreamID() != "gemini-3.7-flash-high" {
+		t.Fatalf("3.7 high base fallback: UpstreamID=%q, want verbatim tier ID", model.GetUpstreamID())
+	}
+}

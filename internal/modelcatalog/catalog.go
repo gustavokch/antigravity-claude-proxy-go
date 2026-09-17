@@ -546,8 +546,12 @@ func applyGemini37(catalog *Catalog, models map[string]modelDetails) {
 			// Upstream publishes this tier directly; keep it verbatim.
 			continue
 		} else if base, ok := catalog.byID["gemini-3.7-flash"]; ok {
+			// Send the tier ID verbatim, not the bare base: upstream accepts
+			// gemini-3.x-flash-{high,medium,low} and throttles per model-ID
+			// bucket, so mapping tiers onto the base ID collapses all tier
+			// traffic into the one saturated bucket (2026-09-17 429 waves).
 			model = base
-			model.UpstreamID = "gemini-3.7-flash"
+			model.UpstreamID = variant.id
 			model.ThinkingLevel = variant.level
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
 			model = base
@@ -603,8 +607,10 @@ func applyGemini38(catalog *Catalog, models map[string]modelDetails) {
 			// Upstream publishes this tier directly; keep it verbatim.
 			continue
 		} else if base, ok := catalog.byID["gemini-3.8-flash"]; ok {
+			// Same verbatim-tier rule as applyGemini37: never collapse tiers
+			// into the shared bare-base throttle bucket.
 			model = base
-			model.UpstreamID = "gemini-3.8-flash"
+			model.UpstreamID = variant.id
 			model.ThinkingLevel = variant.level
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
 			model = base

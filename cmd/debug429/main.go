@@ -68,7 +68,10 @@ func main() {
 			"model":   *model,
 			"request": request,
 		}
-		_, requestErr := client.StreamGenerateContent(ctx, payload, cloudcode.RequestOptions{}, func(event cloudcode.SSEEvent) error { return nil })
+		_, requestErr := client.StreamGenerateContent(ctx, payload, cloudcode.RequestOptions{}, func(event cloudcode.SSEEvent) error {
+			fmt.Printf("  event: %.300s\n", string(event.Data))
+			return nil
+		})
 		if requestErr == nil {
 			fmt.Println("  OK: request succeeded")
 		} else {
