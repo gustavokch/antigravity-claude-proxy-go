@@ -538,7 +538,15 @@
     <!-- Clear stats confirm dialog -->
     <div x-cloak x-show="clearConfirm.open" x-transition.opacity.duration.150ms
         class="bp-modal-overlay" @keydown.escape.window="cancelClear()">
-        <div class="bp-modal-box" role="alertdialog" aria-modal="true" :aria-label="clearConfirm.title">
+        <div class="bp-modal-box" role="alertdialog" aria-modal="true" :aria-label="clearConfirm.title"
+            @keydown.tab.prevent="
+                const btns = Array.from($el.querySelectorAll('button'));
+                if (btns.length) {
+                    const i = btns.indexOf(document.activeElement);
+                    const step = $event.shiftKey ? -1 : 1;
+                    btns[(i + step + btns.length) % btns.length].focus();
+                }
+            ">
             <h4 class="bp-confirm-title" x-text="clearConfirm.title"></h4>
             <p class="bp-confirm-body mt-2" x-text="clearConfirm.body"></p>
             <div class="bp-modal-actions">
