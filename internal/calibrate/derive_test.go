@@ -293,6 +293,21 @@ func TestFragmentDerivesEveryKeyFromAFullSample(t *testing.T) {
 	}
 }
 
+func TestBackoffTiersAscendOnAShortWindow(t *testing.T) {
+	result := Derive(Journal{})
+	result.RecoverDaily = 4 * time.Second
+
+	tiers, ok := result.Fragment()["capacityBackoffTiersMs"].([]int)
+	if !ok {
+		t.Fatalf("capacityBackoffTiersMs: got %T, want []int", result.Fragment()["capacityBackoffTiersMs"])
+	}
+	for index := 1; index < len(tiers); index++ {
+		if tiers[index] < tiers[index-1] {
+			t.Fatalf("tiers: got %v, want an ascending ladder — a later attempt must not wait less", tiers)
+		}
+	}
+}
+
 func TestRequestDelayNeverDropsBelowTheFloor(t *testing.T) {
 	entries := rejects("a@example.com", 5, 4, 1000)
 

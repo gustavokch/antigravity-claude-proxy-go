@@ -204,8 +204,11 @@ func (result Result) Fragment() map[string]any {
 	if window := result.window(); window > 0 {
 		windowMs := int(window / time.Millisecond)
 		fragment["sharedThrottleWindowMs"] = windowMs
+		// The first rung is a fixed short wait, but it must not overshoot the
+		// measured window: a ladder that waits less on its second attempt than
+		// on its first is not a backoff.
 		fragment["capacityBackoffTiersMs"] = []int{
-			firstBackoffTier,
+			min(firstBackoffTier, windowMs),
 			min(maxBackoffTierMs, windowMs),
 			min(maxBackoffTierMs, windowMs*2),
 		}
