@@ -143,3 +143,21 @@ during review; the notes are kept as written and corrected here rather than rewr
   so account exhaustion says nothing about whether their requests would hang. Streaming
   requests are excluded for the same class of reason: the canned verdict is a JSON body
   and a caller awaiting `text/event-stream` could not parse it.
+
+## Re-capturing fingerprints
+
+`scripts/run-claude-mitm-sandbox.sh` runs Claude Code inside a Podman
+container pointed at the host proxy, so new classifier variants can be
+captured without disturbing the host's Claude Code install.
+
+Procedure:
+
+1. Start `antigravity-proxy` on port 8080.
+2. Run `./scripts/run-claude-mitm-sandbox.sh`.
+3. Ask the session to run a shell command and approve the tool call.
+4. Read the captured bodies from the proxy log stream.
+
+The container never mounts `~/.claude`, and its workspace is a `mktemp -d`
+directory discarded when the session exits. Fingerprints recorded here are
+verbatim quotes from observed traffic; nothing in this file is inferred.
+
