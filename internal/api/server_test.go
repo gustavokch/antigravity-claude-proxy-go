@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
@@ -240,7 +242,7 @@ func TestInitialUpstreamErrorStaysJSON(t *testing.T) {
 	request.Header.Set("x-api-key", "local-key")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || response.Header().Get("Content-Type") != "application/json" {
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("status=%d content-type=%q body=%s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
 	}
 	if !strings.Contains(response.Body.String(), "RESOURCE_EXHAUSTED") {
@@ -1796,5 +1798,53 @@ func TestDeriveOpenRouterMaxOutput_MatchesLikeGetModelPricing(t *testing.T) {
 		if got := deriveOpenRouterMaxOutput(requested); got != maxOut {
 			t.Errorf("deriveOpenRouterMaxOutput(%q) = %d, expected %d (should match like GetModelPricing)", requested, got, maxOut)
 		}
+	}
+}
+
+// Claude Code treats 400 as permanently invalid and never retries it. An
+// exhausted pool is temporary, so it must answer 429 with Retry-After.
+func TestClassifyErrorMapsPoolExhaustionTo429(t *testing.T) {
+	err := &accounts.RateLimitError{Model: "gemini-3.8-flash-high", RetryAfter: 42 * time.Second, Shared: true}
+	status, kind, _ := classifyError(err)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("classifyError status = %d, want 429", status)
+	}
+	if kind != "rate_limit_error" {
+		t.Fatalf("classifyError kind = %q, want rate_limit_error", kind)
+	}
+}
+
+func TestClassifyErrorMapsUpstream429To429(t *testing.T) {
+	err := &cloudcode.HTTPError{StatusCode: http.StatusTooManyRequests, Status: "429", Body: "RESOURCE_EXHAUSTED"}
+	status, kind, _ := classifyError(err)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("classifyError status = %d, want 429", status)
+	}
+	if kind != "rate_limit_error" {
+		t.Fatalf("classifyError kind = %q, want rate_limit_error", kind)
+	}
+}
+
+// Retry-After is rounded up: rounding down would invite a retry before the
+// pool is ready, which re-enters the throttle.
+func TestRetryAfterSecondsRoundsUp(t *testing.T) {
+	err := &accounts.RateLimitError{Model: "m", RetryAfter: 1500 * time.Millisecond}
+	if got := retryAfterSeconds(err); got != 2 {
+		t.Fatalf("retryAfterSeconds = %d, want 2", got)
+	}
+}
+
+func TestRetryAfterSecondsReadsUpstreamHeader(t *testing.T) {
+	header := http.Header{}
+	header.Set("Retry-After", "17")
+	err := &cloudcode.HTTPError{StatusCode: http.StatusTooManyRequests, Header: header}
+	if got := retryAfterSeconds(err); got != 17 {
+		t.Fatalf("retryAfterSeconds = %d, want 17", got)
+	}
+}
+
+func TestRetryAfterSecondsIsZeroForOtherErrors(t *testing.T) {
+	if got := retryAfterSeconds(errors.New("boom")); got != 0 {
+		t.Fatalf("retryAfterSeconds = %d, want 0", got)
 	}
 }

@@ -100,36 +100,40 @@ type AccountSelectionConfig struct {
 }
 
 type Config struct {
-	APIKey                   string                    `json:"apiKey,omitempty"`
-	WebUIPassword            string                    `json:"webuiPassword,omitempty"`
-	Debug                    bool                      `json:"debug,omitempty"`
-	DevMode                  bool                      `json:"devMode,omitempty"`
-	LogLevel                 string                    `json:"logLevel,omitempty"`
-	MaxRetries               int                       `json:"maxRetries,omitempty"`
-	RetryBaseMs              int                       `json:"retryBaseMs,omitempty"`
-	RetryMaxMs               int                       `json:"retryMaxMs,omitempty"`
-	PersistTokenCache        bool                      `json:"persistTokenCache,omitempty"`
-	DefaultCooldownMs        int                       `json:"defaultCooldownMs,omitempty"`
-	MaxWaitBeforeErrorMs     int                       `json:"maxWaitBeforeErrorMs,omitempty"`
-	MaxAccounts              int                       `json:"maxAccounts,omitempty"`
-	GlobalQuotaThreshold     float64                   `json:"globalQuotaThreshold,omitempty"`
-	RequestThrottlingEnabled bool                      `json:"requestThrottlingEnabled,omitempty"`
-	RequestDelayMs           int                       `json:"requestDelayMs,omitempty"`
-	RateLimitDedupWindowMs   int                       `json:"rateLimitDedupWindowMs,omitempty"`
-	MaxConsecutiveFailures   int                       `json:"maxConsecutiveFailures,omitempty"`
-	ExtendedCooldownMs       int                       `json:"extendedCooldownMs,omitempty"`
-	MaxCapacityRetries       int                       `json:"maxCapacityRetries,omitempty"`
-	SwitchAccountDelayMs     int                       `json:"switchAccountDelayMs,omitempty"`
-	CapacityBackoffTiersMs   []int                     `json:"capacityBackoffTiersMs,omitempty"`
-	CustomEndpoints          map[string]EndpointConfig `json:"customEndpoints,omitempty"`
-	ModelMapping             map[string]any            `json:"modelMapping,omitempty"`
-	OpenRouter               OpenRouterConfig          `json:"openrouter,omitempty"`
-	Kimi                     KimiConfig                `json:"kimi,omitempty"`
-	AccountSelection         AccountSelectionConfig    `json:"accountSelection,omitempty"`
-	Headroom                 HeadroomConfig            `json:"headroom,omitempty"`
-	ClaudeCode               claudecode.Config         `json:"claudecode,omitempty"`
-	CacheBump                CacheBumpConfig           `json:"cacheBump,omitempty"`
-	Classifier               ClassifierConfig          `json:"classifier"`
+	APIKey                   string  `json:"apiKey,omitempty"`
+	WebUIPassword            string  `json:"webuiPassword,omitempty"`
+	Debug                    bool    `json:"debug,omitempty"`
+	DevMode                  bool    `json:"devMode,omitempty"`
+	LogLevel                 string  `json:"logLevel,omitempty"`
+	MaxRetries               int     `json:"maxRetries,omitempty"`
+	RetryBaseMs              int     `json:"retryBaseMs,omitempty"`
+	RetryMaxMs               int     `json:"retryMaxMs,omitempty"`
+	PersistTokenCache        bool    `json:"persistTokenCache,omitempty"`
+	DefaultCooldownMs        int     `json:"defaultCooldownMs,omitempty"`
+	MaxWaitBeforeErrorMs     int     `json:"maxWaitBeforeErrorMs,omitempty"`
+	MaxAccounts              int     `json:"maxAccounts,omitempty"`
+	GlobalQuotaThreshold     float64 `json:"globalQuotaThreshold,omitempty"`
+	RequestThrottlingEnabled bool    `json:"requestThrottlingEnabled,omitempty"`
+	RequestDelayMs           int     `json:"requestDelayMs,omitempty"`
+	// Upstream429ForensicsEnabled persists every upstream 429 verbatim to
+	// <configDir>/forensics/upstream-429.jsonl (R1 of the
+	// cloudcode-429-throttle-dimension spec). Off by default.
+	Upstream429ForensicsEnabled bool                      `json:"upstream429ForensicsEnabled,omitempty"`
+	SharedThrottleWindowMs      int                       `json:"sharedThrottleWindowMs,omitempty"`
+	MaxConsecutiveFailures      int                       `json:"maxConsecutiveFailures,omitempty"`
+	ExtendedCooldownMs          int                       `json:"extendedCooldownMs,omitempty"`
+	MaxCapacityRetries          int                       `json:"maxCapacityRetries,omitempty"`
+	SwitchAccountDelayMs        int                       `json:"switchAccountDelayMs,omitempty"`
+	CapacityBackoffTiersMs      []int                     `json:"capacityBackoffTiersMs,omitempty"`
+	CustomEndpoints             map[string]EndpointConfig `json:"customEndpoints,omitempty"`
+	ModelMapping                map[string]any            `json:"modelMapping,omitempty"`
+	OpenRouter                  OpenRouterConfig          `json:"openrouter,omitempty"`
+	Kimi                        KimiConfig                `json:"kimi,omitempty"`
+	AccountSelection            AccountSelectionConfig    `json:"accountSelection,omitempty"`
+	Headroom                    HeadroomConfig            `json:"headroom,omitempty"`
+	ClaudeCode                  claudecode.Config         `json:"claudecode,omitempty"`
+	CacheBump                   CacheBumpConfig           `json:"cacheBump,omitempty"`
+	Classifier                  ClassifierConfig          `json:"classifier"`
 }
 
 type ClassifierActionMode string
@@ -249,7 +253,7 @@ func DefaultConfig() Config {
 		MaxAccounts:            10,
 		GlobalQuotaThreshold:   0,
 		RequestDelayMs:         200,
-		RateLimitDedupWindowMs: 2000,
+		SharedThrottleWindowMs: 10000,
 		MaxConsecutiveFailures: 3,
 		ExtendedCooldownMs:     60000,
 		MaxCapacityRetries:     5,

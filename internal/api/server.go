@@ -3130,6 +3130,9 @@ func (server *Server) writeError(writer http.ResponseWriter, err error) {
 		server.logger.Error("API request failed", "error", err)
 	}
 	status, kind, message := classifyError(err)
+	if seconds := retryAfterSeconds(err); seconds > 0 {
+		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
+	}
 	writeAPIError(writer, status, kind, message)
 }
 
@@ -3146,6 +3149,10 @@ func classifyError(err error) (int, string, string) {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return http.StatusGatewayTimeout, "api_error", "Request deadline exceeded while contacting the upstream."
 	}
+	var rateLimitError *accounts.RateLimitError
+	if errors.As(err, &rateLimitError) {
+		return http.StatusTooManyRequests, "rate_limit_error", rateLimitError.Error()
+	}
 	var selectionError *modelcatalog.SelectionError
 	if errors.As(err, &selectionError) {
 		return http.StatusBadRequest, "invalid_request_error", selectionError.Error()
@@ -3158,7 +3165,7 @@ func classifyError(err error) (int, string, string) {
 		case http.StatusForbidden:
 			return http.StatusForbidden, "permission_error", upstreamError.Error()
 		case http.StatusTooManyRequests:
-			return http.StatusBadRequest, "invalid_request_error", "RESOURCE_EXHAUSTED: capacity is exhausted for this model. Please wait for quota to reset."
+			return http.StatusTooManyRequests, "rate_limit_error", "RESOURCE_EXHAUSTED: the upstream throttled this model. Retry after the interval in Retry-After."
 		case http.StatusBadRequest, http.StatusNotFound:
 			return http.StatusBadRequest, "invalid_request_error", upstreamError.Error()
 		default:
@@ -3169,6 +3176,24 @@ func classifyError(err error) (int, string, string) {
 		return http.StatusBadGateway, "api_error", err.Error()
 	}
 	return http.StatusInternalServerError, "api_error", err.Error()
+}
+
+func retryAfterSeconds(err error) int {
+	var rateLimitError *accounts.RateLimitError
+	if errors.As(err, &rateLimitError) && rateLimitError.RetryAfter > 0 {
+		return ceilSeconds(rateLimitError.RetryAfter)
+	}
+	var upstreamError *cloudcode.HTTPError
+	if errors.As(err, &upstreamError) && upstreamError.StatusCode == http.StatusTooManyRequests {
+		if wait := accounts.ParseResetTime(upstreamError.Header, upstreamError.Body, time.Now()); wait > 0 {
+			return ceilSeconds(wait)
+		}
+	}
+	return 0
+}
+
+func ceilSeconds(value time.Duration) int {
+	return int((value + time.Second - 1) / time.Second)
 }
 
 func writeAPIError(writer http.ResponseWriter, status int, kind, message string) {

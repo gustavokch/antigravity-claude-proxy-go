@@ -177,6 +177,43 @@ func TestBuilderUsesStablePerAccountSessionAndExactEnvelope(t *testing.T) {
 	}
 }
 
+// TestBuilderDropsAnthropicBillingHeaderSystemPart pins the fix for upstream
+// returning a disguised 429 RESOURCE_EXHAUSTED. Bisection of an intercepted
+// payload (2026-09-17) showed the literal token "x-anthropic-billing-header"
+// inside systemInstruction.parts is what upstream rejects: the same request
+// with the value alone, with "x-anthropic-foo:", or with "billing-header:"
+// all returned 200 on both accounts, while the header name returned 429 on
+// both regardless of its value. It is client identity leakage, not quota.
+func TestBuilderDropsAnthropicBillingHeaderSystemPart(t *testing.T) {
+	t.Parallel()
+	request := map[string]any{
+		"model": "gemini-3.5-flash-low",
+		"system": []any{
+			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.267.d7f; cc_entrypoint=cli;"},
+			map[string]any{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+		},
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}
+	builder := NewBuilder()
+	built := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
+	parts := asSlice(asMap(asMap(built["request"])["systemInstruction"])["parts"])
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		texts = append(texts, stringValue(asMap(part)["text"]))
+	}
+	if len(texts) != 3 {
+		t.Fatalf("parts = %#v", texts)
+	}
+	if texts[2] != "You are Claude Code, Anthropic's official CLI for Claude." {
+		t.Fatalf("client part dropped or reordered: %#v", texts)
+	}
+	for _, text := range texts {
+		if strings.Contains(strings.ToLower(text), "x-anthropic-billing-header") {
+			t.Fatalf("billing header leaked upstream: %q", text)
+		}
+	}
+}
+
 // TestGeminiToolSignatureFallsBackToSkipSentinel pins that a tool call whose
 // signature the client stripped converts to the documented bypass sentinel and
 // never to a value recovered from process-local state.

@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -131,6 +132,35 @@ func ExtractVerificationURL(body string) string {
 	return strings.TrimRight(match, ",.)}>]")
 }
 
+// rateLimitTiers escalates the guessed cooldown when Google returns a 429
+// carrying no Retry-After and no quotaResetDelay. The old flat 30 s produced
+// roughly 38 doomed upstream calls per account across the 19-minute wave of
+// 2026-09-17, and on a sliding-window throttle every rejected call can extend
+// the window. The first tier stays above 10 s deliberately: the dispatcher
+// fast-retries the same account when the computed wait is <= 10 s.
+var rateLimitTiers = []time.Duration{
+	30 * time.Second,
+	time.Minute,
+	2 * time.Minute,
+	5 * time.Minute,
+	10 * time.Minute,
+}
+
+// jitterFraction is how much Decorrelate may add, as a fraction of the wait.
+const jitterFraction = 0.25
+
+// Decorrelate spreads a cooldown by adding 0–25% of it. Two accounts rejected
+// in the same second are otherwise marked for the same duration and wake in
+// lockstep, re-entering the same throttle together. Jitter is additive only —
+// subtracting could retry before a server-specified reset. A nil source
+// returns the input unchanged so tests stay deterministic.
+func Decorrelate(wait time.Duration, random func() float64) time.Duration {
+	if wait <= 0 || random == nil {
+		return wait
+	}
+	return wait + time.Duration(float64(wait)*jitterFraction*random())
+}
+
 func SmartBackoff(reason ErrorReason, serverReset time.Duration, failures int) time.Duration {
 	if serverReset > 0 {
 		return max(serverReset, 2*time.Second)
@@ -140,7 +170,7 @@ func SmartBackoff(reason ErrorReason, serverReset time.Duration, failures int) t
 		tiers := []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour}
 		return tiers[min(failures, len(tiers)-1)]
 	case ReasonRateLimit:
-		return 30 * time.Second
+		return rateLimitTiers[min(failures, len(rateLimitTiers)-1)]
 	case ReasonCapacity:
 		return 15 * time.Second
 	case ReasonServer:
@@ -167,4 +197,23 @@ func containsAny(value string, candidates ...string) bool {
 		}
 	}
 	return false
+}
+
+// RateLimitError reports that the pool cannot serve a model right now and
+// cannot wait the throttle out inside maxWait. It carries the reset so the
+// API layer can answer 429 + Retry-After: a bare 400 tells Claude Code the
+// request is permanently invalid and it never retries.
+type RateLimitError struct {
+	Model      string
+	RetryAfter time.Duration
+	Shared     bool
+}
+
+func (err *RateLimitError) Error() string {
+	scope := "account"
+	if err.Shared {
+		scope = "pool-wide"
+	}
+	return fmt.Sprintf("RESOURCE_EXHAUSTED: %s rate limit on %s; retry after %s",
+		scope, err.Model, err.RetryAfter.Round(time.Second))
 }

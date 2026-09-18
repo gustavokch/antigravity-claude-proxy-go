@@ -420,4 +420,3 @@ func TestBuildStub_StopSequencePresent(t *testing.T) {
 		t.Errorf("expected 'stop_sequence' to be null/nil, got: %v", val)
 	}
 }
-

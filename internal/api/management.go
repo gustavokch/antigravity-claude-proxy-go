@@ -277,6 +277,12 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 
 	if format == "table" {
 		var buf bytes.Buffer
+		if server.accountManager != nil {
+			if line := formatSharedThrottleLine(server.accountManager.SharedThrottles()); line != "" {
+				fmt.Fprintln(&buf, line)
+				fmt.Fprintln(&buf)
+			}
+		}
 		w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "EMAIL\tSTATUS\tTIER\tPROJECT ID\tRATE LIMITS")
 		for _, acc := range accountsList {
@@ -1719,4 +1725,23 @@ func (server *Server) handleKimiModelsFetch(writer http.ResponseWriter, request 
 		"models": models,
 		"total":  len(models),
 	})
+}
+
+// formatSharedThrottleLine renders the pool-wide throttles above the
+// per-account table. Without it a shared throttle is indistinguishable from
+// two independent per-account rate limits.
+func formatSharedThrottleLine(throttles map[string]time.Duration) string {
+	if len(throttles) == 0 {
+		return ""
+	}
+	models := make([]string, 0, len(throttles))
+	for model := range throttles {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		parts = append(parts, fmt.Sprintf("%s (%s left)", model, throttles[model].Round(time.Second)))
+	}
+	return "SHARED THROTTLE: " + strings.Join(parts, ", ")
 }

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +49,12 @@ type DispatcherOptions struct {
 	Sleep                    SleepFunc
 	Now                      func() time.Time
 	ModelCacheTTL            time.Duration
+	// Forensics429 records every upstream 429 verbatim (append-only JSONL)
+	// when non-nil and enabled. Nil disables recording.
+	Forensics429 *Forensics429Recorder
+	// Random supplies the jitter fraction for Decorrelate. Nil uses
+	// math/rand/v2, which is safe for concurrent use. Tests inject a constant.
+	Random func() float64
 }
 
 type accountClient struct {
@@ -69,7 +77,9 @@ type Dispatcher struct {
 	requestDelay             time.Duration
 	sleep                    SleepFunc
 	now                      func() time.Time
+	random                   func() float64
 	modelCacheTTL            time.Duration
+	forensics429             *Forensics429Recorder
 
 	mu        sync.RWMutex
 	clients   map[string]accountClient
@@ -110,6 +120,9 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 	if options.ModelCacheTTL <= 0 {
 		options.ModelCacheTTL = 5 * time.Minute
 	}
+	if options.Random == nil {
+		options.Random = rand.Float64
+	}
 	return &Dispatcher{
 		manager:                  options.Manager,
 		resolver:                 options.Resolver,
@@ -125,7 +138,9 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		requestDelay:             options.RequestDelay,
 		sleep:                    options.Sleep,
 		now:                      options.Now,
+		random:                   options.Random,
 		modelCacheTTL:            options.ModelCacheTTL,
+		forensics429:             options.Forensics429,
 		clients:                  make(map[string]accountClient),
 	}, nil
 }
@@ -158,6 +173,13 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 		dispatcher.requestDelay = time.Duration(cfg.RequestDelayMs) * time.Millisecond
 	} else {
 		dispatcher.requestDelay = 0
+	}
+	if cfg.Upstream429ForensicsEnabled {
+		if dispatcher.forensics429 == nil || !dispatcher.forensics429.Enabled() {
+			dispatcher.forensics429 = NewForensics429Recorder(filepath.Join(config.GetConfigDir(), "forensics", "upstream-429.jsonl"))
+		}
+	} else {
+		dispatcher.forensics429 = nil
 	}
 }
 
@@ -299,7 +321,11 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				continue
 			}
 			if wait > dispatcher.maxWait {
-				return cloudcode.Response{}, fmt.Errorf("RESOURCE_EXHAUSTED: rate limited on %s; quota resets after %s", model, wait.Round(time.Second))
+				return cloudcode.Response{}, &RateLimitError{
+					Model:      model,
+					RetryAfter: wait,
+					Shared:     dispatcher.manager.SharedThrottleWait(model) > 0,
+				}
 			}
 			return cloudcode.Response{}, errors.New("no accounts available")
 		}
@@ -376,7 +402,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				reason := ClassifyError(upstreamError.Body, upstreamError.StatusCode)
 				reset := ParseResetTime(upstreamError.Header, upstreamError.Body, dispatcher.now())
 				failures := dispatcher.manager.FailureCount(account)
-				wait := SmartBackoff(reason, reset, failures)
+				wait := Decorrelate(SmartBackoff(reason, reset, failures), dispatcher.random)
 				if reason == ReasonCapacity && capacityAttempt >= dispatcher.maxCapacityRetries {
 					dispatcher.manager.MarkRateLimited(account, model, 15*time.Second)
 					break
@@ -393,7 +419,8 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 						return cloudcode.Response{}, err
 					}
 				}
-				slog.Warn("upstream 429", "model", model, "reason", reason, "wait", wait.Round(time.Second), "serverReset", reset, "failures", failures)
+				slog.Warn("upstream 429", "model", model, "reason", reason, "wait", wait.Round(time.Second), "serverReset", reset, "failures", failures, "body", truncateBodyForLog(upstreamError.Body))
+				dispatcher.record429(account, project, model, upstreamError, wait, failures)
 				dispatcher.manager.MarkRateLimited(account, model, wait)
 				break
 			}
@@ -605,7 +632,8 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 	case http.StatusBadRequest, http.StatusNotFound:
 		return false
 	case http.StatusTooManyRequests:
-		wait := SmartBackoff(ClassifyError(body, upstreamError.StatusCode), ParseResetTime(upstreamError.Header, body, dispatcher.now()), dispatcher.manager.FailureCount(account))
+		wait := Decorrelate(SmartBackoff(ClassifyError(body, upstreamError.StatusCode), ParseResetTime(upstreamError.Header, body, dispatcher.now()), dispatcher.manager.FailureCount(account)), dispatcher.random)
+		dispatcher.record429(account, "", model, upstreamError, wait, dispatcher.manager.FailureCount(account))
 		dispatcher.manager.MarkRateLimited(account, model, wait)
 		return true
 	default:
@@ -678,6 +706,46 @@ func findHTTPError(err error) *cloudcode.HTTPError {
 		return upstreamError
 	}
 	return nil
+}
+
+// maxLoggedBodyLen caps upstream error bodies in logs: enough to keep the
+// quota dimension and message, short enough that an error page cannot flood
+// the log.
+const maxLoggedBodyLen = 512
+
+func truncateBodyForLog(body string) string {
+	compact := strings.Join(strings.Fields(body), " ")
+	if len(compact) <= maxLoggedBodyLen {
+		return compact
+	}
+	return compact[:maxLoggedBodyLen]
+}
+
+// record429 persists one upstream 429 verbatim for later throttle-dimension
+// analysis. No-op when forensics is disabled.
+func (dispatcher *Dispatcher) record429(account *Account, project, model string, upstreamError *cloudcode.HTTPError, wait time.Duration, failures int) {
+	dispatcher.mu.RLock()
+	recorder := dispatcher.forensics429
+	dispatcher.mu.RUnlock()
+	if recorder == nil || !recorder.Enabled() {
+		return
+	}
+	email := ""
+	if account != nil {
+		email = account.Email
+	}
+	recorder.Record(Forensics429Entry{
+		Timestamp:   dispatcher.now(),
+		Account:     email,
+		Project:     project,
+		Model:       model,
+		Endpoint:    upstreamError.Endpoint,
+		Status:      upstreamError.StatusCode,
+		Headers:     forensicsHeaders(upstreamError.Header),
+		Body:        upstreamError.Body,
+		AppliedWait: wait.Round(time.Second).String(),
+		Failures:    failures,
+	})
 }
 
 func isCanceled(err error) bool {

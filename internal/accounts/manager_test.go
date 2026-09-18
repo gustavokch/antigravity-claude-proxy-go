@@ -549,3 +549,187 @@ func TestMarkSuccess_EmptyModelClearsListingNamespace(t *testing.T) {
 		t.Fatal("MarkSuccess(account, \"[1m]\") cleared the listing namespace")
 	}
 }
+
+func sharedThrottleManager(t *testing.T, clock *time.Time, emails ...string) *Manager {
+	t.Helper()
+	pool := make([]*Account, 0, len(emails))
+	for _, email := range emails {
+		pool = append(pool, &Account{Email: email, Enabled: true})
+	}
+	manager, err := New(Options{
+		Accounts:             pool,
+		SharedThrottleWindow: 10 * time.Second,
+		Now:                  func() time.Time { return *clock },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager
+}
+
+// Two accounts rejected on the same model inside the window means one shared
+// bucket. Selecting must then return no account and a wait, so the dispatcher
+// waits instead of spending the rest of the pool on certain rejections.
+func TestSharedThrottleBlocksSelectionAfterTwoAccounts(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	clock = clock.Add(time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+
+	selection := manager.Select("gemini-3.8-flash-high")
+	if selection.Account != nil {
+		t.Fatalf("Select returned %s, want no account under a shared throttle", selection.Account.Email)
+	}
+	if selection.Wait <= 0 {
+		t.Fatal("Select must report a wait under a shared throttle")
+	}
+	if got := manager.Available("gemini-3.8-flash-high"); got != 0 {
+		t.Fatalf("Available = %d, want 0 under a shared throttle", got)
+	}
+}
+
+// One account rejected is an ordinary per-account rate limit. Rotation to the
+// other account must still happen.
+func TestSharedThrottleNotSetForASingleAccount(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+
+	selection := manager.Select("gemini-3.8-flash-high")
+	if selection.Account == nil || selection.Account.Email != "b@example.com" {
+		t.Fatal("one rejected account must still rotate to the other account")
+	}
+}
+
+// Rejections far apart are two independent per-account limits, not one
+// bucket. Treating them as shared would stall the pool on coincidence.
+func TestSharedThrottleNotSetOutsideTheWindow(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	clock = clock.Add(11 * time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+
+	if got := manager.SharedThrottleWait("gemini-3.8-flash-high"); got != 0 {
+		t.Fatalf("SharedThrottleWait = %s, want 0 for rejections outside the window", got)
+	}
+}
+
+// A success proves the bucket reopened; holding the pool-wide wait after that
+// would idle a working model.
+func TestMarkSuccessClearsTheSharedThrottle(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+	manager.MarkSuccess(manager.GetAllAccounts()[0], "gemini-3.8-flash-high")
+
+	if got := manager.SharedThrottleWait("gemini-3.8-flash-high"); got != 0 {
+		t.Fatalf("SharedThrottleWait after a success = %s, want 0", got)
+	}
+}
+
+// The wait must expire on its own even without a success.
+func TestSharedThrottleExpires(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+	clock = clock.Add(31 * time.Second)
+
+	if got := manager.SharedThrottleWait("gemini-3.8-flash-high"); got != 0 {
+		t.Fatalf("SharedThrottleWait after expiry = %s, want 0", got)
+	}
+	if manager.Select("gemini-3.8-flash-high").Account == nil {
+		t.Fatal("Select must return an account once the shared throttle expires")
+	}
+}
+
+// A shared throttle on one model must not stall a different model.
+func TestSharedThrottleIsPerModel(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+
+	if manager.Select("gemini-2.5-pro").Account == nil {
+		t.Fatal("a shared throttle on one model must not block another model")
+	}
+}
+
+// Intermediate Select calls during normal account rotation must not clear the
+// record of the first rejection before the second rejection arrives.
+func TestSharedThrottleBlocksSelectionAfterTwoAccountsWithIntermediateSelect(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	rot := manager.Select("gemini-3.8-flash-high")
+	if rot.Account == nil || rot.Account.Email != "b@example.com" {
+		t.Fatalf("expected rotation to b@example.com, got %#v", rot)
+	}
+	clock = clock.Add(time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+
+	selection := manager.Select("gemini-3.8-flash-high")
+	if selection.Account != nil {
+		t.Fatalf("Select returned %s, want no account under a shared throttle", selection.Account.Email)
+	}
+	if selection.Wait <= 0 {
+		t.Fatal("Select must report a wait under a shared throttle")
+	}
+	if got := manager.Available("gemini-3.8-flash-high"); got != 0 {
+		t.Fatalf("Available = %d, want 0 under a shared throttle", got)
+	}
+}
+
+// SharedThrottles reports active throttled models and remaining durations,
+// and returns an empty map when throttles are cleared or expired.
+func TestSharedThrottles(t *testing.T) {
+	clock := time.Date(2026, 9, 17, 17, 0, 0, 0, time.UTC)
+	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
+
+	if got := manager.SharedThrottles(); len(got) != 0 {
+		t.Fatalf("SharedThrottles initially = %v, want empty map", got)
+	}
+
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+
+	throttles := manager.SharedThrottles()
+	if len(throttles) != 1 {
+		t.Fatalf("SharedThrottles count = %d, want 1; got %v", len(throttles), throttles)
+	}
+	wait, ok := throttles["gemini-3.8-flash-high"]
+	if !ok {
+		t.Fatalf("SharedThrottles missing model gemini-3.8-flash-high; got %v", throttles)
+	}
+	if wait != 30*time.Second {
+		t.Fatalf("SharedThrottles wait = %v, want %v", wait, 30*time.Second)
+	}
+
+	// Cleared via MarkSuccess
+	manager.MarkSuccess(manager.GetAllAccounts()[0], "gemini-3.8-flash-high")
+	if got := manager.SharedThrottles(); len(got) != 0 {
+		t.Fatalf("SharedThrottles after MarkSuccess = %v, want empty map", got)
+	}
+
+	// Re-triggered and then expired
+	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
+	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
+	if got := manager.SharedThrottles(); len(got) != 1 {
+		t.Fatalf("SharedThrottles re-triggered count = %d, want 1", len(got))
+	}
+
+	clock = clock.Add(31 * time.Second)
+	if got := manager.SharedThrottles(); len(got) != 0 {
+		t.Fatalf("SharedThrottles after expiry = %v, want empty map", got)
+	}
+}

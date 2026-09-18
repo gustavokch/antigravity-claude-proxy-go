@@ -47,8 +47,8 @@ func TestParseResetTimeAndClassifiers(t *testing.T) {
 	if ClassifyError(bareRPM, 429) != ReasonRateLimit {
 		t.Fatalf("bare RESOURCE_EXHAUSTED classified as %s, want RATE_LIMIT_EXCEEDED", ClassifyError(bareRPM, 429))
 	}
-	if wait := SmartBackoff(ReasonRateLimit, 0, 3); wait != 30*time.Second {
-		t.Fatalf("RPM backoff with failures=3 was %s, want 30s", wait)
+	if wait := SmartBackoff(ReasonRateLimit, 0, 0); wait != 30*time.Second {
+		t.Fatalf("RPM backoff with failures=0 was %s, want 30s", wait)
 	}
 	if ClassifyError(`MODEL_CAPACITY_EXHAUSTED`, 429) != ReasonCapacity {
 		t.Fatal("capacity response was not classified as capacity")
@@ -341,6 +341,7 @@ func newTestDispatcher(t *testing.T, manager *Manager, resolver Resolver, client
 	t.Helper()
 	dispatcher, err := NewDispatcher(DispatcherOptions{
 		Manager: manager, Resolver: resolver, MaxRetries: 5, Sleep: sleep, Now: func() time.Time { return now },
+		Random: func() float64 { return 0 },
 		NewClient: func(token string) CloudClient {
 			client := clients[token]
 			if client == nil {
@@ -411,5 +412,56 @@ func TestDispatcherRequestThrottlingAndConfigUpdate(t *testing.T) {
 
 	if !throttled {
 		t.Errorf("expected 250ms throttling delay in sleep durations, got: %v", sleepDurations)
+	}
+}
+
+// A flat cooldown made the proxy re-probe a throttled model ~38 times across
+// the 2026-09-17 wave. Each tier must strictly exceed the previous one.
+func TestSmartBackoffRateLimitEscalates(t *testing.T) {
+	previous := time.Duration(0)
+	for failures := range len(rateLimitTiers) {
+		wait := SmartBackoff(ReasonRateLimit, 0, failures)
+		if wait <= previous {
+			t.Fatalf("SmartBackoff(failures=%d) = %s, want more than the previous tier %s", failures, wait, previous)
+		}
+		previous = wait
+	}
+	capped := SmartBackoff(ReasonRateLimit, 0, len(rateLimitTiers)+5)
+	if capped != rateLimitTiers[len(rateLimitTiers)-1] {
+		t.Fatalf("SmartBackoff past the last tier = %s, want the cap %s", capped, rateLimitTiers[len(rateLimitTiers)-1])
+	}
+}
+
+// The dispatcher fast-retries the SAME account when the computed wait is
+// <= 10s. A first tier at or below that boundary would turn a rate limit into
+// a tight retry loop on the account that was just rejected.
+func TestSmartBackoffRateLimitFirstTierExceedsFastRetryWindow(t *testing.T) {
+	if got := SmartBackoff(ReasonRateLimit, 0, 0); got <= 10*time.Second {
+		t.Fatalf("first rate-limit tier = %s, want more than 10s", got)
+	}
+}
+
+// Jitter must only add: shortening a server-specified reset would retry
+// before upstream said we may.
+func TestDecorrelateOnlyAdds(t *testing.T) {
+	base := 30 * time.Second
+	if got := Decorrelate(base, func() float64 { return 0 }); got != base {
+		t.Fatalf("Decorrelate at random=0 = %s, want %s", got, base)
+	}
+	got := Decorrelate(base, func() float64 { return 1 })
+	if got <= base {
+		t.Fatalf("Decorrelate at random=1 = %s, want more than %s", got, base)
+	}
+	if got > base+base/4 {
+		t.Fatalf("Decorrelate at random=1 = %s, want at most %s", got, base+base/4)
+	}
+}
+
+func TestDecorrelateHandlesNilSourceAndZero(t *testing.T) {
+	if got := Decorrelate(30*time.Second, nil); got != 30*time.Second {
+		t.Fatalf("Decorrelate with a nil source = %s, want the input unchanged", got)
+	}
+	if got := Decorrelate(0, func() float64 { return 1 }); got != 0 {
+		t.Fatalf("Decorrelate(0) = %s, want 0", got)
 	}
 }

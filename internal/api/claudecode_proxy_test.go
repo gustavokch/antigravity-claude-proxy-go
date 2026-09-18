@@ -269,7 +269,8 @@ func TestForwardToClaudeCode_Upstream429LoopExhaustion(t *testing.T) {
 	}
 }
 
-func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {	cfg := claudecode.Config{
+func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {
+	cfg := claudecode.Config{
 		Allowlist: claudecode.DefaultAllowlist(),
 	}
 

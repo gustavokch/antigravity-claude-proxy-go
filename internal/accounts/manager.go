@@ -194,6 +194,7 @@ type Options struct {
 	Settings             map[string]any
 	SelectionConfig      config.AccountSelectionConfig
 	GlobalQuotaThreshold float64
+	SharedThrottleWindow time.Duration
 	Now                  func() time.Time
 }
 
@@ -212,6 +213,11 @@ type tokenBucket struct {
 	LastUpdated time.Time
 }
 
+type sharedThrottle struct {
+	untilMS int64
+	recent  map[string]int64 // account email -> last rejection unix ms
+}
+
 type Manager struct {
 	mu                   sync.RWMutex
 	configPath           string
@@ -226,6 +232,8 @@ type Manager struct {
 	health               map[string]healthRecord
 	buckets              map[string]tokenBucket
 	projects             map[string]string
+	sharedThrottleWindow time.Duration
+	modelThrottles       map[string]*sharedThrottle
 }
 
 func mapFloat(m map[string]any, key string, fallback float64) float64 {
@@ -286,6 +294,14 @@ func New(options Options) (*Manager, error) {
 	if globalQuotaThreshold <= 0 {
 		globalQuotaThreshold = config.Get().GlobalQuotaThreshold
 	}
+	sharedThrottleWindow := options.SharedThrottleWindow
+	if sharedThrottleWindow <= 0 {
+		if ms := config.Get().SharedThrottleWindowMs; ms > 0 {
+			sharedThrottleWindow = time.Duration(ms) * time.Millisecond
+		} else {
+			sharedThrottleWindow = 10 * time.Second
+		}
+	}
 	return &Manager{
 		configPath:           options.ConfigPath,
 		accounts:             options.Accounts,
@@ -298,6 +314,8 @@ func New(options Options) (*Manager, error) {
 		health:               make(map[string]healthRecord),
 		buckets:              make(map[string]tokenBucket),
 		projects:             make(map[string]string),
+		sharedThrottleWindow: sharedThrottleWindow,
+		modelThrottles:       make(map[string]*sharedThrottle),
 	}, nil
 }
 
@@ -357,6 +375,9 @@ func (manager *Manager) Select(model string) Selection {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.clearExpiredLocked()
+	if wait := manager.sharedThrottleWaitLocked(rateLimitModelKey(model)); wait > 0 {
+		return Selection{Wait: wait}
+	}
 	switch manager.strategy {
 	case StrategySticky:
 		return manager.selectStickyLocked(model)
@@ -374,6 +395,9 @@ func (manager *Manager) Available(model string) int {
 		return 0 // No accounts available
 	}
 	manager.clearExpiredLocked()
+	if manager.sharedThrottleWaitLocked(rateLimitModelKey(model)) > 0 {
+		return 0
+	}
 	count := 0
 	for _, account := range manager.accounts {
 		if manager.usableLocked(account, model) {
@@ -432,6 +456,75 @@ func (manager *Manager) MinWait(model string) time.Duration {
 	return time.Duration(minimum) * time.Millisecond
 }
 
+// recordSharedThrottleLocked notes one rejection and promotes the model to a
+// pool-wide throttle once two distinct accounts are rejected inside the
+// window. A single-account pool can never be "shared" — there is nothing to
+// rotate to — so it is skipped.
+func (manager *Manager) recordSharedThrottleLocked(key, email string, wait time.Duration) {
+	if key == "" || len(manager.accounts) < 2 {
+		return
+	}
+	if manager.modelThrottles == nil {
+		manager.modelThrottles = make(map[string]*sharedThrottle)
+	}
+	nowMS := manager.now().UnixMilli()
+	entry := manager.modelThrottles[key]
+	if entry == nil {
+		entry = &sharedThrottle{recent: make(map[string]int64)}
+		manager.modelThrottles[key] = entry
+	}
+	entry.recent[email] = nowMS
+
+	cutoff := nowMS - manager.sharedThrottleWindow.Milliseconds()
+	for recorded, at := range entry.recent {
+		if at < cutoff {
+			delete(entry.recent, recorded)
+		}
+	}
+	if len(entry.recent) < 2 {
+		return
+	}
+	if until := nowMS + wait.Milliseconds(); until > entry.untilMS {
+		entry.untilMS = until
+		slog.Warn("shared upstream throttle",
+			"model", key, "accounts", len(entry.recent), "wait", wait.Round(time.Second))
+	}
+}
+
+// SharedThrottleWait returns how long the whole pool must wait on a model, or
+// 0 when no shared throttle is active.
+func (manager *Manager) SharedThrottleWait(model string) time.Duration {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.sharedThrottleWaitLocked(rateLimitModelKey(model))
+}
+
+func (manager *Manager) sharedThrottleWaitLocked(key string) time.Duration {
+	entry := manager.modelThrottles[key]
+	if entry == nil {
+		return 0
+	}
+	remaining := entry.untilMS - manager.now().UnixMilli()
+	if remaining <= 0 {
+		return 0
+	}
+	return time.Duration(remaining) * time.Millisecond
+}
+
+// SharedThrottles returns every model under an active pool-wide throttle and
+// how long each has left. Used by the status output.
+func (manager *Manager) SharedThrottles() map[string]time.Duration {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	active := make(map[string]time.Duration)
+	for key := range manager.modelThrottles {
+		if wait := manager.sharedThrottleWaitLocked(key); wait > 0 {
+			active[key] = wait
+		}
+	}
+	return active
+}
+
 func (manager *Manager) MarkRateLimited(account *Account, model string, wait time.Duration) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -451,6 +544,7 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 	account.ModelRateLimits[key] = &RateLimit{
 		IsRateLimited: true, ResetTimeMS: manager.now().Add(wait).UnixMilli(), ActualResetMS: wait.Milliseconds(),
 	}
+	manager.recordSharedThrottleLocked(key, account.Email, wait)
 	account.ConsecutiveFailure++
 	manager.recordRateLimitLocked(account.Email)
 }
@@ -490,6 +584,7 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 	// and must not clear a legitimate empty-model entry.
 	if key := rateLimitModelKey(model); key != "" || strings.TrimSpace(model) == "" {
 		delete(account.ModelRateLimits, key)
+		delete(manager.modelThrottles, key)
 	}
 	manager.recordSuccessLocked(account.Email)
 }
@@ -797,6 +892,24 @@ func (manager *Manager) clearExpiredLocked() {
 			}
 		}
 	}
+	cutoff := now - manager.sharedThrottleWindow.Milliseconds()
+	for key, entry := range manager.modelThrottles {
+		if entry == nil {
+			delete(manager.modelThrottles, key)
+			continue
+		}
+		if entry.untilMS > 0 && entry.untilMS <= now {
+			entry.untilMS = 0
+		}
+		for email, at := range entry.recent {
+			if at < cutoff {
+				delete(entry.recent, email)
+			}
+		}
+		if entry.untilMS <= now && len(entry.recent) == 0 {
+			delete(manager.modelThrottles, key)
+		}
+	}
 }
 
 func (manager *Manager) healthScoreLocked(email string) float64 {
@@ -1065,6 +1178,10 @@ func cloneAccount(acc *Account) *Account {
 func (manager *Manager) SaveToDisk() error {
 	manager.mu.RLock()
 	path := manager.configPath
+	if path == "" {
+		manager.mu.RUnlock()
+		return nil
+	}
 	accounts := make([]*Account, len(manager.accounts))
 	for i, acc := range manager.accounts {
 		accounts[i] = cloneAccount(acc)
