@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/modelcatalog"
 )
@@ -328,8 +327,7 @@ func NewFromFile(path, strategy string, now func() time.Time) (*Manager, error) 
 }
 
 // NewDefault uses the optional account-pool configuration when it exists.
-// Otherwise it creates a one-account pool from the active agy login, or
-// starts with an empty pool if no accounts are available anywhere.
+// Otherwise it starts with an empty pool if no accounts are configured.
 func NewDefault(path, strategy string, now func() time.Time) (*Manager, error) {
 	if path != "" {
 		return NewFromFile(path, strategy, now)
@@ -343,21 +341,8 @@ func NewDefault(path, strategy string, now func() time.Time) (*Manager, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("inspect account configuration: %w", err)
 	}
-	tokenPath, err := auth.DefaultTokenPath()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(tokenPath); err == nil {
-		// agy token exists; use it
-		return New(Options{
-			Accounts:   []*Account{{Email: "agy", Source: "agy", Enabled: true, AgyTokenPath: tokenPath}},
-			ConfigPath: configPath,
-			Strategy:   strategy,
-			Now:        now,
-		})
-	}
 
-	// No accounts found anywhere; start with an empty pool (allow web UI / API to add accounts)
+	// No accounts file found; start with an empty pool (allow web UI / API to add accounts)
 	return New(Options{
 		ConfigPath: configPath,
 		Strategy:   strategy,

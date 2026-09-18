@@ -59,7 +59,7 @@ func TestLoadIsReadOnlyAndResetsTransientStartupState(t *testing.T) {
 	}
 }
 
-func TestNewDefaultUsesActiveAgyLoginWithoutAccountFile(t *testing.T) {
+func TestNewDefaultDoesNotAutoImportAgyTokenWithoutAccountFile(t *testing.T) {
 	directory := t.TempDir()
 	t.Setenv("HOME", directory)
 	path := filepath.Join(directory, "antigravity-oauth-token")
@@ -71,9 +71,12 @@ func TestNewDefaultUsesActiveAgyLoginWithoutAccountFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if manager.Count() != 0 {
+		t.Fatalf("expected empty pool without accounts.json, got %d accounts", manager.Count())
+	}
 	selection := manager.Select("gemini")
-	if selection.Account == nil || selection.Account.Source != "agy" || selection.Account.AgyTokenPath != path {
-		t.Fatalf("selection = %#v", selection)
+	if selection.Account != nil {
+		t.Fatalf("expected nil selection, got %#v", selection.Account)
 	}
 }
 
