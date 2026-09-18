@@ -1178,6 +1178,10 @@ func cloneAccount(acc *Account) *Account {
 func (manager *Manager) SaveToDisk() error {
 	manager.mu.RLock()
 	path := manager.configPath
+	if path == "" {
+		manager.mu.RUnlock()
+		return nil
+	}
 	accounts := make([]*Account, len(manager.accounts))
 	for i, acc := range manager.accounts {
 		accounts[i] = cloneAccount(acc)

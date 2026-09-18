@@ -762,8 +762,8 @@ func TestDirectTierTakesPrecedenceOverTieredWhenBothPresent(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		requested  string
-		wantID     string
+		requested    string
+		wantID       string
 		wantUpstream string
 	}{
 		{"gemini-3.8-flash-high", "gemini-3.8-flash-high", "gemini-3.8-flash-high"},
@@ -783,4 +783,3 @@ func TestDirectTierTakesPrecedenceOverTieredWhenBothPresent(t *testing.T) {
 		}
 	}
 }
-

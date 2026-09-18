@@ -3,11 +3,11 @@ package cloudcode
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"math"
 	"strings"
 	"testing"
 	"time"
-	"log/slog"
 )
 
 func almostEqual(a, b, tolerance float64) bool {
