@@ -4193,7 +4193,7 @@
                                         :class="{ 'border-red-500/50': patternError(rule, 'systemPromptPatterns') }"
                                         :value="patternValue(rule, 'systemPromptPatterns')"
                                         @input="setPattern(rule, 'systemPromptPatterns', 'regex', $event.target.value)">
-                                    <span class="text-[11px] text-gray-600">Regular expression syntax, e.g. ^You are Claude</span>
+                                    <span class="text-[11px] text-gray-600" x-text="$store.global.t('classifierRuleSystemPatternHint')">Regular expression syntax, e.g. ^You are Claude</span>
                                     <span class="text-[11px] text-red-400" x-show="patternError(rule, 'systemPromptPatterns')"
                                         x-text="patternError(rule, 'systemPromptPatterns')"></span>
                                 </label>

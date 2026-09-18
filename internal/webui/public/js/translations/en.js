@@ -766,6 +766,7 @@ window.translations.en = {
     classifierAddRule: "Add rule",
     classifierRuleName: "Rule name",
     classifierRuleSystemPattern: "System prompt regex",
+    classifierRuleSystemPatternHint: "Regular expression syntax, e.g. ^You are Claude",
     classifierRuleFooterPattern: "Footer marker",
     classifierRuleMaxTokensMin: "max_tokens min",
     classifierRuleMaxTokensMax: "max_tokens max",

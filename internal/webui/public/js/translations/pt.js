@@ -709,6 +709,7 @@ window.translations.pt = {
     classifierAddRule: "Adicionar regra",
     classifierRuleName: "Nome da regra",
     classifierRuleSystemPattern: "Regex do prompt de sistema",
+    classifierRuleSystemPatternHint: "Sintaxe de expressão regular, ex: ^You are Claude",
     classifierRuleFooterPattern: "Marcador de rodapé",
     classifierRuleMaxTokensMin: "max_tokens mínimo",
     classifierRuleMaxTokensMax: "max_tokens máximo",
