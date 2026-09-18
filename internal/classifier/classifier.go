@@ -202,7 +202,13 @@ func StubWithText(model, text string) ([]byte, error) {
 			"output_tokens": 0,
 		},
 	}
-	return json.Marshal(resp)
+	buf := &bytes.Buffer{}
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(resp); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSpace(buf.Bytes()), nil
 }
 
 // CompactTranscript truncates excessive output inside <transcript>...</transcript> blocks.

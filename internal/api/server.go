@@ -111,6 +111,8 @@ type Server struct {
 	ccrStore           *ccr.CCRStore
 	cacheBumpStore     *cachebump.Store
 	cacheBumpSched     *cachebump.Scheduler
+	classifierMatcher  *classifier.ConfigurableMatcher
+	classifierAudit    *classifier.Recorder
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -155,6 +157,8 @@ func New(options Options) (*Server, error) {
 	}
 
 	cfg := config.Get()
+	srv.classifierAudit = classifier.NewRecorder(200)
+	srv.applyClassifierConfig(cfg.Classifier)
 	srv.ccrStore = ccr.NewCCRStoreFromMB(cfg.Headroom.CCR.MaxStoreMB)
 	srv.headroom = headroom.NewEngine(
 		cfg.Headroom,
@@ -820,7 +824,23 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	)
 
 	streamRequested, _ := anthropicRequest["stream"].(bool)
-	if (cfg.Classifier.Enabled || config.ClassifierFallbackEnabled()) && !streamRequested {
+
+	// Operator rules are consulted first. Anything they decline to handle —
+	// including a reroute whose backend failed — falls through to the
+	// built-in Detect path below, so today's behavior is the default.
+	skipClassifierDetect := false
+	if cfg.Classifier.Enabled && len(cfg.Classifier.Rules) > 0 && server.classifierMatcher != nil {
+		if rule, backend, matched := server.classifierMatcher.Match(rawBody); matched {
+			responded, skipDetect := server.applyClassifierRule(
+				writer, request, rule, backend, rawBody, model, streamRequested)
+			if responded {
+				return
+			}
+			skipClassifierDetect = skipDetect
+		}
+	}
+
+	if !skipClassifierDetect && (cfg.Classifier.Enabled || config.ClassifierFallbackEnabled()) && !streamRequested {
 		if kind, detected := classifier.Detect(rawBody); detected {
 			effectiveAction := cfg.Classifier.Action
 			if effectiveAction == "" {

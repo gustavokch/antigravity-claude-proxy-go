@@ -1,6 +1,7 @@
 package classifier
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -110,7 +111,13 @@ func TranslateOpenAIToAnthropic(body []byte, echoModel string) ([]byte, error) {
 			"output_tokens": resp.Usage.CompletionTokens,
 		},
 	}
-	return json.Marshal(out)
+	buf := &bytes.Buffer{}
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(out); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSpace(buf.Bytes()), nil
 }
 
 // translatedMessageID marks rerouted answers distinctly from canned stubs
