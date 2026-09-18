@@ -1388,55 +1388,13 @@ func (server *Server) handleLogsStream(writer http.ResponseWriter, request *http
 		return
 	}
 
-	flusher, ok := writer.(http.Flusher)
-	if !ok {
-		http.Error(writer, "Streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	ch, cancel := server.broadcaster.Subscribe(100)
-	defer cancel()
-
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.Header().Set("X-Accel-Buffering", "no")
-	writer.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	var maxSeq uint64
-	emit := func(entry logger.LogEntry) {
-		if entry.Seq <= maxSeq {
-			return
-		}
-		maxSeq = entry.Seq
-		data, err := json.Marshal(entry)
-		if err != nil {
-			return
-		}
-		fmt.Fprintf(writer, "data: %s\n\n", data)
-	}
-
-	if request.URL.Query().Get("history") == "true" {
-		for _, entry := range server.broadcaster.GetHistory() {
-			emit(entry)
-		}
-		flusher.Flush()
-	}
-
-	ctx := request.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case entry, ok := <-ch:
-			if !ok {
-				return
-			}
-			emit(entry)
-			flusher.Flush()
-		}
-	}
+	streamSSE(
+		writer,
+		request,
+		server.broadcaster.GetHistory,
+		func() (<-chan logger.LogEntry, func()) { return server.broadcaster.Subscribe(100) },
+		func(e logger.LogEntry) uint64 { return e.Seq },
+	)
 }
 
 // handleClassifierAuditStream streams interception decisions as SSE. Like
@@ -1448,61 +1406,13 @@ func (server *Server) handleClassifierAuditStream(writer http.ResponseWriter, re
 		return
 	}
 
-	flusher, ok := writer.(http.Flusher)
-	if !ok {
-		http.Error(writer, "Streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	// Subscribe before replaying history so an event added after the
-	// connection opens is never lost in the gap between the history
-	// snapshot and the subscription.
-	events, cancel := server.classifierAudit.Subscribe(100)
-	defer cancel()
-
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.Header().Set("X-Accel-Buffering", "no")
-	writer.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	// An event added after Subscribe but before History() returns lands in
-	// both the replay and the live channel; the monotonic Seq watermark
-	// emits each event exactly once with O(1) state.
-	var maxSeq uint64
-	emit := func(event classifier.Event) {
-		if event.Seq <= maxSeq {
-			return
-		}
-		maxSeq = event.Seq
-		data, err := json.Marshal(event)
-		if err != nil {
-			return
-		}
-		fmt.Fprintf(writer, "data: %s\n\n", data)
-	}
-
-	if request.URL.Query().Get("history") == "true" {
-		for _, event := range server.classifierAudit.History() {
-			emit(event)
-		}
-		flusher.Flush()
-	}
-
-	ctx := request.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case event, open := <-events:
-			if !open {
-				return
-			}
-			emit(event)
-			flusher.Flush()
-		}
-	}
+	streamSSE(
+		writer,
+		request,
+		server.classifierAudit.History,
+		func() (<-chan classifier.Event, func()) { return server.classifierAudit.Subscribe(100) },
+		func(e classifier.Event) uint64 { return e.Seq },
+	)
 }
 
 func (server *Server) handleAuthURLGet(writer http.ResponseWriter, request *http.Request) {
