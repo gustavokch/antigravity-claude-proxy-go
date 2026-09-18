@@ -122,6 +122,50 @@ func (server *Server) applyClassifierRule(
 	return false, false
 }
 
+type backendFormatAdapter struct {
+	preparePayload  func(rawBody []byte, backend *config.TargetBackend) ([]byte, error)
+	setHeaders      func(req *http.Request, apiKey string)
+	parseResponse   func(respBody []byte, clientModel string) ([]byte, error)
+}
+
+var openAIFormatAdapter = backendFormatAdapter{
+	preparePayload: func(rawBody []byte, backend *config.TargetBackend) ([]byte, error) {
+		return classifier.TranslateAnthropicToOpenAI(rawBody, backend.Model, backend.MaxTokens)
+	},
+	setHeaders: func(req *http.Request, apiKey string) {
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	},
+	parseResponse: func(respBody []byte, clientModel string) ([]byte, error) {
+		return classifier.TranslateOpenAIToAnthropic(respBody, clientModel)
+	},
+}
+
+var anthropicFormatAdapter = backendFormatAdapter{
+	preparePayload: func(rawBody []byte, backend *config.TargetBackend) ([]byte, error) {
+		return rawBody, nil
+	},
+	setHeaders: func(req *http.Request, apiKey string) {
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("x-api-key", apiKey)
+			req.Header.Set("anthropic-version", "2023-06-01")
+		}
+	},
+	parseResponse: func(respBody []byte, clientModel string) ([]byte, error) {
+		return respBody, nil
+	},
+}
+
+func getBackendFormatAdapter(format config.BackendFormat) backendFormatAdapter {
+	if format == config.BackendFormatOpenAI {
+		return openAIFormatAdapter
+	}
+	return anthropicFormatAdapter
+}
+
 // callClassifierBackend posts the request to backend and returns an Anthropic
 // Messages response body, translating in both directions when the backend
 // speaks OpenAI.
@@ -138,28 +182,18 @@ func (server *Server) callClassifierBackend(
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	payload := rawBody
-	if backend.Format == config.BackendFormatOpenAI {
-		translated, err := classifier.TranslateAnthropicToOpenAI(rawBody, backend.Model, backend.MaxTokens)
-		if err != nil {
-			return nil, err
-		}
-		payload = translated
+	adapter := getBackendFormatAdapter(backend.Format)
+
+	payload, err := adapter.preparePayload(rawBody, backend)
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, backend.URL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if backend.APIKey != "" {
-		if backend.Format == config.BackendFormatOpenAI {
-			req.Header.Set("Authorization", "Bearer "+backend.APIKey)
-		} else {
-			req.Header.Set("x-api-key", backend.APIKey)
-			req.Header.Set("anthropic-version", "2023-06-01")
-		}
-	}
+	adapter.setHeaders(req, backend.APIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -175,10 +209,7 @@ func (server *Server) callClassifierBackend(
 		return nil, fmt.Errorf("classifier backend returned %d", resp.StatusCode)
 	}
 
-	if backend.Format == config.BackendFormatOpenAI {
-		return classifier.TranslateOpenAIToAnthropic(body, model)
-	}
-	return body, nil
+	return adapter.parseResponse(body, model)
 }
 
 // writeClassifierResponse sends a completed Anthropic message, re-emitting it

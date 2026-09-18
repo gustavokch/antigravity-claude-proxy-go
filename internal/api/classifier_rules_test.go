@@ -91,6 +91,64 @@ func TestApplyClassifierRuleReroutesToBackend(t *testing.T) {
 	}
 }
 
+func TestApplyClassifierRuleReroutesToAnthropicBackend(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("expected a JSON content type, got %q", got)
+		}
+		if got := r.Header.Get("x-api-key"); got != "test-anthropic-key" {
+			t.Errorf("expected x-api-key header, got %q", got)
+		}
+		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
+			t.Errorf("expected anthropic-version header, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_test","type":"message","role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"<severity>0</severity>"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":2}}`))
+	}))
+	defer backend.Close()
+
+	srv := &Server{classifierAudit: classifier.NewRecorder(10)}
+	srv.applyClassifierConfig(config.ClassifierConfig{
+		Rules: []config.Rule{{
+			ID:      "stage1-anthropic",
+			Name:    "Stage 1",
+			Enabled: true,
+			Conditions: config.RuleConditions{
+				FooterPatterns: []config.MatchPattern{
+					{Type: config.PatternSubstring, Pattern: "Grade HARM ONLY"},
+				},
+			},
+			Action:        config.RuleActionReroute,
+			TargetBackend: "upstream-anthropic",
+		}},
+		Backends: map[string]config.TargetBackend{
+			"upstream-anthropic": {Name: "Upstream", URL: backend.URL, Format: config.BackendFormatAnthropic, APIKey: "test-anthropic-key"},
+		},
+	})
+
+	rule, target, matched := srv.classifierMatcher.Match([]byte(ruleRequestBody))
+	if !matched {
+		t.Fatal("expected the rule to match")
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(ruleRequestBody))
+	responded, skipDetect := srv.applyClassifierRule(recorder, request, rule, target, []byte(ruleRequestBody), "claude-sonnet-5", false)
+
+	if !responded {
+		t.Fatal("expected the reroute to answer the request")
+	}
+	if skipDetect {
+		t.Error("skipDetect is only meaningful when the request was not answered")
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "<severity>0</severity>") {
+		t.Errorf("response missing expected verdict: %s", recorder.Body.String())
+	}
+}
+
 func TestApplyClassifierRuleFailsOpenWhenBackendErrors(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
