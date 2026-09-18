@@ -74,6 +74,7 @@ echo
 
 exec podman run --rm -it \
   --name claude-mitm-session \
+  --replace \
   --add-host=containers.internal:host-gateway \
   -e ANTHROPIC_BASE_URL="${TARGET_HOST_URL}" \
   -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
