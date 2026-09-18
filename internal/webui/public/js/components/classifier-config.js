@@ -24,25 +24,14 @@ window.Components.classifierConfig = () => ({
         rules: [],
         backends: {}
     },
-    auditEvents: [],
-    eventSource: null,
-    AUDIT_LIMIT: 50,
     init() {
         this.loadConfig();
         if (this.$watch) {
             this.$watch('$store.global.settingsTab', (tab) => {
                 if (tab === 'classifier') {
                     this.loadConfig();
-                    this.connectAuditStream();
-                } else {
-                    // Leaving the tab must drop the connection; otherwise
-                    // every tab switch leaks another open EventSource.
-                    this.disconnectAuditStream();
                 }
             });
-        }
-        if (Alpine.store('global')?.settingsTab === 'classifier') {
-            this.connectAuditStream();
         }
     },
     ensureVariants() {
@@ -143,44 +132,6 @@ window.Components.classifierConfig = () => ({
             }
         }
         return '';
-    },
-    connectAuditStream() {
-        this.disconnectAuditStream();
-        const password = Alpine.store('global')?.webuiPassword;
-        const url = password
-            ? `/api/classifier/audit/stream?history=true&password=${encodeURIComponent(password)}`
-            : '/api/classifier/audit/stream?history=true';
-
-        this.eventSource = new EventSource(url);
-        this.eventSource.onmessage = (event) => {
-            try {
-                const parsed = JSON.parse(event.data);
-                this.auditEvents.unshift(parsed);
-                if (this.auditEvents.length > this.AUDIT_LIMIT) {
-                    this.auditEvents.length = this.AUDIT_LIMIT;
-                }
-            } catch (err) {
-                console.error('Failed to parse classifier audit event:', err);
-            }
-        };
-        this.eventSource.onerror = () => {
-            // EventSource reconnects on its own; closing here would leave the
-            // feed permanently dead after one transient blip.
-        };
-    },
-    disconnectAuditStream() {
-        if (this.eventSource) {
-            this.eventSource.close();
-            this.eventSource = null;
-        }
-    },
-    statusClass(status) {
-        switch (status) {
-            case 'rerouted': return 'text-green-400 border-green-400/40 bg-green-400/10';
-            case 'stubbed': return 'text-yellow-400 border-yellow-400/40 bg-yellow-400/10';
-            case 'error': return 'text-red-400 border-red-400/40 bg-red-400/10';
-            default: return 'text-gray-400 border-gray-400/40 bg-gray-400/10';
-        }
     },
     async loadConfig() {
         const raw = Alpine.store('settings')?.config?.classifier;
