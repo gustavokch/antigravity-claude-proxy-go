@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -128,3 +129,29 @@ func TestLogSuccess(t *testing.T) {
 		t.Errorf("expected level_tag attribute to be stripped from message, got %s", history[0].Message)
 	}
 }
+
+func TestBroadcasterAddDoesNotRaceWithCancel(t *testing.T) {
+	for i := 0; i < 2000; i++ {
+		broadcaster := NewBroadcaster(1)
+		_, cancel := broadcaster.Subscribe(1)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); cancel() }()
+		go func() { defer wg.Done(); broadcaster.Add(LogEntry{Message: "x"}) }()
+		wg.Wait()
+	}
+}
+
+func TestBroadcasterAddAssignsMonotonicSeq(t *testing.T) {
+	broadcaster := NewBroadcaster(10)
+	broadcaster.Add(LogEntry{Message: "a"})
+	broadcaster.Add(LogEntry{Message: "b"})
+	broadcaster.Add(LogEntry{Message: "c"})
+	history := broadcaster.GetHistory()
+	for i, entry := range history {
+		if entry.Seq != uint64(i+1) {
+			t.Fatalf("expected Seq %d, got %d", i+1, entry.Seq)
+		}
+	}
+}
+

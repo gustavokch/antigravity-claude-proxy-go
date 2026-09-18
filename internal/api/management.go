@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -13,8 +15,10 @@ import (
 
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
+	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
 )
@@ -180,6 +184,9 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	case path == "/api/logs/stream" && method == http.MethodGet:
 		server.handleLogsStream(writer, request)
+		return true
+	case path == "/api/classifier/audit/stream" && method == http.MethodGet:
+		server.handleClassifierAuditStream(writer, request)
 		return true
 	case path == "/api/openrouter/config" && method == http.MethodGet:
 		server.handleOpenRouterConfigGet(writer, request)
@@ -975,6 +982,96 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 				return
 			}
 		}
+
+		for key, backend := range classifierReq.Backends {
+			if strings.TrimSpace(backend.URL) == "" {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q must set a url", key)})
+				return
+			}
+			parsed, err := url.Parse(backend.URL)
+			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q url must be an http or https URL", key)})
+				return
+			}
+			switch backend.Format {
+			case "", config.BackendFormatAnthropic, config.BackendFormatOpenAI:
+				// valid
+			default:
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q format must be anthropic or openai", key)})
+				return
+			}
+			if backend.TimeoutMs < 0 || backend.MaxTokens < 0 {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q timeoutMs and maxTokens must be non-negative", key)})
+				return
+			}
+		}
+
+		for index, rule := range classifierReq.Rules {
+			if strings.TrimSpace(rule.ID) == "" {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier rule %d must set an id", index)})
+				return
+			}
+			switch rule.Action {
+			case config.RuleActionReroute, config.RuleActionStub, config.RuleActionPassthrough:
+				// valid
+			default:
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier rule %q action must be reroute, stub, or passthrough", rule.ID)})
+				return
+			}
+			if rule.Action == config.RuleActionReroute {
+				if _, exists := classifierReq.Backends[rule.TargetBackend]; !exists {
+					writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier rule %q reroutes to unknown backend %q", rule.ID, rule.TargetBackend)})
+					return
+				}
+			}
+			if rule.Action == config.RuleActionStub && strings.TrimSpace(rule.VerdictTemplate) == "" {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier rule %q must set a verdictTemplate to stub with", rule.ID)})
+				return
+			}
+
+			conditions := rule.Conditions
+			// A rule with nothing populated matches every request the proxy
+			// forwards, which would silently divert normal chat traffic.
+			if len(conditions.SystemPromptPatterns) == 0 && len(conditions.FooterPatterns) == 0 &&
+				len(conditions.Models) == 0 && conditions.MaxTokensMin == 0 && conditions.MaxTokensMax == 0 {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier rule %q must declare at least one condition", rule.ID)})
+				return
+			}
+			if conditions.MaxTokensMin < 0 || conditions.MaxTokensMax < 0 {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier rule %q maxTokens bounds must be non-negative", rule.ID)})
+				return
+			}
+			if conditions.MaxTokensMax > 0 && conditions.MaxTokensMin > conditions.MaxTokensMax {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier rule %q maxTokensMin exceeds maxTokensMax", rule.ID)})
+				return
+			}
+
+			patterns := append(append([]config.MatchPattern{}, conditions.SystemPromptPatterns...), conditions.FooterPatterns...)
+			for _, pattern := range patterns {
+				if pattern.Type != config.PatternRegex {
+					continue
+				}
+				if _, err := regexp.Compile(pattern.Pattern); err != nil {
+					writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier rule %q has an invalid regex %q: %v", rule.ID, pattern.Pattern, err)})
+					return
+				}
+			}
+		}
+
+		// The WebUI reads config from the redacted public view, so it cannot
+		// send back a backend key it never saw. An empty incoming key means
+		// "unchanged", not "clear it".
+		existing := config.Get().Classifier
+		for key, incoming := range classifierReq.Backends {
+			if incoming.APIKey != "" {
+				continue
+			}
+			if previous, ok := existing.Backends[key]; ok && previous.APIKey != "" {
+				incoming.APIKey = previous.APIKey
+				classifierReq.Backends[key] = incoming
+			}
+		}
+		updates["classifier"] = classifierReq
 	}
 
 	updated, err := config.Save(updates)
@@ -990,6 +1087,7 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 		updater.UpdateConfig(updated)
 	}
 	server.applyHeadroomConfig(updated.Headroom)
+	server.applyClassifierConfig(updated.Classifier)
 
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":  "ok",
@@ -1290,48 +1388,31 @@ func (server *Server) handleLogsStream(writer http.ResponseWriter, request *http
 		return
 	}
 
-	flusher, ok := writer.(http.Flusher)
-	if !ok {
-		http.Error(writer, "Streaming unsupported", http.StatusInternalServerError)
+	streamSSE(
+		writer,
+		request,
+		server.broadcaster.GetHistory,
+		func() (<-chan logger.LogEntry, func()) { return server.broadcaster.Subscribe(100) },
+		func(e logger.LogEntry) uint64 { return e.Seq },
+	)
+}
+
+// handleClassifierAuditStream streams interception decisions as SSE. Like
+// handleLogsStream, it subscribes before replaying ?history=true and dedupes
+// the overlap by the recorder's monotonic Seq.
+func (server *Server) handleClassifierAuditStream(writer http.ResponseWriter, request *http.Request) {
+	if server.classifierAudit == nil {
+		writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "events": []any{}})
 		return
 	}
 
-	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Cache-Control", "no-cache")
-	writer.Header().Set("Connection", "keep-alive")
-	writer.Header().Set("X-Accel-Buffering", "no")
-	writer.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	// If history requested, send recent logs
-	if request.URL.Query().Get("history") == "true" {
-		history := server.broadcaster.GetHistory()
-		for _, entry := range history {
-			data, _ := json.Marshal(entry)
-			fmt.Fprintf(writer, "data: %s\n\n", data)
-		}
-		flusher.Flush()
-	}
-
-	ch, cancel := server.broadcaster.Subscribe(100)
-	defer cancel()
-
-	ctx := request.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case entry, ok := <-ch:
-			if !ok {
-				return
-			}
-			data, err := json.Marshal(entry)
-			if err == nil {
-				fmt.Fprintf(writer, "data: %s\n\n", data)
-				flusher.Flush()
-			}
-		}
-	}
+	streamSSE(
+		writer,
+		request,
+		server.classifierAudit.History,
+		func() (<-chan classifier.Event, func()) { return server.classifierAudit.Subscribe(100) },
+		func(e classifier.Event) uint64 { return e.Seq },
+	)
 }
 
 func (server *Server) handleAuthURLGet(writer http.ResponseWriter, request *http.Request) {

@@ -114,3 +114,18 @@ _Avoid_: Prompt injector, reasoning clamper.
 The scheduler that replays a minimal version of a recorded session's last request shortly before its prompt cache entry expires, refreshing the entry at read pricing so an idle session returns to a warm cache. Bumping stops the moment it pays a cache write instead of a read.
 _Avoid_: Cache warmer, cache keeper, TTL refresher, cache preheating.
 
+### Security Monitor (Classifier)
+
+**Interception Rule**:
+A declared condition set matching autonomous Claude Code security-monitor prompts by system regex, footer marker, model, or max_tokens bounds, executing in declaration order before built-in fallbacks.
+_Avoid_: Filter, classifier hook, security policy.
+
+**Target Backend**:
+A named external destination endpoint (`anthropic` or `openai` wire format) to which matched classifier requests are rerouted with format translation and optional synthetic streaming.
+_Avoid_: Fallback host, reroute target, classifier upstream.
+
+**Audit Event**:
+A recorded decision entry (`rerouted`, `stubbed`, `passthrough`, or `error`) emitted by the classifier subsystem with a monotonic sequence identifier for live UI feed consumption.
+_Avoid_: Classifier log, monitor trace, interception metric.
+
+

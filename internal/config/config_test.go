@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -579,5 +580,100 @@ func TestClassifierConfigJSONRoundtrip(t *testing.T) {
 	}
 	if stage1 := cfg.Classifier.Variants["stage1-severity"]; stage1.MaxTokens != 32 || stage1.CannedVerdict != "<severity>0</severity>" {
 		t.Errorf("unexpected stage1 override: %+v", stage1)
+	}
+}
+
+func TestClassifierConfigDecodesRulesAndBackends(t *testing.T) {
+	raw := `{
+		"classifier": {
+			"enabled": true,
+			"action": "reroute_only",
+			"rules": [
+				{
+					"id": "stage1-local",
+					"name": "Stage 1 to local judge",
+					"enabled": true,
+					"conditions": {
+						"systemPromptPatterns": [{"type": "regex", "pattern": "(?i)security monitor"}],
+						"footerPatterns": [{"type": "substring", "pattern": "Grade HARM ONLY"}],
+						"maxTokensMax": 128
+					},
+					"action": "reroute",
+					"targetBackend": "local"
+				}
+			],
+			"backends": {
+				"local": {
+					"name": "Local judge",
+					"url": "http://127.0.0.1:8000/v1/chat/completions",
+					"format": "openai",
+					"model": "local-judge",
+					"apiKey": "sk-secret",
+					"timeoutMs": 5000
+				}
+			}
+		}
+	}`
+
+	var cfg Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if len(cfg.Classifier.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(cfg.Classifier.Rules))
+	}
+	rule := cfg.Classifier.Rules[0]
+	if rule.Action != RuleActionReroute {
+		t.Errorf("expected action reroute, got %q", rule.Action)
+	}
+	if rule.Conditions.SystemPromptPatterns[0].Type != PatternRegex {
+		t.Errorf("expected regex pattern type, got %q", rule.Conditions.SystemPromptPatterns[0].Type)
+	}
+	if rule.Conditions.MaxTokensMax != 128 {
+		t.Errorf("expected maxTokensMax 128, got %d", rule.Conditions.MaxTokensMax)
+	}
+	backend := cfg.Classifier.Backends["local"]
+	if backend.Format != BackendFormatOpenAI {
+		t.Errorf("expected format openai, got %q", backend.Format)
+	}
+	if backend.TimeoutMs != 5000 {
+		t.Errorf("expected timeoutMs 5000, got %d", backend.TimeoutMs)
+	}
+}
+
+func TestGetPublicConfigRedactsClassifierBackendKeys(t *testing.T) {
+	restore := currentConfig
+	t.Cleanup(func() { currentConfig = restore })
+
+	currentConfig.Classifier.Backends = map[string]TargetBackend{
+		"local": {Name: "Local", URL: "http://127.0.0.1:8000", APIKey: "sk-secret"},
+	}
+
+	public := GetPublicConfig()
+	blob, err := json.Marshal(public)
+	if err != nil {
+		t.Fatalf("marshal public config: %v", err)
+	}
+	if bytes.Contains(blob, []byte("sk-secret")) {
+		t.Fatal("public config leaked a classifier backend apiKey")
+	}
+
+	clf, ok := public["classifier"].(map[string]any)
+	if !ok {
+		t.Fatal("classifier missing from public config")
+	}
+	backends, ok := clf["backends"].(map[string]any)
+	if !ok {
+		t.Fatal("backends missing from public classifier config")
+	}
+	local, ok := backends["local"].(map[string]any)
+	if !ok {
+		t.Fatal("local backend missing")
+	}
+	if local["hasApiKey"] != true {
+		t.Errorf("expected hasApiKey true, got %v", local["hasApiKey"])
+	}
+	if _, present := local["apiKey"]; present {
+		t.Error("apiKey key should be absent entirely, not blanked")
 	}
 }

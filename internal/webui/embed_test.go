@@ -69,6 +69,17 @@ func TestHandler(t *testing.T) {
 			t.Errorf("expected classifier-config.js to synchronize payload.classifier into store")
 		}
 
+		// Test classifier-audit-feed.js
+		req = httptest.NewRequest(http.MethodGet, "/js/components/classifier-audit-feed.js", nil)
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "classifierAuditFeed") {
+			t.Errorf("expected classifier-audit-feed.js to contain 'classifierAuditFeed'")
+		}
+
 		// Test settings.html contains classifier panel
 		req = httptest.NewRequest(http.MethodGet, "/views/settings.html", nil)
 		rec = httptest.NewRecorder()
@@ -83,6 +94,9 @@ func TestHandler(t *testing.T) {
 		if !strings.Contains(body, "classifierConfig") {
 			t.Errorf("expected settings.html to contain 'classifierConfig'")
 		}
+		if !strings.Contains(body, "classifierAuditFeed") {
+			t.Errorf("expected settings.html to contain 'classifierAuditFeed'")
+		}
 		if strings.Contains(body, "Leave blank to use empty string (allow)") {
 			t.Errorf("misleading placeholder for block-prefilter must be corrected")
 		}
@@ -93,6 +107,9 @@ func TestHandler(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 		if !strings.Contains(rec.Body.String(), "classifier-config.js") {
 			t.Errorf("expected index.html to include 'classifier-config.js'")
+		}
+		if !strings.Contains(rec.Body.String(), "classifier-audit-feed.js") {
+			t.Errorf("expected index.html to include 'classifier-audit-feed.js'")
 		}
 	})
 

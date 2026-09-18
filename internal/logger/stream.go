@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
+
+	"antigravity-go-proxy/internal/ringbuf"
 )
 
 // LogEntry represents a single structured log entry sent to UI/subscribers.
 type LogEntry struct {
+	Seq       uint64 `json:"seq"`
 	Timestamp string `json:"timestamp"`
 	Level     string `json:"level"`
 	Message   string `json:"message"`
@@ -18,12 +20,7 @@ type LogEntry struct {
 
 // Broadcaster manages a ring buffer of recent logs and real-time subscribers.
 type Broadcaster struct {
-	mu          sync.RWMutex
-	capacity    int
-	entries     []LogEntry
-	start       int
-	count       int
-	subscribers map[chan LogEntry]struct{}
+	b *ringbuf.Broadcaster[LogEntry]
 }
 
 // NewBroadcaster creates a new Broadcaster with given buffer capacity.
@@ -32,9 +29,9 @@ func NewBroadcaster(capacity int) *Broadcaster {
 		capacity = 500
 	}
 	return &Broadcaster{
-		capacity:    capacity,
-		entries:     make([]LogEntry, capacity),
-		subscribers: make(map[chan LogEntry]struct{}),
+		b: ringbuf.NewBroadcaster[LogEntry](capacity, func(entry *LogEntry, seq uint64) {
+			entry.Seq = seq
+		}),
 	}
 }
 
@@ -53,72 +50,36 @@ func LogSuccess(msg string, args ...any) {
 
 // Add appends a new entry to the ring buffer and dispatches it to subscribers.
 func (b *Broadcaster) Add(entry LogEntry) {
-	b.mu.Lock()
-	if b.count < b.capacity {
-		b.entries[(b.start+b.count)%b.capacity] = entry
-		b.count++
-	} else {
-		b.entries[b.start] = entry
-		b.start = (b.start + 1) % b.capacity
+	if b == nil || b.b == nil {
+		return
 	}
-
-	// Copy subscribers list for fanout without holding lock during send
-	subs := make([]chan LogEntry, 0, len(b.subscribers))
-	for ch := range b.subscribers {
-		subs = append(subs, ch)
-	}
-	b.mu.Unlock()
-
-	for _, ch := range subs {
-		select {
-		case ch <- entry:
-		default:
-			// Non-blocking drop if consumer is slow
-		}
-	}
+	b.b.Add(entry)
 }
 
 // GetHistory returns all buffered log entries in chronological order.
 func (b *Broadcaster) GetHistory() []LogEntry {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	result := make([]LogEntry, b.count)
-	for i := 0; i < b.count; i++ {
-		result[i] = b.entries[(b.start+i)%b.capacity]
+	if b == nil || b.b == nil {
+		return nil
 	}
-	return result
+	return b.b.GetHistory()
 }
 
 // Subscribe registers a new subscriber channel. The returned cancel func removes it.
 func (b *Broadcaster) Subscribe(bufSize int) (<-chan LogEntry, func()) {
-	if bufSize <= 0 {
-		bufSize = 100
+	if b == nil || b.b == nil {
+		closed := make(chan LogEntry)
+		close(closed)
+		return closed, func() {}
 	}
-	ch := make(chan LogEntry, bufSize)
-
-	b.mu.Lock()
-	b.subscribers[ch] = struct{}{}
-	b.mu.Unlock()
-
-	cancel := func() {
-		b.mu.Lock()
-		if _, exists := b.subscribers[ch]; exists {
-			delete(b.subscribers, ch)
-			close(ch)
-		}
-		b.mu.Unlock()
-	}
-
-	return ch, cancel
+	return b.b.Subscribe(bufSize)
 }
 
 // Clear removes all buffered log entries.
 func (b *Broadcaster) Clear() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.start = 0
-	b.count = 0
+	if b == nil || b.b == nil {
+		return
+	}
+	b.b.Clear()
 }
 
 // StreamHandler is an slog.Handler that writes to both an underlying handler and a Broadcaster.

@@ -154,6 +154,81 @@ type ClassifierVariantConfig struct {
 	ThinkingText      string   `json:"thinkingText,omitempty"`
 }
 
+// PatternType selects how a MatchPattern is evaluated. Substring is the
+// default because it cannot fail to compile: an operator typo in a regex
+// would otherwise silently disable a rule.
+type PatternType string
+
+const (
+	PatternRegex     PatternType = "regex"
+	PatternSubstring PatternType = "substring"
+)
+
+// MatchPattern is one condition test against a slice of request text.
+type MatchPattern struct {
+	Type    PatternType `json:"type"`
+	Pattern string      `json:"pattern"`
+}
+
+// RuleConditions are ANDed together; the patterns inside each list are ORed.
+// An empty list is "no constraint", and a zero MaxTokens bound is unbounded,
+// so a rule with no populated field would match every request. Validation in
+// the config-save handler rejects that case rather than relying on operators
+// to notice.
+type RuleConditions struct {
+	SystemPromptPatterns []MatchPattern `json:"systemPromptPatterns,omitempty"`
+	FooterPatterns       []MatchPattern `json:"footerPatterns,omitempty"`
+	Models               []string       `json:"models,omitempty"`
+	MaxTokensMin         int            `json:"maxTokensMin,omitempty"`
+	MaxTokensMax         int            `json:"maxTokensMax,omitempty"`
+}
+
+// RuleAction is what happens to a request whose rule matched.
+type RuleAction string
+
+const (
+	// RuleActionReroute forwards the request to TargetBackend.
+	RuleActionReroute RuleAction = "reroute"
+	// RuleActionStub answers immediately with the rule's VerdictTemplate.
+	RuleActionStub RuleAction = "stub"
+	// RuleActionPassthrough forwards upstream unchanged and skips the
+	// built-in Detect handling, so an operator can carve out an exception.
+	RuleActionPassthrough RuleAction = "passthrough"
+)
+
+// Rule is one operator-defined interception rule. Rules are evaluated in
+// declaration order and the first enabled match wins.
+type Rule struct {
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	Enabled         bool           `json:"enabled"`
+	Conditions      RuleConditions `json:"conditions"`
+	Action          RuleAction     `json:"action"`
+	TargetBackend   string         `json:"targetBackend,omitempty"`
+	VerdictTemplate string         `json:"verdictTemplate,omitempty"`
+}
+
+// BackendFormat is the wire format a TargetBackend speaks.
+type BackendFormat string
+
+const (
+	BackendFormatAnthropic BackendFormat = "anthropic"
+	BackendFormatOpenAI    BackendFormat = "openai"
+)
+
+// TargetBackend is an endpoint a rule can reroute to. MaxTokens overrides
+// the request's own cap when non-zero; TimeoutMs defaults to 20s at call
+// time, because a classifier call sits in the user's critical path.
+type TargetBackend struct {
+	Name      string        `json:"name"`
+	URL       string        `json:"url"`
+	Format    BackendFormat `json:"format"`
+	APIKey    string        `json:"apiKey,omitempty"`
+	Model     string        `json:"model"`
+	MaxTokens int           `json:"maxTokens,omitempty"`
+	TimeoutMs int           `json:"timeoutMs,omitempty"`
+}
+
 type ClassifierConfig struct {
 	Enabled           bool                               `json:"enabled"`
 	Action            ClassifierActionMode               `json:"action"`
@@ -164,6 +239,8 @@ type ClassifierConfig struct {
 	DefaultVerdict    string                             `json:"defaultVerdict,omitempty"`
 	DefaultThinking   string                             `json:"defaultThinking,omitempty"`
 	Variants          map[string]ClassifierVariantConfig `json:"variants,omitempty"`
+	Rules             []Rule                             `json:"rules,omitempty"`
+	Backends          map[string]TargetBackend           `json:"backends,omitempty"`
 }
 
 func DefaultClassifierConfig() ClassifierConfig {
@@ -677,6 +754,35 @@ func GetPublicConfig() map[string]any {
 			}
 		}
 		result["customEndpoints"] = redacted
+	}
+
+	// A classifier backend may carry its own key, and GET /api/config is a
+	// public route. Mirror the customEndpoints treatment: drop the value,
+	// report only whether one is set.
+	if clf, ok := result["classifier"].(map[string]any); ok {
+		if backends, ok := clf["backends"].(map[string]any); ok {
+			redactedBackends := make(map[string]any, len(backends))
+			for key, backend := range backends {
+				backendMap, isMap := backend.(map[string]any)
+				if !isMap {
+					redactedBackends[key] = backend
+					continue
+				}
+				backendCopy := make(map[string]any, len(backendMap))
+				for bk, bv := range backendMap {
+					if bk == "apiKey" {
+						if strKey, isStr := bv.(string); isStr && strKey != "" {
+							backendCopy["hasApiKey"] = true
+						}
+						continue
+					}
+					backendCopy[bk] = bv
+				}
+				redactedBackends[key] = backendCopy
+			}
+			clf["backends"] = redactedBackends
+			result["classifier"] = clf
+		}
 	}
 
 	if orMap, ok := result["openrouter"].(map[string]any); ok {

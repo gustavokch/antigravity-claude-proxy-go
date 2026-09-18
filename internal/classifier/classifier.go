@@ -177,25 +177,20 @@ func BuildStub(kind Kind, model, verdictTmpl, thinkingTmpl string) ([]byte, erro
 		}
 	}
 
+	return StubWithText(model, verdictText)
+}
+
+// StubWithText builds a canned Anthropic Messages 200 response carrying text
+// verbatim. Rule-driven stubs supply their own verdict, so they bypass the
+// Kind-based template selection in BuildStub entirely.
+func StubWithText(model, text string) ([]byte, error) {
 	id, err := stubMessageID()
 	if err != nil {
 		return nil, err
 	}
 
-	resp := map[string]any{
-		"id":            id,
-		"type":          "message",
-		"role":          "assistant",
-		"model":         model,
-		"content":       []map[string]any{{"type": "text", "text": verdictText}},
-		"stop_reason":   "end_turn",
-		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  0,
-			"output_tokens": 0,
-		},
-	}
-	return json.Marshal(resp)
+	resp := anthropicEnvelope(id, model, text, "end_turn", 0, 0)
+	return encodeCompactJSON(resp)
 }
 
 // CompactTranscript truncates excessive output inside <transcript>...</transcript> blocks.

@@ -20,7 +20,9 @@ window.Components.classifierConfig = () => ({
             'stage1-severity': { maxTokens: 64, cannedVerdict: '' },
             'stage2-severity': { maxTokens: 8192, thinkingText: '', cannedVerdict: '' },
             'block-prefilter': { targetModel: '', cannedVerdict: '' }
-        }
+        },
+        rules: [],
+        backends: {}
     },
     init() {
         this.loadConfig();
@@ -43,6 +45,93 @@ window.Components.classifierConfig = () => ({
         if (!this.config.variants['block-prefilter']) {
             this.config.variants['block-prefilter'] = { targetModel: '', cannedVerdict: '' };
         }
+        if (!Array.isArray(this.config.rules)) this.config.rules = [];
+        if (!this.config.backends || typeof this.config.backends !== 'object') this.config.backends = {};
+    },
+    get backendNames() {
+        return Object.keys(this.config.backends || {});
+    },
+    addRule() {
+        this.config.rules.push({
+            id: `rule-${Date.now()}`,
+            name: '',
+            enabled: true,
+            conditions: {
+                systemPromptPatterns: [],
+                footerPatterns: [],
+                models: [],
+                maxTokensMin: 0,
+                maxTokensMax: 0
+            },
+            action: 'passthrough',
+            targetBackend: '',
+            verdictTemplate: ''
+        });
+    },
+    removeRule(index) {
+        this.config.rules.splice(index, 1);
+    },
+    addBackend() {
+        const key = `backend-${Object.keys(this.config.backends).length + 1}`;
+        this.config.backends[key] = {
+            name: key,
+            url: 'http://127.0.0.1:8000/v1/chat/completions',
+            format: 'openai',
+            model: '',
+            maxTokens: 0,
+            timeoutMs: 20000
+        };
+    },
+    removeBackend(key) {
+        delete this.config.backends[key];
+        // A rule pointing at a deleted backend would be rejected on save, so
+        // clear the reference here rather than surfacing a 400 later.
+        this.config.rules.forEach((rule) => {
+            if (rule.targetBackend === key) rule.targetBackend = '';
+        });
+    },
+    // The editor exposes one pattern per field, which is the shape the
+    // captured fingerprints actually need. Patterns are stored as arrays so
+    // the backend schema does not have to change when multi-pattern editing
+    // is added later.
+    patternValue(rule, field) {
+        const list = rule.conditions?.[field];
+        return Array.isArray(list) && list.length > 0 ? list[0].pattern : '';
+    },
+    setPattern(rule, field, type, value) {
+        if (!rule.conditions) rule.conditions = {};
+        rule.conditions[field] = value ? [{ type, pattern: value }] : [];
+    },
+    // Inline regex feedback: the backend rejects invalid patterns with a bare
+    // 400, so parse here and surface the error next to the field instead.
+    patternError(rule, field) {
+        const list = rule.conditions?.[field];
+        const entry = Array.isArray(list) && list.length > 0 ? list[0] : null;
+        if (!entry || entry.type !== 'regex' || !entry.pattern) return '';
+        try {
+            new RegExp(entry.pattern);
+            return '';
+        } catch (err) {
+            return err.message;
+        }
+    },
+    firstInvalidPattern() {
+        for (const rule of this.config.rules || []) {
+            const conditions = rule.conditions || {};
+            for (const [field, list] of Object.entries(conditions)) {
+                if (!Array.isArray(list)) continue;
+                for (const entry of list) {
+                    if (!entry || entry.type !== 'regex' || !entry.pattern) continue;
+                    try {
+                        new RegExp(entry.pattern);
+                    } catch (err) {
+                        const label = rule.name || rule.id || 'unnamed rule';
+                        return `Rule "${label}" (${field}): invalid regex - ${err.message}`;
+                    }
+                }
+            }
+        }
+        return '';
     },
     async loadConfig() {
         const raw = Alpine.store('settings')?.config?.classifier;
@@ -79,6 +168,11 @@ window.Components.classifierConfig = () => ({
     async saveConfig() {
         this.saving = true;
         try {
+            const invalidPattern = this.firstInvalidPattern();
+            if (invalidPattern) {
+                Alpine.store('global').showToast(invalidPattern, 'error');
+                return;
+            }
             const password = Alpine.store('global')?.webuiPassword;
             const payload = {
                 classifier: {
@@ -103,7 +197,26 @@ window.Components.classifierConfig = () => ({
                             targetModel: this.config.variants?.['block-prefilter']?.targetModel || '',
                             cannedVerdict: this.config.variants?.['block-prefilter']?.cannedVerdict || ''
                         }
-                    }
+                    },
+                    rules: (this.config.rules || []).map((rule) => ({
+                        ...rule,
+                        enabled: !!rule.enabled,
+                        conditions: {
+                            ...(rule.conditions || {}),
+                            maxTokensMin: Number(rule.conditions?.maxTokensMin) || 0,
+                            maxTokensMax: Number(rule.conditions?.maxTokensMax) || 0
+                        }
+                    })),
+                    backends: Object.fromEntries(
+                        Object.entries(this.config.backends || {}).map(([key, backend]) => [key, {
+                            ...backend,
+                            maxTokens: Number(backend.maxTokens) || 0,
+                            timeoutMs: Number(backend.timeoutMs) || 0,
+                            // An empty apiKey means "unchanged" server-side,
+                            // which is what the redacted GET forces here.
+                            apiKey: backend.apiKey || ''
+                        }])
+                    )
                 }
             };
 
@@ -125,8 +238,17 @@ window.Components.classifierConfig = () => ({
             }
 
             if (!res.ok) {
+                // The backend's 400 body is {"status":"error","error":"..."};
+                // show the message field, not raw JSON, so RE2-only syntax
+                // errors (which pass the client-side JS RegExp check) are
+                // readable.
                 const errText = await res.text();
-                throw new Error(errText);
+                let message = errText;
+                try {
+                    const parsed = JSON.parse(errText);
+                    if (parsed && parsed.error) message = parsed.error;
+                } catch { /* body was not JSON; show it as-is */ }
+                throw new Error(message);
             }
             this.config = JSON.parse(JSON.stringify(payload.classifier));
             if (Alpine.store('settings')?.config) {

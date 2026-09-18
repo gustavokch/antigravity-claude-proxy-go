@@ -97,6 +97,14 @@ var classifierKeys = []string{
 	"classifierVariants", "classifierVariantsCount",
 	"classifierVariantStage1", "classifierVariantStage2", "classifierVariantBlock",
 	"classifierSaveNotice",
+	"classifierBackends", "classifierBackendsDesc", "classifierAddBackend",
+	"classifierBackendName", "classifierBackendUrl", "classifierBackendFormat",
+	"classifierBackendModel", "classifierBackendApiKey", "classifierRules",
+	"classifierRulesDesc", "classifierAddRule", "classifierRuleName",
+	"classifierRuleSystemPattern", "classifierRuleSystemPatternHint",
+	"classifierRuleFooterPattern", "classifierRuleMaxTokensMin",
+	"classifierRuleMaxTokensMax", "classifierRuleVerdict", "classifierAudit",
+	"classifierAuditEmpty",
 }
 
 func loadLocale(t *testing.T, locale string) string {
