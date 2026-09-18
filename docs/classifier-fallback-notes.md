@@ -190,7 +190,8 @@ built from operator's `Containerfile` pinning `@anthropic-ai/claude-code@2.1.267
 
 - The sandbox correctly reached host `antigravity-proxy` on port 8080 via `http://containers.internal:8080`.
 - The classifier interception correctly triggered on tool calls (`ls -la`).
-- Traffic matched `block-prefilter` and routing configured in `~/.config/antigravity-proxy/config.json` (`classifier.action = "reroute_only"` to `gemini-3.8-flash-low`).
+- Historical prototype note: initial test traffic observed routing under earlier prototype configuration (`classifier.action = "reroute_only"` to `gemini-3.8-flash-low`). The shipped implementation routes via `classifier.rules[].action = "reroute"` plus named target backends in `classifier.backends`.
+- Shipped rule engine path is verified by unit and end-to-end integration tests (`internal/api/classifier_e2e_test.go`, `internal/api/classifier_rules_test.go`), with live container capture confirming network reachability and wire format compatibility.
 - Upstream requests dispatched to `gemini-3.8-flash-low` with `stream: false` as expected.
 - Existing system prompt fingerprints and variant definitions remain fully compatible with `v2.1.267`.
 
