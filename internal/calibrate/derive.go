@@ -155,9 +155,10 @@ func (result Result) window() time.Duration {
 	return result.RecoverDaily
 }
 
-// Fragment renders the derived settings as config keys. A key whose guard
-// failed is absent: an omitted key leaves the operator's current value alone,
-// which is the safe outcome for a thin sample.
+// Fragment renders the derived settings as config keys, in the shape
+// config.Config declares, so the printed JSON can be pasted into config.json as
+// it stands. A key whose guard failed is absent: an omitted key leaves the
+// operator's current value alone, which is the safe outcome for a thin sample.
 func (result Result) Fragment() map[string]any {
 	fragment := map[string]any{}
 
@@ -172,7 +173,7 @@ func (result Result) Fragment() map[string]any {
 		if result.ConcurrencySafe.OK {
 			bucket["maxTokens"] = min(maxBucketTokens, result.ConcurrencySafe.Value*3)
 		}
-		fragment["accountSelection.tokenBucket"] = bucket
+		fragment["accountSelection"] = map[string]any{"tokenBucket": bucket}
 	}
 	if window := result.window(); window > 0 {
 		windowMs := int(window / time.Millisecond)

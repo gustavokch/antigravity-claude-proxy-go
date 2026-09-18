@@ -16,18 +16,9 @@ func TestFragmentKeysMatchTheConfigStruct(t *testing.T) {
 	}
 	fragment := Derive(Journal{Entries: entries}).Fragment()
 
-	// The bucket is nested under accountSelection in the real config, so lift
-	// it into the shape config.Config actually declares before decoding.
-	nested := map[string]any{}
-	for key, value := range fragment {
-		if key == "accountSelection.tokenBucket" {
-			nested["accountSelection"] = map[string]any{"tokenBucket": value}
-			continue
-		}
-		nested[key] = value
-	}
-
-	encoded, err := json.Marshal(nested)
+	// The fragment is printed for an operator to paste into config.json, so it
+	// must decode into config.Config exactly as emitted — no key rewriting.
+	encoded, err := json.Marshal(fragment)
 	if err != nil {
 		t.Fatalf("marshal fragment: %v", err)
 	}
@@ -57,9 +48,9 @@ func TestBucketKeysExistInTheDefaultConfig(t *testing.T) {
 	entries := rejects("a@example.com", 5, 4, 37)
 	fragment := Derive(Journal{Entries: entries}).Fragment()
 
-	bucket, ok := fragment["accountSelection.tokenBucket"].(map[string]any)
+	bucket, ok := bucketOf(fragment)
 	if !ok {
-		t.Fatalf("accountSelection.tokenBucket: got %T, want map", fragment["accountSelection.tokenBucket"])
+		t.Fatalf("accountSelection.tokenBucket: got %v, want a nested map", fragment["accountSelection"])
 	}
 	if len(bucket) == 0 {
 		t.Fatal("fragment emitted an empty token bucket")

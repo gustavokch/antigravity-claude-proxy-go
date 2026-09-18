@@ -33,6 +33,17 @@ func rejectRecoverPair(account string, at time.Time, gap time.Duration) []Entry 
 	}
 }
 
+// bucketOf reaches the token bucket through the nested shape config.Config
+// declares, which is the shape an operator pastes.
+func bucketOf(fragment map[string]any) (map[string]any, bool) {
+	selection, ok := fragment["accountSelection"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	bucket, ok := selection["tokenBucket"].(map[string]any)
+	return bucket, ok
+}
+
 func TestConcurrencySafeIsOneBelowTheLowestRejectingInFlight(t *testing.T) {
 	entries := append(rejects("a@example.com", 3, 6, 40), rejects("a@example.com", 2, 4, 40)...)
 
@@ -190,9 +201,9 @@ func TestFragmentDerivesEveryKeyFromAFullSample(t *testing.T) {
 			t.Fatalf("tiers: got %v, want %v — the top tier is capped at 1800s", tiers, want)
 		}
 	}
-	bucket, ok := fragment["accountSelection.tokenBucket"].(map[string]any)
+	bucket, ok := bucketOf(fragment)
 	if !ok {
-		t.Fatalf("accountSelection.tokenBucket: got %T, want map", fragment["accountSelection.tokenBucket"])
+		t.Fatalf("accountSelection.tokenBucket: got %v, want a nested map", fragment["accountSelection"])
 	}
 	if bucket["tokensPerMinute"] != 36 {
 		t.Fatalf("tokensPerMinute: got %v, want 36", bucket["tokensPerMinute"])
@@ -217,7 +228,7 @@ func TestMaxTokensIsCappedAtTwenty(t *testing.T) {
 
 	fragment := Derive(Journal{Entries: entries}).Fragment()
 
-	bucket := fragment["accountSelection.tokenBucket"].(map[string]any)
+	bucket, _ := bucketOf(fragment)
 	if bucket["maxTokens"] != 20 {
 		t.Fatalf("maxTokens: got %v, want the cap of 20", bucket["maxTokens"])
 	}
