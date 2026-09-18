@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"antigravity-go-proxy/internal/config"
 )
 
 func TestRecorderHistoryIsCappedAndOrdered(t *testing.T) {
@@ -93,6 +95,32 @@ func TestRecorderAddAssignsMonotonicSeq(t *testing.T) {
 		if event.Seq != uint64(i+1) {
 			t.Fatalf("expected Seq %d, got %d", i+1, event.Seq)
 		}
+	}
+}
+
+func TestEventJSONWireFormat(t *testing.T) {
+	stamp := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	event := Event{
+		Seq:       1,
+		Timestamp: stamp,
+		RuleID:    "r1",
+		RuleName:  "Test Rule",
+		Action:    config.RuleActionReroute,
+		Backend:   "local",
+		Status:    EventStatusRerouted,
+		LatencyMs: 42,
+		Model:     "claude-sonnet-5",
+		Detail:    "ok",
+	}
+
+	data, err := encodeCompactJSON(event)
+	if err != nil {
+		t.Fatalf("failed to encode event: %v", err)
+	}
+
+	expected := `{"seq":1,"timestamp":"2026-09-18T12:00:00Z","ruleId":"r1","ruleName":"Test Rule","action":"reroute","backend":"local","status":"rerouted","latencyMs":42,"model":"claude-sonnet-5","detail":"ok"}`
+	if string(data) != expected {
+		t.Errorf("wire format mismatch:\ngot:  %s\nwant: %s", string(data), expected)
 	}
 }
 

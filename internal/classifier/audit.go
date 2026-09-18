@@ -3,22 +3,32 @@ package classifier
 import (
 	"time"
 
+	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/ringbuf"
 )
 
+// EventStatus describes the outcome of applying a rule to a classifier request.
+type EventStatus string
+
+const (
+	EventStatusRerouted    EventStatus = "rerouted"
+	EventStatusStubbed     EventStatus = "stubbed"
+	EventStatusPassthrough EventStatus = "passthrough"
+	EventStatusError       EventStatus = "error"
+)
+
 // Event is one interception decision, as shown in the WebUI audit stream.
-// Status is one of "rerouted", "stubbed", "passthrough", or "error".
 type Event struct {
-	Seq       uint64    `json:"seq"`
-	Timestamp time.Time `json:"timestamp"`
-	RuleID    string    `json:"ruleId"`
-	RuleName  string    `json:"ruleName"`
-	Action    string    `json:"action"`
-	Backend   string    `json:"backend,omitempty"`
-	Status    string    `json:"status"`
-	LatencyMs int64     `json:"latencyMs"`
-	Model     string    `json:"model,omitempty"`
-	Detail    string    `json:"detail,omitempty"`
+	Seq       uint64            `json:"seq"`
+	Timestamp time.Time         `json:"timestamp"`
+	RuleID    string            `json:"ruleId"`
+	RuleName  string            `json:"ruleName"`
+	Action    config.RuleAction `json:"action"`
+	Backend   string            `json:"backend,omitempty"`
+	Status    EventStatus       `json:"status"`
+	LatencyMs int64             `json:"latencyMs"`
+	Model     string            `json:"model,omitempty"`
+	Detail    string            `json:"detail,omitempty"`
 }
 
 // Recorder is a bounded ring of recent events plus a fan-out to live

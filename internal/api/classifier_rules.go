@@ -66,12 +66,12 @@ func (server *Server) applyClassifierRule(
 	streamRequested bool,
 ) (responded bool, skipDetect bool) {
 	start := time.Now()
-	record := func(status, detail string) {
+	record := func(status classifier.EventStatus, detail string) {
 		server.classifierAudit.Add(classifier.Event{
 			Timestamp: time.Now(),
 			RuleID:    rule.ID,
 			RuleName:  rule.Name,
-			Action:    string(rule.Action),
+			Action:    rule.Action,
 			Backend:   rule.TargetBackend,
 			Status:    status,
 			LatencyMs: time.Since(start).Milliseconds(),
@@ -82,40 +82,40 @@ func (server *Server) applyClassifierRule(
 
 	switch rule.Action {
 	case config.RuleActionPassthrough:
-		record("passthrough", "")
+		record(classifier.EventStatusPassthrough, "")
 		return false, true
 
 	case config.RuleActionStub:
 		stub, err := classifier.StubWithText(model, rule.VerdictTemplate)
 		if err != nil {
 			server.classifierLogger().Warn("[Server] classifier rule stub failed; falling through", "rule", rule.ID, "error", err)
-			record("error", err.Error())
+			record(classifier.EventStatusError, err.Error())
 			return false, false
 		}
 		if err := writeClassifierResponse(writer, stub, streamRequested); err != nil {
-			record("error", err.Error())
+			record(classifier.EventStatusError, err.Error())
 			return true, false
 		}
-		record("stubbed", "")
+		record(classifier.EventStatusStubbed, "")
 		return true, false
 
 	case config.RuleActionReroute:
 		if backend == nil {
-			record("error", "target backend not found")
+			record(classifier.EventStatusError, "target backend not found")
 			return false, false
 		}
 		message, err := server.callClassifierBackend(request.Context(), backend, rawBody, model)
 		if err != nil {
 			server.classifierLogger().Warn("[Server] classifier reroute failed; falling back to built-in handling",
 				"rule", rule.ID, "backend", rule.TargetBackend, "error", err)
-			record("error", err.Error())
+			record(classifier.EventStatusError, err.Error())
 			return false, false
 		}
 		if err := writeClassifierResponse(writer, message, streamRequested); err != nil {
-			record("error", err.Error())
+			record(classifier.EventStatusError, err.Error())
 			return true, false
 		}
-		record("rerouted", "")
+		record(classifier.EventStatusRerouted, "")
 		return true, false
 	}
 
