@@ -177,6 +177,13 @@ func BuildStub(kind Kind, model, verdictTmpl, thinkingTmpl string) ([]byte, erro
 		}
 	}
 
+	return StubWithText(model, verdictText)
+}
+
+// StubWithText builds a canned Anthropic Messages 200 response carrying text
+// verbatim. Rule-driven stubs supply their own verdict, so they bypass the
+// Kind-based template selection in BuildStub entirely.
+func StubWithText(model, text string) ([]byte, error) {
 	id, err := stubMessageID()
 	if err != nil {
 		return nil, err
@@ -187,7 +194,7 @@ func BuildStub(kind Kind, model, verdictTmpl, thinkingTmpl string) ([]byte, erro
 		"type":          "message",
 		"role":          "assistant",
 		"model":         model,
-		"content":       []map[string]any{{"type": "text", "text": verdictText}},
+		"content":       []map[string]any{{"type": "text", "text": text}},
 		"stop_reason":   "end_turn",
 		"stop_sequence": nil,
 		"usage": map[string]any{
