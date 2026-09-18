@@ -287,8 +287,17 @@ window.Components.classifierConfig = () => ({
             }
 
             if (!res.ok) {
+                // The backend's 400 body is {"status":"error","error":"..."};
+                // show the message field, not raw JSON, so RE2-only syntax
+                // errors (which pass the client-side JS RegExp check) are
+                // readable.
                 const errText = await res.text();
-                throw new Error(errText);
+                let message = errText;
+                try {
+                    const parsed = JSON.parse(errText);
+                    if (parsed && parsed.error) message = parsed.error;
+                } catch { /* body was not JSON; show it as-is */ }
+                throw new Error(message);
             }
             this.config = JSON.parse(JSON.stringify(payload.classifier));
             if (Alpine.store('settings')?.config) {
