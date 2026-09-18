@@ -80,6 +80,7 @@ type Dispatcher struct {
 	random                   func() float64
 	modelCacheTTL            time.Duration
 	forensics429             *Forensics429Recorder
+	meter                    *throttleMeter
 
 	mu        sync.RWMutex
 	clients   map[string]accountClient
@@ -141,6 +142,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		random:                   options.Random,
 		modelCacheTTL:            options.ModelCacheTTL,
 		forensics429:             options.Forensics429,
+		meter:                    newThrottleMeter(nil),
 		clients:                  make(map[string]accountClient),
 	}, nil
 }
@@ -268,7 +270,10 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 				return cloudcode.Response{}, err
 			}
 		}
-		response, err := dispatcher.client(selection.Account, credentials.AccessToken).FetchAvailableModels(ctx, dispatcher.project(selection.Account))
+		modelsClient := dispatcher.client(selection.Account, credentials.AccessToken)
+		response, err := dispatcher.metered(selection.Account.Email, func() (cloudcode.Response, error) {
+			return modelsClient.FetchAvailableModels(ctx, dispatcher.project(selection.Account))
+		})
 		if err == nil {
 			dispatcher.manager.MarkSuccess(selection.Account, "")
 			dispatcher.cacheCatalog(response.Body)
@@ -371,11 +376,20 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 					return cloudcode.Response{}, err
 				}
 			}
-			response, requestErr := client.StreamGenerateContent(ctx, payload, options, func(event cloudcode.SSEEvent) error {
-				eventCount++
-				return consume(event)
-			})
+			inFlight, priorMinute := dispatcher.meter.Begin(account.Email)
+			// The release is deferred inside its own scope so a panic in the
+			// consume callback cannot strand the account's in-flight count.
+			response, requestErr := func() (cloudcode.Response, error) {
+				defer dispatcher.meter.End(account.Email)
+				return client.StreamGenerateContent(ctx, payload, options, func(event cloudcode.SSEEvent) error {
+					eventCount++
+					return consume(event)
+				})
+			}()
 			if requestErr == nil {
+				if dispatcher.meter.TakeRecovery(account.Email) {
+					dispatcher.recordRecovery(account, project, model, inFlight, priorMinute)
+				}
 				dispatcher.manager.MarkSuccess(account, model)
 				cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 				return response, nil
@@ -420,7 +434,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 					}
 				}
 				slog.Warn("upstream 429", "model", model, "reason", reason, "wait", wait.Round(time.Second), "serverReset", reset, "failures", failures, "body", truncateBodyForLog(upstreamError.Body))
-				dispatcher.record429(account, project, model, upstreamError, wait, failures)
+				dispatcher.record429(account, project, model, upstreamError, wait, failures, inFlight, priorMinute)
 				dispatcher.manager.MarkRateLimited(account, model, wait)
 				break
 			}
@@ -474,6 +488,16 @@ func cloneRequest(request map[string]any) map[string]any {
 	return cloned
 }
 
+// metered brackets one upstream call with the throttle meter, so every request
+// an account makes counts toward its rate rather than only the streaming ones.
+// A ceiling derived from a partial count reads higher than the account really
+// tolerated, which is the unsafe direction.
+func (dispatcher *Dispatcher) metered(email string, call func() (cloudcode.Response, error)) (cloudcode.Response, error) {
+	dispatcher.meter.Begin(email)
+	defer dispatcher.meter.End(email)
+	return call()
+}
+
 func (dispatcher *Dispatcher) resolveProject(ctx context.Context, account *Account, client CloudClient) (string, error) {
 	if dispatcher.projectID != "" {
 		return dispatcher.projectID, nil
@@ -481,7 +505,9 @@ func (dispatcher *Dispatcher) resolveProject(ctx context.Context, account *Accou
 	if project := dispatcher.manager.Project(account); project != "" {
 		return project, nil
 	}
-	response, err := client.LoadCodeAssist(ctx, "")
+	response, err := dispatcher.metered(account.Email, func() (cloudcode.Response, error) {
+		return client.LoadCodeAssist(ctx, "")
+	})
 	if err != nil {
 		return "", fmt.Errorf("discover project for %s: %w", account.Email, err)
 	}
@@ -527,7 +553,9 @@ func (dispatcher *Dispatcher) RefreshAccount(ctx context.Context, email string) 
 	}
 
 	client := dispatcher.client(targetAccount, credentials.AccessToken)
-	response, err := client.LoadCodeAssist(ctx, "")
+	response, err := dispatcher.metered(email, func() (cloudcode.Response, error) {
+		return client.LoadCodeAssist(ctx, "")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("load code assist for %s: %w", email, err)
 	}
@@ -543,7 +571,9 @@ func (dispatcher *Dispatcher) RefreshAccount(ctx context.Context, email string) 
 		project = dispatcher.project(targetAccount)
 	}
 
-	quotaResponse, err := client.FetchAvailableModels(ctx, project)
+	quotaResponse, err := dispatcher.metered(email, func() (cloudcode.Response, error) {
+		return client.FetchAvailableModels(ctx, project)
+	})
 	if err == nil && len(quotaResponse.Body) > 0 {
 		dispatcher.updateAccountQuota(targetAccount, quotaResponse.Body)
 	}
@@ -633,7 +663,12 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 		return false
 	case http.StatusTooManyRequests:
 		wait := Decorrelate(SmartBackoff(ClassifyError(body, upstreamError.StatusCode), ParseResetTime(upstreamError.Header, body, dispatcher.now()), dispatcher.manager.FailureCount(account)), dispatcher.random)
-		dispatcher.record429(account, "", model, upstreamError, wait, dispatcher.manager.FailureCount(account))
+		email := ""
+		if account != nil {
+			email = account.Email
+		}
+		inFlight, priorMinute := dispatcher.meter.ObserveRejection(email)
+		dispatcher.record429(account, "", model, upstreamError, wait, dispatcher.manager.FailureCount(account), inFlight, priorMinute)
 		dispatcher.manager.MarkRateLimited(account, model, wait)
 		return true
 	default:
@@ -722,8 +757,42 @@ func truncateBodyForLog(body string) string {
 }
 
 // record429 persists one upstream 429 verbatim for later throttle-dimension
-// analysis. No-op when forensics is disabled.
-func (dispatcher *Dispatcher) record429(account *Account, project, model string, upstreamError *cloudcode.HTTPError, wait time.Duration, failures int) {
+// analysis, together with how hard the account was being driven when it was
+// rejected. No-op when forensics is disabled.
+func (dispatcher *Dispatcher) record429(account *Account, project, model string, upstreamError *cloudcode.HTTPError, wait time.Duration, failures, inFlight, priorMinute int) {
+	dispatcher.mu.RLock()
+	recorder := dispatcher.forensics429
+	dispatcher.mu.RUnlock()
+	email := ""
+	if account != nil {
+		email = account.Email
+	}
+	dispatcher.meter.MarkRejected(email)
+	if recorder == nil || !recorder.Enabled() {
+		return
+	}
+	recorder.Record(Forensics429Entry{
+		Timestamp:           dispatcher.now(),
+		Account:             email,
+		Project:             project,
+		Model:               model,
+		Endpoint:            upstreamError.Endpoint,
+		Status:              upstreamError.StatusCode,
+		Outcome:             OutcomeReject,
+		Reason:              string(ClassifyError(upstreamError.Body, upstreamError.StatusCode)),
+		InFlight:            inFlight,
+		PriorMinuteRequests: priorMinute,
+		Headers:             forensicsHeaders(upstreamError.Header),
+		Body:                upstreamError.Body,
+		AppliedWait:         wait.Round(time.Second).String(),
+		Failures:            failures,
+	})
+}
+
+// recordRecovery persists the first success on an account that had been
+// throttled. The gap from its matching reject record is the only direct
+// measurement of how long the throttle held.
+func (dispatcher *Dispatcher) recordRecovery(account *Account, project, model string, inFlight, priorMinute int) {
 	dispatcher.mu.RLock()
 	recorder := dispatcher.forensics429
 	dispatcher.mu.RUnlock()
@@ -735,16 +804,14 @@ func (dispatcher *Dispatcher) record429(account *Account, project, model string,
 		email = account.Email
 	}
 	recorder.Record(Forensics429Entry{
-		Timestamp:   dispatcher.now(),
-		Account:     email,
-		Project:     project,
-		Model:       model,
-		Endpoint:    upstreamError.Endpoint,
-		Status:      upstreamError.StatusCode,
-		Headers:     forensicsHeaders(upstreamError.Header),
-		Body:        upstreamError.Body,
-		AppliedWait: wait.Round(time.Second).String(),
-		Failures:    failures,
+		Timestamp:           dispatcher.now(),
+		Account:             email,
+		Project:             project,
+		Model:               model,
+		Status:              http.StatusOK,
+		Outcome:             OutcomeRecover,
+		InFlight:            inFlight,
+		PriorMinuteRequests: priorMinute,
 	})
 }
 
