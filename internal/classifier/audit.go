@@ -8,6 +8,7 @@ import (
 // Event is one interception decision, as shown in the WebUI audit stream.
 // Status is one of "rerouted", "stubbed", "passthrough", or "error".
 type Event struct {
+	Seq       uint64    `json:"seq"`
 	Timestamp time.Time `json:"timestamp"`
 	RuleID    string    `json:"ruleId"`
 	RuleName  string    `json:"ruleName"`
@@ -25,6 +26,7 @@ type Event struct {
 type Recorder struct {
 	mu          sync.RWMutex
 	capacity    int
+	seq         uint64
 	events      []Event
 	subscribers map[chan Event]struct{}
 }
@@ -52,6 +54,8 @@ func (recorder *Recorder) Add(event Event) {
 	}
 
 	recorder.mu.Lock()
+	recorder.seq++
+	event.Seq = recorder.seq
 	recorder.events = append(recorder.events, event)
 	if len(recorder.events) > recorder.capacity {
 		recorder.events = recorder.events[len(recorder.events)-recorder.capacity:]

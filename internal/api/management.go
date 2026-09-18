@@ -1460,14 +1460,14 @@ func (server *Server) handleClassifierAuditStream(writer http.ResponseWriter, re
 	flusher.Flush()
 
 	// An event added after Subscribe but before History() returns lands in
-	// both the replay and the live channel; emit each event only once.
-	seen := make(map[string]struct{})
+	// both the replay and the live channel; the monotonic Seq watermark
+	// emits each event exactly once with O(1) state.
+	var maxSeq uint64
 	emit := func(event classifier.Event) {
-		key := event.Timestamp.Format(time.RFC3339Nano) + "\x00" + event.RuleID
-		if _, dup := seen[key]; dup {
+		if event.Seq <= maxSeq {
 			return
 		}
-		seen[key] = struct{}{}
+		maxSeq = event.Seq
 		data, err := json.Marshal(event)
 		if err != nil {
 			return

@@ -222,3 +222,32 @@ func TestClassifierAuditStreamEmitsHistoryAndLiveEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifierAuditStreamEmitsSameTimestampSameRuleEvents(t *testing.T) {
+	srv := &Server{classifierAudit: classifier.NewRecorder(10)}
+	stamp := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	srv.classifierAudit.Add(classifier.Event{RuleID: "dup", Status: "stubbed", Timestamp: stamp})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodGet, "/api/classifier/audit/stream?history=true", nil).WithContext(ctx)
+	recorder := &stagedFlushRecorder{rec: httptest.NewRecorder(), gates: []chan struct{}{make(chan struct{}), make(chan struct{})}}
+
+	done := make(chan struct{})
+	go func() {
+		srv.handleClassifierAuditStream(recorder, request)
+		close(done)
+	}()
+
+	waitForCondition(t, 2*time.Second, func() bool { return recorder.statusCode() == http.StatusOK })
+	// Same Timestamp AND RuleID as the history event: the old
+	// Timestamp+RuleID dedupe key would have swallowed this event.
+	srv.classifierAudit.Add(classifier.Event{RuleID: "dup", Status: "rerouted", Timestamp: stamp})
+	close(recorder.gates[0])
+	close(recorder.gates[1])
+	waitForCondition(t, 2*time.Second, func() bool {
+		return strings.Count(recorder.bodyString(), `"ruleId":"dup"`) == 2
+	})
+	cancel()
+	<-done
+}
+

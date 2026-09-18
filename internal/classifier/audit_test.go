@@ -82,3 +82,17 @@ func TestRecorderAddIsNilSafe(t *testing.T) {
 		t.Errorf("expected nil history from a nil recorder, got %+v", history)
 	}
 }
+
+func TestRecorderAddAssignsMonotonicSeq(t *testing.T) {
+	recorder := NewRecorder(10)
+	recorder.Add(Event{RuleID: "a"})
+	recorder.Add(Event{RuleID: "b"})
+	recorder.Add(Event{RuleID: "c"})
+	history := recorder.History()
+	for i, event := range history {
+		if event.Seq != uint64(i+1) {
+			t.Fatalf("expected Seq %d, got %d", i+1, event.Seq)
+		}
+	}
+}
+
