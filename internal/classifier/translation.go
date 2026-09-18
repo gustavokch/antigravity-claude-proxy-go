@@ -1,7 +1,6 @@
 package classifier
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -98,26 +97,15 @@ func TranslateOpenAIToAnthropic(body []byte, echoModel string) ([]byte, error) {
 		stopReason = "max_tokens"
 	}
 
-	out := map[string]any{
-		"id":            id,
-		"type":          "message",
-		"role":          "assistant",
-		"model":         echoModel,
-		"content":       []map[string]any{{"type": "text", "text": resp.Choices[0].Message.Content}},
-		"stop_reason":   stopReason,
-		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  resp.Usage.PromptTokens,
-			"output_tokens": resp.Usage.CompletionTokens,
-		},
-	}
-	buf := &bytes.Buffer{}
-	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(out); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSpace(buf.Bytes()), nil
+	out := anthropicEnvelope(
+		id,
+		echoModel,
+		resp.Choices[0].Message.Content,
+		stopReason,
+		resp.Usage.PromptTokens,
+		resp.Usage.CompletionTokens,
+	)
+	return encodeCompactJSON(out)
 }
 
 // translatedMessageID marks rerouted answers distinctly from canned stubs

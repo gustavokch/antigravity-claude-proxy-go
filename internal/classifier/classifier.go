@@ -189,26 +189,8 @@ func StubWithText(model, text string) ([]byte, error) {
 		return nil, err
 	}
 
-	resp := map[string]any{
-		"id":            id,
-		"type":          "message",
-		"role":          "assistant",
-		"model":         model,
-		"content":       []map[string]any{{"type": "text", "text": text}},
-		"stop_reason":   "end_turn",
-		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  0,
-			"output_tokens": 0,
-		},
-	}
-	buf := &bytes.Buffer{}
-	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(resp); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSpace(buf.Bytes()), nil
+	resp := anthropicEnvelope(id, model, text, "end_turn", 0, 0)
+	return encodeCompactJSON(resp)
 }
 
 // CompactTranscript truncates excessive output inside <transcript>...</transcript> blocks.

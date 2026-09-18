@@ -1,7 +1,6 @@
 package classifier
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -86,13 +85,10 @@ func WriteSyntheticStream(w io.Writer, flush func(), message []byte) error {
 	}
 
 	for _, frame := range frames {
-		buf := &bytes.Buffer{}
-		enc := json.NewEncoder(buf)
-		enc.SetEscapeHTML(false)
-		if err := enc.Encode(frame.payload); err != nil {
+		data, err := encodeCompactJSON(frame.payload)
+		if err != nil {
 			return err
 		}
-		data := bytes.TrimSpace(buf.Bytes())
 		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", frame.event, data); err != nil {
 			return err
 		}
