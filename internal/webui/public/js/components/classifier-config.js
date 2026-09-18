@@ -113,6 +113,37 @@ window.Components.classifierConfig = () => ({
         if (!rule.conditions) rule.conditions = {};
         rule.conditions[field] = value ? [{ type, pattern: value }] : [];
     },
+    // Inline regex feedback: the backend rejects invalid patterns with a bare
+    // 400, so parse here and surface the error next to the field instead.
+    patternError(rule, field) {
+        const list = rule.conditions?.[field];
+        const entry = Array.isArray(list) && list.length > 0 ? list[0] : null;
+        if (!entry || entry.type !== 'regex' || !entry.pattern) return '';
+        try {
+            new RegExp(entry.pattern);
+            return '';
+        } catch (err) {
+            return err.message;
+        }
+    },
+    firstInvalidPattern() {
+        for (const rule of this.config.rules || []) {
+            const conditions = rule.conditions || {};
+            for (const [field, list] of Object.entries(conditions)) {
+                if (!Array.isArray(list)) continue;
+                for (const entry of list) {
+                    if (!entry || entry.type !== 'regex' || !entry.pattern) continue;
+                    try {
+                        new RegExp(entry.pattern);
+                    } catch (err) {
+                        const label = rule.name || rule.id || 'unnamed rule';
+                        return `Rule "${label}" (${field}): invalid regex - ${err.message}`;
+                    }
+                }
+            }
+        }
+        return '';
+    },
     connectAuditStream() {
         this.disconnectAuditStream();
         const password = Alpine.store('global')?.webuiPassword;
@@ -186,6 +217,11 @@ window.Components.classifierConfig = () => ({
     async saveConfig() {
         this.saving = true;
         try {
+            const invalidPattern = this.firstInvalidPattern();
+            if (invalidPattern) {
+                Alpine.store('global').showToast(invalidPattern, 'error');
+                return;
+            }
             const password = Alpine.store('global')?.webuiPassword;
             const payload = {
                 classifier: {

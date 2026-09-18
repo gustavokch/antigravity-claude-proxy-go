@@ -4190,8 +4190,12 @@
                                 <label class="text-xs text-gray-400 md:col-span-2">
                                     <span x-text="$store.global.t('classifierRuleSystemPattern')">System prompt regex</span>
                                     <input type="text" class="input input-xs w-full bg-space-800"
+                                        :class="{ 'border-red-500/50': patternError(rule, 'systemPromptPatterns') }"
                                         :value="patternValue(rule, 'systemPromptPatterns')"
                                         @input="setPattern(rule, 'systemPromptPatterns', 'regex', $event.target.value)">
+                                    <span class="text-[11px] text-gray-600">Regular expression syntax, e.g. ^You are Claude</span>
+                                    <span class="text-[11px] text-red-400" x-show="patternError(rule, 'systemPromptPatterns')"
+                                        x-text="patternError(rule, 'systemPromptPatterns')"></span>
                                 </label>
                                 <label class="text-xs text-gray-400 md:col-span-2">
                                     <span x-text="$store.global.t('classifierRuleFooterPattern')">Footer marker</span>
