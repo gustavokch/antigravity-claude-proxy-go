@@ -57,7 +57,17 @@ func TestApplyClassifierRuleReroutesToBackend(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(ruleRequestBody))
-	responded, skipDetect := srv.applyClassifierRule(recorder, request, rule, target, []byte(ruleRequestBody), "claude-sonnet-5", false)
+	responded, skipDetect := srv.applyClassifierRule(
+		recorder,
+		request,
+		classifierRequest{
+			rule:            rule,
+			backend:         target,
+			rawBody:         []byte(ruleRequestBody),
+			model:           "claude-sonnet-5",
+			streamRequested: false,
+		},
+	)
 
 	if !responded {
 		t.Fatal("expected the reroute to answer the request")
@@ -133,7 +143,17 @@ func TestApplyClassifierRuleReroutesToAnthropicBackend(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(ruleRequestBody))
-	responded, skipDetect := srv.applyClassifierRule(recorder, request, rule, target, []byte(ruleRequestBody), "claude-sonnet-5", false)
+	responded, skipDetect := srv.applyClassifierRule(
+		recorder,
+		request,
+		classifierRequest{
+			rule:            rule,
+			backend:         target,
+			rawBody:         []byte(ruleRequestBody),
+			model:           "claude-sonnet-5",
+			streamRequested: false,
+		},
+	)
 
 	if !responded {
 		t.Fatal("expected the reroute to answer the request")
@@ -160,7 +180,17 @@ func TestApplyClassifierRuleFailsOpenWhenBackendErrors(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(ruleRequestBody))
-	responded, skipDetect := srv.applyClassifierRule(recorder, request, rule, target, []byte(ruleRequestBody), "claude-sonnet-5", false)
+	responded, skipDetect := srv.applyClassifierRule(
+		recorder,
+		request,
+		classifierRequest{
+			rule:            rule,
+			backend:         target,
+			rawBody:         []byte(ruleRequestBody),
+			model:           "claude-sonnet-5",
+			streamRequested: false,
+		},
+	)
 
 	if responded {
 		t.Fatal("a failed backend must not answer the request")
@@ -189,7 +219,17 @@ func TestApplyClassifierRuleStreamsWhenClientAskedFor(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(ruleRequestBody))
-	responded, _ := srv.applyClassifierRule(recorder, request, rule, target, []byte(ruleRequestBody), "claude-sonnet-5", true)
+	responded, _ := srv.applyClassifierRule(
+		recorder,
+		request,
+		classifierRequest{
+			rule:            rule,
+			backend:         target,
+			rawBody:         []byte(ruleRequestBody),
+			model:           "claude-sonnet-5",
+			streamRequested: true,
+		},
+	)
 
 	if !responded {
 		t.Fatal("expected the reroute to answer the request")
@@ -227,7 +267,17 @@ func TestApplyClassifierRuleStubAndPassthrough(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(ruleRequestBody))
-	responded, _ := srv.applyClassifierRule(recorder, request, rule, target, []byte(ruleRequestBody), "claude-sonnet-5", false)
+	responded, _ := srv.applyClassifierRule(
+		recorder,
+		request,
+		classifierRequest{
+			rule:            rule,
+			backend:         target,
+			rawBody:         []byte(ruleRequestBody),
+			model:           "claude-sonnet-5",
+			streamRequested: false,
+		},
+	)
 	if !responded || recorder.Code != http.StatusOK {
 		t.Fatalf("expected a stubbed 200, responded=%v code=%d", responded, recorder.Code)
 	}
@@ -238,7 +288,17 @@ func TestApplyClassifierRuleStubAndPassthrough(t *testing.T) {
 	passthrough := *rule
 	passthrough.Action = config.RuleActionPassthrough
 	recorder2 := httptest.NewRecorder()
-	responded2, skipDetect2 := srv.applyClassifierRule(recorder2, request, &passthrough, nil, []byte(ruleRequestBody), "claude-sonnet-5", false)
+	responded2, skipDetect2 := srv.applyClassifierRule(
+		recorder2,
+		request,
+		classifierRequest{
+			rule:            &passthrough,
+			backend:         nil,
+			rawBody:         []byte(ruleRequestBody),
+			model:           "claude-sonnet-5",
+			streamRequested: false,
+		},
+	)
 	if responded2 {
 		t.Error("passthrough must not write a response")
 	}

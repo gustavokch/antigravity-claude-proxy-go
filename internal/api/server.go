@@ -832,7 +832,16 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	if cfg.Classifier.Enabled && len(cfg.Classifier.Rules) > 0 && server.classifierMatcher != nil {
 		if rule, backend, matched := server.classifierMatcher.Match(rawBody); matched {
 			responded, skipDetect := server.applyClassifierRule(
-				writer, request, rule, backend, rawBody, model, streamRequested)
+				writer,
+				request,
+				classifierRequest{
+					rule:            rule,
+					backend:         backend,
+					rawBody:         rawBody,
+					model:           model,
+					streamRequested: streamRequested,
+				},
+			)
 			if responded {
 				return
 			}

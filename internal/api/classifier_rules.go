@@ -49,6 +49,15 @@ func (server *Server) classifierLogger() *slog.Logger {
 	return slog.Default()
 }
 
+// classifierRequest bundles the inputs needed to evaluate and apply a rule.
+type classifierRequest struct {
+	rule            *config.Rule
+	backend         *config.TargetBackend
+	rawBody         []byte
+	model           string
+	streamRequested bool
+}
+
 // applyClassifierRule carries out a matched rule.
 //
 // responded is true when the rule already wrote the HTTP response and the
@@ -59,13 +68,10 @@ func (server *Server) classifierLogger() *slog.Logger {
 func (server *Server) applyClassifierRule(
 	writer http.ResponseWriter,
 	request *http.Request,
-	rule *config.Rule,
-	backend *config.TargetBackend,
-	rawBody []byte,
-	model string,
-	streamRequested bool,
+	req classifierRequest,
 ) (responded bool, skipDetect bool) {
 	start := time.Now()
+	rule := req.rule
 	record := func(status classifier.EventStatus, detail string) {
 		server.classifierAudit.Add(classifier.Event{
 			Timestamp: time.Now(),
@@ -75,7 +81,7 @@ func (server *Server) applyClassifierRule(
 			Backend:   rule.TargetBackend,
 			Status:    status,
 			LatencyMs: time.Since(start).Milliseconds(),
-			Model:     model,
+			Model:     req.model,
 			Detail:    detail,
 		})
 	}
@@ -86,13 +92,13 @@ func (server *Server) applyClassifierRule(
 		return false, true
 
 	case config.RuleActionStub:
-		stub, err := classifier.StubWithText(model, rule.VerdictTemplate)
+		stub, err := classifier.StubWithText(req.model, rule.VerdictTemplate)
 		if err != nil {
 			server.classifierLogger().Warn("[Server] classifier rule stub failed; falling through", "rule", rule.ID, "error", err)
 			record(classifier.EventStatusError, err.Error())
 			return false, false
 		}
-		if err := writeClassifierResponse(writer, stub, streamRequested); err != nil {
+		if err := writeClassifierResponse(writer, stub, req.streamRequested); err != nil {
 			record(classifier.EventStatusError, err.Error())
 			return true, false
 		}
@@ -100,18 +106,18 @@ func (server *Server) applyClassifierRule(
 		return true, false
 
 	case config.RuleActionReroute:
-		if backend == nil {
+		if req.backend == nil {
 			record(classifier.EventStatusError, "target backend not found")
 			return false, false
 		}
-		message, err := server.callClassifierBackend(request.Context(), backend, rawBody, model)
+		message, err := server.callClassifierBackend(request.Context(), req.backend, req.rawBody, req.model)
 		if err != nil {
 			server.classifierLogger().Warn("[Server] classifier reroute failed; falling back to built-in handling",
 				"rule", rule.ID, "backend", rule.TargetBackend, "error", err)
 			record(classifier.EventStatusError, err.Error())
 			return false, false
 		}
-		if err := writeClassifierResponse(writer, message, streamRequested); err != nil {
+		if err := writeClassifierResponse(writer, message, req.streamRequested); err != nil {
 			record(classifier.EventStatusError, err.Error())
 			return true, false
 		}

@@ -52,7 +52,17 @@ func TestEndToEndClassifierFlow(t *testing.T) {
 	if !matched {
 		t.Fatal("expected match")
 	}
-	responded, skipDetect := srv.applyClassifierRule(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody)), rule, target, []byte(reqBody), "claude-sonnet-5", false)
+	responded, skipDetect := srv.applyClassifierRule(
+		rec,
+		httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody)),
+		classifierRequest{
+			rule:            rule,
+			backend:         target,
+			rawBody:         []byte(reqBody),
+			model:           "claude-sonnet-5",
+			streamRequested: false,
+		},
+	)
 	if !responded || skipDetect || rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 responded, got %v, %v, %d", responded, skipDetect, rec.Code)
 	}
@@ -72,7 +82,17 @@ func TestEndToEndClassifierFlow(t *testing.T) {
 
 	// 3. Streaming reroute
 	recStream := httptest.NewRecorder()
-	respondedStream, _ := srv.applyClassifierRule(recStream, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody)), rule, target, []byte(reqBody), "claude-sonnet-5", true)
+	respondedStream, _ := srv.applyClassifierRule(
+		recStream,
+		httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody)),
+		classifierRequest{
+			rule:            rule,
+			backend:         target,
+			rawBody:         []byte(reqBody),
+			model:           "claude-sonnet-5",
+			streamRequested: true,
+		},
+	)
 	if !respondedStream || recStream.Code != http.StatusOK {
 		t.Fatalf("expected stream responded, got %v, %d", respondedStream, recStream.Code)
 	}
@@ -92,7 +112,17 @@ func TestEndToEndClassifierFlow(t *testing.T) {
 	// 5. Fail-open when backend dies
 	backend.Close()
 	recFail := httptest.NewRecorder()
-	respondedFail, skipDetectFail := srv.applyClassifierRule(recFail, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody)), rule, target, []byte(reqBody), "claude-sonnet-5", false)
+	respondedFail, skipDetectFail := srv.applyClassifierRule(
+		recFail,
+		httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody)),
+		classifierRequest{
+			rule:            rule,
+			backend:         target,
+			rawBody:         []byte(reqBody),
+			model:           "claude-sonnet-5",
+			streamRequested: false,
+		},
+	)
 	if respondedFail {
 		t.Error("dead backend must not respond")
 	}
