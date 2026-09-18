@@ -72,7 +72,7 @@ echo "Approving the bash tool call is what triggers the security-monitor"
 echo "request this harness exists to capture."
 echo
 
-exec podman run --rm -it \
+podman run --rm -it \
   --name claude-mitm-session \
   --replace \
   --add-host=containers.internal:host-gateway \
@@ -85,3 +85,5 @@ exec podman run --rm -it \
   -w /workspace \
   "${IMAGE_NAME}" \
   claude
+EXIT_STATUS=$?
+exit "${EXIT_STATUS}"
