@@ -874,10 +874,11 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 					_, _ = writer.Write(stub)
 					return
 				} else if errors.Is(stubErr, classifier.ErrUnsupportedKind) && targetModel != "" {
-					// Kinds without a captured verdict format (block-prefilter)
-					// cannot be stubbed. Failing fast here breaks every
-					// auto-mode permission check in the client, so reroute to
-					// the variant's target model and forward instead.
+					// A kind without a captured verdict format cannot be
+					// stubbed. Failing fast here breaks every auto-mode
+					// permission check in the client, so reroute to the
+					// variant's target model and forward instead. (Today all
+					// detected kinds have verdicts; this guards future kinds.)
 					logger.Warn("[Server] classifier interception: no canned verdict for this variant; rerouting to the variant target model instead of failing fast",
 						"kind", kind, "model", targetModel)
 					effectiveAction = config.ActionRerouteOnly
