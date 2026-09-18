@@ -15,6 +15,7 @@ import (
 
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/openrouter"
@@ -1445,6 +1446,12 @@ func (server *Server) handleClassifierAuditStream(writer http.ResponseWriter, re
 		return
 	}
 
+	// Subscribe before replaying history so an event added after the
+	// connection opens is never lost in the gap between the history
+	// snapshot and the subscription.
+	events, cancel := server.classifierAudit.Subscribe(100)
+	defer cancel()
+
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Connection", "keep-alive")
@@ -1452,19 +1459,28 @@ func (server *Server) handleClassifierAuditStream(writer http.ResponseWriter, re
 	writer.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// An event added after Subscribe but before History() returns lands in
+	// both the replay and the live channel; emit each event only once.
+	seen := make(map[string]struct{})
+	emit := func(event classifier.Event) {
+		key := event.Timestamp.Format(time.RFC3339Nano) + "\x00" + event.RuleID
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		data, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(writer, "data: %s\n\n", data)
+	}
+
 	if request.URL.Query().Get("history") == "true" {
 		for _, event := range server.classifierAudit.History() {
-			data, err := json.Marshal(event)
-			if err != nil {
-				continue
-			}
-			fmt.Fprintf(writer, "data: %s\n\n", data)
+			emit(event)
 		}
 		flusher.Flush()
 	}
-
-	events, cancel := server.classifierAudit.Subscribe(100)
-	defer cancel()
 
 	ctx := request.Context()
 	for {
@@ -1475,11 +1491,7 @@ func (server *Server) handleClassifierAuditStream(writer http.ResponseWriter, re
 			if !open {
 				return
 			}
-			data, err := json.Marshal(event)
-			if err != nil {
-				continue
-			}
-			fmt.Fprintf(writer, "data: %s\n\n", data)
+			emit(event)
 			flusher.Flush()
 		}
 	}

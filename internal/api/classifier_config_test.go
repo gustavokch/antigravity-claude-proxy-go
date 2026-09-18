@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,13 +95,79 @@ func TestConfigSaveRejectsMalformedRules(t *testing.T) {
 	}
 }
 
+// stagedFlushRecorder gates the first len(gates) Flush calls so a test can
+// deterministically place Recorder.Add calls between handler stages.
+type stagedFlushRecorder struct {
+	rec   *httptest.ResponseRecorder
+	gates []chan struct{}
+	count atomic.Int32
+	mu    sync.Mutex
+}
+
+func (g *stagedFlushRecorder) Header() http.Header {
+	return g.rec.Header()
+}
+
+func (g *stagedFlushRecorder) WriteHeader(code int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.rec.WriteHeader(code)
+}
+
+func (g *stagedFlushRecorder) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.rec.Write(p)
+}
+
+func (g *stagedFlushRecorder) Flush() {
+	n := int(g.count.Add(1))
+	if n <= len(g.gates) {
+		<-g.gates[n-1]
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.rec.Flush()
+}
+
+func (g *stagedFlushRecorder) statusCode() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.rec.Code
+}
+
+func (g *stagedFlushRecorder) bodyString() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.rec.Body.String()
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not met within timeout")
+}
+
 func TestClassifierAuditStreamEmitsHistoryAndLiveEvents(t *testing.T) {
 	srv := &Server{classifierAudit: classifier.NewRecorder(10)}
-	srv.classifierAudit.Add(classifier.Event{RuleID: "historic", Status: "stubbed"})
+	historyStamp := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	srv.classifierAudit.Add(classifier.Event{RuleID: "historic", Status: "stubbed", Timestamp: historyStamp})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	request := httptest.NewRequest(http.MethodGet, "/api/classifier/audit/stream?history=true", nil).WithContext(ctx)
-	recorder := httptest.NewRecorder()
+
+	gateFlush := make(chan struct{})
+	gateDrain := make(chan struct{})
+	recorder := &stagedFlushRecorder{
+		rec:   httptest.NewRecorder(),
+		gates: []chan struct{}{gateFlush, gateDrain},
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -107,10 +175,24 @@ func TestClassifierAuditStreamEmitsHistoryAndLiveEvents(t *testing.T) {
 		close(done)
 	}()
 
-	// Give the handler time to subscribe before the live event is pushed.
-	time.Sleep(100 * time.Millisecond)
-	srv.classifierAudit.Add(classifier.Event{RuleID: "live", Status: "rerouted"})
-	time.Sleep(100 * time.Millisecond)
+	// The status code is written after Subscribe, so seeing it means an Add
+	// now lands in BOTH the ring buffer (history replay) and the live
+	// channel; the stream must emit it exactly once.
+	waitForCondition(t, 2*time.Second, func() bool { return recorder.statusCode() == http.StatusOK })
+	srv.classifierAudit.Add(classifier.Event{RuleID: "overlap", Status: "rerouted", Timestamp: historyStamp.Add(time.Second)})
+	close(gateFlush)
+
+	// Once the history frames are written, the snapshot is fixed; an Add now
+	// can only arrive via the live channel and must not be lost.
+	waitForCondition(t, 2*time.Second, func() bool {
+		return strings.Contains(recorder.bodyString(), `"ruleId":"overlap"`)
+	})
+	srv.classifierAudit.Add(classifier.Event{RuleID: "live", Status: "rerouted", Timestamp: historyStamp.Add(2 * time.Second)})
+	close(gateDrain)
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return strings.Contains(recorder.bodyString(), `"ruleId":"live"`)
+	})
 	cancel()
 
 	select {
@@ -119,15 +201,11 @@ func TestClassifierAuditStreamEmitsHistoryAndLiveEvents(t *testing.T) {
 		t.Fatal("handler did not return when the request context was cancelled")
 	}
 
-	body := recorder.Body.String()
+	body := recorder.bodyString()
 	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
 		t.Errorf("expected an SSE content type, got %q", got)
 	}
-	for _, want := range []string{"historic", "live"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("missing %q in stream:\n%s", want, body)
-		}
-	}
+	counts := map[string]int{}
 	for _, line := range strings.Split(body, "\n") {
 		if !strings.HasPrefix(line, "data: ") {
 			continue
@@ -135,6 +213,12 @@ func TestClassifierAuditStreamEmitsHistoryAndLiveEvents(t *testing.T) {
 		var event classifier.Event
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
 			t.Fatalf("invalid frame %q: %v", line, err)
+		}
+		counts[event.RuleID]++
+	}
+	for _, id := range []string{"historic", "overlap", "live"} {
+		if counts[id] != 1 {
+			t.Errorf("expected %q exactly once, got %d:\n%s", id, counts[id], body)
 		}
 	}
 }
