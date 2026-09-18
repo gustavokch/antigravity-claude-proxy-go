@@ -11,6 +11,7 @@ import (
 
 // LogEntry represents a single structured log entry sent to UI/subscribers.
 type LogEntry struct {
+	Seq       uint64 `json:"seq"`
 	Timestamp string `json:"timestamp"`
 	Level     string `json:"level"`
 	Message   string `json:"message"`
@@ -20,6 +21,7 @@ type LogEntry struct {
 type Broadcaster struct {
 	mu          sync.RWMutex
 	capacity    int
+	seq         uint64
 	entries     []LogEntry
 	start       int
 	count       int
@@ -54,6 +56,11 @@ func LogSuccess(msg string, args ...any) {
 // Add appends a new entry to the ring buffer and dispatches it to subscribers.
 func (b *Broadcaster) Add(entry LogEntry) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.seq++
+	entry.Seq = b.seq
+
 	if b.count < b.capacity {
 		b.entries[(b.start+b.count)%b.capacity] = entry
 		b.count++
@@ -62,14 +69,7 @@ func (b *Broadcaster) Add(entry LogEntry) {
 		b.start = (b.start + 1) % b.capacity
 	}
 
-	// Copy subscribers list for fanout without holding lock during send
-	subs := make([]chan LogEntry, 0, len(b.subscribers))
 	for ch := range b.subscribers {
-		subs = append(subs, ch)
-	}
-	b.mu.Unlock()
-
-	for _, ch := range subs {
 		select {
 		case ch <- entry:
 		default:

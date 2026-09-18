@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/logger"
 )
 
 func postConfigRules(t *testing.T, srv *Server, classifierBlob string) *httptest.ResponseRecorder {
@@ -250,4 +251,45 @@ func TestClassifierAuditStreamEmitsSameTimestampSameRuleEvents(t *testing.T) {
 	cancel()
 	<-done
 }
+
+func TestLogsStreamEmitsHistoryAndLiveEntries(t *testing.T) {
+	srv := &Server{broadcaster: logger.NewBroadcaster(10)}
+	srv.broadcaster.Add(logger.LogEntry{Timestamp: "2026-09-18T12:00:00Z", Level: "INFO", Message: "historic"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodGet, "/api/logs/stream?history=true", nil).WithContext(ctx)
+	recorder := &stagedFlushRecorder{rec: httptest.NewRecorder(), gates: []chan struct{}{make(chan struct{}), make(chan struct{})}}
+
+	done := make(chan struct{})
+	go func() {
+		srv.handleLogsStream(recorder, request)
+		close(done)
+	}()
+
+	waitForCondition(t, 2*time.Second, func() bool { return recorder.statusCode() == http.StatusOK })
+	srv.broadcaster.Add(logger.LogEntry{Timestamp: "2026-09-18T12:00:01Z", Level: "INFO", Message: "overlap"})
+	close(recorder.gates[0])
+	waitForCondition(t, 2*time.Second, func() bool {
+		return strings.Contains(recorder.bodyString(), "overlap")
+	})
+	srv.broadcaster.Add(logger.LogEntry{Timestamp: "2026-09-18T12:00:02Z", Level: "INFO", Message: "live"})
+	close(recorder.gates[1])
+	waitForCondition(t, 2*time.Second, func() bool {
+		return strings.Contains(recorder.bodyString(), "live")
+	})
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return when the request context was cancelled")
+	}
+
+	for _, message := range []string{"historic", "overlap", "live"} {
+		if got := strings.Count(recorder.bodyString(), message); got != 1 {
+			t.Errorf("expected %q exactly once, got %d", message, got)
+		}
+	}
+}
+
 

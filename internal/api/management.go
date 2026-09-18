@@ -18,6 +18,7 @@ import (
 	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
+	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
 )
@@ -1393,6 +1394,9 @@ func (server *Server) handleLogsStream(writer http.ResponseWriter, request *http
 		return
 	}
 
+	ch, cancel := server.broadcaster.Subscribe(100)
+	defer cancel()
+
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("Connection", "keep-alive")
@@ -1400,18 +1404,25 @@ func (server *Server) handleLogsStream(writer http.ResponseWriter, request *http
 	writer.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	// If history requested, send recent logs
+	var maxSeq uint64
+	emit := func(entry logger.LogEntry) {
+		if entry.Seq <= maxSeq {
+			return
+		}
+		maxSeq = entry.Seq
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(writer, "data: %s\n\n", data)
+	}
+
 	if request.URL.Query().Get("history") == "true" {
-		history := server.broadcaster.GetHistory()
-		for _, entry := range history {
-			data, _ := json.Marshal(entry)
-			fmt.Fprintf(writer, "data: %s\n\n", data)
+		for _, entry := range server.broadcaster.GetHistory() {
+			emit(entry)
 		}
 		flusher.Flush()
 	}
-
-	ch, cancel := server.broadcaster.Subscribe(100)
-	defer cancel()
 
 	ctx := request.Context()
 	for {
@@ -1422,18 +1433,15 @@ func (server *Server) handleLogsStream(writer http.ResponseWriter, request *http
 			if !ok {
 				return
 			}
-			data, err := json.Marshal(entry)
-			if err == nil {
-				fmt.Fprintf(writer, "data: %s\n\n", data)
-				flusher.Flush()
-			}
+			emit(entry)
+			flusher.Flush()
 		}
 	}
 }
 
-// handleClassifierAuditStream streams interception decisions as SSE. It
-// mirrors handleLogsStream, including the ?history=true replay, so the WebUI
-// can reuse the EventSource pattern it already has for logs.
+// handleClassifierAuditStream streams interception decisions as SSE. Like
+// handleLogsStream, it subscribes before replaying ?history=true and dedupes
+// the overlap by the recorder's monotonic Seq.
 func (server *Server) handleClassifierAuditStream(writer http.ResponseWriter, request *http.Request) {
 	if server.classifierAudit == nil {
 		writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "events": []any{}})
