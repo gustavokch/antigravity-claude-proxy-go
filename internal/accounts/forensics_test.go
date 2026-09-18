@@ -74,3 +74,59 @@ func TestForensics429RecorderDisabledNoop(t *testing.T) {
 	recorder := NewForensics429Recorder("")
 	recorder.Record(Forensics429Entry{Status: 429, Body: "x"})
 }
+
+func TestRecordCarriesTheCalibrationFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upstream-429.jsonl")
+	recorder := NewForensics429Recorder(path)
+
+	recorder.Record(Forensics429Entry{
+		Timestamp:           time.Unix(1_700_000_000, 0).UTC(),
+		Account:             "a@example.com",
+		Status:              429,
+		Outcome:             OutcomeReject,
+		InFlight:            4,
+		PriorMinuteRequests: 37,
+	})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	var entry Forensics429Entry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("unmarshal journal line: %v", err)
+	}
+	if entry.InFlight != 4 {
+		t.Fatalf("InFlight: got %d, want 4", entry.InFlight)
+	}
+	if entry.PriorMinuteRequests != 37 {
+		t.Fatalf("PriorMinuteRequests: got %d, want 37", entry.PriorMinuteRequests)
+	}
+	if entry.Outcome != OutcomeReject {
+		t.Fatalf("Outcome: got %q, want %q", entry.Outcome, OutcomeReject)
+	}
+}
+
+func TestRecoveryRecordCarriesNoBody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upstream-429.jsonl")
+	recorder := NewForensics429Recorder(path)
+
+	recorder.Record(Forensics429Entry{
+		Timestamp: time.Unix(1_700_000_060, 0).UTC(),
+		Account:   "a@example.com",
+		Status:    200,
+		Outcome:   OutcomeRecover,
+	})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if strings.Contains(string(data), `"body"`) {
+		t.Fatalf("recovery record carried a body field: %s", data)
+	}
+	if strings.Contains(string(data), `"headers"`) {
+		t.Fatalf("recovery record carried a headers field: %s", data)
+	}
+}
+

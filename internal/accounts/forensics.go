@@ -15,20 +15,32 @@ import (
 // small; the cap keeps an error page from bloating the forensics file.
 const maxForensicsBodyLen = 4096
 
-// Forensics429Entry is one recorded upstream 429. Response data only: no
-// request headers, no tokens, no cookies, no prompt text (R2 of the
-// cloudcode-429-throttle-dimension spec).
+// Outcome values for Forensics429Entry. A reject record is one upstream 429; a
+// recover record is the first success on an account that had been rejected.
+// The gap between a matching pair is the measured throttle window.
+const (
+	OutcomeReject  = "reject"
+	OutcomeRecover = "recover"
+)
+
+// Forensics429Entry is one recorded upstream throttle event. Response data
+// only: no request headers, no tokens, no cookies, no prompt text (R2 of the
+// cloudcode-429-throttle-dimension spec). InFlight and PriorMinuteRequests are
+// counters, not content.
 type Forensics429Entry struct {
-	Timestamp   time.Time         `json:"timestamp"`
-	Account     string            `json:"account,omitempty"`
-	Project     string            `json:"project,omitempty"`
-	Model       string            `json:"model,omitempty"`
-	Endpoint    string            `json:"endpoint,omitempty"`
-	Status      int               `json:"status"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Body        string            `json:"body,omitempty"`
-	AppliedWait string            `json:"appliedWait,omitempty"`
-	Failures    int               `json:"failures,omitempty"`
+	Timestamp           time.Time         `json:"timestamp"`
+	Account             string            `json:"account,omitempty"`
+	Project             string            `json:"project,omitempty"`
+	Model               string            `json:"model,omitempty"`
+	Endpoint            string            `json:"endpoint,omitempty"`
+	Status              int               `json:"status"`
+	Outcome             string            `json:"outcome,omitempty"`
+	InFlight            int               `json:"inFlight,omitempty"`
+	PriorMinuteRequests int               `json:"priorMinuteRequests,omitempty"`
+	Headers             map[string]string `json:"headers,omitempty"`
+	Body                string            `json:"body,omitempty"`
+	AppliedWait         string            `json:"appliedWait,omitempty"`
+	Failures            int               `json:"failures,omitempty"`
 }
 
 // Forensics429Recorder appends one JSON line per upstream 429 so the quota
