@@ -61,14 +61,24 @@ func (meter *throttleMeter) End(account string) {
 	}
 }
 
-// Observe reports the current counts without recording a send. Rejection sites
-// that do not hold the values Begin returned read them from here.
+// Observe reports the current counts without recording a send, trimming the
+// send history to the window as it goes.
 func (meter *throttleMeter) Observe(account string) (int, int) {
 	meter.mu.Lock()
 	defer meter.mu.Unlock()
 	sends := trimSendsBefore(meter.sends[account], meter.now().Add(-rateWindow))
 	meter.sends[account] = sends
 	return meter.inFlight[account], len(sends)
+}
+
+// ObserveRejection reports the counts to journal against a rejection whose
+// Begin values the caller no longer holds. It floors both at one: a rejection
+// is handled after the request has already been released, and a zero on a
+// journal line is indistinguishable from a field an older build never wrote, so
+// the calibrator would drop the record entirely.
+func (meter *throttleMeter) ObserveRejection(account string) (int, int) {
+	inFlight, priorMinute := meter.Observe(account)
+	return max(1, inFlight), max(1, priorMinute)
 }
 
 // MarkRejected notes that account was throttled, arming the next success on it

@@ -667,7 +667,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 		if account != nil {
 			email = account.Email
 		}
-		inFlight, priorMinute := dispatcher.meter.Observe(email)
+		inFlight, priorMinute := dispatcher.meter.ObserveRejection(email)
 		dispatcher.record429(account, "", model, upstreamError, wait, dispatcher.manager.FailureCount(account), inFlight, priorMinute)
 		dispatcher.manager.MarkRateLimited(account, model, wait)
 		return true

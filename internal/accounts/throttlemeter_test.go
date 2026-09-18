@@ -168,3 +168,37 @@ func TestMeterIsSafeUnderConcurrentUse(t *testing.T) {
 		t.Fatalf("priorMinute after 50 sends: got %d, want 50", priorMinute)
 	}
 }
+
+func TestObserveRejectionCountsTheRejectedRequestItself(t *testing.T) {
+	now, _ := fakeClock(time.Unix(1_700_000_000, 0))
+	meter := newThrottleMeter(now)
+
+	// The rejection is handled after the request returned, so the meter has
+	// already released it. A zero here would be read as a missing field and the
+	// whole record dropped from the sample.
+	inFlight, priorMinute := meter.ObserveRejection("a@example.com")
+
+	if inFlight != 1 {
+		t.Fatalf("inFlight: got %d, want 1 — the rejected request was itself in flight", inFlight)
+	}
+	if priorMinute != 1 {
+		t.Fatalf("priorMinute: got %d, want 1 — the rejected request was itself sent", priorMinute)
+	}
+}
+
+func TestObserveRejectionKeepsALiveCount(t *testing.T) {
+	now, _ := fakeClock(time.Unix(1_700_000_000, 0))
+	meter := newThrottleMeter(now)
+	meter.Begin("a@example.com")
+	meter.Begin("a@example.com")
+	meter.Begin("a@example.com")
+
+	inFlight, priorMinute := meter.ObserveRejection("a@example.com")
+
+	if inFlight != 3 {
+		t.Fatalf("inFlight: got %d, want 3", inFlight)
+	}
+	if priorMinute != 3 {
+		t.Fatalf("priorMinute: got %d, want 3", priorMinute)
+	}
+}
