@@ -4110,6 +4110,133 @@
                     </details>
                 </div>
 
+                <!-- Backends -->
+                <div class="card bg-space-900/30 border border-space-border/60 p-6 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-sm font-bold text-white uppercase tracking-wider"
+                            x-text="$store.global.t('classifierBackends')">Backends</h4>
+                        <button class="btn btn-xs bg-space-800 border-space-border/60"
+                            @click="addBackend()" x-text="$store.global.t('classifierAddBackend')">Add backend</button>
+                    </div>
+                    <p class="text-xs text-gray-400" x-text="$store.global.t('classifierBackendsDesc')">
+                        Endpoints a rule can reroute classifier requests to.
+                    </p>
+                    <template x-for="key in backendNames" :key="key">
+                        <div class="grid grid-cols-1 md:grid-cols-6 gap-2 items-end p-3 bg-space-900/60 rounded-lg">
+                            <label class="text-xs text-gray-400 md:col-span-1">
+                                <span x-text="$store.global.t('classifierBackendName')">Name</span>
+                                <input type="text" class="input input-xs w-full bg-space-800" x-model="config.backends[key].name">
+                            </label>
+                            <label class="text-xs text-gray-400 md:col-span-2">
+                                <span x-text="$store.global.t('classifierBackendUrl')">URL</span>
+                                <input type="text" class="input input-xs w-full bg-space-800" x-model="config.backends[key].url">
+                            </label>
+                            <label class="text-xs text-gray-400">
+                                <span x-text="$store.global.t('classifierBackendFormat')">Format</span>
+                                <select class="select select-xs w-full bg-space-800" x-model="config.backends[key].format">
+                                    <option value="openai">openai</option>
+                                    <option value="anthropic">anthropic</option>
+                                </select>
+                            </label>
+                            <label class="text-xs text-gray-400">
+                                <span x-text="$store.global.t('classifierBackendModel')">Model</span>
+                                <input type="text" class="input input-xs w-full bg-space-800" x-model="config.backends[key].model">
+                            </label>
+                            <div class="flex items-center gap-2">
+                                <label class="text-xs text-gray-400 flex-1">
+                                    <span x-text="$store.global.t('classifierBackendApiKey')">API key</span>
+                                    <input type="password" class="input input-xs w-full bg-space-800"
+                                        :placeholder="config.backends[key].hasApiKey ? '••••••••' : ''"
+                                        x-model="config.backends[key].apiKey">
+                                </label>
+                                <button class="btn btn-xs btn-error" @click="removeBackend(key)">✕</button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Rules -->
+                <div class="card bg-space-900/30 border border-space-border/60 p-6 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-sm font-bold text-white uppercase tracking-wider"
+                            x-text="$store.global.t('classifierRules')">Interception Rules</h4>
+                        <button class="btn btn-xs bg-space-800 border-space-border/60"
+                            @click="addRule()" x-text="$store.global.t('classifierAddRule')">Add rule</button>
+                    </div>
+                    <p class="text-xs text-gray-400" x-text="$store.global.t('classifierRulesDesc')">
+                        Evaluated top to bottom; the first enabled match wins. Rules run before the built-in detection.
+                    </p>
+                    <template x-for="(rule, index) in config.rules" :key="rule.id">
+                        <div class="p-3 bg-space-900/60 rounded-lg space-y-2">
+                            <div class="flex items-center gap-2">
+                                <input type="checkbox" class="checkbox checkbox-xs" x-model="rule.enabled">
+                                <input type="text" class="input input-xs flex-1 bg-space-800"
+                                    :placeholder="$store.global.t('classifierRuleName')" x-model="rule.name">
+                                <select class="select select-xs bg-space-800" x-model="rule.action">
+                                    <option value="reroute">reroute</option>
+                                    <option value="stub">stub</option>
+                                    <option value="passthrough">passthrough</option>
+                                </select>
+                                <select class="select select-xs bg-space-800" x-model="rule.targetBackend"
+                                    x-show="rule.action === 'reroute'">
+                                    <option value="">—</option>
+                                    <template x-for="key in backendNames" :key="key">
+                                        <option :value="key" x-text="key"></option>
+                                    </template>
+                                </select>
+                                <button class="btn btn-xs btn-error" @click="removeRule(index)">✕</button>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                <label class="text-xs text-gray-400 md:col-span-2">
+                                    <span x-text="$store.global.t('classifierRuleSystemPattern')">System prompt regex</span>
+                                    <input type="text" class="input input-xs w-full bg-space-800"
+                                        :value="patternValue(rule, 'systemPromptPatterns')"
+                                        @input="setPattern(rule, 'systemPromptPatterns', 'regex', $event.target.value)">
+                                </label>
+                                <label class="text-xs text-gray-400 md:col-span-2">
+                                    <span x-text="$store.global.t('classifierRuleFooterPattern')">Footer marker</span>
+                                    <input type="text" class="input input-xs w-full bg-space-800"
+                                        :value="patternValue(rule, 'footerPatterns')"
+                                        @input="setPattern(rule, 'footerPatterns', 'substring', $event.target.value)">
+                                </label>
+                                <label class="text-xs text-gray-400">
+                                    <span x-text="$store.global.t('classifierRuleMaxTokensMin')">max_tokens min</span>
+                                    <input type="number" min="0" class="input input-xs w-full bg-space-800"
+                                        x-model.number="rule.conditions.maxTokensMin">
+                                </label>
+                                <label class="text-xs text-gray-400">
+                                    <span x-text="$store.global.t('classifierRuleMaxTokensMax')">max_tokens max</span>
+                                    <input type="number" min="0" class="input input-xs w-full bg-space-800"
+                                        x-model.number="rule.conditions.maxTokensMax">
+                                </label>
+                                <label class="text-xs text-gray-400 md:col-span-2" x-show="rule.action === 'stub'">
+                                    <span x-text="$store.global.t('classifierRuleVerdict')">Verdict template</span>
+                                    <input type="text" class="input input-xs w-full bg-space-800" x-model="rule.verdictTemplate">
+                                </label>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Live Audit Feed -->
+                <div class="card bg-space-900/30 border border-space-border/60 p-6 space-y-3">
+                    <h4 class="text-sm font-bold text-white uppercase tracking-wider"
+                        x-text="$store.global.t('classifierAudit')">Live Interception Feed</h4>
+                    <p class="text-xs text-gray-400" x-show="auditEvents.length === 0"
+                        x-text="$store.global.t('classifierAuditEmpty')">No interceptions recorded yet.</p>
+                    <div class="max-h-72 overflow-y-auto space-y-1">
+                        <template x-for="event in auditEvents" :key="event.timestamp + event.ruleId">
+                            <div class="flex items-center gap-2 text-xs font-mono p-2 bg-space-900/60 rounded">
+                                <span class="px-2 py-0.5 rounded border" :class="statusClass(event.status)"
+                                    x-text="event.status"></span>
+                                <span class="text-gray-300" x-text="event.ruleName || event.ruleId"></span>
+                                <span class="text-gray-500" x-text="event.backend"></span>
+                                <span class="text-gray-500 ml-auto" x-text="event.latencyMs + 'ms'"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
                 <!-- Save Action Bar -->
                 <div class="flex items-center justify-between p-4 bg-space-900/60 border border-space-border/60 rounded-xl">
                     <span class="text-xs text-gray-400" x-text="$store.global.t('classifierSaveNotice')">Apply safety classification settings to the live proxy.</span>
