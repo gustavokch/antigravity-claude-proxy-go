@@ -18,6 +18,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -141,7 +142,7 @@ func probeDailyEndpoint(ctx context.Context) (time.Duration, error) {
 		if err := calibrate.GuardBody(upstreamError.Body); err != nil {
 			return 0, err
 		}
-		if upstreamError.StatusCode == 401 && !reauthorized {
+		if upstreamError.StatusCode == http.StatusUnauthorized && !reauthorized {
 			reauthorized = true
 			fmt.Println("  probe: 401, re-resolving credentials once")
 			client, err = resolve()
@@ -149,6 +150,12 @@ func probeDailyEndpoint(ctx context.Context) (time.Duration, error) {
 				return 0, fmt.Errorf("re-resolve after 401: %w", err)
 			}
 			continue
+		}
+		if upstreamError.StatusCode != http.StatusTooManyRequests {
+			// Anything else is a broken request, not a throttle — a retired
+			// model id, a bad project. Repeating it nine more times buys
+			// nothing.
+			return 0, fmt.Errorf("probe: upstream returned %d, which is not a throttle", upstreamError.StatusCode)
 		}
 		if delay, ok := calibrate.ParseRetryDelay(upstreamError.Body); ok {
 			fmt.Printf("  probe %d/%d: rejected, stated delay %s\n", attempt+1, calibrate.MaxProbeRequests, delay.Round(time.Second))
