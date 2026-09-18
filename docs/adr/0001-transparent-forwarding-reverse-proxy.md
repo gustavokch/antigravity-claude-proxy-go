@@ -9,4 +9,4 @@ We route models configured in `customEndpoints` through `httputil.ReverseProxy` 
 ## Consequences
 - Zero payload translation overhead and zero format compatibility bugs for non-Google endpoints.
 - Server-Sent Events (SSE) stream directly with chunk flushing handled natively by Go's reverse proxy.
-- Eliminates the need to maintain multi-provider translation adapters within the proxy core.
+- Eliminates the need to maintain multi-provider translation adapters within the proxy core. (Amended by ADR-0003 for scoped classifier security-monitor rule rerouting).
