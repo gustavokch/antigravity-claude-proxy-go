@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -82,7 +83,7 @@ func (builder *Builder) buildCloudCodeRequest(request, googleRequest map[string]
 	if instruction := asMap(googleRequest["systemInstruction"]); instruction != nil {
 		for _, rawPart := range asSlice(instruction["parts"]) {
 			part := asMap(rawPart)
-			if text := stringValue(part["text"]); text != "" {
+			if text := stripBillingHeader(stringValue(part["text"])); text != "" {
 				systemParts = append(systemParts, map[string]any{"text": text})
 			}
 		}
@@ -101,6 +102,33 @@ func (builder *Builder) buildCloudCodeRequest(request, googleRequest map[string]
 		"requestType": "agent",
 		"requestId":   "agent-" + newRequestID(),
 	}
+}
+
+// billingHeaderToken is the Claude Code client identity marker that leaks into
+// the Anthropic system block. Upstream Cloud Code rejects any request whose
+// systemInstruction contains this literal token with a disguised
+// 429 RESOURCE_EXHAUSTED ("capacity is exhausted for this model"), regardless
+// of the header value and regardless of remaining quota. Verified 2026-09-17
+// by replaying an intercepted payload: header name present = 429 on every
+// account, header name removed = 200 on every account, same minute.
+const billingHeaderToken = "x-anthropic-billing-header"
+
+// stripBillingHeader removes the lines that carry billingHeaderToken from a
+// client system part and returns the remaining text. A part that holds nothing
+// else returns "" and the caller drops it.
+func stripBillingHeader(text string) string {
+	if text == "" || !strings.Contains(strings.ToLower(text), billingHeaderToken) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if strings.Contains(strings.ToLower(line), billingHeaderToken) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 func binaryStyleSessionID() string {

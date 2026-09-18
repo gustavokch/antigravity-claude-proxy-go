@@ -92,3 +92,79 @@ receives HTTP **429** with a `Retry-After` header, not 400 or 500.
 - Changing daily-quota accounting (`quotaInfo`), which is a separate dimension
   and is not the limiter here.
 - Web UI work beyond the existing text status table.
+
+## 6. Findings (2026-09-17)
+
+Recorded by the Task 4 probe matrix run (`go run ./cmd/probe429 -model
+gemini-3.8-flash-high -alt-model gemini-2.5-pro -burst 8 -window 20m
+-spacing 30s`), the live agy MITM capture attempt, and the Task 1 forensics
+JSONL. No interpretation beyond what the data shows.
+
+### 6.1 Verbatim 429 bodies
+
+`cloudcode-pa.googleapis.com` (burst, baseline, model axis, account axis, and
+window probes window-0..window-12), every rejection identical:
+
+```json
+{ "error": { "code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED" } }
+```
+
+No quota/rate/retry response headers were present on any recorded
+`cloudcode-pa` rejection (the recorded header set contained no
+quota/rate/retry fields).
+
+`daily-cloudcode-pa.googleapis.com` (endpoint axis probe, 2026-09-17
+21:40:48 -03:00):
+
+```json
+{ "error": { "code": 429, "message": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 17m31s.", "status": "RESOURCE_EXHAUSTED", "details": [ { "@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "QUOTA_EXHAUSTED", "domain": "cloudcode-pa.googleapis.com", "metadata": { "uiMessage": "true", "model": "gemini-3.8-flash-high", "quotaResetDelay": "17m31.337247485s", "quotaResetTimeStamp": "2026-09-18T00:58:20Z" } }, { "@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "1051.337247485s" } ] } }
+```
+
+Quota metric phrase: none of the bodies names a per-project/per-user/per-minute
+metric. The only quota identifiers present are the daily-endpoint
+`ErrorInfo.reason` `QUOTA_EXHAUSTED` with `metadata.model`
+`gemini-3.8-flash-high` and `quotaResetTimeStamp` `2026-09-18T00:58:20Z`, plus
+`RetryInfo.retryDelay` `1051.337247485s`. A grep of all 123 entries in the
+forensics JSONL for `quotaResetDelay`, `per project`, `per user`, `per model`,
+and `metric` returned zero hits; the daily-endpoint rejection above was not
+filed to the forensics JSONL (0 entries name `daily-cloudcode`).
+
+### 6.2 Matrix VERDICT line (verbatim)
+
+```
+VERDICT: throttle is shared across every probed axis (model, account, project, endpoint): project-wide or model capacity. Re-run with -window to measure how long it holds
+```
+
+### 6.3 Measured throttle window
+
+No recovery within 20m: the run printed `still throttled after 20m0s`.
+Window probes window-0 through window-12 (the first ~6.5 minutes of the scan)
+returned 429; from window-13 onward (2026-09-17 ~21:47 -03:00) every probe of
+`ghlsem@gmail.com` returned **401 UNAUTHENTICATED** ("Request had invalid
+authentication credentials") instead of 429, so the tail of the window could
+not observe 429 recovery. The daily-endpoint body during the same run named a
+`quotaResetTimeStamp` of `2026-09-18T00:58:20Z` (~17.5 minutes after the
+endpoint-axis probe).
+
+### 6.4 Live agy in the same window
+
+agy was rejected before any request reached the server: `agy --print='say OK'`
+through the MITM harness exited 1 with
+`tls: failed to verify certificate: x509: "upload.video.google.com" certificate is not trusted`.
+No content and no HTTP status were returned; whether the server would have
+rejected agy in this window is not measurable from this run (capture harness
+failure, recorded for escalation — no keychain changes were attempted).
+
+### 6.5 Decision table
+
+| Verdict | Task 5 ladder | Task 6 shared throttle | Extra follow-up |
+|---------|---------------|------------------------|-----------------|
+| model-scoped | cap the top tier at the measured window | keep: rejections still cluster per model | file a follow-up for sibling-model failover |
+| project-scoped | as above | keep — it is exactly this case | file a follow-up for project rotation |
+| endpoint-scoped | as above | keep | file a follow-up for endpoint failover |
+| account-scoped | as above | **drop Task 6** — rotation is already correct | none |
+| **shared across every axis** ← VERDICT | as above | keep — the primary fix | none |
+
+Notes: the project axis was not probed (both accounts use the single project
+`aicode-consumers`; no second project ID exists), and the window measurement
+is a lower bound contaminated by the mid-scan 401s on `ghlsem@gmail.com`.
