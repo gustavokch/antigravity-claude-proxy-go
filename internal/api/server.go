@@ -873,11 +873,20 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 					writer.WriteHeader(http.StatusOK)
 					_, _ = writer.Write(stub)
 					return
+				} else if errors.Is(stubErr, classifier.ErrUnsupportedKind) && targetModel != "" {
+					// Kinds without a captured verdict format (block-prefilter)
+					// cannot be stubbed. Failing fast here breaks every
+					// auto-mode permission check in the client, so reroute to
+					// the variant's target model and forward instead.
+					logger.Warn("[Server] classifier interception: no canned verdict for this variant; rerouting to the variant target model instead of failing fast",
+						"kind", kind, "model", targetModel)
+					effectiveAction = config.ActionRerouteOnly
+				} else {
+					logger.Warn("[Server] classifier interception: no canned verdict for this variant; failing fast instead of retrying",
+						"kind", kind, "model", stubModel)
+					writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No canned verdict for this classifier variant, so the request fails fast instead of retrying.")
+					return
 				}
-				logger.Warn("[Server] classifier interception: no canned verdict for this variant; failing fast instead of retrying",
-					"kind", kind, "model", stubModel)
-				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No canned verdict for this classifier variant, so the request fails fast instead of retrying.")
-				return
 			}
 
 			if effectiveAction == config.ActionRerouteOnly || effectiveAction == config.ActionFallbackOnExhaustion {

@@ -495,6 +495,52 @@ func TestClassifierCompactTranscript(t *testing.T) {
 	}
 }
 
+func TestClassifierAlwaysStub_UnsupportedKindReroutesToTargetModel(t *testing.T) {
+	server, backend := newAccountBackedTestServer(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Classifier.Enabled = true
+	cfg.Classifier.Action = config.ActionAlwaysStub
+	cfg.Classifier.Variants = map[string]config.ClassifierVariantConfig{
+		// No CannedVerdict: block-prefilter has no captured response format,
+		// so BuildStub cannot answer it. A configured targetModel must turn
+		// the fail-fast 400 into a reroute, or every auto-mode permission
+		// check errors out in the client.
+		"block-prefilter": {TargetModel: "rerouted-prefilter-model"},
+	}
+	config.SetForTest(cfg)
+
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierBlockFooter))
+
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("block-prefilter has no canned verdict; expected reroute to targetModel, got fail-fast 400: %s", rec.Body.String())
+	}
+	if !backend.hit {
+		t.Fatalf("backend was not hit; unsupported kinds must reroute to targetModel; status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotModel, _ := backend.lastReq["model"].(string); gotModel != "rerouted-prefilter-model" {
+		t.Fatalf("dispatched model = %q, want %q", gotModel, "rerouted-prefilter-model")
+	}
+}
+
+func TestClassifierAlwaysStub_UnsupportedKindNoTargetFailsFast(t *testing.T) {
+	server, backend := newAccountBackedTestServer(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Classifier.Enabled = true
+	cfg.Classifier.Action = config.ActionAlwaysStub
+	config.SetForTest(cfg)
+
+	rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierBlockFooter))
+
+	if backend.hit {
+		t.Fatal("backend was dispatched to; without a targetModel the unsupported kind must fail fast")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestClassifierBlockPrefilterCustomVerdict(t *testing.T) {
 	server, backend := newAccountBackedTestServer(t)
 
@@ -555,4 +601,3 @@ func TestClassifierPassthrough(t *testing.T) {
 		t.Fatalf("model should not be mutated in passthrough mode, got: %q", gotModel)
 	}
 }
-
