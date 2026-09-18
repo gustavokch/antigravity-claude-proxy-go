@@ -587,3 +587,21 @@ func TestUpdateConfigToggles429Forensics(t *testing.T) {
 		t.Fatal("disabling upstream429ForensicsEnabled must disarm the recorder at runtime")
 	}
 }
+
+func TestModelFetchCountsAgainstTheAccountRate(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	dispatcher := newDispatcherWithClient(t, &blockingModelsClient{release: release})
+
+	if _, err := dispatcher.FetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("fetch available models: %v", err)
+	}
+
+	inFlight, priorMinute := dispatcher.meter.Observe("test@example.com")
+	if priorMinute == 0 {
+		t.Fatal("the model fetch was not counted against the account's minute window — the derived RPM ceiling would read high")
+	}
+	if inFlight != 0 {
+		t.Fatalf("inFlight after the call returned: got %d, want 0", inFlight)
+	}
+}

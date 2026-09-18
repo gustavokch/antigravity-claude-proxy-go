@@ -270,7 +270,10 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 				return cloudcode.Response{}, err
 			}
 		}
-		response, err := dispatcher.client(selection.Account, credentials.AccessToken).FetchAvailableModels(ctx, dispatcher.project(selection.Account))
+		modelsClient := dispatcher.client(selection.Account, credentials.AccessToken)
+		response, err := dispatcher.metered(selection.Account.Email, func() (cloudcode.Response, error) {
+			return modelsClient.FetchAvailableModels(ctx, dispatcher.project(selection.Account))
+		})
 		if err == nil {
 			dispatcher.manager.MarkSuccess(selection.Account, "")
 			dispatcher.cacheCatalog(response.Body)
@@ -481,6 +484,16 @@ func cloneRequest(request map[string]any) map[string]any {
 	return cloned
 }
 
+// metered brackets one upstream call with the throttle meter, so every request
+// an account makes counts toward its rate rather than only the streaming ones.
+// A ceiling derived from a partial count reads higher than the account really
+// tolerated, which is the unsafe direction.
+func (dispatcher *Dispatcher) metered(email string, call func() (cloudcode.Response, error)) (cloudcode.Response, error) {
+	dispatcher.meter.Begin(email)
+	defer dispatcher.meter.End(email)
+	return call()
+}
+
 func (dispatcher *Dispatcher) resolveProject(ctx context.Context, account *Account, client CloudClient) (string, error) {
 	if dispatcher.projectID != "" {
 		return dispatcher.projectID, nil
@@ -488,7 +501,9 @@ func (dispatcher *Dispatcher) resolveProject(ctx context.Context, account *Accou
 	if project := dispatcher.manager.Project(account); project != "" {
 		return project, nil
 	}
-	response, err := client.LoadCodeAssist(ctx, "")
+	response, err := dispatcher.metered(account.Email, func() (cloudcode.Response, error) {
+		return client.LoadCodeAssist(ctx, "")
+	})
 	if err != nil {
 		return "", fmt.Errorf("discover project for %s: %w", account.Email, err)
 	}
@@ -534,7 +549,9 @@ func (dispatcher *Dispatcher) RefreshAccount(ctx context.Context, email string) 
 	}
 
 	client := dispatcher.client(targetAccount, credentials.AccessToken)
-	response, err := client.LoadCodeAssist(ctx, "")
+	response, err := dispatcher.metered(email, func() (cloudcode.Response, error) {
+		return client.LoadCodeAssist(ctx, "")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("load code assist for %s: %w", email, err)
 	}
@@ -550,7 +567,9 @@ func (dispatcher *Dispatcher) RefreshAccount(ctx context.Context, email string) 
 		project = dispatcher.project(targetAccount)
 	}
 
-	quotaResponse, err := client.FetchAvailableModels(ctx, project)
+	quotaResponse, err := dispatcher.metered(email, func() (cloudcode.Response, error) {
+		return client.FetchAvailableModels(ctx, project)
+	})
 	if err == nil && len(quotaResponse.Body) > 0 {
 		dispatcher.updateAccountQuota(targetAccount, quotaResponse.Body)
 	}
