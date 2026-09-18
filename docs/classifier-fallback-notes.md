@@ -150,6 +150,26 @@ during review; the notes are kept as written and corrected here rather than rewr
 container pointed at the host proxy, so new classifier variants can be
 captured without disturbing the host's Claude Code install.
 
+### Prerequisites
+
+The harness expects an external directory containing a `Containerfile` (default: `${HOME}/Git/claude-container`, configurable via `CLAUDE_CONTAINER_DIR`). The container image builds from this file and must pin `@anthropic-ai/claude-code@2.1.267`:
+
+```dockerfile
+FROM docker.io/library/node:22-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl less jq \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code@2.1.267
+
+WORKDIR /workspace
+ENTRYPOINT ["claude"]
+```
+
 Procedure:
 
 1. Start `antigravity-proxy` on port 8080.
@@ -166,7 +186,7 @@ verbatim quotes from observed traffic; nothing in this file is inferred.
 Date: 2026-09-18.
 
 Interactive capture session executed using container image `claude-box:mitm`
-pinned to `@anthropic-ai/claude-code@2.1.267` via `scripts/run-claude-mitm-sandbox.sh`:
+built from operator's `Containerfile` pinning `@anthropic-ai/claude-code@2.1.267` via `scripts/run-claude-mitm-sandbox.sh`:
 
 - The sandbox correctly reached host `antigravity-proxy` on port 8080 via `http://containers.internal:8080`.
 - The classifier interception correctly triggered on tool calls (`ls -la`).

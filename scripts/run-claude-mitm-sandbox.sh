@@ -23,7 +23,9 @@ for tool in podman jq; do
 done
 
 if [[ ! -f "${CONTAINER_DIR}/Containerfile" ]]; then
-  echo "ERROR: No Containerfile at ${CONTAINER_DIR}. Set CLAUDE_CONTAINER_DIR." >&2
+  echo "ERROR: No Containerfile found at ${CONTAINER_DIR}/Containerfile." >&2
+  echo "ERROR: Set CLAUDE_CONTAINER_DIR to the directory containing Containerfile." >&2
+  echo "ERROR: See docs/classifier-fallback-notes.md#prerequisites for required Containerfile contents." >&2
   exit 1
 fi
 
