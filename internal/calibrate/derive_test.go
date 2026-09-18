@@ -44,6 +44,23 @@ func bucketOf(fragment map[string]any) (map[string]any, bool) {
 	return bucket, ok
 }
 
+func TestConcurrencySafeIgnoresASingleOutlier(t *testing.T) {
+	// Nineteen rejections cluster at eight in flight and one sits at one. A
+	// plain minimum would hand the whole pool a ceiling of 1 on the strength of
+	// that single record.
+	entries := rejects("a@example.com", 19, 8, 40)
+	entries = append(entries, rejects("a@example.com", 1, 1, 40)...)
+
+	result := Derive(Journal{Entries: entries})
+
+	if result.ConcurrencySafe.Value != 7 {
+		t.Fatalf("ConcurrencySafe: got %d, want 7 — one outlier must not set the ceiling", result.ConcurrencySafe.Value)
+	}
+	if result.ConcurrencySafe.N != 20 {
+		t.Fatalf("guard n: got %d, want 20", result.ConcurrencySafe.N)
+	}
+}
+
 func TestPacingSamplesExcludeDailyQuotaRejections(t *testing.T) {
 	// A daily-quota rejection says nothing about concurrency: the account was
 	// out of allowance, not driven too hard. It arrives with a low in-flight
@@ -85,7 +102,7 @@ func TestPacingSamplesHonourARecordedReason(t *testing.T) {
 	}
 }
 
-func TestConcurrencySafeIsOneBelowTheLowestRejectingInFlight(t *testing.T) {
+func TestConcurrencySafeIsOneBelowTheLowRejectingInFlight(t *testing.T) {
 	entries := append(rejects("a@example.com", 3, 6, 40), rejects("a@example.com", 2, 4, 40)...)
 
 	result := Derive(Journal{Entries: entries})
@@ -130,7 +147,7 @@ func TestConcurrencySafeFloorsAtOne(t *testing.T) {
 	}
 }
 
-func TestRPMSafeIsOneBelowTheLowestRejectingRate(t *testing.T) {
+func TestRPMSafeIsOneBelowTheLowRejectingRate(t *testing.T) {
 	entries := append(rejects("a@example.com", 3, 4, 60), rejects("a@example.com", 2, 4, 37)...)
 
 	result := Derive(Journal{Entries: entries})

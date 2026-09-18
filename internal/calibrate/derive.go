@@ -29,6 +29,11 @@ const (
 // may diverge before the report says they describe different buckets.
 const dailyDisagreementRatio = 0.25
 
+// safePercentile is the quantile of the rejecting values a ceiling is read
+// from. Low enough to stay under almost everything that rejected, high enough
+// that one stray record cannot set it.
+const safePercentile = 0.10
+
 // IntResult is a derived count and the evidence behind it. OK false means the
 // guard failed and Value must not be used.
 type IntResult struct {
@@ -77,8 +82,8 @@ func Derive(journal Journal) Result {
 		}
 	}
 
-	result.ConcurrencySafe = oneBelowMinimum(inFlights)
-	result.RPMSafe = oneBelowMinimum(rates)
+	result.ConcurrencySafe = oneBelowLowPercentile(inFlights)
+	result.RPMSafe = oneBelowLowPercentile(rates)
 	result.Recover = medianRetriedGap(journal.Entries)
 	return result
 }
@@ -100,20 +105,23 @@ func pacesTheAccount(entry Entry) bool {
 	return reason == string(accounts.ReasonRateLimit)
 }
 
-// oneBelowMinimum takes the lowest observed rejecting value and steps one below
-// it, which is the highest value never seen to reject.
-func oneBelowMinimum(values []int) IntResult {
+// oneBelowLowPercentile takes a low percentile of the observed rejecting values
+// and steps one below it. The minimum would be the obvious choice, but it is
+// decided by a single record: one rejection logged against a stalled or
+// misattributed request would hand the whole pool a ceiling of 1. A low
+// percentile keeps the same "below anything that rejected" intent while
+// surviving one bad sample. On small samples it is the minimum anyway, which is
+// the conservative reading the guard already requires evidence for.
+func oneBelowLowPercentile(values []int) IntResult {
 	outcome := IntResult{N: len(values), Need: needRejects}
 	if len(values) < needRejects {
 		return outcome
 	}
-	lowest := values[0]
-	for _, value := range values[1:] {
-		if value < lowest {
-			lowest = value
-		}
-	}
-	outcome.Value = max(1, lowest-1)
+	sorted := make([]int, len(values))
+	copy(sorted, values)
+	sort.Ints(sorted)
+	index := int(float64(len(sorted)-1) * safePercentile)
+	outcome.Value = max(1, sorted[index]-1)
 	outcome.OK = true
 	return outcome
 }
