@@ -377,11 +377,15 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				}
 			}
 			inFlight, priorMinute := dispatcher.meter.Begin(account.Email)
-			response, requestErr := client.StreamGenerateContent(ctx, payload, options, func(event cloudcode.SSEEvent) error {
-				eventCount++
-				return consume(event)
-			})
-			dispatcher.meter.End(account.Email)
+			// The release is deferred inside its own scope so a panic in the
+			// consume callback cannot strand the account's in-flight count.
+			response, requestErr := func() (cloudcode.Response, error) {
+				defer dispatcher.meter.End(account.Email)
+				return client.StreamGenerateContent(ctx, payload, options, func(event cloudcode.SSEEvent) error {
+					eventCount++
+					return consume(event)
+				})
+			}()
 			if requestErr == nil {
 				if dispatcher.meter.TakeRecovery(account.Email) {
 					dispatcher.recordRecovery(account, project, model, inFlight, priorMinute)
