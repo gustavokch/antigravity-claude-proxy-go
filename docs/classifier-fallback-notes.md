@@ -161,3 +161,17 @@ The container never mounts `~/.claude`, and its workspace is a `mktemp -d`
 directory discarded when the session exits. Fingerprints recorded here are
 verbatim quotes from observed traffic; nothing in this file is inferred.
 
+## Live Verification with Containerized Claude Code v2.1.267
+
+Date: 2026-09-18.
+
+Interactive capture session executed using container image `claude-box:mitm`
+pinned to `@anthropic-ai/claude-code@2.1.267` via `scripts/run-claude-mitm-sandbox.sh`:
+
+- The sandbox correctly reached host `antigravity-proxy` on port 8080 via `http://containers.internal:8080`.
+- The classifier interception correctly triggered on tool calls (`ls -la`).
+- Traffic matched `block-prefilter` and routing configured in `~/.config/antigravity-proxy/config.json` (`classifier.action = "reroute_only"` to `gemini-3.8-flash-low`).
+- Upstream requests dispatched to `gemini-3.8-flash-low` with `stream: false` as expected.
+- Existing system prompt fingerprints and variant definitions remain fully compatible with `v2.1.267`.
+
+
