@@ -25,7 +25,7 @@ func rejects(account string, n, inFlight, priorMinute int) []Entry {
 }
 
 // rejectRecoverPair builds one reject and the recovery that followed it after
-// gap, with failures set so the pair counts as a retried gap.
+// gap.
 func rejectRecoverPair(account string, at time.Time, gap time.Duration) []Entry {
 	return []Entry{
 		{Timestamp: at, Account: account, Status: 429, Outcome: OutcomeReject, InFlight: 4, PriorMinuteRequests: 40, Failures: 1},
@@ -191,7 +191,10 @@ func TestRecoverNeedsThreePairs(t *testing.T) {
 	}
 }
 
-func TestRecoverSkipsGapsWithNoRetryAttempted(t *testing.T) {
+func TestRecoverCountsAFirstEverRejection(t *testing.T) {
+	// Failures is the count of failures *before* this rejection, so the first
+	// 429 an account ever takes carries zero. Reading that as "no retry was
+	// attempted" threw away the cleanest pairs in the journal.
 	var entries []Entry
 	for index, gap := range []time.Duration{10 * time.Minute, 20 * time.Minute, 30 * time.Minute} {
 		pair := rejectRecoverPair("a@example.com", journalStart.Add(time.Duration(index)*2*time.Hour), gap)
@@ -201,8 +204,27 @@ func TestRecoverSkipsGapsWithNoRetryAttempted(t *testing.T) {
 
 	result := Derive(Journal{Entries: entries})
 
-	if result.Recover.OK {
-		t.Fatal("guard: got OK from gaps where no retry was attempted — those measure operator idleness, not the throttle")
+	if !result.Recover.OK {
+		t.Fatalf("guard: got not OK with n=%d — a first rejection still measures the throttle", result.Recover.N)
+	}
+	if result.Recover.Value != 20*time.Minute {
+		t.Fatalf("Recover: got %s, want 20m", result.Recover.Value)
+	}
+}
+
+func TestRecoverSkipsGapsWideEnoughToBeIdleness(t *testing.T) {
+	var entries []Entry
+	for index, gap := range []time.Duration{10 * time.Minute, 20 * time.Minute, 30 * time.Minute, 9 * time.Hour} {
+		entries = append(entries, rejectRecoverPair("a@example.com", journalStart.Add(time.Duration(index)*24*time.Hour), gap)...)
+	}
+
+	result := Derive(Journal{Entries: entries})
+
+	if result.Recover.N != 3 {
+		t.Fatalf("pairs: got %d, want 3 — a nine-hour gap measures operator idleness, not the throttle", result.Recover.N)
+	}
+	if result.Recover.Value != 20*time.Minute {
+		t.Fatalf("Recover: got %s, want 20m", result.Recover.Value)
 	}
 }
 

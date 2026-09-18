@@ -34,6 +34,12 @@ const dailyDisagreementRatio = 0.25
 // that one stray record cannot set it.
 const safePercentile = 0.10
 
+// maxRecoveryGap bounds a reject-to-recover pair. The longest window the
+// forensics have shown is on the order of twenty minutes; a gap of hours means
+// nobody sent anything, and averaging that in would advise a cooldown far past
+// anything upstream enforced.
+const maxRecoveryGap = 2 * time.Hour
+
 // IntResult is a derived count and the evidence behind it. OK false means the
 // guard failed and Value must not be used.
 type IntResult struct {
@@ -126,10 +132,10 @@ func oneBelowLowPercentile(values []int) IntResult {
 	return outcome
 }
 
-// medianRetriedGap pairs each reject with the next recovery on the same
-// account and takes the median gap. Pairs where no retry was attempted are
-// dropped: that gap measures how long the account was left alone, not how long
-// the throttle held.
+// medianRetriedGap pairs each reject with the next recovery on the same account
+// and takes the median gap. Gaps wider than maxRecoveryGap are dropped: past
+// that point the number measures how long the account was left alone, not how
+// long the throttle held.
 func medianRetriedGap(entries []Entry) DurationResult {
 	ordered := make([]Entry, len(entries))
 	copy(ordered, entries)
@@ -137,27 +143,20 @@ func medianRetriedGap(entries []Entry) DurationResult {
 		return ordered[first].Timestamp.Before(ordered[second].Timestamp)
 	})
 
-	type pending struct {
-		at      time.Time
-		retried bool
-	}
-	open := make(map[string]pending)
+	open := make(map[string]time.Time)
 	var gaps []time.Duration
 
 	for _, entry := range ordered {
 		switch entry.Outcome {
 		case OutcomeReject:
-			open[entry.Account] = pending{at: entry.Timestamp, retried: entry.Failures > 0}
+			open[entry.Account] = entry.Timestamp
 		case OutcomeRecover:
 			start, ok := open[entry.Account]
 			if !ok {
 				continue
 			}
 			delete(open, entry.Account)
-			if !start.retried {
-				continue
-			}
-			if gap := entry.Timestamp.Sub(start.at); gap > 0 {
+			if gap := entry.Timestamp.Sub(start); gap > 0 && gap <= maxRecoveryGap {
 				gaps = append(gaps, gap)
 			}
 		}
