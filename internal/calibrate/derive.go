@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"antigravity-go-proxy/internal/accounts"
 )
 
 // Sample sizes below which a value is reported as insufficient rather than
@@ -61,7 +63,7 @@ func Derive(journal Journal) Result {
 
 	var inFlights, rates []int
 	for _, entry := range journal.Entries {
-		if entry.Outcome != OutcomeReject {
+		if !pacesTheAccount(entry) {
 			continue
 		}
 		// A zero means the field was absent on a pre-migration line, not that
@@ -79,6 +81,23 @@ func Derive(journal Journal) Result {
 	result.RPMSafe = oneBelowMinimum(rates)
 	result.Recover = medianRetriedGap(journal.Entries)
 	return result
+}
+
+// pacesTheAccount reports whether an entry measures how hard the account was
+// being driven. Only a rate-limit rejection does. A daily-quota rejection
+// arrives once the allowance is gone, at whatever concurrency happened to be
+// running — usually one — so admitting it into the sample would pin every
+// ceiling to its floor. Lines written before the reason was recorded are
+// classified from their body, which the journal has always carried.
+func pacesTheAccount(entry Entry) bool {
+	if entry.Outcome != OutcomeReject {
+		return false
+	}
+	reason := entry.Reason
+	if reason == "" {
+		reason = string(accounts.ClassifyError(entry.Body, entry.Status))
+	}
+	return reason == string(accounts.ReasonRateLimit)
 }
 
 // oneBelowMinimum takes the lowest observed rejecting value and steps one below

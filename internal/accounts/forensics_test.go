@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"antigravity-go-proxy/internal/cloudcode"
 )
 
 func TestForensics429RecorderAppendsJSONL(t *testing.T) {
@@ -130,3 +132,28 @@ func TestRecoveryRecordCarriesNoBody(t *testing.T) {
 	}
 }
 
+
+func TestRecordedRejectionCarriesItsReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upstream-429.jsonl")
+	dispatcher := &Dispatcher{
+		now:          func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		forensics429: NewForensics429Recorder(path),
+		meter:        newThrottleMeter(nil),
+	}
+
+	dispatcher.record429(&Account{Email: "a@example.com"}, "p", "m",
+		&cloudcode.HTTPError{StatusCode: 429, Body: `{"error":"Quota exceeded, quotaResetDelay 17m31s"}`},
+		time.Minute, 0, 1, 2)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	var entry Forensics429Entry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("unmarshal journal line: %v", err)
+	}
+	if entry.Reason != string(ReasonQuota) {
+		t.Fatalf("Reason: got %q, want %q — a calibrator must be able to exclude quota rejections", entry.Reason, ReasonQuota)
+	}
+}

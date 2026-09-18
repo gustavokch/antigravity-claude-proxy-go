@@ -23,9 +23,9 @@ const (
 	OutcomeRecover = "recover"
 )
 
-// Entry is one journal line. It carries the calibration fields and drops the
-// forensic ones — bodies and headers answer the dimension question, not the
-// pacing question.
+// Entry is one journal line. It carries the calibration fields, plus the reason
+// and the body needed to tell a pacing rejection from a quota one — a
+// daily-quota 429 says nothing about how fast the account may be driven.
 type Entry struct {
 	Timestamp           time.Time `json:"timestamp"`
 	Account             string    `json:"account"`
@@ -33,6 +33,8 @@ type Entry struct {
 	Endpoint            string    `json:"endpoint"`
 	Status              int       `json:"status"`
 	Outcome             string    `json:"outcome"`
+	Reason              string    `json:"reason"`
+	Body                string    `json:"body"`
 	InFlight            int       `json:"inFlight"`
 	PriorMinuteRequests int       `json:"priorMinuteRequests"`
 	Failures            int       `json:"failures"`

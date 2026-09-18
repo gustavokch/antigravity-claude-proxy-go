@@ -26,7 +26,8 @@ const (
 // Forensics429Entry is one recorded upstream throttle event. Response data
 // only: no request headers, no tokens, no cookies, no prompt text (R2 of the
 // cloudcode-429-throttle-dimension spec). InFlight and PriorMinuteRequests are
-// counters, not content.
+// counters, not content. Reason is the classification of the rejection, so a
+// calibrator can keep quota rejections out of a pacing sample.
 type Forensics429Entry struct {
 	Timestamp           time.Time         `json:"timestamp"`
 	Account             string            `json:"account,omitempty"`
@@ -35,6 +36,7 @@ type Forensics429Entry struct {
 	Endpoint            string            `json:"endpoint,omitempty"`
 	Status              int               `json:"status"`
 	Outcome             string            `json:"outcome,omitempty"`
+	Reason              string            `json:"reason,omitempty"`
 	InFlight            int               `json:"inFlight,omitempty"`
 	PriorMinuteRequests int               `json:"priorMinuteRequests,omitempty"`
 	Headers             map[string]string `json:"headers,omitempty"`

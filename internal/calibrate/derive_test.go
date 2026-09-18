@@ -44,6 +44,47 @@ func bucketOf(fragment map[string]any) (map[string]any, bool) {
 	return bucket, ok
 }
 
+func TestPacingSamplesExcludeDailyQuotaRejections(t *testing.T) {
+	// A daily-quota rejection says nothing about concurrency: the account was
+	// out of allowance, not driven too hard. It arrives with a low in-flight
+	// count, so leaving it in the sample would pin the ceiling to 1.
+	entries := rejects("a@example.com", 5, 4, 37)
+	quota := rejects("a@example.com", 5, 1, 2)
+	for index := range quota {
+		quota[index].Body = `{"error":{"message":"Quota exceeded","details":[{"quotaResetDelay":"17m31s"}]}}`
+	}
+	entries = append(entries, quota...)
+
+	result := Derive(Journal{Entries: entries})
+
+	if result.ConcurrencySafe.N != 5 {
+		t.Fatalf("guard n: got %d, want 5 — only rate-limit rejections pace the proxy", result.ConcurrencySafe.N)
+	}
+	if result.ConcurrencySafe.Value != 3 {
+		t.Fatalf("ConcurrencySafe: got %d, want 3 — a quota rejection must not drag the ceiling down", result.ConcurrencySafe.Value)
+	}
+	if result.RPMSafe.Value != 36 {
+		t.Fatalf("RPMSafe: got %d, want 36", result.RPMSafe.Value)
+	}
+}
+
+func TestPacingSamplesHonourARecordedReason(t *testing.T) {
+	// Lines written by a build that records the reason are filtered on it
+	// directly, without re-reading the body.
+	entries := rejects("a@example.com", 5, 4, 37)
+	quota := rejects("a@example.com", 5, 1, 2)
+	for index := range quota {
+		quota[index].Reason = "QUOTA_EXHAUSTED"
+	}
+	entries = append(entries, quota...)
+
+	result := Derive(Journal{Entries: entries})
+
+	if result.ConcurrencySafe.N != 5 {
+		t.Fatalf("guard n: got %d, want 5 — the recorded reason should have excluded the quota lines", result.ConcurrencySafe.N)
+	}
+}
+
 func TestConcurrencySafeIsOneBelowTheLowestRejectingInFlight(t *testing.T) {
 	entries := append(rejects("a@example.com", 3, 6, 40), rejects("a@example.com", 2, 4, 40)...)
 
