@@ -1,6 +1,7 @@
 package classifier
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -59,6 +60,18 @@ func TestRecorderDoesNotBlockOnSlowSubscriber(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Add blocked on a subscriber that never drains")
+	}
+}
+
+func TestRecorderAddDoesNotRaceWithCancel(t *testing.T) {
+	for i := 0; i < 2000; i++ {
+		recorder := NewRecorder(1)
+		_, cancel := recorder.Subscribe(1)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); cancel() }()
+		go func() { defer wg.Done(); recorder.Add(Event{RuleID: "x"}) }()
+		wg.Wait()
 	}
 }
 

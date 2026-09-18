@@ -56,18 +56,13 @@ func (recorder *Recorder) Add(event Event) {
 	if len(recorder.events) > recorder.capacity {
 		recorder.events = recorder.events[len(recorder.events)-recorder.capacity:]
 	}
-	targets := make([]chan Event, 0, len(recorder.subscribers))
 	for subscriber := range recorder.subscribers {
-		targets = append(targets, subscriber)
-	}
-	recorder.mu.Unlock()
-
-	for _, target := range targets {
 		select {
-		case target <- event:
+		case subscriber <- event:
 		default:
 		}
 	}
+	recorder.mu.Unlock()
 }
 
 // History returns the buffered events oldest-first.
@@ -104,8 +99,8 @@ func (recorder *Recorder) Subscribe(bufSize int) (<-chan Event, func()) {
 		once.Do(func() {
 			recorder.mu.Lock()
 			delete(recorder.subscribers, channel)
-			recorder.mu.Unlock()
 			close(channel)
+			recorder.mu.Unlock()
 		})
 	}
 }
