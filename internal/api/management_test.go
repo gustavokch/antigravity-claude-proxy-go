@@ -1389,3 +1389,34 @@ func TestManagement_ClearStatsRoutes(t *testing.T) {
 		}
 	})
 }
+
+// A pool-wide throttle looks identical to two independent per-account limits
+// in the per-account table. Naming it is the whole point of the line.
+func TestStatusTextShowsSharedThrottle(t *testing.T) {
+	line := formatSharedThrottleLine(map[string]time.Duration{
+		"gemini-3.8-flash-high": 252 * time.Second,
+	})
+	if !strings.Contains(line, "gemini-3.8-flash-high") {
+		t.Fatalf("shared throttle line = %q, want the model name", line)
+	}
+	if !strings.Contains(line, "4m12s") {
+		t.Fatalf("shared throttle line = %q, want the remaining wait", line)
+	}
+}
+
+func TestStatusTextOmitsTheLineWhenNoThrottleIsActive(t *testing.T) {
+	if got := formatSharedThrottleLine(map[string]time.Duration{}); got != "" {
+		t.Fatalf("shared throttle line = %q, want empty when nothing is throttled", got)
+	}
+}
+
+// Deterministic ordering keeps the output diffable between polls.
+func TestStatusTextSortsThrottledModels(t *testing.T) {
+	line := formatSharedThrottleLine(map[string]time.Duration{
+		"zeta-model":  time.Minute,
+		"alpha-model": time.Minute,
+	})
+	if strings.Index(line, "alpha-model") > strings.Index(line, "zeta-model") {
+		t.Fatalf("shared throttle line = %q, want models in sorted order", line)
+	}
+}
