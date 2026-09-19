@@ -297,6 +297,37 @@ func TestUpdateAccountQuotaPopulatesGemini38FlashFamily(t *testing.T) {
 	})
 }
 
+func TestUpdateAccountQuota_FallbackNilFractionStaysUnknown(t *testing.T) {
+	manager, err := New(Options{Accounts: []*Account{{Email: "test@example.com", Enabled: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// agentModelSorts.modelIds has the wrong type, so modelcatalog.Parse
+	// fails and updateAccountQuota takes the non-catalog fallback branch.
+	fallbackBody := []byte(`{"agentModelSorts":[{"groups":[{"modelIds":"not-an-array"}]}],"models":{"gemini-3.7-flash-high":{"quotaInfo":{"resetTime":"2026-09-20T01:00:00Z"}}}}`)
+
+	dispatcher.updateAccountQuota(manager.GetAllAccounts()[0], fallbackBody)
+
+	got, ok := manager.GetAllAccounts()[0].Quota.Models["gemini-3.7-flash-high"]
+	if !ok {
+		t.Fatalf("reset-only entry must be recorded: %+v", manager.GetAllAccounts()[0].Quota.Models)
+	}
+	if got.RemainingFraction != nil {
+		t.Fatalf("nil fraction must stay nil, got %f", *got.RemainingFraction)
+	}
+	if got.ResetTime != "2026-09-20T01:00:00Z" {
+		t.Fatalf("reset time not preserved: %+v", got)
+	}
+}
+
 func TestStreamGenerateContent_ExecutionMetadataUpdatedOnSuccess(t *testing.T) {
 	release := make(chan struct{})
 	close(release)

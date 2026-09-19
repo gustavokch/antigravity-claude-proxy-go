@@ -732,11 +732,9 @@ func (dispatcher *Dispatcher) updateAccountQuota(account *Account, body []byte) 
 		}
 		modelsQuota := make(map[string]ModelQuota, len(doc.Models))
 		for mID, mData := range doc.Models {
+			// Nil fraction stays nil (unknown), mirroring modelcatalog.Parse;
+			// a reset-time-only entry is still recorded so the UI shows N/A.
 			fraction := mData.QuotaInfo.RemainingFraction
-			if fraction == nil && mData.QuotaInfo.ResetTime != "" {
-				zero := 0.0
-				fraction = &zero
-			}
 			if fraction != nil || mData.QuotaInfo.ResetTime != "" {
 				modelsQuota[mID] = ModelQuota{
 					RemainingFraction: fraction,
