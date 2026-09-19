@@ -64,6 +64,30 @@ func TestMergeQuotaFraction_IgnoresEmpty(t *testing.T) {
 	}
 }
 
+func TestMergeQuotaPool_KeepsPoolsOutOfModels(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	account := testAccount("pools@example.com")
+	manager := quotaTestManager(t, now, account)
+
+	half := 0.5
+	manager.MergeQuotaPool("pools@example.com", "gemini-5h", &half, "2026-09-20T01:00:00Z")
+	manager.MergeQuotaPool("pools@example.com", "", &half, "2026-09-20T01:00:00Z")
+
+	got, ok := account.Quota.Pools["gemini-5h"]
+	if !ok || got.RemainingFraction == nil || *got.RemainingFraction != 0.5 {
+		t.Fatalf("pool reading must land in Quota.Pools: %+v ok=%v", got, ok)
+	}
+	if got.ResetTime != "2026-09-20T01:00:00Z" {
+		t.Fatalf("pool reset time not stored: %+v", got)
+	}
+	if len(account.Quota.Models) != 0 {
+		t.Fatalf("pool reading must not enter Quota.Models: %+v", account.Quota.Models)
+	}
+	if account.Quota.LastChecked != now.UnixMilli() {
+		t.Fatalf("pool merge must refresh LastChecked: %+v", account.Quota.LastChecked)
+	}
+}
+
 func TestUpdateAccountCredits_StoresAndIgnoresEmpty(t *testing.T) {
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
 	account := testAccount("credits@example.com")

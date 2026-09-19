@@ -57,6 +57,7 @@ type ModelQuota struct {
 
 type Quota struct {
 	Models      map[string]ModelQuota `json:"models"`
+	Pools       map[string]ModelQuota `json:"pools,omitempty"`
 	LastChecked any                   `json:"lastChecked"`
 }
 
@@ -1507,6 +1508,17 @@ func (manager *Manager) UpdateAccountQuota(email string, quota Quota, subscripti
 // fraction paired with a reset time records exhaustion (0.0), mirroring
 // updateAccountQuota. Keys with neither fraction nor reset are ignored.
 func (manager *Manager) MergeQuotaFraction(email, key string, fraction *float64, resetTime string) {
+	manager.mergeQuota(email, key, fraction, resetTime, false)
+}
+
+// MergeQuotaPool records one live quota-pool reading under key. Pools are
+// shared upstream buckets (e.g. gemini-5h, 3p-weekly) — never models — so
+// they are kept out of Quota.Models and cannot surface as model rows.
+func (manager *Manager) MergeQuotaPool(email, key string, fraction *float64, resetTime string) {
+	manager.mergeQuota(email, key, fraction, resetTime, true)
+}
+
+func (manager *Manager) mergeQuota(email, key string, fraction *float64, resetTime string, pools bool) {
 	if key == "" || (fraction == nil && resetTime == "") {
 		return
 	}
@@ -1520,10 +1532,14 @@ func (manager *Manager) MergeQuotaFraction(email, key string, fraction *float64,
 		if acc.Email != email {
 			continue
 		}
-		if acc.Quota.Models == nil {
-			acc.Quota.Models = make(map[string]ModelQuota)
+		target := &acc.Quota.Models
+		if pools {
+			target = &acc.Quota.Pools
 		}
-		acc.Quota.Models[key] = ModelQuota{RemainingFraction: fraction, ResetTime: resetTime}
+		if *target == nil {
+			*target = make(map[string]ModelQuota)
+		}
+		(*target)[key] = ModelQuota{RemainingFraction: fraction, ResetTime: resetTime}
 		acc.Quota.LastChecked = manager.now().UnixMilli()
 		break
 	}
