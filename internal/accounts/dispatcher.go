@@ -763,12 +763,15 @@ func (dispatcher *Dispatcher) updateAccountQuota(account *Account, body []byte) 
 	dispatcher.manager.UpdateAccountQuota(account.Email, quota, nil)
 }
 
-// refreshLiveQuota best-effort merges RetrieveUserQuotaSummary and
-// RetrieveUserQuota readings over the static catalog fractions. Upstream
-// holds catalog remainingFraction at 1 until exhaustion, so without this the
-// dashboard never shows consumption. Failures are swallowed: the catalog
-// fractions remain the fallback. Clients without the capability (test fakes)
-// skip silently.
+// refreshLiveQuota best-effort merges live quota readings over the static
+// catalog fractions. RetrieveUserQuotaSummary group buckets are shared pools
+// (gemini-5h, 3p-weekly, ...) — they land in Quota.Pools, never in
+// Quota.Models, so they cannot surface as phantom model rows.
+// RetrieveUserQuota buckets are model-keyed and merge into Quota.Models.
+// Upstream holds catalog remainingFraction at 1 until exhaustion, so without
+// this the dashboard never shows consumption. Failures are swallowed: the
+// catalog fractions remain the fallback. Clients without the capability
+// (test fakes) skip silently.
 func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Account, client CloudClient, project string) {
 	if account == nil || client == nil {
 		return
@@ -777,9 +780,9 @@ func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Acc
 		if response, err := fetcher.RetrieveUserQuotaSummary(ctx, project); err == nil &&
 			response.StatusCode >= 200 && response.StatusCode < 300 {
 			for _, bucket := range cloudcode.ParseQuotaSummary(response.Body) {
-				dispatcher.mergeQuotaBucket(account.Email,
-					[]string{bucket.ID, bucket.DisplayName},
-					bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime)
+				dispatcher.mergeQuotaReading(account.Email,
+					strings.ToLower(strings.TrimSpace(bucket.ID)),
+					bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime, true)
 			}
 		}
 	}
@@ -787,37 +790,29 @@ func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Acc
 		if response, err := fetcher.RetrieveUserQuota(ctx, project); err == nil &&
 			response.StatusCode >= 200 && response.StatusCode < 300 {
 			for _, bucket := range cloudcode.ParseUserQuota(response.Body) {
-				dispatcher.mergeQuotaBucket(account.Email,
-					[]string{bucket.ModelID},
-					bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime)
+				dispatcher.mergeQuotaReading(account.Email,
+					strings.ToLower(strings.TrimSpace(bucket.ModelID)),
+					bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime, false)
 			}
 		}
 	}
 }
 
-// mergeQuotaBucket records one live reading under every non-empty key variant.
+// mergeQuotaReading stores one live reading under a single canonical key.
 // An amount-only reading is actionable only at zero (exhausted): a positive
-// amount without its total cannot produce a fraction, so it is skipped rather
-// than fabricated.
-func (dispatcher *Dispatcher) mergeQuotaBucket(email string, keys []string, fraction *float64, amount *int64, resetTime string) {
+// amount without its total cannot produce a fraction, so it is skipped
+// rather than fabricated.
+func (dispatcher *Dispatcher) mergeQuotaReading(email, key string, fraction *float64, amount *int64, resetTime string, pool bool) {
 	if fraction == nil {
 		if amount == nil || *amount != 0 {
 			return
 		}
 	}
-	seen := make(map[string]struct{}, len(keys)*2)
-	for _, key := range keys {
-		for _, variant := range []string{key, strings.ToLower(strings.TrimSpace(key))} {
-			if variant == "" {
-				continue
-			}
-			if _, dup := seen[variant]; dup {
-				continue
-			}
-			seen[variant] = struct{}{}
-			dispatcher.manager.MergeQuotaFraction(email, variant, fraction, resetTime)
-		}
+	if pool {
+		dispatcher.manager.MergeQuotaPool(email, key, fraction, resetTime)
+		return
 	}
+	dispatcher.manager.MergeQuotaFraction(email, key, fraction, resetTime)
 }
 
 func findHTTPError(err error) *cloudcode.HTTPError {

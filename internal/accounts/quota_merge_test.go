@@ -128,13 +128,17 @@ func (quotaCapableClient) FetchAvailableModels(context.Context, string) (cloudco
 
 func (quotaCapableClient) RetrieveUserQuotaSummary(context.Context, string) (cloudcode.Response, error) {
 	return cloudcode.Response{StatusCode: 200, Body: []byte(`{
-		"buckets": [{"bucketId": "gemini-3.8-flash-high", "displayName": "Gemini 3.8 Flash (High)",
-			"remainingFraction": 0.4, "resetTime": "2026-09-20T00:00:00Z"}]
+		"groups": [{"displayName": "Gemini Models",
+			"buckets": [{"bucketId": "gemini-5h", "displayName": "Five Hour Limit Remaining",
+				"remainingFraction": 0.4, "resetTime": "2026-09-20T00:00:00Z", "window": "5h"}]}]
 	}`)}, nil
 }
 
 func (quotaCapableClient) RetrieveUserQuota(context.Context, string) (cloudcode.Response, error) {
-	return cloudcode.Response{StatusCode: 200, Body: []byte(`{"buckets": []}`)}, nil
+	return cloudcode.Response{StatusCode: 200, Body: []byte(`{"buckets": [
+		{"modelId": "gemini-3.8-flash-high", "remainingFraction": 0.6,
+		 "resetTime": "2026-09-20T01:00:19Z", "tokenType": "WTUS"}
+	]}`)}, nil
 }
 
 func (quotaCapableClient) StreamGenerateContent(_ context.Context, _ any, _ cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
@@ -151,9 +155,35 @@ func TestFetchAvailableModelsMergesLiveQuota(t *testing.T) {
 		t.Fatal(err)
 	}
 	account := dispatcher.manager.accounts[0]
+
 	got, ok := account.Quota.Models["gemini-3.8-flash-high"]
-	if !ok || got.RemainingFraction == nil || *got.RemainingFraction != 0.4 {
-		t.Fatalf("summary fraction must overwrite static catalog 1.0: %+v %v", got, ok)
+	if !ok || got.RemainingFraction == nil || *got.RemainingFraction != 0.6 {
+		t.Fatalf("per-model reading must overwrite static catalog 1.0: %+v ok=%v", got, ok)
+	}
+
+	pool, ok := account.Quota.Pools["gemini-5h"]
+	if !ok || pool.RemainingFraction == nil || *pool.RemainingFraction != 0.4 {
+		t.Fatalf("summary pool bucket must land in Quota.Pools: %+v ok=%v", pool, ok)
+	}
+	for key := range account.Quota.Models {
+		if key == "gemini-5h" || key == "Five Hour Limit Remaining" || key == "five hour limit remaining" {
+			t.Fatalf("pool bucket or display name leaked into Quota.Models: %q", key)
+		}
+	}
+}
+
+func TestRefreshLiveQuota_DisplayNamesDoNotDuplicateKeys(t *testing.T) {
+	dispatcher := newDispatcherWithClient(t, quotaCapableClient{})
+	account := dispatcher.manager.accounts[0]
+
+	dispatcher.refreshLiveQuota(context.Background(), account,
+		quotaCapableClient{}, "p")
+
+	if _, dup := account.Quota.Pools["five hour limit remaining"]; dup {
+		t.Fatalf("display name must not become a second pool key: %+v", account.Quota.Pools)
+	}
+	if n := len(account.Quota.Pools); n != 1 {
+		t.Fatalf("expected exactly 1 pool key, got %d: %+v", n, account.Quota.Pools)
 	}
 }
 
