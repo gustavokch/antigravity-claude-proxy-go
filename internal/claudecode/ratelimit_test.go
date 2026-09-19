@@ -198,6 +198,41 @@ func TestRateLimits_MinRemainingFraction(t *testing.T) {
 	}
 }
 
+func TestExtractRateLimits_EmptyHeadersHaveNoSignal(t *testing.T) {
+	rl := ExtractRateLimits(make(http.Header))
+	if rl.HasLimits() {
+		t.Errorf("expected HasLimits=false for empty headers, got %+v", rl)
+	}
+	if !rl.LastUpdated.IsZero() {
+		t.Errorf("expected zero LastUpdated for empty headers, got %v", rl.LastUpdated)
+	}
+	if frac, ok := rl.MinRemainingFraction(); ok || frac != 1.0 {
+		t.Errorf("expected (1.0, false), got (%f, %v)", frac, ok)
+	}
+}
+
+func TestExtractRateLimits_PartialHeadersCountAsSignal(t *testing.T) {
+	h := make(http.Header)
+	h.Set(HeaderRequestsLimit, "100")
+	h.Set(HeaderRequestsRemaining, "90")
+	rl := ExtractRateLimits(h)
+	if !rl.HasLimits() {
+		t.Errorf("expected HasLimits=true, got %+v", rl)
+	}
+	if rl.LastUpdated.IsZero() {
+		t.Errorf("expected non-zero LastUpdated when limits parsed")
+	}
+}
+
+func TestRateLimits_HasLimits(t *testing.T) {
+	if ((RateLimits{}).HasLimits()) {
+		t.Errorf("zero value must have no limits")
+	}
+	if (!(RateLimits{OutputTokensLimit: 10}).HasLimits()) {
+		t.Errorf("single dimension must count")
+	}
+}
+
 func TestRateLimits_ResetTime(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 

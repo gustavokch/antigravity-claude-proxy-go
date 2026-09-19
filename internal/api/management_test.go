@@ -1227,18 +1227,23 @@ func TestManagement_AccountLimits_WithClaudeCodeAccounts(t *testing.T) {
 				}
 				if sonnet, hasSonnet := limits["claude-3-7-sonnet-20250219"].(map[string]any); !hasSonnet {
 					t.Errorf("expected claude-3-7-sonnet-20250219 in claudecode account limits")
-				} else {
-					if sonnet["remaining"] != "100%" {
-						t.Errorf("expected 100%% remaining for healthy account, got %v", sonnet["remaining"])
-					}
+			} else {
+				// No rate-limit headers received: quota is unknown (N/A),
+				// not a false-full 100%.
+				if sonnet["remaining"] != "N/A" {
+					t.Errorf("expected N/A remaining for account with no quota signal, got %v", sonnet["remaining"])
 				}
-				if alias, hasAlias := limits["claude-3-7-sonnet-custom"].(map[string]any); !hasAlias {
-					t.Errorf("expected claude-3-7-sonnet-custom alias in limits")
-				} else {
-					if alias["remaining"] != "100%" {
-						t.Errorf("expected 100%% remaining for alias, got %v", alias["remaining"])
-					}
+				if sonnet["remainingFraction"] != nil {
+					t.Errorf("expected null remainingFraction, got %v", sonnet["remainingFraction"])
 				}
+			}
+			if alias, hasAlias := limits["claude-3-7-sonnet-custom"].(map[string]any); !hasAlias {
+				t.Errorf("expected claude-3-7-sonnet-custom alias in limits")
+			} else {
+				if alias["remaining"] != "N/A" {
+					t.Errorf("expected N/A remaining for alias, got %v", alias["remaining"])
+				}
+			}
 			} else if acc["email"] == "claude-disabled@example.com" {
 				foundDisabled = true
 				if acc["status"] != "disabled" {
@@ -1753,4 +1758,53 @@ func TestManagement_AccountLimits_GoogleAccountRateLimitedStatus(t *testing.T) {
 	if firstAcc["status"] != "rate_limited" {
 		t.Errorf("expected status rate_limited, got %v", firstAcc["status"])
 	}
+}
+
+func TestManagement_AccountLimits_ClaudeCodeUnknownQuotaIsNull(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+
+	cfg := config.Get()
+	cfg.ClaudeCode.Enabled = true
+	cfg.ClaudeCode.Accounts = []claudecode.AccountConfig{
+		{ID: "cc-unknown-1", Name: "CC Unknown", Email: "cc-unknown@example.com", Token: "sk-ant-test", Type: "oauth", Priority: 1, Enabled: true, Source: "oauth"},
+	}
+	cfg.ClaudeCode.Allowlist = []claudecode.ModelConfig{{ID: "claude-sonnet-4-6"}}
+	config.SetForTest(cfg)
+
+	// No rate-limit headers ever received: pool holds the zero value.
+	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+	if pool == nil {
+		t.Fatalf("expected claude code pool to be created")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range res["accounts"].([]any) {
+		am := a.(map[string]any)
+		if am["email"] != "cc-unknown@example.com" {
+			continue
+		}
+		l := am["limits"].(map[string]any)["claude-sonnet-4-6"].(map[string]any)
+		if l["remainingFraction"] != nil {
+			t.Errorf("unknown quota must be null, got %v", l["remainingFraction"])
+		}
+		if l["remaining"] != "N/A" {
+			t.Errorf("unknown quota must render N/A, got %v", l["remaining"])
+		}
+		if _, ok := am["totalRequests"]; !ok {
+			t.Errorf("expected totalRequests usage counter, got %v", am)
+		}
+		return
+	}
+	t.Fatalf("cc-unknown@example.com not found")
 }

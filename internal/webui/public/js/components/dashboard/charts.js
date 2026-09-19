@@ -204,13 +204,17 @@ window.DashboardCharts.updateCharts = function (component) {
       healthByFamily[family] = { total: 0, weighted: 0 };
     }
 
-    // Calculate average health from quotaInfo (each entry has { pct })
-    // Health = average of all account quotas for this model
+    // Calculate average health from quotaInfo (each entry has { pct }).
+    // Null pct = unknown quota: excluded from the average so unknowns
+    // never drag health down with a false 0%.
     const quotaInfo = row.quotaInfo || [];
     let avgHealth = 0;
 
-    if (quotaInfo.length > 0) {
-      avgHealth = quotaInfo.reduce((sum, q) => sum + (q.pct || 0), 0) / quotaInfo.length;
+    const known = quotaInfo.filter((q) => q && q.pct !== null && q.pct !== undefined);
+    if (known.length > 0) {
+      avgHealth = known.reduce((sum, q) => sum + q.pct, 0) / known.length;
+    } else if (quotaInfo.length > 0) {
+      return; // all-unknown row: exclude from health aggregates entirely
     }
     // If quotaInfo is empty, avgHealth remains 0 (depleted/unknown)
 

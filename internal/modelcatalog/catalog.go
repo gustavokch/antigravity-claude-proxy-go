@@ -175,11 +175,10 @@ func Parse(body []byte) (*Catalog, error) {
 		if !exists || details.Disabled {
 			continue
 		}
+		// remainingFraction nil means unknown: upstream sends resetTime-only
+		// quotaInfo when the pool has no fraction to report. Do not fabricate
+		// 0.0 — callers treat nil as "not critical" and the UI renders N/A.
 		remaining := details.QuotaInfo.RemainingFraction
-		if remaining == nil && details.QuotaInfo.ResetTime != "" {
-			zero := 0.0
-			remaining = &zero
-		}
 		model := Model{
 			ID: id, DisplayName: details.DisplayName, Description: details.Description,
 			Disabled: details.Disabled, Recommended: details.Recommended,

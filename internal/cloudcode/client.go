@@ -25,6 +25,8 @@ const (
 	PathLoadCodeAssist       = "/v1internal:loadCodeAssist"
 	PathOnboardUser          = "/v1internal:onboardUser"
 	PathFetchAvailableModels = "/v1internal:fetchAvailableModels"
+	PathRetrieveUserQuota    = "/v1internal:retrieveUserQuota"
+	PathRetrieveUserQuotaSummary = "/v1internal:retrieveUserQuotaSummary"
 	PathGenerateContent      = "/v1internal:generateContent"
 	PathStreamGenerate       = "/v1internal:streamGenerateContent?alt=sse"
 
@@ -181,6 +183,26 @@ func (c *Client) FetchAvailableModels(ctx context.Context, projectID string) (Re
 		request["project"] = projectID
 	}
 	return c.DoJSON(ctx, c.contentEndpoints, PathFetchAvailableModels, request, RequestOptions{})
+}
+
+// RetrieveUserQuotaSummary fetches the live per-bucket quota summary
+// (remaining fractions + reset times). Unlike fetchAvailableModels'
+// static quotaInfo, this RPC is the authoritative consumption signal.
+func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, projectID string) (Response, error) {
+	request := map[string]string{}
+	if projectID != "" {
+		request["project"] = projectID
+	}
+	return c.DoJSON(ctx, c.contentEndpoints, PathRetrieveUserQuotaSummary, request, RequestOptions{})
+}
+
+// RetrieveUserQuota fetches per-model token-bucket quotas (model_id keyed).
+func (c *Client) RetrieveUserQuota(ctx context.Context, projectID string) (Response, error) {
+	request := map[string]string{}
+	if projectID != "" {
+		request["project"] = projectID
+	}
+	return c.DoJSON(ctx, c.contentEndpoints, PathRetrieveUserQuota, request, RequestOptions{})
 }
 
 func (c *Client) GenerateContent(ctx context.Context, payload any, options RequestOptions) (Response, error) {
