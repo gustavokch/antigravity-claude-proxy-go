@@ -466,6 +466,8 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	// 1. Google Cloud Code accounts
 	for _, acc := range accountsList {
 		rateLimits := make(map[string]any)
+		// activeResets is keyed canonically so alias and [1m] spellings resolve.
+		activeResets := make(map[string]time.Time)
 		for model, rl := range acc.ModelRateLimits {
 			if rl != nil && rl.IsRateLimited && rl.ResetTimeMS > now {
 				rateLimits[model] = map[string]any{
@@ -473,25 +475,43 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 					"waitMs":        rl.ResetTimeMS - now,
 					"actualResetMs": rl.ActualResetMS,
 				}
+				activeResets[model] = time.UnixMilli(rl.ResetTimeMS).UTC()
 			}
 		}
 
 		limits := make(map[string]any, len(sortedModels))
 		for _, modelId := range sortedModels {
-			if rl, rateLimited := rateLimits[modelId].(map[string]any); rateLimited {
-				var resetTime any = nil
-				if waitMs, ok := rl["waitMs"].(int64); ok {
-					resetTime = server.now().Add(time.Duration(waitMs) * time.Millisecond).UTC().Format(time.RFC3339)
+			candidates := accounts.ModelKeyCandidates(modelId)
+
+			var matchedReset time.Time
+			var matched bool
+			for _, candidate := range candidates {
+				if reset, ok := activeResets[candidate]; ok {
+					matchedReset = reset
+					matched = true
+					break
 				}
+			}
+
+			if matched {
 				limits[modelId] = map[string]any{
 					"remaining":         "0%",
 					"remainingFraction": 0.0,
-					"resetTime":         resetTime,
+					"resetTime":         matchedReset.Format(time.RFC3339),
 				}
 				continue
 			}
 
-			q, exists := acc.Quota.Models[modelId]
+			var q accounts.ModelQuota
+			var exists bool
+			for _, candidate := range candidates {
+				if mq, ok := acc.Quota.Models[candidate]; ok {
+					q = mq
+					exists = true
+					break
+				}
+			}
+
 			if !exists {
 				limits[modelId] = nil
 				continue
@@ -512,6 +532,8 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			status = "disabled"
 		} else if acc.IsInvalid {
 			status = "invalid"
+		} else if len(activeResets) > 0 && allAllowlistedModelsRateLimited(sortedModels, activeResets) {
+			status = "rate_limited"
 		}
 
 		result = append(result, map[string]any{
@@ -552,6 +574,9 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			status = "rate_limited"
 		}
 
+		computedFrac, hasLimits := rl.MinRemainingFraction()
+		computedReset := rl.ResetTime(server.now())
+
 		for _, modelId := range sortedModels {
 			if !isClaudeModel(modelId, cfg.ClaudeCode.Allowlist) {
 				limits[modelId] = nil
@@ -568,53 +593,14 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 				resetTime = ccAcc.CooldownUntil.UTC().Format(time.RFC3339)
 			} else if status == "rate_limited" {
 				frac = 0.0
-				if !rl.RequestsReset.IsZero() {
-					resetTime = rl.RequestsReset.UTC().Format(time.RFC3339)
-				} else if !rl.TokensReset.IsZero() {
-					resetTime = rl.TokensReset.UTC().Format(time.RFC3339)
-				} else if !rl.InputTokensReset.IsZero() {
-					resetTime = rl.InputTokensReset.UTC().Format(time.RFC3339)
-				} else if !rl.OutputTokensReset.IsZero() {
-					resetTime = rl.OutputTokensReset.UTC().Format(time.RFC3339)
+				if !computedReset.IsZero() {
+					resetTime = computedReset.UTC().Format(time.RFC3339)
 				}
-			} else if rl.RequestsLimit > 0 || rl.TokensLimit > 0 || rl.InputTokensLimit > 0 || rl.OutputTokensLimit > 0 {
-				frac = 1.0
-				if rl.RequestsLimit > 0 {
-					if v := float64(rl.RequestsRemaining) / float64(rl.RequestsLimit); v < frac {
-						frac = v
-					}
+			} else if hasLimits {
+				frac = computedFrac
+				if !computedReset.IsZero() {
+					resetTime = computedReset.UTC().Format(time.RFC3339)
 				}
-				if rl.TokensLimit > 0 {
-					if v := float64(rl.TokensRemaining) / float64(rl.TokensLimit); v < frac {
-						frac = v
-					}
-				}
-				if rl.InputTokensLimit > 0 {
-					if v := float64(rl.InputTokensRemaining) / float64(rl.InputTokensLimit); v < frac {
-						frac = v
-					}
-				}
-				if rl.OutputTokensLimit > 0 {
-					if v := float64(rl.OutputTokensRemaining) / float64(rl.OutputTokensLimit); v < frac {
-						frac = v
-					}
-				}
-				if !rl.RequestsReset.IsZero() {
-					resetTime = rl.RequestsReset.UTC().Format(time.RFC3339)
-				} else if !rl.TokensReset.IsZero() {
-					resetTime = rl.TokensReset.UTC().Format(time.RFC3339)
-				} else if !rl.InputTokensReset.IsZero() {
-					resetTime = rl.InputTokensReset.UTC().Format(time.RFC3339)
-				} else if !rl.OutputTokensReset.IsZero() {
-					resetTime = rl.OutputTokensReset.UTC().Format(time.RFC3339)
-				}
-			}
-
-			if frac < 0 {
-				frac = 0
-			}
-			if frac > 1.0 {
-				frac = 1.0
 			}
 
 			limits[modelId] = map[string]any{
@@ -1855,3 +1841,24 @@ func formatSharedThrottleLine(throttles map[string]time.Duration) string {
 	}
 	return "SHARED THROTTLE: " + strings.Join(parts, ", ")
 }
+
+func allAllowlistedModelsRateLimited(models []string, activeResets map[string]time.Time) bool {
+	if len(models) == 0 {
+		return false
+	}
+	for _, m := range models {
+		candidates := accounts.ModelKeyCandidates(m)
+		matched := false
+		for _, c := range candidates {
+			if _, ok := activeResets[c]; ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
