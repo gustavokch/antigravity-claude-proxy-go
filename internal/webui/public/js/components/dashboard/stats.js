@@ -52,10 +52,11 @@ window.DashboardStats.updateStats = function(component) {
             }
 
             // Check if ANY tracked model is rate limited (<= 5%)
-            // We consider all models in the limits object as "tracked"
+            // We consider all models in the limits object as "tracked".
+            // Null/undefined fraction means UNKNOWN quota (no signal), which
+            // must not count as limited — only a known fraction <= 5% does.
             const hasRateLimitedModel = limits.some(([_, l]) => {
-                // Treat null/undefined fraction as 0 (limited)
-                if (!l || l.remainingFraction === null || l.remainingFraction === undefined) return true;
+                if (!l || l.remainingFraction === null || l.remainingFraction === undefined) return false;
                 return l.remainingFraction <= 0.05;
             });
 
@@ -79,15 +80,17 @@ window.DashboardStats.updateStats = function(component) {
     let totalLimitedModels = 0;
     let totalTrackedModels = 0;
 
-    enabledAccounts.forEach(acc => {
-         const limits = Object.entries(acc.limits || {});
-         limits.forEach(([id, l]) => {
-             totalTrackedModels++;
-             if (!l || l.remainingFraction == null || l.remainingFraction <= 0.05) {
-                 totalLimitedModels++;
-             }
-         });
-    });
+     enabledAccounts.forEach(acc => {
+          const limits = Object.entries(acc.limits || {});
+          limits.forEach(([id, l]) => {
+              // Unknown quota is untracked, not depleted.
+              if (!l || l.remainingFraction == null) return;
+              totalTrackedModels++;
+              if (l.remainingFraction <= 0.05) {
+                  totalLimitedModels++;
+              }
+          });
+     });
     
     component.stats.modelUsage = {
         limited: totalLimitedModels,

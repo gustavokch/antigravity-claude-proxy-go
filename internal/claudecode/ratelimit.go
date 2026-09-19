@@ -25,10 +25,12 @@ const (
 )
 
 // ExtractRateLimits parses standard Anthropic rate-limit headers from an HTTP response header.
+// LastUpdated is set only when at least one limit dimension was parsed;
+// a response carrying no rate-limit headers yields a zero LastUpdated so
+// callers can distinguish "no signal" from "full quota" and avoid clobbering
+// the last good reading with an empty one.
 func ExtractRateLimits(h http.Header) RateLimits {
-	rl := RateLimits{
-		LastUpdated: time.Now(),
-	}
+	rl := RateLimits{}
 
 	if val := h.Get(HeaderRequestsLimit); val != "" {
 		if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
@@ -90,7 +92,19 @@ func ExtractRateLimits(h http.Header) RateLimits {
 		rl.RetryAfter = parseRetryAfter(val)
 	}
 
+	if rl.HasLimits() || rl.RetryAfter > 0 {
+		rl.LastUpdated = time.Now()
+	}
+
 	return rl
+}
+
+// HasLimits reports whether any rate-limit dimension was parsed from headers.
+// Empty responses (no limit headers, no Retry-After) carry no quota signal
+// and must not overwrite the last good reading.
+func (rl RateLimits) HasLimits() bool {
+	return rl.RequestsLimit > 0 || rl.TokensLimit > 0 ||
+		rl.InputTokensLimit > 0 || rl.OutputTokensLimit > 0
 }
 
 // IsRateLimited returns true if any limit has 0 remaining and reset timestamp is in the future,

@@ -335,12 +335,14 @@ func (p *AccountPool) RefreshAllExpiringTokens(window time.Duration) ([]string, 
 }
 
 // UpdateAccountRateLimits updates the cached rate limits for an account.
+// Empty extractions (no limit headers) are ignored so a headerless 200
+// cannot clobber the last good reading back to a false-full 1.0.
 func (p *AccountPool) UpdateAccountRateLimits(accountID string, rl RateLimits) {
 	p.mu.RLock()
 	acc, ok := p.accounts[accountID]
 	p.mu.RUnlock()
 
-	if ok && acc != nil {
+	if ok && acc != nil && (rl.HasLimits() || rl.RetryAfter > 0) {
 		acc.mu.Lock()
 		acc.RateLimits = rl
 		acc.mu.Unlock()
@@ -540,7 +542,7 @@ func (p *AccountPool) RecordSuccess(accountID string, tokens int64, cost float64
 		acc.ConsecutiveFailures = 0
 		acc.TotalTokens += tokens
 		acc.TotalCost += cost
-		if !rl.LastUpdated.IsZero() {
+		if rl.HasLimits() || rl.RetryAfter > 0 {
 			acc.RateLimits = rl
 		}
 		acc.mu.Unlock()
@@ -558,7 +560,7 @@ func (p *AccountPool) RecordRateLimit(accountID string, rl RateLimits, defaultCo
 		defer acc.mu.Unlock()
 
 		acc.TotalErrors++
-		if !rl.LastUpdated.IsZero() {
+		if rl.HasLimits() || rl.RetryAfter > 0 {
 			acc.RateLimits = rl
 		}
 

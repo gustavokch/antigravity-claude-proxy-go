@@ -552,6 +552,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			"lastUsed":             acc.LastUsedMS,
 			"subscription":         acc.Subscription,
 			"quota":                acc.Quota,
+			"credits":              acc.Credits,
 			"rateLimits":           rateLimits,
 			"modelRateLimits":      acc.ModelRateLimits,
 			"limits":               limits,
@@ -583,29 +584,42 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 				continue
 			}
 
-			var frac float64 = 1.0
+			// frac stays nil when Anthropic sent no rate-limit headers:
+			// unknown quota, not full quota. Serializes as null so the
+			// UI can render N/A instead of a false-full 100%.
+			var frac *float64
 			var resetTime any = nil
 
 			if status == "disabled" {
-				frac = 0.0
+				zero := 0.0
+				frac = &zero
 			} else if status == "cooldown" {
-				frac = 0.0
+				zero := 0.0
+				frac = &zero
 				resetTime = ccAcc.CooldownUntil.UTC().Format(time.RFC3339)
 			} else if status == "rate_limited" {
-				frac = 0.0
+				zero := 0.0
+				frac = &zero
 				if !computedReset.IsZero() {
 					resetTime = computedReset.UTC().Format(time.RFC3339)
 				}
 			} else if hasLimits {
-				frac = computedFrac
+				f := computedFrac
+				frac = &f
 				if !computedReset.IsZero() {
 					resetTime = computedReset.UTC().Format(time.RFC3339)
 				}
 			}
 
+			remStr := "N/A"
+			var fracAny any
+			if frac != nil {
+				remStr = fmt.Sprintf("%d%%", int(*frac*100))
+				fracAny = *frac
+			}
 			limits[modelId] = map[string]any{
-				"remaining":         fmt.Sprintf("%d%%", int(frac*100)),
-				"remainingFraction": frac,
+				"remaining":         remStr,
+				"remainingFraction": fracAny,
 				"resetTime":         resetTime,
 			}
 		}
@@ -641,6 +655,9 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			"lastUsed":             lastUsedMS,
 			"rateLimits":           ccAcc.RateLimits,
 			"limits":               limits,
+			"totalRequests":        ccAcc.TotalRequests,
+			"totalTokens":          ccAcc.TotalTokens,
+			"totalCost":            ccAcc.TotalCost,
 			"quotaThreshold":       0.0,
 			"modelQuotaThresholds": map[string]any{},
 		})

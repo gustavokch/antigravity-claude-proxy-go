@@ -379,12 +379,18 @@ document.addEventListener('alpine:init', () => {
                     const limit = acc.limits?.[modelId];
                     if (!limit) return;
 
-                    const pct = limit.remainingFraction !== null ? Math.round(limit.remainingFraction * 100) : 0;
-                    minQuota = Math.min(minQuota, pct);
+                    // Null fraction = unknown quota (e.g. Anthropic sent no
+                    // rate-limit headers). Exclude from min/average so unknown
+                    // never reads as 0% depleted.
+                    const fracNull = limit.remainingFraction === null || limit.remainingFraction === undefined;
+                    const pct = fracNull ? null : Math.round(limit.remainingFraction * 100);
+                    if (!fracNull) {
+                        minQuota = Math.min(minQuota, pct);
 
-                    // Accumulate for average
-                    totalQuotaSum += pct;
-                    validAccountCount++;
+                        // Accumulate for average
+                        totalQuotaSum += pct;
+                        validAccountCount++;
+                    }
 
                     if (limit.resetTime && (!minResetTime || new Date(limit.resetTime) < new Date(minResetTime))) {
                         minResetTime = limit.resetTime;
@@ -427,9 +433,12 @@ document.addEventListener('alpine:init', () => {
                 });
 
                 if (quotaInfo.length === 0) return;
-                const avgQuota = validAccountCount > 0 ? Math.round(totalQuotaSum / validAccountCount) : 0;
+                // All-unknown quotas stay null (never 0% or 100%): sorting
+                // already pushes nulls to the bottom.
+                const rowMinQuota = validAccountCount > 0 ? minQuota : null;
+                const avgQuota = validAccountCount > 0 ? Math.round(totalQuotaSum / validAccountCount) : null;
 
-                if (!showExhausted && minQuota === 0) return;
+                if (!showExhausted && rowMinQuota === 0) return;
 
                 // Check if thresholds vary across accounts
                 const uniqueThresholds = new Set(quotaInfo.map(q => q.thresholdPct));
@@ -439,14 +448,14 @@ document.addEventListener('alpine:init', () => {
                     modelId,
                     displayName: modelId, // Simplified: no longer using alias
                     family,
-                    minQuota,
-                    avgQuota, // Added Average Quota
+                    minQuota: rowMinQuota,
+                    avgQuota, // Added Average Quota (null when unknown)
                     minResetTime,
                     resetIn: minResetTime ? window.utils.formatTimeUntil(minResetTime) : '-',
                     quotaInfo,
                     pinned: !!config.pinned,
                     hidden: !!isHidden, // Use computed visibility
-                    activeCount: quotaInfo.filter(q => q.pct > 0).length,
+                    activeCount: quotaInfo.filter(q => q.pct === null || q.pct > 0).length,
                     effectiveThresholdPct: Math.round(maxEffectiveThreshold * 100),
                     hasVariedThresholds
                 });
@@ -548,7 +557,10 @@ document.addEventListener('alpine:init', () => {
                     if (acc.enabled === false) return;
                     const limit = acc.limits?.[modelId];
                     if (!limit) return;
-                    const pct = limit.remainingFraction !== null ? Math.round(limit.remainingFraction * 100) : 0;
+                    // Preserve null (unknown) so charts can skip it instead
+                    // of dragging health down with a false 0%.
+                    const pct = (limit.remainingFraction === null || limit.remainingFraction === undefined)
+                        ? null : Math.round(limit.remainingFraction * 100);
                     quotaInfo.push({ pct });
                 });
 

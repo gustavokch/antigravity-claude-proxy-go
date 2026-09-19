@@ -163,6 +163,43 @@ func TestAccountPool_AcquireReleaseSuccess(t *testing.T) {
 	}
 }
 
+// A headerless 200 (empty RateLimits) must not clobber the last good reading
+// back to a false-full 1.0.
+func TestAccountPool_RecordSuccessPreservesLimitsWithoutSignal(t *testing.T) {
+	pool := NewAccountPool([]AccountConfig{
+		{ID: "acc-rl", Name: "RL", Token: "token-rl", Priority: 1, Enabled: true},
+	})
+
+	pool.UpdateAccountRateLimits("acc-rl", RateLimits{
+		RequestsLimit:     100,
+		RequestsRemaining: 20,
+		LastUpdated:       time.Now(),
+	})
+	pool.RecordSuccess("acc-rl", 100, 0.001, RateLimits{})
+
+	acc, _ := pool.GetAccount("acc-rl")
+	if acc.RateLimits.RequestsLimit != 100 || acc.RateLimits.RequestsRemaining != 20 {
+		t.Fatalf("empty success must preserve limits, got %+v", acc.RateLimits)
+	}
+	if frac, ok := acc.RateLimits.MinRemainingFraction(); !ok || frac != 0.2 {
+		t.Fatalf("expected (0.2, true), got (%f, %v)", frac, ok)
+	}
+
+	pool.RecordSuccess("acc-rl", 100, 0.001, RateLimits{
+		RequestsLimit:     100,
+		RequestsRemaining: 10,
+		LastUpdated:       time.Now(),
+	})
+	if acc.RateLimits.RequestsRemaining != 10 {
+		t.Fatalf("real signal must overwrite, got %+v", acc.RateLimits)
+	}
+
+	pool.UpdateAccountRateLimits("acc-rl", RateLimits{})
+	if acc.RateLimits.RequestsRemaining != 10 {
+		t.Fatalf("empty update must be ignored, got %+v", acc.RateLimits)
+	}
+}
+
 func TestAccountPool_StickyCapacityBounds(t *testing.T) {
 	pool := NewAccountPool([]AccountConfig{
 		{

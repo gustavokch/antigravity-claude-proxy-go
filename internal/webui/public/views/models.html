@@ -198,7 +198,7 @@
                     <tr class="group transition-all duration-300" :class="row.hidden ? 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0 bg-space-900/50' : ''">
                         <td class="!pl-4">
                             <div class="w-2 h-2 rounded-full transition-all duration-300"
-                                :class="row.avgQuota > 0 ? 'bg-emerald-400' : 'bg-red-400'">
+                                :class="row.avgQuota === null || row.avgQuota === undefined ? 'bg-zinc-500' : (row.avgQuota > 0 ? 'bg-emerald-400' : 'bg-red-400')">
                             </div>
                         </td>
                         <td>
@@ -215,8 +215,8 @@
                                  :class="$store.settings.compact ? 'gap-0.5' : 'gap-1'">
                                 <div class="flex justify-between text-xs font-mono">
                                     <span class="flex items-center gap-1.5">
-                                        <span x-text="row.avgQuota + '%'"
-                                            :class="row.avgQuota > 0 ? 'text-white' : 'text-red-500'"></span>
+                                        <span x-text="row.avgQuota === null || row.avgQuota === undefined ? 'N/A' : row.avgQuota + '%'"
+                                            :class="(row.avgQuota === null || row.avgQuota === undefined) ? 'text-gray-500' : (row.avgQuota > 0 ? 'text-white' : 'text-red-500')"></span>
                                         <!-- Threshold indicator (inline) -->
                                         <span x-show="row.effectiveThresholdPct > 0"
                                               class="text-[10px] text-gray-500"
@@ -235,7 +235,7 @@
                                               class="inline-flex gap-0.5 items-center">
                                             <template x-for="q in row.quotaInfo.slice(0, 8)" :key="q.fullEmail + '-sq'">
                                                 <span class="w-1.5 h-1.5 rounded-sm inline-block"
-                                                      :class="q.pct > 50 ? 'bg-emerald-500/80' : (q.pct > 0 ? 'bg-amber-500/80' : 'bg-red-900/60')"></span>
+                                                      :class="(q.pct === null || q.pct === undefined) ? 'bg-zinc-500/60' : (q.pct > 50 ? 'bg-emerald-500/80' : (q.pct > 0 ? 'bg-amber-500/80' : 'bg-red-900/60'))"></span>
                                             </template>
                                             <span x-show="row.quotaInfo.length > 8"
                                                   class="text-[8px] text-gray-600 leading-none"
@@ -243,16 +243,16 @@
                                         </span>
                                         <!-- Available/Total Accounts Indicator -->
                                         <span class="text-gray-500 text-[10px]"
-                                              x-text="row.quotaInfo.filter(q => q.pct > 0).length + '/' + row.quotaInfo.length"></span>
+                                              x-text="row.quotaInfo.filter(q => q.pct === null || q.pct === undefined || q.pct > 0).length + '/' + row.quotaInfo.length"></span>
                                     </span>
                                 </div>
                                 <div class="relative">
                                     <progress class="progress w-full bg-space-800"
                                         :class="[
                                             $store.settings.compact ? 'h-1' : 'h-1.5',
-                                            row.avgQuota > 50 ? 'progress-gradient-success' : (row.avgQuota > 0 ? 'progress-gradient-warning' : 'progress-gradient-error')
+                                            (row.avgQuota === null || row.avgQuota === undefined) ? 'progress-gradient-unknown' : (row.avgQuota > 50 ? 'progress-gradient-success' : (row.avgQuota > 0 ? 'progress-gradient-warning' : 'progress-gradient-error'))
                                         ]"
-                                        :value="row.avgQuota" max="100"></progress>
+                                        :value="row.avgQuota ?? 0" max="100"></progress>
                                     <!-- Per-account draggable quota threshold markers -->
                                     <template x-for="(q, qIdx) in row.quotaInfo.filter(q => q.thresholdPct > 0 || isDragging(q, row))" :key="q.fullEmail + '-threshold'">
                                         <div class="absolute -top-1 -bottom-1 group/marker"
@@ -307,14 +307,14 @@
                                             <!-- Progress Bar -->
                                             <div class="flex-1 h-1.5 rounded-full bg-space-800 overflow-hidden">
                                                 <div class="h-full rounded-full transition-all duration-500"
-                                                     :class="q.status === 'cooldown' ? 'bg-amber-500' : (q.pct > 50 ? 'bg-emerald-500/70' : (q.pct > 0 ? 'bg-amber-500/70' : 'bg-red-500/50'))"
-                                                     :style="'width: ' + q.pct + '%'"></div>
+                                                     :class="q.status === 'cooldown' ? 'bg-amber-500' : ((q.pct === null || q.pct === undefined) ? 'bg-zinc-500/70' : (q.pct > 50 ? 'bg-emerald-500/70' : (q.pct > 0 ? 'bg-amber-500/70' : 'bg-red-500/50')))"
+                                                     :style="'width: ' + (q.pct ?? 0) + '%'"></div>
                                             </div>
 
                                             <!-- Quota / Remaining -->
                                             <span class="text-[10px] font-mono w-10 text-right flex-shrink-0"
-                                                  :class="q.pct > 0 ? 'text-gray-400' : 'text-red-500/70'"
-                                                  x-text="q.pct + '%'"></span>
+                                                  :class="(q.pct === null || q.pct === undefined) ? 'text-gray-500' : (q.pct > 0 ? 'text-gray-400' : 'text-red-500/70')"
+                                                  x-text="(q.pct === null || q.pct === undefined) ? 'N/A' : q.pct + '%'"></span>
 
                                             <!-- Reset Countdown -->
                                             <span x-show="q.resetTime"
@@ -346,7 +346,7 @@
                             <div class="flex items-center justify-start gap-3">
                                 <div class="text-[10px] font-mono text-gray-500 hidden xl:block text-left leading-tight opacity-70">
                                     <div
-                                        x-text="$store.global.t('activeCount', {count: row.quotaInfo?.filter(q => q.pct > 0).length || 0})">
+                                        x-text="$store.global.t('activeCount', {count: row.quotaInfo?.filter(q => q.pct === null || q.pct === undefined || q.pct > 0).length || 0})">
                                     </div>
                                 </div>
                                 <!-- Account Status Indicators -->
@@ -359,13 +359,14 @@
                                             <!-- Visible accounts (limited to maxVisible) -->
                                             <template x-for="(q, idx) in row.quotaInfo.slice(0, maxVisible)" :key="q.id || q.fullEmail">
                                                 <div class="tooltip tooltip-left"
-                                                     :data-tip="`${q.provider === 'claudecode' ? '[Claude Code] ' : '[Google] '}${q.name || Redact.email(q.fullEmail)} (${q.pct}%) · ${(q.status || 'ok').toUpperCase()}` + (q.priority ? ` · P${q.priority}` : '') + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')">
+                                                     :data-tip="`${q.provider === 'claudecode' ? '[Claude Code] ' : '[Google] '}${q.name || Redact.email(q.fullEmail)} (${(q.pct === null || q.pct === undefined) ? 'N/A' : q.pct + '%'}) · ${(q.status || 'ok').toUpperCase()}` + (q.priority ? ` · P${q.priority}` : '') + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')">
                                                     <div class="w-2.5 h-2.5 rounded-[2px] transition-all hover:scale-125 cursor-help"
                                                         :class="[
                                                             q.status === 'disabled' ? 'bg-zinc-700 opacity-40' :
                                                             q.status === 'cooldown' ? 'bg-amber-500 opacity-90 animate-pulse' :
                                                             q.status === 'rate_limited' ? 'bg-red-600 opacity-80' :
-                                                            (q.pct > 50 ? 'bg-emerald-500 opacity-80' : (q.pct > 0 ? 'bg-amber-500 opacity-80' : 'bg-red-900 opacity-50'))
+                                                            ((q.pct === null || q.pct === undefined) ? 'bg-zinc-500 opacity-70' :
+                                                            (q.pct > 50 ? 'bg-emerald-500 opacity-80' : (q.pct > 0 ? 'bg-amber-500 opacity-80' : 'bg-red-900 opacity-50')))
                                                         ]">
                                                     </div>
                                                 </div>
@@ -373,7 +374,7 @@
                                             <!-- Overflow indicator -->
                                             <template x-if="row.quotaInfo.length > maxVisible">
                                                 <div class="tooltip tooltip-left"
-                                                     :data-tip="row.quotaInfo.slice(maxVisible).map(q => `${q.provider === 'claudecode' ? '[Claude Code] ' : '[Google] '}${q.name || Redact.email(q.fullEmail)} (${q.pct}%)` + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')).join('\n')">
+                                                     :data-tip="row.quotaInfo.slice(maxVisible).map(q => `${q.provider === 'claudecode' ? '[Claude Code] ' : '[Google] '}${q.name || Redact.email(q.fullEmail)} (${(q.pct === null || q.pct === undefined) ? 'N/A' : q.pct + '%'})` + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')).join('\n')">
                                                     <div class="w-2.5 h-2.5 rounded-[2px] bg-gray-700/50 border border-gray-600 flex items-center justify-center cursor-help hover:bg-gray-600/70 transition-colors">
                                                         <span class="text-[6px] text-gray-400 font-bold leading-none"
                                                               x-text="`+${row.quotaInfo.length - maxVisible}`"></span>

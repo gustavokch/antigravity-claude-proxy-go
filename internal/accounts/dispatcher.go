@@ -31,6 +31,17 @@ type Resolver interface {
 	Invalidate(string)
 }
 
+// quotaSummaryFetcher and userQuotaFetcher are optional CloudClient
+// capabilities. *cloudcode.Client implements both; test fakes that do not
+// simply skip the live-quota refresh and keep catalog fractions.
+type quotaSummaryFetcher interface {
+	RetrieveUserQuotaSummary(context.Context, string) (cloudcode.Response, error)
+}
+
+type userQuotaFetcher interface {
+	RetrieveUserQuota(context.Context, string) (cloudcode.Response, error)
+}
+
 type SleepFunc func(context.Context, time.Duration) error
 
 type DispatcherOptions struct {
@@ -278,6 +289,7 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 			dispatcher.manager.MarkSuccess(selection.Account, "")
 			dispatcher.cacheCatalog(response.Body)
 			dispatcher.updateAccountQuota(selection.Account, response.Body)
+			dispatcher.refreshLiveQuota(ctx, selection.Account, modelsClient, dispatcher.project(selection.Account))
 			return response, nil
 		}
 		lastError = err
@@ -379,14 +391,29 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			inFlight, priorMinute := dispatcher.meter.Begin(account.Email)
 			// The release is deferred inside its own scope so a panic in the
 			// consume callback cannot strand the account's in-flight count.
+			// The wrapper also snoops the stream for remaining_credits: the
+			// only per-request consumption signal upstream sends.
+			var lastCredits []cloudcode.CreditBalance
 			response, requestErr := func() (cloudcode.Response, error) {
 				defer dispatcher.meter.End(account.Email)
 				return client.StreamGenerateContent(ctx, payload, options, func(event cloudcode.SSEEvent) error {
 					eventCount++
+					if len(event.Data) > 0 {
+						if balances, ok := cloudcode.ParseRemainingCredits(event.Data); ok {
+							lastCredits = balances
+						}
+					}
 					return consume(event)
 				})
 			}()
 			if requestErr == nil {
+				if len(lastCredits) > 0 {
+					balances := make(map[string]int64, len(lastCredits))
+					for _, b := range lastCredits {
+						balances[b.CreditType] = b.Amount
+					}
+					dispatcher.manager.UpdateAccountCredits(account.Email, balances)
+				}
 				if dispatcher.meter.TakeRecovery(account.Email) {
 					dispatcher.recordRecovery(account, project, model, inFlight, priorMinute)
 				}
@@ -576,6 +603,7 @@ func (dispatcher *Dispatcher) RefreshAccount(ctx context.Context, email string) 
 	})
 	if err == nil && len(quotaResponse.Body) > 0 {
 		dispatcher.updateAccountQuota(targetAccount, quotaResponse.Body)
+		dispatcher.refreshLiveQuota(ctx, targetAccount, client, project)
 	}
 
 	if targetAccount.IsInvalid && targetAccount.VerifyURL != "" {
@@ -733,6 +761,63 @@ func (dispatcher *Dispatcher) updateAccountQuota(account *Account, body []byte) 
 		LastChecked: dispatcher.now().UnixMilli(),
 	}
 	dispatcher.manager.UpdateAccountQuota(account.Email, quota, nil)
+}
+
+// refreshLiveQuota best-effort merges RetrieveUserQuotaSummary and
+// RetrieveUserQuota readings over the static catalog fractions. Upstream
+// holds catalog remainingFraction at 1 until exhaustion, so without this the
+// dashboard never shows consumption. Failures are swallowed: the catalog
+// fractions remain the fallback. Clients without the capability (test fakes)
+// skip silently.
+func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Account, client CloudClient, project string) {
+	if account == nil || client == nil {
+		return
+	}
+	if fetcher, ok := client.(quotaSummaryFetcher); ok {
+		if response, err := fetcher.RetrieveUserQuotaSummary(ctx, project); err == nil &&
+			response.StatusCode >= 200 && response.StatusCode < 300 {
+			for _, bucket := range cloudcode.ParseQuotaSummary(response.Body) {
+				dispatcher.mergeQuotaBucket(account.Email,
+					[]string{bucket.ID, bucket.DisplayName},
+					bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime)
+			}
+		}
+	}
+	if fetcher, ok := client.(userQuotaFetcher); ok {
+		if response, err := fetcher.RetrieveUserQuota(ctx, project); err == nil &&
+			response.StatusCode >= 200 && response.StatusCode < 300 {
+			for _, bucket := range cloudcode.ParseUserQuota(response.Body) {
+				dispatcher.mergeQuotaBucket(account.Email,
+					[]string{bucket.ModelID},
+					bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime)
+			}
+		}
+	}
+}
+
+// mergeQuotaBucket records one live reading under every non-empty key variant.
+// An amount-only reading is actionable only at zero (exhausted): a positive
+// amount without its total cannot produce a fraction, so it is skipped rather
+// than fabricated.
+func (dispatcher *Dispatcher) mergeQuotaBucket(email string, keys []string, fraction *float64, amount *int64, resetTime string) {
+	if fraction == nil {
+		if amount == nil || *amount != 0 {
+			return
+		}
+	}
+	seen := make(map[string]struct{}, len(keys)*2)
+	for _, key := range keys {
+		for _, variant := range []string{key, strings.ToLower(strings.TrimSpace(key))} {
+			if variant == "" {
+				continue
+			}
+			if _, dup := seen[variant]; dup {
+				continue
+			}
+			seen[variant] = struct{}{}
+			dispatcher.manager.MergeQuotaFraction(email, variant, fraction, resetTime)
+		}
+	}
 }
 
 func findHTTPError(err error) *cloudcode.HTTPError {

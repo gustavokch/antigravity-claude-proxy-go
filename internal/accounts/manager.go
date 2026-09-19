@@ -79,6 +79,11 @@ type Account struct {
 	Quota          Quota
 	QuotaThreshold *float64
 	ModelThreshold map[string]float64
+	// Credits holds absolute remaining credit balances by credit-type name
+	// (e.g. "GOOGLE_ONE_AI") as last reported by GenerateContent responses.
+	// Unlike Quota fractions (which upstream holds at 1 until exhaustion),
+	// these decrease with use and are the visible consumption signal.
+	Credits map[string]int64
 
 	LastUsedMS         int64
 	IsInvalid          bool
@@ -103,6 +108,7 @@ type diskAccount struct {
 	Quota                Quota                 `json:"quota"`
 	QuotaThreshold       *float64              `json:"quotaThreshold"`
 	ModelQuotaThresholds map[string]float64    `json:"modelQuotaThresholds"`
+	Credits              map[string]int64      `json:"credits,omitempty"`
 	LastUsed             json.RawMessage       `json:"lastUsed"`
 	IsInvalid            bool                  `json:"isInvalid"`
 	InvalidReason        string                `json:"invalidReason"`
@@ -152,6 +158,7 @@ func Load(path string) (File, error) {
 			AgyTokenPath: stored.AgyTokenPath, ProjectID: stored.ProjectID,
 			Subscription: stored.Subscription, Quota: stored.Quota,
 			QuotaThreshold: stored.QuotaThreshold, ModelThreshold: stored.ModelQuotaThresholds,
+			Credits: stored.Credits,
 			VerifyURL: stored.VerifyURL, ModelRateLimits: stored.ModelRateLimits,
 		}
 		if account.Source == "" {
@@ -1178,6 +1185,7 @@ func Save(path string, accounts []*Account, settings map[string]any, activeIndex
 			Quota:                acc.Quota,
 			QuotaThreshold:       acc.QuotaThreshold,
 			ModelQuotaThresholds: acc.ModelThreshold,
+			Credits:              acc.Credits,
 			IsInvalid:            acc.IsInvalid,
 			InvalidReason:        acc.InvalidReason,
 			VerifyURL:            acc.VerifyURL,
@@ -1247,6 +1255,13 @@ func cloneAccount(acc *Account) *Account {
 			clonedModels[k] = v
 		}
 		cloned.Quota.Models = clonedModels
+	}
+	if acc.Credits != nil {
+		clonedCredits := make(map[string]int64, len(acc.Credits))
+		for k, v := range acc.Credits {
+			clonedCredits[k] = v
+		}
+		cloned.Credits = clonedCredits
 	}
 	return &cloned
 }
@@ -1486,6 +1501,57 @@ func (manager *Manager) UpdateAccountQuota(email string, quota Quota, subscripti
 	}
 }
 
+// MergeQuotaFraction additively records one live quota reading under key.
+// Quota-summary buckets are authoritative over static catalog fractions, so a
+// merged reading overwrites whatever fetchAvailableModels stored. A nil
+// fraction paired with a reset time records exhaustion (0.0), mirroring
+// updateAccountQuota. Keys with neither fraction nor reset are ignored.
+func (manager *Manager) MergeQuotaFraction(email, key string, fraction *float64, resetTime string) {
+	if key == "" || (fraction == nil && resetTime == "") {
+		return
+	}
+	if fraction == nil {
+		zero := 0.0
+		fraction = &zero
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, acc := range manager.accounts {
+		if acc.Email != email {
+			continue
+		}
+		if acc.Quota.Models == nil {
+			acc.Quota.Models = make(map[string]ModelQuota)
+		}
+		acc.Quota.Models[key] = ModelQuota{RemainingFraction: fraction, ResetTime: resetTime}
+		acc.Quota.LastChecked = manager.now().UnixMilli()
+		break
+	}
+}
+
+// UpdateAccountCredits stores absolute remaining credit balances by
+// credit-type name. Empty updates are ignored so a response without a credit
+// signal never wipes the last known balances.
+func (manager *Manager) UpdateAccountCredits(email string, balances map[string]int64) {
+	if len(balances) == 0 {
+		return
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, acc := range manager.accounts {
+		if acc.Email != email {
+			continue
+		}
+		if acc.Credits == nil {
+			acc.Credits = make(map[string]int64, len(balances))
+		}
+		for k, v := range balances {
+			acc.Credits[k] = v
+		}
+		break
+	}
+}
+
 func (manager *Manager) Reload(path string) error {
 	if path == "" {
 		path = manager.ConfigPath()
@@ -1557,6 +1623,7 @@ func (manager *Manager) GetStatus() map[string]any {
 			"lastUsed":             acc.LastUsedMS,
 			"subscription":         acc.Subscription,
 			"quota":                acc.Quota,
+			"credits":              acc.Credits,
 			"limits":               limits,
 			"quotaThreshold":       acc.QuotaThreshold,
 			"modelQuotaThresholds": acc.ModelThreshold,
