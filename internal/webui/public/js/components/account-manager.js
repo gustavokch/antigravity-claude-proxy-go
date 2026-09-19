@@ -401,7 +401,7 @@ window.Components.accountManager = () => ({
         const getQuotaVal = (id) => {
              const l = limits[id];
              if (!l) return -1;
-             if (l.remainingFraction !== null && l.remainingFraction !== undefined) return l.remainingFraction;
+             if (l.remainingFraction != null) return l.remainingFraction;
              if (l.resetTime) return 0; // Rate limited, fraction unknown
              return -1; // Unknown
         };
