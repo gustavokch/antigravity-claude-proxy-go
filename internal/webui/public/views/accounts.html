@@ -242,7 +242,7 @@
                             </span>
                         </td>
                         <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
-                            <div x-data="{ quota: getMainModelQuota(acc) }">
+                            <div x-data="{ get quota() { return getMainModelQuota(acc); } }">
                                 <template x-if="quota.percent !== null">
                                     <div class="flex items-center gap-2">
                                         <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
@@ -438,7 +438,7 @@
 
                             <!-- Quota -->
                             <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
-                                <div x-data="{ quota: getMainModelQuota(acc) }">
+                                <div x-data="{ get quota() { return getMainModelQuota(acc); } }">
                                     <template x-if="quota.percent !== null">
                                         <div class="flex items-center gap-2">
                                             <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">

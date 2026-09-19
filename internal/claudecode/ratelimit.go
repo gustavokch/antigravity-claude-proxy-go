@@ -114,6 +114,103 @@ func (rl RateLimits) IsRateLimited(now time.Time) bool {
 	return false
 }
 
+// MinRemainingFraction computes the minimum remaining fraction (0.0 to 1.0) across all configured
+// rate limit dimensions (requests, unified tokens, input tokens, output tokens).
+// Returns (1.0, false) if no limits are configured.
+func (rl RateLimits) MinRemainingFraction() (float64, bool) {
+	hasLimit := false
+	minFrac := 1.0
+
+	check := func(rem, lim int64) {
+		if lim > 0 {
+			hasLimit = true
+			frac := float64(rem) / float64(lim)
+			if frac < minFrac {
+				minFrac = frac
+			}
+		}
+	}
+
+	check(rl.RequestsRemaining, rl.RequestsLimit)
+	check(rl.TokensRemaining, rl.TokensLimit)
+	check(rl.InputTokensRemaining, rl.InputTokensLimit)
+	check(rl.OutputTokensRemaining, rl.OutputTokensLimit)
+
+	if !hasLimit {
+		return 1.0, false
+	}
+	if minFrac < 0 {
+		minFrac = 0
+	}
+	if minFrac > 1.0 {
+		minFrac = 1.0
+	}
+	return minFrac, true
+}
+
+// ResetTime determines the most relevant reset timestamp:
+// 1. Active RetryAfter duration (relative to LastUpdated or now).
+// 2. If any dimension is exhausted (Remaining == 0 with Limit > 0), the furthest reset time among exhausted dimensions.
+// 3. Furthest reset time among all active dimensions with a future reset timestamp.
+// 4. Fallback chain through configured reset timestamps.
+func (rl RateLimits) ResetTime(now time.Time) time.Time {
+	if rl.RetryAfter > 0 {
+		ref := rl.LastUpdated
+		if ref.IsZero() {
+			ref = now
+		}
+		retryExpiry := ref.Add(time.Duration(rl.RetryAfter) * time.Second)
+		if retryExpiry.After(now) {
+			return retryExpiry
+		}
+	}
+
+	// Check exhausted dimensions first
+	var exhaustedReset time.Time
+	checkExhausted := func(rem, lim int64, reset time.Time) {
+		if lim > 0 && rem == 0 && reset.After(now) {
+			if reset.After(exhaustedReset) {
+				exhaustedReset = reset
+			}
+		}
+	}
+	checkExhausted(rl.RequestsRemaining, rl.RequestsLimit, rl.RequestsReset)
+	checkExhausted(rl.TokensRemaining, rl.TokensLimit, rl.TokensReset)
+	checkExhausted(rl.InputTokensRemaining, rl.InputTokensLimit, rl.InputTokensReset)
+	checkExhausted(rl.OutputTokensRemaining, rl.OutputTokensLimit, rl.OutputTokensReset)
+
+	if !exhaustedReset.IsZero() {
+		return exhaustedReset
+	}
+
+	// Check any future reset timestamp among active dimensions
+	var latestReset time.Time
+	checkActive := func(lim int64, reset time.Time) {
+		if lim > 0 && reset.After(now) {
+			if reset.After(latestReset) {
+				latestReset = reset
+			}
+		}
+	}
+	checkActive(rl.RequestsLimit, rl.RequestsReset)
+	checkActive(rl.TokensLimit, rl.TokensReset)
+	checkActive(rl.InputTokensLimit, rl.InputTokensReset)
+	checkActive(rl.OutputTokensLimit, rl.OutputTokensReset)
+
+	if !latestReset.IsZero() {
+		return latestReset
+	}
+
+	// Fallback to any non-zero reset timestamp
+	for _, t := range []time.Time{rl.InputTokensReset, rl.OutputTokensReset, rl.TokensReset, rl.RequestsReset} {
+		if !t.IsZero() {
+			return t
+		}
+	}
+
+	return time.Time{}
+}
+
 // parseTimestamp attempts multiple common time formats (RFC3339, RFC3339Nano, ISO8601, or relative seconds).
 func parseTimestamp(val string) time.Time {
 	val = strings.TrimSpace(val)

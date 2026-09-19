@@ -736,3 +736,316 @@ func TestSharedThrottles(t *testing.T) {
 		t.Fatalf("SharedThrottles after expiry = %v, want empty map", got)
 	}
 }
+
+func TestManager_QuotaCritical_Normalizes1mSuffix(t *testing.T) {
+	clock := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	zero := 0.0
+	full := 1.0
+
+	exhaustedAcc := &Account{
+		Email:   "exhausted@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &zero,
+					ResetTime:         clock.Add(10 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			LastChecked: clock.UnixMilli(),
+		},
+	}
+	freshAcc := &Account{
+		Email:   "fresh@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &full,
+				},
+			},
+			LastChecked: clock.UnixMilli(),
+		},
+	}
+
+	manager, err := New(Options{
+		Accounts: []*Account{exhaustedAcc, freshAcc},
+		Strategy: StrategyHybrid,
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// When selecting with the [1m] suffix, exhaustedAcc should be identified as quotaCritical
+	// and skipped in favor of freshAcc.
+	selection := manager.Select("gemini-3.8-flash-high[1m]")
+	if selection.Account == nil {
+		t.Fatalf("expected an account to be selected")
+	}
+	if selection.Account.Email != "fresh@example.com" {
+		t.Fatalf("expected fresh@example.com, got %s (quota critical protection failed for [1m] suffix)", selection.Account.Email)
+	}
+}
+
+func TestModelKeyCandidates(t *testing.T) {
+	cases := []struct {
+		input string
+		want  []string
+	}{
+		{
+			input: "gemini-3.8-flash-high[1m]",
+			want:  []string{"gemini-3.8-flash-high[1m]", "gemini-3.8-flash-high"},
+		},
+		{
+			input: "Gemini-3.8-Flash-High",
+			want:  []string{"Gemini-3.8-Flash-High", "gemini-3.8-flash-high"},
+		},
+		{
+			input: "gemini-3.8-flash-high",
+			want:  []string{"gemini-3.8-flash-high"},
+		},
+		{
+			input: "Claude-Opus-4-6[1m]",
+			want:  []string{"Claude-Opus-4-6[1m]", "Claude-Opus-4-6", "claude-opus-4-6"},
+		},
+	}
+
+	for _, tc := range cases {
+		got := ModelKeyCandidates(tc.input)
+		if len(got) != len(tc.want) {
+			t.Fatalf("ModelKeyCandidates(%q) len = %d, want %d (%v vs %v)", tc.input, len(got), len(tc.want), got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("ModelKeyCandidates(%q)[%d] = %q, want %q", tc.input, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+// Finding 1. A three-hour-old record claiming full capacity must not escape the
+// freshness guard just because its ResetTime has not arrived yet.
+func TestManager_StaleFullQuota_IsNotUsable(t *testing.T) {
+	clock := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	full := 1.0
+
+	acc := &Account{
+		Email:   "stale-full@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &full,
+					ResetTime:         clock.Add(4 * time.Hour).Format(time.RFC3339),
+				},
+			},
+			LastChecked: float64(clock.Add(-3 * time.Hour).UnixMilli()),
+		},
+	}
+
+	manager, err := New(Options{Accounts: []*Account{acc}, Strategy: StrategyHybrid, Now: now})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	manager.mu.Lock()
+	usable := manager.quotaUsableLocked(acc.Quota.Models["gemini-3.8-flash-high"], acc.Quota.LastChecked, 0.05)
+	manager.mu.Unlock()
+
+	if usable {
+		t.Errorf("stale full-capacity quota reported usable; the 5 minute freshness guard was bypassed")
+	}
+
+	// And the staleness penalty must still land in scoring.
+	manager.mu.Lock()
+	score := manager.scoreLocked(acc, "gemini-3.8-flash-high")
+	manager.mu.Unlock()
+	wQuota := mapFloat(manager.selectionConfig.Weights, "quota", 3)
+	penalizedQuota := 1.0 * 100 * 0.9 * wQuota
+	// Base score without quota: health (70 * 2 = 140) + tokens (50/50 * 100 * 5 = 500) + lru (3600 * 0.1 = 360) = 1000
+	// Total score with penalized quota = 1000 + 270 = 1270. Unpenalized would be 1000 + 300 = 1300.
+	unpenalizedQuota := 1.0 * 100 * 1.0 * wQuota
+	if score > 1000+penalizedQuota+1e-9 {
+		t.Errorf("scoreLocked = %f, want <= %f (stale penalty not applied)", score, 1000+penalizedQuota)
+	}
+	if score >= 1000+unpenalizedQuota-1e-9 {
+		t.Errorf("scoreLocked = %f, expected stale penalty below %f", score, 1000+unpenalizedQuota)
+	}
+}
+
+// The behaviour the PR did intend: exhaustion outlives the freshness window.
+func TestManager_StaleExhaustedQuota_RemainsCritical(t *testing.T) {
+	clock := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	zero := 0.0
+
+	acc := &Account{
+		Email:   "stale-exhausted@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &zero,
+					ResetTime:         clock.Add(30 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			LastChecked: float64(clock.Add(-3 * time.Hour).UnixMilli()),
+		},
+	}
+
+	manager, err := New(Options{Accounts: []*Account{acc}, Strategy: StrategyHybrid, Now: now})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	manager.mu.Lock()
+	critical := manager.quotaCriticalLocked(acc, "gemini-3.8-flash-high")
+	manager.mu.Unlock()
+
+	if !critical {
+		t.Errorf("exhausted quota with a future ResetTime should stay critical past the freshness window")
+	}
+}
+
+func TestManager_QuotaResetTimeInPast_FallsBackToQuotaFresh(t *testing.T) {
+	clock := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	one := 1.0
+
+	// Account checked 1 minute ago (fresh), but ResetTime was 10 minutes ago.
+	acc := &Account{
+		Email:   "past-reset@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &one,
+					ResetTime:         clock.Add(-10 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			LastChecked: float64(clock.Add(-1 * time.Minute).UnixMilli()),
+		},
+	}
+
+	manager, err := New(Options{
+		Accounts: []*Account{acc},
+		Strategy: StrategyHybrid,
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Score should not have the 10% stale quota penalty applied.
+	manager.mu.Lock()
+	score := manager.scoreLocked(acc, "gemini-3.8-flash-high")
+	manager.mu.Unlock()
+	// Expected quotaScore = 100 * wQuota (3) = 300. If stale penalty was applied, quotaScore = 90 * 3 = 270.
+	wQuota := mapFloat(manager.selectionConfig.Weights, "quota", 3)
+	expectedQuotaComponent := 1.0 * 100 * wQuota
+	if score < expectedQuotaComponent {
+		t.Errorf("scoreLocked = %f, expected at least quota component %f (penalty was incorrectly applied)", score, expectedQuotaComponent)
+	}
+}
+
+func TestManager_QuotaCritical_ResetTimeInPast(t *testing.T) {
+	clock := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	zero := 0.0
+
+	// Account exhausted at 11:50 with reset scheduled for 11:55. Now is 12:00.
+	acc := &Account{
+		Email:   "exhausted-past-reset@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &zero,
+					ResetTime:         clock.Add(-5 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			LastChecked: float64(clock.Add(-10 * time.Minute).UnixMilli()),
+		},
+	}
+
+	manager, err := New(Options{
+		Accounts: []*Account{acc},
+		Strategy: StrategyHybrid,
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	manager.mu.Lock()
+	critical := manager.quotaCriticalLocked(acc, "gemini-3.8-flash-high")
+	manager.mu.Unlock()
+	if critical {
+		t.Errorf("expected quotaCriticalLocked to return false when ResetTime is in the past")
+	}
+}
+
+// Finding 1b. The mirror failure: an elapsed ResetTime must not revoke a
+// reading that quotaFresh accepts. 2% remaining, measured one second ago.
+func TestManager_FreshLowQuota_ElapsedResetTime_StaysCritical(t *testing.T) {
+	clock := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	low := 0.02
+
+	acc := &Account{
+		Email:   "fresh-low@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &low,
+					ResetTime:         clock.Add(-1 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			LastChecked: float64(clock.Add(-1 * time.Second).UnixMilli()),
+		},
+	}
+
+	manager, err := New(Options{Accounts: []*Account{acc}, Strategy: StrategyHybrid, Now: now})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	manager.mu.Lock()
+	critical := manager.quotaCriticalLocked(acc, "gemini-3.8-flash-high")
+	manager.mu.Unlock()
+
+	if !critical {
+		t.Errorf("a one-second-old 2%%-remaining quota must stay critical; an elapsed ResetTime overrode the measured fraction")
+	}
+}
+
+// Finding 4. The ModelThreshold normalization path shipped untested.
+func TestModelThresholdFor_NormalizesSuffixAndCase(t *testing.T) {
+	acc := &Account{
+		Email: "threshold@example.com",
+		ModelThreshold: map[string]float64{
+			"gemini-3.8-flash-high": 0.25,
+		},
+	}
+
+	for _, query := range []string{
+		"gemini-3.8-flash-high",
+		"gemini-3.8-flash-high[1m]",
+		"Gemini-3.8-Flash-High",
+		"Gemini-3.8-Flash-High[1m]",
+	} {
+		got, ok := modelThresholdFor(acc, query)
+		if !ok || got != 0.25 {
+			t.Errorf("modelThresholdFor(%q) = (%v, %v), want (0.25, true)", query, got, ok)
+		}
+	}
+
+	if _, ok := modelThresholdFor(acc, "claude-opus-4-6"); ok {
+		t.Errorf("modelThresholdFor should not resolve an unrelated model")
+	}
+}
+

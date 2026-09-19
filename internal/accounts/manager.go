@@ -408,20 +408,44 @@ func (manager *Manager) AllInvalid() bool {
 	return enabled > 0 && enabled == invalid
 }
 
-// rateLimitModelKey normalizes a model string into the rate-limit map's key
-// namespace. Writers pass catalog-resolved IDs; readers may pass raw
-// client-facing strings carrying the "[1m]" context-window marker or
-// different case/whitespace. Without this, exhaustion recorded under
-// "gemini-3.8-flash-medium" is invisible to a lookup for
-// "gemini-3.8-flash-medium[1m]" — the classifier fallback then saw phantom
-// capacity and forwarded into a 429.
+// ModelKeyCandidates returns the ordered candidate keys to search for quota or thresholds:
+// 1. Exact model string
+// 2. Model with [1m] suffix stripped
+// 3. Lowercased stripped model — the canonical key, identical to rateLimitModelKey
+// Duplicate entries and empty strings are omitted.
 //
-// Only ModelRateLimits is normalized. Quota.Models and ModelThreshold (see
-// quotaCriticalLocked, scoreLocked) are still indexed by the raw argument
-// and remain catalog-ID-only: a caller passing a client-facing string gets a
-// correct rate-limit answer but a default quota score.
+// All model-keyed maps (ModelRateLimits, Quota.Models, ModelThreshold) share this
+// normalization scheme, with rateLimitModelKey naming the canonical write key.
+func ModelKeyCandidates(model string) []string {
+	stripped := modelcatalog.Strip1mSuffix(model)
+	lower := strings.ToLower(stripped)
+	seen := make(map[string]struct{}, 3)
+	candidates := make([]string, 0, 3)
+	// If stripping [1m] produces an empty string, the input was suffix-only (e.g. "[1m]")
+	// and must not be treated as a valid candidate.
+	list := []string{model, stripped, lower}
+	if stripped == "" {
+		list = []string{}
+	}
+	for _, k := range list {
+		if k == "" {
+			continue
+		}
+		if _, exists := seen[k]; !exists {
+			seen[k] = struct{}{}
+			candidates = append(candidates, k)
+		}
+	}
+	return candidates
+}
+
+// rateLimitModelKey returns the canonical key: the last, most-normalized candidate.
 func rateLimitModelKey(model string) string {
-	return strings.ToLower(modelcatalog.Strip1mSuffix(model))
+	candidates := ModelKeyCandidates(model)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[len(candidates)-1]
 }
 
 func (manager *Manager) MinWait(model string) time.Duration {
@@ -972,21 +996,88 @@ func (manager *Manager) consumeTokenLocked(email string) {
 	}
 }
 
+func modelQuotaFor(account *Account, model string) (ModelQuota, bool) {
+	if account == nil || account.Quota.Models == nil {
+		return ModelQuota{}, false
+	}
+	for _, candidate := range ModelKeyCandidates(model) {
+		if q, exists := account.Quota.Models[candidate]; exists {
+			return q, true
+		}
+	}
+	return ModelQuota{}, false
+}
+
+func modelThresholdFor(account *Account, model string) (float64, bool) {
+	if account == nil || account.ModelThreshold == nil {
+		return 0, false
+	}
+	for _, candidate := range ModelKeyCandidates(model) {
+		if v, exists := account.ModelThreshold[candidate]; exists && v > 0 {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+func parseQuotaResetTime(resetTime string) (time.Time, bool) {
+	if resetTime == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, resetTime); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// quotaWindowOpen reports whether the record's reset time is still ahead of now,
+// and whether a reset time was known at all.
+func quotaWindowOpen(quota ModelQuota, now time.Time) (open bool, known bool) {
+	parsed, ok := parseQuotaResetTime(quota.ResetTime)
+	if !ok {
+		return false, false
+	}
+	return now.Before(parsed), true
+}
+
+// quotaUsableLocked reports whether this quota record may be trusted.
+//
+// An EXHAUSTED record stays authoritative until its window resets, even once it
+// falls outside the quotaFresh window — that is the point of tracking ResetTime.
+// Every other record, including one reporting spare capacity, must still be
+// fresh: otherwise a hours-old "100% remaining" snapshot reads as live capacity
+// and the scheduler routes traffic into a 429.
+func (manager *Manager) quotaUsableLocked(quota ModelQuota, lastChecked any, threshold float64) bool {
+	now := manager.now()
+	if open, known := quotaWindowOpen(quota, now); known && open &&
+		quota.RemainingFraction != nil && *quota.RemainingFraction <= threshold {
+		return true
+	}
+	return quotaFresh(lastChecked, now)
+}
+
 func (manager *Manager) quotaCriticalLocked(account *Account, model string) bool {
-	quota, exists := account.Quota.Models[model]
-	if !exists || quota.RemainingFraction == nil || !quotaFresh(account.Quota.LastChecked, manager.now()) {
+	quota, exists := modelQuotaFor(account, model)
+	if !exists || quota.RemainingFraction == nil {
 		return false
 	}
+
 	threshold := 0.05
 	if manager.globalQuotaThreshold > 0 {
 		threshold = manager.globalQuotaThreshold
 	} else if qCfg := manager.selectionConfig.Quota; qCfg != nil {
 		threshold = mapFloat(qCfg, "criticalThreshold", 0.05)
 	}
-	if value, exists := account.ModelThreshold[model]; exists && value > 0 {
+	if value, ok := modelThresholdFor(account, model); ok {
 		threshold = value
 	} else if account.QuotaThreshold != nil && *account.QuotaThreshold > 0 {
 		threshold = *account.QuotaThreshold
+	}
+
+	if !manager.quotaUsableLocked(quota, account.Quota.LastChecked, threshold) {
+		return false
 	}
 	return *quota.RemainingFraction <= threshold
 }
@@ -1007,7 +1098,7 @@ func (manager *Manager) scoreLocked(account *Account, model string) float64 {
 	health := manager.healthScoreLocked(account.Email) * wHealth
 	tokens := manager.tokensLocked(account.Email) / maxTokens * 100 * wTokens
 	quotaScore := 50.0
-	if quota, exists := account.Quota.Models[model]; exists && quota.RemainingFraction != nil {
+	if quota, exists := modelQuotaFor(account, model); exists && quota.RemainingFraction != nil {
 		quotaScore = *quota.RemainingFraction * 100
 		if !quotaFresh(account.Quota.LastChecked, manager.now()) {
 			quotaScore *= .9

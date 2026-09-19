@@ -154,4 +154,90 @@ func TestRateLimits_IsRateLimited(t *testing.T) {
 	if rl4.IsRateLimited(now) {
 		t.Errorf("expected IsRateLimited=false when RetryAfter has expired")
 	}
+
+	// Granular output tokens rate limit
+	rl5 := RateLimits{
+		OutputTokensLimit:     100,
+		OutputTokensRemaining: 0,
+		OutputTokensReset:     now.Add(30 * time.Second),
+	}
+	if !rl5.IsRateLimited(now) {
+		t.Errorf("expected IsRateLimited=true when OutputTokensRemaining is 0 and Reset in future")
+	}
+}
+
+func TestRateLimits_MinRemainingFraction(t *testing.T) {
+	// No limits set
+	empty := RateLimits{}
+	if frac, ok := empty.MinRemainingFraction(); ok || frac != 1.0 {
+		t.Errorf("expected (1.0, false), got (%f, %v)", frac, ok)
+	}
+
+	// Requests limit lower
+	rl1 := RateLimits{
+		RequestsLimit:     100,
+		RequestsRemaining: 20, // 0.2
+		TokensLimit:       1000,
+		TokensRemaining:   500, // 0.5
+	}
+	if frac, ok := rl1.MinRemainingFraction(); !ok || frac != 0.2 {
+		t.Errorf("expected (0.2, true), got (%f, %v)", frac, ok)
+	}
+
+	// Granular input token limit lowest
+	rl2 := RateLimits{
+		RequestsLimit:        100,
+		RequestsRemaining:    90, // 0.9
+		InputTokensLimit:     1000,
+		InputTokensRemaining: 50, // 0.05
+		OutputTokensLimit:    500,
+		OutputTokensRemaining: 400, // 0.8
+	}
+	if frac, ok := rl2.MinRemainingFraction(); !ok || frac != 0.05 {
+		t.Errorf("expected (0.05, true), got (%f, %v)", frac, ok)
+	}
+}
+
+func TestRateLimits_ResetTime(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+
+	// Case 1: Active RetryAfter takes precedence
+	rlRetry := RateLimits{
+		RetryAfter:  30,
+		LastUpdated: now,
+		RequestsReset: now.Add(10 * time.Second),
+	}
+	expectedRetry := now.Add(30 * time.Second)
+	if got := rlRetry.ResetTime(now); !got.Equal(expectedRetry) {
+		t.Errorf("expected ResetTime %v from RetryAfter, got %v", expectedRetry, got)
+	}
+
+	// Case 2: Exhausted granular dimension (Remaining == 0) selected over non-exhausted dimension
+	inputReset := now.Add(45 * time.Second)
+	reqReset := now.Add(10 * time.Second)
+	rlExhausted := RateLimits{
+		RequestsLimit:        100,
+		RequestsRemaining:    50,
+		RequestsReset:        reqReset,
+		InputTokensLimit:     1000,
+		InputTokensRemaining: 0,
+		InputTokensReset:     inputReset,
+	}
+	if got := rlExhausted.ResetTime(now); !got.Equal(inputReset) {
+		t.Errorf("expected exhausted InputTokensReset %v, got %v", inputReset, got)
+	}
+
+	// Case 3: Multiple active dimensions - fallback chain selects latest active reset
+	outReset := now.Add(25 * time.Second)
+	rlActive := RateLimits{
+		TokensLimit:       500,
+		TokensRemaining:   200,
+		TokensReset:       reqReset,
+		OutputTokensLimit: 100,
+		OutputTokensRemaining: 80,
+		OutputTokensReset: outReset,
+	}
+	if got := rlActive.ResetTime(now); !got.Equal(outReset) {
+		t.Errorf("expected latest active reset %v, got %v", outReset, got)
+	}
 }
