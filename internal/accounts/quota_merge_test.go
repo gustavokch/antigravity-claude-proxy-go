@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/cloudcode"
+	"antigravity-go-proxy/internal/modelcatalog"
 )
 
 func quotaTestManager(t *testing.T, now time.Time, account *Account) *Manager {
@@ -198,5 +199,50 @@ func TestStreamGenerateContentRecordsRemainingCredits(t *testing.T) {
 	}
 	if got := dispatcher.manager.accounts[0].Credits["GOOGLE_ONE_AI"]; got != 777 {
 		t.Fatalf("remaining credits must be recorded, got %+v", dispatcher.manager.accounts[0].Credits)
+	}
+}
+
+type countingSummaryClient struct {
+	quotaCapableClient
+	summaryCalls int
+}
+
+func (c *countingSummaryClient) RetrieveUserQuotaSummary(ctx context.Context, project string) (cloudcode.Response, error) {
+	c.summaryCalls++
+	return quotaCapableClient{}.RetrieveUserQuotaSummary(ctx, project)
+}
+
+func TestStreamGenerateContent_RefreshesLiveQuotaThrottled(t *testing.T) {
+	client := &countingSummaryClient{}
+	dispatcher := newDispatcherWithClient(t, client)
+	account := dispatcher.manager.accounts[0]
+
+	// Warm the catalog without touching the quota path, so the only summary
+	// fetches below can come from the post-request refresh.
+	response, err := client.FetchAvailableModels(context.Background(), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := modelcatalog.Parse(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher.storeCatalog(catalog)
+
+	consume := func(cloudcode.SSEEvent) error { return nil }
+	if _, err := dispatcher.StreamGenerateContent(context.Background(),
+		map[string]any{"model": "gemini-3.8-flash-high"}, consume); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatcher.StreamGenerateContent(context.Background(),
+		map[string]any{"model": "gemini-3.8-flash-high"}, consume); err != nil {
+		t.Fatal(err)
+	}
+
+	if client.summaryCalls != 1 {
+		t.Fatalf("expected 1 throttled summary fetch across 2 requests, got %d", client.summaryCalls)
+	}
+	if _, ok := account.Quota.Pools["gemini-5h"]; !ok {
+		t.Fatalf("post-request refresh must record pools: %+v", account.Quota.Pools)
 	}
 }
