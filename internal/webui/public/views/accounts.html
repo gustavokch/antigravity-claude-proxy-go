@@ -242,23 +242,23 @@
                             </span>
                         </td>
                         <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
-                            <div x-data="{ quota: getMainModelQuota(acc) }">
-                                <template x-if="quota.percent !== null">
+                            <div>
+                                <template x-if="getMainModelQuota(acc).percent !== null">
                                     <div class="flex items-center gap-2">
                                         <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
                                             <div class="h-full rounded-full transition-all"
                                                  :class="{
-                                                     'bg-emerald-500': quota.percent > 50,
-                                                     'bg-yellow-500': quota.percent > 20 && quota.percent <= 50,
-                                                     'bg-red-500': quota.percent <= 20
+                                                     'bg-emerald-500': getMainModelQuota(acc).percent > 50,
+                                                     'bg-yellow-500': getMainModelQuota(acc).percent > 20 && getMainModelQuota(acc).percent <= 50,
+                                                     'bg-red-500': getMainModelQuota(acc).percent <= 20
                                                  }"
-                                                 :style="`width: ${quota.percent}%`">
+                                                 :style="`width: ${getMainModelQuota(acc).percent}%`">
                                             </div>
                                         </div>
-                                        <span class="text-xs font-mono text-gray-400" x-text="quota.percent + '%'"></span>
+                                        <span class="text-xs font-mono text-gray-400" x-text="getMainModelQuota(acc).percent + '%'"></span>
                                     </div>
                                 </template>
-                                <template x-if="quota.percent === null">
+                                <template x-if="getMainModelQuota(acc).percent === null">
                                     <span class="text-xs text-gray-600">-</span>
                                 </template>
                                 <div x-show="acc.quotaThreshold !== undefined"
@@ -438,23 +438,23 @@
 
                             <!-- Quota -->
                             <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
-                                <div x-data="{ quota: getMainModelQuota(acc) }">
-                                    <template x-if="quota.percent !== null">
+                                <div>
+                                    <template x-if="getMainModelQuota(acc).percent !== null">
                                         <div class="flex items-center gap-2">
                                             <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
                                                 <div class="h-full rounded-full transition-all"
                                                      :class="{
-                                                         'bg-purple-400': quota.percent > 50,
-                                                         'bg-yellow-500': quota.percent > 20 && quota.percent <= 50,
-                                                         'bg-red-500': quota.percent <= 20
+                                                         'bg-purple-400': getMainModelQuota(acc).percent > 50,
+                                                         'bg-yellow-500': getMainModelQuota(acc).percent > 20 && getMainModelQuota(acc).percent <= 50,
+                                                         'bg-red-500': getMainModelQuota(acc).percent <= 20
                                                      }"
-                                                     :style="`width: ${quota.percent}%`">
+                                                     :style="`width: ${getMainModelQuota(acc).percent}%`">
                                                 </div>
                                             </div>
-                                            <span class="text-xs font-mono text-gray-400" x-text="quota.percent + '%'"></span>
+                                            <span class="text-xs font-mono text-gray-400" x-text="getMainModelQuota(acc).percent + '%'"></span>
                                         </div>
                                     </template>
-                                    <template x-if="quota.percent === null">
+                                    <template x-if="getMainModelQuota(acc).percent === null">
                                         <span class="text-xs text-gray-600">-</span>
                                     </template>
                                 </div>

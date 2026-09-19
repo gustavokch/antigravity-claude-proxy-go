@@ -1266,6 +1266,136 @@ func TestManagement_AccountLimits_WithClaudeCodeAccounts(t *testing.T) {
 	}
 }
 
+func TestManagement_AccountLimits_ClaudeCodeGranularTokenRateLimit(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+
+	cfg := config.Get()
+	cfg.ClaudeCode.Enabled = true
+	cfg.ClaudeCode.Accounts = []claudecode.AccountConfig{
+		{
+			ID:       "cc-granular-1",
+			Name:     "Claude Granular",
+			Email:    "claude-granular@example.com",
+			Token:    "sk-ant-test-granular",
+			Type:     "oauth",
+			Priority: 1,
+			Enabled:  true,
+			Source:   "oauth",
+		},
+	}
+	cfg.ClaudeCode.Allowlist = []claudecode.ModelConfig{
+		{ID: "claude-3-7-sonnet-20250219"},
+	}
+	config.SetForTest(cfg)
+
+	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+	if pool == nil {
+		t.Fatal("expected claude code pool to be created")
+	}
+	pool.UpdateAccountRateLimits("cc-granular-1", claudecode.RateLimits{
+		InputTokensLimit:     1000,
+		InputTokensRemaining: 0,
+		InputTokensReset:     time.Now().Add(time.Minute),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+
+	accountsRaw, ok := res["accounts"].([]any)
+	if !ok {
+		t.Fatalf("expected accounts array")
+	}
+
+	var found bool
+	for _, accRaw := range accountsRaw {
+		acc := accRaw.(map[string]any)
+		if acc["provider"] == "claudecode" && acc["email"] == "claude-granular@example.com" {
+			found = true
+			if acc["status"] != "rate_limited" {
+				t.Errorf("expected status rate_limited for exhausted input tokens, got %v", acc["status"])
+			}
+			limits, ok := acc["limits"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected limits map")
+			}
+			sonnet, ok := limits["claude-3-7-sonnet-20250219"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected sonnet model in limits")
+			}
+			if sonnet["remaining"] != "0%" {
+				t.Errorf("expected 0%% remaining for exhausted input tokens, got %v", sonnet["remaining"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("claude-granular@example.com account not found")
+	}
+}
+
+func TestManagement_AccountLimits_GoogleModelActive429NotStaleQuota(t *testing.T) {
+	server, mgr, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+
+	frac := 1.0
+	mgr.UpdateAccountQuota("test@example.com", accounts.Quota{
+		Models: map[string]accounts.ModelQuota{
+			"gemini-3.8-flash-high": {
+				RemainingFraction: &frac,
+			},
+		},
+	}, nil)
+
+	sel := mgr.Select("gemini-3.8-flash-high")
+	if sel.Account == nil {
+		t.Fatalf("expected an account to be selected")
+	}
+	mgr.MarkRateLimited(sel.Account, "gemini-3.8-flash-high", time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+
+	accountsList, ok := res["accounts"].([]any)
+	if !ok || len(accountsList) == 0 {
+		t.Fatal("expected accounts array")
+	}
+	firstAcc := accountsList[0].(map[string]any)
+	limits, ok := firstAcc["limits"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected limits map")
+	}
+	model, ok := limits["gemini-3.8-flash-high"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected gemini-3.8-flash-high in limits")
+	}
+	if model["remaining"] != "0%" {
+		t.Errorf("expected 0%% remaining for actively rate-limited model, got %v", model["remaining"])
+	}
+	if model["resetTime"] == nil {
+		t.Errorf("expected non-nil resetTime for actively rate-limited model")
+	}
+}
+
 type emptyIDDiscoveryTestBackend struct{}
 
 func (m *emptyIDDiscoveryTestBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {

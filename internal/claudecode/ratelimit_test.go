@@ -154,4 +154,14 @@ func TestRateLimits_IsRateLimited(t *testing.T) {
 	if rl4.IsRateLimited(now) {
 		t.Errorf("expected IsRateLimited=false when RetryAfter has expired")
 	}
+
+	// Granular output tokens rate limit
+	rl5 := RateLimits{
+		OutputTokensLimit:     100,
+		OutputTokensRemaining: 0,
+		OutputTokensReset:     now.Add(30 * time.Second),
+	}
+	if !rl5.IsRateLimited(now) {
+		t.Errorf("expected IsRateLimited=true when OutputTokensRemaining is 0 and Reset in future")
+	}
 }

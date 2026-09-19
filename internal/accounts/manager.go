@@ -972,9 +972,57 @@ func (manager *Manager) consumeTokenLocked(email string) {
 	}
 }
 
+func (manager *Manager) getModelQuotaLocked(account *Account, model string) (ModelQuota, bool) {
+	if account == nil || account.Quota.Models == nil {
+		return ModelQuota{}, false
+	}
+	if q, exists := account.Quota.Models[model]; exists {
+		return q, true
+	}
+	stripped := modelcatalog.Strip1mSuffix(model)
+	if q, exists := account.Quota.Models[stripped]; exists {
+		return q, true
+	}
+	lower := strings.ToLower(stripped)
+	if q, exists := account.Quota.Models[lower]; exists {
+		return q, true
+	}
+	return ModelQuota{}, false
+}
+
+func (manager *Manager) getModelThresholdLocked(account *Account, model string) (float64, bool) {
+	if account == nil || account.ModelThreshold == nil {
+		return 0, false
+	}
+	if v, exists := account.ModelThreshold[model]; exists && v > 0 {
+		return v, true
+	}
+	stripped := modelcatalog.Strip1mSuffix(model)
+	if v, exists := account.ModelThreshold[stripped]; exists && v > 0 {
+		return v, true
+	}
+	lower := strings.ToLower(stripped)
+	if v, exists := account.ModelThreshold[lower]; exists && v > 0 {
+		return v, true
+	}
+	return 0, false
+}
+
+func (manager *Manager) isQuotaActiveLocked(quota ModelQuota, lastChecked any) bool {
+	if quota.ResetTime != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, quota.ResetTime); err == nil {
+			return manager.now().Before(parsed)
+		}
+		if parsed, err := time.Parse(time.RFC3339, quota.ResetTime); err == nil {
+			return manager.now().Before(parsed)
+		}
+	}
+	return quotaFresh(lastChecked, manager.now())
+}
+
 func (manager *Manager) quotaCriticalLocked(account *Account, model string) bool {
-	quota, exists := account.Quota.Models[model]
-	if !exists || quota.RemainingFraction == nil || !quotaFresh(account.Quota.LastChecked, manager.now()) {
+	quota, exists := manager.getModelQuotaLocked(account, model)
+	if !exists || quota.RemainingFraction == nil || !manager.isQuotaActiveLocked(quota, account.Quota.LastChecked) {
 		return false
 	}
 	threshold := 0.05
@@ -983,7 +1031,7 @@ func (manager *Manager) quotaCriticalLocked(account *Account, model string) bool
 	} else if qCfg := manager.selectionConfig.Quota; qCfg != nil {
 		threshold = mapFloat(qCfg, "criticalThreshold", 0.05)
 	}
-	if value, exists := account.ModelThreshold[model]; exists && value > 0 {
+	if value, exists := manager.getModelThresholdLocked(account, model); exists {
 		threshold = value
 	} else if account.QuotaThreshold != nil && *account.QuotaThreshold > 0 {
 		threshold = *account.QuotaThreshold
@@ -1007,9 +1055,9 @@ func (manager *Manager) scoreLocked(account *Account, model string) float64 {
 	health := manager.healthScoreLocked(account.Email) * wHealth
 	tokens := manager.tokensLocked(account.Email) / maxTokens * 100 * wTokens
 	quotaScore := 50.0
-	if quota, exists := account.Quota.Models[model]; exists && quota.RemainingFraction != nil {
+	if quota, exists := manager.getModelQuotaLocked(account, model); exists && quota.RemainingFraction != nil {
 		quotaScore = *quota.RemainingFraction * 100
-		if !quotaFresh(account.Quota.LastChecked, manager.now()) {
+		if !manager.isQuotaActiveLocked(quota, account.Quota.LastChecked) {
 			quotaScore *= .9
 		}
 	}

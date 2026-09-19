@@ -478,6 +478,19 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 
 		limits := make(map[string]any, len(sortedModels))
 		for _, modelId := range sortedModels {
+			if rl, rateLimited := rateLimits[modelId].(map[string]any); rateLimited {
+				var resetTime any = nil
+				if waitMs, ok := rl["waitMs"].(int64); ok {
+					resetTime = server.now().Add(time.Duration(waitMs) * time.Millisecond).UTC().Format(time.RFC3339)
+				}
+				limits[modelId] = map[string]any{
+					"remaining":         "0%",
+					"remainingFraction": 0.0,
+					"resetTime":         resetTime,
+				}
+				continue
+			}
+
 			q, exists := acc.Quota.Models[modelId]
 			if !exists {
 				limits[modelId] = nil
@@ -535,7 +548,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			status = "disabled"
 		} else if !ccAcc.CooldownUntil.IsZero() && ccAcc.CooldownUntil.After(server.now()) {
 			status = "cooldown"
-		} else if (rl.RequestsLimit > 0 && rl.RequestsRemaining == 0) || (rl.TokensLimit > 0 && rl.TokensRemaining == 0) {
+		} else if rl.IsRateLimited(server.now()) {
 			status = "rate_limited"
 		}
 
@@ -559,25 +572,41 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 					resetTime = rl.RequestsReset.UTC().Format(time.RFC3339)
 				} else if !rl.TokensReset.IsZero() {
 					resetTime = rl.TokensReset.UTC().Format(time.RFC3339)
+				} else if !rl.InputTokensReset.IsZero() {
+					resetTime = rl.InputTokensReset.UTC().Format(time.RFC3339)
+				} else if !rl.OutputTokensReset.IsZero() {
+					resetTime = rl.OutputTokensReset.UTC().Format(time.RFC3339)
 				}
-			} else if rl.RequestsLimit > 0 || rl.TokensLimit > 0 {
-				reqFrac := 1.0
+			} else if rl.RequestsLimit > 0 || rl.TokensLimit > 0 || rl.InputTokensLimit > 0 || rl.OutputTokensLimit > 0 {
+				frac = 1.0
 				if rl.RequestsLimit > 0 {
-					reqFrac = float64(rl.RequestsRemaining) / float64(rl.RequestsLimit)
+					if v := float64(rl.RequestsRemaining) / float64(rl.RequestsLimit); v < frac {
+						frac = v
+					}
 				}
-				tokFrac := 1.0
 				if rl.TokensLimit > 0 {
-					tokFrac = float64(rl.TokensRemaining) / float64(rl.TokensLimit)
+					if v := float64(rl.TokensRemaining) / float64(rl.TokensLimit); v < frac {
+						frac = v
+					}
 				}
-				if reqFrac < tokFrac {
-					frac = reqFrac
-				} else {
-					frac = tokFrac
+				if rl.InputTokensLimit > 0 {
+					if v := float64(rl.InputTokensRemaining) / float64(rl.InputTokensLimit); v < frac {
+						frac = v
+					}
+				}
+				if rl.OutputTokensLimit > 0 {
+					if v := float64(rl.OutputTokensRemaining) / float64(rl.OutputTokensLimit); v < frac {
+						frac = v
+					}
 				}
 				if !rl.RequestsReset.IsZero() {
 					resetTime = rl.RequestsReset.UTC().Format(time.RFC3339)
 				} else if !rl.TokensReset.IsZero() {
 					resetTime = rl.TokensReset.UTC().Format(time.RFC3339)
+				} else if !rl.InputTokensReset.IsZero() {
+					resetTime = rl.InputTokensReset.UTC().Format(time.RFC3339)
+				} else if !rl.OutputTokensReset.IsZero() {
+					resetTime = rl.OutputTokensReset.UTC().Format(time.RFC3339)
 				}
 			}
 

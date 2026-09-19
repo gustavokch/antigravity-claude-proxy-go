@@ -736,3 +736,55 @@ func TestSharedThrottles(t *testing.T) {
 		t.Fatalf("SharedThrottles after expiry = %v, want empty map", got)
 	}
 }
+
+func TestManager_QuotaCritical_Normalizes1mSuffix(t *testing.T) {
+	clock := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	zero := 0.0
+	full := 1.0
+
+	exhaustedAcc := &Account{
+		Email:   "exhausted@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &zero,
+					ResetTime:         clock.Add(10 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			LastChecked: clock.UnixMilli(),
+		},
+	}
+	freshAcc := &Account{
+		Email:   "fresh@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"gemini-3.8-flash-high": {
+					RemainingFraction: &full,
+				},
+			},
+			LastChecked: clock.UnixMilli(),
+		},
+	}
+
+	manager, err := New(Options{
+		Accounts: []*Account{exhaustedAcc, freshAcc},
+		Strategy: StrategyHybrid,
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// When selecting with the [1m] suffix, exhaustedAcc should be identified as quotaCritical
+	// and skipped in favor of freshAcc.
+	selection := manager.Select("gemini-3.8-flash-high[1m]")
+	if selection.Account == nil {
+		t.Fatalf("expected an account to be selected")
+	}
+	if selection.Account.Email != "fresh@example.com" {
+		t.Fatalf("expected fresh@example.com, got %s (quota critical protection failed for [1m] suffix)", selection.Account.Email)
+	}
+}

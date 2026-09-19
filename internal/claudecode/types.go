@@ -181,8 +181,7 @@ func (a *Account) Snapshot() AccountSnapshot {
 		status = "disabled"
 	} else if a.CooldownUntil.After(now) {
 		status = "cooldown"
-	} else if (a.RateLimits.RequestsRemaining == 0 && a.RateLimits.RequestsReset.After(now)) ||
-		(a.RateLimits.TokensRemaining == 0 && a.RateLimits.TokensReset.After(now)) {
+	} else if a.RateLimits.IsRateLimited(now) {
 		status = "rate_limited"
 	}
 

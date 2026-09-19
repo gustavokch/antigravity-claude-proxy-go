@@ -304,3 +304,21 @@ func TestAccountPool_RefreshAllExpiringTokens_Errors(t *testing.T) {
 		t.Errorf("expected 0 refreshed IDs, got %d", len(refreshedIDs))
 	}
 }
+
+func TestAccount_Snapshot_StatusRateLimited(t *testing.T) {
+	now := time.Now()
+	acc := &Account{
+		ID:      "acc-snap-test",
+		Enabled: true,
+		RateLimits: RateLimits{
+			InputTokensLimit:     1000,
+			InputTokensRemaining: 0,
+			InputTokensReset:     now.Add(time.Minute),
+		},
+	}
+
+	snap := acc.Snapshot()
+	if snap.Status != "rate_limited" {
+		t.Errorf("expected status 'rate_limited' for exhausted input tokens, got %q", snap.Status)
+	}
+}
