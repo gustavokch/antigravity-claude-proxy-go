@@ -351,6 +351,23 @@ window.Components.serverConfig = () => ({
         }
     },
 
+    // Delay/throttle slider bindings: single reference point for the
+    // server value plus its validation range, so templates never repeat
+    // `serverConfig.xxx || fallback` or hard-code fill divisors.
+    get delayMs() { return this.serverConfig.requestDelayMs || 200; },
+    get throttleMs() { return this.serverConfig.sharedThrottleWindowMs || 10000; },
+    get delayMin() { return window.AppConstants.VALIDATION.REQUEST_DELAY_MIN; },
+    get delayMax() { return window.AppConstants.VALIDATION.REQUEST_DELAY_MAX; },
+    get throttleMin() { return window.AppConstants.VALIDATION.SHARED_THROTTLE_WINDOW_MIN; },
+    get throttleMax() { return window.AppConstants.VALIDATION.SHARED_THROTTLE_WINDOW_MAX; },
+
+    // Slider fill percent derived from (value - MIN) / ((MAX - MIN) / 100),
+    // clamped to [0, 100] so out-of-range server values degrade gracefully.
+    sliderFill(value, min, max) {
+        if (!(max > min)) return 0;
+        return Math.min(100, Math.max(0, (value - min) / ((max - min) / 100)));
+    },
+
     toggleRequestDelayMs(value) {
         const { REQUEST_DELAY_MIN, REQUEST_DELAY_MAX } = window.AppConstants.VALIDATION;
         this.saveConfigField('requestDelayMs', value, 'Request Delay',
