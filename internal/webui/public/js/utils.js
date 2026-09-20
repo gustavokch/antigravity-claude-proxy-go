@@ -45,6 +45,20 @@ window.utils = {
         return `${mins}${mSuffix}`;
     },
 
+    /**
+     * Format a millisecond duration for slider labels.
+     * <1000 -> "Nms", <60000 -> "N.Ns", else "N.Nm".
+     * @param {number} ms - Duration in milliseconds
+     * @returns {string} Human-readable duration (e.g. "200ms", "10.0s", "20.0m")
+     */
+    formatDurationMs(ms) {
+        const n = Number(ms);
+        if (isNaN(n)) return '';
+        if (n < 1000) return `${n}ms`;
+        if (n < 60000) return `${(n / 1000).toFixed(1)}s`;
+        return `${(n / 60000).toFixed(1)}m`;
+    },
+
     getThemeColor(name) {
         return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     },

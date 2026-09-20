@@ -96,9 +96,13 @@ window.AppConstants.VALIDATION = {
     GLOBAL_QUOTA_THRESHOLD_MIN: 0,
     GLOBAL_QUOTA_THRESHOLD_MAX: 99,
 
-    // Request delay (100 - 5000ms)
+    // Request delay (100ms - 30s)
     REQUEST_DELAY_MIN: 100,
-    REQUEST_DELAY_MAX: 5000,
+    REQUEST_DELAY_MAX: 30000,
+
+    // Shared throttle window (1s - 20 minutes; admits calibrate output up to 1200000ms)
+    SHARED_THROTTLE_WINDOW_MIN: 1000,
+    SHARED_THROTTLE_WINDOW_MAX: 1200000,
 
     // Switch account delay (1s - 60s)
     SWITCH_ACCOUNT_DELAY_MIN: 1000,

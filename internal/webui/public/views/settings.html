@@ -3635,23 +3635,50 @@
                                         <label class="flex justify-between items-center mb-2">
                                             <span class="text-xs text-amber-200/70">Delay per Request</span>
                                             <span class="font-mono text-amber-400 text-xs font-semibold"
-                                                x-text="(serverConfig.requestDelayMs || 200) + 'ms'"></span>
+                                                x-text="window.utils.formatDurationMs(delayMs)"></span>
                                         </label>
                                         <div class="flex gap-3 items-center">
-                                            <input type="range" min="100" max="5000" step="100"
+                                            <input type="range" min="100" max="30000" step="100"
                                                 class="custom-range custom-range-yellow flex-1"
-                                                :value="serverConfig.requestDelayMs || 200"
-                                                :style="`background-size: ${((serverConfig.requestDelayMs || 200) - 100) / 49}% 100%`"
+                                                :value="delayMs"
+                                                :style="`background-size: ${sliderFill(delayMs, delayMin, delayMax)}% 100%`"
                                                 @input="toggleRequestDelayMs($event.target.value)"
                                                 aria-label="Request delay slider">
-                                            <input type="number" min="100" max="5000" step="100"
-                                                class="input input-xs input-bordered w-20 bg-space-800/50 border-amber-500/30 text-white font-mono text-center"
-                                                :value="serverConfig.requestDelayMs || 200"
+                                            <input type="number" min="100" max="30000" step="100"
+                                                class="input input-xs input-bordered w-24 bg-space-800/50 border-amber-500/30 text-white font-mono text-center"
+                                                :value="delayMs"
                                                 @change="toggleRequestDelayMs($event.target.value)"
                                                 aria-label="Request delay value">
                                         </div>
                                         <p class="text-[9px] text-amber-100/40 mt-2 leading-tight">
                                             Milliseconds to wait before each API call (token refresh, quota check, messages, etc).</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Shared Throttle Window -->
+                            <div class="form-control bg-space-900/50 rounded-lg border border-space-border/50 transition-all duration-200 hover:border-space-border-hover">
+                                <div class="p-4">
+                                    <label class="flex justify-between items-center mb-2">
+                                        <div class="flex flex-col gap-0.5">
+                                            <span class="text-xs text-gray-300 font-medium">Shared Throttle Window</span>
+                                            <span class="text-[9px] text-gray-500">Cooldown applied across all accounts after a 429 rejection.</span>
+                                        </div>
+                                        <span class="font-mono text-gray-400 text-xs font-semibold"
+                                            x-text="window.utils.formatDurationMs(throttleMs)"></span>
+                                    </label>
+                                    <div class="flex gap-3 items-center">
+                                        <input type="range" min="1000" max="1200000" step="1000"
+                                            class="custom-range flex-1"
+                                            :value="throttleMs"
+                                            :style="`background-size: ${sliderFill(throttleMs, throttleMin, throttleMax)}% 100%`"
+                                            @input="toggleSharedThrottleWindowMs($event.target.value)"
+                                            aria-label="Shared throttle window slider">
+                                        <input type="number" min="1000" max="1200000" step="1000"
+                                            class="input input-xs input-bordered w-24 bg-space-800/50 border-space-border/30 text-white font-mono text-center"
+                                            :value="throttleMs"
+                                            @change="toggleSharedThrottleWindowMs($event.target.value)"
+                                            aria-label="Shared throttle window value">
                                     </div>
                                 </div>
                             </div>
