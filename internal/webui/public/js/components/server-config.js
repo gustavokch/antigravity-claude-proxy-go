@@ -357,6 +357,12 @@ window.Components.serverConfig = () => ({
             (v) => window.Validators.validateRange(v, REQUEST_DELAY_MIN, REQUEST_DELAY_MAX, 'Request Delay'));
     },
 
+    toggleSharedThrottleWindowMs(value) {
+        const { SHARED_THROTTLE_WINDOW_MIN, SHARED_THROTTLE_WINDOW_MAX } = window.AppConstants.VALIDATION;
+        this.saveConfigField('sharedThrottleWindowMs', value, 'Shared Throttle Window',
+            (v) => window.Validators.validateRange(v, SHARED_THROTTLE_WINDOW_MIN, SHARED_THROTTLE_WINDOW_MAX, 'Shared Throttle Window'));
+    },
+
     async toggleUpstream429Forensics(enabled) {
         const store = Alpine.store('global');
         const previousValue = this.serverConfig.upstream429ForensicsEnabled;

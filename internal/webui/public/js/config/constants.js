@@ -96,9 +96,13 @@ window.AppConstants.VALIDATION = {
     GLOBAL_QUOTA_THRESHOLD_MIN: 0,
     GLOBAL_QUOTA_THRESHOLD_MAX: 99,
 
-    // Request delay (100 - 5000ms)
+    // Request delay (100ms - 120s)
     REQUEST_DELAY_MIN: 100,
-    REQUEST_DELAY_MAX: 5000,
+    REQUEST_DELAY_MAX: 120000,
+
+    // Shared throttle window (1s - 5 minutes)
+    SHARED_THROTTLE_WINDOW_MIN: 1000,
+    SHARED_THROTTLE_WINDOW_MAX: 300000,
 
     // Switch account delay (1s - 60s)
     SWITCH_ACCOUNT_DELAY_MIN: 1000,
@@ -127,7 +131,7 @@ window.AppConstants.VALIDATION = {
     HS_MAX_SCORE_MAX: 200,
 
     // Token bucket fields
-    TB_MAX_TOKENS_MIN: 5,
+    TB_MAX_TOKENS_MIN: 1,
     TB_MAX_TOKENS_MAX: 200,
     TB_TOKENS_PER_MINUTE_MIN: 1,
     TB_TOKENS_PER_MINUTE_MAX: 60,
