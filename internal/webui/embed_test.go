@@ -113,6 +113,35 @@ func TestHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("serve gateway order component and settings view", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/js/components/gateway-order.js", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "gatewayOrder") {
+			t.Errorf("expected gateway-order.js to contain 'gatewayOrder'")
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/views/settings.html", nil)
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "gatewayOrder") {
+			t.Errorf("expected settings.html to contain 'gatewayOrder'")
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/", nil)
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if !strings.Contains(rec.Body.String(), "gateway-order.js") {
+			t.Errorf("expected index.html to include 'gateway-order.js'")
+		}
+	})
+
 	t.Run("fallback to index on unknown route", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/unknown/spa/path", nil)
 		rec := httptest.NewRecorder()

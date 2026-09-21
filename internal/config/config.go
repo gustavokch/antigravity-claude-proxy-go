@@ -153,6 +153,7 @@ type Config struct {
 	Headroom                    HeadroomConfig            `json:"headroom,omitempty"`
 	ClaudeCode                  claudecode.Config         `json:"claudecode,omitempty"`
 	CacheBump                   CacheBumpConfig           `json:"cacheBump,omitempty"`
+	GatewayOrder                GatewayOrderConfig        `json:"gatewayOrder"`
 	Classifier                  ClassifierConfig          `json:"classifier"`
 }
 
@@ -386,6 +387,9 @@ func DefaultConfig() Config {
 		Zen: ZenConfig{
 			BaseURL:   zen.DefaultBaseURL,
 			Allowlist: []ZenModelConfig{},
+		},
+		GatewayOrder: GatewayOrderConfig{
+			Order: DefaultGatewayOrder(),
 		},
 		AccountSelection: AccountSelectionConfig{
 			Strategy: "hybrid",
@@ -781,6 +785,10 @@ func GetPublicConfig() map[string]any {
 		result["hasPassword"] = false
 	}
 	delete(result, "webuiPassword")
+
+	// The WebUI needs the full gateway vocabulary to render appended
+	// providers. No secret, so no redaction.
+	result["knownProviders"] = KnownGatewayIDs()
 
 	if ce, ok := result["customEndpoints"].(map[string]any); ok {
 		redacted := make(map[string]any)

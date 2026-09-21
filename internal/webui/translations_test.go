@@ -27,6 +27,19 @@ var kimiPanelKeys = []string{
 	"kimiDiscoverTitle", "kimiDiscoverDesc", "kimiDiscoverImport",
 }
 
+// gatewayOrderKeys are the i18n keys referenced by the gateway precedence
+// panel in views/settings.html and js/components/gateway-order.js. Every
+// locale must define them.
+var gatewayOrderKeys = []string{
+	"gatewayOrderTitle", "gatewayOrderDesc", "gatewayOrderGlobal",
+	"gatewayOrderGlobalHint", "gatewayOrderPerModel", "gatewayOrderPerModelHint",
+	"gatewayOrderAddModel", "gatewayOrderModelPlaceholder",
+	"gatewayOrderRemoveOverride", "gatewayOrderReset", "gatewayOrderNoOverrides",
+	"gatewayOrderSaved", "gatewayOrderMoveUp", "gatewayOrderMoveDown",
+	"gatewayOrderTerminalHint", "gatewayKimi", "gatewayZen", "gatewayClaudecode",
+	"gatewayOpenrouter", "gatewayCustom", "gatewayCloudcode",
+}
+
 var presetKeys = []string{
 	"configPresets", "saveAsPreset", "deletePreset", "presetHint",
 	"unsavedChangesTitle", "unsavedChangesMessage", "loadAnyway",
@@ -137,6 +150,45 @@ func TestTranslations_KimiKeys(t *testing.T) {
 				t.Errorf("locale %s missing key %q", locale, key)
 			}
 		}
+	}
+}
+
+func TestTranslations_GatewayOrderKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range gatewayOrderKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_GatewayOrderTemplateReferences(t *testing.T) {
+	b, err := Assets.ReadFile("public/views/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	src := string(b)
+	staticKeys := []string{
+		"gatewayOrderTitle", "gatewayOrderDesc", "gatewayOrderGlobal",
+		"gatewayOrderGlobalHint", "gatewayOrderPerModel", "gatewayOrderPerModelHint",
+		"gatewayOrderAddModel", "gatewayOrderModelPlaceholder",
+		"gatewayOrderRemoveOverride", "gatewayOrderReset", "gatewayOrderNoOverrides",
+		"gatewayOrderTerminalHint", "gatewayOrderMoveUp", "gatewayOrderMoveDown",
+	}
+	for _, key := range staticKeys {
+		if !strings.Contains(src, fmt.Sprintf("t('%s')", key)) {
+			t.Errorf("settings.html does not reference translation key %q", key)
+		}
+	}
+	// The six provider labels (gatewayKimi … gatewayCloudcode) render through
+	// t(gatewayLabelKey(id)), so no literal t('…') check can match them.
+	// They are covered by TestTranslations_GatewayOrderKeys instead; assert
+	// the dynamic call exists so the exclusion stays honest.
+	if !strings.Contains(src, "t(gatewayLabelKey(id))") {
+		t.Error("settings.html must render provider labels via t(gatewayLabelKey(id))")
 	}
 }
 

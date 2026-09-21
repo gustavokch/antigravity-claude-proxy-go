@@ -441,6 +441,206 @@ func TestOpenRouterModels_WarmsColdCatalogCache(t *testing.T) {
 	t.Fatalf("catalog cache still cold after discovery request (%d upstream fetches)", atomic.LoadInt32(&hits))
 }
 
+// collisionCatalogBackend advertises one catalog ID chosen to collide with a
+// gateway allowlist entry.
+type collisionCatalogBackend struct{ id string }
+
+func (m *collisionCatalogBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
+	return cloudcode.Response{
+		Body: []byte(`{"models":{"` + m.id + `":{"displayName":"Catalog ` + m.id + `"}},"agentModelSorts":[{"groups":[{"modelIds":["` + m.id + `"]}]}]}`),
+	}, nil
+}
+
+func (m *collisionCatalogBackend) StreamGenerateContent(ctx context.Context, req map[string]any, cb func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	return cloudcode.Response{Body: []byte(`{}`)}, nil
+}
+
+func discoveryEntries(t *testing.T, cfg config.Config, backend interface {
+	FetchAvailableModels(context.Context) (cloudcode.Response, error)
+	StreamGenerateContent(context.Context, map[string]any, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
+}) []map[string]any {
+	t.Helper()
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	config.SetForTest(cfg)
+	server := &Server{backend: backend, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	return resp.Data
+}
+
+func entriesByID(data []map[string]any) map[string][]map[string]any {
+	byID := make(map[string][]map[string]any)
+	for _, m := range data {
+		if id, ok := m["id"].(string); ok {
+			byID[id] = append(byID[id], m)
+		}
+	}
+	return byID
+}
+
+// sharedCollisionFixture builds one config whose colliding ID every gateway
+// accepts, and drives both halves — dispatch and discovery — from it, so the
+// halves cannot drift apart.
+func sharedCollisionFixture(t *testing.T, order []config.GatewayID) (dispatchWinner string, owner string) {
+	t.Helper()
+	probe := newDispatchProbe()
+	kimi, zen, cc, or, custom, backend := dispatchUpstreams(t, probe)
+	cfg := dispatchBaseConfig(kimi.URL, zen.URL, cc.URL, or.URL, custom.URL)
+	cfg.GatewayOrder.Order = order
+	server := newDispatchServer(t, cfg, backend)
+	rec := postDispatchMessages(t, server, dispatchModel)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dispatch status = %d; body = %s", rec.Code, rec.Body.String())
+	}
+	for name, c := range probe.hits {
+		if c > 0 {
+			dispatchWinner = name
+		}
+	}
+
+	data := discoveryEntries(t, cfg, &discoveryTestBackend{})
+	byID := entriesByID(data)
+	entries := byID[dispatchModel]
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one %q entry, got %d", dispatchModel, len(entries))
+	}
+	owner, _ = entries[0]["owned_by"].(string)
+	return dispatchWinner, owner
+}
+
+func TestModelsDiscovery_AdvertisedOwnerMatchesDispatchWinner(t *testing.T) {
+	winner, owner := sharedCollisionFixture(t, nil)
+	if winner != "kimi" {
+		t.Fatalf("dispatch winner = %q, want kimi", winner)
+	}
+	if owner != winner {
+		t.Errorf("advertised owner = %q, dispatch winner = %q", owner, winner)
+	}
+}
+
+func TestModelsDiscovery_OwnerFollowsConfiguredOrder(t *testing.T) {
+	winner, owner := sharedCollisionFixture(t,
+		[]config.GatewayID{"openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"})
+	if winner != "openrouter" {
+		t.Fatalf("dispatch winner = %q, want openrouter", winner)
+	}
+	if owner != winner {
+		t.Errorf("advertised owner = %q, dispatch winner = %q", owner, winner)
+	}
+}
+
+func TestModelsDiscovery_NoDuplicateAcrossGateways(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	cfg := config.DefaultConfig()
+	cfg.Kimi = config.KimiConfig{Enabled: true, Allowlist: []config.KimiModelConfig{{ID: "shared-dup", Enabled: true}}}
+	cfg.OpenRouter = config.OpenRouterConfig{Enabled: true, Allowlist: []config.OpenRouterModelConfig{{ID: "shared-dup", Enabled: true}}}
+	data := discoveryEntries(t, cfg, &discoveryTestBackend{})
+	if got := len(entriesByID(data)["shared-dup"]); got != 1 {
+		t.Errorf("shared-dup entries = %d, want exactly 1", got)
+	}
+}
+
+func TestModelsDiscovery_CatalogCollisionYieldsToGateway(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	cfg := config.DefaultConfig()
+	cfg.Kimi = config.KimiConfig{Enabled: true, Allowlist: []config.KimiModelConfig{{ID: "catalog-shared", Enabled: true}}}
+	data := discoveryEntries(t, cfg, &collisionCatalogBackend{id: "catalog-shared"})
+	entries := entriesByID(data)["catalog-shared"]
+	if len(entries) != 1 {
+		t.Fatalf("catalog-shared entries = %d, want exactly 1", len(entries))
+	}
+	if entries[0]["owned_by"] != "kimi" {
+		t.Errorf("owned_by = %v, want kimi: the catalog must yield to the gateway", entries[0]["owned_by"])
+	}
+}
+
+func TestModelsDiscovery_ClaudeCodeAccountsWithoutEnabledDoesNotOwnIDs(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	cfg := config.DefaultConfig()
+	cfg.ClaudeCode.Enabled = false
+	cfg.ClaudeCode.Accounts = []claudecode.AccountConfig{{ID: "acc1", Token: "tok", Enabled: true}}
+	cfg.ClaudeCode.Allowlist = []claudecode.ModelConfig{{ID: "cc-custom-x", Enabled: true}}
+	data := discoveryEntries(t, cfg, &collisionCatalogBackend{id: "cc-custom-x"})
+	entries := entriesByID(data)["cc-custom-x"]
+	if len(entries) != 1 {
+		t.Fatalf("cc-custom-x entries = %d, want exactly 1", len(entries))
+	}
+	// The catalog family of cc-custom-x is unknown (owned_by google): a
+	// disabled gateway with accounts present must not own the ID.
+	if entries[0]["owned_by"] != "google" {
+		t.Errorf("owned_by = %v, want google (catalog owns the ID)", entries[0]["owned_by"])
+	}
+}
+
+func TestModelsDiscovery_PerModelOverrideDoesNotAffectDiscovery(t *testing.T) {
+	probe := newDispatchProbe()
+	kimi, zen, cc, or, custom, _ := dispatchUpstreams(t, probe)
+	_ = probe
+	cfg := dispatchBaseConfig(kimi.URL, zen.URL, cc.URL, or.URL, custom.URL)
+	cfg.GatewayOrder.ByModel = map[string][]config.GatewayID{
+		dispatchModel: {"openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"},
+	}
+	data := discoveryEntries(t, cfg, &discoveryTestBackend{})
+	entries := entriesByID(data)[dispatchModel]
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one %q entry, got %d", dispatchModel, len(entries))
+	}
+	// The global order still starts with kimi: per-model overrides do not
+	// govern the advertised order.
+	if entries[0]["owned_by"] != "kimi" {
+		t.Errorf("owned_by = %v, want kimi (global order governs discovery)", entries[0]["owned_by"])
+	}
+}
+
+func TestModelsDiscovery_ZenAdvertisesWireSubsetOnly(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	cfg := config.DefaultConfig()
+	cfg.Zen = config.ZenConfig{Enabled: true, APIKey: "k-zen", Allowlist: []config.ZenModelConfig{
+		{ID: "gpt-zzz-nonwire", Enabled: true},
+		{ID: dispatchModel, Enabled: true},
+	}}
+	cfg.Kimi = config.KimiConfig{Enabled: true, Allowlist: []config.KimiModelConfig{{ID: dispatchModel, Enabled: true}}}
+	data := discoveryEntries(t, cfg, &discoveryTestBackend{})
+	byID := entriesByID(data)
+	if got := len(byID["gpt-zzz-nonwire"]); got != 0 {
+		t.Errorf("non-wire zen entries = %d, want 0", got)
+	}
+	entries := byID[dispatchModel]
+	if len(entries) != 1 {
+		t.Fatalf("shared zen/kimi entries = %d, want exactly 1", len(entries))
+	}
+	if entries[0]["owned_by"] != "kimi" {
+		t.Errorf("owned_by = %v, want kimi (default order wins)", entries[0]["owned_by"])
+	}
+}
+
+func TestGatewayModelAppenders_CoverEveryKnownGateway(t *testing.T) {
+	for _, id := range config.KnownGatewayIDs() {
+		if _, ok := gatewayModelAppenders[id]; !ok {
+			t.Errorf("known gateway %q has no discovery appender", id)
+		}
+	}
+	for id := range gatewayModelAppenders {
+		if !config.IsKnownGatewayID(id) {
+			t.Errorf("discovery appender for unknown gateway %q", id)
+		}
+	}
+}
+
 // TestKimiModels_MaxOutputFallbackDoesNotEqualContextWindow guards the Kimi
 // discovery fallback against the same failure the OpenRouter branch guards
 // against: a context-only allowlist entry must not advertise its context

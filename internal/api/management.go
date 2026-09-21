@@ -993,6 +993,102 @@ func (server *Server) handleConfigGet(writer http.ResponseWriter, request *http.
 	})
 }
 
+// normalizeGatewayOrderUpdate validates and normalises an incoming
+// "gatewayOrder" section. It returns a map holding only the keys the client
+// sent, deliberately not a typed struct: Save's generic merge is per-key
+// present, and replacing the whole section here would make a partial
+// {"order":[...]} POST silently discard every per-model override. Pointer fields
+// distinguish "key absent" from "key empty".
+func normalizeGatewayOrderUpdate(raw any) (map[string]any, error) {
+	rawMap, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("gatewayOrder must be an object")
+	}
+	out := make(map[string]any)
+	if orderRaw, present := rawMap["order"]; present {
+		ids, err := normalizeGatewayIDList(orderRaw, "gatewayOrder order")
+		if err != nil {
+			return nil, err
+		}
+		out["order"] = ids
+	}
+	if byModelRaw, present := rawMap["byModel"]; present {
+		byModelMap, ok := byModelRaw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("gatewayOrder byModel must be an object")
+		}
+		keys := make([]string, 0, len(byModelMap))
+		for k := range byModelMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		merged := make(map[string][]string)
+		for _, k := range keys {
+			norm := config.NormalizeModelKey(k)
+			if norm == "" {
+				return nil, fmt.Errorf("gatewayOrder byModel key %q must not be empty", k)
+			}
+			ids, err := normalizeGatewayIDList(byModelMap[k], fmt.Sprintf("gatewayOrder byModel entry for %q", k))
+			if err != nil {
+				return nil, err
+			}
+			// Two raw keys can normalise to one model (case, "[1m]",
+			// whitespace): merge first-wins in sorted raw-key order so
+			// nothing the operator wrote is silently dropped.
+			seen := make(map[string]bool, len(merged[norm])+len(ids))
+			combined := append([]string(nil), merged[norm]...)
+			for _, id := range combined {
+				seen[id] = true
+			}
+			for _, id := range ids {
+				if !seen[id] {
+					seen[id] = true
+					combined = append(combined, id)
+				}
+			}
+			merged[norm] = combined
+		}
+		out["byModel"] = merged
+	}
+	return out, nil
+}
+
+// normalizeGatewayIDList validates one provider-ID list: every entry must be
+// a known provider string (trimmed and lowercased), with no duplicates after
+// normalisation. An empty list is accepted and equals unset.
+func normalizeGatewayIDList(raw any, what string) ([]string, error) {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array of provider IDs", what)
+	}
+	ids := make([]string, 0, len(list))
+	seen := make(map[string]bool, len(list))
+	for _, item := range list {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s must be an array of provider IDs", what)
+		}
+		norm := strings.ToLower(strings.TrimSpace(s))
+		if !config.IsKnownGatewayID(config.GatewayID(norm)) {
+			return nil, fmt.Errorf("unknown provider %q: must be one of %s", s, strings.Join(gatewayIDStrings(config.KnownGatewayIDs()), ", "))
+		}
+		if seen[norm] {
+			return nil, fmt.Errorf("duplicate provider %q in %s", s, what)
+		}
+		seen[norm] = true
+		ids = append(ids, norm)
+	}
+	return ids, nil
+}
+
+func gatewayIDStrings(ids []config.GatewayID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, string(id))
+	}
+	return out
+}
+
 func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http.Request) {
 	var updates map[string]any
 	if err := json.NewDecoder(request.Body).Decode(&updates); err != nil || len(updates) == 0 {
@@ -1133,6 +1229,18 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 		updates["classifier"] = classifierReq
 	}
 
+	if rawGatewayOrder, ok := updates["gatewayOrder"]; ok && rawGatewayOrder != nil {
+		normalized, err := normalizeGatewayOrderUpdate(rawGatewayOrder)
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+			return
+		}
+		updates["gatewayOrder"] = normalized
+	}
+
+	// No applyXConfig push for gateway order: config.Get() is read once per
+	// request (server.go), so a saved order takes effect on the next request
+	// with no restart. Ordering is hot by construction.
 	updated, err := config.Save(updates)
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": err.Error()})

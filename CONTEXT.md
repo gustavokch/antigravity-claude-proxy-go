@@ -18,6 +18,10 @@ _Avoid_: Passthrough mode, bypass route, proxy bypass.
 A user-configured target host URL and optional API key mapped to specific model names for transparent forwarding.
 _Avoid_: Upstream target, external provider, third-party backend.
 
+**Gateway Precedence**:
+The configurable order in which the proxy tries each gateway (Kimi, Zen, Claude Code, OpenRouter, custom endpoints) when more than one would accept the same Requested Model; `cloudcode` marks the terminal account-backed route. Configured by `gatewayOrder.order`, overridden per model by `gatewayOrder.byModel`. The list is a hint: an omitted gateway is tried after the listed ones rather than disabled.
+_Avoid_: provider priority, load order, gateway ranking, fallback chain.
+
 ### Identity & Account Management
 
 **Account**:

@@ -423,8 +423,17 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	selectable := catalog.PublicModels()
 	models := make([]any, 0, len(selectable))
 	seen := make(map[string]bool)
+	cfg := config.Get()
+	owned := gatewayOwnedModelIDs(cfg)
 
 	for _, details := range selectable {
+		// A colliding ID is advertised by the gateway that wins it, never
+		// by the catalog: the dispatcher routes the ID to the gateway, so
+		// a catalog entry here would advertise an owner that disagrees
+		// with the dispatcher.
+		if owned[details.ID] {
+			continue
+		}
 		description := details.DisplayName
 		if description == "" {
 			description = details.ID
@@ -445,232 +454,14 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 		})
 		seen[details.ID] = true
 	}
-	cfg := config.Get()
 
-	// Claude Code allowlist models and aliases
-	if cfg.ClaudeCode.Enabled || len(cfg.ClaudeCode.Accounts) > 0 {
-		allowlist := cfg.ClaudeCode.Allowlist
-		if len(allowlist) == 0 {
-			allowlist = claudecode.DefaultAllowlist()
-		}
-		for _, item := range allowlist {
-			if !item.Enabled {
-				continue
-			}
-			desc := item.DisplayName
-			if desc == "" {
-				desc = item.ID
-			}
-			contextLen := item.ContextLen
-			if contextLen <= 0 {
-				contextLen = defaultDiscoveryContextWindow
-			}
-			maxOutput := item.MaxOutputTokens
-			if maxOutput <= 0 {
-				maxOutput = 8192
-			}
-			aliases := item.ExpandAliases()
-
-			if !seen[item.ID] {
-				entry := map[string]any{
-					"id":                item.ID,
-					"object":            "model",
-					"created":           server.now().Unix(),
-					"owned_by":          "anthropic",
-					"description":       desc,
-					"display_name":      desc,
-					"context_window":    contextLen,
-					"max_output_tokens": maxOutput,
-					"supports_thinking": item.Thinking,
-				}
-				if len(aliases) > 0 {
-					entry["aliases"] = aliases
-				}
-				models = append(models, entry)
-				seen[item.ID] = true
-			}
-
-			for _, alias := range aliases {
-				if alias != "" && alias != item.ID && !seen[alias] {
-					models = append(models, map[string]any{
-						"id":                alias,
-						"object":            "model",
-						"created":           server.now().Unix(),
-						"owned_by":          "anthropic",
-						"description":       desc + " (Alias)",
-						"display_name":      desc + " (Alias)",
-						"context_window":    contextLen,
-						"max_output_tokens": maxOutput,
-						"supports_thinking": item.Thinking,
-					})
-					seen[alias] = true
-				}
-			}
-		}
-	}
-
-	if cfg.OpenRouter.Enabled {
-		// The catalog lookups below read the cache without refreshing it. The
-		// startup warmup is asynchronous and silent on failure, so repair a
-		// cold or expired cache here: discovery is often the first request a
-		// client makes, and a miss otherwise pins every advertised limit to
-		// the conservative defaults. Returns immediately when the cache is
-		// valid.
-		openrouter.DefaultClient.WarmupCacheAsync(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL)
-		for _, item := range cfg.OpenRouter.Allowlist {
-			if !item.Enabled {
-				continue
-			}
-			desc := item.DisplayName
-			if desc == "" {
-				desc = item.ID
-			}
-			// Prefer the operator's manual override, then the live OpenRouter
-			// catalog (so context_window/max_output_tokens reflect a model's
-			// real capability, e.g. 1M context, automatically), then a
-			// conservative fallback when neither is known.
-			catalogContext, catalogMaxOutput, haveCatalog := openrouter.DefaultClient.GetModelLimits(item.ID)
-			contextLen := item.ContextLen
-			if contextLen <= 0 && haveCatalog {
-				contextLen = catalogContext
-			}
-			if contextLen <= 0 {
-				contextLen = defaultDiscoveryContextWindow
-			}
-			maxOutput := item.MaxOutputTokens
-			if maxOutput <= 0 && haveCatalog {
-				maxOutput = catalogMaxOutput
-			}
-			if maxOutput <= 0 {
-				// Nothing states the output cap. Fall back to the context
-				// window, but never above the conservative default: a large
-				// context says nothing about how much a model may emit.
-				maxOutput = contextLen
-				if maxOutput > defaultDiscoveryMaxOutputTokens {
-					maxOutput = defaultDiscoveryMaxOutputTokens
-				}
-			}
-			models = append(models, map[string]any{
-				"id":                item.ID,
-				"object":            "model",
-				"created":           server.now().Unix(),
-				"owned_by":          "openrouter",
-				"description":       desc,
-				"display_name":      desc,
-				"context_window":    contextLen,
-				"max_output_tokens": maxOutput,
-				"supports_thinking": true,
-			})
-			if item.Alias != "" && item.Alias != item.ID {
-				models = append(models, map[string]any{
-					"id":                item.Alias,
-					"object":            "model",
-					"created":           server.now().Unix(),
-					"owned_by":          "openrouter",
-					"description":       desc + " (Alias)",
-					"display_name":      desc + " (Alias)",
-					"context_window":    contextLen,
-					"max_output_tokens": maxOutput,
-					"supports_thinking": true,
-				})
-			}
-		}
-	}
-	if cfg.Kimi.Enabled {
-		for _, item := range cfg.Kimi.Allowlist {
-			if !item.Enabled {
-				continue
-			}
-			desc := item.DisplayName
-			if desc == "" {
-				desc = item.ID
-			}
-			contextLen := item.ContextLen
-			if contextLen <= 0 {
-				contextLen = defaultDiscoveryContextWindow
-			}
-			maxOutput := item.MaxOutputTokens
-			if maxOutput <= 0 {
-				// Nothing states the output cap. Fall back to the context
-				// window, but never above the conservative default: a large
-				// context says nothing about how much a model may emit.
-				maxOutput = contextLen
-				if maxOutput > defaultDiscoveryMaxOutputTokens {
-					maxOutput = defaultDiscoveryMaxOutputTokens
-				}
-			}
-			models = append(models, map[string]any{
-				"id":                item.ID,
-				"object":            "model",
-				"created":           server.now().Unix(),
-				"owned_by":          "kimi",
-				"description":       desc,
-				"display_name":      desc,
-				"context_window":    contextLen,
-				"max_output_tokens": maxOutput,
-				"supports_thinking": true,
-			})
-			if item.Alias != "" && item.Alias != item.ID {
-				models = append(models, map[string]any{
-					"id":                item.Alias,
-					"object":            "model",
-					"created":           server.now().Unix(),
-					"owned_by":          "kimi",
-					"description":       desc + " (Alias)",
-					"display_name":      desc + " (Alias)",
-					"context_window":    contextLen,
-					"max_output_tokens": maxOutput,
-					"supports_thinking": true,
-				})
-			}
-		}
-	}
-	if cfg.Zen.Enabled {
-		for _, item := range cfg.Zen.Allowlist {
-			if !item.Enabled {
-				continue
-			}
-			if !zen.IsAnthropicWire(item.ID) {
-				continue
-			}
-			desc := item.DisplayName
-			if desc == "" {
-				desc = item.ID
-			}
-			contextLen := item.ContextLen
-			if contextLen <= 0 {
-				contextLen = defaultDiscoveryContextWindow
-			}
-			maxOutput := item.MaxOutputTokens
-			if maxOutput <= 0 {
-				// Zen's catalog states no output cap, but the forward path fills
-				// max_tokens from this same constant — advertise what we will send.
-				maxOutput = zen.DefaultMaxOutputTokens
-			}
-			models = append(models, map[string]any{
-				"id":                item.ID,
-				"object":            "model",
-				"created":           server.now().Unix(),
-				"owned_by":          "zen",
-				"description":       desc,
-				"display_name":      desc,
-				"context_window":    contextLen,
-				"max_output_tokens": maxOutput,
-				"supports_thinking": true,
-			})
-			if item.Alias != "" && item.Alias != item.ID {
-				models = append(models, map[string]any{
-					"id":                item.Alias,
-					"object":            "model",
-					"created":           server.now().Unix(),
-					"owned_by":          "zen",
-					"description":       desc + " (Alias)",
-					"display_name":      desc + " (Alias)",
-					"context_window":    contextLen,
-					"max_output_tokens": maxOutput,
-					"supports_thinking": true,
-				})
-			}
+	// Each gateway appends its models in configured precedence order. Entry
+	// order is cosmetic — the catalog stays first in the array — but
+	// ownership is functional: the shared seen guard gives the win to the
+	// first gateway in order, the same gateway the dispatcher picks.
+	for _, id := range cfg.GatewayOrder.Effective("") {
+		if appender, ok := gatewayModelAppenders[id]; ok {
+			appender(server, cfg, &models, seen)
 		}
 	}
 
@@ -1019,79 +810,10 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			}
 		}
 	}
-	if cfg.Kimi.Enabled {
-		if kimiEntry, ok := matchKimiModelEntry(cfg.Kimi, model); ok {
-			targetModel := stripKimi1mSuffix(kimiEntry.ID)
-			anthropicRequest["model"] = targetModel
-			reqBody, err := json.Marshal(anthropicRequest)
-			if err != nil {
-				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Kimi request: "+err.Error())
-				return
-			}
-			reqBody = applyMaxTokensPolicy(reqBody, anthropicRequest, kimiEntry.MaxOutputTokens, 0)
-			server.forwardToKimi(writer, request, cfg.Kimi, reqBody, targetModel)
-			return
-		}
-	}
-	if cfg.Zen.Enabled {
-		if zenEntry, ok := matchZenModelEntry(cfg.Zen, model); ok {
-			target := zenTargetModel(zenEntry)
-			anthropicRequest["model"] = target
-			reqBody, err := json.Marshal(anthropicRequest)
-			if err != nil {
-				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error",
-					"Failed to marshal Zen request: "+err.Error())
-				return
-			}
-			server.forwardToZen(writer, request, cfg.Zen, reqBody, anthropicRequest, target, zenEntry)
-			return
-		}
-	}
-	if cfg.ClaudeCode.Enabled {
-		if ccMatch := matchClaudeCodeModel(cfg.ClaudeCode, model); ccMatch != "" {
-			anthropicRequest["model"] = ccMatch
-			ccBody, err := json.Marshal(anthropicRequest)
-			if err != nil {
-				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal ClaudeCode request: "+err.Error())
-				return
-			}
-			// The Anthropic gateway requires max_tokens; derive it from the
-			// allowlist entry (defaults carry each model's max output) when
-			// the client omitted it. Client values are clamped down, never up.
-			ccBody = applyMaxTokensPolicy(ccBody, anthropicRequest, 0, claudeCodeEntryMaxOutput(cfg.ClaudeCode, ccMatch))
-			server.forwardToClaudeCode(writer, request, cfg.ClaudeCode, ccBody, ccMatch)
-			return
-		}
-	}
-	if cfg.OpenRouter.Enabled {
-		for _, item := range cfg.OpenRouter.Allowlist {
-			if !item.Enabled {
-				continue
-			}
-			if item.ID == model || (item.Alias != "" && item.Alias == model) {
-				anthropicRequest["model"] = item.ID
-				reqBody, err := json.Marshal(anthropicRequest)
-				if err != nil {
-					writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request: "+err.Error())
-					return
-				}
-				server.forwardToOpenRouter(writer, request, cfg.OpenRouter, reqBody, anthropicRequest)
-				return
-			}
-		}
-	}
-
-	if endpoint, exists := cfg.CustomEndpoints[model]; exists && endpoint.URL != "" {
-		reqBody, err := json.Marshal(anthropicRequest)
-		if err != nil {
-			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request: "+err.Error())
-			return
-		}
-		if !bodyMutated {
-			// Nothing rewrote the request — forward the client's exact bytes.
-			reqBody = rawBody
-		}
-		server.forwardToCustomEndpoint(writer, request, endpoint, model, reqBody)
+	if server.dispatchAlternateBackend(&gatewayRequest{
+		writer: writer, request: request, cfg: cfg,
+		body: anthropicRequest, rawBody: rawBody, mutated: bodyMutated, model: model,
+	}) {
 		return
 	}
 

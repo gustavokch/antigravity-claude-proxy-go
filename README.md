@@ -57,22 +57,55 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
 │                                                                             │
 │ 1. Model Mapping Resolution (Resolves aliases & chained mappings <= 5 hops) │
 │                                                                             │
-│ 2. Match Claude Code OAuth Token (ant-oat-*) or Claude Code Pool?           │
-│    └─► Transparent ReverseProxy to https://api.anthropic.com/v1/messages   │
-│    └─► Inject Bearer token, merge beta headers, handle CCR hydration loop   │
+│ 2. Gateway precedence walk (configurable via gatewayOrder, default below):  │
+│    a. Kimi Code Gateway (allowlist ID/alias, [1m]-insensitive)?             │
+│    b. OpenCode Zen Gateway (Anthropic-wire allowlist, key must resolve)?    │
+│    c. Claude Code Gateway (pool accounts, allowlist ID/alias)?              │
+│    d. OpenRouter Allowlist / Alias (literal match)?                         │
+│    e. Custom Endpoints Map (Anthropic-format path)?                         │
+│    └─► First matching gateway forwards; see gatewayOrder paragraph below   │
 │                                                                             │
-│ 3. Match OpenRouter Allowlist / Alias?                                      │
-│    └─► Rewrite model to upstream OpenRouter ID                              │
-│    └─► Transparent ReverseProxy to OpenRouter (/v1/messages)                │
-│                                                                             │
-│ 4. Match Custom Endpoints Map?                                              │
-│    └─► Transparent ReverseProxy to Custom Endpoint URL                      │
-│                                                                             │
-│ 5. Match Google Cloud Code Catalog?                                         │
+│ 3. Match Google Cloud Code Catalog? (terminal account-backed route)         │
 │    └─► Select Account via Strategy (hybrid / sticky / round-robin)          │
 │    └─► Translate to Cloud Code format + Stream SSE + Adaptive Thinking      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Gateway Precedence (`gatewayOrder`)
+
+One model ID can exist on more than one gateway. The proxy resolves the
+collision by walking a configured precedence list and handing the request to
+the first gateway whose matcher already accepts the model. The default order
+is `kimi`, `zen`, `claudecode`, `openrouter`, `custom`, `cloudcode`:
+
+```json
+{
+  "gatewayOrder": {
+    "order": ["kimi", "zen", "claudecode", "openrouter", "custom", "cloudcode"],
+    "byModel": {
+      "claude-sonnet-5": ["openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"]
+    }
+  }
+}
+```
+
+- The list is a hint, never a disable list: a provider omitted from `order`
+  is tried after the listed ones, in default order. A partial config can
+  never silently drop a gateway.
+- A `byModel` entry wins over the global `order` for that model only
+  (matched after model mapping, case-insensitively, `[1m]`-insensitively).
+- An override never widens a matcher: it only chooses between gateways that
+  already accept the model.
+- `cloudcode` is terminal: the walk stops there and continues to the
+  account-backed path. Hoisting it is the supported way to prefer the
+  account pool for a model.
+- Zen falls through when no API key resolves (`zen.apiKey` or
+  `OPENCODE_API_KEY`), so a keyless Zen config listed first never claims
+  the route.
+- The non-Anthropic-format custom-endpoint short-circuit for
+  `/v1/chat/completions` runs before translation and is not orderable;
+  `custom` in the order list covers only the Anthropic-format path.
+- The knob lives in `config.json` and the WebUI only (no env vars).
 
 ---
 

@@ -1793,6 +1793,111 @@
                     </div>
                 </div>
 
+                <!-- Section 0e: Gateway Precedence -->
+                <div class="card bg-space-900/30 border border-neon-cyan/40 p-6 space-y-5" x-data="window.Components.gatewayOrder()">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div class="space-y-1">
+                            <div class="flex items-center gap-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-neon-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                                </svg>
+                                <h4 class="text-sm font-bold text-white uppercase tracking-wider" x-text="$store.global.t('gatewayOrderTitle') || 'Gateway Precedence'">Gateway Precedence</h4>
+                            </div>
+                            <p class="text-xs text-gray-400" x-text="$store.global.t('gatewayOrderDesc') || 'The order the proxy tries each gateway when more than one would accept the same model.'">
+                                The order the proxy tries each gateway when more than one would accept the same model.
+                            </p>
+                        </div>
+                        <button class="btn btn-sm bg-space-800 hover:bg-space-700 border border-neon-cyan/50 text-neon-cyan font-medium px-4 gap-2 shrink-0 self-start sm:self-auto"
+                            @click="reset()"
+                            :disabled="saving"
+                            x-text="$store.global.t('gatewayOrderReset') || 'Reset to default'">Reset to default</button>
+                    </div>
+
+                    <!-- Global order -->
+                    <div class="space-y-2 pt-2 border-t border-space-border/40">
+                        <label class="text-xs font-semibold text-gray-300 uppercase tracking-wider" x-text="$store.global.t('gatewayOrderGlobal') || 'Global order'">Global order</label>
+                        <p class="text-[11px] text-gray-500 leading-relaxed" x-text="$store.global.t('gatewayOrderGlobalHint') || 'Muted gateways are not listed: they are tried after the listed ones.'">
+                            Muted gateways are not listed: they are tried after the listed ones.
+                        </p>
+                        <div class="view-card !p-0 overflow-hidden border border-space-border/60">
+                            <table class="standard-table">
+                                <tbody>
+                                    <template x-for="(id, index) in effectiveOrder()" :key="id">
+                                        <tr class="hover:bg-white/5 transition-colors" :class="!isListed(id) ? 'opacity-50' : ''">
+                                            <td class="pl-4 font-mono text-xs text-gray-200 w-8" x-text="index + 1"></td>
+                                            <td class="font-semibold text-white text-xs">
+                                                <span x-text="$store.global.t(gatewayLabelKey(id)) || id"></span>
+                                                <template x-if="id === 'cloudcode'">
+                                                    <span class="block text-[10px] font-normal text-gray-500" x-text="$store.global.t('gatewayOrderTerminalHint') || 'Terminal: the walk stops here.'"></span>
+                                                </template>
+                                            </td>
+                                            <td class="text-right pr-4 whitespace-nowrap">
+                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-neon-cyan min-h-[28px] min-w-[28px]"
+                                                    @click="move(id, -1)"
+                                                    :disabled="index === 0"
+                                                    :aria-label="$store.global.t('gatewayOrderMoveUp') || 'Move up'">▲</button>
+                                                <button class="btn btn-xs btn-ghost text-gray-400 hover:text-neon-cyan min-h-[28px] min-w-[28px]"
+                                                    @click="move(id, 1)"
+                                                    :disabled="index === effectiveOrder().length - 1"
+                                                    :aria-label="$store.global.t('gatewayOrderMoveDown') || 'Move down'">▼</button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Per-model overrides -->
+                    <div class="space-y-2 pt-2 border-t border-space-border/40">
+                        <label class="text-xs font-semibold text-gray-300 uppercase tracking-wider" x-text="$store.global.t('gatewayOrderPerModel') || 'Per-model overrides'">Per-model overrides</label>
+                        <p class="text-[11px] text-gray-500 leading-relaxed" x-text="$store.global.t('gatewayOrderPerModelHint') || 'An override beats the global order for that model only.'">
+                            An override beats the global order for that model only.
+                        </p>
+                        <div x-show="overrideNames().length === 0" class="text-xs text-gray-500 font-mono py-2"
+                            x-text="$store.global.t('gatewayOrderNoOverrides') || 'No per-model overrides.'">No per-model overrides.</div>
+                        <template x-for="model in overrideNames()" :key="model">
+                            <div class="view-card !p-0 overflow-hidden border border-space-border/60">
+                                <div class="flex items-center justify-between px-4 py-2 bg-space-950/40 border-b border-space-border/40">
+                                    <span class="font-mono text-xs text-white" x-text="model"></span>
+                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-red-400 min-h-[28px]"
+                                        @click="removeOverride(model)"
+                                        x-text="$store.global.t('gatewayOrderRemoveOverride') || 'Remove override'">Remove override</button>
+                                </div>
+                                <table class="standard-table">
+                                    <tbody>
+                                        <template x-for="(id, index) in (byModel[model] || [])" :key="id">
+                                            <tr class="hover:bg-white/5 transition-colors">
+                                                <td class="pl-4 font-mono text-xs text-gray-200 w-8" x-text="index + 1"></td>
+                                                <td class="font-semibold text-white text-xs" x-text="$store.global.t(gatewayLabelKey(id)) || id"></td>
+                                                <td class="text-right pr-4 whitespace-nowrap">
+                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-neon-cyan min-h-[28px] min-w-[28px]"
+                                                        @click="moveOverride(model, id, -1)"
+                                                        :disabled="index === 0"
+                                                        :aria-label="$store.global.t('gatewayOrderMoveUp') || 'Move up'">▲</button>
+                                                    <button class="btn btn-xs btn-ghost text-gray-400 hover:text-neon-cyan min-h-[28px] min-w-[28px]"
+                                                        @click="moveOverride(model, id, 1)"
+                                                        :disabled="index === (byModel[model] || []).length - 1"
+                                                        :aria-label="$store.global.t('gatewayOrderMoveDown') || 'Move down'">▼</button>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </template>
+                        <div class="flex flex-col sm:flex-row gap-2">
+                            <input class="input input-xs input-bordered bg-space-800 border-space-border font-mono text-white flex-1 text-xs"
+                                x-model="newModel"
+                                aria-label="New override model ID"
+                                :placeholder="$store.global.t('gatewayOrderModelPlaceholder') || 'Model ID (e.g. claude-sonnet-5)'">
+                            <button class="btn btn-xs bg-neon-cyan hover:bg-cyan-600 border-none text-black text-xs px-3 min-h-[28px] font-semibold"
+                                @click="addOverride()"
+                                x-text="$store.global.t('gatewayOrderAddModel') || 'Add'">Add</button>
+                        </div>
+                    </div>
+                </div>
+
                                 <!-- Section 1: Transparent Forwarding (Custom Endpoints) -->
                 <div class="card bg-space-900/30 border border-neon-cyan/30 p-6 space-y-4">
                     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
