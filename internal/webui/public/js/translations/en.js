@@ -636,6 +636,10 @@ window.translations.en = {
     zenDiscoverDesc: "Fetch the model catalog from the Zen API. Only the Anthropic-wire subset can be forwarded; other wire formats are marked unusable.",
     zenDiscoverImport: "Import",
     zenDiscoverUnusable: "Other wire format — not forwardable",
+    zenNotAnthropicWire: "Not in the Zen Anthropic-wire subset — this entry cannot be forwarded.",
+    zenWireUnverified: "Wire format unverified — confirm via Discover Models.",
+    zenLimits: "Limits",
+    zenMaxOutput: "Max Output",
 
     // Headroom Engine
     headroomSettings: "Headroom Context Optimization",

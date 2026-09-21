@@ -565,6 +565,10 @@ window.translations.pt = {
     zenDiscoverDesc: "Buscar o catálogo de modelos da API Zen. Apenas o subconjunto Anthropic pode ser encaminhado; outros formatos estão marcados como inutilizáveis.",
     zenDiscoverImport: "Importar",
     zenDiscoverUnusable: "Outro formato de API — não encaminhável",
+    zenNotAnthropicWire: "Fora do subconjunto Anthropic do Zen — esta entrada não pode ser encaminhada.",
+    zenWireUnverified: "Formato de API não verificado — confirme via Descobrir Modelos.",
+    zenLimits: "Limites",
+    zenMaxOutput: "Saída Máx.",
 
     // Predefinições de configuração
     configPresets: "Predefinições de Configuração",

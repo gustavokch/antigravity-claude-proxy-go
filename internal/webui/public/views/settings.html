@@ -1465,7 +1465,10 @@
                                                     @change="saveZenConfig()"
                                                     :aria-label="'Toggle ' + m.id + ' allowlist status'">
                                             </td>
-                                            <td class="font-mono text-xs text-white" x-text="m.id"></td>
+                                            <td class="font-mono text-xs text-white">
+                                                <span x-text="m.id"></span>
+                                                <span x-show="(zenUnverified || []).includes(m.id)" class="badge badge-xs badge-warning ml-2" x-text="$store.global.t('zenWireUnverified') || 'Wire format unverified'">Wire format unverified</span>
+                                            </td>
                                             <td>
                                                 <input class="input input-xs bg-space-800 border-space-border text-teal-400 font-mono text-xs w-full focus:border-teal-400"
                                                     x-model="m.alias"
@@ -1486,7 +1489,7 @@
                                                         @click="toggleZenExpanded(m.id)"
                                                         :aria-expanded="isZenExpanded(m.id)"
                                                         :aria-label="(isZenExpanded(m.id) ? 'Collapse' : 'Expand') + ' limits for ' + m.id"
-                                                        :title="$store.global.t('kimiMaxOutput') || 'Max Output'">
+                                                        :title="$store.global.t('zenMaxOutput') || 'Max Output'">
                                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 transition-transform" :class="isZenExpanded(m.id) && 'rotate-90'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
                                                         </svg>
@@ -1506,9 +1509,9 @@
                                         <tr x-show="isZenExpanded(m.id)" class="bg-space-900/40">
                                             <td colspan="5" class="!p-0">
                                                 <div class="px-6 py-4 border-t border-space-border/40">
-                                                    <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2" x-text="$store.global.t('openRouterLimits') || 'Limits'">Limits</div>
+                                                    <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2" x-text="$store.global.t('zenLimits') || 'Limits'">Limits</div>
                                                     <div class="max-w-xs">
-                                                        <label class="block text-[10px] text-gray-400 mb-1" :for="'zen-maxout-' + m.id" x-text="$store.global.t('kimiMaxOutput') || 'Max Output'">Max Output</label>
+                                                        <label class="block text-[10px] text-gray-400 mb-1" :for="'zen-maxout-' + m.id" x-text="$store.global.t('zenMaxOutput') || 'Max Output'">Max Output</label>
                                                         <input type="number" min="0" :id="'zen-maxout-' + m.id" :value="m.maxOutputTokens || ''"
                                                             @change="updateZenMaxOutput(idx, $event.target.value)"
                                                             :aria-label="'Max output tokens for ' + m.id"

@@ -355,6 +355,7 @@ window.Components.models = () => ({
     zenSaving: false,
     zenError: '',
     zenDiscovered: [],
+    zenUnverified: [],
     zenNewId: '',
     zenNewAlias: '',
     zenNewDisplay: '',
@@ -862,6 +863,8 @@ window.Components.models = () => ({
 
     importZenDiscovered() {
         const picked = this.zenDiscovered.filter(m => m.selected && m.usable);
+        const imported = new Set(picked.map(p => p.id));
+        this.zenUnverified = (this.zenUnverified || []).filter(v => !imported.has(v));
         const existing = new Set(this.zenConfig.allowlist.map(m => m.id));
         picked.forEach(p => {
             if (!existing.has(p.id)) {
@@ -882,16 +885,53 @@ window.Components.models = () => ({
         if (dialog) dialog.close();
     },
 
-    addZenAllowlistRow() {
+    async addZenAllowlistRow() {
         if (!this.zenNewId) return;
+        const id = this.zenNewId.trim();
+        if (!id) return;
+        const store = Alpine.store('global');
+        this.zenError = '';
+        // The server owns the Anthropic-wire subset, so validate the typed id
+        // against the `models` bucket of /api/zen/models/fetch before creating
+        // an entry that could never succeed. The endpoint answers
+        // unauthenticated and is cached 5 min server-side, so this is cheap.
+        // When the catalog is unreachable, add the row but flag it with a
+        // warning badge instead of blocking (verified on next discovery).
+        let verified = null;
+        try {
+            const password = store.webuiPassword;
+            const { response, newPassword } = await window.utils.request('/api/zen/models/fetch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            }, password);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (response.ok) {
+                const data = await response.json();
+                const wire = new Set((data.models || []).map(m => String(m.id).toLowerCase()));
+                verified = wire.has(id.replace(/^opencode\//i, '').toLowerCase());
+            }
+        } catch (e) {
+            verified = null;
+        }
+        if (verified === false) {
+            this.zenError = (store.t && store.t('zenNotAnthropicWire')) ||
+                ('Model "' + id + '" is not in the Zen Anthropic-wire subset and cannot be forwarded.');
+            return;
+        }
         this.zenConfig.allowlist.push({
-            id: this.zenNewId,
+            id: id,
             alias: this.zenNewAlias || '',
             displayName: this.zenNewDisplay || '',
             contextLength: 0,
             maxOutputTokens: 0,
             enabled: true
         });
+        if (verified === null) {
+            this.zenUnverified.push(id);
+        } else {
+            this.zenUnverified = (this.zenUnverified || []).filter(v => v !== id);
+        }
         this.zenNewId = '';
         this.zenNewAlias = '';
         this.zenNewDisplay = '';
