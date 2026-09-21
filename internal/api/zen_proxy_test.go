@@ -21,7 +21,15 @@ import (
 type zenTestBackend struct{}
 
 func (m *zenTestBackend) FetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
-	return cloudcode.Response{Body: []byte(`{}`)}, nil
+	// Minimal parseable Cloud Code catalog so GET /v1/models reaches the
+	// gateway discovery blocks in tests.
+	return cloudcode.Response{
+		Body: []byte(`{
+			"defaultAgentModelId":"gemini-test",
+			"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":["gemini-test"]}]}],
+			"models":{"gemini-test":{"displayName":"Gemini Test"}}
+		}`),
+	}, nil
 }
 
 func (m *zenTestBackend) StreamGenerateContent(ctx context.Context, req map[string]any, cb func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
@@ -503,6 +511,107 @@ func TestServer_ForwardToZen_ExplicitMaxTokensNotClampedToDefault(t *testing.T) 
 	}
 	if maxTok, _ := sent["max_tokens"].(float64); int(maxTok) != 64000 {
 		t.Errorf("max_tokens = %v, want explicit client value 64000 (not clamped to default)", sent["max_tokens"])
+	}
+}
+
+func TestServer_Models_SkipsNonAnthropicWireZenEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	saveZenTestConfig(t, map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-zen-test",
+		"baseUrl": "http://127.0.0.1:1",
+		"allowlist": []map[string]any{
+			{"id": "gpt-5", "enabled": true},
+			{"id": "claude-sonnet-4-6", "enabled": true},
+		},
+	})
+
+	server := newZenTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, m := range body.Data {
+		if id, _ := m["id"].(string); id != "" {
+			seen[id] = true
+		}
+	}
+	if !seen["claude-sonnet-4-6"] {
+		t.Errorf("claude-sonnet-4-6 missing from /v1/models: %v", seen)
+	}
+	if seen["gpt-5"] {
+		t.Errorf("gpt-5 is not Anthropic-wire and must not be advertised in /v1/models")
+	}
+}
+
+func TestServer_Models_ZenMaxOutputUsesPackageDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	saveZenTestConfig(t, map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-zen-test",
+		"baseUrl": "http://127.0.0.1:1",
+		"allowlist": []map[string]any{
+			{"id": "claude-sonnet-4-6", "enabled": true},
+			{"id": "claude-opus-4-5", "enabled": true, "maxOutputTokens": 64000},
+		},
+	})
+
+	server := newZenTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]map[string]any{}
+	for _, m := range body.Data {
+		if id, _ := m["id"].(string); id != "" {
+			byID[id] = m
+		}
+	}
+	def, ok := byID["claude-sonnet-4-6"]
+	if !ok {
+		t.Fatalf("claude-sonnet-4-6 missing from /v1/models")
+	}
+	if maxOut, _ := def["max_output_tokens"].(float64); int(maxOut) != zen.DefaultMaxOutputTokens {
+		t.Errorf("default max_output_tokens = %v, want package default %d", def["max_output_tokens"], zen.DefaultMaxOutputTokens)
+	}
+	if ctxWin, _ := def["context_window"].(float64); int(ctxWin) != defaultDiscoveryContextWindow {
+		t.Errorf("context_window = %v, want discovery default %d", def["context_window"], defaultDiscoveryContextWindow)
+	}
+	capped, ok := byID["claude-opus-4-5"]
+	if !ok {
+		t.Fatalf("claude-opus-4-5 missing from /v1/models")
+	}
+	if maxOut, _ := capped["max_output_tokens"].(float64); int(maxOut) != 64000 {
+		t.Errorf("explicit max_output_tokens = %v, want 64000", capped["max_output_tokens"])
 	}
 }
 

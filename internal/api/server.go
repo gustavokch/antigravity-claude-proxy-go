@@ -630,6 +630,9 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			if !item.Enabled {
 				continue
 			}
+			if !zen.IsAnthropicWire(item.ID) {
+				continue
+			}
 			desc := item.DisplayName
 			if desc == "" {
 				desc = item.ID
@@ -640,13 +643,9 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 			maxOutput := item.MaxOutputTokens
 			if maxOutput <= 0 {
-				// Nothing states the output cap. Fall back to the context
-				// window, but never above the conservative default: a large
-				// context says nothing about how much a model may emit.
-				maxOutput = contextLen
-				if maxOutput > defaultDiscoveryMaxOutputTokens {
-					maxOutput = defaultDiscoveryMaxOutputTokens
-				}
+				// Zen's catalog states no output cap, but the forward path fills
+				// max_tokens from this same constant — advertise what we will send.
+				maxOutput = zen.DefaultMaxOutputTokens
 			}
 			models = append(models, map[string]any{
 				"id":                item.ID,
