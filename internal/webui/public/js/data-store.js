@@ -17,6 +17,7 @@ document.addEventListener('alpine:init', () => {
         openrouterCredits: null, // OpenRouter balance payload (from /api/openrouter/credits)
         openrouterCreditsLoading: false,
         kimi: {}, // Kimi Code gateway configuration
+        zen: {}, // OpenCode Zen gateway configuration
         headroomStats: {}, // Headroom compression & shaping metrics
         quotaRows: [], // Filtered view
         usageHistory: {}, // Usage statistics history (from /account-limits?includeHistory=true)
@@ -91,7 +92,9 @@ document.addEventListener('alpine:init', () => {
                         this.customEndpoints = data.customEndpoints || {};
                         this.openrouter = data.openrouter || {};
                         this.openrouterCredits = data.openrouterCredits || null;
-                        this.kimi = data.kimi || {};
+                this.kimi = data.kimi || {};
+                this.zen = data.zen || {};
+                        this.zen = data.zen || {};
                         this.headroomStats = data.headroomStats || {};
                         this.usageHistory = data.usageHistory || {};
 
@@ -116,6 +119,7 @@ document.addEventListener('alpine:init', () => {
                     openrouter: this.openrouter,
                     openrouterCredits: this.openrouterCredits,
                     kimi: this.kimi,
+                    zen: this.zen,
                     headroomStats: this.headroomStats,
                     usageHistory: this.usageHistory,
                     timestamp: Date.now()
@@ -507,6 +511,7 @@ document.addEventListener('alpine:init', () => {
             if (this.customEndpoints && this.customEndpoints[modelId]) return 'forwarded';
             if (this.openrouter && this.openrouter.allowlist && this.openrouter.allowlist.some(m => m.id === modelId || m.alias === modelId)) return 'openrouter';
             if (this.kimi && this.kimi.allowlist && this.kimi.allowlist.some(m => m.id === modelId || m.alias === modelId)) return 'kimi';
+            if (this.zen && this.zen.allowlist && this.zen.allowlist.some(m => m.id === modelId || m.alias === modelId)) return 'zen';
             const lower = modelId.toLowerCase();
             if (lower.includes('claude')) return 'claude';
             if (lower.includes('gemini')) return 'gemini';
@@ -526,6 +531,8 @@ document.addEventListener('alpine:init', () => {
                     return 'bg-indigo-400';
                 case 'kimi':
                     return 'bg-cyan-400';
+                case 'zen':
+                    return 'bg-teal-400';
                 default:
                     return 'bg-zinc-600';
             }

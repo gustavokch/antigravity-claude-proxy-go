@@ -138,7 +138,7 @@ during review; the notes are kept as written and corrected here rather than rewr
   prefix, so an extra or reordered block upstream cannot silently disable the feature.
 - Variant C fast-fails with a non-retryable **400**, not a 429. A 429 invites the
   caller's own retry/backoff, which is the stall the fallback exists to remove.
-- The capacity gate runs **after** the Kimi / Claude Code / OpenRouter / custom-endpoint
+- The capacity gate runs **after** the Kimi / Zen / Claude Code / OpenRouter / custom-endpoint
   routes. Those backends carry their own credentials and never consume account capacity,
   so account exhaustion says nothing about whether their requests would hang. Streaming
   requests are excluded for the same class of reason: the canned verdict is a JSON body

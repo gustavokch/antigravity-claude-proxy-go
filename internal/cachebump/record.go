@@ -20,6 +20,8 @@ const (
 	RouteClaudeCode Route = "claudecode"
 	// RouteKimi is the Kimi passthrough route.
 	RouteKimi Route = "kimi"
+	// RouteZen is the OpenCode Zen passthrough route.
+	RouteZen Route = "zen"
 	// RouteCustom is the custom-endpoint route.
 	RouteCustom Route = "custom"
 )

@@ -12,6 +12,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/openrouter"
+	"antigravity-go-proxy/internal/zen"
 )
 
 type HeadroomConfig = headroom.Config
@@ -91,6 +92,24 @@ type KimiConfig struct {
 	Allowlist []KimiModelConfig `json:"allowlist,omitempty"`
 }
 
+// ZenModelConfig describes one OpenCode Zen model the proxy may forward to.
+type ZenModelConfig struct {
+	ID              string `json:"id"`
+	Alias           string `json:"alias,omitempty"`
+	DisplayName     string `json:"displayName,omitempty"`
+	ContextLen      int    `json:"contextLength,omitempty"`
+	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"` // manual max_tokens override; 0 = fill from zen.DefaultMaxOutputTokens
+	Enabled         bool   `json:"enabled"`
+}
+
+// ZenConfig holds the OpenCode Zen gateway configuration.
+type ZenConfig struct {
+	Enabled   bool             `json:"enabled"`
+	BaseURL   string           `json:"baseUrl"`
+	APIKey    string           `json:"apiKey,omitempty"`
+	Allowlist []ZenModelConfig `json:"allowlist,omitempty"`
+}
+
 type AccountSelectionConfig struct {
 	Strategy    string         `json:"strategy,omitempty"`
 	HealthScore map[string]any `json:"healthScore,omitempty"`
@@ -129,6 +148,7 @@ type Config struct {
 	ModelMapping                map[string]any            `json:"modelMapping,omitempty"`
 	OpenRouter                  OpenRouterConfig          `json:"openrouter,omitempty"`
 	Kimi                        KimiConfig                `json:"kimi,omitempty"`
+	Zen                         ZenConfig                 `json:"zen,omitempty"`
 	AccountSelection            AccountSelectionConfig    `json:"accountSelection,omitempty"`
 	Headroom                    HeadroomConfig            `json:"headroom,omitempty"`
 	ClaudeCode                  claudecode.Config         `json:"claudecode,omitempty"`
@@ -264,6 +284,7 @@ func DefaultClassifierConfig() ClassifierConfig {
 type CacheBumpRoutesConfig struct {
 	ClaudeCode      bool `json:"claudecode"`
 	Kimi            bool `json:"kimi"`
+	Zen             bool `json:"zen"`
 	CustomEndpoints bool `json:"customEndpoints"`
 }
 
@@ -307,6 +328,8 @@ func (c CacheBumpConfig) EnabledFor(route, headerValue string) bool {
 		return c.Routes.ClaudeCode
 	case "kimi":
 		return c.Routes.Kimi
+	case "zen":
+		return c.Routes.Zen
 	case "custom":
 		return c.Routes.CustomEndpoints
 	}
@@ -359,6 +382,10 @@ func DefaultConfig() Config {
 		Kimi: KimiConfig{
 			BaseURL:   "https://api.moonshot.ai/anthropic",
 			Allowlist: []KimiModelConfig{},
+		},
+		Zen: ZenConfig{
+			BaseURL:   zen.DefaultBaseURL,
+			Allowlist: []ZenModelConfig{},
 		},
 		AccountSelection: AccountSelectionConfig{
 			Strategy: "hybrid",
@@ -620,6 +647,27 @@ func Save(updates map[string]any) (Config, error) {
 			}
 			continue
 		}
+		if k == "zen" {
+			if vMap, ok := v.(map[string]any); ok {
+				zenCopy := make(map[string]any)
+				for kk, vv := range vMap {
+					zenCopy[kk] = vv
+				}
+				hasApiKey, _ := zenCopy["hasApiKey"].(bool)
+				apiKey, _ := zenCopy["apiKey"].(string)
+				existingZen, _ := currentMap["zen"].(map[string]any)
+				if hasApiKey && apiKey == "" && existingZen != nil {
+					if existingKey, ok := existingZen["apiKey"].(string); ok && existingKey != "" {
+						zenCopy["apiKey"] = existingKey
+					}
+				}
+				delete(zenCopy, "hasApiKey")
+				currentMap[k] = zenCopy
+			} else {
+				currentMap[k] = v
+			}
+			continue
+		}
 		if k == "claudecode" {
 			if vMap, ok := v.(map[string]any); ok {
 				// Start from the persisted section so keys absent from the
@@ -811,6 +859,20 @@ func GetPublicConfig() map[string]any {
 			}
 		}
 		result["kimi"] = kimiCopy
+	}
+
+	if zenMap, ok := result["zen"].(map[string]any); ok {
+		zenCopy := make(map[string]any)
+		for kk, vv := range zenMap {
+			if kk == "apiKey" {
+				if strKey, isStr := vv.(string); isStr && strKey != "" {
+					zenCopy["hasApiKey"] = true
+				}
+			} else {
+				zenCopy[kk] = vv
+			}
+		}
+		result["zen"] = zenCopy
 	}
 
 	if ccMap, ok := result["claudecode"].(map[string]any); ok {

@@ -286,6 +286,7 @@ window.Components.models = () => ({
             if (val === 'models') {
                 this.fetchOpenRouterConfig();
                 this.fetchKimiConfig();
+                this.fetchZenConfig();
                 this.loadCCConfig();
             }
         });
@@ -342,6 +343,22 @@ window.Components.models = () => ({
     kimiNewAlias: '',
     kimiNewDisplay: '',
 
+    // OpenCode Zen Gateway State & Methods
+    zenConfig: {
+        enabled: false,
+        baseUrl: 'https://opencode.ai/zen',
+        apiKey: '',
+        hasApiKey: false,
+        keySource: 'none',
+        allowlist: []
+    },
+    zenSaving: false,
+    zenError: '',
+    zenDiscovered: [],
+    zenNewId: '',
+    zenNewAlias: '',
+    zenNewDisplay: '',
+
     // Per-model provider routing panel state
     expandedRouting: new Set(),
     routingPanels: {}, // modelId -> { loading, error, data }
@@ -362,7 +379,6 @@ window.Components.models = () => ({
 
     // Per-model limits panel state for the Kimi allowlist (no routing panel there)
     expandedKimi: new Set(),
-
     isKimiExpanded(modelId) {
         return this.expandedKimi.has(modelId);
     },
@@ -374,6 +390,22 @@ window.Components.models = () => ({
             this.expandedKimi.add(modelId);
         }
         this.expandedKimi = new Set(this.expandedKimi);
+    },
+
+    // Per-model limits panel state for the Zen allowlist (same shape as Kimi)
+    expandedZen: new Set(),
+
+    isZenExpanded(modelId) {
+        return this.expandedZen.has(modelId);
+    },
+
+    toggleZenExpanded(modelId) {
+        if (this.expandedZen.has(modelId)) {
+            this.expandedZen.delete(modelId);
+        } else {
+            this.expandedZen.add(modelId);
+        }
+        this.expandedZen = new Set(this.expandedZen);
     },
 
     async fetchRoutingProviders(modelId) {
@@ -445,6 +477,15 @@ window.Components.models = () => ({
         this._kimiSaveTimer = setTimeout(() => {
             this._kimiSaveTimer = null;
             this.saveKimiConfig();
+        }, 500);
+    },
+
+    // Same trailing debounce for the Zen allowlist limits input.
+    saveZenConfigDebounced() {
+        if (this._zenSaveTimer) clearTimeout(this._zenSaveTimer);
+        this._zenSaveTimer = setTimeout(() => {
+            this._zenSaveTimer = null;
+            this.saveZenConfig();
         }, 500);
     },
 
@@ -710,6 +751,151 @@ window.Components.models = () => ({
         this.kimiNewAlias = '';
         this.kimiNewDisplay = '';
         this.saveKimiConfig();
+    },
+
+    async fetchZenConfig() {
+        const password = Alpine.store('global').webuiPassword;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/zen/config', {}, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            if (data.config) {
+                this.zenConfig = {
+                    enabled: !!data.config.enabled,
+                    baseUrl: data.config.baseUrl || 'https://opencode.ai/zen',
+                    apiKey: '',
+                    hasApiKey: !!data.config.hasApiKey,
+                    keySource: data.config.keySource || 'none',
+                    allowlist: data.config.allowlist || []
+                };
+                Alpine.store('data').zen = this.zenConfig;
+            }
+        } catch (e) {
+            console.error('Failed to fetch Zen config:', e);
+        }
+    },
+
+    async saveZenConfig() {
+        const store = Alpine.store('global');
+        const password = store.webuiPassword;
+        this.zenSaving = true;
+        this.zenError = '';
+        try {
+            const payload = {
+                enabled: this.zenConfig.enabled,
+                baseUrl: this.zenConfig.baseUrl || 'https://opencode.ai/zen',
+                hasApiKey: this.zenConfig.hasApiKey,
+                allowlist: this.zenConfig.allowlist || []
+            };
+            if (this.zenConfig.apiKey && this.zenConfig.apiKey.trim()) {
+                payload.apiKey = this.zenConfig.apiKey.trim();
+            }
+            const { response, newPassword } = await window.utils.request('/api/zen/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }, password);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            if (data.config) {
+                this.zenConfig.hasApiKey = !!data.config.hasApiKey;
+                this.zenConfig.keySource = data.config.keySource || this.zenConfig.keySource;
+                if (payload.apiKey) {
+                    this.zenConfig.apiKey = '';
+                }
+                Alpine.store('data').zen = this.zenConfig;
+            }
+            store.showToast(store.t('zenSavedSuccess') || 'Zen settings saved', 'success');
+        } catch (e) {
+            this.zenError = e.message || 'Failed to save Zen settings';
+            store.showToast(this.zenError, 'error');
+        } finally {
+            this.zenSaving = false;
+        }
+    },
+
+    async discoverZenModels() {
+        const password = Alpine.store('global').webuiPassword;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/zen/models/fetch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            }, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            const usable = (data.models || []).map(m => ({
+                id: m.id,
+                displayName: m.id,
+                usable: true,
+                selected: true
+            }));
+            const unusable = (data.other || []).map(m => ({
+                id: m.id,
+                displayName: m.id,
+                usable: false,
+                selected: false
+            }));
+            this.zenDiscovered = usable.concat(unusable);
+        } catch (e) {
+            const store = Alpine.store('global');
+            store.showToast(e.message || 'Failed to fetch Zen models', 'error');
+        }
+    },
+
+    async openZenDiscoverModal() {
+        await this.discoverZenModels();
+        const dialog = document.getElementById('zen_discover_modal');
+        if (dialog && typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        }
+    },
+
+    importZenDiscovered() {
+        const picked = this.zenDiscovered.filter(m => m.selected && m.usable);
+        const existing = new Set(this.zenConfig.allowlist.map(m => m.id));
+        picked.forEach(p => {
+            if (!existing.has(p.id)) {
+                this.zenConfig.allowlist.push({
+                    id: p.id,
+                    alias: '',
+                    displayName: p.displayName,
+                    contextLength: 0,
+                    // 0 = auto: the proxy fills max_tokens from the package
+                    // default instead of a webUI-baked value.
+                    maxOutputTokens: 0,
+                    enabled: true
+                });
+            }
+        });
+        this.saveZenConfig();
+        const dialog = document.getElementById('zen_discover_modal');
+        if (dialog) dialog.close();
+    },
+
+    addZenAllowlistRow() {
+        if (!this.zenNewId) return;
+        this.zenConfig.allowlist.push({
+            id: this.zenNewId,
+            alias: this.zenNewAlias || '',
+            displayName: this.zenNewDisplay || '',
+            contextLength: 0,
+            maxOutputTokens: 0,
+            enabled: true
+        });
+        this.zenNewId = '';
+        this.zenNewAlias = '';
+        this.zenNewDisplay = '';
+        this.saveZenConfig();
     },
 
     // Claude Code Official API Gateway State & Methods
@@ -1241,6 +1427,14 @@ window.Components.models = () => ({
         if (item) {
             item.maxOutputTokens = this.asInt(value);
             this.saveKimiConfigDebounced();
+        }
+    },
+
+    updateZenMaxOutput(idx, value) {
+        const item = (this.zenConfig.allowlist || [])[idx];
+        if (item) {
+            item.maxOutputTokens = this.asInt(value);
+            this.saveZenConfigDebounced();
         }
     },
 
