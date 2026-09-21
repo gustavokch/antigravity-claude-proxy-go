@@ -47,3 +47,13 @@ func TestIsAnthropicWire(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalAnthropicWireID(t *testing.T) {
+	got, ok := CanonicalAnthropicWireID("opencode/Claude-Sonnet-4-6")
+	if !ok || got != "claude-sonnet-4-6" {
+		t.Fatalf("got %q ok=%v, want claude-sonnet-4-6 true", got, ok)
+	}
+	if _, ok := CanonicalAnthropicWireID("gpt-5"); ok {
+		t.Fatal("gpt-5 must not canonicalize")
+	}
+}

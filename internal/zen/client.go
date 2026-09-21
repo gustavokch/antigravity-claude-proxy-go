@@ -41,32 +41,41 @@ var AnthropicWireIDs = []string{
 	"qwen3.5-plus",
 }
 
-var anthropicWireSet map[string]struct{}
+var anthropicWireSet map[string]string
 
 func init() {
-	anthropicWireSet = make(map[string]struct{}, len(AnthropicWireIDs))
+	anthropicWireSet = make(map[string]string, len(AnthropicWireIDs))
 	for _, id := range AnthropicWireIDs {
-		anthropicWireSet[strings.ToLower(id)] = struct{}{}
+		anthropicWireSet[strings.ToLower(id)] = id
 	}
 }
 
-// stripOpencodePrefix removes a leading "opencode/" (case-insensitive), the
-// id format used in OpenCode client config.
-func stripOpencodePrefix(id string) string {
-	if len(id) >= 9 && strings.EqualFold(id[:9], "opencode/") {
-		return id[9:]
+// StripOpencodePrefix trims space and removes a leading "opencode/"
+// (case-insensitive), the id format used in OpenCode client config.
+func StripOpencodePrefix(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if len(trimmed) >= 9 && strings.EqualFold(trimmed[:9], "opencode/") {
+		return strings.TrimSpace(trimmed[9:])
 	}
-	return id
+	return trimmed
+}
+
+// CanonicalAnthropicWireID maps id to its canonical catalog spelling after
+// stripping an "opencode/" prefix and lowercasing. ok=false means the id is
+// not in the Anthropic-wire subset.
+func CanonicalAnthropicWireID(id string) (canonical string, ok bool) {
+	cleaned := StripOpencodePrefix(id)
+	if cleaned == "" {
+		return "", false
+	}
+	canonical, ok = anthropicWireSet[strings.ToLower(cleaned)]
+	return canonical, ok
 }
 
 // IsAnthropicWire reports whether id is in the Anthropic-wire subset, after
 // stripping an "opencode/" prefix and lowercasing.
 func IsAnthropicWire(id string) bool {
-	id = stripOpencodePrefix(strings.TrimSpace(id))
-	if id == "" {
-		return false
-	}
-	_, ok := anthropicWireSet[strings.ToLower(id)]
+	_, ok := CanonicalAnthropicWireID(id)
 	return ok
 }
 

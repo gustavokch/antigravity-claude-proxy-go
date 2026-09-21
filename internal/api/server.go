@@ -1844,7 +1844,7 @@ func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConf
 		}
 		return config.ZenModelConfig{}, false
 	}
-	cleanModel := stripZenOpencodePrefix(model)
+	cleanModel := zen.StripOpencodePrefix(model)
 	if cleanModel == "" {
 		return config.ZenModelConfig{}, false
 	}
@@ -1855,34 +1855,29 @@ func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConf
 		// Wire gate on the entry ID — the value actually forwarded upstream.
 		// A non-wire entry never claims the route, so it cannot shadow a
 		// backend that can serve the model.
-		if !zen.IsAnthropicWire(stripZenOpencodePrefix(item.ID)) {
+		if !zen.IsAnthropicWire(zen.StripOpencodePrefix(item.ID)) {
 			continue
 		}
-		if item.ID != "" && strings.EqualFold(stripZenOpencodePrefix(item.ID), cleanModel) {
+		if item.ID != "" && strings.EqualFold(zen.StripOpencodePrefix(item.ID), cleanModel) {
 			return item, true
 		}
 		if item.Alias != "" && (strings.EqualFold(strings.TrimSpace(item.Alias), strings.TrimSpace(model)) ||
-			strings.EqualFold(stripZenOpencodePrefix(item.Alias), cleanModel)) {
+			strings.EqualFold(zen.StripOpencodePrefix(item.Alias), cleanModel)) {
 			return item, true
 		}
 	}
 	return config.ZenModelConfig{}, false
 }
 
-// stripZenOpencodePrefix trims space and removes a leading "opencode/"
-// (case-insensitive).
-func stripZenOpencodePrefix(s string) string {
-	trimmed := strings.TrimSpace(s)
-	if len(trimmed) >= 9 && strings.EqualFold(trimmed[:9], "opencode/") {
-		return strings.TrimSpace(trimmed[9:])
-	}
-	return trimmed
-}
-
-// zenTargetModel returns the raw Zen model ID with any "opencode/" prefix
-// stripped — the value actually sent upstream.
+// zenTargetModel returns the canonical catalog spelling of the Zen model ID —
+// the value actually sent upstream. Zen's catalog ids are lowercase; without
+// this an allowlist entry spelled `Claude-Sonnet-4-6` would be forwarded
+// verbatim after passing the case-insensitive wire guard.
 func zenTargetModel(entry config.ZenModelConfig) string {
-	return stripZenOpencodePrefix(entry.ID)
+	if canonical, ok := zen.CanonicalAnthropicWireID(entry.ID); ok {
+		return canonical
+	}
+	return zen.StripOpencodePrefix(entry.ID)
 }
 
 // claudeCodeEntryMaxOutput returns the allowlist entry's MaxOutputTokens for
