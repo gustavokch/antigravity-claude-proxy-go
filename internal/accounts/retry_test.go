@@ -415,6 +415,51 @@ func TestDispatcherRequestThrottlingAndConfigUpdate(t *testing.T) {
 	}
 }
 
+// The catalog fetch is a rare background refresh on a 30s budget, not
+// hot-loop generation: request throttling must not gate it. A requestDelayMs
+// above fetchModelsTimeout (e.g. 60s) otherwise guarantees "context deadline
+// exceeded" on every refresh, and through it on every Cloud Code request past
+// the catalog TTL.
+func TestFetchAvailableModelsIgnoresRequestThrottle(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	account := testAccount("catalog-throttle@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var sleepDurations []time.Duration
+	sleep := func(_ context.Context, d time.Duration) error {
+		mu.Lock()
+		defer mu.Unlock()
+		sleepDurations = append(sleepDurations, d)
+		return nil
+	}
+
+	client := &scriptedClient{}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-catalog"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-catalog": client}, now, sleep)
+	dispatcher.UpdateConfig(config.Config{
+		RequestThrottlingEnabled: true,
+		RequestDelayMs:           60000,
+	})
+
+	if _, err := dispatcher.FetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("FetchAvailableModels failed: %v", err)
+	}
+	if dispatcher.CachedCatalog() == nil {
+		t.Fatal("expected the fetch to populate the cached catalog")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sleepDurations) != 0 {
+		t.Fatalf("catalog fetch slept %d time(s) despite throttling exemption — a requestDelayMs above fetchModelsTimeout would deadlock every refresh", len(sleepDurations))
+	}
+}
+
 // A flat cooldown made the proxy re-probe a throttled model ~38 times across
 // the 2026-09-17 wave. Each tier must strictly exceed the previous one.
 func TestSmartBackoffRateLimitEscalates(t *testing.T) {

@@ -366,7 +366,16 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 
 	modelSet := make(map[string]bool)
 	modelContext := make(map[string]any)
-	if catalog, err := server.fetchModelCatalog(request.Context()); err == nil && catalog != nil {
+	// Prefer the cached catalog: /account-limits is a poll endpoint and must
+	// never block on upstream I/O. A blocking refresh is only attempted on
+	// cold start, when no fetch has ever succeeded.
+	catalog := server.cachedModelCatalog()
+	if catalog == nil {
+		if fresh, err := server.fetchModelCatalog(request.Context()); err == nil {
+			catalog = fresh
+		}
+	}
+	if catalog != nil {
 		for _, m := range catalog.Selectable() {
 			if m.ID == "" {
 				continue

@@ -18,6 +18,7 @@ import (
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/logger"
+	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/stats"
 )
 
@@ -89,6 +90,60 @@ func (m *mockRefresherBackend) StreamGenerateContent(context.Context, map[string
 func (m *mockRefresherBackend) RefreshAccount(ctx context.Context, email string) (*accounts.Account, error) {
 	m.acc.Subscription = accounts.Subscription{Tier: "pro", ProjectID: "proj-123"}
 	return m.acc, nil
+}
+
+// cachedCatalogStub retains one catalog and counts blocking refreshes, so the
+// test proves /account-limits serves the cache without upstream I/O.
+type cachedCatalogStub struct {
+	catalog    *modelcatalog.Catalog
+	fetchCalls int
+}
+
+func (m *cachedCatalogStub) FetchAvailableModels(context.Context) (cloudcode.Response, error) {
+	m.fetchCalls++
+	return cloudcode.Response{}, context.DeadlineExceeded
+}
+
+func (m *cachedCatalogStub) StreamGenerateContent(context.Context, map[string]any, func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	return cloudcode.Response{}, nil
+}
+
+func (m *cachedCatalogStub) CachedCatalog() *modelcatalog.Catalog { return m.catalog }
+
+func TestAccountLimitsServesCachedCatalogWithoutRefresh(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	catalog, err := modelcatalog.Parse([]byte(`{
+		"defaultAgentModelId":"cached-model",
+		"agentModelSorts":[{"groups":[{"modelIds":["cached-model"]}]}],
+		"models":{"cached-model":{"displayName":"Cached Model","maxTokens":200000,"maxOutputTokens":32000}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &cachedCatalogStub{catalog: catalog}
+	server.backend = stub
+
+	req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if stub.fetchCalls != 0 {
+		t.Fatalf("FetchAvailableModels calls=%d; want 0 (cached catalog must serve without upstream I/O)", stub.fetchCalls)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	modelContext, ok := res["modelContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected modelContext in response, got keys: %v", res)
+	}
+	if _, ok := modelContext["cached-model"]; !ok {
+		t.Fatalf("expected cached-model in modelContext, got %v", modelContext)
+	}
 }
 
 func TestManagement_HealthAndLimits(t *testing.T) {

@@ -565,6 +565,23 @@ func containsString(values []string, wanted string) bool {
 	return false
 }
 
+// cachedCatalogBackend is implemented by backends that retain the last
+// fetched model catalog. Read-only status endpoints prefer it over a
+// blocking refresh so a poll can never stall on upstream I/O.
+type cachedCatalogBackend interface {
+	CachedCatalog() *modelcatalog.Catalog
+}
+
+// cachedModelCatalog returns the backend's last fetched catalog without any
+// upstream I/O. It returns nil when the backend retains none (or is not a
+// retaining backend); callers fall back to fetchModelCatalog then.
+func (server *Server) cachedModelCatalog() *modelcatalog.Catalog {
+	if backend, ok := server.backend.(cachedCatalogBackend); ok {
+		return backend.CachedCatalog()
+	}
+	return nil
+}
+
 func (server *Server) fetchModelCatalog(ctx context.Context) (*modelcatalog.Catalog, error) {
 	var response cloudcode.Response
 	var err error

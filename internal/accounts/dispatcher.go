@@ -276,15 +276,12 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 			lastError = err
 			continue
 		}
-		dispatcher.mu.RLock()
-		throttling := dispatcher.requestThrottlingEnabled
-		delay := dispatcher.requestDelay
-		dispatcher.mu.RUnlock()
-		if throttling && delay > 0 {
-			if err := dispatcher.sleep(ctx, delay); err != nil {
-				return cloudcode.Response{}, err
-			}
-		}
+		// No request-throttle sleep here by design. This fetch is a rare
+		// background refresh (once per ModelCacheTTL), not hot-loop
+		// generation, and it runs on a fetchCtx bounded by
+		// fetchModelsTimeout — any requestDelayMs above that budget would
+		// guarantee "context deadline exceeded" on every catalog refresh
+		// (and through it, on every Cloud Code request past the TTL).
 		modelsClient := dispatcher.client(selection.Account, credentials.AccessToken)
 		response, err := dispatcher.metered(selection.Account.Email, func() (cloudcode.Response, error) {
 			return modelsClient.FetchAvailableModels(ctx, dispatcher.project(selection.Account))
@@ -510,6 +507,16 @@ func (dispatcher *Dispatcher) storeCatalog(catalog *modelcatalog.Catalog) {
 	defer dispatcher.mu.Unlock()
 	dispatcher.catalog = catalog
 	dispatcher.catalogAt = dispatcher.now()
+}
+
+// CachedCatalog returns the last successfully fetched model catalog without
+// triggering an upstream refresh. It returns nil when no fetch has succeeded
+// yet. Read-only status endpoints (e.g. /account-limits) prefer this over a
+// blocking FetchAvailableModels so a poll can never stall on upstream I/O.
+func (dispatcher *Dispatcher) CachedCatalog() *modelcatalog.Catalog {
+	dispatcher.mu.RLock()
+	defer dispatcher.mu.RUnlock()
+	return dispatcher.catalog
 }
 
 func cloneRequest(request map[string]any) map[string]any {
