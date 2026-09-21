@@ -13,6 +13,7 @@ import (
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/openrouter"
+	"antigravity-go-proxy/internal/zen"
 )
 
 // cacheBumpTickingInterval is how often the scheduler looks for due bumps.
@@ -171,6 +172,8 @@ func (server *Server) cacheBumpSender() cachebump.Sender {
 			return server.sendClaudeCodeBump(ctx, rec)
 		case cachebump.RouteKimi:
 			return server.sendKimiBump(ctx, rec)
+		case cachebump.RouteZen:
+			return server.sendZenBump(ctx, rec)
 		case cachebump.RouteCustom:
 			return server.sendCustomBump(ctx, rec)
 		}
@@ -243,6 +246,22 @@ func (server *Server) sendKimiBump(ctx context.Context, rec cachebump.Record) (c
 	}
 	return postBumpRequest(ctx, rec, kimi.NormalizeBaseURL(kimiCfg.BaseURL)+"/v1/messages", func(hdr http.Header) {
 		hdr.Set("Authorization", "Bearer "+kimiCfg.APIKey)
+	})
+}
+
+// sendZenBump replays a bump against the currently configured Zen gateway.
+// The replay floor is minMaxTokensFloor (16), same as Kimi.
+func (server *Server) sendZenBump(ctx context.Context, rec cachebump.Record) (cachebump.BumpResult, error) {
+	zenCfg := config.Get().Zen
+	if zenCfg.BaseURL == "" {
+		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
+	}
+	key := zenAPIKey(zenCfg)
+	if key == "" {
+		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
+	}
+	return postBumpRequest(ctx, rec, zen.NormalizeBaseURL(zenCfg.BaseURL)+"/v1/messages", func(hdr http.Header) {
+		hdr.Set("Authorization", "Bearer "+key)
 	})
 }
 

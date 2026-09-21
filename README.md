@@ -437,7 +437,7 @@ retrying, once no account has capacity for its model:
 | Recognized classifier call, unsupported variant | unchanged | non-retryable 400, no retry/backoff |
 
 The gate applies only to requests bound for the account-backed dispatch path.
-Traffic routed to Kimi, Claude Code, OpenRouter or a custom endpoint carries
+Traffic routed to Kimi, Zen, Claude Code, OpenRouter or a custom endpoint carries
 its own credentials and never consumes account capacity, so it is never
 stubbed or failed by this flag. Streaming requests are also left alone: the
 canned verdict is a plain JSON body, which a caller awaiting
@@ -478,6 +478,59 @@ The OpenRouter Gateway allows querying OpenRouter's Anthropic-compatible message
 
 ---
 
+## OpenCode Zen Gateway
+
+The Zen Gateway forwards allowlisted models transparently to the OpenCode Zen
+Anthropic-compatible endpoint (`https://opencode.ai/zen/v1/messages`) with
+`Authorization: Bearer <key>` — no payload translation, same pattern as the
+Kimi gateway. Anthropic-compatible clients (Claude Code, Hermes) reach Zen
+models through the existing `POST /v1/messages` path.
+
+Phase 1 supports the Anthropic-wire subset only — Claude models and Qwen
+Anthropic variants:
+
+`claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`,
+`claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5`, `claude-sonnet-5`,
+`claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-sonnet-4`,
+`claude-haiku-4-5`, `qwen3.8-flash`, `qwen3.6-plus`, `qwen3.5-plus`.
+
+The other Zen wire formats are out of scope: `/zen/v1/responses` (GPT, Grok,
+Muse), `/zen/v1/chat/completions` (DeepSeek, MiniMax, GLM, Kimi, Big Pickle),
+`/zen/v1/models/<gemini-id>` (Gemini-native), and `/zen/v1/systemone` (Jev).
+The subset is a static list in code (`internal/zen`) because the Zen catalog
+carries no wire-format field; when OpenCode adds a model with an
+`@ai-sdk/anthropic` docs row, open an issue so the list can grow. A stale list
+fails closed (400 on an unknown id).
+
+Example `config.json`:
+
+```json
+{
+  "zen": {
+    "enabled": true,
+    "baseUrl": "https://opencode.ai/zen",
+    "apiKey": "sk-zen-...",
+    "allowlist": [
+      {"id": "claude-sonnet-4-6", "alias": "sonnet", "enabled": true}
+    ]
+  }
+}
+```
+
+- **Routing order**: ModelMapping → Kimi → Zen → Claude Code → OpenRouter →
+  CustomEndpoints → CloudCode. An explicit Zen allowlist entry wins on ID
+  collision (e.g. `claude-sonnet-4-6` exists in both Zen and CloudCode);
+  use aliases to disambiguate.
+- **Key**: `zen.apiKey`, with `OPENCODE_API_KEY` env fallback. The WebUI
+  reports the source as `keySource: "config"|"env"|"none"` and never echoes
+  the env value. OpenCode config ids use the `opencode/<model-id>` format;
+  the proxy strips the prefix on match.
+- **max_tokens**: filled, never 400 — client value → allowlist entry
+  `maxOutputTokens` → package default 32768. An explicit client value above
+  the default is not clamped.
+
+---
+
 ## Transparent Forwarding to Custom Endpoints
 
 Route non-Google models to external providers or local mock endpoints without payload conversion:
@@ -494,7 +547,7 @@ Anthropic prompt cache entries expire five minutes after their last read (one ho
 
 Bumping for a session stops automatically the moment it stops paying: a bump that reports `cache_creation_input_tokens > 0` with zero reads (`paid_write`), an upstream 4xx rejection, an unavailable recorded account, the per-session bump cap, or prolonged client idleness all end the schedule. A new real client turn re-arms the session.
 
-- **Routes**: Claude Code (bumps pinned to the account that owns the cache entry), Kimi, and custom endpoints. Not OpenRouter (provider failover can land the replay on a different provider) and not the Cloud Code / Gemini translation route (implicit caching).
+- **Routes**: Claude Code (bumps pinned to the account that owns the cache entry), Kimi, Zen, and custom endpoints. Not OpenRouter (provider failover can land the replay on a different provider) and not the Cloud Code / Gemini translation route (implicit caching).
 - **Enablement**: global switch plus per-route flags in the Web UI (Settings → Cache Bump), or per-session with the `X-Cache-Bump: on|off` request header when header overrides are allowed. `off` always disarms a request; `on` overrides the per-route flag but never the global switch, so turning Cache Bump off stops every route. The header is consumed by the proxy and never forwarded upstream.
 - **Safety**: request bodies live in memory only (a restart drops them), never touch disk, and are never exposed through the management API. Memory is bounded twice: by `maxSessions` and by a total body budget (`maxBodyMB`), so a handful of very long conversations cannot crowd out every other session.
 - **Key settings** (`config.json` → `cacheBump`): `enabled`, `allowHeaderOverride`, `leadSeconds` (default 60), `maxBumpsPerSession` (default 48), `maxIdleMinutes` (default 240), `maxSessions` (default 200), `maxBodyMB` (default 64), `routes.claudecode` / `routes.kimi` / `routes.customEndpoints`.

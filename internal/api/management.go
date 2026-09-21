@@ -21,6 +21,7 @@ import (
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
+	"antigravity-go-proxy/internal/zen"
 )
 
 func (server *Server) checkWebUIPassword(request *http.Request) bool {
@@ -214,6 +215,15 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	case path == "/api/kimi/models/fetch" && method == http.MethodPost:
 		server.handleKimiModelsFetch(writer, request)
+		return true
+	case path == "/api/zen/config" && method == http.MethodGet:
+		server.handleZenConfigGet(writer, request)
+		return true
+	case path == "/api/zen/config" && method == http.MethodPost:
+		server.handleZenConfigSave(writer, request)
+		return true
+	case path == "/api/zen/models/fetch" && method == http.MethodPost:
+		server.handleZenModelsFetch(writer, request)
 		return true
 	case path == "/api/auth/url" && method == http.MethodGet:
 		server.handleAuthURLGet(writer, request)
@@ -439,6 +449,22 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	}
 	if cfg.Kimi.Enabled {
 		for _, m := range cfg.Kimi.Allowlist {
+			if m.ID != "" {
+				modelSet[m.ID] = true
+				if m.ContextLen > 0 {
+					modelContext[m.ID] = m.ContextLen
+				}
+			}
+			if m.Alias != "" {
+				modelSet[m.Alias] = true
+				if m.ContextLen > 0 {
+					modelContext[m.Alias] = m.ContextLen
+				}
+			}
+		}
+	}
+	if cfg.Zen.Enabled {
+		for _, m := range cfg.Zen.Allowlist {
 			if m.ID != "" {
 				modelSet[m.ID] = true
 				if m.ContextLen > 0 {
@@ -679,6 +705,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		"customEndpoints":      publicCfg["customEndpoints"],
 		"openrouter":           publicCfg["openrouter"],
 		"kimi":                 publicCfg["kimi"],
+		"zen":                  publicCfg["zen"],
 		"claudecode":           publicCfg["claudecode"],
 		"globalQuotaThreshold": cfg.GlobalQuotaThreshold,
 		"accounts":             result,
@@ -1118,6 +1145,9 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 	if updater, ok := server.backend.(ConfigUpdater); ok {
 		updater.UpdateConfig(updated)
 	}
+	// Any config save may have fixed or broken the Zen key: re-arm the
+	// one-shot keyless warning (see resetZenKeylessWarning).
+	resetZenKeylessWarning()
 	server.applyHeadroomConfig(updated.Headroom)
 	server.applyClassifierConfig(updated.Classifier)
 
@@ -1837,6 +1867,132 @@ func (server *Server) handleKimiModelsFetch(writer http.ResponseWriter, request 
 		"status": "ok",
 		"models": models,
 		"total":  len(models),
+	})
+}
+
+// zenKeySource reports where the Zen gateway key comes from: "config" when
+// zen.apiKey is set, "env" when only OPENCODE_API_KEY is set, "none" when
+// neither is. The env value itself is never echoed.
+func zenKeySource(cfg config.ZenConfig) string {
+	if cfg.APIKey != "" {
+		return "config"
+	}
+	if zenAPIKey(cfg) != "" {
+		return "env"
+	}
+	return "none"
+}
+
+func (server *Server) handleZenConfigGet(writer http.ResponseWriter, request *http.Request) {
+	pub := config.GetPublicConfig()
+	zenMap, _ := pub["zen"].(map[string]any)
+	if zenMap == nil {
+		zenMap = map[string]any{
+			"enabled":   false,
+			"baseUrl":   zen.DefaultBaseURL,
+			"hasApiKey": false,
+			"allowlist": []any{},
+		}
+	}
+	cfg := config.Get()
+	source := zenKeySource(cfg.Zen)
+	zenMap["keySource"] = source
+	if source != "none" {
+		zenMap["hasApiKey"] = true
+	}
+	activeCount := 0
+	if cfg.Zen.Enabled {
+		for _, m := range cfg.Zen.Allowlist {
+			if m.Enabled {
+				activeCount++
+			}
+		}
+	}
+	zenMap["activeModelCount"] = activeCount
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status": "ok",
+		"config": zenMap,
+	})
+}
+
+func (server *Server) handleZenConfigSave(writer http.ResponseWriter, request *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid JSON: " + err.Error()})
+		return
+	}
+	saved, err := config.Save(map[string]any{"zen": body})
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": "Failed to save config: " + err.Error()})
+		return
+	}
+	if updater, ok := server.backend.(ConfigUpdater); ok {
+		updater.UpdateConfig(saved)
+	}
+	pub := config.GetPublicConfig()
+	zenMap, _ := pub["zen"].(map[string]any)
+	if zenMap != nil {
+		source := zenKeySource(saved.Zen)
+		zenMap["keySource"] = source
+		if source != "none" {
+			zenMap["hasApiKey"] = true
+		}
+	}
+	// Re-arm the one-shot keyless warning so a later misconfiguration warns
+	// again instead of staying silent for the process lifetime.
+	resetZenKeylessWarning()
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status": "ok",
+		"config": zenMap,
+	})
+}
+
+func (server *Server) handleZenModelsFetch(writer http.ResponseWriter, request *http.Request) {
+	var req struct {
+		APIKey  string `json:"apiKey,omitempty"`
+		BaseURL string `json:"baseUrl,omitempty"`
+	}
+	_ = json.NewDecoder(request.Body).Decode(&req)
+	cfg := config.Get()
+	apiKey := req.APIKey
+	if apiKey == "" {
+		apiKey = cfg.Zen.APIKey
+	}
+	baseURL := req.BaseURL
+	if baseURL == "" {
+		baseURL = cfg.Zen.BaseURL
+	}
+	if baseURL == "" {
+		baseURL = zen.DefaultBaseURL
+	}
+	// An empty key is not an error: the catalog endpoint answers
+	// unauthenticated, so the picker populates before a key is pasted.
+	models, err := zen.DefaultClient.FetchModels(request.Context(), apiKey, baseURL)
+	if err != nil {
+		writeJSON(writer, http.StatusBadGateway, map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
+	}
+	if models == nil {
+		models = []zen.ModelItem{}
+	}
+	anthropic := make([]zen.ModelItem, 0, len(models))
+	other := make([]zen.ModelItem, 0)
+	for _, m := range models {
+		if zen.IsAnthropicWire(m.ID) {
+			anthropic = append(anthropic, m)
+		} else {
+			other = append(other, m)
+		}
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"status":    "ok",
+		"models":    anthropic,
+		"other":     other,
+		"total":     len(models),
+		"anthropic": len(anthropic),
 	})
 }
 

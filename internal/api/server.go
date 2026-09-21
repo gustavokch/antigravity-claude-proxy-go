@@ -17,10 +17,12 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -43,6 +45,7 @@ import (
 	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
+	"antigravity-go-proxy/internal/zen"
 )
 
 const (
@@ -622,6 +625,54 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 			}
 		}
 	}
+	if cfg.Zen.Enabled {
+		for _, item := range cfg.Zen.Allowlist {
+			if !item.Enabled {
+				continue
+			}
+			if !zen.IsAnthropicWire(item.ID) {
+				continue
+			}
+			desc := item.DisplayName
+			if desc == "" {
+				desc = item.ID
+			}
+			contextLen := item.ContextLen
+			if contextLen <= 0 {
+				contextLen = defaultDiscoveryContextWindow
+			}
+			maxOutput := item.MaxOutputTokens
+			if maxOutput <= 0 {
+				// Zen's catalog states no output cap, but the forward path fills
+				// max_tokens from this same constant — advertise what we will send.
+				maxOutput = zen.DefaultMaxOutputTokens
+			}
+			models = append(models, map[string]any{
+				"id":                item.ID,
+				"object":            "model",
+				"created":           server.now().Unix(),
+				"owned_by":          "zen",
+				"description":       desc,
+				"display_name":      desc,
+				"context_window":    contextLen,
+				"max_output_tokens": maxOutput,
+				"supports_thinking": true,
+			})
+			if item.Alias != "" && item.Alias != item.ID {
+				models = append(models, map[string]any{
+					"id":                item.Alias,
+					"object":            "model",
+					"created":           server.now().Unix(),
+					"owned_by":          "zen",
+					"description":       desc + " (Alias)",
+					"display_name":      desc + " (Alias)",
+					"context_window":    contextLen,
+					"max_output_tokens": maxOutput,
+					"supports_thinking": true,
+				})
+			}
+		}
+	}
 
 	writeJSON(writer, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
@@ -982,6 +1033,20 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			return
 		}
 	}
+	if cfg.Zen.Enabled {
+		if zenEntry, ok := matchZenModelEntry(cfg.Zen, model); ok {
+			target := zenTargetModel(zenEntry)
+			anthropicRequest["model"] = target
+			reqBody, err := json.Marshal(anthropicRequest)
+			if err != nil {
+				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error",
+					"Failed to marshal Zen request: "+err.Error())
+				return
+			}
+			server.forwardToZen(writer, request, cfg.Zen, reqBody, anthropicRequest, target, zenEntry)
+			return
+		}
+	}
 	if cfg.ClaudeCode.Enabled {
 		if ccMatch := matchClaudeCodeModel(cfg.ClaudeCode, model); ccMatch != "" {
 			anthropicRequest["model"] = ccMatch
@@ -1031,8 +1096,8 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 
 	// Classifier fallback on exhaustion is evaluated here, after every
-	// alternate-backend route has had its chance to return: Kimi, Claude Code,
-	// OpenRouter and custom endpoints carry their own credentials and never
+	// alternate-backend route has had its chance to return: Kimi, Zen,
+	// Claude Code, OpenRouter and custom endpoints carry their own credentials and never
 	// consume account capacity, so account exhaustion says nothing about
 	// whether those requests would stall. Only the account-backed dispatch path
 	// below is gated.
@@ -1412,6 +1477,183 @@ func (server *Server) kimiInstrumentResponse(resp *http.Response, model, session
 	resp.Header.Set("Content-Length", strconv.Itoa(len(respBytes)))
 }
 
+// zenAPIKey resolves the Zen gateway key: config first, then the
+// OPENCODE_API_KEY env fallback. Empty means no key from either source.
+// The two call sites (forward path, cache-bump replay) share this helper so
+// they cannot drift.
+func zenAPIKey(cfg config.ZenConfig) string {
+	if cfg.APIKey != "" {
+		return cfg.APIKey
+	}
+	return os.Getenv("OPENCODE_API_KEY")
+}
+
+// forwardToZen transparently forwards an /v1/messages request to the OpenCode
+// Zen gateway. The Zen Anthropic-wire endpoint needs no translation: we
+// rewrite Authorization, preserve the Anthropic version/beta headers, and
+// stream the response back. When CCR is enabled, it hydrates headroom_retrieve calls.
+func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Request, zenCfg config.ZenConfig, body []byte, anthropicRequest map[string]any, model string, zenEntry config.ZenModelConfig) {
+	key := zenAPIKey(zenCfg)
+	if key == "" {
+		// Defence-in-depth: matchZenModelEntry must reject keyless configs
+		// before this point, so reaching here is a programming error.
+		writeAPIError(writer, http.StatusInternalServerError, "api_error", "Zen route claimed without a resolved API key (zen.apiKey or OPENCODE_API_KEY)")
+		return
+	}
+	if !zen.IsAnthropicWire(model) {
+		// Defence-in-depth: matchZenModelEntry must reject non-wire entries
+		// before this point, so reaching here is a programming error.
+		writeAPIError(writer, http.StatusInternalServerError, "api_error",
+			"Model "+model+" claimed the Zen route but is not in the Anthropic-wire subset")
+		return
+	}
+	// max_tokens fill, not clamp: the Zen catalog carries no output limit, so
+	// an omitted client value falls back to the allowlist entry, then to the
+	// package default. The default must not be passed as applyMaxTokensPolicy's
+	// derivedLimit — that would silently cut an explicit client value down.
+	if _, present := anthropicRequest["max_tokens"]; !present {
+		fill := zenEntry.MaxOutputTokens
+		if fill <= 0 {
+			fill = zen.DefaultMaxOutputTokens
+		}
+		next := maps.Clone(anthropicRequest)
+		next["max_tokens"] = fill
+		remarshaled, err := json.Marshal(next)
+		if err != nil {
+			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error",
+				"Failed to marshal Zen request: "+err.Error())
+			return
+		}
+		anthropicRequest = next
+		body = remarshaled
+	}
+	body = applyMaxTokensPolicy(body, anthropicRequest, zenEntry.MaxOutputTokens, 0)
+
+	if server.logger != nil {
+		server.logger.Info("zen forward", "model", model)
+	}
+
+	startTime := server.nowTime()
+	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
+
+	if !server.isCCREnabled() {
+		modify := func(resp *http.Response) error {
+			if resp.StatusCode < 400 {
+				server.maybeRecordCacheBump(cachebump.RouteZen, request, body, sessionKey, model, "", "", minMaxTokensFloor)
+				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
+			}
+			return nil
+		}
+		zen.ForwardMessagesWithModify(writer, request, zenCfg.BaseURL, key, body, modify)
+		return
+	}
+
+	var reqMap map[string]any
+	if err := json.Unmarshal(body, &reqMap); err != nil {
+		modify := func(resp *http.Response) error {
+			if resp.StatusCode < 400 {
+				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
+			}
+			return nil
+		}
+		zen.ForwardMessagesWithModify(writer, request, zenCfg.BaseURL, key, body, modify)
+		return
+	}
+
+	targetURL := zen.NormalizeBaseURL(zenCfg.BaseURL) + "/v1/messages"
+	sender := func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBytes))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+key)
+		if v := request.Header.Get("anthropic-version"); v != "" {
+			httpReq.Header.Set("anthropic-version", v)
+		} else {
+			httpReq.Header.Set("anthropic-version", "2023-06-01")
+		}
+		if b := request.Header.Get("anthropic-beta"); b != "" {
+			httpReq.Header.Set("anthropic-beta", b)
+		}
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err == nil && resp.StatusCode < 400 {
+			server.maybeRecordCacheBump(cachebump.RouteZen, request, reqBytes, sessionKey, model, "", "", minMaxTokensFloor)
+		}
+		return resp, err
+	}
+
+	opts := server.defaultCCROptions(sender)
+	opts.OnUsage = func(in, out, cr, cw int) {
+		latency := server.nowTime().Sub(startTime)
+		metrics := zen.RequestMetrics{
+			Model:               model,
+			SessionID:           sessionKey,
+			InputTokens:         in,
+			OutputTokens:        out,
+			CacheReadTokens:     cr,
+			CacheCreationTokens: cw,
+			Latency:             latency,
+		}
+		metrics.ComputeFinalMetrics()
+		zen.LogObservability(server.logger, metrics)
+		if server.tracker != nil {
+			server.tracker.TrackRequest(model, latency, in, out, cr)
+		}
+	}
+
+	isStreaming, _ := reqMap["stream"].(bool)
+	if isStreaming {
+		_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
+	} else {
+		_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
+	}
+}
+
+func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionID string, startTime time.Time) {
+	onComplete := func(in, out, cr, cw int) {
+		latency := server.nowTime().Sub(startTime)
+		metrics := zen.RequestMetrics{
+			Model:               model,
+			SessionID:           sessionID,
+			InputTokens:         in,
+			OutputTokens:        out,
+			CacheReadTokens:     cr,
+			CacheCreationTokens: cw,
+			Latency:             latency,
+		}
+		metrics.ComputeFinalMetrics()
+		zen.LogObservability(server.logger, metrics)
+		if server.tracker != nil {
+			server.tracker.TrackRequest(model, latency, in, out, cr)
+		}
+	}
+	if ccIsSSEResponse(resp.Header) {
+		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
+		return
+	}
+	respBytes, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+		return
+	}
+	payloadBytes := respBytes
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
+			if decompressed, err := io.ReadAll(gz); err == nil {
+				payloadBytes = decompressed
+			}
+			_ = gz.Close()
+		}
+	}
+	in, out, cr, cw := openrouter.ParseUsageFromJSON(payloadBytes)
+	onComplete(in, out, cr, cw)
+	resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+	resp.ContentLength = int64(len(respBytes))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(respBytes)))
+}
+
 func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {
 	return CCRProxyOptions{
 		IsCCREnabled: func() bool {
@@ -1564,6 +1806,78 @@ func stripKimi1mSuffix(s string) string {
 		return strings.TrimSpace(trimmed[:len(trimmed)-4])
 	}
 	return trimmed
+}
+
+var zenKeylessWarned atomic.Bool
+
+// resetZenKeylessWarning re-arms the one-shot keyless warning. Called from the
+// config-update path so a later misconfiguration warns again.
+func resetZenKeylessWarning() { zenKeylessWarned.Store(false) }
+
+// matchZenModelEntry returns the enabled allowlist entry matching `model` by
+// either ID or alias. Returns ok=false if no match. A leading "opencode/"
+// prefix (case-insensitive) is stripped from both sides before compare, so
+// `opencode/claude-sonnet-4-6` matches allowlist id `claude-sonnet-4-6`.
+//
+// Only entries the route can actually serve claim it: the entry ID must be in
+// the Anthropic-wire subset and a key must resolve. Anything else falls
+// through to Claude Code / OpenRouter / CloudCode. A keyless config with
+// enabled entries emits a one-shot slog.Warn (re-armed on config change)
+// instead of failing the request.
+func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConfig, bool) {
+	if strings.TrimSpace(model) == "" {
+		return config.ZenModelConfig{}, false
+	}
+	// Key check hoisted out of the loop: a keyless Zen config is
+	// indistinguishable from an unused gateway, so it must not claim the
+	// route. Diagnosability comes from the one-shot warn below.
+	if zenAPIKey(cfg) == "" {
+		enabled := 0
+		for _, item := range cfg.Allowlist {
+			if item.Enabled {
+				enabled++
+			}
+		}
+		if enabled > 0 && zenKeylessWarned.CompareAndSwap(false, true) {
+			slog.Warn("zen gateway enabled with allowlisted models but no API key resolved; these models will fall through to other backends",
+				"models", enabled, "hint", "set zen.apiKey or OPENCODE_API_KEY")
+		}
+		return config.ZenModelConfig{}, false
+	}
+	cleanModel := zen.StripOpencodePrefix(model)
+	if cleanModel == "" {
+		return config.ZenModelConfig{}, false
+	}
+	for _, item := range cfg.Allowlist {
+		if !item.Enabled {
+			continue
+		}
+		// Wire gate on the entry ID — the value actually forwarded upstream.
+		// A non-wire entry never claims the route, so it cannot shadow a
+		// backend that can serve the model.
+		if !zen.IsAnthropicWire(zen.StripOpencodePrefix(item.ID)) {
+			continue
+		}
+		if item.ID != "" && strings.EqualFold(zen.StripOpencodePrefix(item.ID), cleanModel) {
+			return item, true
+		}
+		if item.Alias != "" && (strings.EqualFold(strings.TrimSpace(item.Alias), strings.TrimSpace(model)) ||
+			strings.EqualFold(zen.StripOpencodePrefix(item.Alias), cleanModel)) {
+			return item, true
+		}
+	}
+	return config.ZenModelConfig{}, false
+}
+
+// zenTargetModel returns the canonical catalog spelling of the Zen model ID —
+// the value actually sent upstream. Zen's catalog ids are lowercase; without
+// this an allowlist entry spelled `Claude-Sonnet-4-6` would be forwarded
+// verbatim after passing the case-insensitive wire guard.
+func zenTargetModel(entry config.ZenModelConfig) string {
+	if canonical, ok := zen.CanonicalAnthropicWireID(entry.ID); ok {
+		return canonical
+	}
+	return zen.StripOpencodePrefix(entry.ID)
 }
 
 // claudeCodeEntryMaxOutput returns the allowlist entry's MaxOutputTokens for
