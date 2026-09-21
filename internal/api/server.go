@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -1495,12 +1496,16 @@ func zenAPIKey(cfg config.ZenConfig) string {
 func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Request, zenCfg config.ZenConfig, body []byte, anthropicRequest map[string]any, model string, zenEntry config.ZenModelConfig) {
 	key := zenAPIKey(zenCfg)
 	if key == "" {
-		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Zen gateway enabled but no API key configured (zen.apiKey or OPENCODE_API_KEY)")
+		// Defence-in-depth: matchZenModelEntry must reject keyless configs
+		// before this point, so reaching here is a programming error.
+		writeAPIError(writer, http.StatusInternalServerError, "api_error", "Zen route claimed without a resolved API key (zen.apiKey or OPENCODE_API_KEY)")
 		return
 	}
 	if !zen.IsAnthropicWire(model) {
-		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error",
-			"Model "+model+" is not in the Zen Anthropic-wire subset and cannot be forwarded to /zen/v1/messages")
+		// Defence-in-depth: matchZenModelEntry must reject non-wire entries
+		// before this point, so reaching here is a programming error.
+		writeAPIError(writer, http.StatusInternalServerError, "api_error",
+			"Model "+model+" claimed the Zen route but is not in the Anthropic-wire subset")
 		return
 	}
 	// max_tokens fill, not clamp: the Zen catalog carries no output limit, so
@@ -1804,12 +1809,40 @@ func stripKimi1mSuffix(s string) string {
 	return trimmed
 }
 
+var zenKeylessWarned atomic.Bool
+
+// resetZenKeylessWarning re-arms the one-shot keyless warning. Called from the
+// config-update path so a later misconfiguration warns again.
+func resetZenKeylessWarning() { zenKeylessWarned.Store(false) }
+
 // matchZenModelEntry returns the enabled allowlist entry matching `model` by
 // either ID or alias. Returns ok=false if no match. A leading "opencode/"
 // prefix (case-insensitive) is stripped from both sides before compare, so
 // `opencode/claude-sonnet-4-6` matches allowlist id `claude-sonnet-4-6`.
+//
+// Only entries the route can actually serve claim it: the entry ID must be in
+// the Anthropic-wire subset and a key must resolve. Anything else falls
+// through to Claude Code / OpenRouter / CloudCode. A keyless config with
+// enabled entries emits a one-shot slog.Warn (re-armed on config change)
+// instead of failing the request.
 func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConfig, bool) {
 	if strings.TrimSpace(model) == "" {
+		return config.ZenModelConfig{}, false
+	}
+	// Key check hoisted out of the loop: a keyless Zen config is
+	// indistinguishable from an unused gateway, so it must not claim the
+	// route. Diagnosability comes from the one-shot warn below.
+	if zenAPIKey(cfg) == "" {
+		enabled := 0
+		for _, item := range cfg.Allowlist {
+			if item.Enabled {
+				enabled++
+			}
+		}
+		if enabled > 0 && zenKeylessWarned.CompareAndSwap(false, true) {
+			slog.Warn("zen gateway enabled with allowlisted models but no API key resolved; these models will fall through to other backends",
+				"models", enabled, "hint", "set zen.apiKey or OPENCODE_API_KEY")
+		}
 		return config.ZenModelConfig{}, false
 	}
 	cleanModel := stripZenOpencodePrefix(model)
@@ -1818,6 +1851,12 @@ func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConf
 	}
 	for _, item := range cfg.Allowlist {
 		if !item.Enabled {
+			continue
+		}
+		// Wire gate on the entry ID — the value actually forwarded upstream.
+		// A non-wire entry never claims the route, so it cannot shadow a
+		// backend that can serve the model.
+		if !zen.IsAnthropicWire(stripZenOpencodePrefix(item.ID)) {
 			continue
 		}
 		if item.ID != "" && strings.EqualFold(stripZenOpencodePrefix(item.ID), cleanModel) {

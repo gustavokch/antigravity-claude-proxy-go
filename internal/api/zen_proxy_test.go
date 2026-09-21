@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -175,25 +177,172 @@ func TestServer_ForwardToZen_SSE(t *testing.T) {
 	}
 }
 
-func TestServer_ForwardToZen_NoKey400(t *testing.T) {
+func TestServer_Messages_KeylessZenEntryFallsThrough(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+	resetZenKeylessWarning()
+
+	zenHit := false
+	zenStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zenHit = true
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer zenStub.Close()
+
+	var customHit bool
+	customTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		customHit = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_custom","content":[{"type":"text","text":"custom_ok"}]}`))
+	}))
+	defer customTarget.Close()
+
+	saveZenTestConfig(t, map[string]any{
+		"enabled": true,
+		"baseUrl": zenStub.URL,
+		"allowlist": []map[string]any{
+			{"id": "claude-sonnet-4-6", "enabled": true},
+		},
+	})
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"claude-sonnet-4-6": map[string]any{
+				"url":    customTarget.URL,
+				"apiKey": "custom-secret",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("config.Save customEndpoints: %v", err)
+	}
+
+	rec := postZenMessages(t, newZenTestServer(t),
+		`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
+
+	if zenHit {
+		t.Error("keyless Zen config must not claim the route (Zen upstream was hit)")
+	}
+	if !customHit {
+		t.Fatalf("keyless Zen entry must fall through to the custom endpoint; status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != 200 {
+		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMatchZenModelEntry_SkipsWhenNoKey(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "")
+	resetZenKeylessWarning()
+	cfg := config.ZenConfig{Enabled: true, Allowlist: []config.ZenModelConfig{
+		{ID: "claude-sonnet-4-6", Enabled: true},
+	}}
+	if _, ok := matchZenModelEntry(cfg, "claude-sonnet-4-6"); ok {
+		t.Fatal("no key configured; Zen must not claim the route")
+	}
+}
+
+func TestMatchZenModelEntry_KeylessWarnsOnceAndRearms(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "")
+	resetZenKeylessWarning()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev); resetZenKeylessWarning() })
+
+	cfg := config.ZenConfig{Enabled: true, Allowlist: []config.ZenModelConfig{
+		{ID: "claude-sonnet-4-6", Enabled: true},
+	}}
+	if _, ok := matchZenModelEntry(cfg, "claude-sonnet-4-6"); ok {
+		t.Fatal("keyless config must not match")
+	}
+	if _, ok := matchZenModelEntry(cfg, "claude-sonnet-4-6"); ok {
+		t.Fatal("keyless config must not match")
+	}
+	if got := bytes.Count(buf.Bytes(), []byte("fall through")); got != 1 {
+		t.Fatalf("keyless warn fired %d times, want exactly once; log=%q", got, buf.String())
+	}
+	resetZenKeylessWarning()
+	if _, ok := matchZenModelEntry(cfg, "claude-sonnet-4-6"); ok {
+		t.Fatal("keyless config must not match")
+	}
+	if got := bytes.Count(buf.Bytes(), []byte("fall through")); got != 2 {
+		t.Fatalf("keyless warn fired %d times after re-arm, want 2; log=%q", got, buf.String())
+	}
+}
+
+func TestMatchZenModelEntry_SkipsNonAnthropicWire(t *testing.T) {
+	cfg := config.ZenConfig{
+		Enabled: true,
+		APIKey:  "sk-test",
+		Allowlist: []config.ZenModelConfig{
+			{ID: "gpt-5", Enabled: true},
+			{ID: "claude-sonnet-4-6", Enabled: true},
+		},
+	}
+	if _, ok := matchZenModelEntry(cfg, "gpt-5"); ok {
+		t.Fatal("gpt-5 is not Anthropic-wire; it must not claim the Zen route")
+	}
+	if _, ok := matchZenModelEntry(cfg, "claude-sonnet-4-6"); !ok {
+		t.Fatal("claude-sonnet-4-6 must still match")
+	}
+}
+
+func TestServer_Messages_NonWireZenEntryFallsThrough(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("OPENCODE_API_KEY", "")
 
+	zenHit := false
+	zenStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zenHit = true
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer zenStub.Close()
+
+	var customHit bool
+	customTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		customHit = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_custom","content":[{"type":"text","text":"custom_ok"}]}`))
+	}))
+	defer customTarget.Close()
+
 	saveZenTestConfig(t, map[string]any{
 		"enabled": true,
-		"baseUrl": "http://127.0.0.1:1",
+		"apiKey":  "sk-zen-test",
+		"baseUrl": zenStub.URL,
 		"allowlist": []map[string]any{
-			{"id": "claude-sonnet-4-6", "enabled": true},
+			{"id": "gpt-5", "enabled": true},
 		},
 	})
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"gpt-5": map[string]any{
+				"url":    customTarget.URL,
+				"apiKey": "custom-secret",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("config.Save customEndpoints: %v", err)
+	}
 
 	rec := postZenMessages(t, newZenTestServer(t),
-		`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
+		`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
 
-	if rec.Code != 400 {
-		t.Fatalf("client status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	if zenHit {
+		t.Error("non-wire Zen entry must not claim the route (Zen upstream was hit)")
+	}
+	if !customHit {
+		t.Fatalf("non-wire Zen entry must fall through to the custom endpoint; status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != 200 {
+		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -227,29 +376,28 @@ func TestServer_ForwardToZen_EnvKeyFallback(t *testing.T) {
 	}
 }
 
-func TestServer_ForwardToZen_NonAnthropicID400(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("OPENCODE_API_KEY", "")
+func TestServer_ForwardToZen_DefenceInDepthGuards(t *testing.T) {
+	// Direct calls to forwardToZen bypass matchZenModelEntry (the routing
+	// layer that now rejects keyless and non-wire configs). The forwarder
+	// keeps 500 guards so a programming error fails loud instead of sending
+	// an unauthenticated or misrouted request upstream.
+	server := newZenTestServer(t)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
+	reqMap := map[string]any{"model": "claude-sonnet-4-6", "max_tokens": 100}
 
-	saveZenTestConfig(t, map[string]any{
-		"enabled": true,
-		"apiKey":  "sk-zen-test",
-		"baseUrl": "http://127.0.0.1:1",
-		"allowlist": []map[string]any{
-			{"id": "gpt-5.5", "enabled": true},
-		},
-	})
-
-	rec := postZenMessages(t, newZenTestServer(t),
-		`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
-
-	if rec.Code != 400 {
-		t.Fatalf("client status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	server.forwardToZen(rec, req, config.ZenConfig{Enabled: true}, body, reqMap,
+		"claude-sonnet-4-6", config.ZenModelConfig{ID: "claude-sonnet-4-6", Enabled: true})
+	if rec.Code != 500 {
+		t.Errorf("keyless direct forward = %d, want 500; body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "gpt-5.5") {
-		t.Errorf("error should name the model, got %s", rec.Body.String())
+
+	rec2 := httptest.NewRecorder()
+	server.forwardToZen(rec2, req, config.ZenConfig{Enabled: true, APIKey: "sk-zen-test"}, body, reqMap,
+		"gpt-5.5", config.ZenModelConfig{ID: "gpt-5.5", Enabled: true})
+	if rec2.Code != 500 {
+		t.Errorf("non-wire direct forward = %d, want 500; body = %s", rec2.Code, rec2.Body.String())
 	}
 }
 
@@ -359,9 +507,10 @@ func TestServer_ForwardToZen_ExplicitMaxTokensNotClampedToDefault(t *testing.T) 
 }
 
 func TestMatchZenModelEntry(t *testing.T) {
-	cfg := config.ZenConfig{Allowlist: []config.ZenModelConfig{
+	cfg := config.ZenConfig{APIKey: "sk-test", Allowlist: []config.ZenModelConfig{
 		{ID: "claude-sonnet-4-6", Alias: "sonnet", Enabled: true},
 		{ID: "gpt-5.5", Enabled: false},
+		{ID: "gpt-5", Enabled: true},
 	}}
 	if _, ok := matchZenModelEntry(cfg, "sonnet"); !ok {
 		t.Error("alias match failed")
@@ -374,6 +523,9 @@ func TestMatchZenModelEntry(t *testing.T) {
 	}
 	if _, ok := matchZenModelEntry(cfg, "gpt-5.5"); ok {
 		t.Error("disabled entry should not match")
+	}
+	if _, ok := matchZenModelEntry(cfg, "gpt-5"); ok {
+		t.Error("enabled but non-Anthropic-wire entry should not match")
 	}
 	if _, ok := matchZenModelEntry(cfg, ""); ok {
 		t.Error("empty model should not match")
