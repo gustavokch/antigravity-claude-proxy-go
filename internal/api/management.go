@@ -1145,6 +1145,9 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 	if updater, ok := server.backend.(ConfigUpdater); ok {
 		updater.UpdateConfig(updated)
 	}
+	// Any config save may have fixed or broken the Zen key: re-arm the
+	// one-shot keyless warning (see resetZenKeylessWarning).
+	resetZenKeylessWarning()
 	server.applyHeadroomConfig(updated.Headroom)
 	server.applyClassifierConfig(updated.Classifier)
 
@@ -1929,14 +1932,18 @@ func (server *Server) handleZenConfigSave(writer http.ResponseWriter, request *h
 	pub := config.GetPublicConfig()
 	zenMap, _ := pub["zen"].(map[string]any)
 	if zenMap != nil {
-		zenMap["keySource"] = zenKeySource(saved.Zen)
-		if zenKeySource(saved.Zen) != "none" {
+		source := zenKeySource(saved.Zen)
+		zenMap["keySource"] = source
+		if source != "none" {
 			zenMap["hasApiKey"] = true
 		}
 	}
+	// Re-arm the one-shot keyless warning so a later misconfiguration warns
+	// again instead of staying silent for the process lifetime.
+	resetZenKeylessWarning()
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",
-		"config": pub["zen"],
+		"config": zenMap,
 	})
 }
 
