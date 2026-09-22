@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/cloudcode"
+	"antigravity-go-proxy/internal/modelcatalog"
 )
 
 // individualQuotaBody is the verbatim upstream 429 observed on 2026-09-22 for
@@ -296,5 +297,62 @@ func TestShortExhaustionSparesTheWeeklyPool(t *testing.T) {
 	}
 	if got := account.Quota.Pools["gemini-weekly"]; got.RemainingFraction == nil || *got.RemainingFraction != 1 {
 		t.Fatalf("a 17-minute reset cannot mean the weekly bucket is empty: %+v", got)
+	}
+}
+
+func TestQuotaKeyPrefersTheCatalogTierId(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 16, 53, 0, 0, time.UTC)
+	account := testAccount("tiered@example.com")
+	manager := quotaTestManager(t, now, account)
+	dispatcher := newTestDispatcher(t, manager, &staticResolver{tokens: map[string]string{}},
+		map[string]*scriptedClient{}, now, func(context.Context, time.Duration) error { return nil })
+
+	// Upstream publishes only the tiered entry; the catalog fans it out into
+	// three selectable tier ids that all send gemini-3.8-flash-tiered.
+	catalog, err := modelcatalog.Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":["gemini-3.8-flash-high"]}]}],
+		"models":{"gemini-3.8-flash-tiered":{"supportsThinking":true,"quotaInfo":{"remainingFraction":1}}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher.storeCatalog(catalog)
+
+	body := `{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",` +
+		`"reason":"QUOTA_EXHAUSTED","metadata":{"model":"gemini-3.8-flash-tiered",` +
+		`"quotaResetTimeStamp":"2026-09-24T19:58:20Z"}}]}}`
+	dispatcher.recordQuotaExhaustion(account, "gemini-3.8-flash-high", body)
+
+	got := account.Quota.Models["gemini-3.8-flash-high"]
+	if got.RemainingFraction == nil || *got.RemainingFraction != 0 {
+		t.Fatalf("the exhaustion must land on the tier row the UI and the scheduler read: %+v", account.Quota.Models)
+	}
+	if _, invented := account.Quota.Models["gemini-3.8-flash-tiered"]; invented {
+		t.Fatal("the upstream-only id is not a selectable model and must not become a row")
+	}
+}
+
+func TestQuotaKeyFallbackStripsThe1mSuffix(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 16, 53, 0, 0, time.UTC)
+	account := testAccount("suffix@example.com")
+	manager := quotaTestManager(t, now, account)
+	dispatcher := newTestDispatcher(t, manager, &staticResolver{tokens: map[string]string{}},
+		map[string]*scriptedClient{}, now, func(context.Context, time.Duration) error { return nil })
+
+	// ErrorInfo without a model: the requested id is the only key available,
+	// and it must be normalised the way ModelKeyCandidates normalises reads.
+	body := `{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",` +
+		`"metadata":{"quotaResetTimeStamp":"2026-09-24T19:58:20Z"}}]}}`
+	dispatcher.recordQuotaExhaustion(account, "claude-sonnet-4-6[1m]", body)
+
+	if _, suffixed := account.Quota.Models["claude-sonnet-4-6[1m]"]; suffixed {
+		t.Fatalf("a [1m]-suffixed row is never refreshed by a live reading: %+v", account.Quota.Models)
+	}
+	got := account.Quota.Models["claude-sonnet-4-6"]
+	if got.RemainingFraction == nil || *got.RemainingFraction != 0 {
+		t.Fatalf("the stripped id must carry the exhaustion: %+v", account.Quota.Models)
 	}
 }

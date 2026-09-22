@@ -861,6 +861,37 @@ func (dispatcher *Dispatcher) mergeQuotaReading(email, key string, fraction *flo
 	dispatcher.manager.MergeQuotaFraction(email, key, fraction, resetTime)
 }
 
+// currentCatalog returns the cached catalog, possibly nil before the first
+// successful fetch.
+func (dispatcher *Dispatcher) currentCatalog() *modelcatalog.Catalog {
+	dispatcher.mu.RLock()
+	defer dispatcher.mu.RUnlock()
+	return dispatcher.catalog
+}
+
+// quotaKeyFor picks the key an exhaustion is filed under. Quota rows are keyed
+// by catalog id — that is what ModelKeyCandidates looks up and what the UI
+// lists — while upstream names its own model id, and for a tier-mapped model
+// the two differ: every gemini-3.8-flash-* tier can share one
+// gemini-3.8-flash-tiered upstream id. When the requested catalog model is the
+// one upstream charged, the catalog id wins, so the row that goes to 0 is a
+// row something actually reads.
+func (dispatcher *Dispatcher) quotaKeyFor(requested, upstream string) string {
+	requested = strings.ToLower(strings.TrimSpace(modelcatalog.Strip1mSuffix(requested)))
+	if upstream == "" {
+		return requested
+	}
+	if requested != "" {
+		if catalog := dispatcher.currentCatalog(); catalog != nil {
+			if model, err := catalog.Resolve(requested); err == nil &&
+				strings.ToLower(model.GetUpstreamID()) == upstream {
+				return requested
+			}
+		}
+	}
+	return upstream
+}
+
 // recordQuotaExhaustion turns an upstream "individual quota reached" 429 into
 // a quota reading. The quota RPCs report the refused model at
 // remainingFraction 1 for the whole cooldown, so this error body is the only
@@ -874,11 +905,7 @@ func (dispatcher *Dispatcher) recordQuotaExhaustion(account *Account, model, bod
 	if !ok {
 		return
 	}
-	key := exhaustion.Model
-	if key == "" {
-		key = strings.ToLower(strings.TrimSpace(model))
-	}
-	dispatcher.manager.MarkQuotaExhausted(account.Email, key, exhaustion.ResetTime)
+	dispatcher.manager.MarkQuotaExhausted(account.Email, dispatcher.quotaKeyFor(model, exhaustion.Model), exhaustion.ResetTime)
 }
 
 func findHTTPError(err error) *cloudcode.HTTPError {
