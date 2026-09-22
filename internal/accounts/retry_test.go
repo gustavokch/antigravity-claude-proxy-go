@@ -1,8 +1,10 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -631,6 +633,37 @@ func TestFetchAvailableModelsClampsRetrySpacing(t *testing.T) {
 	}
 	if sleeps[0] != catalogRetryPauseCeiling {
 		t.Fatalf("retry sleep=%s; want the %s ceiling, not the configured 60s requestDelayMs", sleeps[0], catalogRetryPauseCeiling)
+	}
+}
+
+// The plan asks operators to lower an extreme requestDelayMs, but nothing in
+// the process told them it was extreme. UpdateConfig must warn when the delay
+// paces every generation slower than one request per catalog-fetch budget.
+func TestUpdateConfigWarnsOnExtremeRequestDelay(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	account := testAccount("delay-warn@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := newTestDispatcher(t, manager, &staticResolver{}, map[string]*scriptedClient{}, now, func(context.Context, time.Duration) error { return nil })
+
+	// Not parallel: this test swaps the process-global default slog handler,
+	// which must not leak into concurrent tests.
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(original)
+
+	// A modest delay is none of the fetch budget's business.
+	dispatcher.UpdateConfig(config.Config{RequestThrottlingEnabled: true, RequestDelayMs: 250})
+	if strings.Contains(buf.String(), "requestDelayMs paces") {
+		t.Fatalf("warning emitted for a modest requestDelayMs: %s", buf.String())
+	}
+
+	dispatcher.UpdateConfig(config.Config{RequestThrottlingEnabled: true, RequestDelayMs: 60000})
+	if !strings.Contains(buf.String(), "requestDelayMs paces") {
+		t.Fatalf("no warning for a 60s requestDelayMs against a %s fetch budget: %s", fetchModelsTimeout, buf.String())
 	}
 }
 

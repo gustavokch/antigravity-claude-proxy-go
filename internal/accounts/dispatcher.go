@@ -198,6 +198,12 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 	} else {
 		dispatcher.forensics429 = nil
 	}
+
+	if dispatcher.requestThrottlingEnabled && dispatcher.requestDelay >= fetchModelsTimeout {
+		slog.Warn("[Dispatcher] requestDelayMs paces every generation slower than one request per catalog-fetch budget; lower it unless this is deliberate",
+			"requestDelayMs", dispatcher.requestDelay.Milliseconds(),
+			"fetchModelsTimeoutMs", fetchModelsTimeout.Milliseconds())
+	}
 }
 
 // fetchModelsTimeout bounds a decoupled catalog fetch, including any OAuth
