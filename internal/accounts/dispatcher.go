@@ -518,11 +518,18 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 			slog.Warn("[Server] Model catalog refresh failed; serving the stale catalog", "error", err)
 			return catalog.ResolveWithRequest(requested, request)
 		}
-		catalog, err = modelcatalog.Parse(response.Body)
-		if err != nil {
-			return modelcatalog.Model{}, err
+		// fetchAvailableModels already parsed and cached the body via
+		// cacheCatalog; read it back instead of parsing the body twice. The
+		// parse remains the fallback for when the cached parse stored nothing,
+		// so a malformed body still surfaces its decode error rather than a
+		// nil dereference.
+		if catalog = dispatcher.CachedCatalog(); catalog == nil {
+			catalog, err = modelcatalog.Parse(response.Body)
+			if err != nil {
+				return modelcatalog.Model{}, err
+			}
+			dispatcher.storeCatalog(catalog)
 		}
-		dispatcher.storeCatalog(catalog)
 	}
 	return catalog.ResolveWithRequest(requested, request)
 }
