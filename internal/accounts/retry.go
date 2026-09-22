@@ -93,6 +93,45 @@ func ClassifyError(body string, status int) ErrorReason {
 	return ReasonUnknown
 }
 
+// QuotaExhaustion is one upstream "individual quota reached" reading, carried
+// in the ErrorInfo detail of a 429. Cloud Code's quota RPCs
+// (retrieveUserQuota / retrieveUserQuotaSummary) hold the gemini buckets at
+// remainingFraction 1 even while these 429s are firing — verified 2026-09-22,
+// where a generateContent for gemini-3.8-flash-high returned
+// "Individual quota reached ... Resets in 51h5m10s" in the same second that
+// both gemini pools and every gemini model reported 1. This error body is
+// therefore the only truthful per-model consumption signal upstream sends.
+type QuotaExhaustion struct {
+	Model     string
+	ResetTime string
+}
+
+// ExtractQuotaExhaustion reads the model and reset timestamp from a 429
+// ErrorInfo detail. A body without quotaResetTimeStamp is an RPM/capacity 429
+// that carries no quota reading, so it yields ok=false rather than a
+// fabricated exhaustion.
+func ExtractQuotaExhaustion(body string) (QuotaExhaustion, bool) {
+	var response struct {
+		Error struct {
+			Details []struct {
+				Metadata map[string]any `json:"metadata"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &response) != nil {
+		return QuotaExhaustion{}, false
+	}
+	for _, detail := range response.Error.Details {
+		reset, _ := detail.Metadata["quotaResetTimeStamp"].(string)
+		if reset == "" {
+			continue
+		}
+		model, _ := detail.Metadata["model"].(string)
+		return QuotaExhaustion{Model: strings.ToLower(strings.TrimSpace(model)), ResetTime: reset}, true
+	}
+	return QuotaExhaustion{}, false
+}
+
 func IsPermanentAuthFailure(body string) bool {
 	lower := strings.ToLower(body)
 	return containsAny(lower, "invalid_grant", "token revoked", "token has been expired or revoked", "token_revoked", "invalid_client", "credentials are invalid")

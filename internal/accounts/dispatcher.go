@@ -467,6 +467,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				}
 				slog.Warn("upstream 429", "model", model, "reason", reason, "wait", wait.Round(time.Second), "serverReset", reset, "failures", failures, "body", truncateBodyForLog(upstreamError.Body))
 				dispatcher.record429(account, project, model, upstreamError, wait, failures, inFlight, priorMinute)
+				dispatcher.recordQuotaExhaustion(account, model, upstreamError.Body)
 				dispatcher.manager.MarkRateLimited(account, model, wait)
 				break
 			}
@@ -702,6 +703,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 		}
 		inFlight, priorMinute := dispatcher.meter.ObserveRejection(email)
 		dispatcher.record429(account, "", model, upstreamError, wait, dispatcher.manager.FailureCount(account), inFlight, priorMinute)
+		dispatcher.recordQuotaExhaustion(account, model, body)
 		dispatcher.manager.MarkRateLimited(account, model, wait)
 		return true
 	default:
@@ -857,6 +859,26 @@ func (dispatcher *Dispatcher) mergeQuotaReading(email, key string, fraction *flo
 		return
 	}
 	dispatcher.manager.MergeQuotaFraction(email, key, fraction, resetTime)
+}
+
+// recordQuotaExhaustion turns an upstream "individual quota reached" 429 into
+// a quota reading. The quota RPCs report the refused model at
+// remainingFraction 1 for the whole cooldown, so this error body is the only
+// place the consumption shows. The ErrorInfo model wins over the requested
+// model id when present: upstream names the bucket it actually charged.
+func (dispatcher *Dispatcher) recordQuotaExhaustion(account *Account, model, body string) {
+	if account == nil {
+		return
+	}
+	exhaustion, ok := ExtractQuotaExhaustion(body)
+	if !ok {
+		return
+	}
+	key := exhaustion.Model
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(model))
+	}
+	dispatcher.manager.MarkQuotaExhausted(account.Email, key, exhaustion.ResetTime)
 }
 
 func findHTTPError(err error) *cloudcode.HTTPError {

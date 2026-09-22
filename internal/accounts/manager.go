@@ -53,6 +53,11 @@ func (limit *RateLimit) UnmarshalJSON(data []byte) error {
 type ModelQuota struct {
 	RemainingFraction *float64 `json:"remainingFraction"`
 	ResetTime         string   `json:"resetTime,omitempty"`
+	// ExhaustedUntilMS holds an upstream "individual quota reached" 429 until
+	// its own reset time. Cloud Code keeps reporting remainingFraction 1 for a
+	// model it is already refusing, so without this marker the next live
+	// refresh restores a phantom 100%.
+	ExhaustedUntilMS int64 `json:"exhaustedUntilMs,omitempty"`
 }
 
 type Quota struct {
@@ -1518,6 +1523,68 @@ func (manager *Manager) MergeQuotaPool(email, key string, fraction *float64, res
 	manager.mergeQuota(email, key, fraction, resetTime, true)
 }
 
+// quotaPoolsForModel names the shared upstream buckets a model is charged
+// against. Upstream publishes the grouping only as prose
+// ("Models within this group: Gemini Flash, Gemini Pro"), never as model ids,
+// so the family prefix is the only available mapping. A model outside both
+// published groups (the chat_* and tab_* internal ids) maps to nothing.
+func quotaPoolsForModel(model string) []string {
+	switch {
+	case strings.HasPrefix(model, "gemini-"):
+		return []string{"gemini-weekly", "gemini-5h"}
+	case strings.HasPrefix(model, "claude-"), strings.HasPrefix(model, "gpt-oss"):
+		return []string{"3p-weekly", "3p-5h"}
+	default:
+		return nil
+	}
+}
+
+// MarkQuotaExhausted records an upstream "individual quota reached" 429 for
+// one model: fraction 0, held until resetTime. Live quota readings cannot
+// clobber it before then, because upstream reports the exhausted model at
+// remainingFraction 1 for the whole cooldown.
+//
+// The model's shared pools follow it down, so the group bars stop reading
+// 100% while every request against the group is being refused. Only pools a
+// live refresh already wrote are touched: an exhaustion must not invent pool
+// rows for an account that was never polled. The 429's own reset time is
+// carried onto the pool, which is deliberately not the pool's published
+// window — upstream gives no per-pool consumption signal to reconcile with,
+// and the 429 reset is the one time that is known to be real.
+func (manager *Manager) MarkQuotaExhausted(email, key, resetTime string) {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" || resetTime == "" {
+		return
+	}
+	reset, err := time.Parse(time.RFC3339, resetTime)
+	if err != nil {
+		return
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, acc := range manager.accounts {
+		if acc.Email != email {
+			continue
+		}
+		if acc.Quota.Models == nil {
+			acc.Quota.Models = make(map[string]ModelQuota)
+		}
+		exhausted := func() ModelQuota {
+			zero := 0.0
+			return ModelQuota{RemainingFraction: &zero, ResetTime: resetTime, ExhaustedUntilMS: reset.UnixMilli()}
+		}
+		acc.Quota.Models[key] = exhausted()
+		for _, pool := range quotaPoolsForModel(key) {
+			if _, seen := acc.Quota.Pools[pool]; !seen {
+				continue
+			}
+			acc.Quota.Pools[pool] = exhausted()
+		}
+		acc.Quota.LastChecked = manager.now().UnixMilli()
+		break
+	}
+}
+
 func (manager *Manager) mergeQuota(email, key string, fraction *float64, resetTime string, pools bool) {
 	if key == "" || (fraction == nil && resetTime == "") {
 		return
@@ -1538,6 +1605,10 @@ func (manager *Manager) mergeQuota(email, key string, fraction *float64, resetTi
 		}
 		if *target == nil {
 			*target = make(map[string]ModelQuota)
+		}
+		if previous, seen := (*target)[key]; seen && previous.ExhaustedUntilMS > manager.now().UnixMilli() {
+			// A recorded exhaustion outranks the live reading until it expires.
+			break
 		}
 		(*target)[key] = ModelQuota{RemainingFraction: fraction, ResetTime: resetTime}
 		acc.Quota.LastChecked = manager.now().UnixMilli()
