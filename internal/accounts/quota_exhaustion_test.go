@@ -225,3 +225,59 @@ func TestClaudeQuota429PropagatesTo3pPools(t *testing.T) {
 		t.Fatalf("a claude exhaustion must not touch gemini-weekly: %+v", got)
 	}
 }
+
+func TestExhaustionSurvivesCatalogRefresh(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 16, 53, 0, 0, time.UTC)
+	account := poolTestAccount("catalog@example.com")
+	manager := quotaTestManager(t, now, account)
+
+	manager.MarkQuotaExhausted("catalog@example.com", "gemini-3.8-flash-high", "2026-09-24T19:58:20Z")
+
+	// What a /v1/models fetch does: a whole-catalog snapshot, which reports
+	// the refused model at 1, followed by the live refresh merging 1 again.
+	full := 1.0
+	manager.UpdateAccountQuota("catalog@example.com", Quota{
+		Models:      map[string]ModelQuota{"gemini-3.8-flash-high": {RemainingFraction: &full}},
+		LastChecked: now.UnixMilli(),
+	}, nil)
+	manager.MergeQuotaFraction("catalog@example.com", "gemini-3.8-flash-high", &full, "2026-09-22T21:53:12Z")
+
+	got := account.Quota.Models["gemini-3.8-flash-high"]
+	if got.RemainingFraction == nil || *got.RemainingFraction != 0 {
+		t.Fatalf("a catalog snapshot must not erase an unexpired exhaustion: %+v", got)
+	}
+	if got.ExhaustedUntilMS == 0 {
+		t.Fatal("the exhaustion marker itself must survive, or the next merge clobbers it")
+	}
+	if len(account.Quota.Pools) != 4 {
+		t.Fatalf("a catalog snapshot carries no pool readings and must not drop them: %+v", account.Quota.Pools)
+	}
+}
+
+func TestCatalogRefreshDropsExpiredExhaustion(t *testing.T) {
+	t.Parallel()
+	current := time.Date(2026, 9, 22, 16, 53, 0, 0, time.UTC)
+	account := testAccount("expired@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategyHybrid, Now: func() time.Time { return current }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager.MarkQuotaExhausted("expired@example.com", "gemini-3.8-flash-high", "2026-09-24T19:58:20Z")
+	current = time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
+
+	full := 1.0
+	manager.UpdateAccountQuota("expired@example.com", Quota{
+		Models:      map[string]ModelQuota{"gemini-3.8-flash-high": {RemainingFraction: &full}},
+		LastChecked: current.UnixMilli(),
+	}, nil)
+
+	got := account.Quota.Models["gemini-3.8-flash-high"]
+	if got.RemainingFraction == nil || *got.RemainingFraction != 1 {
+		t.Fatalf("past its reset time the catalog reading must win: %+v", got)
+	}
+	if got.ExhaustedUntilMS != 0 {
+		t.Fatalf("an expired marker must not be carried: %+v", got)
+	}
+}

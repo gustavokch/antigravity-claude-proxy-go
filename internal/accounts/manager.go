@@ -1493,11 +1493,33 @@ func (manager *Manager) UpdateThresholds(email string, quotaThreshold *float64, 
 	return manager.SaveToDisk()
 }
 
+// carryQuotaExhaustions moves unexpired 429-recorded exhaustions from the
+// previous reading onto an incoming one. A catalog snapshot reports what
+// upstream publishes, and upstream publishes remainingFraction 1 for a model
+// it is already refusing — so replacing the map wholesale erases the one
+// truthful reading and lets the next live refresh restore a phantom 100%.
+// A nil incoming map means the source carried no reading of that kind at all
+// (the catalog fetch never reports pools), so the previous map stands.
+func carryQuotaExhaustions(previous, incoming map[string]ModelQuota, nowMS int64) map[string]ModelQuota {
+	if incoming == nil {
+		return previous
+	}
+	for key, record := range previous {
+		if record.ExhaustedUntilMS > nowMS {
+			incoming[key] = record
+		}
+	}
+	return incoming
+}
+
 func (manager *Manager) UpdateAccountQuota(email string, quota Quota, subscription *Subscription) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
+	nowMS := manager.now().UnixMilli()
 	for _, acc := range manager.accounts {
 		if acc.Email == email {
+			quota.Models = carryQuotaExhaustions(acc.Quota.Models, quota.Models, nowMS)
+			quota.Pools = carryQuotaExhaustions(acc.Quota.Pools, quota.Pools, nowMS)
 			acc.Quota = quota
 			if subscription != nil {
 				acc.Subscription = *subscription
