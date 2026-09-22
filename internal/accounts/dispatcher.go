@@ -484,7 +484,15 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 	if !fresh {
 		response, err := dispatcher.FetchAvailableModels(ctx)
 		if err != nil {
-			return modelcatalog.Model{}, fmt.Errorf("refresh selectable models: %w", err)
+			// Degrade, do not fail: a stale catalog resolves models correctly
+			// for every model that already existed. Returning here instead
+			// turned any refresh failure into a 504 on every request past the
+			// TTL. Only a total absence of catalog is fatal.
+			if catalog == nil {
+				return modelcatalog.Model{}, fmt.Errorf("refresh selectable models: %w", err)
+			}
+			slog.Warn("[Server] Model catalog refresh failed; serving the stale catalog", "error", err)
+			return catalog.ResolveWithRequest(requested, request)
 		}
 		catalog, err = modelcatalog.Parse(response.Body)
 		if err != nil {

@@ -94,6 +94,11 @@ type scriptedClient struct {
 	payload       map[string]any
 	requestOption cloudcode.RequestOptions
 	modelsBody    []byte
+	// modelsErrAfter makes FetchAvailableModels succeed for the first
+	// modelsErrAfter calls and fail afterwards; 0 (the default) always
+	// succeeds. Tests seed a catalog, age it, then flip the upstream dead.
+	modelsCalls    int
+	modelsErrAfter int
 }
 
 func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
@@ -101,6 +106,13 @@ func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode
 }
 
 func (client *scriptedClient) FetchAvailableModels(context.Context, string) (cloudcode.Response, error) {
+	client.mu.Lock()
+	client.modelsCalls++
+	failing := client.modelsErrAfter > 0 && client.modelsCalls > client.modelsErrAfter
+	client.mu.Unlock()
+	if failing {
+		return cloudcode.Response{}, fmt.Errorf("models upstream unreachable")
+	}
 	body := client.modelsBody
 	if len(body) == 0 {
 		body = []byte(`{
@@ -499,6 +511,39 @@ func TestRefreshCatalogIfStaleKicksBackgroundFetch(t *testing.T) {
 		t.Fatal("RefreshCatalogIfStale did not kick a fetch for a stale catalog")
 	}
 	waitForCatalogAt(t, dispatcher, current)
+}
+
+// A catalog refresh that fails must not take generation down with it: a stale
+// catalog still resolves models. Only a total absence of catalog is fatal.
+func TestResolveModelFallsBackToStaleCatalogOnRefreshFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	current := now
+	account := testAccount("stale-refresh@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return current }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The models call succeeds exactly once (the seed fetch), then dies.
+	client := &scriptedClient{modelsErrAfter: 1, results: []scriptedResult{{events: [][]byte{[]byte(`{}`)}}}}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-stale-refresh"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-stale-refresh": client}, now, nil)
+	dispatcher.now = func() time.Time { return current }
+
+	if _, err := dispatcher.fetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("seed fetch failed: %v", err)
+	}
+
+	// Age the catalog past the TTL so StreamGenerateContent must refresh it,
+	// then let the refresh fail: the stale catalog still resolves the model
+	// and the request reaches the client instead of 504ing.
+	current = now.Add(6 * time.Minute)
+	if _, err := dispatcher.StreamGenerateContent(context.Background(), testRequest(), func(cloudcode.SSEEvent) error { return nil }); err != nil {
+		t.Fatalf("StreamGenerateContent failed on a refresh error with a stale catalog available: %v", err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("stream calls=%d; want 1 (the request must reach the client)", client.calls)
+	}
 }
 
 // waitForCatalogAt polls catalogAt under the lock with a deadline, so the
