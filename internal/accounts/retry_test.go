@@ -448,13 +448,22 @@ func TestFetchAvailableModelsIgnoresRequestThrottle(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The sleep honors its context and actually waits: a stub that never
+	// blocks would pass trivially even with the throttle sleep restored.
 	var mu sync.Mutex
 	var sleepDurations []time.Duration
-	sleep := func(_ context.Context, d time.Duration) error {
+	sleep := func(ctx context.Context, d time.Duration) error {
 		mu.Lock()
-		defer mu.Unlock()
 		sleepDurations = append(sleepDurations, d)
-		return nil
+		mu.Unlock()
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 
 	client := &scriptedClient{}
@@ -465,8 +474,14 @@ func TestFetchAvailableModelsIgnoresRequestThrottle(t *testing.T) {
 		RequestDelayMs:           60000,
 	})
 
-	if _, err := dispatcher.FetchAvailableModels(context.Background()); err != nil {
-		t.Fatalf("FetchAvailableModels failed: %v", err)
+	// Drive the fetch directly on a budget far shorter than the configured
+	// requestDelayMs. With the throttle sleep restored this hangs until the
+	// deadline and fails with context deadline exceeded — the production
+	// symptom the exemption prevents.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := dispatcher.fetchAvailableModels(ctx); err != nil {
+		t.Fatalf("catalog fetch failed under a budget shorter than requestDelayMs: %v", err)
 	}
 	if dispatcher.CachedCatalog() == nil {
 		t.Fatal("expected the fetch to populate the cached catalog")
