@@ -96,9 +96,12 @@ type scriptedClient struct {
 	modelsBody    []byte
 	// modelsErrAfter makes FetchAvailableModels succeed for the first
 	// modelsErrAfter calls and fail afterwards; 0 (the default) always
-	// succeeds. Tests seed a catalog, age it, then flip the upstream dead.
+	// succeeds. modelsErr, when set, is returned verbatim by every models
+	// call (e.g. a rotate-worthy upstream 429). Tests seed a catalog, age
+	// it, then flip the upstream dead.
 	modelsCalls    int
 	modelsErrAfter int
+	modelsErr      error
 }
 
 func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
@@ -109,9 +112,13 @@ func (client *scriptedClient) FetchAvailableModels(context.Context, string) (clo
 	client.mu.Lock()
 	client.modelsCalls++
 	failing := client.modelsErrAfter > 0 && client.modelsCalls > client.modelsErrAfter
+	modelsErr := client.modelsErr
 	client.mu.Unlock()
 	if failing {
 		return cloudcode.Response{}, fmt.Errorf("models upstream unreachable")
+	}
+	if modelsErr != nil {
+		return cloudcode.Response{}, modelsErr
 	}
 	body := client.modelsBody
 	if len(body) == 0 {
@@ -561,6 +568,55 @@ func waitForCatalogAt(t *testing.T, dispatcher *Dispatcher, want time.Time) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("catalogAt never reached %s", want)
+}
+
+// Retries across accounts still need spacing — just not a full requestDelayMs,
+// which can exceed the whole fetch budget. The first attempt pays nothing; each
+// retry pays at most catalogRetryPauseCeiling.
+func TestFetchAvailableModelsClampsRetrySpacing(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	first := testAccount("spacing-first@example.com")
+	second := testAccount("spacing-second@example.com")
+	manager, err := New(Options{Accounts: []*Account{first, second}, Strategy: StrategySticky, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &staticResolver{tokens: map[string]string{first.Email: "tok-spacing-first", second.Email: "tok-spacing-second"}}
+	quotaError := &cloudcode.HTTPError{
+		Endpoint: cloudcode.DailyEndpoint, StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests",
+		Header: http.Header{"Retry-After": {"60"}}, Body: `{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota exhausted"}}`,
+	}
+	clients := map[string]*scriptedClient{
+		"tok-spacing-first":  {modelsErr: quotaError},
+		"tok-spacing-second": {},
+	}
+	var mu sync.Mutex
+	var sleeps []time.Duration
+	dispatcher := newTestDispatcher(t, manager, resolver, clients, now, func(_ context.Context, d time.Duration) error {
+		mu.Lock()
+		sleeps = append(sleeps, d)
+		mu.Unlock()
+		return nil
+	})
+	// An operator-configured 60s requestDelayMs must not leak into the fetch
+	// budget: the retry pause is clamped to catalogRetryPauseCeiling.
+	dispatcher.UpdateConfig(config.Config{RequestThrottlingEnabled: true, RequestDelayMs: 60000})
+
+	if _, err := dispatcher.FetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("FetchAvailableModels failed: %v", err)
+	}
+	if dispatcher.CachedCatalog() == nil {
+		t.Fatal("expected the second account's fetch to populate the cached catalog")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sleeps) != 1 {
+		t.Fatalf("sleeps=%v; want exactly one retry pause (first attempt pays nothing, second account succeeds)", sleeps)
+	}
+	if sleeps[0] != catalogRetryPauseCeiling {
+		t.Fatalf("retry sleep=%s; want the %s ceiling, not the configured 60s requestDelayMs", sleeps[0], catalogRetryPauseCeiling)
+	}
 }
 
 // A flat cooldown made the proxy re-probe a throttled model ~38 times across

@@ -260,9 +260,33 @@ func (dispatcher *Dispatcher) startModelFetch() *modelFetchCall {
 	return call
 }
 
+// catalogRetryPauseCeiling caps the spacing between catalog-fetch retries. The
+// full requestDelayMs cannot apply here: a delay above fetchModelsTimeout would
+// guarantee "context deadline exceeded" on every refresh. Dropping the pause
+// entirely is the other extreme — the loop would then fire one immediate
+// list-models call per account during a 429 wave.
+const catalogRetryPauseCeiling = time.Second
+
 func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
 	var lastError error
 	for attempt := 0; attempt < max(dispatcher.maxRetries, dispatcher.manager.Count()+1); attempt++ {
+		// Retries across accounts keep a bounded spacing rather than the full
+		// requestDelayMs: this fetch runs on a context bounded by
+		// fetchModelsTimeout, so a delay above that budget would guarantee
+		// "context deadline exceeded" on every catalog refresh (and through
+		// it, on every Cloud Code request past the catalog TTL). The first
+		// attempt pays nothing.
+		if attempt > 0 {
+			dispatcher.mu.RLock()
+			throttling := dispatcher.requestThrottlingEnabled
+			delay := dispatcher.requestDelay
+			dispatcher.mu.RUnlock()
+			if throttling && delay > 0 {
+				if err := dispatcher.sleep(ctx, min(delay, catalogRetryPauseCeiling)); err != nil {
+					return cloudcode.Response{}, err
+				}
+			}
+		}
 		selection := dispatcher.manager.Select("")
 		if selection.Account == nil {
 			return cloudcode.Response{}, errors.New("no accounts available")
@@ -276,12 +300,6 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 			lastError = err
 			continue
 		}
-		// No request-throttle sleep here by design. This fetch is a rare
-		// background refresh (once per ModelCacheTTL), not hot-loop
-		// generation, and it runs on a fetchCtx bounded by
-		// fetchModelsTimeout — any requestDelayMs above that budget would
-		// guarantee "context deadline exceeded" on every catalog refresh
-		// (and through it, on every Cloud Code request past the TTL).
 		modelsClient := dispatcher.client(selection.Account, credentials.AccessToken)
 		response, err := dispatcher.metered(selection.Account.Email, func() (cloudcode.Response, error) {
 			return modelsClient.FetchAvailableModels(ctx, dispatcher.project(selection.Account))
