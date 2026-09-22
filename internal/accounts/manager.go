@@ -1575,7 +1575,8 @@ func quotaPoolsForModel(model string, window time.Duration) []string {
 // MarkQuotaExhausted records an upstream "individual quota reached" 429 for
 // one model: fraction 0, held until resetTime. Live quota readings cannot
 // clobber it before then, because upstream reports the exhausted model at
-// remainingFraction 1 for the whole cooldown.
+// remainingFraction 1 for the whole cooldown. The record is persisted, so a
+// restart inside the window does not restore the phantom reading.
 //
 // The model's shared pools follow it down, so the group bars stop reading
 // 100% while every request against the group is being refused. Only pools a
@@ -1594,7 +1595,7 @@ func (manager *Manager) MarkQuotaExhausted(email, key, resetTime string) {
 		return
 	}
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
+	changed := false
 	for _, acc := range manager.accounts {
 		if acc.Email != email {
 			continue
@@ -1606,6 +1607,7 @@ func (manager *Manager) MarkQuotaExhausted(email, key, resetTime string) {
 			zero := 0.0
 			return ModelQuota{RemainingFraction: &zero, ResetTime: resetTime, ExhaustedUntilMS: reset.UnixMilli()}
 		}
+		changed = acc.Quota.Models[key].ExhaustedUntilMS != reset.UnixMilli()
 		acc.Quota.Models[key] = exhausted()
 		for _, pool := range quotaPoolsForModel(key, reset.Sub(manager.now())) {
 			if _, seen := acc.Quota.Pools[pool]; !seen {
@@ -1615,6 +1617,14 @@ func (manager *Manager) MarkQuotaExhausted(email, key, resetTime string) {
 		}
 		acc.Quota.LastChecked = manager.now().UnixMilli()
 		break
+	}
+	manager.mu.Unlock()
+	if !changed {
+		// Repeat 429s inside one window must not become a write storm.
+		return
+	}
+	if err := manager.SaveToDisk(); err != nil {
+		slog.Warn("persist quota exhaustion", "email", email, "model", key, "error", err)
 	}
 }
 

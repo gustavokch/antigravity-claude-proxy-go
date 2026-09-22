@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -354,5 +355,25 @@ func TestQuotaKeyFallbackStripsThe1mSuffix(t *testing.T) {
 	got := account.Quota.Models["claude-sonnet-4-6"]
 	if got.RemainingFraction == nil || *got.RemainingFraction != 0 {
 		t.Fatalf("the stripped id must carry the exhaustion: %+v", account.Quota.Models)
+	}
+}
+
+func TestMarkQuotaExhaustedPersists(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 16, 53, 0, 0, time.UTC)
+	account := testAccount("persist@example.com")
+	manager := quotaTestManager(t, now, account)
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	manager.SetConfigPath(path)
+
+	manager.MarkQuotaExhausted("persist@example.com", "gemini-3.8-flash-high", "2026-09-24T19:58:20Z")
+
+	file, err := Load(path)
+	if err != nil {
+		t.Fatalf("the exhaustion must be on disk before the next restart: %v", err)
+	}
+	got := file.Accounts[0].Quota.Models["gemini-3.8-flash-high"]
+	if got.ExhaustedUntilMS == 0 || got.RemainingFraction == nil || *got.RemainingFraction != 0 {
+		t.Fatalf("exhaustion did not round-trip through accounts.json: %+v", got)
 	}
 }
