@@ -1545,20 +1545,31 @@ func (manager *Manager) MergeQuotaPool(email, key string, fraction *float64, res
 	manager.mergeQuota(email, key, fraction, resetTime, true)
 }
 
+// quotaFiveHourWindow is the published span of the short pools (gemini-5h,
+// 3p-5h). A reset inside it cannot be evidence about the weekly bucket.
+const quotaFiveHourWindow = 5 * time.Hour
+
 // quotaPoolsForModel names the shared upstream buckets a model is charged
-// against. Upstream publishes the grouping only as prose
-// ("Models within this group: Gemini Flash, Gemini Pro"), never as model ids,
-// so the family prefix is the only available mapping. A model outside both
-// published groups (the chat_* and tab_* internal ids) maps to nothing.
-func quotaPoolsForModel(model string) []string {
+// against, filtered by how far out the 429's own reset is. Upstream publishes
+// the grouping only as prose ("Models within this group: Gemini Flash, Gemini
+// Pro"), never as model ids, so the family prefix is the only available
+// mapping. A model outside both published groups (the chat_* and tab_*
+// internal ids) maps to nothing. A reset inside the 5h window says nothing
+// about the weekly bucket, so only the short pool follows the model down.
+func quotaPoolsForModel(model string, window time.Duration) []string {
+	var weekly, fiveHour string
 	switch {
 	case strings.HasPrefix(model, "gemini-"):
-		return []string{"gemini-weekly", "gemini-5h"}
+		weekly, fiveHour = "gemini-weekly", "gemini-5h"
 	case strings.HasPrefix(model, "claude-"), strings.HasPrefix(model, "gpt-oss"):
-		return []string{"3p-weekly", "3p-5h"}
+		weekly, fiveHour = "3p-weekly", "3p-5h"
 	default:
 		return nil
 	}
+	if window <= quotaFiveHourWindow {
+		return []string{fiveHour}
+	}
+	return []string{weekly, fiveHour}
 }
 
 // MarkQuotaExhausted records an upstream "individual quota reached" 429 for
@@ -1596,7 +1607,7 @@ func (manager *Manager) MarkQuotaExhausted(email, key, resetTime string) {
 			return ModelQuota{RemainingFraction: &zero, ResetTime: resetTime, ExhaustedUntilMS: reset.UnixMilli()}
 		}
 		acc.Quota.Models[key] = exhausted()
-		for _, pool := range quotaPoolsForModel(key) {
+		for _, pool := range quotaPoolsForModel(key, reset.Sub(manager.now())) {
 			if _, seen := acc.Quota.Pools[pool]; !seen {
 				continue
 			}

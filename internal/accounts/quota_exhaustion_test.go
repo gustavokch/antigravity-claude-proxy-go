@@ -281,3 +281,20 @@ func TestCatalogRefreshDropsExpiredExhaustion(t *testing.T) {
 		t.Fatalf("an expired marker must not be carried: %+v", got)
 	}
 }
+
+func TestShortExhaustionSparesTheWeeklyPool(t *testing.T) {
+	t.Parallel()
+	// The 2026-09-17 probe: "Individual quota reached ... Resets in 17m31s".
+	now := time.Date(2026, 9, 18, 0, 40, 49, 0, time.UTC)
+	account := poolTestAccount("short@example.com")
+	manager := quotaTestManager(t, now, account)
+
+	manager.MarkQuotaExhausted("short@example.com", "gemini-3.8-flash-high", "2026-09-18T00:58:20Z")
+
+	if got := account.Quota.Pools["gemini-5h"]; got.RemainingFraction == nil || *got.RemainingFraction != 0 {
+		t.Fatalf("a 17-minute exhaustion still empties the 5h pool: %+v", got)
+	}
+	if got := account.Quota.Pools["gemini-weekly"]; got.RemainingFraction == nil || *got.RemainingFraction != 1 {
+		t.Fatalf("a 17-minute reset cannot mean the weekly bucket is empty: %+v", got)
+	}
+}
