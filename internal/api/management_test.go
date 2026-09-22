@@ -18,6 +18,7 @@ import (
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/logger"
+	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/stats"
 )
 
@@ -89,6 +90,115 @@ func (m *mockRefresherBackend) StreamGenerateContent(context.Context, map[string
 func (m *mockRefresherBackend) RefreshAccount(ctx context.Context, email string) (*accounts.Account, error) {
 	m.acc.Subscription = accounts.Subscription{Tier: "pro", ProjectID: "proj-123"}
 	return m.acc, nil
+}
+
+// cachedCatalogStub retains one catalog and counts blocking refreshes, so the
+// test proves /account-limits serves the cache without upstream I/O.
+type cachedCatalogStub struct {
+	catalog      *modelcatalog.Catalog
+	stale        bool
+	fetchCalls   int
+	refreshCalls int
+}
+
+func (m *cachedCatalogStub) FetchAvailableModels(context.Context) (cloudcode.Response, error) {
+	m.fetchCalls++
+	return cloudcode.Response{}, context.DeadlineExceeded
+}
+
+func (m *cachedCatalogStub) StreamGenerateContent(context.Context, map[string]any, func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	return cloudcode.Response{}, nil
+}
+
+func (m *cachedCatalogStub) CachedCatalog() *modelcatalog.Catalog { return m.catalog }
+
+func (m *cachedCatalogStub) RefreshCatalogIfStale() bool {
+	m.refreshCalls++
+	return m.stale
+}
+
+// testCatalog parses the shared catalog fixture used by /account-limits tests.
+func testCatalog(t *testing.T) *modelcatalog.Catalog {
+	t.Helper()
+	catalog, err := modelcatalog.Parse([]byte(`{
+		"defaultAgentModelId":"cached-model",
+		"agentModelSorts":[{"groups":[{"modelIds":["cached-model"]}]}],
+		"models":{"cached-model":{"displayName":"Cached Model","maxTokens":200000,"maxOutputTokens":32000}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func TestAccountLimitsServesCachedCatalogWithoutRefresh(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	catalog := testCatalog(t)
+	stub := &cachedCatalogStub{catalog: catalog}
+	server.backend = stub
+
+	req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if stub.fetchCalls != 0 {
+		t.Fatalf("FetchAvailableModels calls=%d; want 0 (cached catalog must serve without upstream I/O)", stub.fetchCalls)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	modelContext, ok := res["modelContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected modelContext in response, got keys: %v", res)
+	}
+	if _, ok := modelContext["cached-model"]; !ok {
+		t.Fatalf("expected cached-model in modelContext, got %v", modelContext)
+	}
+}
+
+// /account-limits no longer blocks on a fetch, so it must ask for a background
+// refresh instead: an idle proxy's quota data would otherwise freeze at
+// whatever the last generation request observed.
+func TestAccountLimitsRequestsRefreshForStaleCatalog(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	stub := &cachedCatalogStub{catalog: testCatalog(t), stale: true}
+	server.backend = stub
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/account-limits", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if stub.fetchCalls != 0 {
+		t.Fatalf("blocking FetchAvailableModels calls=%d; want 0", stub.fetchCalls)
+	}
+	if stub.refreshCalls != 1 {
+		t.Fatalf("RefreshCatalogIfStale calls=%d; want 1 (idle quota data must not freeze)", stub.refreshCalls)
+	}
+}
+
+// With no catalog ever fetched, the first poll may pay one blocking fetch —
+// but a permanently failing upstream must not charge every later poll 30s.
+func TestAccountLimitsColdStartFetchesAtMostOncePerCooldown(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	stub := &cachedCatalogStub{catalog: nil} // FetchAvailableModels returns DeadlineExceeded
+	server.backend = stub
+
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/account-limits", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("poll %d: expected 200, got %d", i, rec.Code)
+		}
+	}
+	if stub.fetchCalls != 1 {
+		t.Fatalf("blocking fetch calls=%d; want 1 (a failing upstream must not stall every poll)", stub.fetchCalls)
+	}
 }
 
 func TestManagement_HealthAndLimits(t *testing.T) {
@@ -225,6 +335,9 @@ func TestManagement_HealthAndLimits(t *testing.T) {
 
 	t.Run("GET /account-limits advertises modelContext", func(t *testing.T) {
 		server.backend = &geminiDiscoveryTestBackend{}
+		// Earlier subtests' polls consumed this server's one-cold-fetch
+		// cooldown; a cold start is what this subtest simulates.
+		server.coldCatalogAttemptAt = time.Time{}
 		handler := server.Handler()
 
 		req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)

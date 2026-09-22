@@ -128,6 +128,12 @@ type Server struct {
 	// uniform (attribution or no attribution), so a single intercept proves
 	// the proxy must carry spoofed app headers for the rest of the run.
 	appSpoofActivated bool
+
+	// coldCatalogAttemptAt records the last cold-start catalog fetch attempt
+	// on a status poll; guarded by catalogMu. It bounds how often a
+	// catalog-less server pays a blocking fetch when upstream never recovers.
+	coldCatalogAttemptAt time.Time
+	catalogMu            sync.Mutex
 }
 
 func New(options Options) (*Server, error) {
@@ -563,6 +569,51 @@ func containsString(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+// cachedCatalogBackend is implemented by backends that retain the last
+// fetched model catalog. Read-only status endpoints prefer it over a
+// blocking refresh so a poll can never stall on upstream I/O.
+type cachedCatalogBackend interface {
+	CachedCatalog() *modelcatalog.Catalog
+	RefreshCatalogIfStale() bool
+}
+
+// cachedModelCatalog returns the backend's last fetched catalog without any
+// upstream I/O. It returns nil when the backend retains none (or is not a
+// retaining backend); callers fall back to fetchModelCatalog then.
+func (server *Server) cachedModelCatalog() *modelcatalog.Catalog {
+	if backend, ok := server.backend.(cachedCatalogBackend); ok {
+		return backend.CachedCatalog()
+	}
+	return nil
+}
+
+// refreshModelCatalogIfStale asks a retaining backend to refresh a stale
+// catalog in the background. It never blocks and is a no-op for backends that
+// do not retain a catalog.
+func (server *Server) refreshModelCatalogIfStale() {
+	if backend, ok := server.backend.(cachedCatalogBackend); ok {
+		backend.RefreshCatalogIfStale()
+	}
+}
+
+// coldCatalogCooldown bounds how often a catalog-less server pays a blocking
+// catalog fetch on a status poll. Without it, an upstream that never recovers
+// charges every poll the full fetchModelsTimeout.
+const coldCatalogCooldown = 60 * time.Second
+
+// allowColdCatalogFetch reports whether a catalog-less status poll may pay one
+// blocking catalog fetch, recording the attempt when it does. It is false
+// inside coldCatalogCooldown of the last attempt.
+func (server *Server) allowColdCatalogFetch() bool {
+	server.catalogMu.Lock()
+	defer server.catalogMu.Unlock()
+	if !server.coldCatalogAttemptAt.IsZero() && server.now().Sub(server.coldCatalogAttemptAt) < coldCatalogCooldown {
+		return false
+	}
+	server.coldCatalogAttemptAt = server.now()
+	return true
 }
 
 func (server *Server) fetchModelCatalog(ctx context.Context) (*modelcatalog.Catalog, error) {

@@ -1,8 +1,10 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -94,6 +96,14 @@ type scriptedClient struct {
 	payload       map[string]any
 	requestOption cloudcode.RequestOptions
 	modelsBody    []byte
+	// modelsErrAfter makes FetchAvailableModels succeed for the first
+	// modelsErrAfter calls and fail afterwards; 0 (the default) always
+	// succeeds. modelsErr, when set, is returned verbatim by every models
+	// call (e.g. a rotate-worthy upstream 429). Tests seed a catalog, age
+	// it, then flip the upstream dead.
+	modelsCalls    int
+	modelsErrAfter int
+	modelsErr      error
 }
 
 func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
@@ -101,6 +111,17 @@ func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode
 }
 
 func (client *scriptedClient) FetchAvailableModels(context.Context, string) (cloudcode.Response, error) {
+	client.mu.Lock()
+	client.modelsCalls++
+	failing := client.modelsErrAfter > 0 && client.modelsCalls > client.modelsErrAfter
+	modelsErr := client.modelsErr
+	client.mu.Unlock()
+	if failing {
+		return cloudcode.Response{}, fmt.Errorf("models upstream unreachable")
+	}
+	if modelsErr != nil {
+		return cloudcode.Response{}, modelsErr
+	}
 	body := client.modelsBody
 	if len(body) == 0 {
 		body = []byte(`{
@@ -412,6 +433,237 @@ func TestDispatcherRequestThrottlingAndConfigUpdate(t *testing.T) {
 
 	if !throttled {
 		t.Errorf("expected 250ms throttling delay in sleep durations, got: %v", sleepDurations)
+	}
+}
+
+// The catalog fetch is a rare background refresh on a 30s budget, not
+// hot-loop generation: request throttling must not gate it. A requestDelayMs
+// above fetchModelsTimeout (e.g. 60s) otherwise guarantees "context deadline
+// exceeded" on every refresh, and through it on every Cloud Code request past
+// the catalog TTL.
+func TestFetchAvailableModelsIgnoresRequestThrottle(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	account := testAccount("catalog-throttle@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The sleep honors its context and actually waits: a stub that never
+	// blocks would pass trivially even with the throttle sleep restored.
+	var mu sync.Mutex
+	var sleepDurations []time.Duration
+	sleep := func(ctx context.Context, d time.Duration) error {
+		mu.Lock()
+		sleepDurations = append(sleepDurations, d)
+		mu.Unlock()
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	client := &scriptedClient{}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-catalog"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-catalog": client}, now, sleep)
+	dispatcher.UpdateConfig(config.Config{
+		RequestThrottlingEnabled: true,
+		RequestDelayMs:           60000,
+	})
+
+	// Drive the fetch directly on a budget far shorter than the configured
+	// requestDelayMs. With the throttle sleep restored this hangs until the
+	// deadline and fails with context deadline exceeded — the production
+	// symptom the exemption prevents.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := dispatcher.fetchAvailableModels(ctx); err != nil {
+		t.Fatalf("catalog fetch failed under a budget shorter than requestDelayMs: %v", err)
+	}
+	if dispatcher.CachedCatalog() == nil {
+		t.Fatal("expected the fetch to populate the cached catalog")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sleepDurations) != 0 {
+		t.Fatalf("catalog fetch slept %d time(s) despite throttling exemption — a requestDelayMs above fetchModelsTimeout would deadlock every refresh", len(sleepDurations))
+	}
+}
+
+// A status poll must not leave quota data frozen: when the cached catalog has
+// aged past modelCacheTTL, RefreshCatalogIfStale kicks the shared single-flight
+// fetch (which also runs updateAccountQuota/refreshLiveQuota) without blocking
+// the caller.
+func TestRefreshCatalogIfStaleKicksBackgroundFetch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	current := now
+	account := testAccount("stale-catalog@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return current }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedClient{}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-stale"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-stale": client}, now, nil)
+	dispatcher.now = func() time.Time { return current }
+
+	// Seed the cache with the internal fetch so no background goroutine is
+	// in flight: the refresh below must be the one that starts the fetch.
+	if _, err := dispatcher.fetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("seed fetch failed: %v", err)
+	}
+	first := dispatcher.CachedCatalog()
+	if first == nil {
+		t.Fatal("seed fetch did not populate the catalog")
+	}
+
+	// Fresh catalog: no refresh.
+	if dispatcher.RefreshCatalogIfStale() {
+		t.Fatal("RefreshCatalogIfStale kicked a fetch while the catalog was still fresh")
+	}
+
+	// Age it past the TTL: refresh is requested, and the caller is not blocked.
+	current = now.Add(10 * time.Minute)
+	if !dispatcher.RefreshCatalogIfStale() {
+		t.Fatal("RefreshCatalogIfStale did not kick a fetch for a stale catalog")
+	}
+	waitForCatalogAt(t, dispatcher, current)
+}
+
+// A catalog refresh that fails must not take generation down with it: a stale
+// catalog still resolves models. Only a total absence of catalog is fatal.
+func TestResolveModelFallsBackToStaleCatalogOnRefreshFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	current := now
+	account := testAccount("stale-refresh@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return current }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The models call succeeds exactly once (the seed fetch), then dies.
+	client := &scriptedClient{modelsErrAfter: 1, results: []scriptedResult{{events: [][]byte{[]byte(`{}`)}}}}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-stale-refresh"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-stale-refresh": client}, now, nil)
+	dispatcher.now = func() time.Time { return current }
+
+	if _, err := dispatcher.fetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("seed fetch failed: %v", err)
+	}
+
+	// Age the catalog past the TTL so StreamGenerateContent must refresh it,
+	// then let the refresh fail: the stale catalog still resolves the model
+	// and the request reaches the client instead of 504ing.
+	current = now.Add(6 * time.Minute)
+	if _, err := dispatcher.StreamGenerateContent(context.Background(), testRequest(), func(cloudcode.SSEEvent) error { return nil }); err != nil {
+		t.Fatalf("StreamGenerateContent failed on a refresh error with a stale catalog available: %v", err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("stream calls=%d; want 1 (the request must reach the client)", client.calls)
+	}
+}
+
+// waitForCatalogAt polls catalogAt under the lock with a deadline, so the
+// assertion does not race the background goroutine RefreshCatalogIfStale starts.
+func waitForCatalogAt(t *testing.T, dispatcher *Dispatcher, want time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		dispatcher.mu.RLock()
+		at := dispatcher.catalogAt
+		dispatcher.mu.RUnlock()
+		if at.Equal(want) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("catalogAt never reached %s", want)
+}
+
+// Retries across accounts still need spacing — just not a full requestDelayMs,
+// which can exceed the whole fetch budget. The first attempt pays nothing; each
+// retry pays at most catalogRetryPauseCeiling.
+func TestFetchAvailableModelsClampsRetrySpacing(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	first := testAccount("spacing-first@example.com")
+	second := testAccount("spacing-second@example.com")
+	manager, err := New(Options{Accounts: []*Account{first, second}, Strategy: StrategySticky, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &staticResolver{tokens: map[string]string{first.Email: "tok-spacing-first", second.Email: "tok-spacing-second"}}
+	quotaError := &cloudcode.HTTPError{
+		Endpoint: cloudcode.DailyEndpoint, StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests",
+		Header: http.Header{"Retry-After": {"60"}}, Body: `{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota exhausted"}}`,
+	}
+	clients := map[string]*scriptedClient{
+		"tok-spacing-first":  {modelsErr: quotaError},
+		"tok-spacing-second": {},
+	}
+	var mu sync.Mutex
+	var sleeps []time.Duration
+	dispatcher := newTestDispatcher(t, manager, resolver, clients, now, func(_ context.Context, d time.Duration) error {
+		mu.Lock()
+		sleeps = append(sleeps, d)
+		mu.Unlock()
+		return nil
+	})
+	// An operator-configured 60s requestDelayMs must not leak into the fetch
+	// budget: the retry pause is clamped to catalogRetryPauseCeiling.
+	dispatcher.UpdateConfig(config.Config{RequestThrottlingEnabled: true, RequestDelayMs: 60000})
+
+	if _, err := dispatcher.FetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("FetchAvailableModels failed: %v", err)
+	}
+	if dispatcher.CachedCatalog() == nil {
+		t.Fatal("expected the second account's fetch to populate the cached catalog")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sleeps) != 1 {
+		t.Fatalf("sleeps=%v; want exactly one retry pause (first attempt pays nothing, second account succeeds)", sleeps)
+	}
+	if sleeps[0] != catalogRetryPauseCeiling {
+		t.Fatalf("retry sleep=%s; want the %s ceiling, not the configured 60s requestDelayMs", sleeps[0], catalogRetryPauseCeiling)
+	}
+}
+
+// The plan asks operators to lower an extreme requestDelayMs, but nothing in
+// the process told them it was extreme. UpdateConfig must warn when the delay
+// paces every generation slower than one request per catalog-fetch budget.
+func TestUpdateConfigWarnsOnExtremeRequestDelay(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	account := testAccount("delay-warn@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := newTestDispatcher(t, manager, &staticResolver{}, map[string]*scriptedClient{}, now, func(context.Context, time.Duration) error { return nil })
+
+	// Not parallel: this test swaps the process-global default slog handler,
+	// which must not leak into concurrent tests.
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(original)
+
+	// A modest delay is none of the fetch budget's business.
+	dispatcher.UpdateConfig(config.Config{RequestThrottlingEnabled: true, RequestDelayMs: 250})
+	if strings.Contains(buf.String(), "requestDelayMs paces") {
+		t.Fatalf("warning emitted for a modest requestDelayMs: %s", buf.String())
+	}
+
+	dispatcher.UpdateConfig(config.Config{RequestThrottlingEnabled: true, RequestDelayMs: 60000})
+	if !strings.Contains(buf.String(), "requestDelayMs paces") {
+		t.Fatalf("no warning for a 60s requestDelayMs against a %s fetch budget: %s", fetchModelsTimeout, buf.String())
 	}
 }
 

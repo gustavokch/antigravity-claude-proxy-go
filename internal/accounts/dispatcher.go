@@ -198,6 +198,12 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 	} else {
 		dispatcher.forensics429 = nil
 	}
+
+	if dispatcher.requestThrottlingEnabled && dispatcher.requestDelay >= fetchModelsTimeout {
+		slog.Warn("[Dispatcher] requestDelayMs paces every generation slower than one request per catalog-fetch budget; lower it unless this is deliberate",
+			"requestDelayMs", dispatcher.requestDelay.Milliseconds(),
+			"fetchModelsTimeoutMs", fetchModelsTimeout.Milliseconds())
+	}
 }
 
 // fetchModelsTimeout bounds a decoupled catalog fetch, including any OAuth
@@ -260,9 +266,33 @@ func (dispatcher *Dispatcher) startModelFetch() *modelFetchCall {
 	return call
 }
 
+// catalogRetryPauseCeiling caps the spacing between catalog-fetch retries. The
+// full requestDelayMs cannot apply here: a delay above fetchModelsTimeout would
+// guarantee "context deadline exceeded" on every refresh. Dropping the pause
+// entirely is the other extreme — the loop would then fire one immediate
+// list-models call per account during a 429 wave.
+const catalogRetryPauseCeiling = time.Second
+
 func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudcode.Response, error) {
 	var lastError error
 	for attempt := 0; attempt < max(dispatcher.maxRetries, dispatcher.manager.Count()+1); attempt++ {
+		// Retries across accounts keep a bounded spacing rather than the full
+		// requestDelayMs: this fetch runs on a context bounded by
+		// fetchModelsTimeout, so a delay above that budget would guarantee
+		// "context deadline exceeded" on every catalog refresh (and through
+		// it, on every Cloud Code request past the catalog TTL). The first
+		// attempt pays nothing.
+		if attempt > 0 {
+			dispatcher.mu.RLock()
+			throttling := dispatcher.requestThrottlingEnabled
+			delay := dispatcher.requestDelay
+			dispatcher.mu.RUnlock()
+			if throttling && delay > 0 {
+				if err := dispatcher.sleep(ctx, min(delay, catalogRetryPauseCeiling)); err != nil {
+					return cloudcode.Response{}, err
+				}
+			}
+		}
 		selection := dispatcher.manager.Select("")
 		if selection.Account == nil {
 			return cloudcode.Response{}, errors.New("no accounts available")
@@ -275,15 +305,6 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 			dispatcher.manager.MarkFailure(selection.Account, "")
 			lastError = err
 			continue
-		}
-		dispatcher.mu.RLock()
-		throttling := dispatcher.requestThrottlingEnabled
-		delay := dispatcher.requestDelay
-		dispatcher.mu.RUnlock()
-		if throttling && delay > 0 {
-			if err := dispatcher.sleep(ctx, delay); err != nil {
-				return cloudcode.Response{}, err
-			}
 		}
 		modelsClient := dispatcher.client(selection.Account, credentials.AccessToken)
 		response, err := dispatcher.metered(selection.Account.Email, func() (cloudcode.Response, error) {
@@ -487,13 +508,28 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 	if !fresh {
 		response, err := dispatcher.FetchAvailableModels(ctx)
 		if err != nil {
-			return modelcatalog.Model{}, fmt.Errorf("refresh selectable models: %w", err)
+			// Degrade, do not fail: a stale catalog resolves models correctly
+			// for every model that already existed. Returning here instead
+			// turned any refresh failure into a 504 on every request past the
+			// TTL. Only a total absence of catalog is fatal.
+			if catalog == nil {
+				return modelcatalog.Model{}, fmt.Errorf("refresh selectable models: %w", err)
+			}
+			slog.Warn("[Server] Model catalog refresh failed; serving the stale catalog", "error", err)
+			return catalog.ResolveWithRequest(requested, request)
 		}
-		catalog, err = modelcatalog.Parse(response.Body)
-		if err != nil {
-			return modelcatalog.Model{}, err
+		// fetchAvailableModels already parsed and cached the body via
+		// cacheCatalog; read it back instead of parsing the body twice. The
+		// parse remains the fallback for when the cached parse stored nothing,
+		// so a malformed body still surfaces its decode error rather than a
+		// nil dereference.
+		if catalog = dispatcher.CachedCatalog(); catalog == nil {
+			catalog, err = modelcatalog.Parse(response.Body)
+			if err != nil {
+				return modelcatalog.Model{}, err
+			}
+			dispatcher.storeCatalog(catalog)
 		}
-		dispatcher.storeCatalog(catalog)
 	}
 	return catalog.ResolveWithRequest(requested, request)
 }
@@ -510,6 +546,33 @@ func (dispatcher *Dispatcher) storeCatalog(catalog *modelcatalog.Catalog) {
 	defer dispatcher.mu.Unlock()
 	dispatcher.catalog = catalog
 	dispatcher.catalogAt = dispatcher.now()
+}
+
+// CachedCatalog returns the last successfully fetched model catalog without
+// triggering an upstream refresh. It returns nil when no fetch has succeeded
+// yet. Read-only status endpoints (e.g. /account-limits) prefer this over a
+// blocking FetchAvailableModels so a poll can never stall on upstream I/O.
+func (dispatcher *Dispatcher) CachedCatalog() *modelcatalog.Catalog {
+	dispatcher.mu.RLock()
+	defer dispatcher.mu.RUnlock()
+	return dispatcher.catalog
+}
+
+// RefreshCatalogIfStale starts a background catalog refresh when the cached
+// catalog is missing or older than modelCacheTTL, and reports whether one was
+// requested. It never blocks: startModelFetch single-flights the work on a
+// context bounded by fetchModelsTimeout. Status endpoints call this so a
+// non-blocking poll still drives the quota refresh that rides along with a
+// successful fetch (updateAccountQuota + refreshLiveQuota).
+func (dispatcher *Dispatcher) RefreshCatalogIfStale() bool {
+	dispatcher.mu.RLock()
+	fresh := dispatcher.catalog != nil && dispatcher.now().Sub(dispatcher.catalogAt) < dispatcher.modelCacheTTL
+	dispatcher.mu.RUnlock()
+	if fresh {
+		return false
+	}
+	dispatcher.startModelFetch()
+	return true
 }
 
 func cloneRequest(request map[string]any) map[string]any {
