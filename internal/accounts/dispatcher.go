@@ -488,6 +488,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				}
 				slog.Warn("upstream 429", "model", model, "reason", reason, "wait", wait.Round(time.Second), "serverReset", reset, "failures", failures, "body", truncateBodyForLog(upstreamError.Body))
 				dispatcher.record429(account, project, model, upstreamError, wait, failures, inFlight, priorMinute)
+				dispatcher.recordQuotaExhaustion(account, model, upstreamError.Body)
 				dispatcher.manager.MarkRateLimited(account, model, wait)
 				break
 			}
@@ -765,6 +766,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 		}
 		inFlight, priorMinute := dispatcher.meter.ObserveRejection(email)
 		dispatcher.record429(account, "", model, upstreamError, wait, dispatcher.manager.FailureCount(account), inFlight, priorMinute)
+		dispatcher.recordQuotaExhaustion(account, model, body)
 		dispatcher.manager.MarkRateLimited(account, model, wait)
 		return true
 	default:
@@ -920,6 +922,53 @@ func (dispatcher *Dispatcher) mergeQuotaReading(email, key string, fraction *flo
 		return
 	}
 	dispatcher.manager.MergeQuotaFraction(email, key, fraction, resetTime)
+}
+
+// currentCatalog returns the cached catalog, possibly nil before the first
+// successful fetch.
+func (dispatcher *Dispatcher) currentCatalog() *modelcatalog.Catalog {
+	dispatcher.mu.RLock()
+	defer dispatcher.mu.RUnlock()
+	return dispatcher.catalog
+}
+
+// quotaKeyFor picks the key an exhaustion is filed under. Quota rows are keyed
+// by catalog id — that is what ModelKeyCandidates looks up and what the UI
+// lists — while upstream names its own model id, and for a tier-mapped model
+// the two differ: every gemini-3.8-flash-* tier can share one
+// gemini-3.8-flash-tiered upstream id. When the requested catalog model is the
+// one upstream charged, the catalog id wins, so the row that goes to 0 is a
+// row something actually reads.
+func (dispatcher *Dispatcher) quotaKeyFor(requested, upstream string) string {
+	requested = strings.ToLower(strings.TrimSpace(modelcatalog.Strip1mSuffix(requested)))
+	if upstream == "" {
+		return requested
+	}
+	if requested != "" {
+		if catalog := dispatcher.currentCatalog(); catalog != nil {
+			if model, err := catalog.Resolve(requested); err == nil &&
+				strings.ToLower(model.GetUpstreamID()) == upstream {
+				return requested
+			}
+		}
+	}
+	return upstream
+}
+
+// recordQuotaExhaustion turns an upstream "individual quota reached" 429 into
+// a quota reading. The quota RPCs report the refused model at
+// remainingFraction 1 for the whole cooldown, so this error body is the only
+// place the consumption shows. The ErrorInfo model wins over the requested
+// model id when present: upstream names the bucket it actually charged.
+func (dispatcher *Dispatcher) recordQuotaExhaustion(account *Account, model, body string) {
+	if account == nil {
+		return
+	}
+	exhaustion, ok := ExtractQuotaExhaustion(body)
+	if !ok {
+		return
+	}
+	dispatcher.manager.MarkQuotaExhausted(account.Email, dispatcher.quotaKeyFor(model, exhaustion.Model), exhaustion.ResetTime)
 }
 
 func findHTTPError(err error) *cloudcode.HTTPError {
