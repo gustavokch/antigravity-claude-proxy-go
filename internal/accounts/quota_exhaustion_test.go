@@ -391,3 +391,28 @@ func TestMarkQuotaExhaustedAcceptsFractionalSeconds(t *testing.T) {
 		t.Fatalf("a fractional-second reset must parse like every other reset in the package: %+v", got)
 	}
 }
+
+func TestRotateForErrorRecordsQuotaExhaustion(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 16, 53, 0, 0, time.UTC)
+	account := testAccount("rotate@example.com")
+	manager := quotaTestManager(t, now, account)
+	dispatcher := newTestDispatcher(t, manager, &staticResolver{tokens: map[string]string{}},
+		map[string]*scriptedClient{}, now, func(context.Context, time.Duration) error { return nil })
+
+	quotaError := &cloudcode.HTTPError{
+		Endpoint: cloudcode.DailyEndpoint, StatusCode: http.StatusTooManyRequests,
+		Status: "429 Too Many Requests", Body: individualQuotaBody,
+	}
+	if !dispatcher.rotateForError(account, "gemini-3.8-flash-high", quotaError) {
+		t.Fatal("a 429 must rotate")
+	}
+
+	got := account.Quota.Models["gemini-3.8-flash-high"]
+	if got.RemainingFraction == nil || *got.RemainingFraction != 0 {
+		t.Fatalf("the non-stream 429 path must record the exhaustion too: %+v", got)
+	}
+	if got.ResetTime != "2026-09-24T19:58:20Z" {
+		t.Fatalf("reset time = %q", got.ResetTime)
+	}
+}
