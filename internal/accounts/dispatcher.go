@@ -519,6 +519,23 @@ func (dispatcher *Dispatcher) CachedCatalog() *modelcatalog.Catalog {
 	return dispatcher.catalog
 }
 
+// RefreshCatalogIfStale starts a background catalog refresh when the cached
+// catalog is missing or older than modelCacheTTL, and reports whether one was
+// requested. It never blocks: startModelFetch single-flights the work on a
+// context bounded by fetchModelsTimeout. Status endpoints call this so a
+// non-blocking poll still drives the quota refresh that rides along with a
+// successful fetch (updateAccountQuota + refreshLiveQuota).
+func (dispatcher *Dispatcher) RefreshCatalogIfStale() bool {
+	dispatcher.mu.RLock()
+	fresh := dispatcher.catalog != nil && dispatcher.now().Sub(dispatcher.catalogAt) < dispatcher.modelCacheTTL
+	dispatcher.mu.RUnlock()
+	if fresh {
+		return false
+	}
+	dispatcher.startModelFetch()
+	return true
+}
+
 func cloneRequest(request map[string]any) map[string]any {
 	cloned := make(map[string]any, len(request))
 	for key, value := range request {

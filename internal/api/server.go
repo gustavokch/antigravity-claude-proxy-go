@@ -570,6 +570,7 @@ func containsString(values []string, wanted string) bool {
 // blocking refresh so a poll can never stall on upstream I/O.
 type cachedCatalogBackend interface {
 	CachedCatalog() *modelcatalog.Catalog
+	RefreshCatalogIfStale() bool
 }
 
 // cachedModelCatalog returns the backend's last fetched catalog without any
@@ -580,6 +581,15 @@ func (server *Server) cachedModelCatalog() *modelcatalog.Catalog {
 		return backend.CachedCatalog()
 	}
 	return nil
+}
+
+// refreshModelCatalogIfStale asks a retaining backend to refresh a stale
+// catalog in the background. It never blocks and is a no-op for backends that
+// do not retain a catalog.
+func (server *Server) refreshModelCatalogIfStale() {
+	if backend, ok := server.backend.(cachedCatalogBackend); ok {
+		backend.RefreshCatalogIfStale()
+	}
 }
 
 func (server *Server) fetchModelCatalog(ctx context.Context) (*modelcatalog.Catalog, error) {

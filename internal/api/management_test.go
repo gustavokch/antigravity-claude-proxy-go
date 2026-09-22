@@ -95,8 +95,10 @@ func (m *mockRefresherBackend) RefreshAccount(ctx context.Context, email string)
 // cachedCatalogStub retains one catalog and counts blocking refreshes, so the
 // test proves /account-limits serves the cache without upstream I/O.
 type cachedCatalogStub struct {
-	catalog    *modelcatalog.Catalog
-	fetchCalls int
+	catalog      *modelcatalog.Catalog
+	stale        bool
+	fetchCalls   int
+	refreshCalls int
 }
 
 func (m *cachedCatalogStub) FetchAvailableModels(context.Context) (cloudcode.Response, error) {
@@ -110,8 +112,14 @@ func (m *cachedCatalogStub) StreamGenerateContent(context.Context, map[string]an
 
 func (m *cachedCatalogStub) CachedCatalog() *modelcatalog.Catalog { return m.catalog }
 
-func TestAccountLimitsServesCachedCatalogWithoutRefresh(t *testing.T) {
-	server, _, _ := newTestServerWithManager(t)
+func (m *cachedCatalogStub) RefreshCatalogIfStale() bool {
+	m.refreshCalls++
+	return m.stale
+}
+
+// testCatalog parses the shared catalog fixture used by /account-limits tests.
+func testCatalog(t *testing.T) *modelcatalog.Catalog {
+	t.Helper()
 	catalog, err := modelcatalog.Parse([]byte(`{
 		"defaultAgentModelId":"cached-model",
 		"agentModelSorts":[{"groups":[{"modelIds":["cached-model"]}]}],
@@ -120,6 +128,12 @@ func TestAccountLimitsServesCachedCatalogWithoutRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return catalog
+}
+
+func TestAccountLimitsServesCachedCatalogWithoutRefresh(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	catalog := testCatalog(t)
 	stub := &cachedCatalogStub{catalog: catalog}
 	server.backend = stub
 
@@ -143,6 +157,28 @@ func TestAccountLimitsServesCachedCatalogWithoutRefresh(t *testing.T) {
 	}
 	if _, ok := modelContext["cached-model"]; !ok {
 		t.Fatalf("expected cached-model in modelContext, got %v", modelContext)
+	}
+}
+
+// /account-limits no longer blocks on a fetch, so it must ask for a background
+// refresh instead: an idle proxy's quota data would otherwise freeze at
+// whatever the last generation request observed.
+func TestAccountLimitsRequestsRefreshForStaleCatalog(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	stub := &cachedCatalogStub{catalog: testCatalog(t), stale: true}
+	server.backend = stub
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/account-limits", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if stub.fetchCalls != 0 {
+		t.Fatalf("blocking FetchAvailableModels calls=%d; want 0", stub.fetchCalls)
+	}
+	if stub.refreshCalls != 1 {
+		t.Fatalf("RefreshCatalogIfStale calls=%d; want 1 (idle quota data must not freeze)", stub.refreshCalls)
 	}
 }
 

@@ -460,6 +460,64 @@ func TestFetchAvailableModelsIgnoresRequestThrottle(t *testing.T) {
 	}
 }
 
+// A status poll must not leave quota data frozen: when the cached catalog has
+// aged past modelCacheTTL, RefreshCatalogIfStale kicks the shared single-flight
+// fetch (which also runs updateAccountQuota/refreshLiveQuota) without blocking
+// the caller.
+func TestRefreshCatalogIfStaleKicksBackgroundFetch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	current := now
+	account := testAccount("stale-catalog@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return current }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedClient{}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-stale"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-stale": client}, now, nil)
+	dispatcher.now = func() time.Time { return current }
+
+	// Seed the cache with the internal fetch so no background goroutine is
+	// in flight: the refresh below must be the one that starts the fetch.
+	if _, err := dispatcher.fetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("seed fetch failed: %v", err)
+	}
+	first := dispatcher.CachedCatalog()
+	if first == nil {
+		t.Fatal("seed fetch did not populate the catalog")
+	}
+
+	// Fresh catalog: no refresh.
+	if dispatcher.RefreshCatalogIfStale() {
+		t.Fatal("RefreshCatalogIfStale kicked a fetch while the catalog was still fresh")
+	}
+
+	// Age it past the TTL: refresh is requested, and the caller is not blocked.
+	current = now.Add(10 * time.Minute)
+	if !dispatcher.RefreshCatalogIfStale() {
+		t.Fatal("RefreshCatalogIfStale did not kick a fetch for a stale catalog")
+	}
+	waitForCatalogAt(t, dispatcher, current)
+}
+
+// waitForCatalogAt polls catalogAt under the lock with a deadline, so the
+// assertion does not race the background goroutine RefreshCatalogIfStale starts.
+func waitForCatalogAt(t *testing.T, dispatcher *Dispatcher, want time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		dispatcher.mu.RLock()
+		at := dispatcher.catalogAt
+		dispatcher.mu.RUnlock()
+		if at.Equal(want) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("catalogAt never reached %s", want)
+}
+
 // A flat cooldown made the proxy re-probe a throttled model ~38 times across
 // the 2026-09-17 wave. Each tier must strictly exceed the previous one.
 func TestSmartBackoffRateLimitEscalates(t *testing.T) {
