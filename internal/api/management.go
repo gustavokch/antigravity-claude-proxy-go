@@ -373,7 +373,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	// proxies.
 	catalog := server.cachedModelCatalog()
 	server.refreshModelCatalogIfStale()
-	if catalog == nil {
+	if catalog == nil && server.allowColdCatalogFetch() {
 		if fresh, err := server.fetchModelCatalog(request.Context()); err == nil {
 			catalog = fresh
 		}

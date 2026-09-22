@@ -182,6 +182,25 @@ func TestAccountLimitsRequestsRefreshForStaleCatalog(t *testing.T) {
 	}
 }
 
+// With no catalog ever fetched, the first poll may pay one blocking fetch —
+// but a permanently failing upstream must not charge every later poll 30s.
+func TestAccountLimitsColdStartFetchesAtMostOncePerCooldown(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	stub := &cachedCatalogStub{catalog: nil} // FetchAvailableModels returns DeadlineExceeded
+	server.backend = stub
+
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/account-limits", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("poll %d: expected 200, got %d", i, rec.Code)
+		}
+	}
+	if stub.fetchCalls != 1 {
+		t.Fatalf("blocking fetch calls=%d; want 1 (a failing upstream must not stall every poll)", stub.fetchCalls)
+	}
+}
+
 func TestManagement_HealthAndLimits(t *testing.T) {
 	server, _, _ := newTestServerWithManager(t)
 	handler := server.Handler()
@@ -316,6 +335,9 @@ func TestManagement_HealthAndLimits(t *testing.T) {
 
 	t.Run("GET /account-limits advertises modelContext", func(t *testing.T) {
 		server.backend = &geminiDiscoveryTestBackend{}
+		// Earlier subtests' polls consumed this server's one-cold-fetch
+		// cooldown; a cold start is what this subtest simulates.
+		server.coldCatalogAttemptAt = time.Time{}
 		handler := server.Handler()
 
 		req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
