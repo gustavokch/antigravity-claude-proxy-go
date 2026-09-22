@@ -1590,8 +1590,8 @@ func (manager *Manager) MarkQuotaExhausted(email, key, resetTime string) {
 	if key == "" || resetTime == "" {
 		return
 	}
-	reset, err := time.Parse(time.RFC3339, resetTime)
-	if err != nil {
+	reset, ok := parseQuotaResetTime(resetTime)
+	if !ok {
 		return
 	}
 	manager.mu.Lock()
@@ -1651,6 +1651,8 @@ func (manager *Manager) mergeQuota(email, key string, fraction *float64, resetTi
 		}
 		if previous, seen := (*target)[key]; seen && previous.ExhaustedUntilMS > manager.now().UnixMilli() {
 			// A recorded exhaustion outranks the live reading until it expires.
+			slog.Debug("live quota reading ignored; exhaustion still open",
+				"email", email, "key", key, "until", time.UnixMilli(previous.ExhaustedUntilMS).UTC().Format(time.RFC3339))
 			break
 		}
 		(*target)[key] = ModelQuota{RemainingFraction: fraction, ResetTime: resetTime}

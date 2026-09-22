@@ -377,3 +377,17 @@ func TestMarkQuotaExhaustedPersists(t *testing.T) {
 		t.Fatalf("exhaustion did not round-trip through accounts.json: %+v", got)
 	}
 }
+
+func TestMarkQuotaExhaustedAcceptsFractionalSeconds(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 16, 53, 0, 0, time.UTC)
+	account := testAccount("nano@example.com")
+	manager := quotaTestManager(t, now, account)
+
+	manager.MarkQuotaExhausted("nano@example.com", "gemini-3.8-flash-high", "2026-09-24T19:58:20.582931120Z")
+
+	got := account.Quota.Models["gemini-3.8-flash-high"]
+	if got.ExhaustedUntilMS == 0 {
+		t.Fatalf("a fractional-second reset must parse like every other reset in the package: %+v", got)
+	}
+}
