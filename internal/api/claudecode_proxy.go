@@ -140,10 +140,20 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 }
 
 // ccExtractSessionID extracts a stable session key from request headers, then
-// from the request body. Claude Code does not send a session header: it carries
-// the identifier in metadata.user_id, so the body must be inspected. Mirrors
-// openrouter.ExtractSessionID minus the remote-address fallback, which would
-// change account stickiness for anonymous clients.
+// from the request body.
+//
+// The four header names below are the spellings third-party harnesses use.
+// Claude Code itself sends none of them: it sends X-Claude-Code-Session-Id,
+// present on every captured POST /v1/messages in
+// .reference/claude-code-headers-20260923*.jsonl and absent from the captured
+// GETs. Reading that name here would change which requests get a session key
+// and therefore account stickiness, so it is a behaviour change rather than a
+// spelling to add to the list.
+//
+// The body fallback exists because a harness that sends no session header may
+// still carry the identifier in metadata. Mirrors openrouter.ExtractSessionID
+// minus the remote-address fallback, which would change account stickiness for
+// anonymous clients.
 func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 	if r != nil {
 		for _, h := range []string{"x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
