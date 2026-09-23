@@ -330,7 +330,14 @@ func (server *Server) forwardToClaudeCode(
 					pool.Acquire(acc.ID)
 					startTime := time.Now()
 
-					resp, err := client.SendMessage(ctx, acc.Token, bodyBytes, request.Header)
+					identity, normalize := ccCfg.SpoofIdentity(acc.AccountUUID, sessionKey)
+					resp, err := client.SendMessage(ctx, claudecode.MessageRequest{
+						Token:         acc.Token,
+						Body:          bodyBytes,
+						ClientHeaders: request.Header,
+						Normalize:     normalize,
+						Identity:      identity,
+					})
 					if err != nil {
 						pool.Release(acc.ID)
 						pool.RecordFailure(acc.ID, false, 10*time.Second)
@@ -347,7 +354,13 @@ func (server *Server) forwardToClaudeCode(
 							if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
 								if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
 									server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
-									retryResp, retryErr := client.SendMessage(ctx, refreshedAcc.Token, bodyBytes, request.Header)
+									retryResp, retryErr := client.SendMessage(ctx, claudecode.MessageRequest{
+										Token:         refreshedAcc.Token,
+										Body:          bodyBytes,
+										ClientHeaders: request.Header,
+										Normalize:     normalize,
+										Identity:      identity,
+									})
 									if retryErr == nil {
 										_ = resp.Body.Close()
 										resp = retryResp
@@ -450,7 +463,14 @@ func (server *Server) forwardToClaudeCode(
 		pool.Acquire(acc.ID)
 		startTime := time.Now()
 
-		resp, err := client.SendMessage(request.Context(), acc.Token, reqBody, request.Header)
+		identity, normalize := ccCfg.SpoofIdentity(acc.AccountUUID, sessionKey)
+		resp, err := client.SendMessage(request.Context(), claudecode.MessageRequest{
+			Token:         acc.Token,
+			Body:          reqBody,
+			ClientHeaders: request.Header,
+			Normalize:     normalize,
+			Identity:      identity,
+		})
 		if err != nil {
 			pool.Release(acc.ID)
 			pool.RecordFailure(acc.ID, false, 10*time.Second)
@@ -467,7 +487,13 @@ func (server *Server) forwardToClaudeCode(
 				if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
 					if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
 						server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
-						retryResp, retryErr := client.SendMessage(request.Context(), refreshedAcc.Token, reqBody, request.Header)
+						retryResp, retryErr := client.SendMessage(request.Context(), claudecode.MessageRequest{
+							Token:         refreshedAcc.Token,
+							Body:          reqBody,
+							ClientHeaders: request.Header,
+							Normalize:     normalize,
+							Identity:      identity,
+						})
 						if retryErr == nil {
 							_ = resp.Body.Close()
 							resp = retryResp

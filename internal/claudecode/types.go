@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"antigravity-go-proxy/internal/ccidentity"
 )
 
 // DefaultBaseURL is the official Anthropic API endpoint.
@@ -85,6 +87,50 @@ func DefaultRoutingConfig() RoutingConfig {
 	}
 }
 
+// IdentityConfig controls whether outbound requests are rewritten to the
+// captured Claude Code wire identity.
+//
+// Disabled is a disable flag rather than an enable flag on purpose: the zero
+// value must mean "normalize", because the feature exists so a foreign harness
+// is not gated, and a zero-value-means-off bool would ship it silently inert.
+//
+// The overrides exist because three captured values are environment-specific
+// (X-Stainless-OS and X-Stainless-Runtime-Version came from a Linux container)
+// or still unverified (Entrypoint: only sdk-cli has ever been captured).
+// Empty means use the captured value.
+type IdentityConfig struct {
+	Disabled                bool   `json:"disabled,omitempty"`
+	ClientVersion           string `json:"clientVersion,omitempty"`
+	Entrypoint              string `json:"entrypoint,omitempty"`
+	TurnOrigin              string `json:"turnOrigin,omitempty"`
+	UserAgent               string `json:"userAgent,omitempty"`
+	StainlessOS             string `json:"stainlessOs,omitempty"`
+	StainlessRuntimeVersion string `json:"stainlessRuntimeVersion,omitempty"`
+}
+
+// SpoofIdentity returns the wire identity to send for one request, and whether
+// normalization is enabled at all.
+//
+// accountUUID and sessionKey are what the request already knows: the account
+// chosen by the pool, and the session key used for stickiness. Reusing the
+// session key keeps the spoofed session UUID consistent with that routing rather
+// than inventing a second, unrelated notion of session.
+func (c Config) SpoofIdentity(accountUUID, sessionKey string) (ccidentity.Identity, bool) {
+	if c.Identity.Disabled {
+		return ccidentity.Identity{}, false
+	}
+	return ccidentity.Identity{
+		AccountUUID:             accountUUID,
+		SessionKey:              sessionKey,
+		ClientVersion:           c.Identity.ClientVersion,
+		Entrypoint:              c.Identity.Entrypoint,
+		TurnOrigin:              c.Identity.TurnOrigin,
+		UserAgent:               c.Identity.UserAgent,
+		StainlessOS:             c.Identity.StainlessOS,
+		StainlessRuntimeVersion: c.Identity.StainlessRuntimeVersion,
+	}, true
+}
+
 // Config is the root configuration structure for the Claude Code subsystem.
 type Config struct {
 	Enabled    bool            `json:"enabled"`
@@ -94,6 +140,7 @@ type Config struct {
 	Accounts   []AccountConfig `json:"accounts,omitempty"`
 	Allowlist  []ModelConfig   `json:"allowlist,omitempty"`
 	Routing    RoutingConfig   `json:"routing,omitempty"`
+	Identity   IdentityConfig  `json:"identity,omitempty"`
 }
 
 // RateLimits tracks Anthropic API rate limits extracted from response headers.

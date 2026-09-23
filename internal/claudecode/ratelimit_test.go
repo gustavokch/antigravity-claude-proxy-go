@@ -186,11 +186,11 @@ func TestRateLimits_MinRemainingFraction(t *testing.T) {
 
 	// Granular input token limit lowest
 	rl2 := RateLimits{
-		RequestsLimit:        100,
-		RequestsRemaining:    90, // 0.9
-		InputTokensLimit:     1000,
-		InputTokensRemaining: 50, // 0.05
-		OutputTokensLimit:    500,
+		RequestsLimit:         100,
+		RequestsRemaining:     90, // 0.9
+		InputTokensLimit:      1000,
+		InputTokensRemaining:  50, // 0.05
+		OutputTokensLimit:     500,
 		OutputTokensRemaining: 400, // 0.8
 	}
 	if frac, ok := rl2.MinRemainingFraction(); !ok || frac != 0.05 {
@@ -225,10 +225,10 @@ func TestExtractRateLimits_PartialHeadersCountAsSignal(t *testing.T) {
 }
 
 func TestRateLimits_HasLimits(t *testing.T) {
-	if ((RateLimits{}).HasLimits()) {
+	if (RateLimits{}).HasLimits() {
 		t.Errorf("zero value must have no limits")
 	}
-	if (!(RateLimits{OutputTokensLimit: 10}).HasLimits()) {
+	if !(RateLimits{OutputTokensLimit: 10}).HasLimits() {
 		t.Errorf("single dimension must count")
 	}
 }
@@ -238,8 +238,8 @@ func TestRateLimits_ResetTime(t *testing.T) {
 
 	// Case 1: Active RetryAfter takes precedence
 	rlRetry := RateLimits{
-		RetryAfter:  30,
-		LastUpdated: now,
+		RetryAfter:    30,
+		LastUpdated:   now,
 		RequestsReset: now.Add(10 * time.Second),
 	}
 	expectedRetry := now.Add(30 * time.Second)
@@ -265,12 +265,12 @@ func TestRateLimits_ResetTime(t *testing.T) {
 	// Case 3: Multiple active dimensions - fallback chain selects latest active reset
 	outReset := now.Add(25 * time.Second)
 	rlActive := RateLimits{
-		TokensLimit:       500,
-		TokensRemaining:   200,
-		TokensReset:       reqReset,
-		OutputTokensLimit: 100,
+		TokensLimit:           500,
+		TokensRemaining:       200,
+		TokensReset:           reqReset,
+		OutputTokensLimit:     100,
 		OutputTokensRemaining: 80,
-		OutputTokensReset: outReset,
+		OutputTokensReset:     outReset,
 	}
 	if got := rlActive.ResetTime(now); !got.Equal(outReset) {
 		t.Errorf("expected latest active reset %v, got %v", outReset, got)

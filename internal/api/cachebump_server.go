@@ -207,7 +207,17 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 	pool.Acquire(acc.ID)
 	defer pool.Release(acc.ID)
 
-	resp, err := client.SendMessage(ctx, acc.Token, rec.Body, rec.Headers)
+	// A replay must carry the same identity as the original request, so the
+	// recorded session key is reused rather than derived again: a different
+	// session UUID would make the replay look like a different client.
+	identity, normalize := config.Get().ClaudeCode.SpoofIdentity(acc.AccountUUID, rec.SessionID)
+	resp, err := client.SendMessage(ctx, claudecode.MessageRequest{
+		Token:         acc.Token,
+		Body:          rec.Body,
+		ClientHeaders: rec.Headers,
+		Normalize:     normalize,
+		Identity:      identity,
+	})
 	if err != nil {
 		return cachebump.BumpResult{}, err
 	}
