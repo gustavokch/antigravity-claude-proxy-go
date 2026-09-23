@@ -90,7 +90,8 @@ func BuildEntry(input EntryInput) Entry {
 	return entry
 }
 
-// Options tunes file handling and redaction.
+// Options tunes file handling and redaction. A MaxFiles or MaxFileBytes of
+// zero or less means no limit.
 type Options struct {
 	MaxFiles     int
 	MaxFileBytes int64
@@ -142,6 +143,10 @@ func (recorder *Recorder) Record(entry Entry) {
 		for i, item := range entry.Context {
 			entry.Context[i] = strings.ReplaceAll(item, recorder.home, "~")
 		}
+		// The verdict and its rationale quote the command under judgement, so
+		// they carry absolute paths as often as the action does.
+		entry.VerdictRaw = strings.ReplaceAll(entry.VerdictRaw, recorder.home, "~")
+		entry.Thinking = strings.ReplaceAll(entry.Thinking, recorder.home, "~")
 	}
 
 	line, err := json.Marshal(entry)
@@ -165,14 +170,17 @@ func (recorder *Recorder) Record(entry Entry) {
 		recorder.prune(path)
 	}
 
-	if info, err := os.Stat(path); err == nil && info.Size() >= recorder.options.MaxFileBytes {
-		recorder.dropped++
-		if time.Since(recorder.lastWarn) > time.Hour {
-			recorder.lastWarn = time.Now()
-			slog.Warn("corpus: file at its size cap, dropping rows",
-				"file", path, "dropped", recorder.dropped)
+	// A MaxFileBytes of zero or less means no limit, matching MaxFiles.
+	if recorder.options.MaxFileBytes > 0 {
+		if info, err := os.Stat(path); err == nil && info.Size() >= recorder.options.MaxFileBytes {
+			recorder.dropped++
+			if time.Since(recorder.lastWarn) > time.Hour {
+				recorder.lastWarn = time.Now()
+				slog.Warn("corpus: file at its size cap, dropping rows",
+					"file", path, "dropped", recorder.dropped)
+			}
+			return
 		}
-		return
 	}
 
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)

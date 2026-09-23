@@ -244,9 +244,11 @@ func TestRecorderRedactsHomeDirectory(t *testing.T) {
 
 	recorder := New(dir, Options{MaxFiles: 8, MaxFileBytes: 1 << 20, RedactPaths: true})
 	recorder.Record(Entry{
-		Version: 1,
-		Action:  `{"Bash":"cat ` + home + `/.ssh/config"}`,
-		Context: []string{`{"user":"look in ` + home + `/notes"}`},
+		Version:    1,
+		Action:     `{"Bash":"cat ` + home + `/.ssh/config"}`,
+		Context:    []string{`{"user":"look in ` + home + `/notes"}`},
+		VerdictRaw: `<thinking>Reads ` + home + `/.ssh/config.</thinking><severity>3</severity>`,
+		Thinking:   `Reads ` + home + `/.ssh/config.`,
 	})
 
 	rows := readRows(t, dir)
@@ -261,6 +263,31 @@ func TestRecorderRedactsHomeDirectory(t *testing.T) {
 	}
 	if strings.Contains(rows[0].Context[0], home) {
 		t.Errorf("Context still carries the home path: %q", rows[0].Context[0])
+	}
+	// The verdict and its rationale quote the command under judgement, so they
+	// carry absolute paths just as often as the action does.
+	if strings.Contains(rows[0].VerdictRaw, home) {
+		t.Errorf("VerdictRaw still carries the home path: %q", rows[0].VerdictRaw)
+	}
+	if strings.Contains(rows[0].Thinking, home) {
+		t.Errorf("Thinking still carries the home path: %q", rows[0].Thinking)
+	}
+}
+
+func TestRecorderZeroMaxFileBytesMeansNoLimit(t *testing.T) {
+	dir := t.TempDir()
+	// An unset MaxFileBytes means no limit, matching MaxFiles <= 0.
+	recorder := New(dir, Options{MaxFiles: 8})
+	for i := 0; i < 20; i++ {
+		recorder.Record(Entry{Version: 1, Action: fmt.Sprintf("row-%02d-%s", i, strings.Repeat("x", 40))})
+	}
+
+	rows := readRows(t, dir)
+	if len(rows) != 20 {
+		t.Errorf("got %d rows, want all 20 written when no cap is set", len(rows))
+	}
+	if recorder.Dropped() != 0 {
+		t.Errorf("Dropped = %d, want 0 when no cap is set", recorder.Dropped())
 	}
 }
 
