@@ -3,10 +3,15 @@ set -euo pipefail
 
 # Claude Code wire-identity drift gate.
 #
-# Boots the proxy behind mitmdump, sends one foreign-headed request through the
-# pooled Claude Code gateway, and diffs the headers the proxy actually put on
-# the wire against the committed capture at
-# .reference/claude-code-headers-20260923.jsonl.
+# Boots the proxy behind mitmdump, drives four requests across the three paths
+# that carry a wire identity, and checks each against the committed capture at
+# .reference/claude-code-headers-20260923.jsonl:
+#
+#   pooled gateway, normalized      full header and body diff against the capture
+#   custom endpoint, no apiKey      must present the captured identity
+#   custom endpoint with an apiKey  must present the CALLER's identity and keep
+#                                   the key, because x-api-key is on the omit list
+#   GET /v1/models, three callers   must carry the captured discovery User-Agent
 #
 # What this gate detects: the PROXY drifting away from the captured baseline —
 # a refactor that drops a header, a canonicalisation bug that changes a name's
@@ -36,12 +41,32 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cc-identity-gate.XXXXXX")"
 MITM_CONFDIR="${WORK_DIR}/mitm"
 CONFIG_DIR="${WORK_DIR}/config"
 OBSERVED="${WORK_DIR}/observed.jsonl"
+OBSERVED_POOLED="${WORK_DIR}/observed-pooled.jsonl"
+OBSERVED_CUSTOM_KEYLESS="${WORK_DIR}/observed-custom-keyless.jsonl"
+OBSERVED_CUSTOM_KEYED="${WORK_DIR}/observed-custom-keyed.jsonl"
+OBSERVED_DISCOVERY="${WORK_DIR}/observed-discovery.jsonl"
 MITM_LOG="${WORK_DIR}/mitmdump.log"
 PROXY_LOG="${WORK_DIR}/proxy.log"
 
 # The request the gate drives. Any allowlisted Claude model works; haiku is the
 # cheapest if the stub is ever replaced by a live account.
 GATE_MODEL="claude-haiku-4-5"
+
+# Two custom endpoints, identical but for the credential. Both are
+# Anthropic-shaped, so isAnthropicEndpoint matches and normalization is in
+# scope for both; only the configured apiKey decides. Neither model name is in
+# the Claude Code allowlist, so the pooled gateway declines them and this gate's
+# first phase is untouched.
+GATE_CUSTOM_KEYLESS_MODEL="gate-custom-keyless"
+GATE_CUSTOM_KEYED_MODEL="gate-custom-keyed"
+GATE_CUSTOM_API_KEY="gate-custom-endpoint-credential-not-valid-upstream"
+# The caller's own fingerprint, which a non-normalized endpoint must see
+# unchanged. Kept in one place because both the driven request and the
+# passthrough assertion need the same value.
+GATE_CALLER_USER_AGENT="foreign-harness/1.0"
+# GATE_CUSTOM_API_KEY_SHA256 is computed AFTER the tool preflight, because it
+# needs shasum and a missing tool has to reach skip() rather than die on a
+# failed command substitution under `set -o pipefail`.
 
 skip() {
   echo "SKIPPED: $1" >&2
@@ -57,10 +82,15 @@ fail() {
 if [[ "${ANTIGRAVITY_SKIP_CC_IDENTITY_GATE:-0}" == "1" ]]; then
   skip "ANTIGRAVITY_SKIP_CC_IDENTITY_GATE=1"
 fi
-for tool in mitmdump jq go nc python3; do
+for tool in mitmdump jq go nc python3 shasum; do
   command -v "${tool}" >/dev/null 2>&1 || skip "${tool} not found in PATH"
 done
 [[ -f "${BASELINE}" ]] || skip "baseline capture missing at ${BASELINE}"
+
+# The mitm addon redacts any header whose name matches api[_-]?key, hashing the
+# whole value. Comparing that digest proves the exact key survived without the
+# key ever appearing in the capture.
+GATE_CUSTOM_API_KEY_SHA256="$(printf '%s' "${GATE_CUSTOM_API_KEY}" | shasum -a 256 | cut -d' ' -f1)"
 
 cleanup() {
   if [[ -n "${PROXY_PID:-}" ]] && kill -0 "${PROXY_PID}" 2>/dev/null; then
@@ -81,17 +111,53 @@ cleanup() {
 # and the next run then fails to bind while every readiness check still passes.
 trap cleanup EXIT INT TERM
 
-echo "=== [1/6] Building the proxy ==="
+# Each phase is diffed against its own records alone. The differ reads the
+# FIRST POST /v1/messages record it finds, so a later phase's request would
+# otherwise change what the earlier assertion examines. The mitm addon opens
+# the output per record with mode "a" and closes it again, so truncating here
+# cannot corrupt a write in flight.
+snapshot_phase() {
+  local destination="$1"
+  local what="$2"
+  for _ in $(seq 1 50); do
+    [[ -s "${OBSERVED}" ]] && break
+    sleep 0.2
+  done
+  if [[ ! -s "${OBSERVED}" ]]; then
+    KEEP_WORK_DIR=1
+    echo "mitmdump log:" >&2
+    tail -20 "${MITM_LOG}" >&2 || true
+    echo "proxy log:" >&2
+    tail -20 "${PROXY_LOG}" >&2 || true
+    fail "no flow reached mitmdump for ${what}. Work dir kept at ${WORK_DIR}"
+  fi
+  cp "${OBSERVED}" "${destination}"
+  : > "${OBSERVED}"
+}
+
+echo "=== [1/9] Building the proxy ==="
 mkdir -p "${REPO_ROOT}/bin"
 (cd "${REPO_ROOT}" && go build -o bin/antigravity-proxy ./cmd/proxy)
 
-echo "=== [2/6] Writing a stub configuration ==="
+echo "=== [2/9] Writing a stub configuration ==="
 mkdir -p "${CONFIG_DIR}" "${MITM_CONFDIR}"
-# gatewayOrder is narrowed to claudecode alone so the request cannot be answered
-# by another gateway and leave this gate asserting nothing.
+# gatewayOrder is narrowed to claudecode and custom alone so no request can be
+# answered by another gateway and leave this gate asserting nothing. The two
+# custom models are not in the Claude Code allowlist, and tryCustomEndpointGateway
+# keys on the exact model name, so the pooled phase and the custom phases cannot
+# answer each other's requests.
 cat > "${CONFIG_DIR}/config.json" <<JSON
 {
-  "gatewayOrder": { "byModel": {}, "order": ["claudecode"] },
+  "gatewayOrder": { "byModel": {}, "order": ["claudecode", "custom"] },
+  "customEndpoints": {
+    "${GATE_CUSTOM_KEYLESS_MODEL}": {
+      "url": "https://api.anthropic.com/v1/messages"
+    },
+    "${GATE_CUSTOM_KEYED_MODEL}": {
+      "url": "https://api.anthropic.com/v1/messages",
+      "apiKey": "${GATE_CUSTOM_API_KEY}"
+    }
+  },
   "claudecode": {
     "enabled": true,
     "baseUrl": "https://api.anthropic.com",
@@ -115,7 +181,7 @@ cat > "${CONFIG_DIR}/config.json" <<JSON
 JSON
 chmod 600 "${CONFIG_DIR}/config.json"
 
-echo "=== [3/6] Starting mitmdump on port ${MITM_PORT} ==="
+echo "=== [3/9] Starting mitmdump on port ${MITM_PORT} ==="
 if nc -z 127.0.0.1 "${MITM_PORT}" >/dev/null 2>&1; then
   fail "something is already listening on ${MITM_PORT}; free it or set ANTIGRAVITY_CC_IDENTITY_MITM_PORT"
 fi
@@ -161,7 +227,7 @@ done
 nc -z 127.0.0.1 "${MITM_PORT}" >/dev/null 2>&1 \
   || fail "mitmdump is not listening on ${MITM_PORT} after 20s"
 
-echo "=== [4/6] Starting the proxy on port ${PROXY_PORT} ==="
+echo "=== [4/9] Starting the proxy on port ${PROXY_PORT} ==="
 # The claudecode client is built with a nil *http.Client, so it uses
 # http.DefaultTransport, which honours HTTPS_PROXY via ProxyFromEnvironment.
 # SSL_CERT_FILE makes Go trust the mitmproxy CA for this process only.
@@ -184,7 +250,7 @@ done
 nc -z 127.0.0.1 "${PROXY_PORT}" >/dev/null 2>&1 \
   || fail "proxy is not listening on ${PROXY_PORT} after 20s"
 
-echo "=== [5/6] Driving one foreign-headed request ==="
+echo "=== [5/9] Driving one foreign-headed request ==="
 # Deliberately hostile input: a foreign User-Agent, a foreign x-app, and a beta
 # the capture does not contain. Normalization has to overwrite all three. The
 # response is ignored — the stub credential is rejected upstream, and the
@@ -213,32 +279,20 @@ echo "=== [5/6] Driving one foreign-headed request ==="
 curl -sS -o /dev/null --max-time 60 \
   -X POST "http://127.0.0.1:${PROXY_PORT}/v1/messages" \
   -H 'Content-Type: application/json' \
-  -H 'User-Agent: foreign-harness/1.0' \
+  -H "User-Agent: ${GATE_CALLER_USER_AGENT}" \
   -H 'x-app: foreign-app' \
   -H 'anthropic-beta: foreign-beta-not-in-baseline' \
   -d "{\"model\":\"${GATE_MODEL}\",\"max_tokens\":16,\"temperature\":0.7,\"system\":[{\"type\":\"text\",\"text\":\"caller system prompt the proxy must not delete\"}],\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
   >/dev/null 2>&1 || true
 
-# Give mitmdump time to flush the record.
-for _ in $(seq 1 50); do
-  [[ -s "${OBSERVED}" ]] && break
-  sleep 0.2
-done
-if [[ ! -s "${OBSERVED}" ]]; then
-  KEEP_WORK_DIR=1
-  echo "mitmdump log:" >&2
-  tail -20 "${MITM_LOG}" >&2 || true
-  echo "proxy log:" >&2
-  tail -20 "${PROXY_LOG}" >&2 || true
-  fail "no flow reached mitmdump. Either the proxy ignored HTTPS_PROXY or it never sent an upstream request. Work dir kept at ${WORK_DIR}"
-fi
+snapshot_phase "${OBSERVED_POOLED}" "the pooled gateway request"
 
-echo "=== [6/6] Diffing the wire identity against the baseline ==="
+echo "=== [6/9] Diffing the wire identity against the baseline ==="
 if ! REPO_ROOT="${REPO_ROOT}" python3 "${REPO_ROOT}/scripts/diff_claude_code_identity.py" \
   --baseline "${BASELINE}" \
-  --observed "${OBSERVED}"; then
+  --observed "${OBSERVED_POOLED}"; then
   KEEP_WORK_DIR=1
-  echo "Observed capture kept at ${OBSERVED}" >&2
+  echo "Observed capture kept at ${OBSERVED_POOLED}" >&2
   fail "the proxy's wire identity has drifted from the committed baseline"
 fi
 
@@ -255,7 +309,7 @@ fi
 SYSTEM_SHAPE="$(jq -r '
   [ .[] | select(.method == "POST") | select(.path | startswith("/v1/messages")) ]
   | last | .request_body.shape.system[1] // "absent"
-' -s "${OBSERVED}" 2>/dev/null || echo "unreadable")"
+' -s "${OBSERVED_POOLED}" 2>/dev/null || echo "unreadable")"
 
 if [[ "${SYSTEM_SHAPE}" != "<x2>" ]]; then
   KEEP_WORK_DIR=1
@@ -263,8 +317,66 @@ if [[ "${SYSTEM_SHAPE}" != "<x2>" ]]; then
   echo "ERROR: the request sent one system block and normalization prepends the billing" >&2
   echo "ERROR: marker, so two must arrive. <x1> means block 0 was overwritten and the" >&2
   echo "ERROR: caller's system prompt was deleted." >&2
-  echo "Observed capture kept at ${OBSERVED}" >&2
+  echo "Observed capture kept at ${OBSERVED_POOLED}" >&2
   fail "normalization destroyed the caller's system prompt"
+fi
+
+echo "=== [7/9] Driving a keyless custom endpoint ==="
+# Anthropic-shaped and carrying no credential of its own, so normalization
+# applies: this is the half of T1 that must keep working. Same hostile input as
+# the pooled request, so a regression shows up as the caller's own values
+# reaching the wire.
+curl -sS -o /dev/null --max-time 60 \
+  -X POST "http://127.0.0.1:${PROXY_PORT}/v1/messages" \
+  -H 'Content-Type: application/json' \
+  -H "User-Agent: ${GATE_CALLER_USER_AGENT}" \
+  -H 'x-app: foreign-app' \
+  -d "{\"model\":\"${GATE_CUSTOM_KEYLESS_MODEL}\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+  >/dev/null 2>&1 || true
+
+snapshot_phase "${OBSERVED_CUSTOM_KEYLESS}" "the keyless custom endpoint"
+
+if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" normalized \
+  --baseline "${BASELINE}" \
+  --observed "${OBSERVED_CUSTOM_KEYLESS}"; then
+  KEEP_WORK_DIR=1
+  echo "Observed capture kept at ${OBSERVED_CUSTOM_KEYLESS}" >&2
+  fail "a keyless Anthropic-shaped custom endpoint was not normalized"
+fi
+
+echo "=== [8/9] Driving a custom endpoint authenticated by API key ==="
+# The T1 regression, live. x-api-key is on the omit list and ApplyHeaders
+# deletes every omitted name, so normalizing this endpoint would send it
+# authenticated by nothing. internal/api/server.go refuses to normalize it at
+# all; the wire must therefore show the caller's identity and the configured
+# key, not the captured identity.
+#
+# The caller's User-Agent survives because this endpoint is forwarded by the
+# ReverseProxy path, which clones the inbound headers. The CCR branch in
+# forwardToCustomEndpoint builds a fresh request instead and copies none of
+# them, so if headroom.ccr.enabled ever defaults to true this phase fails with
+# Go-http-client/1.1 for a reason that has nothing to do with T1. The stub
+# configuration sets no headroom block, and the default is false.
+curl -sS -o /dev/null --max-time 60 \
+  -X POST "http://127.0.0.1:${PROXY_PORT}/v1/messages" \
+  -H 'Content-Type: application/json' \
+  -H "User-Agent: ${GATE_CALLER_USER_AGENT}" \
+  -H 'x-app: foreign-app' \
+  -d "{\"model\":\"${GATE_CUSTOM_KEYED_MODEL}\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+  >/dev/null 2>&1 || true
+
+snapshot_phase "${OBSERVED_CUSTOM_KEYED}" "the keyed custom endpoint"
+
+if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" passthrough \
+  --observed "${OBSERVED_CUSTOM_KEYED}" \
+  --caller-user-agent "${GATE_CALLER_USER_AGENT}" \
+  --api-key-sha256 "${GATE_CUSTOM_API_KEY_SHA256}"; then
+  KEEP_WORK_DIR=1
+  echo "ERROR: an endpoint configured with an apiKey must reach the upstream carrying it." >&2
+  echo "ERROR: x-api-key is on the omit list, so normalizing such an endpoint deletes the" >&2
+  echo "ERROR: credential and the endpoint authenticates by nothing." >&2
+  echo "Observed capture kept at ${OBSERVED_CUSTOM_KEYED}" >&2
+  fail "the custom-endpoint credential rule was broken"
 fi
 
 echo "Claude Code identity gate PASSED: the wire identity matches ${BASELINE##*/},"
