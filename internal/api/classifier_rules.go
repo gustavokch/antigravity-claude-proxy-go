@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/config"
 )
 
@@ -28,6 +29,19 @@ const maxClassifierBackendResponse = 1 << 20
 // rather than per request, and a config that fails to compile leaves the
 // previous rule set active instead of silently disabling interception.
 func (server *Server) applyClassifierConfig(cfg config.ClassifierConfig) {
+	// The recorder is rebuilt on every config application so a settings save
+	// takes effect without a restart.
+	if cfg.Capture.Enabled {
+		resolved := cfg.Capture.Resolved()
+		server.classifierCorpus = corpus.New(resolved.Dir, corpus.Options{
+			MaxFiles:     resolved.MaxFiles,
+			MaxFileBytes: resolved.MaxFileBytes,
+			RedactPaths:  resolved.RedactPathsEnabled(),
+		})
+	} else {
+		server.classifierCorpus = nil
+	}
+
 	if server.classifierMatcher == nil {
 		matcher, err := classifier.NewConfigurableMatcher(cfg.Rules, cfg.Backends)
 		if err != nil {
@@ -56,6 +70,17 @@ type classifierRequest struct {
 	rawBody         []byte
 	model           string
 	streamRequested bool
+	// captureSource is the corpus source for this request. A rule that
+	// answers assigns through it so the single deferred recorder in messages
+	// writes one row with the right provenance.
+	captureSource *corpus.Source
+}
+
+// setCaptureSource records which path answered, when capture is on.
+func (req classifierRequest) setCaptureSource(source corpus.Source) {
+	if req.captureSource != nil {
+		*req.captureSource = source
+	}
 }
 
 // applyClassifierRule carries out a matched rule.
@@ -102,6 +127,7 @@ func (server *Server) applyClassifierRule(
 			record(classifier.EventStatusError, err.Error())
 			return true, false
 		}
+		req.setCaptureSource(corpus.SourceStub)
 		record(classifier.EventStatusStubbed, "")
 		return true, false
 
@@ -121,6 +147,7 @@ func (server *Server) applyClassifierRule(
 			record(classifier.EventStatusError, err.Error())
 			return true, false
 		}
+		req.setCaptureSource(corpus.SourceRule)
 		record(classifier.EventStatusRerouted, "")
 		return true, false
 	}

@@ -31,6 +31,7 @@ import (
 	"antigravity-go-proxy/internal/cachebump"
 	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
@@ -117,6 +118,7 @@ type Server struct {
 	cacheBumpSched     *cachebump.Scheduler
 	classifierMatcher  *classifier.ConfigurableMatcher
 	classifierAudit    *classifier.Recorder
+	classifierCorpus   *corpus.Recorder
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -719,6 +721,30 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 
 	streamRequested, _ := anthropicRequest["stream"].(bool)
 
+	// Capture installs one tap and one deferred writer, before any branch can
+	// answer. Recording inside each branch instead would double-write when a
+	// branch falls through to the next.
+	captureSource := corpus.SourceUpstream
+	var captureRef *corpus.Source
+	if server.classifierCorpus.Enabled() {
+		if kind, detected := classifier.Detect(rawBody); detected {
+			tap := corpus.NewResponseTap(writer)
+			writer = tap
+			captureRef = &captureSource
+			contextEntries := cfg.Classifier.Capture.Resolved().ContextEntries
+			defer func() {
+				server.classifierCorpus.Record(corpus.BuildEntry(corpus.EntryInput{
+					RawBody:        rawBody,
+					Kind:           kind.String(),
+					Model:          model,
+					Source:         captureSource,
+					Tap:            tap,
+					ContextEntries: contextEntries,
+				}))
+			}()
+		}
+	}
+
 	// Operator rules are consulted first. Anything they decline to handle —
 	// including a reroute whose backend failed — falls through to the
 	// built-in Detect path below, so today's behavior is the default.
@@ -734,6 +760,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 					rawBody:         rawBody,
 					model:           model,
 					streamRequested: streamRequested,
+					captureSource:   captureRef,
 				},
 			)
 			if responded {
@@ -792,6 +819,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 				if stub, stubErr := classifier.BuildStub(kind, stubModel, verdictTmpl, thinkingTmpl); stubErr == nil {
 					logger.Warn("[Server] classifier interception: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
 						"kind", kind, "model", stubModel)
+					captureSource = corpus.SourceStub
 					writer.Header().Set("Content-Type", "application/json")
 					writer.WriteHeader(http.StatusOK)
 					_, _ = writer.Write(stub)
@@ -885,6 +913,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			if stub, stubErr := classifier.BuildStub(classifierFallbackKind, model, classifierFallbackVerdictTmpl, classifierFallbackThinkingTmpl); stubErr == nil {
 				logger.Warn("[Server] classifier fallback: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
 					"kind", classifierFallbackKind, "model", model)
+				captureSource = corpus.SourceStub
 				writer.Header().Set("Content-Type", "application/json")
 				writer.WriteHeader(http.StatusOK)
 				_, _ = writer.Write(stub)
