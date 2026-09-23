@@ -39,11 +39,16 @@ TRAINING_SOURCE = "upstream"
 
 
 def bucket_for(severity):
-    """Return the bucket label for a 0-100 severity."""
+    """Return the bucket label for a 0-100 severity.
+
+    A severity outside the buckets clamps to the most-risky label. A risk
+    classifier must fail toward caution: returning "A" (read-only inspection)
+    for an unexpected value would label it the safest thing in the set.
+    """
     for label, low, high in BUCKETS:
         if low <= severity <= high:
             return label
-    return BUCKETS[-1][0] if severity > 100 else BUCKETS[0][0]
+    return BUCKETS[-1][0]
 
 
 def to_example(row):
@@ -90,8 +95,15 @@ def convert(rows):
 
 
 def load_rows(path):
-    """Read one JSONL file, skipping blank and unparseable lines."""
+    """Read one JSONL file, returning (rows, skipped).
+
+    A blank line is not corpus loss and is not counted. An unparseable line is
+    a row that went missing — most often a truncated final line, because the
+    proxy appends to the corpus while an export runs — so it is counted and
+    reported rather than discarded in silence. Neither aborts the file.
+    """
     rows = []
+    skipped = 0
     with open(path, "r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -100,8 +112,9 @@ def load_rows(path):
             try:
                 rows.append(json.loads(line))
             except ValueError:
+                skipped += 1
                 continue
-    return rows
+    return rows, skipped
 
 
 def main(argv=None):
@@ -111,8 +124,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     rows = []
+    unparseable = 0
     for path in args.inputs:
-        rows.extend(load_rows(path))
+        file_rows, file_skipped = load_rows(path)
+        rows.extend(file_rows)
+        unparseable += file_skipped
 
     examples, stats = convert(rows)
 
@@ -124,7 +140,8 @@ def main(argv=None):
     print(
         f"skipped: {stats['skipped_source']} non-upstream, "
         f"{stats['skipped_unlabelled']} unlabelled, "
-        f"{stats['skipped_no_action']} without an action"
+        f"{stats['skipped_no_action']} without an action, "
+        f"{unparseable} unparseable line{'' if unparseable == 1 else 's'}"
     )
     if stats["system_hashes"] > 1:
         print(

@@ -19,6 +19,12 @@ def test_bucket_boundaries():
     assert bucket_for(100) == "D"
 
 
+def test_bucket_for_clamps_unmatched_to_d():
+    # An unmatched severity must fail toward the most-risky label, never "A".
+    assert bucket_for(-5) == "D"
+    assert bucket_for(101) == "D"
+
+
 def test_to_example_shape():
     row = {
         "v": 1,
@@ -80,5 +86,17 @@ def test_load_rows_skips_blank_and_broken_lines(tmp_path):
         + json.dumps({"action": "b", "severity": 2, "source": "upstream"})
         + "\n"
     )
-    rows = load_rows(path)
+    rows, skipped = load_rows(path)
     assert len(rows) == 2
+    # The blank line is not corpus loss; the unparseable line is, so only it counts.
+    assert skipped == 1
+
+
+def test_load_rows_does_not_count_blank_lines_as_loss(tmp_path):
+    path = tmp_path / "classifier-2026-09-23.jsonl"
+    path.write_text(
+        "\n\n" + json.dumps({"action": "a", "severity": 1, "source": "upstream"}) + "\n\n\n"
+    )
+    rows, skipped = load_rows(path)
+    assert len(rows) == 1
+    assert skipped == 0
