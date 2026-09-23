@@ -192,30 +192,53 @@ require_secret() {
   printf '%s' "${value}"
 }
 
+# Empty default so `check` — which needs no credential and exits before any
+# container runs — can still expand these under `set -u` on bash 3.2, where an
+# unset array is an unbound variable rather than an empty list.
+AUTH_ENV=()
+
 case "${MODE}" in
   oauth|interactive)
-    TOKEN="$(require_secret CLAUDE_CODE_OAUTH_TOKEN 'OAuth token' "${HOME}/.claude-oat")"
-    AUTH_ENV=(-e "CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}")
+    SECRET_NAME=CLAUDE_CODE_OAUTH_TOKEN
+    SECRET_LABEL='OAuth token'
+    SECRET_DEFAULT="${HOME}/.claude-oat"
     ;;
   apikey)
-    TOKEN="$(require_secret ANTHROPIC_API_KEY 'API key' "${HOME}/.claude-key")"
-    AUTH_ENV=(-e "ANTHROPIC_API_KEY=${TOKEN}")
+    SECRET_NAME=ANTHROPIC_API_KEY
+    SECRET_LABEL='API key'
+    SECRET_DEFAULT="${HOME}/.claude-key"
     ;;
 esac
-unset TOKEN
 
-# The interactive branch runs under expect, which echoes the command it spawns.
-# An -e NAME=value argument would therefore print the credential, so the value is
-# handed over in a 0600 env-file instead and only its path appears in argv.
-INTERACTIVE_AUTH_ARGS=("${AUTH_ENV[@]}")
-if [[ "${MODE}" == "interactive" ]]; then
+# The credential reaches the container through a 0600 env-file, never through
+# `-e NAME=value`.
+#
+# An -e argument puts the live token in the container process's argv, where any
+# local user reads it out of `ps` for as long as the run lasts, and where every
+# tool-call log that records the command keeps a copy. That is the same exposure
+# this script's own credential notes warn about for shell history, so the
+# non-interactive modes should not reintroduce it — they were the modes the
+# capture procedure actually tells the operator to run. Only the path appears in
+# argv now.
+if [[ -n "${SECRET_NAME:-}" ]]; then
+  # Assigned first, not substituted straight into printf. require_secret exits 1
+  # on a missing or too-short credential, and a command substitution inside a
+  # simple command discards that status: printf would succeed, write
+  # "NAME=" to the env-file, and the run would reach the container with an empty
+  # credential. An assignment propagates the failure, so `set -e` aborts here.
+  SECRET_VALUE="$(require_secret "${SECRET_NAME}" "${SECRET_LABEL}" "${SECRET_DEFAULT}")"
   AUTH_ENV_FILE="$(mktemp -t claude-capture-env)"
   chmod 600 "${AUTH_ENV_FILE}"
-  case "${MODE}" in
-    interactive) printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(read_secret CLAUDE_CODE_OAUTH_TOKEN "${HOME}/.claude-oat")" > "${AUTH_ENV_FILE}" ;;
-  esac
-  INTERACTIVE_AUTH_ARGS=(--env-file "${AUTH_ENV_FILE}")
+  printf '%s=%s\n' "${SECRET_NAME}" "${SECRET_VALUE}" > "${AUTH_ENV_FILE}"
+  unset SECRET_VALUE
+  AUTH_ENV=(--env-file "${AUTH_ENV_FILE}")
 fi
+
+# Kept as a separate name because the interactive branch runs under expect, which
+# echoes the command it spawns: an -e NAME=value argument there would print the
+# credential to the terminal and into the expect log. Both forms are the env-file
+# now, so they are the same arguments.
+INTERACTIVE_AUTH_ARGS=("${AUTH_ENV[@]}")
 
 if [[ "${MODE}" == "check" ]]; then
   # Presence only, never the value: this is the fastest way to find out that a
@@ -275,8 +298,18 @@ cleanup() {
   # Interactive mode seeds an onboarding file here. It is cleaned in this
   # function rather than by a second `trap ... EXIT`, because a second EXIT
   # trap REPLACES this one and would silently stop mitmdump from being killed.
-  [[ -n "${ONBOARD_DIR:-}" ]] && rm -rf "${ONBOARD_DIR}"
-  [[ -n "${AUTH_ENV_FILE:-}" ]] && rm -f "${AUTH_ENV_FILE}"
+  if [[ -n "${ONBOARD_DIR:-}" ]]; then
+    rm -rf "${ONBOARD_DIR}"
+  fi
+  if [[ -n "${AUTH_ENV_FILE:-}" ]]; then
+    rm -f "${AUTH_ENV_FILE}"
+  fi
+  # An EXIT trap's last command decides the script's exit status, overriding even
+  # an explicit `exit 0`. Written as `[[ -n "${VAR:-}" ]] && rm ...`, the list
+  # returned 1 whenever the variable was unset — which is every non-interactive
+  # mode — so a completely successful capture exited 1. `if` blocks plus this
+  # explicit return keep the body's status.
+  return 0
 }
 # EXIT alone is not enough: a killed or interrupted script leaves mitmdump
 # holding the port, and the next run then fails to bind while every check passes.
