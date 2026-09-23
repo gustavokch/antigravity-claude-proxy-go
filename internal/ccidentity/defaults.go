@@ -184,12 +184,10 @@ func dynamicHeaders() []DynamicHeader {
 // DefaultProfile returns the captured identity.
 func DefaultProfile() Profile {
 	return Profile{
-		Static:         nil, // filled per identity; see StaticFor
-		Dynamic:        dynamicHeaders(),
-		Omit:           omittedHeaders,
-		Path:           MessagesPath,
-		Betas:          Betas,
-		MetadataFields: MetadataFields,
+		Dynamic: dynamicHeaders(),
+		Omit:    omittedHeaders,
+		Path:    MessagesPath,
+		Betas:   Betas,
 	}
 }
 

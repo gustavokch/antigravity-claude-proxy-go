@@ -74,9 +74,12 @@ type Turn struct {
 // The shape is a list of headers plus an explicit omit list rather than named
 // fields per header, because the capture decides what exists: a named-field
 // struct would need editing every time the client grows or drops a header.
+//
+// The constant header set is deliberately NOT a field here. Three of its values
+// depend on the identity or on operator overrides, so it is a function of the
+// identity — see StaticFor. The metadata key order is not a field either: it is
+// fixed by the declaration order of the struct that encodes it.
 type Profile struct {
-	// Static headers are sent with these exact values, in this order.
-	Static []Header
 	// Dynamic headers are regenerated on every request.
 	Dynamic []DynamicHeader
 	// Omit lists header names quiet Claude Code never sends. The applier deletes
@@ -91,6 +94,4 @@ type Profile struct {
 	// puts claude-code-20250219 ahead of oauth-2025-04-20, which append-only
 	// cannot produce.
 	Betas []string
-	// MetadataFields are the keys metadata.user_id carries, in this order.
-	MetadataFields []string
 }
