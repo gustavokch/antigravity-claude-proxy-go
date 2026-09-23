@@ -70,6 +70,9 @@ type classifierRequest struct {
 	rawBody         []byte
 	model           string
 	streamRequested bool
+	// kind is the detected variant. Rules match on their own patterns, so it
+	// is resolved here rather than taken from the rule.
+	kind classifier.Kind
 	// captureSource is the corpus source for this request. A rule that
 	// answers assigns through it so the single deferred recorder in messages
 	// writes one row with the right provenance.
@@ -140,7 +143,16 @@ func (server *Server) applyClassifierRule(
 			record(classifier.EventStatusError, "target backend not found")
 			return false, false
 		}
-		message, err := server.callClassifierBackend(request.Context(), req.backend, req.rawBody, req.model)
+		kind := req.kind
+		if kind == classifier.KindNone {
+			kind, _ = classifier.Detect(req.rawBody)
+		}
+		message, err := server.callClassifierBackend(request.Context(), classifierCall{
+			rawBody: req.rawBody,
+			model:   req.model,
+			kind:    kind,
+			backend: req.backend,
+		})
 		if err != nil {
 			server.classifierLogger().Warn("[Server] classifier reroute failed; falling back to built-in handling",
 				"rule", rule.ID, "backend", rule.TargetBackend, "error", err)
@@ -163,15 +175,25 @@ func (server *Server) applyClassifierRule(
 	return false, false
 }
 
+// classifierCall is one backend invocation. It carries the detected variant
+// because Stage 1 and Stage 2 require different answer shapes, and
+// parseResponse would otherwise have no way to tell them apart.
+type classifierCall struct {
+	rawBody []byte
+	model   string
+	kind    classifier.Kind
+	backend *config.TargetBackend
+}
+
 type backendFormatAdapter struct {
-	preparePayload func(rawBody []byte, backend *config.TargetBackend) ([]byte, error)
+	preparePayload func(call classifierCall) ([]byte, error)
 	setHeaders     func(req *http.Request, apiKey string)
-	parseResponse  func(respBody []byte, clientModel string) ([]byte, error)
+	parseResponse  func(respBody []byte, call classifierCall) ([]byte, error)
 }
 
 var openAIFormatAdapter = backendFormatAdapter{
-	preparePayload: func(rawBody []byte, backend *config.TargetBackend) ([]byte, error) {
-		return classifier.TranslateAnthropicToOpenAI(rawBody, backend.Model, backend.MaxTokens)
+	preparePayload: func(call classifierCall) ([]byte, error) {
+		return classifier.TranslateAnthropicToOpenAI(call.rawBody, call.backend.Model, call.backend.MaxTokens)
 	},
 	setHeaders: func(req *http.Request, apiKey string) {
 		req.Header.Set("Content-Type", "application/json")
@@ -179,14 +201,14 @@ var openAIFormatAdapter = backendFormatAdapter{
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 	},
-	parseResponse: func(respBody []byte, clientModel string) ([]byte, error) {
-		return classifier.TranslateOpenAIToAnthropic(respBody, clientModel)
+	parseResponse: func(respBody []byte, call classifierCall) ([]byte, error) {
+		return classifier.TranslateOpenAIToAnthropic(respBody, call.model)
 	},
 }
 
 var anthropicFormatAdapter = backendFormatAdapter{
-	preparePayload: func(rawBody []byte, backend *config.TargetBackend) ([]byte, error) {
-		return rawBody, nil
+	preparePayload: func(call classifierCall) ([]byte, error) {
+		return call.rawBody, nil
 	},
 	setHeaders: func(req *http.Request, apiKey string) {
 		req.Header.Set("Content-Type", "application/json")
@@ -195,7 +217,7 @@ var anthropicFormatAdapter = backendFormatAdapter{
 			req.Header.Set("anthropic-version", "2023-06-01")
 		}
 	},
-	parseResponse: func(respBody []byte, clientModel string) ([]byte, error) {
+	parseResponse: func(respBody []byte, call classifierCall) ([]byte, error) {
 		return respBody, nil
 	},
 }
@@ -212,29 +234,27 @@ func getBackendFormatAdapter(format config.BackendFormat) backendFormatAdapter {
 // speaks OpenAI.
 func (server *Server) callClassifierBackend(
 	ctx context.Context,
-	backend *config.TargetBackend,
-	rawBody []byte,
-	model string,
+	call classifierCall,
 ) ([]byte, error) {
-	timeout := time.Duration(backend.TimeoutMs) * time.Millisecond
+	timeout := time.Duration(call.backend.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = defaultClassifierBackendTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	adapter := getBackendFormatAdapter(backend.Format)
+	adapter := getBackendFormatAdapter(call.backend.Format)
 
-	payload, err := adapter.preparePayload(rawBody, backend)
+	payload, err := adapter.preparePayload(call)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, backend.URL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, call.backend.URL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	adapter.setHeaders(req, backend.APIKey)
+	adapter.setHeaders(req, call.backend.APIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -250,7 +270,7 @@ func (server *Server) callClassifierBackend(
 		return nil, fmt.Errorf("classifier backend returned %d", resp.StatusCode)
 	}
 
-	return adapter.parseResponse(body, model)
+	return adapter.parseResponse(body, call)
 }
 
 // writeClassifierResponse sends a completed Anthropic message, re-emitting it
