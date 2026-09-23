@@ -284,12 +284,26 @@ carries three values that change per request.
 - [ ] Note in code that `net/http` canonicalizes header names (`X-Stainless-OS` →
   `X-Stainless-Os`); harmless over HTTP/2, as the existing comment at `:1059-1064` says.
 
-### Task C3: WebUI (deferrable) — NOT STARTED
+### Task C3: WebUI — DONE
 
-**Files:** Modify `internal/webui/public/js/components/models.js`, `internal/webui/public/js/translations/en.js`, `pt.js`, `internal/webui/translations_test.go`
+**Files:** Modify `internal/webui/public/js/components/models.js`, `internal/webui/public/views/settings.html`, `internal/webui/public/js/translations/en.js`, `pt.js`, `internal/webui/translations_test.go`
 
-- [ ] Mirror the `appSpoof` field group, using `fetchOpenRouterConfig` / `saveOpenRouterConfig`
-  (`models.js:527-618`) as the template. The feature is fully usable via `config.json` without this.
+- [x] Mirror the `appSpoof` field group, using `fetchOpenRouterConfig` / `saveOpenRouterConfig`
+  (`models.js:527-618`) as the template.
+
+Three traps, each now pinned by a test rather than a comment:
+
+1. `saveCCConfig` sends an explicit field list, not the whole object, so a section
+   not named there is dropped on every save.
+2. The flag is a *disable* flag. A panel binding an "enabled" checkbox would
+   invert the feature for every operator who never opens it.
+3. `loadCCConfig` spreads the server config over the local object, which replaces
+   `identity` with `undefined` for any config saved before the panel existed.
+
+Verified end to end: `entrypoint=cli` and `stainlessOs=Darwin` persist through
+`/api/claudecode/config` and reach the wire as
+`User-Agent: claude-cli/2.1.280 (external, cli)`, `X-Stainless-OS: Darwin`, and
+`cc_entrypoint=cli` in the generated `system[0]`.
 
 ---
 
@@ -433,4 +447,5 @@ are the bug.
 - A second OAuth capture on a different account, to settle whether
   `metadata.user_id.account_uuid` is ever populated. See "New open question" in
   Phase D.
-- Phase C3 (WebUI field group) not started.
+
+Every phase of this plan is otherwise complete.
