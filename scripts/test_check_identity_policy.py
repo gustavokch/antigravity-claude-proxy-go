@@ -198,6 +198,26 @@ class DiscoveryTest(unittest.TestCase):
         self.assertTrue(any("baseline" in p for p in problems), problems)
 
 
+class RecordSelectionTest(unittest.TestCase):
+    """A phase drives exactly one request, so it must assert on exactly one.
+
+    The capture carries no phase marker — mitm_header_dump.build_record stores
+    no model — so a record left over from an earlier phase is indistinguishable
+    from this phase's own. Counting is the only defence.
+    """
+
+    def test_accepts_exactly_one(self):
+        self.assertEqual(policy.check_record_count([observed_normalized()]), [])
+
+    def test_rejects_more_than_one_messages_record(self):
+        problems = policy.check_record_count([observed_normalized(), observed_normalized()])
+        self.assertTrue(any("2" in p for p in problems), problems)
+
+    def test_rejects_no_messages_record(self):
+        problems = policy.check_record_count([])
+        self.assertTrue(any("no POST /v1/messages" in p for p in problems), problems)
+
+
 class LoaderTest(unittest.TestCase):
     def test_splits_records_by_method_and_path(self):
         path = write_jsonl(

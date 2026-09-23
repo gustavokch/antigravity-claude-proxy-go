@@ -82,6 +82,26 @@ def get_records(records: list[dict]) -> list[dict]:
     return [r for r in records if r.get("method") == "GET"]
 
 
+def check_record_count(observed_posts: list[dict]) -> list[str]:
+    """Each phase drives exactly one request, so it must find exactly one.
+
+    Without this the policies read observed_posts[0] and a leftover record
+    decides what gets asserted. The gate snapshots a phase as soon as the
+    capture file is non-empty, and build_record stores no model, so a retried
+    or late-flushed earlier flow appended after that snapshot is
+    indistinguishable from this phase's own and sorts ahead of it. A normalized
+    request re-checked as itself passes while proving nothing.
+    """
+    if not observed_posts:
+        return ["no POST /v1/messages record reached the wire for this phase"]
+    if len(observed_posts) > 1:
+        return [
+            f"{len(observed_posts)} POST /v1/messages records reached the wire, want 1; "
+            "a record from another phase cannot be told apart from this one"
+        ]
+    return []
+
+
 def user_agent(record: dict) -> object:
     entry = header_map(record).get("user-agent")
     return entry[1] if entry else None
@@ -216,8 +236,11 @@ def main() -> int:
         subject = f"{len(observed_gets)} discovery request(s)"
     else:
         observed_posts = messages_records(load_records(args.observed))
-        if not observed_posts:
-            print(f"no POST /v1/messages record in {args.observed}", file=sys.stderr)
+        problems = check_record_count(observed_posts)
+        if problems:
+            print(f"{len(problems)} policy violation(s) in {args.observed}:", file=sys.stderr)
+            for problem in problems:
+                print(f"  - {problem}", file=sys.stderr)
             return 1
         observed = observed_posts[0]
         if args.policy == "normalized":
