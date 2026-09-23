@@ -195,11 +195,11 @@ The practical target is therefore: **the same header set with the same values**,
 achieving order, `Connection`, and `Accept-Encoding` only if a decision below
 says to. Do not describe the result as byte-identical.
 
-### Task B1: Profile shape
+### Task B1: Profile shape — DONE
 
 **Files:** Create `internal/ccidentity/profile.go`
 
-- [ ] `Header{Name, Value string}`; `DynamicHeader{Name string; Value func(Identity) string}`.
+- [x] `Header{Name, Value string}`; `DynamicHeader{Name string; Value func(Identity) string}`.
 - [ ] `Profile{Static []Header; Dynamic []DynamicHeader; Omit []string; Path string; BillingHeader func(Identity, Turn) string; UserIDFormat func(Identity) string}`.
 - [ ] `Identity{AccountUUID, DeviceID, SessionKey, ClientVersion, Entrypoint string}`.
 - [ ] `Turn` carries the per-request pieces: `PrevRequestID`, and the `cch` seed.
@@ -208,11 +208,11 @@ Naming the two generated strings as functions rather than format strings is the
 correction the capture forces: `metadata.user_id` is a JSON object and `system[0]`
 carries three values that change per request.
 
-### Task B2: Captured constants
+### Task B2: Captured constants — DONE
 
 **Files:** Create `internal/ccidentity/defaults.go`
 
-- [ ] `ClientVersion = "2.1.280"`, `MessagesUserAgent = "claude-cli/2.1.280 (external, sdk-cli)"`, `DiscoveryUserAgent = "claude-code/2.1.280"`.
+- [x] `ClientVersion = "2.1.280"`, `MessagesUserAgent = "claude-cli/2.1.280 (external, sdk-cli)"`, `DiscoveryUserAgent = "claude-code/2.1.280"`.
 - [ ] The 13-entry beta list, in captured order, as one ordered slice.
 - [ ] `DefaultProfile()` with a provenance comment per value naming
   `.reference/claude-code-headers-20260923.txt`.
@@ -222,11 +222,11 @@ carries three values that change per request.
   The messages-path UA is a new constant, not a correction to any existing one.
 - [ ] Fix the falsified comment at `internal/api/claudecode_proxy.go:142-146`.
 
-### Task B3: Appliers
+### Task B3: Appliers — DONE
 
 **Files:** Create `internal/ccidentity/apply.go`
 
-- [ ] `ApplyHeaders(h http.Header, p Profile, id Identity)` — delete `Omit` first, then
+- [x] `ApplyHeaders(h http.Header, p Profile, id Identity)` — delete `Omit` first, then
   assign `Static` and `Dynamic` by **direct map assignment** to preserve the captured case
   (`h["X-Stainless-OS"] = ...`, not `h.Set`). Order within the map is Go's problem and is
   out of scope per the decision below.
@@ -242,11 +242,11 @@ carries three values that change per request.
   captured list is dropped unless a decision says to preserve it.
 - [ ] Path: request `/v1/messages?beta=true`.
 
-### Task B4: Tests
+### Task B4: Tests — DONE (24 cases)
 
 **Files:** Create `internal/ccidentity/*_test.go`
 
-- [ ] Table-driven header test with rows read from the committed baseline: every recorded
+- [x] Table-driven header test with rows read from the committed baseline: every recorded
   header present with the same value; every `Omit` name absent even when the input carried it.
 - [ ] User id stable for one `Identity`, different across accounts, matching the captured format.
 - [ ] Malformed JSON returns an error rather than a silent passthrough.
@@ -256,7 +256,7 @@ carries three values that change per request.
 
 ## Phase C — Wiring
 
-### Task C1: Claude Code gateway
+### Task C1: Claude Code gateway — DONE
 
 **Files:** Modify `internal/claudecode/client.go`, `internal/claudecode/types.go`, `internal/api/claudecode_proxy.go`, `internal/api/cachebump_server.go`, `internal/config/config.go`
 
@@ -270,7 +270,7 @@ carries three values that change per request.
 - [ ] `claudecode.Config` gains `Identity ClaudeCodeIdentityConfig{ Disabled bool; ClientVersion string; UserAgent string }`
   — a *disable* flag, so the zero value means normalize. Default it at `config.go:426-433`.
 
-### Task C2: Custom endpoint
+### Task C2: Custom endpoint — DONE
 
 **Files:** Modify `internal/api/server.go`, `internal/config/config.go`
 
@@ -284,7 +284,7 @@ carries three values that change per request.
 - [ ] Note in code that `net/http` canonicalizes header names (`X-Stainless-OS` →
   `X-Stainless-Os`); harmless over HTTP/2, as the existing comment at `:1059-1064` says.
 
-### Task C3: WebUI (deferrable)
+### Task C3: WebUI (deferrable) — NOT STARTED
 
 **Files:** Modify `internal/webui/public/js/components/models.js`, `internal/webui/public/js/translations/en.js`, `pt.js`, `internal/webui/translations_test.go`
 
@@ -316,3 +316,55 @@ with the new evidence rather than adding headers speculatively.
 TLS/JA4 mimicry and any TLS customization; OpenRouter; Zen and Kimi pass-through; the
 classifier's Anthropic backend (`internal/api/classifier_rules.go:157`); the Cloud Code path
 in `internal/format/builder.go`; and client detection of any kind.
+---
+
+## Implementation status (2026-09-23)
+
+Phases A, B and C1/C2 are done and committed on `feat/claude-code-identity-spoof`.
+The identity model was corrected against the capture before any of it was written;
+see the corrected table in Phase B.
+
+### Two canonicalisation bugs, same root cause
+
+Both were found by tests, not by reading, and both were SILENT failures — the
+request still succeeded, which is why they matter.
+
+1. `ApplyAuthHeaders` read the beta header with `http.Header.Get`, which
+   canonicalises to `Anthropic-Beta`. It therefore missed the lowercase
+   `anthropic-beta` that normalization stores, then `Set` a SECOND key, putting
+   two conflicting beta headers on the wire.
+2. `ccidentity.ApplyHeaders` assigned the captured spelling without deleting the
+   canonical key net/http had stored, so a client's `x-app` (stored `X-App`)
+   survived alongside the injected `x-app`, and the upstream read the client's
+   value.
+
+The rule both fixes encode: **any header this code touches must be looked up and
+deleted case-insensitively, because net/http canonicalises every name it parses.**
+The captured wire names are deliberately not canonical (`X-Stainless-OS`,
+lowercase `anthropic-*`), so exact-case storage is correct and canonical lookups
+are the bug.
+
+### Deliberate gaps, all recorded rather than hidden
+
+- `Accept-Encoding` is cleared, not spoofed, per the fidelity decision. Go keeps
+  adding gzip and decompressing transparently.
+- Header ORDER is not reproduced: net/http sorts keys before writing.
+- `context_management`, `diagnostics` and `output_config` are not synthesised.
+  The capture shows Claude Code sending them and this implementation cannot
+  invent their contents, so their absence is a known difference.
+- `x-claude-code-prev-tool-durations` is not sent. It appears only after a tool
+  has run, which a request alone cannot tell us.
+- `cc_entrypoint` defaults to `sdk-cli`, the only value ever captured. `cli` is
+  configurable but unverified.
+- A custom endpoint must configure its `/messages` path for the gate to pass. A
+  bare host does not match `isAnthropicEndpoint`.
+
+### Still outstanding
+
+- The `cli` entrypoint capture. Six automated attempts failed; the folder-trust
+  dialog defaults its cursor to "No, exit", a second renderer prompt follows it,
+  and answering that restarts the UI and re-prompts trust. `interactive` mode is
+  now human-driven and documents this.
+- The API-key auth mode was never captured.
+- Phase C3 (WebUI field group) not started.
+- Phase D3 (drift gate script) and D4 (hand end-to-end) not run.
