@@ -66,18 +66,28 @@ func validateIdentityOverrides(updates map[string]any) error {
 }
 
 // validateIdentityField validates the "identity" key of one config section.
+//
+// It is strict about a key it finds: an identity that is present but is not an
+// object is refused rather than ignored, because ignoring it would store a
+// value the gateway then reads as no overrides at all. A section without the
+// key, or one that cannot be re-marshalled, is left alone so an unrelated
+// decode failure elsewhere in the payload cannot reject a valid save.
 func validateIdentityField(section any, label string) error {
 	encoded, err := json.Marshal(section)
 	if err != nil {
 		return nil
 	}
 	var wrapper struct {
-		Identity *claudecode.IdentityConfig `json:"identity"`
+		Identity json.RawMessage `json:"identity"`
 	}
-	if err := json.Unmarshal(encoded, &wrapper); err != nil || wrapper.Identity == nil {
+	if err := json.Unmarshal(encoded, &wrapper); err != nil || len(wrapper.Identity) == 0 {
 		return nil
 	}
-	if err := wrapper.Identity.Validate(); err != nil {
+	var identity claudecode.IdentityConfig
+	if err := json.Unmarshal(wrapper.Identity, &identity); err != nil {
+		return fmt.Errorf("%s: invalid identity: %w", label, err)
+	}
+	if err := identity.Validate(); err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}
 	return nil
@@ -98,22 +108,11 @@ func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, req
 
 	// The identity overrides become outbound header values, so a control
 	// character in one breaks every request to this gateway at the transport
-	// layer. Refuse it here, where the operator can see which field it was.
-	if raw, present := body["identity"]; present {
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid identity"})
-			return
-		}
-		var identity claudecode.IdentityConfig
-		if err := json.Unmarshal(encoded, &identity); err != nil {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid identity: " + err.Error()})
-			return
-		}
-		if err := identity.Validate(); err != nil {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
-			return
-		}
+	// layer. Refuse it here, where the operator can see which field it was,
+	// through the same helper /api/config uses.
+	if err := validateIdentityField(body, "claudecode"); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+		return
 	}
 
 	_, err := config.Save(map[string]any{"claudecode": body})

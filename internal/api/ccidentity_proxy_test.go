@@ -459,3 +459,55 @@ func TestCustomEndpoint_IdentityOverridesAreHonoured(t *testing.T) {
 		t.Errorf("User-Agent = %q, want the constructed cli form", got.userAgent)
 	}
 }
+
+// TestIdentityValidationIsTheSameOnBothConfigSurfaces pins that the two config
+// endpoints reject the same payloads.
+//
+// /api/config validates through validateIdentityField and
+// /api/claudecode/config had its own inline copy of the same marshal ->
+// unmarshal -> Validate shape. Two copies drift, and this one guards the
+// control-character rejection that keeps a bad paste from breaking every
+// request to the gateway at the transport layer.
+func TestIdentityValidationIsTheSameOnBothConfigSurfaces(t *testing.T) {
+	cases := []struct {
+		name     string
+		identity string
+		field    string
+	}{
+		{"control character", `{"userAgent":"claude-cli/2.1.280\r\nX-Injected: 1"}`, "userAgent"},
+		{"control character in another field", `{"stainlessOs":"Darwin\nX-Injected: 1"}`, "stainlessOs"},
+		{"identity is not an object", `"claude-cli"`, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("claudecode config", func(t *testing.T) {
+				srv, _, _ := newTestServerWithManager(t)
+				seedCCConfig(t)
+				rec := doJSON(t, srv, http.MethodPost, "/api/claudecode/config",
+					`{"enabled":true,"identity":`+tc.identity+`}`)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+				}
+				if tc.field != "" && !strings.Contains(rec.Body.String(), tc.field) {
+					t.Errorf("error %q does not name the offending field", rec.Body.String())
+				}
+			})
+
+			t.Run("endpoint config", func(t *testing.T) {
+				srv, _, _ := newTestServerWithManager(t)
+				rec := doJSON(t, srv, http.MethodPost, "/api/config",
+					`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","identity":`+tc.identity+`}}}`)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+				}
+				if tc.field != "" && !strings.Contains(rec.Body.String(), tc.field) {
+					t.Errorf("error %q does not name the offending field", rec.Body.String())
+				}
+				if _, present := config.Get().CustomEndpoints["m"]; present {
+					t.Error("the rejected endpoint was stored anyway")
+				}
+			})
+		})
+	}
+}
