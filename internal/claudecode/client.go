@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"antigravity-go-proxy/internal/ccidentity"
 )
 
 const (
@@ -32,6 +34,26 @@ func IsOAuthToken(token string) bool {
 	return false
 }
 
+// headerKeyFold returns the key in h that matches name case-insensitively, or
+// "" when there is none.
+//
+// Needed because http.Header.Get canonicalises its argument, and the captured
+// Claude Code header set is stored with its exact wire names — which are not
+// canonical: `anthropic-beta` is lowercase, and X-Stainless-OS is not
+// X-Stainless-Os. A plain Get therefore misses a header that is present and,
+// worse, a subsequent Set adds a SECOND key, putting two values on the wire.
+func headerKeyFold(h http.Header, name string) string {
+	if _, ok := h[name]; ok {
+		return name
+	}
+	for key := range h {
+		if strings.EqualFold(key, name) {
+			return key
+		}
+	}
+	return ""
+}
+
 // ApplyAuthHeaders applies appropriate headers for OAuth vs API Key authentication.
 func ApplyAuthHeaders(req *http.Request, token string) {
 	trimmed := strings.TrimSpace(token)
@@ -42,28 +64,38 @@ func ApplyAuthHeaders(req *http.Request, token string) {
 		}
 		cleanToken = strings.TrimSpace(cleanToken)
 		req.Header.Set("Authorization", "Bearer "+cleanToken)
-		req.Header.Del("x-api-key")
+		deleteHeaderFold(req.Header, "x-api-key")
 
 		// Ensure anthropic-beta includes oauth-2025-04-20
-		existingBeta := req.Header.Get("anthropic-beta")
+		betaKey := headerKeyFold(req.Header, ccidentity.OAuthBetaKey)
+		existingBeta := ""
+		if betaKey != "" {
+			existingBeta = strings.Join(req.Header[betaKey], ",")
+		}
 		if existingBeta == "" {
-			req.Header.Set("anthropic-beta", OAuthBetaHeader)
-		} else {
-			parts := strings.Split(existingBeta, ",")
-			found := false
-			for _, p := range parts {
-				if strings.TrimSpace(p) == OAuthBetaHeader {
-					found = true
-					break
-				}
-			}
-			if !found {
-				req.Header.Set("anthropic-beta", existingBeta+","+OAuthBetaHeader)
+			req.Header[ccidentity.OAuthBetaKey] = []string{OAuthBetaHeader}
+			return
+		}
+		for _, p := range strings.Split(existingBeta, ",") {
+			if strings.TrimSpace(p) == OAuthBetaHeader {
+				return
 			}
 		}
+		// Append in place, under the key the header already uses, so the captured
+		// spelling is preserved and no second key appears.
+		req.Header[betaKey] = []string{existingBeta + "," + OAuthBetaHeader}
 	} else {
 		req.Header.Set("x-api-key", trimmed)
-		req.Header.Del("Authorization")
+		deleteHeaderFold(req.Header, "Authorization")
+	}
+}
+
+// deleteHeaderFold removes every key matching name case-insensitively.
+func deleteHeaderFold(h http.Header, name string) {
+	for key := range h {
+		if strings.EqualFold(key, name) {
+			delete(h, key)
+		}
 	}
 }
 
@@ -284,44 +316,119 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 	}
 }
 
-// SendMessage forwards a /v1/messages request to Anthropic with appropriate auth and beta headers.
-func (c *Client) SendMessage(ctx context.Context, token string, reqBody []byte, clientHeaders http.Header) (*http.Response, error) {
-	url := fmt.Sprintf("%s/v1/messages", c.baseURL)
+// MessageRequest carries one /v1/messages send.
+type MessageRequest struct {
+	// Token authenticates the upstream request. OAuth and API keys are told
+	// apart by IsOAuthToken.
+	Token string
+	// Body is the JSON request body as received from the client.
+	Body []byte
+	// ClientHeaders are the inbound headers. They are read only when Normalize
+	// is false: normalization deletes this set rather than forwarding it, which
+	// is the point of the exercise.
+	ClientHeaders http.Header
+	// Normalize replaces the client's identity with the captured Claude Code
+	// identity. When false the request is forwarded exactly as today, so a
+	// caller that already is Claude Code keeps its own headers and body.
+	Normalize bool
+	// Identity and Turn supply the values normalization cannot derive from the
+	// request alone: the account, the session, and the previous turn's request
+	// id for cc_prev_req.
+	Identity ccidentity.Identity
+	Turn     ccidentity.Turn
+}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+// SendMessage forwards a /v1/messages request to Anthropic with appropriate auth
+// and beta headers.
+//
+// When req.Normalize is set, the outbound request is rewritten to the captured
+// Claude Code identity (see internal/ccidentity) before auth is applied, so a
+// non-Claude-Code caller is indistinguishable at the HTTP layer. When it is not
+// set, only anthropic-version, anthropic-beta and Accept are copied, exactly as
+// before.
+func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Response, error) {
+	// Normalization and API-key auth cannot both be honest. The captured identity
+	// is an OAuth identity — defaults.go lists x-api-key among the names Claude
+	// Code never sends — and ApplyAuthHeaders runs last, so it would put that
+	// header back after the omit list removed it, leaving the full Claude Code
+	// set plus one header contradicting it. The API-key wire shape is uncaptured,
+	// so there is nothing to reproduce either. An API key forwards as before.
+	normalize := req.Normalize && IsOAuthToken(strings.TrimSpace(req.Token))
+
+	// One lookup for the three places that need it below.
+	profile := ccidentity.DefaultProfile()
+
+	path := "/v1/messages"
+	if normalize {
+		path = profile.Path
+	}
+	url := fmt.Sprintf("%s%s", c.baseURL, path)
+
+	body := req.Body
+	if normalize {
+		normalized, err := ccidentity.ApplyBody(body, profile, req.Identity, req.Turn)
+		if err != nil {
+			// Fail closed: forwarding an unnormalised body would send exactly the
+			// fingerprint normalization exists to remove.
+			return nil, fmt.Errorf("normalize request body: %w", err)
+		}
+		body = normalized
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create upstream request: %w", err)
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
+	if normalize {
+		// ApplyHeaders takes the map directly; it ignores req.ClientHeaders on
+		// purpose, since the omit list must be able to remove what the client
+		// sent rather than copy it.
+		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, req.Turn)
+		httpReq.ContentLength = int64(len(body))
+	} else {
+		httpReq.Header.Set("Content-Type", "application/json")
 
-	// Set or forward anthropic-version
-	version := DefaultAnthropicVersion
-	if clientHeaders != nil {
-		if v := clientHeaders.Get("anthropic-version"); v != "" {
-			version = v
-		}
-	}
-	httpReq.Header.Set("anthropic-version", version)
+		// Set the captured User-Agent here too. Go's transport writes
+		// Go-http-client/1.1 when none is set, which announces the standard
+		// library — the fingerprint this package exists to remove, and a worse
+		// one than the value below. It does not make the claim the normalized
+		// branch makes: a version string carries no session, and the headers
+		// that do assert an OAuth Claude Code identity (x-app, the cc_* system
+		// block, the captured beta order) are not set on this branch.
+		httpReq.Header.Set("User-Agent", ccidentity.MessagesUserAgent)
 
-	// Forward beta headers if present
-	if clientHeaders != nil {
-		if betas := clientHeaders.Values("anthropic-beta"); len(betas) > 0 {
-			for _, b := range betas {
-				httpReq.Header.Add("anthropic-beta", b)
+		// Set or forward anthropic-version
+		version := DefaultAnthropicVersion
+		if req.ClientHeaders != nil {
+			if v := req.ClientHeaders.Get("anthropic-version"); v != "" {
+				version = v
 			}
-		} else if beta := clientHeaders.Get("anthropic-beta"); beta != "" {
-			httpReq.Header.Set("anthropic-beta", beta)
 		}
+		httpReq.Header.Set("anthropic-version", version)
 
-		// Forward Accept header
-		if accept := clientHeaders.Get("Accept"); accept != "" {
-			httpReq.Header.Set("Accept", accept)
+		// Forward beta headers if present
+		if req.ClientHeaders != nil {
+			if betas := req.ClientHeaders.Values("anthropic-beta"); len(betas) > 0 {
+				for _, b := range betas {
+					httpReq.Header.Add("anthropic-beta", b)
+				}
+			} else if beta := req.ClientHeaders.Get("anthropic-beta"); beta != "" {
+				httpReq.Header.Set("anthropic-beta", beta)
+			}
+
+			// Forward Accept header
+			if accept := req.ClientHeaders.Get("Accept"); accept != "" {
+				httpReq.Header.Set("Accept", accept)
+			}
 		}
 	}
 
-	// Apply authentication headers (x-api-key vs Authorization: Bearer + anthropic-beta)
-	ApplyAuthHeaders(httpReq, token)
+	// Apply authentication headers (x-api-key vs Authorization: Bearer + anthropic-beta).
+	// Last, so auth wins over anything normalization set: ApplyAuthHeaders only
+	// appends oauth-2025-04-20 when it is absent, which leaves the captured beta
+	// order intact.
+	ApplyAuthHeaders(httpReq, req.Token)
 
 	return c.httpClient.Do(httpReq)
 }
@@ -336,6 +443,7 @@ func (c *Client) ValidateAccount(ctx context.Context, token string) error {
 	}
 
 	req.Header.Set("anthropic-version", DefaultAnthropicVersion)
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, token)
 
 	resp, err := c.httpClient.Do(req)
@@ -382,7 +490,7 @@ func (c *Client) FetchModels(ctx context.Context, token string, baseURL string) 
 	}
 
 	req.Header.Set("anthropic-version", DefaultAnthropicVersion)
-	req.Header.Set("User-Agent", "Claude-Code/2.1.246")
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, cleanToken)
 
 	resp, err := c.httpClient.Do(req)
@@ -448,7 +556,7 @@ func (c *Client) FetchRateLimits(ctx context.Context, token string) (RateLimits,
 	}
 
 	req.Header.Set("anthropic-version", DefaultAnthropicVersion)
-	req.Header.Set("User-Agent", "Claude-Code/2.1.246")
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, cleanToken)
 
 	resp, err := c.httpClient.Do(req)

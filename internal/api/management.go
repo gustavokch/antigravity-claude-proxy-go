@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/accounts"
-	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/logger"
@@ -1250,6 +1250,15 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 		updates["gatewayOrder"] = normalized
 	}
 
+	// The identity overrides on both config surfaces become outbound header
+	// values, so a control character in one breaks every request through that
+	// route at the transport layer. Refuse it here, where the operator can see
+	// which field it was.
+	if err := validateIdentityOverrides(updates); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+
 	// No applyXConfig push for gateway order: config.Get() is read once per
 	// request (server.go), so a saved order takes effect on the next request
 	// with no restart. Ordering is hot by construction.
@@ -2154,4 +2163,3 @@ func allAllowlistedModelsRateLimited(models []string, activeResets map[string]ti
 	}
 	return true
 }
-

@@ -129,9 +129,9 @@ func (server *Server) applyClassifierRule(
 }
 
 type backendFormatAdapter struct {
-	preparePayload  func(rawBody []byte, backend *config.TargetBackend) ([]byte, error)
-	setHeaders      func(req *http.Request, apiKey string)
-	parseResponse   func(respBody []byte, clientModel string) ([]byte, error)
+	preparePayload func(rawBody []byte, backend *config.TargetBackend) ([]byte, error)
+	setHeaders     func(req *http.Request, apiKey string)
+	parseResponse  func(respBody []byte, clientModel string) ([]byte, error)
 }
 
 var openAIFormatAdapter = backendFormatAdapter{

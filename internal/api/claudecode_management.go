@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -40,6 +41,58 @@ func ccAccountToMap(a claudecode.AccountConfig) map[string]any {
 	}
 }
 
+// validateIdentityOverrides checks every claudecode.IdentityConfig reachable in a
+// config update: the gateway's own, and one per custom endpoint.
+//
+// It re-marshals the raw map rather than decoding the whole config, so an update
+// that touches neither is untouched and an unrelated decode failure elsewhere in
+// the payload cannot make this reject a valid save.
+func validateIdentityOverrides(updates map[string]any) error {
+	if raw, ok := updates["claudecode"]; ok {
+		if err := validateIdentityField(raw, "claudecode"); err != nil {
+			return err
+		}
+	}
+	endpoints, ok := updates["customEndpoints"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	for model, raw := range endpoints {
+		if err := validateIdentityField(raw, "customEndpoints."+model); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateIdentityField validates the "identity" key of one config section.
+//
+// It is strict about a key it finds: an identity that is present but is not an
+// object is refused rather than ignored, because ignoring it would store a
+// value the gateway then reads as no overrides at all. A section without the
+// key, or one that cannot be re-marshalled, is left alone so an unrelated
+// decode failure elsewhere in the payload cannot reject a valid save.
+func validateIdentityField(section any, label string) error {
+	encoded, err := json.Marshal(section)
+	if err != nil {
+		return nil
+	}
+	var wrapper struct {
+		Identity json.RawMessage `json:"identity"`
+	}
+	if err := json.Unmarshal(encoded, &wrapper); err != nil || len(wrapper.Identity) == 0 {
+		return nil
+	}
+	var identity claudecode.IdentityConfig
+	if err := json.Unmarshal(wrapper.Identity, &identity); err != nil {
+		return fmt.Errorf("%s: invalid identity: %w", label, err)
+	}
+	if err := identity.Validate(); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	return nil
+}
+
 // handleClaudeCodeConfigPost saves ClaudeCode gateway config.
 func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, request *http.Request) {
 	var body map[string]any
@@ -52,6 +105,15 @@ func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, req
 	// payload. Settings saves must never touch accounts — account mutations
 	// go through the dedicated /api/claudecode/accounts endpoints.
 	delete(body, "accounts")
+
+	// The identity overrides become outbound header values, so a control
+	// character in one breaks every request to this gateway at the transport
+	// layer. Refuse it here, where the operator can see which field it was,
+	// through the same helper /api/config uses.
+	if err := validateIdentityField(body, "claudecode"); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
 
 	_, err := config.Save(map[string]any{"claudecode": body})
 	if err != nil {

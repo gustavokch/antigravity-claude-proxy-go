@@ -17,13 +17,13 @@ type QuotaBucket struct {
 }
 
 type quotaSummaryBucketJSON struct {
-	BucketID           string   `json:"bucketId"`
-	DisplayName        string   `json:"displayName"`
-	Window             string   `json:"window"`
-	Disabled           bool     `json:"disabled"`
-	ResetTime          string   `json:"resetTime"`
-	RemainingFraction  *float64 `json:"remainingFraction"`
-	RemainingAmount    *int64   `json:"remainingAmount"`
+	BucketID          string   `json:"bucketId"`
+	DisplayName       string   `json:"displayName"`
+	Window            string   `json:"window"`
+	Disabled          bool     `json:"disabled"`
+	ResetTime         string   `json:"resetTime"`
+	RemainingFraction *float64 `json:"remainingFraction"`
+	RemainingAmount   *int64   `json:"remainingAmount"`
 }
 
 type quotaSummaryGroupJSON struct {

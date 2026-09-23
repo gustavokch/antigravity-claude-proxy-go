@@ -1,9 +1,12 @@
 package claudecode
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"antigravity-go-proxy/internal/ccidentity"
 )
 
 // DefaultBaseURL is the official Anthropic API endpoint.
@@ -85,6 +88,89 @@ func DefaultRoutingConfig() RoutingConfig {
 	}
 }
 
+// IdentityConfig controls whether outbound requests are rewritten to the
+// captured Claude Code wire identity.
+//
+// Disabled is a disable flag rather than an enable flag on purpose: the zero
+// value must mean "normalize", because the feature exists so a foreign harness
+// is not gated, and a zero-value-means-off bool would ship it silently inert.
+//
+// The overrides exist because three captured values are environment-specific
+// (X-Stainless-OS and X-Stainless-Runtime-Version came from a Linux container)
+// or still unverified (Entrypoint: only sdk-cli has ever been captured).
+// Empty means use the captured value.
+type IdentityConfig struct {
+	Disabled                bool   `json:"disabled,omitempty"`
+	ClientVersion           string `json:"clientVersion,omitempty"`
+	Entrypoint              string `json:"entrypoint,omitempty"`
+	TurnOrigin              string `json:"turnOrigin,omitempty"`
+	UserAgent               string `json:"userAgent,omitempty"`
+	StainlessOS             string `json:"stainlessOs,omitempty"`
+	StainlessRuntimeVersion string `json:"stainlessRuntimeVersion,omitempty"`
+}
+
+// Validate reports the first override that cannot be sent as an HTTP header
+// value.
+//
+// All six overrides end up in header values or in the system-block marker. Go's
+// transport refuses a value containing a control character with "invalid header
+// field value", so an unchecked CR or LF here would break every request to this
+// gateway with an error that names neither the field nor where it was set.
+// Refusing at save time puts the message where the operator is.
+func (c IdentityConfig) Validate() error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"clientVersion", c.ClientVersion},
+		{"entrypoint", c.Entrypoint},
+		{"turnOrigin", c.TurnOrigin},
+		{"userAgent", c.UserAgent},
+		{"stainlessOs", c.StainlessOS},
+		{"stainlessRuntimeVersion", c.StainlessRuntimeVersion},
+	} {
+		for _, r := range field.value {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf(
+					"identity.%s contains a control character (%q); it is sent as an HTTP header value",
+					field.name, r)
+			}
+		}
+	}
+	return nil
+}
+
+// WireIdentity builds the wire identity from this configuration, and reports
+// whether normalization applies at all.
+//
+// One name for this lookup, on the type that holds the configuration. It is
+// reached as cfg.Identity.WireIdentity(...) on the pooled gateway and as
+// endpoint.Identity.WireIdentity(...) on the custom-endpoint path; there is no
+// second spelling on the parent Config.
+//
+// accountUUID and sessionKey are what the request already knows: the account
+// chosen by the pool, and the session key used for stickiness. Reusing the
+// session key keeps the session UUID consistent with that routing rather than
+// inventing a second, unrelated notion of session. accountUUID may be empty:
+// the capture recorded metadata.user_id carrying an EMPTY account_uuid in every
+// request, so an endpoint with no pooled account reproduces that faithfully
+// rather than inventing one.
+func (c IdentityConfig) WireIdentity(accountUUID, sessionKey string) (ccidentity.Identity, bool) {
+	if c.Disabled {
+		return ccidentity.Identity{}, false
+	}
+	return ccidentity.Identity{
+		AccountUUID:             accountUUID,
+		SessionKey:              sessionKey,
+		ClientVersion:           c.ClientVersion,
+		Entrypoint:              c.Entrypoint,
+		TurnOrigin:              c.TurnOrigin,
+		UserAgent:               c.UserAgent,
+		StainlessOS:             c.StainlessOS,
+		StainlessRuntimeVersion: c.StainlessRuntimeVersion,
+	}, true
+}
+
 // Config is the root configuration structure for the Claude Code subsystem.
 type Config struct {
 	Enabled    bool            `json:"enabled"`
@@ -94,6 +180,7 @@ type Config struct {
 	Accounts   []AccountConfig `json:"accounts,omitempty"`
 	Allowlist  []ModelConfig   `json:"allowlist,omitempty"`
 	Routing    RoutingConfig   `json:"routing,omitempty"`
+	Identity   IdentityConfig  `json:"identity,omitempty"`
 }
 
 // RateLimits tracks Anthropic API rate limits extracted from response headers.

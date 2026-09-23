@@ -316,6 +316,13 @@ func TestAPIKeyOptionalAndEnforcedWhenConfigured(t *testing.T) {
 
 func newTestHandler(t *testing.T, upstream *fakeUpstream, projectID string) http.Handler {
 	t.Helper()
+	return newTestServer(t, upstream, projectID).Handler()
+}
+
+// newTestServer is newTestHandler's Server, for tests that call one handler
+// method directly instead of routing to it.
+func newTestServer(t *testing.T, upstream *fakeUpstream, projectID string) *Server {
+	t.Helper()
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	server, err := New(Options{
 		APIKey: "local-key", ProjectID: projectID, Now: func() time.Time { return now },
@@ -333,7 +340,7 @@ func newTestHandler(t *testing.T, upstream *fakeUpstream, projectID string) http
 	if err != nil {
 		t.Fatal(err)
 	}
-	return server.Handler()
+	return server
 }
 
 func standardStream() [][]byte {

@@ -196,3 +196,34 @@ built from operator's `Containerfile` pinning `@anthropic-ai/claude-code@2.1.267
 - Existing system prompt fingerprints and variant definitions remain fully compatible with `v2.1.267`.
 
 
+
+## Re-capturing the Claude Code baseline
+
+`scripts/capture-claude-code-headers.sh` records vanilla Claude Code's own wire
+traffic to `api.anthropic.com` through mitmdump, so the client's real headers and
+body fingerprint can be read without the proxy having rewritten them first.
+
+Procedure, in a real terminal:
+
+1. `scripts/capture-claude-code-headers.sh token` — prints an OAuth token.
+2. Save it with `umask 077 && printf '%s' '<token>' > ~/.claude-oat`.
+3. `scripts/capture-claude-code-headers.sh check` — confirms the token resolves,
+   reporting character counts and never the value.
+4. `scripts/capture-claude-code-headers.sh oauth` — writes
+   `.reference/claude-code-headers-<date>.jsonl` plus a `.meta.txt`.
+
+Request bodies are never dumped, even with capture on. The addon records a body
+*FINGERPRINT*: the key tree with value types, the metadata map with identifiers
+reduced to their shape, and the first system block. Prompts, file contents and
+tool output stay out by construction, not by review. Credentials are hashed
+before anything is written.
+
+The OAuth and API-key header sets differ, so capture both and label the
+artifacts. `scripts/capture-claude-code-headers.sh interactive` exists for the
+`cc_entrypoint=cli` record a `--print` run cannot produce; it needs a human,
+because a first-run session is gated by key-press dialogs that piped input
+cannot answer.
+
+Fingerprints recorded here are verbatim quotes from observed traffic; nothing in
+the artifact is inferred. Values that could not be confirmed are marked
+`unknown`.

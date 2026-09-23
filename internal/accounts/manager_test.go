@@ -1048,4 +1048,3 @@ func TestModelThresholdFor_NormalizesSuffixAndCase(t *testing.T) {
 		t.Errorf("modelThresholdFor should not resolve an unrelated model")
 	}
 }
-

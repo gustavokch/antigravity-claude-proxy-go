@@ -1593,6 +1593,70 @@
                         </div>
                     </div>
 
+                    <!-- Claude Code wire identity (headers and body normalization) -->
+                    <div class="pt-2 border-t border-space-border/40">
+                        <details class="group" :open="ccIdentityIsCustom || null">
+                            <summary class="cursor-pointer flex items-center gap-2 select-none py-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 text-gray-400 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                                </svg>
+                                <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider" x-text="$store.global.t('ccIdentityTitle') || 'Claude Code Wire Identity'">Claude Code Wire Identity</span>
+                                <span class="badge badge-xs font-mono text-[9px]"
+                                    :class="ccIdentityIsCustom ? 'bg-neon-green/10 text-neon-green border-neon-green/30' : 'bg-space-800 text-gray-500 border-space-border'"
+                                    x-text="ccIdentityIsCustom ? ($store.global.t('ccIdentityCustom') || 'CUSTOM') : ($store.global.t('ccIdentityDefault') || 'DEFAULT')">DEFAULT</span>
+                            </summary>
+                            <div class="space-y-3 pb-2">
+                                <p class="text-[11px] text-gray-500 leading-relaxed" x-text="$store.global.t('ccIdentityDesc') || 'Outbound requests are normalized to the captured Claude Code fingerprint by default. Leave every field blank to use the captured values.'">
+                                    Outbound requests are normalized to the captured Claude Code fingerprint by default. Leave every field blank to use the captured values.
+                                </p>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" class="checkbox checkbox-xs"
+                                        x-model="ccConfig.identity.disabled"
+                                        aria-label="Disable Claude Code identity normalization">
+                                    <span class="text-xs text-gray-300" x-text="$store.global.t('ccIdentityFieldDisabled') || 'Disable normalization (send the client&apos;s own headers)'">Disable normalization</span>
+                                </label>
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4" :class="ccConfig.identity.disabled ? 'opacity-40 pointer-events-none' : ''">
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('ccIdentityFieldClientVersion') || 'Client Version'">Client Version</label>
+                                        <input type="text" x-model="ccConfig.identity.clientVersion"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            placeholder="2.1.280">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('ccIdentityFieldEntrypoint') || 'Entrypoint'">Entrypoint</label>
+                                        <input type="text" x-model="ccConfig.identity.entrypoint"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            placeholder="sdk-cli">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('ccIdentityFieldTurnOrigin') || 'Turn Origin'">Turn Origin</label>
+                                        <input type="text" x-model="ccConfig.identity.turnOrigin"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            placeholder="sdk">
+                                    </div>
+                                    <div class="form-control md:col-span-3">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('ccIdentityFieldUserAgent') || 'User Agent'">User Agent</label>
+                                        <input type="text" x-model="ccConfig.identity.userAgent"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            placeholder="claude-cli/2.1.280 (external, sdk-cli)">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('ccIdentityFieldStainlessOs') || 'Stainless OS'">Stainless OS</label>
+                                        <input type="text" x-model="ccConfig.identity.stainlessOs"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            placeholder="Linux">
+                                    </div>
+                                    <div class="form-control md:col-span-2">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('ccIdentityFieldStainlessRuntimeVersion') || 'Stainless Runtime Version'">Stainless Runtime Version</label>
+                                        <input type="text" x-model="ccConfig.identity.stainlessRuntimeVersion"
+                                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full"
+                                            placeholder="v26.3.0">
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+
                     <div class="flex items-center gap-2 pt-1">
                         <button class="btn btn-sm bg-purple-600 hover:bg-purple-500 border-none text-white text-xs px-4"
                             @click="saveCCConfig()" :disabled="ccSaving"

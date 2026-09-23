@@ -507,6 +507,18 @@ window.translations.pt = {
     appSpoofFieldTitle: "Título do App",
     appSpoofFieldCategories: "Categorias do App",
     appSpoofFieldReferer: "Referer",
+    // Claude Code wire identity (normalização de cabeçalhos e corpo de saída)
+    ccIdentityTitle: "Identidade de Rede do Claude Code",
+    ccIdentityDefault: "PADRÃO",
+    ccIdentityCustom: "PERSONALIZADO",
+    ccIdentityDesc: "Por padrão, as requisições de saída são normalizadas para a impressão digital capturada do Claude Code. Deixe todos os campos em branco para usar os valores capturados.",
+    ccIdentityFieldDisabled: "Desativar normalização (enviar os cabeçalhos do próprio cliente)",
+    ccIdentityFieldClientVersion: "Versão do Cliente",
+    ccIdentityFieldEntrypoint: "Entrypoint",
+    ccIdentityFieldTurnOrigin: "Origem do Turno",
+    ccIdentityFieldUserAgent: "User Agent",
+    ccIdentityFieldStainlessOs: "Stainless OS",
+    ccIdentityFieldStainlessRuntimeVersion: "Versão do Runtime Stainless",
     skipFastModeOrgCheck: "Ignorar Verificação de Organização do Fast Mode",
     skipFastModeOrgCheckDesc: "Ignora a validação de organização da Anthropic ao usar modelos fast mode pelo proxy.",
 

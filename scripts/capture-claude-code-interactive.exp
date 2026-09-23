@@ -1,0 +1,78 @@
+#!/usr/bin/expect -f
+#
+# Drive an interactive Claude Code session so its cc_entrypoint=cli request can
+# be captured.
+#
+# Why expect and not piped stdin: a first-run session gates itself with a theme
+# picker and a folder-trust dialog. Both are key-press dialogs. Piping lines at
+# the container produces a session that answers neither, emits GET requests only,
+# and never sends POST /v1/messages — observed three times on 2026-09-23. expect
+# gives the container a real PTY and injects keys, which is what those dialogs
+# need.
+#
+# Usage (normally invoked by scripts/capture-claude-code-headers.sh interactive):
+#   CLAUDE_INTERACTIVE_PROMPT='...' \
+#     expect scripts/capture-claude-code-interactive.exp podman run --rm -it ... claude
+#
+# Every keystroke is unconditional and every wait is a fixed sleep. The startup
+# gates are not matched by pattern because their wording varies by version and a
+# pattern that fails to match leaves the session stuck, which is the failure this
+# script exists to avoid. Sending Enter to a session that has no dialog up is
+# harmless.
+
+set timeout 240
+set prompt_text "Reply with exactly CLAUDE_INTERACTIVE_OK"
+if {[info exists env(CLAUDE_INTERACTIVE_PROMPT)]} {
+    set prompt_text $env(CLAUDE_INTERACTIVE_PROMPT)
+}
+
+if {$argc == 0} {
+    puts stderr "ERROR: no command given. Pass the podman invocation as arguments."
+    exit 2
+}
+
+# The TUI output is the only record of what the gates actually said. Keeping it
+# outside the repository; it can contain the operator's prompt text.
+if {[info exists env(CLAUDE_INTERACTIVE_LOG)]} {
+    log_file -a $env(CLAUDE_INTERACTIVE_LOG)
+}
+
+puts stderr "=== interactive driver: starting session ==="
+# -noecho: the default spawn prints the full argument list, and the credential
+# used to arrive here as an -e NAME=value pair. That printed a live OAuth token
+# into the run output on 2026-09-23. The caller now passes an --env-file, and
+# this flag means even a future argument-list mistake cannot print one.
+spawn -noecho {*}$argv
+
+# Startup is slow and variable: a cold container renders the folder-trust dialog
+# at roughly 46s, measured 2026-09-23. Sending keys at 8s (the first attempt)
+# meant every keystroke landed before the dialog existed, and expect then closed
+# the session — which podman reported as EOF at 46s. The waits below are sized to
+# the measurement. Pattern matching is NOT used: the TUI's output fragments
+# phrases with cursor-positioning escapes ("Yes", esc, "I trust this folder"), so
+# a phrase match cannot be relied on to fire.
+puts stderr "=== driver: waiting for startup and the folder-trust dialog ==="
+sleep 60
+
+# The dialog is a two-item list whose cursor starts on the FIRST item, and that
+# item is "No, exit". A bare Enter therefore declines trust and kills the session.
+puts stderr "=== driver: selecting Yes on the folder-trust dialog ==="
+send "\033\[B"
+sleep 2
+send "\r"
+sleep 6
+
+puts stderr "=== driver: submitting the prompt ==="
+send "$prompt_text\r"
+
+# Long enough for a round trip plus the tool-free answer.
+sleep 25
+
+puts stderr "=== driver: ending the session ==="
+send "/exit\r"
+sleep 5
+send "\r"
+
+expect eof
+puts stderr "=== interactive driver: done ==="
+exit 0

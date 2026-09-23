@@ -1,0 +1,513 @@
+package ccidentity
+
+import (
+	"encoding/json"
+	"net/http"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// hdrGet reads a header without canonicalising the lookup key.
+//
+// http.Header.Get canonicalises its argument, so it cannot find the names this
+// package stores on purpose: the captured wire names are X-Stainless-OS and the
+// lowercase anthropic-* family, and canonicalising either would change what
+// reaches the wire.
+func hdrGet(h http.Header, name string) string {
+	if values, ok := h[name]; ok && len(values) > 0 {
+		return values[0]
+	}
+	return ""
+}
+
+func testIdentity() Identity {
+	return Identity{
+		AccountUUID: "11111111-2222-3333-4444-555555555555",
+		SessionKey:  "session-abc",
+	}
+}
+
+// capturedHeaders is the constant header set read out of
+// .reference/claude-code-headers-20260923.txt. It is duplicated here on purpose:
+// a test that reads the artifact at run time would pass even if both the
+// artifact and the implementation were changed together, and this test's job is
+// to fail when the implementation drifts from the recorded bytes.
+var capturedHeaders = map[string]string{
+	"Accept":                                    "application/json",
+	"Content-Type":                              "application/json",
+	"X-Stainless-Arch":                          "arm64",
+	"X-Stainless-Lang":                          "js",
+	"X-Stainless-OS":                            "Linux",
+	"X-Stainless-Package-Version":               "0.112.1",
+	"X-Stainless-Retry-Count":                   "0",
+	"X-Stainless-Runtime":                       "node",
+	"X-Stainless-Runtime-Version":               "v26.3.0",
+	"X-Stainless-Timeout":                       "600",
+	"anthropic-dangerous-direct-browser-access": "true",
+	"anthropic-version":                         "2023-06-01",
+	"x-app":                                     "cli",
+	"x-claude-code-request-class":               "main",
+}
+
+func TestApplyHeadersSendsTheCapturedSet(t *testing.T) {
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+
+	for name, want := range capturedHeaders {
+		if got := hdrGet(h, name); got != want {
+			t.Errorf("%s = %q, want captured %q", name, got, want)
+		}
+	}
+	if got := hdrGet(h, "User-Agent"); got != MessagesUserAgent {
+		t.Errorf("User-Agent = %q, want %q", got, MessagesUserAgent)
+	}
+	wantBeta := strings.Join(Betas, ",")
+	if got := hdrGet(h, "anthropic-beta"); got != wantBeta {
+		t.Errorf("anthropic-beta = %q, want captured order %q", got, wantBeta)
+	}
+}
+
+func TestApplyHeadersPreservesCapturedNameCase(t *testing.T) {
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+	if _, ok := h["X-Stainless-OS"]; !ok {
+		t.Fatalf("X-Stainless-OS missing; Header.Set canonicalisation would produce %q", "X-Stainless-Os")
+	}
+	if _, ok := h["X-Stainless-Os"]; ok {
+		t.Error("X-Stainless-Os present; the captured name is X-Stainless-OS")
+	}
+}
+
+func TestApplyHeadersDeletesForeignClientValues(t *testing.T) {
+	h := http.Header{}
+	h.Set("User-Agent", "cursor/1.2.3")
+	h.Set("x-api-key", "sk-ant-api-key-that-must-not-leak")
+	h.Set("X-Stainless-Lang", "js")
+	h.Set("HTTP-Referer", "https://cursor.com")
+	h.Set("X-Title", "Cursor")
+	h.Set("Authorization", "Bearer foreign")
+	h.Set("X-Forwarded-For", "10.0.0.1")
+	h.Set("x-session-id", "cursor-session")
+
+	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+
+	for _, name := range []string{
+		"x-api-key", "HTTP-Referer", "X-Title", "X-Forwarded-For", "x-session-id",
+	} {
+		if got := hdrGet(h, name); got != "" {
+			t.Errorf("%s survived the rewrite as %q; omit list must delete it", name, got)
+		}
+	}
+	if got := hdrGet(h, "User-Agent"); got != MessagesUserAgent {
+		t.Errorf("User-Agent = %q, want the captured value", got)
+	}
+}
+
+func TestApplyHeadersLeavesTransportOwnedHeadersToGo(t *testing.T) {
+	// Accept-Encoding is deliberately not spoofed: setting it stops net/http
+	// adding gzip and its transparent decompression, which the SSE path needs.
+	h := http.Header{}
+	h.Set("Accept-Encoding", "br")
+	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+	if got := hdrGet(h, "Accept-Encoding"); got != "" {
+		t.Errorf("Accept-Encoding = %q; want it cleared so Go manages it", got)
+	}
+}
+
+func TestSessionIDStablePerSessionAndRequestIDFresh(t *testing.T) {
+	id := testIdentity()
+	first := http.Header{}
+	second := http.Header{}
+	ApplyHeaders(first, DefaultProfile(), id, Turn{})
+	ApplyHeaders(second, DefaultProfile(), id, Turn{})
+
+	if hdrGet(first, "X-Claude-Code-Session-Id") != hdrGet(second, "X-Claude-Code-Session-Id") {
+		t.Error("session id changed between two requests of one session")
+	}
+	if hdrGet(first, "x-client-request-id") == hdrGet(second, "x-client-request-id") {
+		t.Error("x-client-request-id repeated; the capture shows it fresh per request")
+	}
+
+	other := http.Header{}
+	ApplyHeaders(other, DefaultProfile(), Identity{SessionKey: "different"}, Turn{})
+	if hdrGet(other, "X-Claude-Code-Session-Id") == hdrGet(first, "X-Claude-Code-Session-Id") {
+		t.Error("session id identical across two different session keys")
+	}
+}
+
+var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func TestSessionIDIsUUIDShaped(t *testing.T) {
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+	if got := hdrGet(h, "X-Claude-Code-Session-Id"); !uuidRE.MatchString(got) {
+		t.Errorf("session id %q is not UUID-shaped; the capture shows a UUID", got)
+	}
+}
+
+func TestApplyBodyMetadataUserIDIsTheCapturedJSONObject(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[]}`)
+	out, err := ApplyBody(body, DefaultProfile(), testIdentity(), Turn{})
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var parsed struct {
+		Metadata struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if !strings.HasPrefix(parsed.Metadata.UserID, `{"device_id":"`) {
+		t.Fatalf("user_id = %q, want the captured stringified JSON object", parsed.Metadata.UserID)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(parsed.Metadata.UserID), &payload); err != nil {
+		t.Fatalf("user_id is not valid JSON: %v", err)
+	}
+	if len(payload["device_id"]) != 64 {
+		t.Errorf("device_id length = %d, want 64 hex characters as captured", len(payload["device_id"]))
+	}
+	// Claude Code sends account_uuid EMPTY. Observed in 6 of 6 captured
+	// requests across two independent OAuth credentials:
+	// .reference/claude-code-headers-20260923.jsonl (3) and
+	// .reference/claude-code-headers-20260923-acct2.jsonl (3). Emitting the
+	// real account UUID here would be a field no real client populates.
+	if payload["account_uuid"] != "" {
+		t.Errorf("account_uuid = %q, want empty as captured", payload["account_uuid"])
+	}
+	if !uuidRE.MatchString(payload["session_id"]) {
+		t.Errorf("session_id = %q, want a UUID", payload["session_id"])
+	}
+}
+
+// Emptying account_uuid must not cost per-account stickiness: device_id is
+// derived from the account, so two accounts still present different devices.
+func TestApplyBodyDeviceIDStillDiffersPerAccountWithEmptyAccountUUID(t *testing.T) {
+	first := testIdentity()
+	first.AccountUUID = "11111111-1111-4111-8111-111111111111"
+	second := testIdentity()
+	second.AccountUUID = "22222222-2222-4222-8222-222222222222"
+
+	read := func(id Identity) (device, account string) {
+		out, err := ApplyBody([]byte(`{}`), DefaultProfile(), id, Turn{})
+		if err != nil {
+			t.Fatalf("ApplyBody: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(out, &parsed); err != nil {
+			t.Fatalf("re-parse: %v", err)
+		}
+		userID, _ := parsed["metadata"].(map[string]any)["user_id"].(string)
+		var payload map[string]string
+		if err := json.Unmarshal([]byte(userID), &payload); err != nil {
+			t.Fatalf("user_id is not valid JSON: %v", err)
+		}
+		return payload["device_id"], payload["account_uuid"]
+	}
+
+	firstDevice, firstAccount := read(first)
+	secondDevice, secondAccount := read(second)
+
+	if firstAccount != "" || secondAccount != "" {
+		t.Errorf("account_uuid = %q and %q, want both empty", firstAccount, secondAccount)
+	}
+	if firstDevice == secondDevice {
+		t.Errorf("device_id is %q for both accounts; per-account identity was lost", firstDevice)
+	}
+}
+
+func TestApplyBodyMetadataUserIDFieldOrderMatchesCapture(t *testing.T) {
+	out, err := ApplyBody([]byte(`{}`), DefaultProfile(), testIdentity(), Turn{})
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(out, &parsed)
+	userID, _ := parsed["metadata"].(map[string]any)["user_id"].(string)
+	device, account, session := strings.Index(userID, "device_id"), strings.Index(userID, "account_uuid"), strings.Index(userID, "session_id")
+	if !(device < account && account < session) {
+		t.Errorf("user_id key order = %q, want device_id, account_uuid, session_id", userID)
+	}
+}
+
+func TestApplyBodyDeviceIDStablePerIdentity(t *testing.T) {
+	// Only metadata can be compared: the body also carries a fresh cch per call,
+	// so two whole bodies are never equal.
+	id := testIdentity()
+	userID := func(body []byte) string {
+		var parsed struct {
+			Metadata struct {
+				UserID string `json:"user_id"`
+			} `json:"metadata"`
+		}
+		_ = json.Unmarshal(body, &parsed)
+		return parsed.Metadata.UserID
+	}
+	first, _ := ApplyBody([]byte(`{}`), DefaultProfile(), id, Turn{})
+	second, _ := ApplyBody([]byte(`{}`), DefaultProfile(), id, Turn{})
+	if userID(first) != userID(second) {
+		t.Errorf("metadata differs across turns of one session:\n %s\n %s", userID(first), userID(second))
+	}
+}
+
+func TestApplyBodyPreservesOtherMetadataKeys(t *testing.T) {
+	body := []byte(`{"metadata":{"custom":"keep-me"}}`)
+	out, err := ApplyBody(body, DefaultProfile(), testIdentity(), Turn{})
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(out, &parsed)
+	if parsed["metadata"].(map[string]any)["custom"] != "keep-me" {
+		t.Error("an unrelated metadata key was dropped")
+	}
+}
+
+func TestApplyBodyDropsFieldsClaudeCodeDoesNotSend(t *testing.T) {
+	body := []byte(`{"model":"m","temperature":0.7,"top_p":0.9,"top_k":40,"stop_sequences":["x"],"tool_choice":{"type":"auto"},"service_tier":"auto"}`)
+	out, err := ApplyBody(body, DefaultProfile(), testIdentity(), Turn{})
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(out, &parsed)
+	for _, name := range omittedBodyFields {
+		if _, present := parsed[name]; present {
+			t.Errorf("%s survived; the capture shows Claude Code does not send it", name)
+		}
+	}
+	if parsed["model"] != "m" {
+		t.Error("model was dropped")
+	}
+}
+
+func TestApplyBodySystemBlockZeroIsTheBillingHeader(t *testing.T) {
+	id := testIdentity()
+	body := []byte(`{"system":[{"type":"text","text":"original"},{"type":"text","text":"second"}]}`)
+	out, err := ApplyBody(body, DefaultProfile(), id, Turn{})
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var parsed struct {
+		System []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"system"`
+	}
+	_ = json.Unmarshal(out, &parsed)
+	if len(parsed.System) != 3 {
+		t.Fatalf("system has %d blocks, want 3: the marker plus both original blocks", len(parsed.System))
+	}
+	if !strings.HasPrefix(parsed.System[0].Text, "x-anthropic-billing-header: ") {
+		t.Errorf("system[0] = %q, want the billing header", parsed.System[0].Text)
+	}
+	// The caller's prompt is content this package cannot reconstruct. Claude
+	// Code's own block 0 is the marker and its prompt follows, so prepending is
+	// both the captured shape and the non-destructive one.
+	if parsed.System[1].Text != "original" {
+		t.Errorf("system[1] = %q; the caller's first block must survive", parsed.System[1].Text)
+	}
+	if parsed.System[2].Text != "second" {
+		t.Errorf("system[2] = %q; later blocks must be untouched", parsed.System[2].Text)
+	}
+}
+
+func TestApplyBodyReplacesAnExistingBillingHeader(t *testing.T) {
+	// A caller that already is Claude Code sends a marker of its own. Prepending
+	// a second one would put two on the wire, which no client does.
+	body := []byte(`{"system":[` +
+		`{"type":"text","text":"x-anthropic-billing-header: cc_version=1.0.0.abc; cc_entrypoint=sdk-cli; cch=11111; cc_prompt_id=x; cc_turn_origin=sdk;"},` +
+		`{"type":"text","text":"real prompt"}]}`)
+	out, err := ApplyBody(body, DefaultProfile(), testIdentity(), Turn{})
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var parsed struct {
+		System []struct {
+			Text string `json:"text"`
+		} `json:"system"`
+	}
+	_ = json.Unmarshal(out, &parsed)
+	if len(parsed.System) != 2 {
+		t.Fatalf("system has %d blocks, want 2: the caller's marker replaced, not doubled", len(parsed.System))
+	}
+	if strings.Contains(parsed.System[0].Text, "cc_version=1.0.0.abc") {
+		t.Error("the caller's own billing header survived; it must be replaced")
+	}
+	if parsed.System[1].Text != "real prompt" {
+		t.Errorf("system[1] = %q, want the caller's prompt", parsed.System[1].Text)
+	}
+}
+
+func TestApplyBodyStringSystemIsPromotedToBlocks(t *testing.T) {
+	out, err := ApplyBody([]byte(`{"system":"be helpful"}`), DefaultProfile(), testIdentity(), Turn{})
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(out, &parsed)
+	blocks, ok := parsed["system"].([]any)
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("system = %#v, want a two-block array as captured", parsed["system"])
+	}
+}
+
+func TestApplyBodyRejectsMalformedJSON(t *testing.T) {
+	if _, err := ApplyBody([]byte(`{"model":`), DefaultProfile(), testIdentity(), Turn{}); err == nil {
+		t.Error("malformed JSON returned no error; forwarding unnormalised bytes is worse than failing")
+	}
+	if _, err := ApplyBody([]byte(`[1,2]`), DefaultProfile(), testIdentity(), Turn{}); err == nil {
+		t.Error("non-object body returned no error")
+	}
+}
+
+func TestApplyBodyEmptyBodyIsPassedThrough(t *testing.T) {
+	out, err := ApplyBody(nil, DefaultProfile(), testIdentity(), Turn{})
+	if err != nil || out != nil {
+		t.Errorf("ApplyBody(nil) = %v, %v; want nil, nil", out, err)
+	}
+}
+
+var billingRE = regexp.MustCompile(`^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=(sdk-cli|cli); cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=(sdk|cli);$`)
+
+func TestBillingHeaderMatchesCapturedShape(t *testing.T) {
+	got := BillingHeader(testIdentity(), Turn{})
+	if !billingRE.MatchString(got) {
+		t.Errorf("billing header = %q, does not match the captured shape", got)
+	}
+}
+
+func TestBillingHeaderCCHIsFreshPerRequest(t *testing.T) {
+	id := testIdentity()
+	first := BillingHeader(id, Turn{})
+	second := BillingHeader(id, Turn{})
+	if first == second {
+		t.Error("two requests produced identical billing headers; cch must be fresh")
+	}
+	// Everything except cch is stable within one session.
+	strip := func(s string) string {
+		return regexp.MustCompile(`cch=[0-9a-f]{5}`).ReplaceAllString(s, "cch=X")
+	}
+	if strip(first) != strip(second) {
+		t.Errorf("only cch should vary within a session:\n %q\n %q", first, second)
+	}
+}
+
+// promptIDRE pulls cc_prompt_id out of a billing header.
+var promptIDRE = regexp.MustCompile(`cc_prompt_id=([0-9a-f-]{36})`)
+
+// TestBillingHeaderPromptIDDiffersFromSessionID pins a relation the captures
+// prove, which no single-field check can catch.
+//
+// In all six captured requests across two independent OAuth accounts,
+// X-Claude-Code-Session-Id and cc_prompt_id are different UUIDs, and both are
+// stable within one process:
+//
+//	5c1c7cec-… / 7cd5023f-…   ca6f5fe3-… / 9f414346-…   (rows 2, 5 and 6)
+//	ccbbdab8-… / b0f9a831-…   2ca893cf-… / fc5d5bcf-…   (acct2, same rows)
+//
+// A request where the two are equal is one no real Claude Code emits, which is
+// exactly the kind of tell this package exists to remove.
+func TestBillingHeaderPromptIDDiffersFromSessionID(t *testing.T) {
+	id := testIdentity()
+
+	match := promptIDRE.FindStringSubmatch(BillingHeader(id, Turn{}))
+	if match == nil {
+		t.Fatalf("billing header carries no cc_prompt_id: %q", BillingHeader(id, Turn{}))
+	}
+	promptID := match[1]
+
+	if promptID == sessionUUID(id) {
+		t.Errorf("cc_prompt_id == session UUID (%s); the captures show them always different", promptID)
+	}
+
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
+	if header := hdrGet(h, "X-Claude-Code-Session-Id"); header == promptID {
+		t.Errorf("cc_prompt_id == X-Claude-Code-Session-Id (%s); 6 of 6 captured requests differ", header)
+	}
+
+	// Stable for one identity, as rows 5 and 6 of each capture show.
+	again := promptIDRE.FindStringSubmatch(BillingHeader(id, Turn{}))[1]
+	if again != promptID {
+		t.Errorf("cc_prompt_id changed within one session: %s then %s", promptID, again)
+	}
+}
+
+func TestBillingHeaderCarriesPrevRequestIDOnFollowUpTurns(t *testing.T) {
+	got := BillingHeader(testIdentity(), Turn{PrevRequestID: "req_011CfL3J5mtdJ5DhtF1opYTr"})
+	if !strings.Contains(got, "cc_prev_req=req_011CfL3J5mtdJ5DhtF1opYTr; cc_prompt_id=") {
+		t.Errorf("billing header = %q; cc_prev_req must sit between cch and cc_prompt_id as captured", got)
+	}
+	if strings.Contains(BillingHeader(testIdentity(), Turn{}), "cc_prev_req") {
+		t.Error("cc_prev_req present on a first turn; the capture only shows it on a follow-up")
+	}
+}
+
+func TestBillingHeaderEntrypointAndOriginFollowTheIdentity(t *testing.T) {
+	id := testIdentity()
+	id.Entrypoint = EntrypointInteractive
+	id.TurnOrigin = "cli"
+	got := BillingHeader(id, Turn{})
+	if !strings.Contains(got, "cc_entrypoint=cli;") {
+		t.Errorf("billing header = %q, want the configured entrypoint", got)
+	}
+	if !strings.Contains(got, "cc_turn_origin=cli;") {
+		t.Errorf("billing header = %q, want the configured turn origin", got)
+	}
+}
+
+func TestUserAgentDefaultsToTheCapturedLiteral(t *testing.T) {
+	id := Identity{}
+	if got := messagesUserAgent(id); got != MessagesUserAgent {
+		t.Errorf("User-Agent = %q, want the captured literal %q", got, MessagesUserAgent)
+	}
+	id.Entrypoint = EntrypointSDKCLI
+	if got := messagesUserAgent(id); got != MessagesUserAgent {
+		t.Errorf("User-Agent = %q for sdk-cli, want the captured literal", got)
+	}
+}
+
+func TestUserAgentConstructionForOtherEntrypointsIsInferred(t *testing.T) {
+	// No capture confirms this string; the test pins the construction so a
+	// change is deliberate rather than accidental.
+	got := messagesUserAgent(Identity{Entrypoint: EntrypointInteractive})
+	if got != "claude-cli/2.1.280 (external, cli)" {
+		t.Errorf("User-Agent = %q, want the constructed form", got)
+	}
+}
+
+func TestOverridesWinWhenSet(t *testing.T) {
+	id := Identity{
+		UserAgent:               "custom-ua",
+		StainlessOS:             "macOS",
+		StainlessRuntimeVersion: "v99.0.0",
+	}
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
+	if hdrGet(h, "User-Agent") != "custom-ua" {
+		t.Errorf("User-Agent = %q, want the override", hdrGet(h, "User-Agent"))
+	}
+	if hdrGet(h, "X-Stainless-OS") != "macOS" {
+		t.Errorf("X-Stainless-OS = %q, want the override", hdrGet(h, "X-Stainless-OS"))
+	}
+	if hdrGet(h, "X-Stainless-Runtime-Version") != "v99.0.0" {
+		t.Errorf("X-Stainless-Runtime-Version = %q, want the override", hdrGet(h, "X-Stainless-Runtime-Version"))
+	}
+}
+
+func TestDefaultProfilePinsTheCapturedPathAndBetas(t *testing.T) {
+	p := DefaultProfile()
+	if p.Path != "/v1/messages?beta=true" {
+		t.Errorf("Path = %q, want the captured path with its query string", p.Path)
+	}
+	if len(p.Betas) != 13 {
+		t.Fatalf("Betas has %d entries, want the captured 13", len(p.Betas))
+	}
+	if p.Betas[0] != "claude-code-20250219" || p.Betas[1] != "oauth-2025-04-20" {
+		t.Errorf("first betas = %q, %q; the capture puts claude-code-20250219 first", p.Betas[0], p.Betas[1])
+	}
+}

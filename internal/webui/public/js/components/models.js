@@ -5,6 +5,35 @@
  */
 window.Components = window.Components || {};
 
+// The Claude Code wire identity overrides, as one list. The seven fields travel
+// together through the default state, the load and the save, and the panel
+// decides whether any is set; naming them once keeps those four places from
+// drifting apart.
+const CC_IDENTITY_STRING_FIELDS = [
+    'clientVersion',
+    'entrypoint',
+    'turnOrigin',
+    'userAgent',
+    'stainlessOs',
+    'stainlessRuntimeVersion'
+];
+
+// ccIdentityFrom returns the complete field set, taking whatever source has.
+//
+// Called with no arguments it is the default state: disabled false, because it
+// is a DISABLE flag and the zero value normalizes, and every string blank,
+// because blank means "use the captured value" — see
+// internal/ccidentity/defaults.go. transform is what the save path uses to trim.
+function ccIdentityFrom(source, transform) {
+    const src = source || {};
+    const apply = transform || ((value) => value);
+    const out = { disabled: !!src.disabled };
+    for (const name of CC_IDENTITY_STRING_FIELDS) {
+        out[name] = apply(src[name] || '');
+    }
+    return out;
+}
+
 window.Components.models = () => ({
     // Color palette for per-account threshold markers
     thresholdColors: [
@@ -946,7 +975,8 @@ window.Components.models = () => ({
         autoImport: false,
         accounts: [],
         allowlist: [],
-        routing: {}
+        routing: {},
+        identity: ccIdentityFrom()
     },
     ccAccounts: [],
     ccSaving: false,
@@ -966,6 +996,15 @@ window.Components.models = () => ({
     ccDiscoverSearch: '',
     ccDiscoverFamilyFilter: 'all',
     ccSelectedModels: [],
+
+    // ccIdentityIsCustom reports whether the operator has overridden anything in
+    // the wire identity panel. The template asks three times (open state, badge
+    // colour, badge text), so it is answered once here.
+    get ccIdentityIsCustom() {
+        const identity = this.ccConfig.identity || {};
+        if (identity.disabled) return true;
+        return CC_IDENTITY_STRING_FIELDS.some(name => !!(identity[name] || '').trim());
+    },
 
     get filteredClaudeCodeModels() {
         let list = this.ccDiscoveredModels || [];
@@ -1176,6 +1215,10 @@ window.Components.models = () => ({
             const data = await response.json();
             if (data.config) {
                 this.ccConfig = { ...this.ccConfig, ...data.config };
+                // A spread would replace the whole identity object with an
+                // absent one on any config saved before this panel existed,
+                // leaving x-model bound to undefined.
+                this.ccConfig.identity = ccIdentityFrom(data.config.identity);
             }
         } catch (_) {}
         await this.loadCCAccounts();
@@ -1197,6 +1240,11 @@ window.Components.models = () => ({
         this.ccError = '';
         this.ccSuccess = '';
         try {
+            const identity = this.ccConfig.identity || {};
+            // saveCCConfig sends an explicit field list, so identity has to be
+            // named here or the panel's values are dropped on every save. Blank
+            // strings are sent as-is: empty means "use the captured value", and
+            // omitting them would leave a stale override in place.
             const { response, newPassword } = await window.utils.request('/api/claudecode/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1206,7 +1254,8 @@ window.Components.models = () => ({
                     mode: this.ccConfig.mode,
                     autoImport: this.ccConfig.autoImport,
                     allowlist: this.ccConfig.allowlist,
-                    routing: this.ccConfig.routing
+                    routing: this.ccConfig.routing,
+                    identity: ccIdentityFrom(identity, (value) => value.trim())
                 })
             }, store.webuiPassword);
             if (newPassword) store.webuiPassword = newPassword;

@@ -3,7 +3,7 @@ BIN_DIR=bin
 VERSION?=1.0.0
 LDFLAGS=-s -w -X main.version=$(VERSION)
 
-.PHONY: all build test clean cross-compile dist install
+.PHONY: all build test clean cross-compile dist install install-hooks fmt fmt-check
 
 all: build
 
@@ -46,3 +46,28 @@ dist:
 
 install:
 	@./scripts/install.sh
+
+# gen/ is excluded from every gofmt target here. Its formatting comes from the
+# protobuf generator, so reformatting it would be undone by the next
+# scripts/generate-proto.sh — and it carries known drift today for that reason.
+GOFMT_PATHS=$(shell find . -name '*.go' -not -path './gen/*' -not -path './.claude/*' -not -path './bin/*')
+
+fmt:
+	@gofmt -l -w $(GOFMT_PATHS)
+	@echo "gofmt applied."
+
+fmt-check:
+	@drift="$$(gofmt -l $(GOFMT_PATHS))"; \
+	if [ -n "$$drift" ]; then \
+		echo "Not gofmt-clean:"; echo "$$drift"; \
+		echo "Run: make fmt"; \
+		exit 1; \
+	fi; \
+	echo "gofmt clean."
+
+install-hooks:
+	@git config core.hooksPath scripts/git-hooks
+	@chmod +x scripts/git-hooks/*
+	@echo "core.hooksPath -> scripts/git-hooks"
+	@echo "Installed: $$(ls scripts/git-hooks)"
+	@echo "Bypass once with: git commit --no-verify   (or SKIP_GOFMT_HOOK=1)"

@@ -123,4 +123,3 @@ func TestEventJSONWireFormat(t *testing.T) {
 		t.Errorf("wire format mismatch:\ngot:  %s\nwant: %s", string(data), expected)
 	}
 }
-

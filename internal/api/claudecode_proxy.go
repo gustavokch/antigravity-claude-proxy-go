@@ -140,10 +140,20 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 }
 
 // ccExtractSessionID extracts a stable session key from request headers, then
-// from the request body. Claude Code does not send a session header: it carries
-// the identifier in metadata.user_id, so the body must be inspected. Mirrors
-// openrouter.ExtractSessionID minus the remote-address fallback, which would
-// change account stickiness for anonymous clients.
+// from the request body.
+//
+// The four header names below are the spellings third-party harnesses use.
+// Claude Code itself sends none of them: it sends X-Claude-Code-Session-Id,
+// present on every captured POST /v1/messages in
+// .reference/claude-code-headers-20260923*.jsonl and absent from the captured
+// GETs. Reading that name here would change which requests get a session key
+// and therefore account stickiness, so it is a behaviour change rather than a
+// spelling to add to the list.
+//
+// The body fallback exists because a harness that sends no session header may
+// still carry the identifier in metadata. Mirrors openrouter.ExtractSessionID
+// minus the remote-address fallback, which would change account stickiness for
+// anonymous clients.
 func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 	if r != nil {
 		for _, h := range []string{"x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
@@ -330,7 +340,14 @@ func (server *Server) forwardToClaudeCode(
 					pool.Acquire(acc.ID)
 					startTime := time.Now()
 
-					resp, err := client.SendMessage(ctx, acc.Token, bodyBytes, request.Header)
+					identity, normalize := ccCfg.Identity.WireIdentity(acc.AccountUUID, sessionKey)
+					resp, err := client.SendMessage(ctx, claudecode.MessageRequest{
+						Token:         acc.Token,
+						Body:          bodyBytes,
+						ClientHeaders: request.Header,
+						Normalize:     normalize,
+						Identity:      identity,
+					})
 					if err != nil {
 						pool.Release(acc.ID)
 						pool.RecordFailure(acc.ID, false, 10*time.Second)
@@ -347,7 +364,13 @@ func (server *Server) forwardToClaudeCode(
 							if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
 								if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
 									server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
-									retryResp, retryErr := client.SendMessage(ctx, refreshedAcc.Token, bodyBytes, request.Header)
+									retryResp, retryErr := client.SendMessage(ctx, claudecode.MessageRequest{
+										Token:         refreshedAcc.Token,
+										Body:          bodyBytes,
+										ClientHeaders: request.Header,
+										Normalize:     normalize,
+										Identity:      identity,
+									})
 									if retryErr == nil {
 										_ = resp.Body.Close()
 										resp = retryResp
@@ -450,7 +473,14 @@ func (server *Server) forwardToClaudeCode(
 		pool.Acquire(acc.ID)
 		startTime := time.Now()
 
-		resp, err := client.SendMessage(request.Context(), acc.Token, reqBody, request.Header)
+		identity, normalize := ccCfg.Identity.WireIdentity(acc.AccountUUID, sessionKey)
+		resp, err := client.SendMessage(request.Context(), claudecode.MessageRequest{
+			Token:         acc.Token,
+			Body:          reqBody,
+			ClientHeaders: request.Header,
+			Normalize:     normalize,
+			Identity:      identity,
+		})
 		if err != nil {
 			pool.Release(acc.ID)
 			pool.RecordFailure(acc.ID, false, 10*time.Second)
@@ -467,7 +497,13 @@ func (server *Server) forwardToClaudeCode(
 				if refreshErr := pool.RefreshAccountToken(acc.ID); refreshErr == nil {
 					if refreshedAcc, ok := pool.GetAccount(acc.ID); ok {
 						server.syncRefreshedAccountToConfig(acc.ID, refreshedAcc.Token, refreshedAcc.RefreshToken, refreshedAcc.ExpiresAt)
-						retryResp, retryErr := client.SendMessage(request.Context(), refreshedAcc.Token, reqBody, request.Header)
+						retryResp, retryErr := client.SendMessage(request.Context(), claudecode.MessageRequest{
+							Token:         refreshedAcc.Token,
+							Body:          reqBody,
+							ClientHeaders: request.Header,
+							Normalize:     normalize,
+							Identity:      identity,
+						})
 						if retryErr == nil {
 							_ = resp.Body.Close()
 							resp = retryResp

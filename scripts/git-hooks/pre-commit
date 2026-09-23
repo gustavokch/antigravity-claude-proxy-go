@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+#
+# Reject a commit that would introduce gofmt drift.
+#
+# Install:
+#   make install-hooks
+# or:
+#   git config core.hooksPath scripts/git-hooks
+#
+# Bypass, when you mean it:
+#   SKIP_GOFMT_HOOK=1 git commit ...
+#   git commit --no-verify ...
+#
+# Three things here are deliberate:
+#
+#   - It checks the STAGED content, not the working tree. The two differ whenever a
+#     file is partially staged with `git add -p`, and the staged blob is what the
+#     commit will contain. Checking the working tree would pass a commit that lands
+#     unformatted code, and fail one whose staged part is clean.
+#   - It compares through files rather than command substitution. `$(... )` strips
+#     trailing newlines from both sides, which would hide a missing or extra blank
+#     line at end of file — one of the most common gofmt drifts there is, and four
+#     of the seven files fixed in the commit that added this hook were exactly that.
+#   - Generated code under gen/ is exempt. Its formatting comes from the generator,
+#     so reformatting it here would be undone by the next
+#     scripts/generate-proto.sh and would block anyone committing a regenerated
+#     file. gen/ carries known drift today for that reason.
+#
+# Written for bash 3.2, which is what /bin/bash is on macOS: no mapfile, and no
+# expansion of a possibly-empty array before its count has been checked.
+
+set -uo pipefail
+
+if [[ "${SKIP_GOFMT_HOOK:-0}" == "1" ]]; then
+  exit 0
+fi
+
+if ! command -v gofmt >/dev/null 2>&1; then
+  echo "pre-commit: gofmt not found in PATH." >&2
+  echo "pre-commit: install Go, or bypass with SKIP_GOFMT_HOOK=1 if you cannot." >&2
+  exit 1
+fi
+
+# ACMR: added, copied, modified, renamed. A deleted path has no staged content to
+# format, and asking for it would make `git show :path` fail.
+staged=()
+while IFS= read -r path; do
+  [[ -n "${path}" ]] && staged+=("${path}")
+done < <(
+  git diff --cached --name-only --diff-filter=ACMR \
+    | grep '\.go$' \
+    | grep -v '^gen/' \
+    || true
+)
+
+if [[ "${#staged[@]}" -eq 0 ]]; then
+  exit 0
+fi
+
+work="$(mktemp -d -t gofmt-hook)"
+trap 'rm -rf "${work}"' EXIT
+
+unformatted=()
+for path in "${staged[@]}"; do
+  if ! git show ":${path}" > "${work}/staged.go" 2>/dev/null; then
+    echo "pre-commit: cannot read staged ${path}; skipping it." >&2
+    continue
+  fi
+  if ! gofmt "${work}/staged.go" > "${work}/formatted.go" 2>/dev/null; then
+    # A syntax error is the compiler's problem, not this hook's. Say so rather
+    # than blocking the commit on a parse failure gofmt cannot describe usefully.
+    echo "pre-commit: gofmt cannot parse ${path}; leaving it to the compiler." >&2
+    continue
+  fi
+  if ! cmp -s "${work}/staged.go" "${work}/formatted.go"; then
+    unformatted+=("${path}")
+  fi
+done
+
+if [[ "${#unformatted[@]}" -eq 0 ]]; then
+  exit 0
+fi
+
+echo "pre-commit: ${#unformatted[@]} staged file(s) are not gofmt-clean:" >&2
+for path in "${unformatted[@]}"; do
+  echo "  ${path}" >&2
+done
+echo >&2
+echo "See what would change:" >&2
+echo "  gofmt -d ${unformatted[*]}" >&2
+echo "Then fix and restage:" >&2
+echo "  gofmt -w ${unformatted[*]} && git add ${unformatted[*]}" >&2
+exit 1

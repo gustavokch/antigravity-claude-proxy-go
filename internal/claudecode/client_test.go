@@ -6,8 +6,26 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/ccidentity"
 )
+
+// headerValueFold reads a header value without canonicalising the lookup key.
+// ApplyAuthHeaders stores anthropic-beta under its captured lowercase name, which
+// http.Header.Get cannot find because Get canonicalises its argument.
+func headerValueFold(h http.Header, name string) string {
+	if values, ok := h[name]; ok && len(values) > 0 {
+		return strings.Join(values, ",")
+	}
+	for key, values := range h {
+		if strings.EqualFold(key, name) && len(values) > 0 {
+			return strings.Join(values, ",")
+		}
+	}
+	return ""
+}
 
 func TestClient_SendMessage(t *testing.T) {
 	var capturedAuth, capturedBearer, capturedVersion, capturedBeta string
@@ -37,7 +55,11 @@ func TestClient_SendMessage(t *testing.T) {
 	customHeaders.Set("anthropic-version", "2023-06-01")
 	customHeaders.Set("anthropic-beta", "claude-code-20250219")
 
-	resp, err := client.SendMessage(context.Background(), "sk-ant-test-key", []byte(`{"model":"claude-sonnet-5"}`), customHeaders)
+	resp, err := client.SendMessage(context.Background(), MessageRequest{
+		Token:         "sk-ant-test-key",
+		Body:          []byte(`{"model":"claude-sonnet-5"}`),
+		ClientHeaders: customHeaders,
+	})
 	if err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
@@ -79,7 +101,11 @@ func TestClient_SendMessage_OAuth(t *testing.T) {
 	customHeaders := make(http.Header)
 	customHeaders.Set("anthropic-beta", "claude-code-20250219")
 
-	resp, err := client.SendMessage(context.Background(), "sk-ant-oat01-test-oauth-token", []byte(`{}`), customHeaders)
+	resp, err := client.SendMessage(context.Background(), MessageRequest{
+		Token:         "sk-ant-oat01-test-oauth-token",
+		Body:          []byte(`{}`),
+		ClientHeaders: customHeaders,
+	})
 	if err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
@@ -224,13 +250,16 @@ func TestApplyAuthHeaders(t *testing.T) {
 				req.Header.Set(k, v)
 			}
 			ApplyAuthHeaders(req, tc.token)
+			// Read without canonicalising: ApplyAuthHeaders stores the beta header
+			// under its captured lowercase wire name, and http.Header.Get would
+			// look for Anthropic-Beta and report it missing.
 			for k, want := range tc.wantHeaders {
-				if got := req.Header.Get(k); got != want {
+				if got := headerValueFold(req.Header, k); got != want {
 					t.Errorf("header %s = %q, want %q", k, got, want)
 				}
 			}
 			for _, k := range tc.missingHeaders {
-				if got := req.Header.Get(k); got != "" {
+				if got := headerValueFold(req.Header, k); got != "" {
 					t.Errorf("header %s = %q, want empty", k, got)
 				}
 			}
@@ -412,5 +441,276 @@ func TestClient_FetchRateLimits(t *testing.T) {
 	}
 	if rl.TokensLimit != 200000 || rl.TokensRemaining != 198000 {
 		t.Errorf("unexpected tokens limit: %+v", rl)
+	}
+}
+
+// TestClient_SendMessage_NormalizesToCapturedIdentity covers the opt-in path: a
+// foreign harness's headers and body are replaced by the captured Claude Code
+// identity, and nothing of the caller survives.
+func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
+	var gotPath, gotUA, gotApp, gotSession, gotRequestID, gotBeta, gotAPIKey, gotAuthorization string
+	var gotStainlessOS, gotBody string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotPath = r.URL.RequestURI()
+		gotUA = r.Header.Get("User-Agent")
+		gotApp = r.Header.Get("x-app")
+		gotSession = r.Header.Get("X-Claude-Code-Session-Id")
+		gotRequestID = r.Header.Get("x-client-request-id")
+		gotBeta = r.Header.Get("anthropic-beta")
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotAuthorization = r.Header.Get("Authorization")
+		gotStainlessOS = r.Header.Get("X-Stainless-OS")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+
+	// Headers a foreign harness would send.
+	foreign := make(http.Header)
+	foreign.Set("User-Agent", "cursor/1.2.3")
+	foreign.Set("x-api-key", "sk-ant-api-key-must-not-leak")
+	foreign.Set("x-app", "cursor")
+	foreign.Set("X-Stainless-Lang", "js")
+	foreign.Set("X-Title", "Cursor")
+
+	resp, err := client.SendMessage(context.Background(), MessageRequest{
+		Token:         "sk-ant-oat01-test-oauth-token",
+		Body:          []byte(`{"model":"claude-sonnet-5","temperature":0.7,"system":"be helpful"}`),
+		ClientHeaders: foreign,
+		Normalize:     true,
+		Identity: ccidentity.Identity{
+			AccountUUID: "11111111-2222-3333-4444-555555555555",
+			SessionKey:  "session-abc",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotPath != "/v1/messages?beta=true" {
+		t.Errorf("path = %q, want the captured path with its query string", gotPath)
+	}
+	if gotUA != ccidentity.MessagesUserAgent {
+		t.Errorf("User-Agent = %q, want the captured %q", gotUA, ccidentity.MessagesUserAgent)
+	}
+	if gotApp != "cli" {
+		t.Errorf("x-app = %q, want cli", gotApp)
+	}
+	if gotStainlessOS != "Linux" {
+		t.Errorf("X-Stainless-OS = %q, want the captured value", gotStainlessOS)
+	}
+	if gotAPIKey != "" {
+		t.Errorf("x-api-key = %q; the captured OAuth request has none", gotAPIKey)
+	}
+	if gotAuthorization != "Bearer sk-ant-oat01-test-oauth-token" {
+		t.Errorf("Authorization = %q, want a Bearer token", gotAuthorization)
+	}
+	if gotSession == "" || gotRequestID == "" {
+		t.Errorf("session id = %q, request id = %q; both must be set", gotSession, gotRequestID)
+	}
+	if gotBeta != strings.Join(ccidentity.Betas, ",") {
+		t.Errorf("anthropic-beta = %q, want the captured 13-entry order", gotBeta)
+	}
+	if strings.Contains(gotBody, "temperature") {
+		t.Errorf("body = %q; temperature must be dropped, Claude Code does not send it", gotBody)
+	}
+	if !strings.Contains(gotBody, "x-anthropic-billing-header: cc_version=2.1.280.") {
+		t.Errorf("body = %q; system block 0 must be the generated billing header", gotBody)
+	}
+	// user_id is a JSON string CONTAINING JSON, so it appears escaped in the
+	// body. Parse it rather than substring-match the escaped form.
+	var parsed struct {
+		Metadata struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &parsed); err != nil {
+		t.Fatalf("normalized body is not valid JSON: %v", err)
+	}
+	if !strings.HasPrefix(parsed.Metadata.UserID, `{"device_id":"`) {
+		t.Errorf("metadata.user_id = %q, want the captured stringified JSON object", parsed.Metadata.UserID)
+	}
+}
+
+// TestClient_SendMessage_NormalizeWithAPIKeyDoesNotClaimTheOAuthIdentity pins
+// that the two cannot both be sent.
+//
+// The captured identity is an OAuth identity: defaults.go lists x-api-key among
+// the names "Never sent by Claude Code", and ApplyAuthHeaders runs last, so with
+// an API key it put that header back after the omit list had removed it. The
+// result was the full Claude Code header set plus one header that contradicts
+// it — a combination no real client emits, which is the opposite of what
+// normalization is for. The API-key wire shape is also still uncaptured, so
+// there is nothing to reproduce.
+//
+// The User-Agent is the one exception, and it is checked by
+// TestSendMessageNeverSendsGoDefaultUserAgent instead: both branches send the
+// captured value, because the alternative is Go's default announcing the
+// standard library. A version string alone claims no session; the headers that
+// carry the OAuth claim are the ones asserted below.
+func TestClient_SendMessage_NormalizeWithAPIKeyDoesNotClaimTheOAuthIdentity(t *testing.T) {
+	var gotAPIKey, gotApp string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotApp = r.Header.Get("x-app")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	resp, err := client.SendMessage(context.Background(), MessageRequest{
+		Token:     "sk-ant-api03-not-an-oauth-token",
+		Body:      []byte(`{"model":"claude-sonnet-5"}`),
+		Normalize: true,
+		Identity:  ccidentity.Identity{SessionKey: "session-abc"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotAPIKey == "" {
+		t.Error("x-api-key was dropped; an API-key request still has to authenticate")
+	}
+	if gotApp == "cli" {
+		t.Error("x-app=cli was sent alongside an x-api-key; no real client does both")
+	}
+}
+
+// TestClient_SendMessage_NormalizeFailsClosedOnBadBody pins that a malformed
+// body is refused rather than forwarded: forwarding it would send exactly the
+// unnormalised fingerprint normalization exists to remove.
+func TestClient_SendMessage_NormalizeFailsClosedOnBadBody(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	_, err := client.SendMessage(context.Background(), MessageRequest{
+		Token:     "sk-ant-oat01-test",
+		Body:      []byte(`{"model":`),
+		Normalize: true,
+	})
+	if err == nil {
+		t.Fatal("malformed body was accepted with normalization on")
+	}
+	if called {
+		t.Error("upstream was called despite the body being unusable")
+	}
+}
+
+// TestClient_DiscoveryRequestsSendTheCapturedUserAgent pins the version and the
+// case of the non-messages User-Agent.
+//
+// The capture records claude-code/2.1.280 on every GET it observed, lowercase
+// and with no parenthesised mode, which is a different family from the
+// claude-cli/ value the messages path sends. These two calls hardcoded
+// Claude-Code/2.1.246: a stale version, and a capitalisation no observed
+// request uses.
+//
+// The capture covers GET /api/claude_code/* rather than GET /v1/models, so the
+// family and version here are carried over from it, not read off it directly.
+func TestClient_DiscoveryRequestsSendTheCapturedUserAgent(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+
+	t.Run("FetchModels", func(t *testing.T) {
+		got = ""
+		if _, err := client.FetchModels(context.Background(), "sk-ant-oat01-test", ""); err != nil {
+			t.Fatalf("FetchModels: %v", err)
+		}
+		if got != ccidentity.DiscoveryUserAgent {
+			t.Errorf("User-Agent = %q, want %q", got, ccidentity.DiscoveryUserAgent)
+		}
+	})
+
+	t.Run("FetchRateLimits", func(t *testing.T) {
+		got = ""
+		if _, err := client.FetchRateLimits(context.Background(), "sk-ant-oat01-test"); err != nil {
+			t.Fatalf("FetchRateLimits: %v", err)
+		}
+		if got != ccidentity.DiscoveryUserAgent {
+			t.Errorf("User-Agent = %q, want %q", got, ccidentity.DiscoveryUserAgent)
+		}
+	})
+}
+
+// TestSendMessageNeverSendsGoDefaultUserAgent is the fingerprint regression.
+//
+// Go's transport writes User-Agent: Go-http-client/1.1 when no value is set, so
+// a branch that sets none announces the Go standard library — the exact
+// fingerprint leak this feature exists to remove. The normalized branch sets the
+// captured value; the API-key branch and the /v1/models calls set nothing.
+func TestSendMessageNeverSendsGoDefaultUserAgent(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_ok","data":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
+
+	cases := []struct {
+		name string
+		send func() error
+	}{
+		{"SendMessage normalized (oauth)", func() error {
+			_, err := client.SendMessage(context.Background(), MessageRequest{
+				Token: "sk-ant-oat01-test", Body: body, Normalize: true,
+			})
+			return err
+		}},
+		{"SendMessage not normalized (api key)", func() error {
+			_, err := client.SendMessage(context.Background(), MessageRequest{
+				Token: "sk-ant-api03-test", Body: body, Normalize: true,
+			})
+			return err
+		}},
+		{"SendMessage normalization off", func() error {
+			_, err := client.SendMessage(context.Background(), MessageRequest{
+				Token: "sk-ant-oat01-test", Body: body,
+			})
+			return err
+		}},
+		{"ValidateAccount", func() error {
+			return client.ValidateAccount(context.Background(), "sk-ant-oat01-test")
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got = ""
+			if err := tc.send(); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if got == "" {
+				t.Fatal("upstream saw no User-Agent at all")
+			}
+			if strings.Contains(got, "Go-http-client") {
+				t.Errorf("User-Agent = %q; the Go default announces the standard library", got)
+			}
+		})
 	}
 }

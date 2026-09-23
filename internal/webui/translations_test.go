@@ -120,6 +120,17 @@ var classifierKeys = []string{
 	"classifierAuditEmpty",
 }
 
+// claudeCodeIdentityKeys are the i18n keys referenced by the Claude Code
+// wire-identity field group in views/settings.html. Every locale must define
+// them.
+var claudeCodeIdentityKeys = []string{
+	"ccIdentityTitle", "ccIdentityDefault", "ccIdentityCustom",
+	"ccIdentityDesc", "ccIdentityFieldDisabled", "ccIdentityFieldClientVersion",
+	"ccIdentityFieldEntrypoint", "ccIdentityFieldTurnOrigin",
+	"ccIdentityFieldUserAgent", "ccIdentityFieldStainlessOs",
+	"ccIdentityFieldStainlessRuntimeVersion",
+}
+
 func loadLocale(t *testing.T, locale string) string {
 	t.Helper()
 	b, err := Assets.ReadFile(fmt.Sprintf("public/js/translations/%s.js", locale))
@@ -309,6 +320,66 @@ func TestTranslations_AppSpoofTemplateReferences(t *testing.T) {
 		if !strings.Contains(src, fmt.Sprintf("t('%s')", key)) {
 			t.Errorf("settings.html does not reference translation key %q", key)
 		}
+	}
+}
+
+func TestTranslations_ClaudeCodeIdentityKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range claudeCodeIdentityKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_ClaudeCodeIdentityTemplateReferences(t *testing.T) {
+	b, err := Assets.ReadFile("public/views/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	src := string(b)
+	for _, key := range claudeCodeIdentityKeys {
+		if !strings.Contains(src, fmt.Sprintf("t('%s')", key)) {
+			t.Errorf("settings.html does not reference translation key %q", key)
+		}
+	}
+}
+
+// The identity field group is a DISABLE flag: the zero value normalizes. A
+// template that binds an "enabled" checkbox would silently invert the feature
+// for every operator who has never opened the panel.
+func TestTranslations_ClaudeCodeIdentityBindsTheDisableFlag(t *testing.T) {
+	b, err := Assets.ReadFile("public/views/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	src := string(b)
+	if !strings.Contains(src, "ccConfig.identity.disabled") {
+		t.Error("settings.html must bind ccConfig.identity.disabled, not an inverted enabled flag")
+	}
+}
+
+// saveCCConfig sends an explicit field list rather than the whole object, so a
+// new section that is not named there is dropped on every save.
+func TestClaudeCodeIdentity_RidesThroughTheSave(t *testing.T) {
+	b, err := Assets.ReadFile("public/js/components/models.js")
+	if err != nil {
+		t.Fatalf("read models.js: %v", err)
+	}
+	src := string(b)
+	idx := strings.Index(src, "async saveCCConfig()")
+	if idx < 0 {
+		t.Fatal("models.js has no saveCCConfig")
+	}
+	end := strings.Index(src[idx:], "\n    },")
+	if end < 0 {
+		t.Fatal("could not find the end of saveCCConfig")
+	}
+	if !strings.Contains(src[idx:idx+end], "identity") {
+		t.Error("saveCCConfig does not send identity; the panel's values would never persist")
 	}
 }
 

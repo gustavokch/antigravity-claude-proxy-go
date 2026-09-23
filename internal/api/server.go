@@ -29,6 +29,7 @@ import (
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/cachebump"
+	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
@@ -998,6 +999,61 @@ func resolveCustomEndpointURL(endpointURL string, requestPath string) (*url.URL,
 	return targetURL, nil
 }
 
+// ccDefaultProfile is the captured profile, built once.
+//
+// ccidentity.DefaultProfile allocates a 28-name omit list, the 13-entry beta
+// list and two closures on every call, and this path calls it two or three times
+// per request. The value is a constant, so it is built here instead.
+var ccDefaultProfile = ccidentity.DefaultProfile()
+
+// withCapturedBetaQuery adds the beta=true the capture records on
+// POST /v1/messages.
+//
+// internal/ccidentity/defaults.go states a request without it does not match the
+// captured traffic, and the pooled gateway path sends it because it takes its
+// path from Profile.Path. This path takes its URL from the endpoint's own
+// configuration, so the query has to be added rather than inherited. An existing
+// beta parameter is left alone.
+func withCapturedBetaQuery(rawQuery string) string {
+	values, err := url.ParseQuery(rawQuery)
+	if err == nil && values.Get("beta") != "" {
+		return rawQuery
+	}
+	if rawQuery == "" {
+		return "beta=true"
+	}
+	return rawQuery + "&beta=true"
+}
+
+// customEndpointIdentity builds the wire identity for one custom-endpoint
+// request, and reports whether normalization applies.
+//
+// Gated on isAnthropicEndpoint: the rewrite claims to be the Claude Code client
+// speaking the Anthropic wire, so an endpoint that is not Anthropic-shaped keeps
+// its own headers rather than being told a lie about its request format.
+//
+// accountUUID is empty because a custom endpoint has no pooled Claude Code
+// account. That is what the capture recorded anyway: every observed request
+// carried an empty account_uuid inside metadata.user_id.
+//
+// An endpoint carrying its own APIKey is refused for the same reason
+// internal/claudecode/client.go refuses one: normalization claims an OAuth
+// Claude Code identity, and an API-key credential contradicts that claim. Here
+// the contradiction is also destructive — x-api-key is on the omit list
+// (internal/ccidentity/defaults.go), ApplyHeaders deletes every omitted name,
+// and both call sites set the key before ApplyHeaders runs. Such an endpoint
+// would be sent normalized but unauthenticated, so it is sent as it was
+// configured instead.
+func customEndpointIdentity(endpoint config.EndpointConfig, sessionKey string) (ccidentity.Identity, bool) {
+	if !isAnthropicEndpoint(endpoint.URL) {
+		return ccidentity.Identity{}, false
+	}
+	if strings.TrimSpace(endpoint.APIKey) != "" {
+		return ccidentity.Identity{}, false
+	}
+	return endpoint.Identity.WireIdentity("", sessionKey)
+}
+
 func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, model string, reqBody []byte) {
 	isMessagesRequest := request.URL.Path == "/v1/messages" || strings.HasSuffix(request.URL.Path, "/messages")
 
@@ -1019,7 +1075,16 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		var reqMap map[string]any
 		if err := json.Unmarshal(reqBody, &reqMap); err == nil {
 			customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
+			identity, normalize := customEndpointIdentity(endpoint, customSessionKey)
 			sender := func(ctx context.Context, bodyBytes []byte) (*http.Response, error) {
+				if normalize {
+					normalized, err := ccidentity.ApplyBody(bodyBytes, ccDefaultProfile, identity, ccidentity.Turn{})
+					if err != nil {
+						return nil, fmt.Errorf("normalize request body: %w", err)
+					}
+					bodyBytes = normalized
+				}
+
 				httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL.String(), bytes.NewReader(bodyBytes))
 				if err != nil {
 					return nil, err
@@ -1029,14 +1094,20 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 					httpReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 					httpReq.Header.Set("x-api-key", endpoint.APIKey)
 				}
-				if v := request.Header.Get("anthropic-version"); v != "" {
-					httpReq.Header.Set("anthropic-version", v)
+				if normalize {
+					ccidentity.ApplyHeaders(httpReq.Header, ccDefaultProfile, identity, ccidentity.Turn{})
+					httpReq.URL.RawQuery = withCapturedBetaQuery(httpReq.URL.RawQuery)
 				} else {
-					httpReq.Header.Set("anthropic-version", "2023-06-01")
+					if v := request.Header.Get("anthropic-version"); v != "" {
+						httpReq.Header.Set("anthropic-version", v)
+					} else {
+						httpReq.Header.Set("anthropic-version", "2023-06-01")
+					}
+					if b := request.Header.Get("anthropic-beta"); b != "" {
+						httpReq.Header.Set("anthropic-beta", b)
+					}
 				}
-				if b := request.Header.Get("anthropic-beta"); b != "" {
-					httpReq.Header.Set("anthropic-beta", b)
-				}
+				httpReq.ContentLength = int64(len(bodyBytes))
 				resp, err := http.DefaultClient.Do(httpReq)
 				if err == nil && resp.StatusCode < 400 {
 					server.maybeRecordCacheBump(cachebump.RouteCustom, request, bodyBytes, customSessionKey, model, "", model, minMaxTokensFloor)
@@ -1056,6 +1127,34 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	}
 
 	customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
+
+	// Normalization happens HERE, not inside Rewrite. ApplyBody is fallible and
+	// Rewrite has no error return, so a failure there could only be logged — and
+	// the request would go upstream carrying the client's own body and headers,
+	// which is the fingerprint normalization exists to remove.
+	// ccidentity.ErrNotAnObject's doc comment names that outcome as worse than
+	// refusing, and the SendMessage path already refuses. Doing the fallible work
+	// before the proxy exists is what lets this path refuse too.
+	outBody := reqBody
+	identity, normalize := customEndpointIdentity(endpoint, customSessionKey)
+	if normalize {
+		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, ccidentity.Turn{})
+		if err != nil {
+			if server.logger != nil {
+				server.logger.Error("custom endpoint identity normalization failed; refusing to forward",
+					"error", err, "url", targetURL.String())
+			}
+			message := "Custom endpoint identity normalization failed: " + err.Error()
+			if !isMessagesRequest {
+				writeOpenAIError(writer, http.StatusBadGateway, "api_error", message)
+				return
+			}
+			writeAPIError(writer, http.StatusBadGateway, "api_error", message)
+			return
+		}
+		outBody = normalized
+	}
+
 	// Rewrite (not Director): the stdlib strips Forwarded/X-Forwarded-* before
 	// the hook and does not re-add them, so the custom endpoint never sees
 	// proxy or client forwarding headers. It also closes the Director
@@ -1083,8 +1182,8 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			}
 			out.Host = targetURL.Host
 
-			out.Body = io.NopCloser(bytes.NewReader(reqBody))
-			out.ContentLength = int64(len(reqBody))
+			out.Body = io.NopCloser(bytes.NewReader(outBody))
+			out.ContentLength = int64(len(outBody))
 
 			if endpoint.APIKey != "" {
 				out.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
@@ -1092,6 +1191,17 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			} else {
 				out.Header.Del("Authorization")
 				out.Header.Del("x-api-key")
+			}
+
+			// Normalization runs LAST and only for Anthropic-shaped endpoints, so
+			// the omit list can remove the x-api-key the auth block just set: the
+			// captured OAuth request carries Authorization alone.
+			if normalize {
+				ccidentity.ApplyHeaders(out.Header, ccDefaultProfile, identity, ccidentity.Turn{})
+				if isMessagesRequest {
+					out.URL.RawQuery = withCapturedBetaQuery(out.URL.RawQuery)
+				}
+				return
 			}
 
 			if v := request.Header.Get("anthropic-version"); v != "" {

@@ -316,8 +316,12 @@ func TestCacheBump_CustomEndpointHourMarkerWithoutBetaIsFiveMinutes(t *testing.T
 	}
 	var gotBeta string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The plain reverse-proxy path must forward the client protocols so
-		// the cache entry the upstream honors matches the recorded TTL.
+		// The upstream must be told extended cache TTL is allowed, so the cache
+		// entry it creates matches the recorded TTL. The value is asserted by
+		// CONTAINS rather than equality: this endpoint is Anthropic-shaped, so
+		// identity normalization replaces the client's beta header with the
+		// captured Claude Code list — which already carries
+		// extended-cache-ttl-2025-04-11, so the requirement still holds either way.
 		gotBeta = r.Header.Get("anthropic-beta")
 		upstream.handler().ServeHTTP(w, r)
 	}))
@@ -345,8 +349,8 @@ func TestCacheBump_CustomEndpointHourMarkerWithoutBetaIsFiveMinutes(t *testing.T
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	if gotBeta != "extended-cache-ttl-2025-04-11" {
-		t.Errorf("expected beta forwarded upstream, got %q", gotBeta)
+	if !strings.Contains(gotBeta, "extended-cache-ttl-2025-04-11") {
+		t.Errorf("upstream beta %q does not allow extended cache TTL; the 1h entry it creates would not match the recorded TTL", gotBeta)
 	}
 	rec, ok := store.Get(cachebump.RecordKey(cachebump.RouteCustom, "sess-custom-hour"))
 	if !ok {
