@@ -214,6 +214,39 @@ The gate's comparison logic is the Python half and is covered by the 54 tests
 above; the live leg is still unrun for this branch and needs an operator to
 execute it by hand.
 
+### The gate ran, and what it settled
+
+The operator ran it. It passed:
+
+```
+no drift: 21 headers over HTTP/2.0, path /v1/messages?beta=true,
+metadata.user_id and system[0] both match the captured format
+Claude Code identity gate PASSED
+```
+
+Proven on the wire by that run:
+
+- **T1.** `compare_correlations` ran with real values on both sides, not
+  placeholders: `SENSITIVE_NAME` in `mitm_header_dump.py` matches
+  authorization/cookie/api-key only, so `X-Claude-Code-Session-Id` is recorded
+  verbatim, and `cc_prompt_id` comes from the unredacted `system_first_block`. The
+  proxy's own emitted pair was compared and differed.
+- Header normalization end to end: a foreign `User-Agent`, a foreign `x-app` and a
+  beta absent from the baseline were all overwritten, 21 headers matching.
+- Body normalization: `temperature` stripped, `metadata.user_id` shape matching,
+  `?beta=true` on the path.
+
+NOT exercised by that run, and unit-tested only:
+
+- **T3.** The driven request carries no `system` field, so
+  `systemWithBillingHeader` took its `default:` branch — the one that was never
+  destructive. The `[]any` branch that used to delete the caller's prompt did not
+  run. Closing this needs a `system` on the driven request AND a differ assertion
+  that the caller's block survives; `system_first_block` alone cannot see it.
+- **T4, T6.** The gate narrows `gatewayOrder` to `["claudecode"]`, so
+  `forwardToCustomEndpoint` never runs. Both fixes live there.
+- **T5.** The stub credential is OAuth-shaped, so the API-key skip never triggers.
+
 RUN by the operator afterwards: `capture-claude-code-headers.sh oauth`, twice.
 The second run printed `exit=0` on a successful 7-record capture, which is the
 live proof the T-exit fix needed — the same command exited 1 before it. The first
