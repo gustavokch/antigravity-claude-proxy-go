@@ -165,11 +165,46 @@ Test: existing suite.
 
 ## Verification gate
 
-- `go build ./...`
-- `go vet ./internal/...`
-- `go test ./internal/...`
-- `python3 -m pytest scripts/test_diff_claude_code_identity.py scripts/test_mitm_header_dump.py -q`
-- `gofmt -l internal/ccidentity internal/claudecode internal/api` must be empty
+Run after the last task. Results:
+
+- `go build ./...` — clean
+- `go vet ./internal/...` — clean
+- `go test ./internal/...` — all packages pass
+- `python3 -m pytest scripts/test_diff_claude_code_identity.py scripts/test_mitm_header_dump.py -q` — 54 passed (was 51; T2 adds 3)
+- `gofmt -l internal/ccidentity internal/claudecode internal/api` — empty
+
+NOT run: `scripts/verify-claude-code-identity.sh`. It starts mitmdump and a proxy
+listener, which this session's permission classifier refuses as an external write.
+The gate's comparison logic is the Python half and is covered by the 54 tests
+above; the live leg is still unrun for this branch and needs an operator to
+execute it by hand.
+
+Pre-existing gofmt breakage outside this feature, untouched here:
+`internal/accounts/{manager,manager_test,forensics_test}.go`,
+`internal/classifier/audit_test.go`, `internal/cloudcode/{client,quota}.go`,
+`internal/logger/stream_test.go`.
+
+## Outcome per task
+
+| Task | State | Note |
+|---|---|---|
+| T1 `cc_prompt_id` collision | done | `485c318` |
+| T2 gate cross-field check | done | `d2a47ee` |
+| T3 system block prepend | done | `75e254c` |
+| T4 fail closed | done | `857632c`, carries T6 and T9 |
+| T5 API key vs normalization | done | `a67f142` |
+| T6 captured beta query | done | in `857632c` |
+| T7 dead Profile fields | done | `e5a7904` |
+| T8 reject control characters | done | `76beecd`, both config surfaces |
+| T9 profile built once | done | in `857632c` |
+
+T4's test calls `forwardToCustomEndpoint` directly. The router reads `model` out
+of the body before reaching it, so a non-object body cannot arrive through the
+live path today — the fail-open branch was unreachable in practice. It is fixed
+anyway, because the function should not depend on a guarantee its caller happens
+to provide, and the two normalize paths disagreeing on error discipline is the
+kind of difference that becomes a bug when a caller changes. Recorded here rather
+than claimed as a live bug fix.
 
 ## Not done here
 
