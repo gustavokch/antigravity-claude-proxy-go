@@ -4,7 +4,9 @@ Claude Code 2.1.280 client header baseline (OAuth)
 > GROUND TRUTH. Every value below is a verbatim quote from intercepted traffic,
 > nothing is inferred. Anything not byte-confirmed is marked `unknown`.
 
-Captured:  2026-09-23
+Captured:  2026-09-23 (two runs: the first proved the harness, the second was
+           taken after the harness was fixed and is the source of the conditional
+           header below. Both runs agree on every header listed as static.)
 Client:    2.1.280 (Claude Code)
 Image:     claude-box:mitm (built from ~/Git/claude-container/Containerfile,
            pin @anthropic-ai/claude-code@2.1.280)
@@ -61,6 +63,17 @@ POST /v1/messages?beta=true — headers, in wire order
   Host: api.anthropic.com
   Accept-Encoding: gzip, deflate, br, zstd
   Content-Length: <n>
+
+Conditional header, absent from the first turn of a session and present after a
+tool has run (observed on the third captured request, 2026-09-23 08:48:47Z):
+
+  x-claude-code-prev-tool-durations: Bash=29
+
+Format is `<ToolName>=<milliseconds>`, comma-separated when more than one tool
+has run (the multi-tool case is `unknown` — only a single Bash entry was seen).
+A session that has never used a tool does not send this header at all, so a
+spoof cannot decide it from the request alone; whether the upstream gates on its
+absence is `unknown`.
 
 Notably absent: x-api-key. The OAuth path authenticates with Authorization
 alone. The proxy currently DELETES Authorization and sets x-api-key for

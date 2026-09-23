@@ -8,10 +8,22 @@
 # not ours.
 #
 # Usage:
-#   scripts/capture-claude-code-headers.sh oauth     # capture with an OAuth token
-#   scripts/capture-claude-code-headers.sh apikey    # capture with an API key
-#   scripts/capture-claude-code-headers.sh token     # mint an OAuth token for the above
-#   scripts/capture-claude-code-headers.sh check     # verify prerequisites only
+#   scripts/capture-claude-code-headers.sh oauth        # capture with an OAuth token
+#   scripts/capture-claude-code-headers.sh apikey       # capture with an API key
+#   scripts/capture-claude-code-headers.sh interactive  # capture cc_entrypoint=cli
+#   scripts/capture-claude-code-headers.sh token        # mint an OAuth token for the above
+#   scripts/capture-claude-code-headers.sh check        # verify prerequisites only
+#
+# `interactive` exists because cc_entrypoint differs by session kind: a --print
+# run sends sdk-cli, and docs/classifier-fallback-notes.md records cli from an
+# interactive session. Setting CLAUDE_CODE_ENTRYPOINT does NOT reproduce it —
+# verified 2026-09-23, where forcing that variable on a --print run still left
+# cc_entrypoint=sdk-cli and cc_turn_origin=sdk in every record.
+#
+# UNVERIFIED: that a container TTY is sufficient to produce cli. Three automated
+# attempts on 2026-09-23 produced GET requests and no POST /v1/messages at all,
+# because first-run key-press gates (theme, folder trust) block the prompt. The
+# cli header set is still uncaptured; `interactive` therefore needs a human.
 #
 # Credentials come from CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY, or from a
 # file named by CLAUDE_CODE_OAUTH_TOKEN_FILE / ANTHROPIC_API_KEY_FILE. Prefer the
@@ -53,9 +65,9 @@ META_OUT="${CAPTURE_DIR}/claude-code-headers-${CAPTURE_TAG}.meta.txt"
 
 MODE="${1:-}"
 case "${MODE}" in
-  oauth|apikey|token|check) ;;
+  oauth|apikey|interactive|token|check) ;;
   *)
-    echo "usage: $0 {oauth|apikey|token|check}" >&2
+    echo "usage: $0 {oauth|apikey|interactive|token|check}" >&2
     exit 2
     ;;
 esac
@@ -157,11 +169,19 @@ MIN_SECRET_CHARS=20
 
 require_secret() {
   # require_secret <ENV_NAME> <LABEL> <DEFAULT_FILE>; echoes the value or exits 1.
-  local name="$1" label="$2" default_file="$3" value
+  local name="$1" label="$2" default_file="$3" value file_var="${1}_FILE"
   value="$(read_secret "${name}" "${default_file}")"
   if [[ -z "${value}" ]]; then
     echo "ERROR: no ${label}. Set ${name}, or point ${name}_FILE at a file holding it." >&2
-    [[ -n "${default_file}" ]] && echo "ERROR: the default path ${default_file} is not present either." >&2
+    # Only mention the default when nothing explicit was given: otherwise the
+    # hint names a file the operator did not ask for.
+    if [[ -n "${default_file}" && -z "${!name:-}" && -z "${!file_var:-}" ]]; then
+      if [[ -f "${default_file}" ]]; then
+        echo "ERROR: the default path ${default_file} exists but was not used." >&2
+      else
+        echo "ERROR: the default path ${default_file} is not present either." >&2
+      fi
+    fi
     exit 1
   fi
   if (( ${#value} < MIN_SECRET_CHARS )); then
@@ -173,7 +193,7 @@ require_secret() {
 }
 
 case "${MODE}" in
-  oauth)
+  oauth|interactive)
     TOKEN="$(require_secret CLAUDE_CODE_OAUTH_TOKEN 'OAuth token' "${HOME}/.claude-oat")"
     AUTH_ENV=(-e "CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}")
     ;;
@@ -199,6 +219,19 @@ fi
 echo "=== [3/5] Starting mitmdump on port ${MITM_PORT} ==="
 MITM_LOG="/tmp/claude-capture-mitmdump.log"
 : > "${MITM_LOG}"
+
+# The port must be ours. A stale mitmdump left by an earlier attempt (the
+# interactive watchdog kills its wrapper, not the proxy) still answers the
+# readiness probe below, so this run's own mitmdump fails to bind and writes
+# nothing while every check passes. That produced a silent zero-record capture
+# on 2026-09-23; refusing to start is the fix.
+if nc -z 127.0.0.1 "${MITM_PORT}" >/dev/null 2>&1; then
+  echo "ERROR: something is already listening on ${MITM_PORT}." >&2
+  echo "ERROR: a stale mitmdump from an earlier run is the usual cause. Free it with:" >&2
+  echo "ERROR:   pkill -f mitm_header_dump.py" >&2
+  echo "ERROR: or choose another port with ANTIGRAVITY_MITM_PORT." >&2
+  exit 1
+fi
 
 # The addon's host filter defaults to the Cloud Code hosts. Without
 # MITM_DUMP_HOSTS it drops every api.anthropic.com flow before it can write a
@@ -226,8 +259,14 @@ cleanup() {
     kill "${MITM_PID}" 2>/dev/null || true
     wait "${MITM_PID}" 2>/dev/null || true
   fi
+  # Interactive mode seeds an onboarding file here. It is cleaned in this
+  # function rather than by a second `trap ... EXIT`, because a second EXIT
+  # trap REPLACES this one and would silently stop mitmdump from being killed.
+  [[ -n "${ONBOARD_DIR:-}" ]] && rm -rf "${ONBOARD_DIR}"
 }
-trap cleanup EXIT
+# EXIT alone is not enough: a killed or interrupted script leaves mitmdump
+# holding the port, and the next run then fails to bind while every check passes.
+trap cleanup EXIT INT TERM
 
 # mitmdump generates its CA on first start. Waiting for the file is the only
 # reliable readiness signal: an empty capture because the CA was absent is the
@@ -275,34 +314,74 @@ echo
 
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-podman run --rm \
-  --add-host=containers.internal:host-gateway \
-  -e "HTTPS_PROXY=http://host.containers.internal:${MITM_PORT}" \
-  -e "https_proxy=http://host.containers.internal:${MITM_PORT}" \
-  -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-  -e DISABLE_AUTOUPDATER=1 \
-  -e DISABLE_TELEMETRY=1 \
-  -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \
-  -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \
-  -v "${MITM_CONFDIR}:/certs:ro" \
-  "${AUTH_ENV[@]}" \
-  "${IMAGE_NAME}" \
-  claude --print 'Reply with exactly CLAUDE_CAPTURE_OK'
+# Interactive mode is for capturing cc_entrypoint=cli, which a --print run
+# cannot produce. It hands the terminal to a human on purpose; see the comment
+# inside the branch for why automation was abandoned.
+if [[ "${MODE}" == "interactive" ]]; then
+  echo "Interactive capture: this mode needs an operator at the keyboard."
+  echo
+  echo "A first-run session is gated twice — a theme picker, then a folder-trust"
+  echo "dialog — before it accepts a prompt, so it emits only GETs until both are"
+  echo "answered. Piped stdin cannot answer either: three automated attempts on"
+  echo "2026-09-23 (bare -ti, a script(1) PTY wrapper, and a pre-seeded onboarding"
+  echo "flag) each produced GET requests and no POST /v1/messages. The gates are"
+  echo "key-press dialogs, not line input."
+  echo
+  echo "In the session: type a prompt, press Enter, then /exit to end it."
+  echo
 
-podman run --rm \
-  --add-host=containers.internal:host-gateway \
-  -e "HTTPS_PROXY=http://host.containers.internal:${MITM_PORT}" \
-  -e "https_proxy=http://host.containers.internal:${MITM_PORT}" \
-  -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-  -e DISABLE_AUTOUPDATER=1 \
-  -e DISABLE_TELEMETRY=1 \
-  -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \
-  -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \
-  -v "${MITM_CONFDIR}:/certs:ro" \
-  "${AUTH_ENV[@]}" \
-  "${IMAGE_NAME}" \
-  claude --print --permission-mode=acceptEdits \
-    'Run `ls -la` with the Bash tool and tell me what you see.'
+  # Skips the theme gate. It does not skip the folder-trust dialog, which is
+  # why a human is still required.
+  ONBOARD_DIR="$(mktemp -d -t claude-onboard)"
+  printf '%s' '{"hasCompletedOnboarding":true,"theme":"dark","installMethod":"unknown"}' \
+    > "${ONBOARD_DIR}/.claude.json"
+
+  podman rm -f claude-mitm-interactive >/dev/null 2>&1 || true
+  podman run --rm -it \
+    --name claude-mitm-interactive \
+    --add-host=containers.internal:host-gateway \
+    -e "HTTPS_PROXY=http://host.containers.internal:${MITM_PORT}" \
+    -e "https_proxy=http://host.containers.internal:${MITM_PORT}" \
+    -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    -e DISABLE_AUTOUPDATER=1 \
+    -e DISABLE_TELEMETRY=1 \
+    -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \
+    -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \
+    -v "${MITM_CONFDIR}:/certs:ro" \
+    -v "${ONBOARD_DIR}/.claude.json:/root/.claude.json:ro" \
+    "${AUTH_ENV[@]}" \
+    "${IMAGE_NAME}" \
+    claude || true
+else
+  podman run --rm \
+    --add-host=containers.internal:host-gateway \
+    -e "HTTPS_PROXY=http://host.containers.internal:${MITM_PORT}" \
+    -e "https_proxy=http://host.containers.internal:${MITM_PORT}" \
+    -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    -e DISABLE_AUTOUPDATER=1 \
+    -e DISABLE_TELEMETRY=1 \
+    -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \
+    -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \
+    -v "${MITM_CONFDIR}:/certs:ro" \
+    "${AUTH_ENV[@]}" \
+    "${IMAGE_NAME}" \
+    claude --print 'Reply with exactly CLAUDE_CAPTURE_OK'
+
+  podman run --rm \
+    --add-host=containers.internal:host-gateway \
+    -e "HTTPS_PROXY=http://host.containers.internal:${MITM_PORT}" \
+    -e "https_proxy=http://host.containers.internal:${MITM_PORT}" \
+    -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    -e DISABLE_AUTOUPDATER=1 \
+    -e DISABLE_TELEMETRY=1 \
+    -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \
+    -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \
+    -v "${MITM_CONFDIR}:/certs:ro" \
+    "${AUTH_ENV[@]}" \
+    "${IMAGE_NAME}" \
+    claude --print --permission-mode=acceptEdits \
+      'Run `ls -la` with the Bash tool and tell me what you see.'
+fi
 
 echo "=== [5/5] Result ==="
 if [[ -f "${DUMP_OUT}" ]]; then
