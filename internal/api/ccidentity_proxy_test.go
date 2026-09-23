@@ -10,6 +10,8 @@ import (
 
 	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
 )
 
 // capturedForward is what the upstream received on one proxied request.
@@ -86,9 +88,13 @@ func serveCustomEndpointRequest(t *testing.T, handler http.Handler) *httptest.Re
 	return rec
 }
 
+// saveCustomEndpoint stores one endpoint. It carries no apiKey by default:
+// a configured key turns normalization off (see customEndpointIdentity), so a
+// test that wants normalization must not have one, and a test that wants the
+// key must ask for it.
 func saveCustomEndpoint(t *testing.T, endpointURL string, extra map[string]any) {
 	t.Helper()
-	entry := map[string]any{"url": endpointURL, "apiKey": "target-secret-key"}
+	entry := map[string]any{"url": endpointURL}
 	for k, v := range extra {
 		entry[k] = v
 	}
@@ -143,13 +149,15 @@ func TestCustomEndpoint_AnthropicShapedEndpointIsNormalized(t *testing.T) {
 	if got.sawSessionID == "" || got.sawRequestID == "" {
 		t.Errorf("session id = %q, request id = %q; both must be set", got.sawSessionID, got.sawRequestID)
 	}
-	// The captured OAuth request carries Authorization alone. This endpoint's key
-	// is sent as both, and normalization must strip the x-api-key.
+	// The captured OAuth request carries no x-api-key, and this endpoint
+	// configures no key of its own, so nothing should reach the upstream under
+	// either name. An endpoint that does configure one is not normalized at all;
+	// TestCustomEndpointAPIKeySurvivesNormalization covers that.
 	if got.apiKey != "" {
 		t.Errorf("x-api-key = %q; the captured request has none", got.apiKey)
 	}
-	if !strings.Contains(got.authorization, "target-secret-key") {
-		t.Errorf("Authorization = %q, want the endpoint key preserved", got.authorization)
+	if got.authorization != "" {
+		t.Errorf("Authorization = %q; no credential was configured", got.authorization)
 	}
 
 	var body map[string]any
@@ -333,6 +341,95 @@ func TestCustomEndpoint_DisabledIdentityKeepsClientHeaders(t *testing.T) {
 	}
 	if got.requestClass != "" {
 		t.Errorf("x-claude-code-request-class = %q; disabled identity must add nothing", got.requestClass)
+	}
+}
+
+// ccrEnabledServer wires the headroom engine and store that
+// forwardToCustomEndpoint's first branch requires, so the sender path can be
+// driven instead of the reverse-proxy one.
+func ccrEnabledServer(t *testing.T) *Server {
+	t.Helper()
+	server := newTestServer(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+	store := ccr.NewCCRStore(1024 * 1024)
+	server.ccrStore = store
+	server.headroom = headroom.NewEngine(headroom.Config{
+		Enabled: true,
+		CCR:     headroom.CCRConfig{Enabled: true},
+	}, nil, ccr.NewStage(store))
+	return server
+}
+
+// TestCustomEndpointAPIKeySurvivesNormalization is the credential regression.
+//
+// x-api-key is on the omit list (internal/ccidentity/defaults.go), ApplyHeaders
+// deletes every omitted name, and both custom-endpoint paths set the key before
+// ApplyHeaders runs. An endpoint that authenticates by API key therefore lost
+// its credential the moment normalization was switched on by default, and only
+// relays that also accept the Authorization Bearer header set beside it kept
+// working.
+//
+// Both paths are driven because each sets the key and calls ApplyHeaders in its
+// own block.
+func TestCustomEndpointAPIKeySurvivesNormalization(t *testing.T) {
+	t.Run("reverse proxy path", func(t *testing.T) {
+		withConfigDir(t)
+
+		target, got := customEndpointUpstream(t)
+		saveCustomEndpoint(t, target.URL+"/v1/messages", map[string]any{"apiKey": "target-secret-key"})
+
+		h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+		if rec := serveCustomEndpointRequest(t, h); rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got.apiKey != "target-secret-key" {
+			t.Errorf("x-api-key = %q, want the configured key; the endpoint cannot authenticate without it", got.apiKey)
+		}
+	})
+
+	t.Run("ccr sender path", func(t *testing.T) {
+		withConfigDir(t)
+
+		target, got := customEndpointUpstream(t)
+		endpoint := config.EndpointConfig{URL: target.URL + "/v1/messages", APIKey: "target-secret-key"}
+
+		server := ccrEnabledServer(t)
+		body := `{"model":"claude-custom-model","stream":false,"messages":[{"role":"user","content":"hello"}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		req.Header.Set("User-Agent", "cursor/1.2.3")
+		rec := httptest.NewRecorder()
+		server.forwardToCustomEndpoint(rec, req, endpoint, "claude-custom-model", []byte(body))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got.apiKey != "target-secret-key" {
+			t.Errorf("x-api-key = %q, want the configured key; the endpoint cannot authenticate without it", got.apiKey)
+		}
+	})
+}
+
+// TestCustomEndpointWithoutAPIKeyStillNormalizes keeps the fix narrow: the
+// refusal is about a credential that normalization would delete, not about
+// custom endpoints in general.
+func TestCustomEndpointWithoutAPIKeyStillNormalizes(t *testing.T) {
+	withConfigDir(t)
+
+	target, got := customEndpointUpstream(t)
+	saveCustomEndpoint(t, target.URL+"/v1/messages", nil)
+
+	h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+	if rec := serveCustomEndpointRequest(t, h); rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if got.userAgent != ccidentity.MessagesUserAgent {
+		t.Errorf("User-Agent = %q, want the captured %q", got.userAgent, ccidentity.MessagesUserAgent)
+	}
+	if got.requestClass != "main" {
+		t.Errorf("x-claude-code-request-class = %q, want main", got.requestClass)
+	}
+	if got.apiKey != "" {
+		t.Errorf("x-api-key = %q; with no configured key the omit list applies", got.apiKey)
 	}
 }
 

@@ -1035,8 +1035,20 @@ func withCapturedBetaQuery(rawQuery string) string {
 // accountUUID is empty because a custom endpoint has no pooled Claude Code
 // account. That is what the capture recorded anyway: every observed request
 // carried an empty account_uuid inside metadata.user_id.
+//
+// An endpoint carrying its own APIKey is refused for the same reason
+// internal/claudecode/client.go refuses one: normalization claims an OAuth
+// Claude Code identity, and an API-key credential contradicts that claim. Here
+// the contradiction is also destructive — x-api-key is on the omit list
+// (internal/ccidentity/defaults.go), ApplyHeaders deletes every omitted name,
+// and both call sites set the key before ApplyHeaders runs. Such an endpoint
+// would be sent normalized but unauthenticated, so it is sent as it was
+// configured instead.
 func customEndpointIdentity(endpoint config.EndpointConfig, sessionKey string) (ccidentity.Identity, bool) {
 	if !isAnthropicEndpoint(endpoint.URL) {
+		return ccidentity.Identity{}, false
+	}
+	if strings.TrimSpace(endpoint.APIKey) != "" {
 		return ccidentity.Identity{}, false
 	}
 	return endpoint.Identity.Identity("", sessionKey)
