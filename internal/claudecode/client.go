@@ -355,15 +355,18 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 	// so there is nothing to reproduce either. An API key forwards as before.
 	normalize := req.Normalize && IsOAuthToken(strings.TrimSpace(req.Token))
 
+	// One lookup for the three places that need it below.
+	profile := ccidentity.DefaultProfile()
+
 	path := "/v1/messages"
 	if normalize {
-		path = ccidentity.DefaultProfile().Path
+		path = profile.Path
 	}
 	url := fmt.Sprintf("%s%s", c.baseURL, path)
 
 	body := req.Body
 	if normalize {
-		normalized, err := ccidentity.ApplyBody(body, ccidentity.DefaultProfile(), req.Identity, req.Turn)
+		normalized, err := ccidentity.ApplyBody(body, profile, req.Identity, req.Turn)
 		if err != nil {
 			// Fail closed: forwarding an unnormalised body would send exactly the
 			// fingerprint normalization exists to remove.
@@ -381,7 +384,7 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 		// ApplyHeaders takes the map directly; it ignores req.ClientHeaders on
 		// purpose, since the omit list must be able to remove what the client
 		// sent rather than copy it.
-		ccidentity.ApplyHeaders(httpReq.Header, ccidentity.DefaultProfile(), req.Identity, req.Turn)
+		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, req.Turn)
 		httpReq.ContentLength = int64(len(body))
 	} else {
 		httpReq.Header.Set("Content-Type", "application/json")

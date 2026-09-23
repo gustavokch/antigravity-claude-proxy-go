@@ -181,14 +181,24 @@ func dynamicHeaders() []DynamicHeader {
 	}
 }
 
+// defaultProfile is the captured profile. Nothing in it varies per call:
+// dynamicHeaders holds two closures that take the identity as an argument
+// rather than closing over one, and Omit, Path and Betas are constants. It is
+// therefore built once instead of on every request.
+//
+// Omit and Betas are shared with every caller, as they already were when this
+// was a constructor. Neither is mutated anywhere; defaults_test.go pins the
+// sharing, so a caller that started to mutate one would be caught.
+var defaultProfile = Profile{
+	Dynamic: dynamicHeaders(),
+	Omit:    omittedHeaders,
+	Path:    MessagesPath,
+	Betas:   Betas,
+}
+
 // DefaultProfile returns the captured identity.
 func DefaultProfile() Profile {
-	return Profile{
-		Dynamic: dynamicHeaders(),
-		Omit:    omittedHeaders,
-		Path:    MessagesPath,
-		Betas:   Betas,
-	}
+	return defaultProfile
 }
 
 // StaticFor returns the captured constant header set for one identity.
