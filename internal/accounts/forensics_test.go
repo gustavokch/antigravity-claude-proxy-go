@@ -132,7 +132,6 @@ func TestRecoveryRecordCarriesNoBody(t *testing.T) {
 	}
 }
 
-
 func TestRecordedRejectionCarriesItsReason(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upstream-429.jsonl")
 	dispatcher := &Dispatcher{

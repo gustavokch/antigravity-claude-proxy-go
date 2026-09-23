@@ -164,7 +164,7 @@ func Load(path string) (File, error) {
 			AgyTokenPath: stored.AgyTokenPath, ProjectID: stored.ProjectID,
 			Subscription: stored.Subscription, Quota: stored.Quota,
 			QuotaThreshold: stored.QuotaThreshold, ModelThreshold: stored.ModelQuotaThresholds,
-			Credits: stored.Credits,
+			Credits:   stored.Credits,
 			VerifyURL: stored.VerifyURL, ModelRateLimits: stored.ModelRateLimits,
 		}
 		if account.Source == "" {
