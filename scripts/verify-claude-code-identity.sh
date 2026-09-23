@@ -383,7 +383,8 @@ echo "=== [9/9] Driving the three discovery callers ==="
 # Three of the five sites T4 corrected, one per client method:
 #
 #   .../test         ValidateAccount    (sent no User-Agent at all, so Go's
-#                                        transport supplied Go-http-client/1.1)
+#                                        transport supplied Go-http-client/<ver>,
+#                                        2.0 over the h2 connection mitm negotiates)
 #   .../ratelimits   FetchRateLimits    (sent Claude-Code/2.1.246)
 #   models/fetch     FetchModels        (sent Claude-Code/2.1.246)
 #
@@ -421,7 +422,8 @@ if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" discovery \
   KEEP_WORK_DIR=1
   echo "ERROR: the capture records claude-code/<version> on every GET it observed," >&2
   echo "ERROR: lowercase and with no parenthesised mode. Go's transport supplies" >&2
-  echo "ERROR: Go-http-client/1.1 when no User-Agent is set at all." >&2
+  echo "ERROR: Go-http-client/<negotiated HTTP version> when no User-Agent is set" >&2
+  echo "ERROR: at all, so a 2.0 there means the header is missing, not stale." >&2
   echo "Observed capture kept at ${OBSERVED_DISCOVERY}" >&2
   fail "a discovery request did not carry the captured User-Agent"
 fi
