@@ -31,14 +31,28 @@ from diff_claude_code_identity import header_map  # noqa: E402
 
 
 def load_records(path: str) -> list[dict]:
-    """Every record in a capture file, in order."""
+    """Every record in a capture file, in order.
+
+    A malformed line is reported with its file and line number rather than
+    left to raise a bare JSONDecodeError. The gate truncates the live capture
+    between phases while mitmdump may be mid-append, and a record above
+    PIPE_BUF is not an atomic write, so a half-written line is a real outcome —
+    and one an operator must not read as the proxy's headers having drifted.
+    """
     records = []
     with open(path, encoding="utf-8") as handle:
-        for line in handle:
+        for number, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
                 continue
-            records.append(json.loads(line))
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"{path} line {number} is not a JSON record ({error.msg}); "
+                    "the capture is truncated or was written to mid-read, "
+                    "which says nothing about the proxy's wire identity"
+                ) from error
     return records
 
 
@@ -209,6 +223,34 @@ def check_discovery(
     return problems
 
 
+def evaluate(args) -> tuple[list[str], str]:
+    """The policy's problems, and the subject they are reported against."""
+    if args.policy == "discovery":
+        baseline_gets = get_records(load_records(args.baseline))
+        observed_gets = discovery_records(load_records(args.observed))
+        return (
+            check_discovery(baseline_gets, observed_gets, args.min_records),
+            f"{len(observed_gets)} discovery request(s)",
+        )
+
+    observed_posts = messages_records(load_records(args.observed))
+    count_problems = check_record_count(observed_posts)
+    if count_problems:
+        return count_problems, args.observed
+
+    observed = observed_posts[0]
+    subject = f"POST {observed.get('path')}"
+    if args.policy == "normalized":
+        baseline_posts = messages_records(load_records(args.baseline))
+        if not baseline_posts:
+            raise ValueError(f"no POST /v1/messages record in {args.baseline}")
+        return check_normalized(baseline_posts[0], observed), subject
+    return (
+        check_passthrough(observed, args.caller_user_agent, args.api_key_sha256),
+        subject,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="policy", required=True)
@@ -229,31 +271,14 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if args.policy == "discovery":
-        baseline_gets = get_records(load_records(args.baseline))
-        observed_gets = discovery_records(load_records(args.observed))
-        problems = check_discovery(baseline_gets, observed_gets, args.min_records)
-        subject = f"{len(observed_gets)} discovery request(s)"
-    else:
-        observed_posts = messages_records(load_records(args.observed))
-        problems = check_record_count(observed_posts)
-        if problems:
-            print(f"{len(problems)} policy violation(s) in {args.observed}:", file=sys.stderr)
-            for problem in problems:
-                print(f"  - {problem}", file=sys.stderr)
-            return 1
-        observed = observed_posts[0]
-        if args.policy == "normalized":
-            baseline_posts = messages_records(load_records(args.baseline))
-            if not baseline_posts:
-                print(f"no POST /v1/messages record in {args.baseline}", file=sys.stderr)
-                return 1
-            problems = check_normalized(baseline_posts[0], observed)
-        else:
-            problems = check_passthrough(
-                observed, args.caller_user_agent, args.api_key_sha256
-            )
-        subject = f"POST {observed.get('path')}"
+    # An unreadable or half-written capture is a problem with the capture, not
+    # a verdict on the proxy. Report it as itself rather than as a traceback
+    # under the caller's "the wire identity has drifted" message.
+    try:
+        problems, subject = evaluate(args)
+    except (OSError, ValueError) as error:
+        print(f"cannot evaluate policy {args.policy}: {error}", file=sys.stderr)
+        return 1
 
     if problems:
         print(f"{len(problems)} policy violation(s) in {subject}:", file=sys.stderr)

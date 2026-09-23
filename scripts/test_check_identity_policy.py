@@ -218,6 +218,30 @@ class RecordSelectionTest(unittest.TestCase):
         self.assertTrue(any("no POST /v1/messages" in p for p in problems), problems)
 
 
+class LoaderErrorTest(unittest.TestCase):
+    """A half-written record must not read as wire drift.
+
+    The gate truncates the live capture between phases while mitmdump may be
+    mid-append, and a record above PIPE_BUF is not an atomic write. An
+    unhandled JSONDecodeError would surface as a traceback under a fail()
+    message blaming the proxy's headers.
+    """
+
+    def test_names_the_file_and_line_for_a_malformed_record(self):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        handle.write(json.dumps(observed_normalized()) + "\n")
+        handle.write('{"method": "POST", truncated\n')
+        handle.close()
+        try:
+            with self.assertRaises(ValueError) as caught:
+                policy.load_records(handle.name)
+            message = str(caught.exception)
+            self.assertIn("line 2", message)
+            self.assertIn(os.path.basename(handle.name), message)
+        finally:
+            os.unlink(handle.name)
+
+
 class LoaderTest(unittest.TestCase):
     def test_splits_records_by_method_and_path(self):
         path = write_jsonl(
