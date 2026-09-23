@@ -295,21 +295,85 @@ carries three values that change per request.
 
 ## Phase D — Verification
 
-- [ ] `go test ./internal/ccidentity/... ./internal/claudecode/... ./internal/api/...`
-- [ ] Integration test in the shape of `internal/api/openrouter_appspoof_test.go`: new
+- [x] `go test ./internal/ccidentity/... ./internal/claudecode/... ./internal/api/...`
+- [x] Integration test in the shape of `internal/api/openrouter_appspoof_test.go`: new
   `internal/api/ccidentity_proxy_test.go` with an `httptest.Server` upstream, asserting the
   upstream observes the baseline header set for a foreign-headed request; the custom-endpoint
   twin; and a gate test — extend the URL table at `internal/api/server_test.go:1126-1153`.
   Also assert a *real* Claude Code client's `anthropic-version` / `anthropic-beta` still pass
   through uncorrupted.
-- [ ] `scripts/verify-claude-code-identity.sh`, modeled on `scripts/verify-ja4.sh` including
+- [x] `scripts/verify-claude-code-identity.sh`, modeled on `scripts/verify-ja4.sh` including
   its skip-loudly discipline (exit 0 with an explicit "did not run — this is NOT a pass").
-- [ ] End to end by hand: drive `POST /v1/chat/completions` (the existing OpenAI shim,
+- [x] End to end by hand: drive `POST /v1/chat/completions` (the existing OpenAI shim,
   `internal/api/server.go:374`) at a model that previously gated, and record the before/after
   status in the PR description.
 
 If a gateway still gates after normalization, the capture was incomplete: return to Phase A
 with the new evidence rather than adding headers speculatively.
+
+### D3 result — the gate uses mitmdump, not tcpdump alone
+
+`scripts/verify-claude-code-identity.sh` plus `scripts/diff_claude_code_identity.py`.
+The plan said "modeled on `scripts/verify-ja4.sh`", and the skip-loudly discipline is
+taken from it unchanged. The capture mechanism could not be: JA4 reads the plaintext
+ClientHello, but request headers live inside the encrypted record layer, so tcpdump
+cannot see them. mitmdump terminates TLS and the existing `scripts/mitm_header_dump.py`
+addon already records exactly the shape the diff needs.
+
+The gate needs no credential — it configures a stub OAuth account, and mitmdump records
+the outbound request before the upstream rejects it.
+
+Falsified rather than assumed: changing `X-Stainless-Timeout` from `600` to `601` in
+`internal/ccidentity/defaults.go` makes the gate exit 1 naming that header; a clean tree
+exits 0 with `21 headers over HTTP/2.0`.
+
+What it detects is the PROXY drifting from the capture. It cannot detect CLAUDE CODE
+drifting from the capture — both sides of that diff are frozen. A new Claude Code version
+changing its own fingerprint needs a fresh `scripts/capture-claude-code-headers.sh oauth`.
+
+### D4 result — no gate was reachable, so there is no before/after delta
+
+Run 2026-09-23 against `api.anthropic.com` on the operator's own OAuth account
+(`ghlsem@gmail.com`), model `claude-haiku-4-5`, one foreign-headed
+`POST /v1/chat/completions` (`User-Agent: foreign-harness/1.0`, no Anthropic headers):
+
+| Run | Binary | Status |
+|---|---|---|
+| Before | `46f1a87`, the live pre-feature binary and an ancestor of this branch | 200 |
+| After | `27c59b4`, this branch, isolated instance on port 8099 | 200 |
+
+**The premise did not hold.** Nothing reachable gates a foreign harness today — the
+pre-feature binary already serves 200 on the Claude Code gateway. The one endpoint
+recorded as gating is packy's CC group, and it rejects genuine Claude Code from this
+machine too, so it cannot separate our fingerprint from an IP or account flag.
+
+200/200 is therefore **no regression, not "ungated"**. Do not describe D4 as proof the
+gate was defeated.
+
+Because 200/200 on its own proves nothing about what went on the wire, the wire was
+observed separately, against a local recorder upstream. Normalization does apply: path
+`/v1/messages?beta=true`, 19/19 baseline headers at baseline values with exact case
+preserved over HTTP/1.1, `anthropic-beta` byte-identical to the captured 13-entry list,
+the client's `x-app: foreign-app` and `anthropic-beta: some-harness-beta` both overwritten,
+`temperature`/`top_p` stripped, `metadata.user_id` in the captured JSON-object form, and a
+generated `system[0]` billing header.
+
+This also answers open question 1 from the handoff: dropping a harness beta cost nothing
+on this path. The append-inbound-extras rule is not needed on the evidence available.
+
+### New open question — account_uuid
+
+`metadata.user_id.account_uuid` goes out **non-empty** on the pooled Claude Code path,
+carrying the real account's UUID. The capture recorded it **empty in 3/3 requests** from a
+logged-in OAuth session, and `.reference/claude-code-headers-20260923.txt:116` marks
+"whether that is specific to this token or general to the OAuth path" as `unknown`.
+
+This is a distinguishable difference that the deliberate-gaps list does not cover. It is
+intentional in `internal/claudecode/types.go:117` — per-account-sticky identity — but the
+decision was taken against an unvaried sample. Operator decision (2026-09-23): settle it
+with a second capture on a different account rather than by changing behavior now. The
+drift gate exempts the field in the meantime, with a comment naming this question.
+
 
 ## Out of scope
 
@@ -366,5 +430,7 @@ are the bug.
   and answering that restarts the UI and re-prompts trust. `interactive` mode is
   now human-driven and documents this.
 - The API-key auth mode was never captured.
+- A second OAuth capture on a different account, to settle whether
+  `metadata.user_id.account_uuid` is ever populated. See "New open question" in
+  Phase D.
 - Phase C3 (WebUI field group) not started.
-- Phase D3 (drift gate script) and D4 (hand end-to-end) not run.
