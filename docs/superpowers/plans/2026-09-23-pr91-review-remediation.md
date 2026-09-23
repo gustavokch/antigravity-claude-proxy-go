@@ -378,10 +378,20 @@ separate capture and `CLAUDE_CAPTURE_APPEND=1` as the deliberate override. All
 three states exercised: existing file rejects, override proceeds, absent file
 proceeds.
 
-Pre-existing gofmt breakage outside this feature, untouched here:
-`internal/accounts/{manager,manager_test,forensics_test}.go`,
-`internal/classifier/audit_test.go`, `internal/cloudcode/{client,quota}.go`,
-`internal/logger/stream_test.go`.
+Pre-existing gofmt breakage outside this feature. This said "untouched here",
+which stopped being true later in the branch: `ed8fae0` reformatted
+`internal/api/{classifier_config_test,classifier_rules,dispatch_test,management_test}.go`
+and `40fc443` reformatted `internal/accounts/{manager,manager_test,forensics_test}.go`,
+`internal/classifier/audit_test.go`, `internal/cloudcode/{client,quota}.go` and
+`internal/logger/stream_test.go`. Both are formatting only, mechanically so, and
+`internal/api/classifier_rules.go` is on the originating plan's out-of-scope
+list.
+
+The whole-repo pass was folded in because `07a6eec` installs a gofmt pre-commit
+hook, which cannot be satisfied by a tree that is already drifted. Reverting it
+now would churn a pushed branch to restore unformatted files, so the record is
+corrected here instead. `gen/exa/codeium_common_pb/codeium_common.pb.go` stays
+drifted deliberately: it is generated.
 
 ## Outcome per task
 
