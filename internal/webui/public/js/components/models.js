@@ -946,7 +946,18 @@ window.Components.models = () => ({
         autoImport: false,
         accounts: [],
         allowlist: [],
-        routing: {}
+        routing: {},
+        // A DISABLE flag, so the zero value normalizes. Every blank string
+        // means "use the captured value" — see internal/ccidentity/defaults.go.
+        identity: {
+            disabled: false,
+            clientVersion: '',
+            entrypoint: '',
+            turnOrigin: '',
+            userAgent: '',
+            stainlessOs: '',
+            stainlessRuntimeVersion: ''
+        }
     },
     ccAccounts: [],
     ccSaving: false,
@@ -1176,6 +1187,18 @@ window.Components.models = () => ({
             const data = await response.json();
             if (data.config) {
                 this.ccConfig = { ...this.ccConfig, ...data.config };
+                // A spread would replace the whole identity object with an
+                // absent one on any config saved before this panel existed,
+                // leaving x-model bound to undefined.
+                this.ccConfig.identity = {
+                    disabled: !!(data.config.identity && data.config.identity.disabled),
+                    clientVersion: (data.config.identity && data.config.identity.clientVersion) || '',
+                    entrypoint: (data.config.identity && data.config.identity.entrypoint) || '',
+                    turnOrigin: (data.config.identity && data.config.identity.turnOrigin) || '',
+                    userAgent: (data.config.identity && data.config.identity.userAgent) || '',
+                    stainlessOs: (data.config.identity && data.config.identity.stainlessOs) || '',
+                    stainlessRuntimeVersion: (data.config.identity && data.config.identity.stainlessRuntimeVersion) || ''
+                };
             }
         } catch (_) {}
         await this.loadCCAccounts();
@@ -1197,6 +1220,11 @@ window.Components.models = () => ({
         this.ccError = '';
         this.ccSuccess = '';
         try {
+            const identity = this.ccConfig.identity || {};
+            // saveCCConfig sends an explicit field list, so identity has to be
+            // named here or the panel's values are dropped on every save. Blank
+            // strings are sent as-is: empty means "use the captured value", and
+            // omitting them would leave a stale override in place.
             const { response, newPassword } = await window.utils.request('/api/claudecode/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1206,7 +1234,16 @@ window.Components.models = () => ({
                     mode: this.ccConfig.mode,
                     autoImport: this.ccConfig.autoImport,
                     allowlist: this.ccConfig.allowlist,
-                    routing: this.ccConfig.routing
+                    routing: this.ccConfig.routing,
+                    identity: {
+                        disabled: !!identity.disabled,
+                        clientVersion: (identity.clientVersion || '').trim(),
+                        entrypoint: (identity.entrypoint || '').trim(),
+                        turnOrigin: (identity.turnOrigin || '').trim(),
+                        userAgent: (identity.userAgent || '').trim(),
+                        stainlessOs: (identity.stainlessOs || '').trim(),
+                        stainlessRuntimeVersion: (identity.stainlessRuntimeVersion || '').trim()
+                    }
                 })
             }, store.webuiPassword);
             if (newPassword) store.webuiPassword = newPassword;

@@ -572,6 +572,18 @@ window.translations.en = {
     appSpoofFieldTitle: "App Title",
     appSpoofFieldCategories: "App Categories",
     appSpoofFieldReferer: "Referer",
+    // Claude Code wire identity (outbound header and body normalization)
+    ccIdentityTitle: "Claude Code Wire Identity",
+    ccIdentityDefault: "DEFAULT",
+    ccIdentityCustom: "CUSTOM",
+    ccIdentityDesc: "Outbound requests are normalized to the captured Claude Code fingerprint by default. Leave every field blank to use the captured values.",
+    ccIdentityFieldDisabled: "Disable normalization (send the client's own headers)",
+    ccIdentityFieldClientVersion: "Client Version",
+    ccIdentityFieldEntrypoint: "Entrypoint",
+    ccIdentityFieldTurnOrigin: "Turn Origin",
+    ccIdentityFieldUserAgent: "User Agent",
+    ccIdentityFieldStainlessOs: "Stainless OS",
+    ccIdentityFieldStainlessRuntimeVersion: "Stainless Runtime Version",
     skipFastModeOrgCheck: "Skip Fast Mode Org Check",
     skipFastModeOrgCheckDesc: "Skips Anthropic organization validation when using fast mode models via proxy.",
 
