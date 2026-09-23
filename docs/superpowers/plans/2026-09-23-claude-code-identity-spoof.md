@@ -103,65 +103,144 @@ Not yet run: a live capture. It needs an interactive OAuth login (see Task A4).
 
 ### Task A4: Run the captures (operator-interactive)
 
-- [ ] `scripts/capture-claude-code-headers.sh token` — follow the URL, paste the code.
-- [ ] `export CLAUDE_CODE_OAUTH_TOKEN=<token>`.
-- [ ] `scripts/capture-claude-code-headers.sh oauth` — the target fingerprint.
-- [ ] `export ANTHROPIC_API_KEY=<key>`; `scripts/capture-claude-code-headers.sh apikey` — the contrasting set.
-- [ ] Confirm at least one `POST api.anthropic.com/v1/messages` per mode. If the
-  security-monitor request does not appear, record that outcome rather than forcing it.
+- [x] `scripts/capture-claude-code-headers.sh oauth` — 7 records, 3 messages calls at 200.
+- [ ] `export ANTHROPIC_API_KEY=<key>`; `scripts/capture-claude-code-headers.sh apikey`
+  — blocked: no real Anthropic key available in this environment.
+- [x] Security-monitor request: did NOT fire. The Bash-tool prompt was accepted rather than
+  approved through a permission prompt, which is the likely cause. Recorded, not forced.
+
+Two harness bugs were found by the first run, both fixed:
+
+1. The addon's host filter defaults to the Cloud Code hosts, and the script never set
+   `MITM_DUMP_HOSTS`, so every `api.anthropic.com` flow was dropped before a record could be
+   written — indistinguishable from the container ignoring the proxy.
+2. A single `nc -z` probe raced mitmdump's bind whenever the CA already existed. Now a
+   bounded poll that also fails fast on a dead process.
+
+`--quiet` was also removed from mitmdump: its flow log is the only evidence separating "the
+addon filtered everything" from "the container bypassed HTTPS_PROXY", and those need
+different fixes.
 
 ### Task A5: Baseline artifact and provenance
 
 **Files:**
-- Create: `.reference/claude-code-headers-<date>.jsonl` (from A4)
-- Create: `.reference/claude-code-headers-<date>.txt`
+- Create: `.reference/claude-code-headers-20260923.jsonl` (captured)
+- Create: `.reference/claude-code-headers-20260923.txt` (written)
+- Create: `.reference/claude-code-headers-20260923.meta.txt` (written by the harness)
 - Modify: `docs/classifier-fallback-notes.md`
 
-- [ ] Write the human baseline in the format of `.reference/agy-headers-mitm-20260903.txt`:
-  per-auth-mode header table, body fingerprint, `Method:` line naming the commands run.
+- [x] Captured 7 records, all `api.anthropic.com`, three of them
+  `POST /v1/messages?beta=true` returning 200.
+- [x] Human baseline written, in the format of `.reference/agy-headers-mitm-20260903.txt`,
+  with per-path header tables, the body fingerprint, and a `Method:` line.
+- [x] Redaction confirmed: no raw token appears anywhere in the JSONL.
 - [ ] Append a "Re-capturing the Claude Code baseline" section to
   `docs/classifier-fallback-notes.md` naming the script and the procedure.
+- [ ] Close the gaps below, or record them as accepted.
+
+Open gaps, from the artifact's own Gaps section:
+
+- The API-key auth mode was never captured — no real Anthropic key was available.
+- The interactive (`cc_entrypoint=cli`) session was never captured; only `--print`
+  (`sdk-cli`). Re-run without `--print` to close it.
+- The security-monitor request never fired, so its `x-claude-code-request-class` value is
+  still `unknown`. All three captured requests were `main`.
+- `cc_turn_origin` for interactive sessions, and the `cch` derivation, are `unknown`.
+- `X-Stainless-OS: Linux` and `X-Stainless-Runtime-Version: v26.3.0` reflect the Linux
+  capture container. A macOS host would report different values. Which to spoof is a
+  decision, not a fact.
 
 ---
 
 ## Phase B — `internal/ccidentity`
+
+### Corrected identity model (2026-09-23 capture)
+
+The capture changed the data model this plan originally assumed. Read
+`.reference/claude-code-headers-20260923.txt` before writing Phase B code; the
+summary here is a pointer, not a substitute.
+
+| Assumption | Captured reality |
+|---|---|
+| `metadata.user_id` = `user_<hex>_account_<uuid>_session_<uuid>` | A **string containing a JSON object**: `{"device_id":"<64 hex>","account_uuid":"","session_id":"<uuid>"}`. The flat form is wrong. |
+| `system[0]` holds a constant prefix | Holds a per-request line: `cc_version=2.1.280.<3 hex>`, `cch=<5 hex, fresh each request>`, `cc_prompt_id=<uuid, per session>`, `cc_turn_origin`, and `cc_prev_req` on follow-up turns. Equality matching is impossible; the applier must **generate** it. |
+| Client sent no session header | `X-Claude-Code-Session-Id` is present and stable per process. `internal/api/claudecode_proxy.go:142-146` claims otherwise and needs correcting. |
+| Four headers were enough to reason about | Thirteen `x-stainless-*` / `x-app` / `x-claude-code-*` headers, `anthropic-dangerous-direct-browser-access: true`, plus the 13-entry beta list. |
+| `claude-code/2.1.246` | Messages path sends `claude-cli/2.1.280 (external, sdk-cli)`. The `/api/claude_code/*` discovery path sends `claude-code/2.1.280`. Two different families. |
+| Path `/v1/messages` | `/v1/messages?beta=true`. |
+
+### Achievable target — read before implementing
+
+The plan's original goal said "byte-indistinguishable". That is **not achievable
+through `net/http`**, and both limits were verified in Go's source rather than
+assumed:
+
+1. **Header order cannot be spoofed.** `Header.writeSubset` sorts keys via
+   `sortedKeyValues` (`$GOROOT/src/net/http/header.go:167`). The captured wire
+   order is not sorted. Matching it needs a transport that writes the request
+   itself, not `http.Transport`.
+2. **`Accept-Encoding` spoofing costs transparent decompression.** Setting it
+   ourselves stops `http.Transport` adding gzip, and its own comment is explicit:
+   "We only attempt to uncompress the gzip stream if we were the layer that
+   requested it" (`$GOROOT/src/net/http/transport.go:2995-2998`). Spoofing
+   `gzip, deflate, br, zstd` therefore requires decompressing upstream responses
+   in the proxy — on the SSE streaming path. zstd and br are not in the stdlib.
+
+Header *names* can keep their exact case: assigning `req.Header["X-Stainless-OS"]`
+directly preserves the key, whereas `Header.Set` canonicalizes to
+`X-Stainless-Os`. The captured value is `X-Stainless-OS`, and over the captured
+HTTP/1.1 transport that difference reaches the wire.
+
+The practical target is therefore: **the same header set with the same values**,
+achieving order, `Connection`, and `Accept-Encoding` only if a decision below
+says to. Do not describe the result as byte-identical.
 
 ### Task B1: Profile shape
 
 **Files:** Create `internal/ccidentity/profile.go`
 
 - [ ] `Header{Name, Value string}`; `DynamicHeader{Name string; Value func(Identity) string}`.
-- [ ] `Profile{Static []Header; Dynamic []DynamicHeader; Omit []string; SystemPrefix string; UserIDFormat string}`.
-- [ ] `Identity{AccountUUID, OrganizationUUID, SessionKey, ClientVersion, Entrypoint string}`.
+- [ ] `Profile{Static []Header; Dynamic []DynamicHeader; Omit []string; Path string; BillingHeader func(Identity, Turn) string; UserIDFormat func(Identity) string}`.
+- [ ] `Identity{AccountUUID, DeviceID, SessionKey, ClientVersion, Entrypoint string}`.
+- [ ] `Turn` carries the per-request pieces: `PrevRequestID`, and the `cch` seed.
 
-Deliberately not a struct of named header fields: the capture decides what exists, and named
-fields would force a redesign on every surprise. `Omit` is the leak guard and is not optional.
+Naming the two generated strings as functions rather than format strings is the
+correction the capture forces: `metadata.user_id` is a JSON object and `system[0]`
+carries three values that change per request.
 
 ### Task B2: Captured constants
 
 **Files:** Create `internal/ccidentity/defaults.go`
 
-- [ ] `ClientVersion = "2.1.280"` as one exported constant.
-- [ ] `DefaultProfile()` returning values transcribed from the A5 artifacts, each with a
-  provenance comment.
-- [ ] Update the five stale `2.1.246` literals to the constant: `internal/claudecode/client.go:385`,
-  `:451` (`Claude-Code/`), and `internal/auth/claudecode_oauth.go:629`, `:680`, `:733` (`claude-code/`).
-  Version substring only — the case difference between the two families is left as it is
-  unless the A5 capture settles which spelling the messages path uses.
+- [ ] `ClientVersion = "2.1.280"`, `MessagesUserAgent = "claude-cli/2.1.280 (external, sdk-cli)"`, `DiscoveryUserAgent = "claude-code/2.1.280"`.
+- [ ] The 13-entry beta list, in captured order, as one ordered slice.
+- [ ] `DefaultProfile()` with a provenance comment per value naming
+  `.reference/claude-code-headers-20260923.txt`.
+- [ ] Update the five stale `2.1.246` literals: `internal/claudecode/client.go:385`, `:451`
+  are the *discovery* family (`claude-code/`, correct case, stale version);
+  `internal/auth/claudecode_oauth.go:629`, `:680`, `:733` send `claude-code/2.1.246`.
+  The messages-path UA is a new constant, not a correction to any existing one.
+- [ ] Fix the falsified comment at `internal/api/claudecode_proxy.go:142-146`.
 
 ### Task B3: Appliers
 
 **Files:** Create `internal/ccidentity/apply.go`
 
-- [ ] `ApplyHeaders(h http.Header, p Profile, id Identity)` — delete `Omit` first, then set
-  `Static` in order, then `Dynamic`. Deletion before setting is the only way to guarantee a
-  foreign client's value is gone.
+- [ ] `ApplyHeaders(h http.Header, p Profile, id Identity)` — delete `Omit` first, then
+  assign `Static` and `Dynamic` by **direct map assignment** to preserve the captured case
+  (`h["X-Stainless-OS"] = ...`, not `h.Set`). Order within the map is Go's problem and is
+  out of scope per the decision below.
 - [ ] `ApplyBody(body []byte, p Profile, id Identity) ([]byte, error)` — set
-  `metadata.user_id` via `UserIDFormat`; ensure system block 0 equals the rendered
-  `SystemPrefix`; drop top-level fields the capture shows Claude Code never sends.
-- [ ] Beta rule, stated because it is where normalization can break a working request:
-  replace `anthropic-beta` with the profile's captured list, then append any inbound beta not
-  already present, preserving inbound order. `ApplyAuthHeaders` still runs last so auth wins.
+  `metadata.user_id` to the stringified JSON object; replace system block 0 with the
+  generated billing header; add `context_management` / `diagnostics` / `output_config` only
+  if a decision says the harnesses' requests need them synthesized; drop `temperature`,
+  `top_p`, `top_k`, `stop_sequences`, `tool_choice`, `service_tier`, which Claude Code does
+  not send.
+- [ ] Beta handling: **replace** with the captured ordered list rather than appending
+  `oauth-2025-04-20`. The captured order has `claude-code-20250219` first and
+  `oauth-2025-04-20` second, which append-only cannot produce. A harness beta not in the
+  captured list is dropped unless a decision says to preserve it.
+- [ ] Path: request `/v1/messages?beta=true`.
 
 ### Task B4: Tests
 

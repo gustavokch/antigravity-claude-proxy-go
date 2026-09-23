@@ -200,8 +200,19 @@ echo "=== [3/5] Starting mitmdump on port ${MITM_PORT} ==="
 MITM_LOG="/tmp/claude-capture-mitmdump.log"
 : > "${MITM_LOG}"
 
+# The addon's host filter defaults to the Cloud Code hosts. Without
+# MITM_DUMP_HOSTS it drops every api.anthropic.com flow before it can write a
+# record, which looks exactly like the container never using the proxy.
+# MITM_DUMP_REQUEST_BODY turns on the body fingerprint; both must be set here,
+# because the addon reads its configuration once at startup.
+#
+# mitmdump is deliberately NOT run with --quiet: its flow log is the only
+# evidence that separates "the addon filtered everything" from "the container
+# ignored HTTPS_PROXY", and those need different fixes.
+MITM_DUMP_HOSTS="${MITM_DUMP_HOSTS:-api.anthropic.com}" \
+MITM_DUMP_REQUEST_BODY=1 \
+MITM_DUMP_OUT="${DUMP_OUT}" \
 mitmdump \
-  --quiet \
   --listen-host 0.0.0.0 \
   --listen-port "${MITM_PORT}" \
   --allow-hosts "${ALLOW_HOSTS}" \
@@ -233,7 +244,22 @@ if [[ ! -f "${CA_FILE}" ]]; then
 fi
 
 if ! nc -z 127.0.0.1 "${MITM_PORT}" >/dev/null 2>&1; then
-  echo "ERROR: mitmdump is not listening on ${MITM_PORT}. Log:" >&2
+  # A single probe races mitmdump's bind whenever the CA already exists from a
+  # previous run, because the CA wait above returns immediately. Poll instead,
+  # and fail on a dead process rather than waiting out the whole timeout.
+  for _ in $(seq 1 50); do
+    if ! kill -0 "${MITM_PID}" 2>/dev/null; then
+      echo "ERROR: mitmdump exited on startup. Log:" >&2
+      tail -20 "${MITM_LOG}" >&2
+      exit 1
+    fi
+    nc -z 127.0.0.1 "${MITM_PORT}" >/dev/null 2>&1 && break
+    sleep 0.2
+  done
+fi
+
+if ! nc -z 127.0.0.1 "${MITM_PORT}" >/dev/null 2>&1; then
+  echo "ERROR: mitmdump is not listening on ${MITM_PORT} after 10s. Log:" >&2
   tail -20 "${MITM_LOG}" >&2
   exit 1
 fi
@@ -249,7 +275,7 @@ echo
 
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-podman run --rm -it \
+podman run --rm \
   --add-host=containers.internal:host-gateway \
   -e "HTTPS_PROXY=http://host.containers.internal:${MITM_PORT}" \
   -e "https_proxy=http://host.containers.internal:${MITM_PORT}" \
@@ -263,7 +289,7 @@ podman run --rm -it \
   "${IMAGE_NAME}" \
   claude --print 'Reply with exactly CLAUDE_CAPTURE_OK'
 
-podman run --rm -it \
+podman run --rm \
   --add-host=containers.internal:host-gateway \
   -e "HTTPS_PROXY=http://host.containers.internal:${MITM_PORT}" \
   -e "https_proxy=http://host.containers.internal:${MITM_PORT}" \
@@ -279,8 +305,15 @@ podman run --rm -it \
     'Run `ls -la` with the Bash tool and tell me what you see.'
 
 echo "=== [5/5] Result ==="
-HOSTS_SEEN=$(jq -r '.host' "${DUMP_OUT}" 2>/dev/null | sort -u | tr '\n' ' ' || true)
-LINES=$(wc -l < "${DUMP_OUT}" 2>/dev/null | tr -d ' ' || echo 0)
+if [[ -f "${DUMP_OUT}" ]]; then
+  HOSTS_SEEN=$(jq -r '.host' "${DUMP_OUT}" 2>/dev/null | sort -u | tr '\n' ' ')
+  LINES=$(wc -l < "${DUMP_OUT}" | tr -d ' ')
+else
+  # The addon never opened the file, so nothing it saw matched. Distinguishing
+  # that from "the container bypassed the proxy" needs the mitmdump flow log.
+  HOSTS_SEEN=""
+  LINES=0
+fi
 
 cat > "${META_OUT}" <<EOF
 Claude Code wire capture — ${MODE} auth
@@ -307,7 +340,10 @@ echo "Records written: ${LINES}"
 echo "Hosts seen:      ${HOSTS_SEEN:-none}"
 echo "Baseline meta:   ${META_OUT}"
 if [[ "${LINES}" -eq 0 ]]; then
-  echo "WARNING: no records captured. Check ${MITM_LOG} and that the container" >&2
-  echo "WARNING: reached host.containers.internal:${MITM_PORT}." >&2
+  echo "WARNING: no records captured. The mitmdump flow log is the diagnostic:" >&2
+  echo "WARNING:   flows to api.anthropic.com present -> the addon's filter is wrong" >&2
+  echo "WARNING:   no flows at all                     -> the container bypassed HTTPS_PROXY" >&2
+  echo "WARNING: log: ${MITM_LOG}" >&2
+  tail -20 "${MITM_LOG}" >&2
   exit 1
 fi
