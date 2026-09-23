@@ -5,6 +5,35 @@
  */
 window.Components = window.Components || {};
 
+// The Claude Code wire identity overrides, as one list. The seven fields travel
+// together through the default state, the load and the save, and the panel
+// decides whether any is set; naming them once keeps those four places from
+// drifting apart.
+const CC_IDENTITY_STRING_FIELDS = [
+    'clientVersion',
+    'entrypoint',
+    'turnOrigin',
+    'userAgent',
+    'stainlessOs',
+    'stainlessRuntimeVersion'
+];
+
+// ccIdentityFrom returns the complete field set, taking whatever source has.
+//
+// Called with no arguments it is the default state: disabled false, because it
+// is a DISABLE flag and the zero value normalizes, and every string blank,
+// because blank means "use the captured value" — see
+// internal/ccidentity/defaults.go. transform is what the save path uses to trim.
+function ccIdentityFrom(source, transform) {
+    const src = source || {};
+    const apply = transform || ((value) => value);
+    const out = { disabled: !!src.disabled };
+    for (const name of CC_IDENTITY_STRING_FIELDS) {
+        out[name] = apply(src[name] || '');
+    }
+    return out;
+}
+
 window.Components.models = () => ({
     // Color palette for per-account threshold markers
     thresholdColors: [
@@ -947,17 +976,7 @@ window.Components.models = () => ({
         accounts: [],
         allowlist: [],
         routing: {},
-        // A DISABLE flag, so the zero value normalizes. Every blank string
-        // means "use the captured value" — see internal/ccidentity/defaults.go.
-        identity: {
-            disabled: false,
-            clientVersion: '',
-            entrypoint: '',
-            turnOrigin: '',
-            userAgent: '',
-            stainlessOs: '',
-            stainlessRuntimeVersion: ''
-        }
+        identity: ccIdentityFrom()
     },
     ccAccounts: [],
     ccSaving: false,
@@ -977,6 +996,15 @@ window.Components.models = () => ({
     ccDiscoverSearch: '',
     ccDiscoverFamilyFilter: 'all',
     ccSelectedModels: [],
+
+    // ccIdentityIsCustom reports whether the operator has overridden anything in
+    // the wire identity panel. The template asks three times (open state, badge
+    // colour, badge text), so it is answered once here.
+    get ccIdentityIsCustom() {
+        const identity = this.ccConfig.identity || {};
+        if (identity.disabled) return true;
+        return CC_IDENTITY_STRING_FIELDS.some(name => !!(identity[name] || '').trim());
+    },
 
     get filteredClaudeCodeModels() {
         let list = this.ccDiscoveredModels || [];
@@ -1190,15 +1218,7 @@ window.Components.models = () => ({
                 // A spread would replace the whole identity object with an
                 // absent one on any config saved before this panel existed,
                 // leaving x-model bound to undefined.
-                this.ccConfig.identity = {
-                    disabled: !!(data.config.identity && data.config.identity.disabled),
-                    clientVersion: (data.config.identity && data.config.identity.clientVersion) || '',
-                    entrypoint: (data.config.identity && data.config.identity.entrypoint) || '',
-                    turnOrigin: (data.config.identity && data.config.identity.turnOrigin) || '',
-                    userAgent: (data.config.identity && data.config.identity.userAgent) || '',
-                    stainlessOs: (data.config.identity && data.config.identity.stainlessOs) || '',
-                    stainlessRuntimeVersion: (data.config.identity && data.config.identity.stainlessRuntimeVersion) || ''
-                };
+                this.ccConfig.identity = ccIdentityFrom(data.config.identity);
             }
         } catch (_) {}
         await this.loadCCAccounts();
@@ -1235,15 +1255,7 @@ window.Components.models = () => ({
                     autoImport: this.ccConfig.autoImport,
                     allowlist: this.ccConfig.allowlist,
                     routing: this.ccConfig.routing,
-                    identity: {
-                        disabled: !!identity.disabled,
-                        clientVersion: (identity.clientVersion || '').trim(),
-                        entrypoint: (identity.entrypoint || '').trim(),
-                        turnOrigin: (identity.turnOrigin || '').trim(),
-                        userAgent: (identity.userAgent || '').trim(),
-                        stainlessOs: (identity.stainlessOs || '').trim(),
-                        stainlessRuntimeVersion: (identity.stainlessRuntimeVersion || '').trim()
-                    }
+                    identity: ccIdentityFrom(identity, (value) => value.trim())
                 })
             }, store.webuiPassword);
             if (newPassword) store.webuiPassword = newPassword;
