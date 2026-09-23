@@ -302,11 +302,54 @@ right answer to the wrong question.
 Worth keeping in the record: the failure was a real result. The gate caught a
 badly built test on its first run, which is the behaviour wanted from it.
 
-Live status: the mechanism is proven — the real `ApplyBody` output for an
-Anthropic one-block body is `<x2>`, the pre-fix shape is `<x1>`, the jq path
-resolves against a committed capture, the differ still reads record 0, and
-`messages_records` returns a number on a missing file. The two-request wiring has
-not run live.
+### T11's second live run failed too, on a structural constraint
+
+The two-request design could not work. The record-count check reported it
+precisely rather than as a false regression, and the proxy log gave the cause:
+
+```
+WARN  claudecode 401 unauthorized, failing over  account=cc-identity-gate-stub
+ERROR [POST] /v1/chat/completions 503 (474ms)
+ERROR [POST] /v1/messages 503 (0s)
+```
+
+The stub credential draws a 401 on the first upstream attempt, the pool cools the
+only account down, and every later request is answered 503 locally with nothing
+sent — `503 (0s)`, no attempt. **The gate gets exactly one upstream attempt per
+run.** That is inherent to using a stub credential, and no ordering of two
+requests avoids it.
+
+So one request has to carry everything, and it is Anthropic-shaped: that is the
+only shape reaching the branch that used to overwrite block 0. `temperature` rides
+along on the same body, since the Anthropic schema carries it too, so the omit-list
+coverage the OpenAI-shaped request used to provide is not lost.
+
+Verified the switch introduces no drift before running it: the OpenAI path's
+normalized `top_level_keys` in the previous run were
+`max_tokens, messages, metadata, model, system`, and the direct `ApplyBody` output
+for the Anthropic body is the same five. The baseline's set is a superset, and
+missing keys are not drift.
+
+### It passes
+
+```
+no drift: 21 headers over HTTP/2.0, path /v1/messages?beta=true,
+metadata.user_id and system[0] both match the captured format
+Claude Code identity gate PASSED: the wire identity matches
+claude-code-headers-20260923.jsonl, and the caller's system prompt survived
+alongside the billing marker.
+```
+
+Same 21 headers as the run before the change, plus the new assertion. T3 now has
+wire-level coverage: a real proxy request carrying a one-block system array came
+out the far side with two blocks, the marker prepended and the caller's prompt
+intact.
+
+What the gate no longer drives is `translateOpenAIRequest`. That is acceptable
+here — normalization is the same `ApplyBody`/`ApplyHeaders` call whatever the
+inbound shape, and the previous run proved the two shapes converge on the same
+normalized body. The OpenAI translation itself is not what this gate tests, and it
+has its own unit tests.
 
 RUN by the operator afterwards: `capture-claude-code-headers.sh oauth`, twice.
 The second run printed `exit=0` on a successful 7-record capture, which is the
@@ -353,6 +396,8 @@ Pre-existing gofmt breakage outside this feature, untouched here:
 | T7 dead Profile fields | done | `e5a7904` |
 | T8 reject control characters | done | `76beecd`, both config surfaces |
 | T9 profile built once | done | in `857632c` |
+| T10 refuse to append to a capture | done | `3882436`, found by a live capture run |
+| T11 wire guard for T3 | done | `45a4bbd`, `28cb43b`, plus the single-request fix; passes live |
 
 T4's test calls `forwardToCustomEndpoint` directly. The router reads `model` out
 of the body before reaching it, so a non-object body cannot arrive through the
