@@ -35,6 +35,24 @@ Extracted from the committed captures. `X-Claude-Code-Session-Id` and
 to the header is unknowable. T1 leaves it equal to the header value — the
 conservative choice, since only the prompt-id collision is disproved.
 
+### Third dataset, captured after the fix
+
+A verification run of `capture-claude-code-headers.sh oauth` on 2026-09-23T19:16Z
+produced three more `POST /v1/messages` records on the first account. They agree:
+
+| row | `X-Claude-Code-Session-Id` | `cc_prompt_id` |
+|---|---|---|
+| 9 | `50a3c033-8257-4734-a246-a74862f651e2` | `32621f51-c8a5-4d69-b7fb-611e56d53e49` |
+| 12 | `eaa80bf0-6803-47ce-be91-5affe66453fc` | `7384faf7-6599-4504-8b35-3fc17ec80e9e` |
+| 13 | `eaa80bf0-6803-47ce-be91-5affe66453fc` | `7384faf7-6599-4504-8b35-3fc17ec80e9e` |
+
+Nine of nine now, over three runs and two accounts, zero identical pairs. Rows 12
+and 13 repeat both values, confirming again that both are stable across the turns
+of one process. Those records are NOT committed: they arrived by appending to the
+committed baseline, which is the hazard the run exposed (see below), so the
+baseline was restored to its committed 7 and the new records were set aside
+outside the repo.
+
 ## T1 — `cc_prompt_id` must not equal the session id
 
 Modify: `internal/ccidentity/apply.go`
@@ -178,6 +196,33 @@ listener, which this session's permission classifier refuses as an external writ
 The gate's comparison logic is the Python half and is covered by the 54 tests
 above; the live leg is still unrun for this branch and needs an operator to
 execute it by hand.
+
+RUN by the operator afterwards: `capture-claude-code-headers.sh oauth` completed
+all five steps and wrote 7 records. Its exit status was not observed, so the
+exit-status fix is proven only by the isolated repro, not by that run. The run did
+surface a new defect, fixed in the same pass:
+
+## T10 — refuse to append to an existing capture
+
+Modify: `scripts/capture-claude-code-headers.sh`
+
+`CAPTURE_TAG` defaults to `date +%Y%m%d` and the addon opens its output with
+`"a"`, so the documented `oauth` command, run on the same calendar day as an
+existing capture, appends to it and regenerates its `.meta.txt` from the combined
+file. The committed 7-record baseline became 14 records with no warning. Its
+first 7 lines stayed byte-identical, so nothing was lost, but two things follow
+that the script's output does not show:
+
+- The frozen reference stops being frozen, visible only as a dirty working tree.
+  One `git add -A` commits a mutated baseline.
+- The drift gate gets LOOSER. `compare_headers` unions the expected header set
+  over every baseline record, so a header appearing only in the appended run
+  becomes expected and stops being reported as unexpected.
+
+Now refuses when the target holds records, naming `CLAUDE_CAPTURE_TAG` for a
+separate capture and `CLAUDE_CAPTURE_APPEND=1` as the deliberate override. All
+three states exercised: existing file rejects, override proceeds, absent file
+proceeds.
 
 Pre-existing gofmt breakage outside this feature, untouched here:
 `internal/accounts/{manager,manager_test,forensics_test}.go`,

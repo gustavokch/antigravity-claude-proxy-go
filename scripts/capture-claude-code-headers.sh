@@ -252,6 +252,34 @@ if [[ "${MODE}" == "check" ]]; then
   exit 0
 fi
 
+# The capture file must not already hold records.
+#
+# CAPTURE_TAG defaults to today's date and the addon opens its output with "a",
+# so running the documented `oauth` command on the same calendar day as an
+# existing capture silently APPENDS to it and regenerates its .meta.txt from the
+# combined file. When that file is a committed baseline, two things follow, and
+# neither is visible in the script's output:
+#
+#   - The frozen reference stops being frozen. It shows up only as a dirty
+#     working tree, and one `git add -A` commits a mutated baseline.
+#   - The drift gate gets LOOSER. compare_headers builds its expected set as the
+#     union over every baseline record, so a header that appears only in the
+#     appended run becomes "expected" and stops being reported as unexpected.
+#
+# Observed on 2026-09-23: a verification run grew the committed 7-record baseline
+# to 14. Refusing is the fix; CLAUDE_CAPTURE_TAG is how you take a second
+# capture, and CLAUDE_CAPTURE_APPEND=1 is the deliberate override.
+if [[ -s "${DUMP_OUT}" && "${CLAUDE_CAPTURE_APPEND:-0}" != "1" ]]; then
+  echo "ERROR: ${DUMP_OUT} already holds $(wc -l < "${DUMP_OUT}" | tr -d ' ') records." >&2
+  echo "ERROR: this script appends, so continuing would grow that file and rewrite its" >&2
+  echo "ERROR: .meta.txt from the combined result. If it is a committed baseline, that" >&2
+  echo "ERROR: silently loosens the drift gate as well." >&2
+  echo "ERROR: take a separate capture instead:" >&2
+  echo "ERROR:   CLAUDE_CAPTURE_TAG=$(date +%Y%m%d)-run2 $0 ${MODE}" >&2
+  echo "ERROR: or set CLAUDE_CAPTURE_APPEND=1 to append on purpose." >&2
+  exit 1
+fi
+
 echo "=== [3/5] Starting mitmdump on port ${MITM_PORT} ==="
 MITM_LOG="/tmp/claude-capture-mitmdump.log"
 : > "${MITM_LOG}"
