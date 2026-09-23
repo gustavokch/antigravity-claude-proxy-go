@@ -132,7 +132,16 @@ def check_normalized(baseline: dict, observed: dict) -> list[str]:
         problems.append(f"User-Agent is {observed_ua!r}, want the captured {expected_ua!r}")
 
     expected_class = header_map(baseline).get("x-claude-code-request-class")
-    if expected_class is not None:
+    if expected_class is None:
+        # Skipping the assertion here would degrade this policy to a
+        # User-Agent comparison without saying so, which is the failure mode
+        # this whole checker exists to rule out. check_discovery treats a
+        # baseline with no GET the same way.
+        problems.append(
+            "the baseline POST carries no x-claude-code-request-class, so this "
+            "policy cannot tell a normalized request from an unnormalized one"
+        )
+    else:
         entry = headers.get("x-claude-code-request-class")
         if entry is None:
             problems.append("x-claude-code-request-class is absent; the request was not normalized")

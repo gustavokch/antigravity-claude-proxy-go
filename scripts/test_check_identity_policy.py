@@ -106,6 +106,14 @@ class NormalizedTest(unittest.TestCase):
         problems = policy.check_normalized(baseline_post(), observed)
         self.assertTrue(any("beta=true" in p for p in problems), problems)
 
+    def test_rejects_a_baseline_without_the_normalization_marker(self):
+        # A regenerated capture that dropped the marker would otherwise leave
+        # this policy green while asserting only the User-Agent.
+        baseline = baseline_post()
+        baseline["headers"] = [["User-Agent", CAPTURED_UA]]
+        problems = policy.check_normalized(baseline, observed_normalized())
+        self.assertTrue(any("baseline" in p for p in problems), problems)
+
 
 class PassthroughTest(unittest.TestCase):
     def test_accepts_an_unnormalized_keyed_request(self):
