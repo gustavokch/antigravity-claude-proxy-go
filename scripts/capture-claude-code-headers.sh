@@ -121,13 +121,19 @@ fi
 # into shell history and any tool-call log. A file also lets the operator create
 # the credential without pasting it anywhere that records it.
 read_secret() {
-  # read_secret <ENV_NAME>; echoes the value or nothing.
-  local name="$1" file_var="${1}_FILE" value file
+  # read_secret <ENV_NAME> [DEFAULT_FILE]; echoes the value or nothing.
+  local name="$1" default_file="${2:-}" file_var="${1}_FILE" value file
   value="${!name:-}"
   file="${!file_var:-}"
   if [[ -n "${value}" ]]; then
     printf '%s' "${value}"
     return
+  fi
+  # Default path, used only when both the variable and its _FILE are unset. It
+  # exists so `check` inspects the obvious file instead of silently reporting
+  # absent because the operator did not repeat the path on the command line.
+  if [[ -z "${file}" && -n "${default_file}" && -f "${default_file}" ]]; then
+    file="${default_file}"
   fi
   if [[ -n "${file}" ]]; then
     if [[ ! -f "${file}" ]]; then
@@ -144,24 +150,35 @@ read_secret() {
   fi
 }
 
+# A real credential is far longer than this. The floor exists because the most
+# likely mistake is writing a placeholder or a truncated paste into the file,
+# and a 401 three minutes into a container run hides that cause.
+MIN_SECRET_CHARS=20
+
+require_secret() {
+  # require_secret <ENV_NAME> <LABEL> <DEFAULT_FILE>; echoes the value or exits 1.
+  local name="$1" label="$2" default_file="$3" value
+  value="$(read_secret "${name}" "${default_file}")"
+  if [[ -z "${value}" ]]; then
+    echo "ERROR: no ${label}. Set ${name}, or point ${name}_FILE at a file holding it." >&2
+    [[ -n "${default_file}" ]] && echo "ERROR: the default path ${default_file} is not present either." >&2
+    exit 1
+  fi
+  if (( ${#value} < MIN_SECRET_CHARS )); then
+    echo "ERROR: the ${label} is only ${#value} characters, which is too short to be" >&2
+    echo "ERROR: a real credential. A placeholder or truncated paste is the usual cause." >&2
+    exit 1
+  fi
+  printf '%s' "${value}"
+}
+
 case "${MODE}" in
   oauth)
-    TOKEN="$(read_secret CLAUDE_CODE_OAUTH_TOKEN)"
-    if [[ -z "${TOKEN}" ]]; then
-      echo "ERROR: no OAuth token. Set CLAUDE_CODE_OAUTH_TOKEN, or point" >&2
-      echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN_FILE at a file holding it." >&2
-      echo "ERROR: run '$0 token' first if you have neither." >&2
-      exit 1
-    fi
+    TOKEN="$(require_secret CLAUDE_CODE_OAUTH_TOKEN 'OAuth token' "${HOME}/.claude-oat")"
     AUTH_ENV=(-e "CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}")
     ;;
   apikey)
-    TOKEN="$(read_secret ANTHROPIC_API_KEY)"
-    if [[ -z "${TOKEN}" ]]; then
-      echo "ERROR: no API key. Set ANTHROPIC_API_KEY, or point" >&2
-      echo "ERROR: ANTHROPIC_API_KEY_FILE at a file holding it." >&2
-      exit 1
-    fi
+    TOKEN="$(require_secret ANTHROPIC_API_KEY 'API key' "${HOME}/.claude-key")"
     AUTH_ENV=(-e "ANTHROPIC_API_KEY=${TOKEN}")
     ;;
 esac
@@ -169,12 +186,13 @@ unset TOKEN
 
 if [[ "${MODE}" == "check" ]]; then
   # Presence only, never the value: this is the fastest way to find out that a
-  # token file is pointed at the wrong path or is carrying a trailing newline.
-  oauth_chars=$(read_secret CLAUDE_CODE_OAUTH_TOKEN | wc -c | tr -d ' ')
-  key_chars=$(read_secret ANTHROPIC_API_KEY | wc -c | tr -d ' ')
+  # token file is pointed at the wrong path, holds a placeholder, or is carrying
+  # a trailing newline.
+  oauth_chars=$(read_secret CLAUDE_CODE_OAUTH_TOKEN "${HOME}/.claude-oat" | wc -c | tr -d ' ')
+  key_chars=$(read_secret ANTHROPIC_API_KEY "${HOME}/.claude-key" | wc -c | tr -d ' ')
   echo "=== check only: prerequisites satisfied, nothing captured ==="
-  echo "  oauth token: ${oauth_chars} chars (0 = absent)"
-  echo "  api key:     ${key_chars} chars (0 = absent)"
+  echo "  oauth token: ${oauth_chars} chars (need >= ${MIN_SECRET_CHARS}; 0 = absent)"
+  echo "  api key:     ${key_chars} chars (need >= ${MIN_SECRET_CHARS}; 0 = absent)"
   exit 0
 fi
 
