@@ -272,6 +272,9 @@ func BillingHeader(id Identity, turn Turn) string {
 	b.WriteString("; cc_entrypoint=")
 	b.WriteString(entrypoint)
 	b.WriteString("; cch=")
+	// Five hex characters, as captured. randomHex reads whole bytes and returns
+	// two characters per byte, so three bytes is the smallest read that covers
+	// five; the sixth character is discarded rather than padded.
 	b.WriteString(randomHex(3)[:5])
 	b.WriteString("; ")
 	if turn.PrevRequestID != "" {
