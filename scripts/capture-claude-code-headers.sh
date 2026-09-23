@@ -204,6 +204,19 @@ case "${MODE}" in
 esac
 unset TOKEN
 
+# The interactive branch runs under expect, which echoes the command it spawns.
+# An -e NAME=value argument would therefore print the credential, so the value is
+# handed over in a 0600 env-file instead and only its path appears in argv.
+INTERACTIVE_AUTH_ARGS=("${AUTH_ENV[@]}")
+if [[ "${MODE}" == "interactive" ]]; then
+  AUTH_ENV_FILE="$(mktemp -t claude-capture-env)"
+  chmod 600 "${AUTH_ENV_FILE}"
+  case "${MODE}" in
+    interactive) printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(read_secret CLAUDE_CODE_OAUTH_TOKEN "${HOME}/.claude-oat")" > "${AUTH_ENV_FILE}" ;;
+  esac
+  INTERACTIVE_AUTH_ARGS=(--env-file "${AUTH_ENV_FILE}")
+fi
+
 if [[ "${MODE}" == "check" ]]; then
   # Presence only, never the value: this is the fastest way to find out that a
   # token file is pointed at the wrong path, holds a placeholder, or is carrying
@@ -263,6 +276,7 @@ cleanup() {
   # function rather than by a second `trap ... EXIT`, because a second EXIT
   # trap REPLACES this one and would silently stop mitmdump from being killed.
   [[ -n "${ONBOARD_DIR:-}" ]] && rm -rf "${ONBOARD_DIR}"
+  [[ -n "${AUTH_ENV_FILE:-}" ]] && rm -f "${AUTH_ENV_FILE}"
 }
 # EXIT alone is not enough: a killed or interrupted script leaves mitmdump
 # holding the port, and the next run then fails to bind while every check passes.
@@ -337,7 +351,29 @@ if [[ "${MODE}" == "interactive" ]]; then
     > "${ONBOARD_DIR}/.claude.json"
 
   podman rm -f claude-mitm-interactive >/dev/null 2>&1 || true
-  podman run --rm -it \
+
+  # expect, not piped stdin: see the driver's own header for why. The podman
+  # argv is passed through as-is so this script stays the single source of the
+  # container's environment.
+  if ! command -v expect >/dev/null 2>&1; then
+    echo "ERROR: expect is not installed; interactive capture cannot be driven." >&2
+    echo "ERROR: macOS ships it at /usr/bin/expect." >&2
+    exit 1
+  fi
+
+  CLAUDE_INTERACTIVE_LOG="${CLAUDE_INTERACTIVE_LOG:-/tmp/claude-interactive-tui.log}"
+  : > "${CLAUDE_INTERACTIVE_LOG}"
+  export CLAUDE_INTERACTIVE_LOG
+  export CLAUDE_INTERACTIVE_PROMPT="${CLAUDE_INTERACTIVE_PROMPT:-Reply with exactly CLAUDE_INTERACTIVE_OK}"
+
+  # stdin must not reach EOF: in a non-interactive shell expect's stdin closes at
+  # once, and podman then fails mid-session with "Failed to write input to
+  # service: EOF". /dev/zero never EOFs and costs one descriptor. A `sleep |`
+  # holder was tried first and was worse, because the pipeline then outlives
+  # expect by the whole sleep duration and every run looked hung.
+  expect "${REPO_ROOT}/scripts/capture-claude-code-interactive.exp" \
+    </dev/zero \
+    podman run --rm -it \
     --name claude-mitm-interactive \
     --add-host=containers.internal:host-gateway \
     -e "HTTPS_PROXY=http://host.containers.internal:${MITM_PORT}" \
@@ -349,8 +385,10 @@ if [[ "${MODE}" == "interactive" ]]; then
     -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \
     -v "${MITM_CONFDIR}:/certs:ro" \
     -v "${ONBOARD_DIR}/.claude.json:/root/.claude.json:ro" \
-    "${AUTH_ENV[@]}" \
+    "${INTERACTIVE_AUTH_ARGS[@]}" \
     "${IMAGE_NAME}" \
+    claude || true
+  podman rm -f claude-mitm-interactive >/dev/null 2>&1 || true
     claude || true
 else
   podman run --rm \
