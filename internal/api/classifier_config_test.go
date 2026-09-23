@@ -291,5 +291,3 @@ func TestLogsStreamEmitsHistoryAndLiveEntries(t *testing.T) {
 		}
 	}
 }
-
-

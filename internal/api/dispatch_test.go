@@ -630,5 +630,3 @@ func TestDispatch_HotReload(t *testing.T) {
 	rec2 := postDispatchMessages(t, server, dispatchModel)
 	requireDispatchWinnerDelta(t, probe, before, backend, rec2, "openrouter")
 }
-
-

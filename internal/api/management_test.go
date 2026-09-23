@@ -1340,23 +1340,23 @@ func TestManagement_AccountLimits_WithClaudeCodeAccounts(t *testing.T) {
 				}
 				if sonnet, hasSonnet := limits["claude-3-7-sonnet-20250219"].(map[string]any); !hasSonnet {
 					t.Errorf("expected claude-3-7-sonnet-20250219 in claudecode account limits")
-			} else {
-				// No rate-limit headers received: quota is unknown (N/A),
-				// not a false-full 100%.
-				if sonnet["remaining"] != "N/A" {
-					t.Errorf("expected N/A remaining for account with no quota signal, got %v", sonnet["remaining"])
+				} else {
+					// No rate-limit headers received: quota is unknown (N/A),
+					// not a false-full 100%.
+					if sonnet["remaining"] != "N/A" {
+						t.Errorf("expected N/A remaining for account with no quota signal, got %v", sonnet["remaining"])
+					}
+					if sonnet["remainingFraction"] != nil {
+						t.Errorf("expected null remainingFraction, got %v", sonnet["remainingFraction"])
+					}
 				}
-				if sonnet["remainingFraction"] != nil {
-					t.Errorf("expected null remainingFraction, got %v", sonnet["remainingFraction"])
+				if alias, hasAlias := limits["claude-3-7-sonnet-custom"].(map[string]any); !hasAlias {
+					t.Errorf("expected claude-3-7-sonnet-custom alias in limits")
+				} else {
+					if alias["remaining"] != "N/A" {
+						t.Errorf("expected N/A remaining for alias, got %v", alias["remaining"])
+					}
 				}
-			}
-			if alias, hasAlias := limits["claude-3-7-sonnet-custom"].(map[string]any); !hasAlias {
-				t.Errorf("expected claude-3-7-sonnet-custom alias in limits")
-			} else {
-				if alias["remaining"] != "N/A" {
-					t.Errorf("expected N/A remaining for alias, got %v", alias["remaining"])
-				}
-			}
 			} else if acc["email"] == "claude-disabled@example.com" {
 				foundDisabled = true
 				if acc["status"] != "disabled" {
