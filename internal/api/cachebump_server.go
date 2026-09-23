@@ -210,7 +210,7 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 	// A replay must carry the same identity as the original request, so the
 	// recorded session key is reused rather than derived again: a different
 	// session UUID would make the replay look like a different client.
-	identity, normalize := config.Get().ClaudeCode.SpoofIdentity(acc.AccountUUID, rec.SessionID)
+	identity, normalize := config.Get().ClaudeCode.Identity.WireIdentity(acc.AccountUUID, rec.SessionID)
 	resp, err := client.SendMessage(ctx, claudecode.MessageRequest{
 		Token:         acc.Token,
 		Body:          rec.Body,

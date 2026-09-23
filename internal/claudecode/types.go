@@ -140,13 +140,22 @@ func (c IdentityConfig) Validate() error {
 	return nil
 }
 
-// Identity builds the wire identity from this configuration.
+// WireIdentity builds the wire identity from this configuration, and reports
+// whether normalization applies at all.
 //
-// It returns ok=false when normalization is disabled. accountUUID may be empty:
+// One name for this lookup, on the type that holds the configuration. It is
+// reached as cfg.Identity.WireIdentity(...) on the pooled gateway and as
+// endpoint.Identity.WireIdentity(...) on the custom-endpoint path; there is no
+// second spelling on the parent Config.
+//
+// accountUUID and sessionKey are what the request already knows: the account
+// chosen by the pool, and the session key used for stickiness. Reusing the
+// session key keeps the session UUID consistent with that routing rather than
+// inventing a second, unrelated notion of session. accountUUID may be empty:
 // the capture recorded metadata.user_id carrying an EMPTY account_uuid in every
 // request, so an endpoint with no pooled account reproduces that faithfully
 // rather than inventing one.
-func (c IdentityConfig) Identity(accountUUID, sessionKey string) (ccidentity.Identity, bool) {
+func (c IdentityConfig) WireIdentity(accountUUID, sessionKey string) (ccidentity.Identity, bool) {
 	if c.Disabled {
 		return ccidentity.Identity{}, false
 	}
@@ -160,17 +169,6 @@ func (c IdentityConfig) Identity(accountUUID, sessionKey string) (ccidentity.Ide
 		StainlessOS:             c.StainlessOS,
 		StainlessRuntimeVersion: c.StainlessRuntimeVersion,
 	}, true
-}
-
-// SpoofIdentity returns the wire identity to send for one request of the pooled
-// Claude Code gateway, and whether normalization is enabled at all.
-//
-// accountUUID and sessionKey are what the request already knows: the account
-// chosen by the pool, and the session key used for stickiness. Reusing the
-// session key keeps the spoofed session UUID consistent with that routing rather
-// than inventing a second, unrelated notion of session.
-func (c Config) SpoofIdentity(accountUUID, sessionKey string) (ccidentity.Identity, bool) {
-	return c.Identity.Identity(accountUUID, sessionKey)
 }
 
 // Config is the root configuration structure for the Claude Code subsystem.

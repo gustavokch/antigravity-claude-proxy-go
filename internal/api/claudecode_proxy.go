@@ -340,7 +340,7 @@ func (server *Server) forwardToClaudeCode(
 					pool.Acquire(acc.ID)
 					startTime := time.Now()
 
-					identity, normalize := ccCfg.SpoofIdentity(acc.AccountUUID, sessionKey)
+					identity, normalize := ccCfg.Identity.WireIdentity(acc.AccountUUID, sessionKey)
 					resp, err := client.SendMessage(ctx, claudecode.MessageRequest{
 						Token:         acc.Token,
 						Body:          bodyBytes,
@@ -473,7 +473,7 @@ func (server *Server) forwardToClaudeCode(
 		pool.Acquire(acc.ID)
 		startTime := time.Now()
 
-		identity, normalize := ccCfg.SpoofIdentity(acc.AccountUUID, sessionKey)
+		identity, normalize := ccCfg.Identity.WireIdentity(acc.AccountUUID, sessionKey)
 		resp, err := client.SendMessage(request.Context(), claudecode.MessageRequest{
 			Token:         acc.Token,
 			Body:          reqBody,

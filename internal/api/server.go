@@ -1051,7 +1051,7 @@ func customEndpointIdentity(endpoint config.EndpointConfig, sessionKey string) (
 	if strings.TrimSpace(endpoint.APIKey) != "" {
 		return ccidentity.Identity{}, false
 	}
-	return endpoint.Identity.Identity("", sessionKey)
+	return endpoint.Identity.WireIdentity("", sessionKey)
 }
 
 func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, model string, reqBody []byte) {
