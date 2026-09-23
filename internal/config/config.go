@@ -21,6 +21,12 @@ type OpenRouterResponseCacheConfig = openrouter.ResponseCacheConfig
 type EndpointConfig struct {
 	URL    string `json:"url"`
 	APIKey string `json:"apiKey,omitempty"`
+	// Identity controls whether requests to this endpoint are rewritten to the
+	// captured Claude Code wire identity. It applies only when the endpoint is
+	// Anthropic-shaped (see isAnthropicEndpoint): claiming to be Claude Code over
+	// a protocol that is not the Anthropic wire would be a lie about the request
+	// format, not just about the client.
+	Identity claudecode.IdentityConfig `json:"identity,omitempty"`
 }
 
 type OpenRouterModelConfig struct {

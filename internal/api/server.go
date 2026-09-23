@@ -29,6 +29,7 @@ import (
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/cachebump"
+	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
@@ -998,6 +999,23 @@ func resolveCustomEndpointURL(endpointURL string, requestPath string) (*url.URL,
 	return targetURL, nil
 }
 
+// customEndpointIdentity builds the wire identity for one custom-endpoint
+// request, and reports whether normalization applies.
+//
+// Gated on isAnthropicEndpoint: the rewrite claims to be the Claude Code client
+// speaking the Anthropic wire, so an endpoint that is not Anthropic-shaped keeps
+// its own headers rather than being told a lie about its request format.
+//
+// accountUUID is empty because a custom endpoint has no pooled Claude Code
+// account. That is what the capture recorded anyway: every observed request
+// carried an empty account_uuid inside metadata.user_id.
+func customEndpointIdentity(endpoint config.EndpointConfig, sessionKey string) (ccidentity.Identity, bool) {
+	if !isAnthropicEndpoint(endpoint.URL) {
+		return ccidentity.Identity{}, false
+	}
+	return endpoint.Identity.Identity("", sessionKey)
+}
+
 func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, request *http.Request, endpoint config.EndpointConfig, model string, reqBody []byte) {
 	isMessagesRequest := request.URL.Path == "/v1/messages" || strings.HasSuffix(request.URL.Path, "/messages")
 
@@ -1019,7 +1037,16 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		var reqMap map[string]any
 		if err := json.Unmarshal(reqBody, &reqMap); err == nil {
 			customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
+			identity, normalize := customEndpointIdentity(endpoint, customSessionKey)
 			sender := func(ctx context.Context, bodyBytes []byte) (*http.Response, error) {
+				if normalize {
+					normalized, err := ccidentity.ApplyBody(bodyBytes, ccidentity.DefaultProfile(), identity, ccidentity.Turn{})
+					if err != nil {
+						return nil, fmt.Errorf("normalize request body: %w", err)
+					}
+					bodyBytes = normalized
+				}
+
 				httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL.String(), bytes.NewReader(bodyBytes))
 				if err != nil {
 					return nil, err
@@ -1029,14 +1056,19 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 					httpReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
 					httpReq.Header.Set("x-api-key", endpoint.APIKey)
 				}
-				if v := request.Header.Get("anthropic-version"); v != "" {
-					httpReq.Header.Set("anthropic-version", v)
+				if normalize {
+					ccidentity.ApplyHeaders(httpReq.Header, ccidentity.DefaultProfile(), identity, ccidentity.Turn{})
 				} else {
-					httpReq.Header.Set("anthropic-version", "2023-06-01")
+					if v := request.Header.Get("anthropic-version"); v != "" {
+						httpReq.Header.Set("anthropic-version", v)
+					} else {
+						httpReq.Header.Set("anthropic-version", "2023-06-01")
+					}
+					if b := request.Header.Get("anthropic-beta"); b != "" {
+						httpReq.Header.Set("anthropic-beta", b)
+					}
 				}
-				if b := request.Header.Get("anthropic-beta"); b != "" {
-					httpReq.Header.Set("anthropic-beta", b)
-				}
+				httpReq.ContentLength = int64(len(bodyBytes))
 				resp, err := http.DefaultClient.Do(httpReq)
 				if err == nil && resp.StatusCode < 400 {
 					server.maybeRecordCacheBump(cachebump.RouteCustom, request, bodyBytes, customSessionKey, model, "", model, minMaxTokensFloor)
@@ -1092,6 +1124,28 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			} else {
 				out.Header.Del("Authorization")
 				out.Header.Del("x-api-key")
+			}
+
+			// Normalization runs LAST and only for Anthropic-shaped endpoints, so
+			// the omit list can remove the x-api-key the auth block just set: the
+			// captured OAuth request carries Authorization alone.
+			if identity, normalize := customEndpointIdentity(endpoint, customSessionKey); normalize {
+				normalized, err := ccidentity.ApplyBody(reqBody, ccidentity.DefaultProfile(), identity, ccidentity.Turn{})
+				if err != nil {
+					// Fail closed. Rewrite has no error return, so record it and
+					// send the unmodified headers with the original body rather
+					// than a half-rewritten request: a partial rewrite is a
+					// fingerprint no client ever sends.
+					if server.logger != nil {
+						server.logger.Error("custom endpoint identity normalization failed; forwarding unmodified",
+							"error", err, "url", targetURL.String())
+					}
+				} else {
+					out.Body = io.NopCloser(bytes.NewReader(normalized))
+					out.ContentLength = int64(len(normalized))
+					ccidentity.ApplyHeaders(out.Header, ccidentity.DefaultProfile(), identity, ccidentity.Turn{})
+					return
+				}
 			}
 
 			if v := request.Header.Get("anthropic-version"); v != "" {

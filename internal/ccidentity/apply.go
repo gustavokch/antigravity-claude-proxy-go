@@ -28,44 +28,58 @@ var buildSuffix = func() string {
 
 // ApplyHeaders rewrites h into the captured Claude Code header set.
 //
-// Order matters: every name in the omit list is deleted BEFORE the captured set
-// is assigned. Assigning alone would leave a foreign client's value in place for
-// any header the capture does not mention, which is the leak the omit list
-// exists to close.
+// Deletion happens before assignment, and it is case-insensitive, because
+// net/http canonicalises the names it parses: a client's `x-app` arrives stored
+// as `X-App`, and `anthropic-beta` as `Anthropic-Beta`. Assigning the captured
+// spelling without first removing the canonical one leaves BOTH keys in the map,
+// and the transport writes both — so the upstream would read the client's value
+// under the canonical key and the captured one would be inert. That is a silent
+// failure, not a visible one: the request still succeeds.
 //
-// Names are assigned into the map directly rather than through Header.Set,
-// because Set canonicalises and the captured name is X-Stainless-OS, not
-// X-Stainless-Os. Over the HTTP/1.1 transport the capture used, that difference
-// reaches the wire.
+// The same canonicalisation is why names are assigned into the map directly
+// rather than through Header.Set. The captured wire names are X-Stainless-OS and
+// the lowercase anthropic-* family; Set would store X-Stainless-Os and
+// Anthropic-Beta instead, which over the captured HTTP/1.1 transport reaches the
+// wire.
 func ApplyHeaders(h map[string][]string, p Profile, id Identity, turn Turn) {
 	if h == nil {
 		return
 	}
+
+	static := StaticFor(id)
+
+	// Names this call will write, compared case-insensitively.
+	claimed := make(map[string]bool, len(p.Omit)+len(static)+len(p.Dynamic)+1)
 	for _, name := range p.Omit {
-		delete(h, name)
-		delete(h, canonicalName(name))
+		claimed[strings.ToLower(name)] = true
 	}
-	for _, header := range StaticFor(id) {
+	for _, header := range static {
+		claimed[strings.ToLower(header.Name)] = true
+	}
+	claimed[strings.ToLower(OAuthBetaKey)] = true
+	for _, dynamic := range p.Dynamic {
+		claimed[strings.ToLower(dynamic.Name)] = true
+	}
+
+	for key := range h {
+		if claimed[strings.ToLower(key)] {
+			delete(h, key)
+		}
+	}
+
+	for _, header := range static {
 		h[header.Name] = []string{header.Value}
 	}
-	h["anthropic-beta"] = []string{strings.Join(p.Betas, ",")}
+	h[OAuthBetaKey] = []string{strings.Join(p.Betas, ",")}
 	for _, dynamic := range p.Dynamic {
 		h[dynamic.Name] = []string{dynamic.Value(id, turn)}
 	}
 }
 
-// canonicalName is net/http's canonical form, used so an omit entry removes a
-// value a caller inserted with Header.Set as well as one assigned by name.
-func canonicalName(name string) string {
-	parts := strings.Split(strings.ToLower(name), "-")
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
-	}
-	return strings.Join(parts, "-")
-}
+// OAuthBetaKey is the captured spelling of the beta header. It is lowercase on
+// the wire, which is why this package addresses it by name rather than through
+// the canonicalising http.Header helpers.
+const OAuthBetaKey = "anthropic-beta"
 
 // ApplyBody rewrites a /v1/messages body into the captured Claude Code shape:
 // metadata.user_id becomes the captured stringified JSON object, system block 0

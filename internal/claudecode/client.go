@@ -67,13 +67,13 @@ func ApplyAuthHeaders(req *http.Request, token string) {
 		deleteHeaderFold(req.Header, "x-api-key")
 
 		// Ensure anthropic-beta includes oauth-2025-04-20
-		betaKey := headerKeyFold(req.Header, OAuthBetaKey)
+		betaKey := headerKeyFold(req.Header, ccidentity.OAuthBetaKey)
 		existingBeta := ""
 		if betaKey != "" {
 			existingBeta = strings.Join(req.Header[betaKey], ",")
 		}
 		if existingBeta == "" {
-			req.Header[OAuthBetaKey] = []string{OAuthBetaHeader}
+			req.Header[ccidentity.OAuthBetaKey] = []string{OAuthBetaHeader}
 			return
 		}
 		for _, p := range strings.Split(existingBeta, ",") {
@@ -89,11 +89,6 @@ func ApplyAuthHeaders(req *http.Request, token string) {
 		deleteHeaderFold(req.Header, "Authorization")
 	}
 }
-
-// OAuthBetaKey is the captured spelling of the beta header. It is lowercase on
-// the wire, which is why this package addresses it by name rather than through
-// the canonicalising http.Header helpers.
-const OAuthBetaKey = "anthropic-beta"
 
 // deleteHeaderFold removes every key matching name case-insensitively.
 func deleteHeaderFold(h http.Header, name string) {

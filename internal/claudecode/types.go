@@ -108,27 +108,37 @@ type IdentityConfig struct {
 	StainlessRuntimeVersion string `json:"stainlessRuntimeVersion,omitempty"`
 }
 
-// SpoofIdentity returns the wire identity to send for one request, and whether
-// normalization is enabled at all.
+// Identity builds the wire identity from this configuration.
+//
+// It returns ok=false when normalization is disabled. accountUUID may be empty:
+// the capture recorded metadata.user_id carrying an EMPTY account_uuid in every
+// request, so an endpoint with no pooled account reproduces that faithfully
+// rather than inventing one.
+func (c IdentityConfig) Identity(accountUUID, sessionKey string) (ccidentity.Identity, bool) {
+	if c.Disabled {
+		return ccidentity.Identity{}, false
+	}
+	return ccidentity.Identity{
+		AccountUUID:             accountUUID,
+		SessionKey:              sessionKey,
+		ClientVersion:           c.ClientVersion,
+		Entrypoint:              c.Entrypoint,
+		TurnOrigin:              c.TurnOrigin,
+		UserAgent:               c.UserAgent,
+		StainlessOS:             c.StainlessOS,
+		StainlessRuntimeVersion: c.StainlessRuntimeVersion,
+	}, true
+}
+
+// SpoofIdentity returns the wire identity to send for one request of the pooled
+// Claude Code gateway, and whether normalization is enabled at all.
 //
 // accountUUID and sessionKey are what the request already knows: the account
 // chosen by the pool, and the session key used for stickiness. Reusing the
 // session key keeps the spoofed session UUID consistent with that routing rather
 // than inventing a second, unrelated notion of session.
 func (c Config) SpoofIdentity(accountUUID, sessionKey string) (ccidentity.Identity, bool) {
-	if c.Identity.Disabled {
-		return ccidentity.Identity{}, false
-	}
-	return ccidentity.Identity{
-		AccountUUID:             accountUUID,
-		SessionKey:              sessionKey,
-		ClientVersion:           c.Identity.ClientVersion,
-		Entrypoint:              c.Identity.Entrypoint,
-		TurnOrigin:              c.Identity.TurnOrigin,
-		UserAgent:               c.Identity.UserAgent,
-		StainlessOS:             c.Identity.StainlessOS,
-		StainlessRuntimeVersion: c.Identity.StainlessRuntimeVersion,
-	}, true
+	return c.Identity.Identity(accountUUID, sessionKey)
 }
 
 // Config is the root configuration structure for the Claude Code subsystem.
