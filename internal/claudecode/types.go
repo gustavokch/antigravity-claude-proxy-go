@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -106,6 +107,37 @@ type IdentityConfig struct {
 	UserAgent               string `json:"userAgent,omitempty"`
 	StainlessOS             string `json:"stainlessOs,omitempty"`
 	StainlessRuntimeVersion string `json:"stainlessRuntimeVersion,omitempty"`
+}
+
+// Validate reports the first override that cannot be sent as an HTTP header
+// value.
+//
+// All six overrides end up in header values or in the system-block marker. Go's
+// transport refuses a value containing a control character with "invalid header
+// field value", so an unchecked CR or LF here would break every request to this
+// gateway with an error that names neither the field nor where it was set.
+// Refusing at save time puts the message where the operator is.
+func (c IdentityConfig) Validate() error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"clientVersion", c.ClientVersion},
+		{"entrypoint", c.Entrypoint},
+		{"turnOrigin", c.TurnOrigin},
+		{"userAgent", c.UserAgent},
+		{"stainlessOs", c.StainlessOS},
+		{"stainlessRuntimeVersion", c.StainlessRuntimeVersion},
+	} {
+		for _, r := range field.value {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf(
+					"identity.%s contains a control character (%q); it is sent as an HTTP header value",
+					field.name, r)
+			}
+		}
+	}
+	return nil
 }
 
 // Identity builds the wire identity from this configuration.

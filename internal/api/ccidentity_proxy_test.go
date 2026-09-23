@@ -224,6 +224,70 @@ func TestCustomEndpoint_NormalizationFailureFailsClosed(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeConfigPost_RejectsControlCharsInIdentityOverrides pins that a
+// bad override is refused at save time.
+//
+// The six overrides become outbound header values. Go's transport rejects a
+// value containing a CR or LF with "invalid header field value", so one bad
+// paste in the settings panel would break every request to the gateway with an
+// error naming neither the field nor the panel. The WebUI trims surrounding
+// whitespace, which does not touch an embedded newline.
+func TestClaudeCodeConfigPost_RejectsControlCharsInIdentityOverrides(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	seedCCConfig(t)
+
+	before := config.Get().ClaudeCode.Identity
+	rec := doJSON(t, srv, http.MethodPost, "/api/claudecode/config",
+		`{"enabled":true,"identity":{"userAgent":"claude-cli/2.1.280\r\nX-Injected: 1"}}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "userAgent") {
+		t.Errorf("error %q does not name the offending field", rec.Body.String())
+	}
+	if got := config.Get().ClaudeCode.Identity; got != before {
+		t.Errorf("the rejected value was stored anyway: %+v", got)
+	}
+}
+
+// TestClaudeCodeConfigPost_AcceptsCleanIdentityOverrides is the other half: the
+// check must not reject the values the panel is for.
+func TestClaudeCodeConfigPost_AcceptsCleanIdentityOverrides(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	seedCCConfig(t)
+
+	rec := doJSON(t, srv, http.MethodPost, "/api/claudecode/config",
+		`{"enabled":true,"identity":{"entrypoint":"cli","stainlessOs":"Darwin"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if got := config.Get().ClaudeCode.Identity.StainlessOS; got != "Darwin" {
+		t.Errorf("stainlessOs = %q, want Darwin", got)
+	}
+}
+
+// TestConfigPost_RejectsControlCharsInEndpointIdentity is the same check on the
+// other config surface: a custom endpoint carries its own identity overrides, and
+// they reach header values by the same route.
+func TestConfigPost_RejectsControlCharsInEndpointIdentity(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+
+	rec := doJSON(t, srv, http.MethodPost, "/api/config", `{"customEndpoints":{"m":{`+
+		`"url":"https://example.com/v1/messages",`+
+		`"identity":{"stainlessOs":"Darwin\nX-Injected: 1"}}}}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "stainlessOs") {
+		t.Errorf("error %q does not name the offending field", rec.Body.String())
+	}
+	if _, present := config.Get().CustomEndpoints["m"]; present {
+		t.Error("the rejected endpoint was stored anyway")
+	}
+}
+
 // TestCustomEndpoint_NonAnthropicShapeKeepsClientHeaders pins the gate: an
 // endpoint that does not speak the Anthropic wire is not told a lie about its own
 // request format.

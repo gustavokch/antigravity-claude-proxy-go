@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -40,6 +41,48 @@ func ccAccountToMap(a claudecode.AccountConfig) map[string]any {
 	}
 }
 
+// validateIdentityOverrides checks every claudecode.IdentityConfig reachable in a
+// config update: the gateway's own, and one per custom endpoint.
+//
+// It re-marshals the raw map rather than decoding the whole config, so an update
+// that touches neither is untouched and an unrelated decode failure elsewhere in
+// the payload cannot make this reject a valid save.
+func validateIdentityOverrides(updates map[string]any) error {
+	if raw, ok := updates["claudecode"]; ok {
+		if err := validateIdentityField(raw, "claudecode"); err != nil {
+			return err
+		}
+	}
+	endpoints, ok := updates["customEndpoints"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	for model, raw := range endpoints {
+		if err := validateIdentityField(raw, "customEndpoints."+model); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateIdentityField validates the "identity" key of one config section.
+func validateIdentityField(section any, label string) error {
+	encoded, err := json.Marshal(section)
+	if err != nil {
+		return nil
+	}
+	var wrapper struct {
+		Identity *claudecode.IdentityConfig `json:"identity"`
+	}
+	if err := json.Unmarshal(encoded, &wrapper); err != nil || wrapper.Identity == nil {
+		return nil
+	}
+	if err := wrapper.Identity.Validate(); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	return nil
+}
+
 // handleClaudeCodeConfigPost saves ClaudeCode gateway config.
 func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, request *http.Request) {
 	var body map[string]any
@@ -52,6 +95,26 @@ func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, req
 	// payload. Settings saves must never touch accounts — account mutations
 	// go through the dedicated /api/claudecode/accounts endpoints.
 	delete(body, "accounts")
+
+	// The identity overrides become outbound header values, so a control
+	// character in one breaks every request to this gateway at the transport
+	// layer. Refuse it here, where the operator can see which field it was.
+	if raw, present := body["identity"]; present {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid identity"})
+			return
+		}
+		var identity claudecode.IdentityConfig
+		if err := json.Unmarshal(encoded, &identity); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid identity: " + err.Error()})
+			return
+		}
+		if err := identity.Validate(); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+			return
+		}
+	}
 
 	_, err := config.Save(map[string]any{"claudecode": body})
 	if err != nil {
