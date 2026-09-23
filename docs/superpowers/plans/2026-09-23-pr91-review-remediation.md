@@ -37,21 +37,38 @@ conservative choice, since only the prompt-id collision is disproved.
 
 ### Third dataset, captured after the fix
 
-A verification run of `capture-claude-code-headers.sh oauth` on 2026-09-23T19:16Z
-produced three more `POST /v1/messages` records on the first account. They agree:
+Two verification runs of `capture-claude-code-headers.sh oauth` on 2026-09-23
+produced six more `POST /v1/messages` records on the first account. They agree:
 
-| row | `X-Claude-Code-Session-Id` | `cc_prompt_id` |
+| run | `X-Claude-Code-Session-Id` | `cc_prompt_id` |
 |---|---|---|
-| 9 | `50a3c033-8257-4734-a246-a74862f651e2` | `32621f51-c8a5-4d69-b7fb-611e56d53e49` |
-| 12 | `eaa80bf0-6803-47ce-be91-5affe66453fc` | `7384faf7-6599-4504-8b35-3fc17ec80e9e` |
-| 13 | `eaa80bf0-6803-47ce-be91-5affe66453fc` | `7384faf7-6599-4504-8b35-3fc17ec80e9e` |
+| 19:16Z | `50a3c033-8257-4734-a246-a74862f651e2` | `32621f51-c8a5-4d69-b7fb-611e56d53e49` |
+| 19:16Z | `eaa80bf0-6803-47ce-be91-5affe66453fc` | `7384faf7-6599-4504-8b35-3fc17ec80e9e` (×2 turns) |
+| 19:21Z | `a2fb70b7-a0c9-42e2-a02c-913862cf2904` | `0c8259d8-67bd-449f-bfd9-3bff7a17cbbc` |
+| 19:21Z | `3f25755c-7c6f-4095-bb82-eea944ee85f6` | `fc2f6e3d-032e-4863-b81e-cf37b9fee4e2` (×2 turns) |
 
-Nine of nine now, over three runs and two accounts, zero identical pairs. Rows 12
-and 13 repeat both values, confirming again that both are stable across the turns
-of one process. Those records are NOT committed: they arrived by appending to the
-committed baseline, which is the hazard the run exposed (see below), so the
-baseline was restored to its committed 7 and the new records were set aside
-outside the repo.
+Twelve of twelve now, over four runs and two accounts, zero identical pairs. The
+paired turns repeat both values, confirming again that both ids are stable across
+the turns of one process — which is what makes two salts, rather than one random
+value, the right fix. `account_uuid` was empty in all of them too, so the earlier
+finding holds at 12 of 12 as well.
+
+The 19:21Z run is committed as `claude-code-headers-20260923-run2.{jsonl,meta.txt}`:
+it is a properly tagged capture with its own meta, it is the evidence base for the
+correlation check added in T2, and it was screened for credentials before
+committing (Authorization reduced to a SHA-256 and length, identifiers redacted to
+`<hex>`/`<uuid>`, no `sk-ant-`/`oat0` literals anywhere in the file). The 19:16Z
+records are NOT committed: they arrived by appending to the committed baseline,
+which is the hazard that run exposed (T10), so the baseline was restored to its
+committed 7.
+
+Run against the frozen baseline, the fresh capture exercises the differ and the
+new correlation check on data neither was built from:
+
+```
+no drift: 23 headers over HTTP/1.1, path /v1/messages?beta=true,
+metadata.user_id and system[0] both match the captured format
+```
 
 ## T1 — `cc_prompt_id` must not equal the session id
 
@@ -197,10 +214,10 @@ The gate's comparison logic is the Python half and is covered by the 54 tests
 above; the live leg is still unrun for this branch and needs an operator to
 execute it by hand.
 
-RUN by the operator afterwards: `capture-claude-code-headers.sh oauth` completed
-all five steps and wrote 7 records. Its exit status was not observed, so the
-exit-status fix is proven only by the isolated repro, not by that run. The run did
-surface a new defect, fixed in the same pass:
+RUN by the operator afterwards: `capture-claude-code-headers.sh oauth`, twice.
+The second run printed `exit=0` on a successful 7-record capture, which is the
+live proof the T-exit fix needed — the same command exited 1 before it. The first
+run surfaced a new defect, fixed in the same pass:
 
 ## T10 — refuse to append to an existing capture
 
