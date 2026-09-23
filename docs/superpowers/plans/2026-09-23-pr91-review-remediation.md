@@ -241,11 +241,47 @@ NOT exercised by that run, and unit-tested only:
 - **T3.** The driven request carries no `system` field, so
   `systemWithBillingHeader` took its `default:` branch — the one that was never
   destructive. The `[]any` branch that used to delete the caller's prompt did not
-  run. Closing this needs a `system` on the driven request AND a differ assertion
-  that the caller's block survives; `system_first_block` alone cannot see it.
+  run. **Closed in T11 below.**
 - **T4, T6.** The gate narrows `gatewayOrder` to `["claudecode"]`, so
   `forwardToCustomEndpoint` never runs. Both fixes live there.
 - **T5.** The stub credential is OAuth-shaped, so the API-key skip never triggers.
+
+## T11 — give T3 a wire-level guard
+
+Modify: `scripts/verify-claude-code-identity.sh`
+
+The driven request now sends one text system block, and the gate asserts two
+arrive. One block in, two out: the marker prepended, the caller's prompt intact.
+`<x1>` means block 0 was overwritten and the prompt was destroyed.
+
+The assertion sits in the gate, not the differ, because it is about what THIS
+request sent. The differ only knows baseline versus observed, and real Claude
+Code's own count is not a bound on ours — the committed captures show `<x4>`, so a
+baseline-relative rule would be meaningless here.
+
+It reads `request_body.shape.system[1]`. The fingerprint encodes a list as
+`[shape-of-first, "<xN>"]`, so the count is already recorded and no change to
+`mitm_header_dump.py` was needed. `compare_body` never compares `shape`, so this
+disturbs nothing.
+
+Falsified in both directions without a live run, by feeding the real `ApplyBody`
+output for exactly the driven body through `body_fingerprint`:
+
+| Implementation | `shape.system` | Gate | Differ |
+|---|---|---|---|
+| this branch (prepends) | `[…, "<x2>"]` | passes | no drift |
+| pre-fix (overwrites) | `[…, "<x1>"]` | **fails** | no drift |
+
+The second row is the point: the differ reports no drift either way, because
+`system_first_block` sees block 0 alone. The new assertion is the only thing that
+catches it.
+
+Also confirmed: the added `system` field does not create drift. Normalized
+`top_level_keys` are `max_tokens, messages, metadata, model, system`, all present
+in the baseline's set, and `temperature` is still stripped.
+
+Live status: every component is proven, but the assertion has not run inside a real
+gate invocation. One `./scripts/verify-claude-code-identity.sh` settles it.
 
 RUN by the operator afterwards: `capture-claude-code-headers.sh oauth`, twice.
 The second run printed `exit=0` on a successful 7-record capture, which is the

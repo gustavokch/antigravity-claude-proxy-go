@@ -189,13 +189,20 @@ echo "=== [5/6] Driving one foreign-headed request ==="
 # the capture does not contain. Normalization has to overwrite all three. The
 # response is ignored — the stub credential is rejected upstream, and the
 # request mitmdump recorded on the way out is the subject of this test.
+#
+# The single system block is load-bearing, not filler. Normalization puts the
+# billing marker at block 0, and it used to do that by OVERWRITING block 0 —
+# which silently deleted the caller's whole system prompt whenever it arrived as
+# one text block, exactly the shape here. A request with no system field cannot
+# catch that: it takes the "no system at all" branch, which was never
+# destructive. One block in, two blocks out is the assertion after the diff.
 curl -sS -o /dev/null --max-time 60 \
   -X POST "http://127.0.0.1:${PROXY_PORT}/v1/chat/completions" \
   -H 'Content-Type: application/json' \
   -H 'User-Agent: foreign-harness/1.0' \
   -H 'x-app: foreign-app' \
   -H 'anthropic-beta: foreign-beta-not-in-baseline' \
-  -d "{\"model\":\"${GATE_MODEL}\",\"max_tokens\":16,\"temperature\":0.7,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+  -d "{\"model\":\"${GATE_MODEL}\",\"max_tokens\":16,\"temperature\":0.7,\"system\":[{\"type\":\"text\",\"text\":\"caller system prompt the proxy must not delete\"}],\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
   >/dev/null 2>&1 || true
 
 # Give mitmdump time to flush the record.
@@ -221,4 +228,29 @@ if ! REPO_ROOT="${REPO_ROOT}" python3 "${REPO_ROOT}/scripts/diff_claude_code_ide
   fail "the proxy's wire identity has drifted from the committed baseline"
 fi
 
-echo "Claude Code identity gate PASSED: the wire identity matches ${BASELINE##*/}."
+# The caller's system prompt must still be there, after the marker.
+#
+# This assertion lives here rather than in the differ because it is about what
+# THIS request sent, and the differ only knows baseline versus observed — real
+# Claude Code's own block count is not a bound on ours. The body fingerprint
+# encodes a list as [shape-of-first, "<xN>"], so "<x2>" is the marker plus the one
+# block the curl above sent. "<x1>" means block 0 was overwritten and the caller's
+# prompt was destroyed; that was the behaviour before this branch, and the diff
+# above cannot see it, since system_first_block reports block 0 alone.
+SYSTEM_SHAPE="$(jq -r '
+  [ .[] | select(.method == "POST") | select(.path | startswith("/v1/messages")) ]
+  | last | .request_body.shape.system[1] // "absent"
+' -s "${OBSERVED}" 2>/dev/null || echo "unreadable")"
+
+if [[ "${SYSTEM_SHAPE}" != "<x2>" ]]; then
+  KEEP_WORK_DIR=1
+  echo "ERROR: system block count is ${SYSTEM_SHAPE}, want <x2>." >&2
+  echo "ERROR: the request sent one system block and normalization prepends the billing" >&2
+  echo "ERROR: marker, so two must arrive. <x1> means block 0 was overwritten and the" >&2
+  echo "ERROR: caller's system prompt was deleted." >&2
+  echo "Observed capture kept at ${OBSERVED}" >&2
+  fail "normalization destroyed the caller's system prompt"
+fi
+
+echo "Claude Code identity gate PASSED: the wire identity matches ${BASELINE##*/},"
+echo "and the caller's system prompt survived alongside the billing marker."
