@@ -63,6 +63,16 @@ type Identity struct {
 }
 
 // Turn carries the per-request pieces of the identity.
+//
+// No production caller populates it today: internal/api passes Turn{} at every
+// call site and internal/claudecode never sets MessageRequest.Turn, so
+// cc_prev_req does not reach the wire. It is kept rather than deleted because
+// it encodes a real captured behaviour that could not be reconstructed from the
+// capture later, and apply.go implements it.
+//
+// A caller that wanted to send it would have to thread the previous turn's
+// upstream request-id (the response's request-id header) through the session
+// store that already keys on the session key, then set it here.
 type Turn struct {
 	// PrevRequestID is the upstream request id of the previous turn, sent as
 	// cc_prev_req. Claude Code only includes it on a follow-up turn.

@@ -54,10 +54,6 @@ var Betas = []string{
 	"cache-diagnosis-2026-04-07",
 }
 
-// MetadataFields is the key order metadata.user_id carries. The captured value is
-// a STRING containing this JSON object, not a flat user_<hex>_... identifier.
-var MetadataFields = []string{"device_id", "account_uuid", "session_id"}
-
 // staticHeaders are the captured constant header set, minus the ones net/http
 // owns (Host, Content-Length) and the ones the transport manages (Connection).
 //
