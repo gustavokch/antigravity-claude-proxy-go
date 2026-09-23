@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -139,6 +140,60 @@ func TestClassifierCaptureDisabledCreatesNoRecorder(t *testing.T) {
 	srv.applyClassifierConfig(config.ClassifierConfig{Enabled: true})
 	if srv.classifierCorpus.Enabled() {
 		t.Error("recorder is enabled when capture config is off")
+	}
+}
+
+// failingWriter refuses every body write, standing in for a client that hung
+// up mid-response.
+type failingWriter struct {
+	header http.Header
+	status int
+}
+
+func (writer *failingWriter) Header() http.Header {
+	if writer.header == nil {
+		writer.header = make(http.Header)
+	}
+	return writer.header
+}
+
+func (writer *failingWriter) WriteHeader(status int) { writer.status = status }
+
+func (writer *failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("connection closed by peer")
+}
+
+// TestClassifierCaptureStubSourceSurvivesWriteFailure pins the source to the
+// path that produced the verdict, not to the write that failed to deliver it.
+// A row labeled upstream claims a teacher model graded the action; on this
+// path the proxy generated the verdict itself, so the row would be
+// training-eligible mislabeling.
+func TestClassifierCaptureStubSourceSurvivesWriteFailure(t *testing.T) {
+	srv := &Server{classifierAudit: classifier.NewRecorder(10)}
+	rule := &config.Rule{
+		ID:              "stage1-stub",
+		Name:            "Stage 1",
+		Enabled:         true,
+		Action:          config.RuleActionStub,
+		VerdictTemplate: "<severity>0</severity>",
+	}
+
+	source := corpus.SourceUpstream
+	responded, _ := srv.applyClassifierRule(
+		&failingWriter{},
+		httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(captureBody)),
+		classifierRequest{
+			rule:          rule,
+			rawBody:       []byte(captureBody),
+			model:         "claude-sonnet-5",
+			captureSource: &source,
+		},
+	)
+	if !responded {
+		t.Fatal("expected the stub branch to report that it answered")
+	}
+	if source != corpus.SourceStub {
+		t.Errorf("captureSource = %q, want stub", source)
 	}
 }
 

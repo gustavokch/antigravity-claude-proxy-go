@@ -123,11 +123,15 @@ func (server *Server) applyClassifierRule(
 			record(classifier.EventStatusError, err.Error())
 			return false, false
 		}
+		// Set before the write: the source names the path that produced the
+		// verdict, not the delivery. A stub whose write failed is still a
+		// stub, and labeling it upstream would claim a teacher model graded
+		// an action the proxy graded itself.
+		req.setCaptureSource(corpus.SourceStub)
 		if err := writeClassifierResponse(writer, stub, req.streamRequested); err != nil {
 			record(classifier.EventStatusError, err.Error())
 			return true, false
 		}
-		req.setCaptureSource(corpus.SourceStub)
 		record(classifier.EventStatusStubbed, "")
 		return true, false
 
@@ -143,11 +147,15 @@ func (server *Server) applyClassifierRule(
 			record(classifier.EventStatusError, err.Error())
 			return false, false
 		}
+		// Set once the backend has answered, before the write, for the same
+		// reason as the stub branch above. A backend call that failed returns
+		// earlier and leaves the source alone, so a fall-through to built-in
+		// handling is still labeled by whichever path answers.
+		req.setCaptureSource(corpus.SourceRule)
 		if err := writeClassifierResponse(writer, message, req.streamRequested); err != nil {
 			record(classifier.EventStatusError, err.Error())
 			return true, false
 		}
-		req.setCaptureSource(corpus.SourceRule)
 		record(classifier.EventStatusRerouted, "")
 		return true, false
 	}
