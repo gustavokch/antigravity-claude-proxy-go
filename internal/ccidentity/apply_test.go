@@ -363,6 +363,47 @@ func TestBillingHeaderCCHIsFreshPerRequest(t *testing.T) {
 	}
 }
 
+// promptIDRE pulls cc_prompt_id out of a billing header.
+var promptIDRE = regexp.MustCompile(`cc_prompt_id=([0-9a-f-]{36})`)
+
+// TestBillingHeaderPromptIDDiffersFromSessionID pins a relation the captures
+// prove, which no single-field check can catch.
+//
+// In all six captured requests across two independent OAuth accounts,
+// X-Claude-Code-Session-Id and cc_prompt_id are different UUIDs, and both are
+// stable within one process:
+//
+//	5c1c7cec-… / 7cd5023f-…   ca6f5fe3-… / 9f414346-…   (rows 2, 5 and 6)
+//	ccbbdab8-… / b0f9a831-…   2ca893cf-… / fc5d5bcf-…   (acct2, same rows)
+//
+// A request where the two are equal is one no real Claude Code emits, which is
+// exactly the kind of tell this package exists to remove.
+func TestBillingHeaderPromptIDDiffersFromSessionID(t *testing.T) {
+	id := testIdentity()
+
+	match := promptIDRE.FindStringSubmatch(BillingHeader(id, Turn{}))
+	if match == nil {
+		t.Fatalf("billing header carries no cc_prompt_id: %q", BillingHeader(id, Turn{}))
+	}
+	promptID := match[1]
+
+	if promptID == sessionUUID(id) {
+		t.Errorf("cc_prompt_id == session UUID (%s); the captures show them always different", promptID)
+	}
+
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
+	if header := hdrGet(h, "X-Claude-Code-Session-Id"); header == promptID {
+		t.Errorf("cc_prompt_id == X-Claude-Code-Session-Id (%s); 6 of 6 captured requests differ", header)
+	}
+
+	// Stable for one identity, as rows 5 and 6 of each capture show.
+	again := promptIDRE.FindStringSubmatch(BillingHeader(id, Turn{}))[1]
+	if again != promptID {
+		t.Errorf("cc_prompt_id changed within one session: %s then %s", promptID, again)
+	}
+}
+
 func TestBillingHeaderCarriesPrevRequestIDOnFollowUpTurns(t *testing.T) {
 	got := BillingHeader(testIdentity(), Turn{PrevRequestID: "req_011CfL3J5mtdJ5DhtF1opYTr"})
 	if !strings.Contains(got, "cc_prev_req=req_011CfL3J5mtdJ5DhtF1opYTr; cc_prompt_id=") {

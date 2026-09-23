@@ -185,10 +185,34 @@ func deviceID(id Identity) string {
 // same session key always yields the same UUID and the identity stays consistent
 // with the pool's sticky routing.
 func sessionUUID(id Identity) string {
-	if id.SessionKey == "" {
+	return derivedUUID("ccidentity-session:", id.SessionKey)
+}
+
+// promptUUID is the cc_prompt_id in the billing header. It is derived from the
+// session key under a DIFFERENT salt from sessionUUID, because the captures show
+// the two are never the same value.
+//
+// X-Claude-Code-Session-Id and cc_prompt_id differ in all six captured requests
+// across two independent OAuth accounts, and both are stable within one process
+// (rows 5 and 6 of each capture repeat both values). Deriving them from one salt
+// made every normalised request carry one UUID in both slots — a correlation no
+// real client produces. Two salts keep both properties: distinct, and stable.
+//
+// Their true relation is not knowable from the capture, since metadata's own
+// session_id is redacted to <uuid> there. Distinctness is what the capture
+// proves, and distinctness is all this reproduces.
+func promptUUID(id Identity) string {
+	return derivedUUID("ccidentity-prompt:", id.SessionKey)
+}
+
+// derivedUUID turns a salt and a seed into a stable version-5-shaped UUID. An
+// empty seed yields a random version-4 UUID instead, because there is nothing to
+// derive from and a constant would collide across every session.
+func derivedUUID(salt, seed string) string {
+	if seed == "" {
 		return newUUID()
 	}
-	sum := sha256.Sum256([]byte("ccidentity-session:" + id.SessionKey))
+	sum := sha256.Sum256([]byte(salt + seed))
 	var value [16]byte
 	copy(value[:], sum[:16])
 	value[6] = value[6]&0x0f | 0x50 // version 5, name-based
@@ -256,7 +280,7 @@ func BillingHeader(id Identity, turn Turn) string {
 		b.WriteString("; ")
 	}
 	b.WriteString("cc_prompt_id=")
-	b.WriteString(sessionUUID(id))
+	b.WriteString(promptUUID(id))
 	b.WriteString("; cc_turn_origin=")
 	b.WriteString(origin)
 	b.WriteString(";")
