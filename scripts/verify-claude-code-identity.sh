@@ -379,5 +379,54 @@ if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" passthrough \
   fail "the custom-endpoint credential rule was broken"
 fi
 
+echo "=== [9/9] Driving the three discovery callers ==="
+# Three of the five sites T4 corrected, one per client method:
+#
+#   .../test         ValidateAccount    (sent no User-Agent at all, so Go's
+#                                        transport supplied Go-http-client/1.1)
+#   .../ratelimits   FetchRateLimits    (sent Claude-Code/2.1.246)
+#   models/fetch     FetchModels        (sent Claude-Code/2.1.246)
+#
+# The other two are in internal/auth and are not driven here: the refresh route
+# reaches them only when the pool happens to have been created through the
+# server-bound getOrCreateCCPool rather than the package-level nil-server one,
+# and FetchProfile needs a real authorization code. The policy selector is wider
+# than /v1/models, so either is still checked if it fires.
+#
+# No request body is needed: each handler resolves the stub token out of the
+# configuration. The upstream rejects that token, which is irrelevant — the
+# request mitmdump recorded on the way out is the whole subject.
+#
+# The management API is unauthenticated here because the stub configuration
+# sets no webuiPassword.
+GATE_ACCOUNT_ID="cc-identity-gate-stub"
+for route in \
+  "/api/claudecode/accounts/${GATE_ACCOUNT_ID}/test" \
+  "/api/claudecode/accounts/${GATE_ACCOUNT_ID}/ratelimits" \
+  "/api/claudecode/models/fetch"
+do
+  curl -sS -o /dev/null --max-time 60 \
+    -X POST "http://127.0.0.1:${PROXY_PORT}${route}" \
+    -H 'Content-Type: application/json' \
+    -d '{}' \
+    >/dev/null 2>&1 || true
+done
+
+snapshot_phase "${OBSERVED_DISCOVERY}" "the discovery requests"
+
+if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" discovery \
+  --baseline "${BASELINE}" \
+  --observed "${OBSERVED_DISCOVERY}" \
+  --min-records 3; then
+  KEEP_WORK_DIR=1
+  echo "ERROR: the capture records claude-code/<version> on every GET it observed," >&2
+  echo "ERROR: lowercase and with no parenthesised mode. Go's transport supplies" >&2
+  echo "ERROR: Go-http-client/1.1 when no User-Agent is set at all." >&2
+  echo "Observed capture kept at ${OBSERVED_DISCOVERY}" >&2
+  fail "a discovery request did not carry the captured User-Agent"
+fi
+
 echo "Claude Code identity gate PASSED: the wire identity matches ${BASELINE##*/},"
-echo "and the caller's system prompt survived alongside the billing marker."
+echo "the caller's system prompt survived alongside the billing marker,"
+echo "a keyed custom endpoint kept its credential and was not normalized,"
+echo "and every discovery request carried the captured User-Agent."
