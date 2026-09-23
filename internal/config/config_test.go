@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"antigravity-go-proxy/internal/openrouter"
@@ -675,5 +676,88 @@ func TestGetPublicConfigRedactsClassifierBackendKeys(t *testing.T) {
 	}
 	if _, present := local["apiKey"]; present {
 		t.Error("apiKey key should be absent entirely, not blanked")
+	}
+}
+
+func TestClassifierCaptureResolvedFillsDefaults(t *testing.T) {
+	resolved := ClassifierCaptureConfig{Enabled: true}.Resolved()
+
+	if resolved.Dir == "" {
+		t.Error("Dir is empty, want the default corpus directory")
+	}
+	if !strings.HasSuffix(resolved.Dir, filepath.Join("corpus")) {
+		t.Errorf("Dir = %q, want it to end in corpus", resolved.Dir)
+	}
+	if resolved.ContextEntries != 2 {
+		t.Errorf("ContextEntries = %d, want 2", resolved.ContextEntries)
+	}
+	if resolved.MaxFiles != 8 {
+		t.Errorf("MaxFiles = %d, want 8", resolved.MaxFiles)
+	}
+	if resolved.MaxFileBytes != 67108864 {
+		t.Errorf("MaxFileBytes = %d, want 67108864", resolved.MaxFileBytes)
+	}
+}
+
+func TestClassifierCaptureResolvedKeepsExplicitValues(t *testing.T) {
+	resolved := ClassifierCaptureConfig{
+		Enabled:        true,
+		Dir:            "/tmp/custom",
+		ContextEntries: 5,
+		MaxFiles:       3,
+		MaxFileBytes:   1048576,
+	}.Resolved()
+
+	if resolved.Dir != "/tmp/custom" {
+		t.Errorf("Dir = %q", resolved.Dir)
+	}
+	if resolved.ContextEntries != 5 {
+		t.Errorf("ContextEntries = %d, want 5", resolved.ContextEntries)
+	}
+	if resolved.MaxFiles != 3 {
+		t.Errorf("MaxFiles = %d, want 3", resolved.MaxFiles)
+	}
+	if resolved.MaxFileBytes != 1048576 {
+		t.Errorf("MaxFileBytes = %d", resolved.MaxFileBytes)
+	}
+}
+
+func TestClassifierCaptureContextEntriesZeroIsHonored(t *testing.T) {
+	// 0 is a meaningful value (action only), so Resolved must not replace it
+	// with the default. It is distinguished by ContextEntries being set to -1
+	// when unset is intended; see Resolved's contract.
+	resolved := ClassifierCaptureConfig{Enabled: true, ContextEntries: -1}.Resolved()
+	if resolved.ContextEntries != 0 {
+		t.Errorf("ContextEntries = %d, want 0 when explicitly disabled with -1", resolved.ContextEntries)
+	}
+}
+
+func TestClassifierCaptureRedactPathsDefaultsToTrue(t *testing.T) {
+	if !(ClassifierCaptureConfig{}).RedactPathsEnabled() {
+		t.Error("RedactPathsEnabled = false when unset, want true")
+	}
+	off := false
+	if (ClassifierCaptureConfig{RedactPaths: &off}).RedactPathsEnabled() {
+		t.Error("RedactPathsEnabled = true when explicitly false")
+	}
+}
+
+func TestClassifierConfigDecodesCapture(t *testing.T) {
+	raw := `{"enabled":true,"capture":{"enabled":true,"dir":"/tmp/c","contextEntries":4,"maxFiles":2,"maxFileBytes":2048,"redactPaths":false}}`
+	var decoded ClassifierConfig
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !decoded.Capture.Enabled {
+		t.Error("Capture.Enabled = false")
+	}
+	if decoded.Capture.Dir != "/tmp/c" {
+		t.Errorf("Capture.Dir = %q", decoded.Capture.Dir)
+	}
+	if decoded.Capture.ContextEntries != 4 {
+		t.Errorf("Capture.ContextEntries = %d", decoded.Capture.ContextEntries)
+	}
+	if decoded.Capture.RedactPathsEnabled() {
+		t.Error("RedactPathsEnabled = true, want false")
 	}
 }

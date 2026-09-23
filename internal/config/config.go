@@ -268,6 +268,61 @@ type ClassifierConfig struct {
 	Variants          map[string]ClassifierVariantConfig `json:"variants,omitempty"`
 	Rules             []Rule                             `json:"rules,omitempty"`
 	Backends          map[string]TargetBackend           `json:"backends,omitempty"`
+	Capture           ClassifierCaptureConfig            `json:"capture,omitempty"`
+}
+
+// ClassifierCaptureConfig controls persistence of classifier requests and the
+// verdicts returned for them. Off by default, like
+// Upstream429ForensicsEnabled: this writes the operator's own shell commands
+// to disk and must be opted into.
+type ClassifierCaptureConfig struct {
+	Enabled bool   `json:"enabled"`
+	Dir     string `json:"dir,omitempty"`
+	// ContextEntries is how many transcript entries before the graded action
+	// are kept. 0 means the action only; pass -1 to mean "explicitly zero"
+	// when the default would otherwise apply.
+	ContextEntries int   `json:"contextEntries,omitempty"`
+	MaxFiles       int   `json:"maxFiles,omitempty"`
+	MaxFileBytes   int64 `json:"maxFileBytes,omitempty"`
+	// RedactPaths is a pointer because its default is true: a plain bool
+	// cannot tell an absent field from an explicit false.
+	RedactPaths *bool `json:"redactPaths,omitempty"`
+}
+
+// Capture defaults. Named rather than inlined so the WebUI, the validator and
+// Resolved cannot drift apart.
+const (
+	DefaultCaptureContextEntries = 2
+	DefaultCaptureMaxFiles       = 8
+	DefaultCaptureMaxFileBytes   = int64(64 << 20)
+)
+
+// Resolved returns the config with zero values replaced by defaults. A
+// ContextEntries of -1 resolves to 0, which is how an operator asks for the
+// action with no surrounding context.
+func (capture ClassifierCaptureConfig) Resolved() ClassifierCaptureConfig {
+	if capture.Dir == "" {
+		capture.Dir = filepath.Join(GetConfigDir(), "corpus")
+	}
+	switch {
+	case capture.ContextEntries < 0:
+		capture.ContextEntries = 0
+	case capture.ContextEntries == 0:
+		capture.ContextEntries = DefaultCaptureContextEntries
+	}
+	if capture.MaxFiles <= 0 {
+		capture.MaxFiles = DefaultCaptureMaxFiles
+	}
+	if capture.MaxFileBytes <= 0 {
+		capture.MaxFileBytes = DefaultCaptureMaxFileBytes
+	}
+	return capture
+}
+
+// RedactPathsEnabled reports whether the home directory is replaced with ~ in
+// captured commands. Unset means enabled.
+func (capture ClassifierCaptureConfig) RedactPathsEnabled() bool {
+	return capture.RedactPaths == nil || *capture.RedactPaths
 }
 
 func DefaultClassifierConfig() ClassifierConfig {

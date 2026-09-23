@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -1148,6 +1149,24 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier variant %q temperature must be between 0.0 and 2.0", variantKey)})
 				return
 			}
+		}
+
+		capture := classifierReq.Capture
+		if capture.ContextEntries < -1 || capture.ContextEntries > 20 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture contextEntries must be between -1 and 20"})
+			return
+		}
+		if capture.MaxFiles < 0 || capture.MaxFiles > 365 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture maxFiles must be between 0 and 365"})
+			return
+		}
+		if capture.MaxFileBytes < 0 || capture.MaxFileBytes > int64(4)<<30 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture maxFileBytes must be between 0 and 4294967296"})
+			return
+		}
+		if capture.Dir != "" && !filepath.IsAbs(capture.Dir) {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture dir must be an absolute path"})
+			return
 		}
 
 		for key, backend := range classifierReq.Backends {
