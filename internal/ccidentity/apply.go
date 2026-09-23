@@ -294,24 +294,32 @@ func randomHex(bytes int) string {
 	return hex.EncodeToString(value)
 }
 
-// systemWithBillingHeader replaces system block 0 with the generated billing
-// header, preserving the rest of the system prompt.
+// systemWithBillingHeader puts the generated billing header at system block 0,
+// preserving the rest of the system prompt.
 //
 // A plain string system prompt is promoted to the block array the capture shows,
 // because that is the shape Claude Code sends and a string would be a
-// distinguishable difference. A block whose type is not "text" is left alone:
-// replacing it would destroy content this package cannot reconstruct.
+// distinguishable difference.
+//
+// The marker is PREPENDED, not written over block 0. Claude Code's own block 0
+// is this marker and its real prompt follows, so prepending is both the captured
+// shape and the only non-destructive option: overwriting would silently delete
+// the caller's whole system prompt whenever it arrived as a single text block,
+// while the identical prompt sent as a plain string survived. A block 0 that is
+// already a billing header is replaced instead, so a caller that really is
+// Claude Code does not end up sending two.
+//
+// A block whose type is not "text" is left alone: replacing it would destroy
+// content this package cannot reconstruct.
 func systemWithBillingHeader(existing any, id Identity, turn Turn) any {
 	header := BillingHeader(id, turn)
+	marker := map[string]any{"type": "text", "text": header}
 	switch system := existing.(type) {
 	case string:
-		return []any{
-			map[string]any{"type": "text", "text": header},
-			map[string]any{"type": "text", "text": system},
-		}
+		return []any{marker, map[string]any{"type": "text", "text": system}}
 	case []any:
 		if len(system) == 0 {
-			return []any{map[string]any{"type": "text", "text": header}}
+			return []any{marker}
 		}
 		first, ok := system[0].(map[string]any)
 		if !ok {
@@ -321,13 +329,22 @@ func systemWithBillingHeader(existing any, id Identity, turn Turn) any {
 		if kind != "" && kind != "text" {
 			return system
 		}
-		replaced := make([]any, len(system))
-		copy(replaced, system)
-		replaced[0] = map[string]any{"type": "text", "text": header}
-		return replaced
+		if text, _ := first["text"].(string); strings.HasPrefix(text, billingHeaderPrefix) {
+			replaced := make([]any, len(system))
+			copy(replaced, system)
+			replaced[0] = marker
+			return replaced
+		}
+		prepended := make([]any, 0, len(system)+1)
+		prepended = append(prepended, marker)
+		return append(prepended, system...)
 	default:
 		// No system field at all: add the block array Claude Code sends rather
 		// than omitting the marker entirely.
-		return []any{map[string]any{"type": "text", "text": header}}
+		return []any{marker}
 	}
 }
+
+// billingHeaderPrefix identifies a block that already carries the marker, so it
+// is replaced rather than duplicated.
+const billingHeaderPrefix = "x-anthropic-billing-header: "

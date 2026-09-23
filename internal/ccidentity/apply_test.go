@@ -298,14 +298,47 @@ func TestApplyBodySystemBlockZeroIsTheBillingHeader(t *testing.T) {
 		} `json:"system"`
 	}
 	_ = json.Unmarshal(out, &parsed)
-	if len(parsed.System) != 2 {
-		t.Fatalf("system has %d blocks, want 2", len(parsed.System))
+	if len(parsed.System) != 3 {
+		t.Fatalf("system has %d blocks, want 3: the marker plus both original blocks", len(parsed.System))
 	}
 	if !strings.HasPrefix(parsed.System[0].Text, "x-anthropic-billing-header: ") {
 		t.Errorf("system[0] = %q, want the billing header", parsed.System[0].Text)
 	}
-	if parsed.System[1].Text != "second" {
-		t.Errorf("system[1] = %q; later blocks must be untouched", parsed.System[1].Text)
+	// The caller's prompt is content this package cannot reconstruct. Claude
+	// Code's own block 0 is the marker and its prompt follows, so prepending is
+	// both the captured shape and the non-destructive one.
+	if parsed.System[1].Text != "original" {
+		t.Errorf("system[1] = %q; the caller's first block must survive", parsed.System[1].Text)
+	}
+	if parsed.System[2].Text != "second" {
+		t.Errorf("system[2] = %q; later blocks must be untouched", parsed.System[2].Text)
+	}
+}
+
+func TestApplyBodyReplacesAnExistingBillingHeader(t *testing.T) {
+	// A caller that already is Claude Code sends a marker of its own. Prepending
+	// a second one would put two on the wire, which no client does.
+	body := []byte(`{"system":[` +
+		`{"type":"text","text":"x-anthropic-billing-header: cc_version=1.0.0.abc; cc_entrypoint=sdk-cli; cch=11111; cc_prompt_id=x; cc_turn_origin=sdk;"},` +
+		`{"type":"text","text":"real prompt"}]}`)
+	out, err := ApplyBody(body, DefaultProfile(), testIdentity(), Turn{})
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var parsed struct {
+		System []struct {
+			Text string `json:"text"`
+		} `json:"system"`
+	}
+	_ = json.Unmarshal(out, &parsed)
+	if len(parsed.System) != 2 {
+		t.Fatalf("system has %d blocks, want 2: the caller's marker replaced, not doubled", len(parsed.System))
+	}
+	if strings.Contains(parsed.System[0].Text, "cc_version=1.0.0.abc") {
+		t.Error("the caller's own billing header survived; it must be replaced")
+	}
+	if parsed.System[1].Text != "real prompt" {
+		t.Errorf("system[1] = %q, want the caller's prompt", parsed.System[1].Text)
 	}
 }
 
