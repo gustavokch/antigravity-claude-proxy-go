@@ -21,8 +21,8 @@ import check_identity_policy as policy  # noqa: E402
 CAPTURED_UA = "claude-cli/2.1.280 (external, sdk-cli)"
 DISCOVERY_UA = "claude-code/2.1.280"
 CALLER_UA = "foreign-harness/1.0"
-# sha256 of "gate-key", as the mitm addon records an x-api-key value.
-GATE_KEY = "gate-key"
+# The mitm addon records an x-api-key as a sha256 of the whole value, so the
+# digest is what a test has to speak in. This is sha256("gate-key").
 GATE_KEY_SHA = "2ecdda0fa468a95225e6309a105b7cc045e85013482364c03609a18eb7180c21"
 
 
@@ -201,7 +201,7 @@ class DiscoveryTest(unittest.TestCase):
             {"method": "GET", "path": "/v1/models", "headers": [["user-agent", DISCOVERY_UA]]}
         ]
         problems = policy.check_discovery([baseline_get()], observed, min_records=3)
-        self.assertTrue(any("3" in p for p in problems), problems)
+        self.assertTrue(any("want 3" in p for p in problems), problems)
 
     def test_rejects_a_baseline_without_a_get(self):
         problems = policy.check_discovery([], [], min_records=1)
@@ -221,7 +221,7 @@ class RecordSelectionTest(unittest.TestCase):
 
     def test_rejects_more_than_one_messages_record(self):
         problems = policy.check_record_count([observed_normalized(), observed_normalized()])
-        self.assertTrue(any("2" in p for p in problems), problems)
+        self.assertTrue(any("2 POST /v1/messages" in p for p in problems), problems)
 
     def test_rejects_no_messages_record(self):
         problems = policy.check_record_count([])
