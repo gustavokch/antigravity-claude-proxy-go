@@ -22,7 +22,15 @@ window.Components.classifierConfig = () => ({
             'block-prefilter': { targetModel: '', cannedVerdict: '' }
         },
         rules: [],
-        backends: {}
+        backends: {},
+        capture: {
+            enabled: false,
+            dir: '',
+            contextEntries: 2,
+            maxFiles: 8,
+            maxFileBytes: 67108864,
+            redactPaths: true
+        }
     },
     init() {
         this.loadConfig();
@@ -47,6 +55,18 @@ window.Components.classifierConfig = () => ({
         }
         if (!Array.isArray(this.config.rules)) this.config.rules = [];
         if (!this.config.backends || typeof this.config.backends !== 'object') this.config.backends = {};
+    },
+    ensureCapture() {
+        if (!this.config.capture) {
+            this.config.capture = {
+                enabled: false,
+                dir: '',
+                contextEntries: 2,
+                maxFiles: 8,
+                maxFileBytes: 67108864,
+                redactPaths: true
+            };
+        }
     },
     get backendNames() {
         return Object.keys(this.config.backends || {});
@@ -138,6 +158,7 @@ window.Components.classifierConfig = () => ({
         if (raw) {
             this.config = JSON.parse(JSON.stringify(raw));
             this.ensureVariants();
+            this.ensureCapture();
             return;
         }
 
@@ -157,6 +178,7 @@ window.Components.classifierConfig = () => ({
                 if (data?.config?.classifier) {
                     this.config = JSON.parse(JSON.stringify(data.config.classifier));
                     this.ensureVariants();
+                    this.ensureCapture();
                 }
             }
         } catch (err) {
@@ -216,7 +238,18 @@ window.Components.classifierConfig = () => ({
                             // which is what the redacted GET forces here.
                             apiKey: backend.apiKey || ''
                         }])
-                    )
+                    ),
+                    capture: {
+                        ...(this.config.capture || {}),
+                        enabled: !!this.config.capture?.enabled,
+                        // Alpine's .number modifier leaves a cleared field as
+                        // '', which the Go int decoder rejects with a bare
+                        // 400; coerce the same way the fields above do.
+                        contextEntries: Number(this.config.capture?.contextEntries) || 0,
+                        maxFiles: Number(this.config.capture?.maxFiles) || 0,
+                        maxFileBytes: Number(this.config.capture?.maxFileBytes) || 0,
+                        redactPaths: !!this.config.capture?.redactPaths
+                    }
                 }
             };
 

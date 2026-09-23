@@ -4581,6 +4581,54 @@
                     </template>
                 </div>
 
+                <!-- Corpus Capture -->
+                <div class="card bg-space-900/30 border border-space-border/60 p-6 space-y-4" x-show="config.capture">
+                    <h4 class="text-sm font-bold text-white uppercase tracking-wider"
+                        x-text="$store.global.t('classifierCaptureTitle')">Corpus Capture</h4>
+                    <p class="text-xs text-gray-400" x-text="$store.global.t('classifierCaptureDesc')">
+                        Write each classifier request and the verdict returned for it to local JSONL, as training data for a local decision model.
+                    </p>
+                    <p class="text-xs text-amber-400/90 leading-relaxed" x-text="$store.global.t('classifierCaptureCost')">
+                        Verdict labels are only collected while classifier requests reach upstream. During a collection window, rules must be set to passthrough, which consumes upstream quota.
+                    </p>
+                    <div class="flex items-center justify-between p-3 bg-space-800/40 rounded-lg border border-space-border/40">
+                        <span class="text-xs font-medium text-gray-200" x-text="$store.global.t('classifierCaptureEnabled')">Enable Corpus Capture</span>
+                        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                            <input type="checkbox" class="sr-only peer"
+                                x-model="config.capture.enabled"
+                                aria-label="Enable corpus capture toggle">
+                            <div class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black"></div>
+                        </label>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureDir')">Corpus Directory</label>
+                        <input type="text" x-model="config.capture.dir"
+                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                            :placeholder="$store.global.t('classifierCaptureDirPlaceholder')">
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureContextEntries')">Context Entries Kept (0 for the action only)</label>
+                            <input type="number" min="-1" max="20" x-model.number="config.capture.contextEntries"
+                                class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan">
+                        </div>
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureMaxFiles')">Day Files Retained</label>
+                            <input type="number" min="1" max="365" x-model.number="config.capture.maxFiles"
+                                class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan">
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between p-3 bg-space-800/40 rounded-lg border border-space-border/40">
+                        <span class="text-xs font-medium text-gray-200" x-text="$store.global.t('classifierCaptureRedact')">Replace Home Directory With ~</span>
+                        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                            <input type="checkbox" class="sr-only peer"
+                                x-model="config.capture.redactPaths"
+                                aria-label="Redact home directory toggle">
+                            <div class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black"></div>
+                        </label>
+                    </div>
+                </div>
+
                 <!-- Rules -->
                 <div class="card bg-space-900/30 border border-space-border/60 p-6 space-y-4">
                     <div class="flex items-center justify-between">
