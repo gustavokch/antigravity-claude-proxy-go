@@ -999,6 +999,32 @@ func resolveCustomEndpointURL(endpointURL string, requestPath string) (*url.URL,
 	return targetURL, nil
 }
 
+// ccDefaultProfile is the captured profile, built once.
+//
+// ccidentity.DefaultProfile allocates a 28-name omit list, the 13-entry beta
+// list and two closures on every call, and this path calls it two or three times
+// per request. The value is a constant, so it is built here instead.
+var ccDefaultProfile = ccidentity.DefaultProfile()
+
+// withCapturedBetaQuery adds the beta=true the capture records on
+// POST /v1/messages.
+//
+// internal/ccidentity/defaults.go states a request without it does not match the
+// captured traffic, and the pooled gateway path sends it because it takes its
+// path from Profile.Path. This path takes its URL from the endpoint's own
+// configuration, so the query has to be added rather than inherited. An existing
+// beta parameter is left alone.
+func withCapturedBetaQuery(rawQuery string) string {
+	values, err := url.ParseQuery(rawQuery)
+	if err == nil && values.Get("beta") != "" {
+		return rawQuery
+	}
+	if rawQuery == "" {
+		return "beta=true"
+	}
+	return rawQuery + "&beta=true"
+}
+
 // customEndpointIdentity builds the wire identity for one custom-endpoint
 // request, and reports whether normalization applies.
 //
@@ -1040,7 +1066,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			identity, normalize := customEndpointIdentity(endpoint, customSessionKey)
 			sender := func(ctx context.Context, bodyBytes []byte) (*http.Response, error) {
 				if normalize {
-					normalized, err := ccidentity.ApplyBody(bodyBytes, ccidentity.DefaultProfile(), identity, ccidentity.Turn{})
+					normalized, err := ccidentity.ApplyBody(bodyBytes, ccDefaultProfile, identity, ccidentity.Turn{})
 					if err != nil {
 						return nil, fmt.Errorf("normalize request body: %w", err)
 					}
@@ -1057,7 +1083,8 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 					httpReq.Header.Set("x-api-key", endpoint.APIKey)
 				}
 				if normalize {
-					ccidentity.ApplyHeaders(httpReq.Header, ccidentity.DefaultProfile(), identity, ccidentity.Turn{})
+					ccidentity.ApplyHeaders(httpReq.Header, ccDefaultProfile, identity, ccidentity.Turn{})
+					httpReq.URL.RawQuery = withCapturedBetaQuery(httpReq.URL.RawQuery)
 				} else {
 					if v := request.Header.Get("anthropic-version"); v != "" {
 						httpReq.Header.Set("anthropic-version", v)
@@ -1088,6 +1115,34 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	}
 
 	customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
+
+	// Normalization happens HERE, not inside Rewrite. ApplyBody is fallible and
+	// Rewrite has no error return, so a failure there could only be logged — and
+	// the request would go upstream carrying the client's own body and headers,
+	// which is the fingerprint normalization exists to remove.
+	// ccidentity.ErrNotAnObject's doc comment names that outcome as worse than
+	// refusing, and the SendMessage path already refuses. Doing the fallible work
+	// before the proxy exists is what lets this path refuse too.
+	outBody := reqBody
+	identity, normalize := customEndpointIdentity(endpoint, customSessionKey)
+	if normalize {
+		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, ccidentity.Turn{})
+		if err != nil {
+			if server.logger != nil {
+				server.logger.Error("custom endpoint identity normalization failed; refusing to forward",
+					"error", err, "url", targetURL.String())
+			}
+			message := "Custom endpoint identity normalization failed: " + err.Error()
+			if !isMessagesRequest {
+				writeOpenAIError(writer, http.StatusBadGateway, "api_error", message)
+				return
+			}
+			writeAPIError(writer, http.StatusBadGateway, "api_error", message)
+			return
+		}
+		outBody = normalized
+	}
+
 	// Rewrite (not Director): the stdlib strips Forwarded/X-Forwarded-* before
 	// the hook and does not re-add them, so the custom endpoint never sees
 	// proxy or client forwarding headers. It also closes the Director
@@ -1115,8 +1170,8 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			}
 			out.Host = targetURL.Host
 
-			out.Body = io.NopCloser(bytes.NewReader(reqBody))
-			out.ContentLength = int64(len(reqBody))
+			out.Body = io.NopCloser(bytes.NewReader(outBody))
+			out.ContentLength = int64(len(outBody))
 
 			if endpoint.APIKey != "" {
 				out.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
@@ -1129,23 +1184,12 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			// Normalization runs LAST and only for Anthropic-shaped endpoints, so
 			// the omit list can remove the x-api-key the auth block just set: the
 			// captured OAuth request carries Authorization alone.
-			if identity, normalize := customEndpointIdentity(endpoint, customSessionKey); normalize {
-				normalized, err := ccidentity.ApplyBody(reqBody, ccidentity.DefaultProfile(), identity, ccidentity.Turn{})
-				if err != nil {
-					// Fail closed. Rewrite has no error return, so record it and
-					// send the unmodified headers with the original body rather
-					// than a half-rewritten request: a partial rewrite is a
-					// fingerprint no client ever sends.
-					if server.logger != nil {
-						server.logger.Error("custom endpoint identity normalization failed; forwarding unmodified",
-							"error", err, "url", targetURL.String())
-					}
-				} else {
-					out.Body = io.NopCloser(bytes.NewReader(normalized))
-					out.ContentLength = int64(len(normalized))
-					ccidentity.ApplyHeaders(out.Header, ccidentity.DefaultProfile(), identity, ccidentity.Turn{})
-					return
+			if normalize {
+				ccidentity.ApplyHeaders(out.Header, ccDefaultProfile, identity, ccidentity.Turn{})
+				if isMessagesRequest {
+					out.URL.RawQuery = withCapturedBetaQuery(out.URL.RawQuery)
 				}
+				return
 			}
 
 			if v := request.Header.Get("anthropic-version"); v != "" {

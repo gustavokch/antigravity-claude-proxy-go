@@ -175,6 +175,55 @@ func TestCustomEndpoint_AnthropicShapedEndpointIsNormalized(t *testing.T) {
 	}
 }
 
+// TestCustomEndpoint_NormalizedRequestCarriesTheCapturedQuery pins the query
+// string the capture records. defaults.go states a /v1/messages request without
+// ?beta=true does not match the captured traffic, and the pooled gateway path
+// already sends it, so the custom-endpoint path must too.
+func TestCustomEndpoint_NormalizedRequestCarriesTheCapturedQuery(t *testing.T) {
+	withConfigDir(t)
+
+	target, got := customEndpointUpstream(t)
+	saveCustomEndpoint(t, target.URL+"/v1/messages", nil)
+
+	h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+	if rec := serveCustomEndpointRequest(t, h); rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(got.path, "beta=true") {
+		t.Errorf("upstream saw %q, want the captured ?beta=true", got.path)
+	}
+}
+
+// TestCustomEndpoint_NormalizationFailureFailsClosed pins the error discipline
+// ccidentity.ErrNotAnObject's own doc comment demands: an unnormalised body is
+// the fingerprint normalization exists to remove, so forwarding it is worse than
+// refusing. The SendMessage path already returns an error here; this path used to
+// log and forward the client's body AND headers.
+//
+// forwardToCustomEndpoint is called directly because the router reaches it only
+// after reading "model" out of the body, which means it never hands it a
+// non-object today. That makes this a contract test rather than a live-path one:
+// the function must not depend on a guarantee its caller happens to provide.
+func TestCustomEndpoint_NormalizationFailureFailsClosed(t *testing.T) {
+	withConfigDir(t)
+
+	target, got := customEndpointUpstream(t)
+	endpoint := config.EndpointConfig{URL: target.URL + "/v1/messages"}
+
+	server := newTestServer(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`null`))
+	req.Header.Set("User-Agent", "cursor/1.2.3")
+	rec := httptest.NewRecorder()
+	server.forwardToCustomEndpoint(rec, req, endpoint, "claude-custom-model", []byte(`null`))
+
+	if rec.Code == http.StatusOK {
+		t.Errorf("status = 200; a body that cannot be normalized must not be forwarded")
+	}
+	if got.userAgent != "" {
+		t.Errorf("upstream saw User-Agent %q; it should have seen no request at all", got.userAgent)
+	}
+}
+
 // TestCustomEndpoint_NonAnthropicShapeKeepsClientHeaders pins the gate: an
 // endpoint that does not speak the Anthropic wire is not told a lie about its own
 // request format.
