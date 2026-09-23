@@ -13,6 +13,13 @@
 #   scripts/capture-claude-code-headers.sh token     # mint an OAuth token for the above
 #   scripts/capture-claude-code-headers.sh check     # verify prerequisites only
 #
+# Credentials come from CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY, or from a
+# file named by CLAUDE_CODE_OAUTH_TOKEN_FILE / ANTHROPIC_API_KEY_FILE. Prefer the
+# file form: a token on a command line lands in shell history and in any tool-call
+# log, and the file form lets the operator create the credential without pasting
+# it anywhere that records it. A file is read with newlines stripped and is never
+# deleted by this script.
+#
 # The OAuth and API-key header sets differ, and the OAuth one is the target
 # fingerprint, so capture both and label the artifacts.
 #
@@ -92,16 +99,12 @@ CLIENT_VERSION="$(podman run --rm "${IMAGE_NAME}" claude --version 2>&1 | tr -d 
 }
 echo "  ${CLIENT_VERSION}"
 
-if [[ "${MODE}" == "check" ]]; then
-  echo "=== check only: prerequisites satisfied, nothing captured ==="
-  exit 0
-fi
-
 if [[ "${MODE}" == "token" ]]; then
   echo "=== Minting an OAuth token in a throwaway container ==="
   echo "Follow the printed URL, then paste the code back into the prompt."
-  echo "Export the resulting token as CLAUDE_CODE_OAUTH_TOKEN. It is not"
-  echo "written to any artifact by this script."
+  echo "Save the resulting token to a 0600 file and pass its path as"
+  echo "CLAUDE_CODE_OAUTH_TOKEN_FILE, or export it as CLAUDE_CODE_OAUTH_TOKEN."
+  echo "It is not written to any artifact by this script."
   echo
   exec podman run --rm -it \
     --add-host=containers.internal:host-gateway \
@@ -111,23 +114,69 @@ fi
 
 # Credentials are read here and handed to the container through the environment.
 # Nothing below prints them.
+#
+# Each credential may also arrive through a file path (*_FILE), because an
+# interactive shell that sets the variable and the process that needs it are
+# often different shells — and passing a live token on a command line puts it
+# into shell history and any tool-call log. A file also lets the operator create
+# the credential without pasting it anywhere that records it.
+read_secret() {
+  # read_secret <ENV_NAME>; echoes the value or nothing.
+  local name="$1" file_var="${1}_FILE" value file
+  value="${!name:-}"
+  file="${!file_var:-}"
+  if [[ -n "${value}" ]]; then
+    printf '%s' "${value}"
+    return
+  fi
+  if [[ -n "${file}" ]]; then
+    if [[ ! -f "${file}" ]]; then
+      # Report and return empty rather than exiting: the caller's empty-check
+      # already fails closed, and check mode must be able to report a broken
+      # path without aborting.
+      echo "ERROR: ${file_var}=${file} does not exist." >&2
+      return
+    fi
+    # Trailing newlines are the common accident when a secret is written with
+    # an editor; a token with a newline in it is a 401 that looks like a bad
+    # credential.
+    printf '%s' "$(tr -d '\r\n' < "${file}")"
+  fi
+}
+
 case "${MODE}" in
   oauth)
-    if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
-      echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN is unset." >&2
-      echo "ERROR: run '$0 token' first, then export the token it prints." >&2
+    TOKEN="$(read_secret CLAUDE_CODE_OAUTH_TOKEN)"
+    if [[ -z "${TOKEN}" ]]; then
+      echo "ERROR: no OAuth token. Set CLAUDE_CODE_OAUTH_TOKEN, or point" >&2
+      echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN_FILE at a file holding it." >&2
+      echo "ERROR: run '$0 token' first if you have neither." >&2
       exit 1
     fi
-    AUTH_ENV=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
+    AUTH_ENV=(-e "CLAUDE_CODE_OAUTH_TOKEN=${TOKEN}")
     ;;
   apikey)
-    if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-      echo "ERROR: ANTHROPIC_API_KEY is unset." >&2
+    TOKEN="$(read_secret ANTHROPIC_API_KEY)"
+    if [[ -z "${TOKEN}" ]]; then
+      echo "ERROR: no API key. Set ANTHROPIC_API_KEY, or point" >&2
+      echo "ERROR: ANTHROPIC_API_KEY_FILE at a file holding it." >&2
       exit 1
     fi
-    AUTH_ENV=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
+    AUTH_ENV=(-e "ANTHROPIC_API_KEY=${TOKEN}")
     ;;
 esac
+unset TOKEN
+
+if [[ "${MODE}" == "check" ]]; then
+  # Presence only, never the value: this is the fastest way to find out that a
+  # token file is pointed at the wrong path or is carrying a trailing newline.
+  oauth_chars=$(read_secret CLAUDE_CODE_OAUTH_TOKEN | wc -c | tr -d ' ')
+  key_chars=$(read_secret ANTHROPIC_API_KEY | wc -c | tr -d ' ')
+  echo "=== check only: prerequisites satisfied, nothing captured ==="
+  echo "  oauth token: ${oauth_chars} chars (0 = absent)"
+  echo "  api key:     ${key_chars} chars (0 = absent)"
+  exit 0
+fi
 
 echo "=== [3/5] Starting mitmdump on port ${MITM_PORT} ==="
 MITM_LOG="/tmp/claude-capture-mitmdump.log"
