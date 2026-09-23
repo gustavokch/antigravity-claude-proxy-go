@@ -56,17 +56,23 @@ window.Components.classifierConfig = () => ({
         if (!Array.isArray(this.config.rules)) this.config.rules = [];
         if (!this.config.backends || typeof this.config.backends !== 'object') this.config.backends = {};
     },
+    // Every capture field except enabled is omitempty server-side, so an
+    // untouched config arrives as {"enabled":false} and nothing else. Backfill
+    // per field, not just when the whole object is missing: a field left
+    // undefined would otherwise be sent back as a value the operator never
+    // chose, and for redactPaths (a *bool whose nil default is true) that
+    // silently turns path redaction off.
     ensureCapture() {
-        if (!this.config.capture) {
-            this.config.capture = {
-                enabled: false,
-                dir: '',
-                contextEntries: 2,
-                maxFiles: 8,
-                maxFileBytes: 67108864,
-                redactPaths: true
-            };
+        if (!this.config.capture || typeof this.config.capture !== 'object') {
+            this.config.capture = {};
         }
+        const capture = this.config.capture;
+        if (typeof capture.enabled !== 'boolean') capture.enabled = false;
+        if (typeof capture.dir !== 'string') capture.dir = '';
+        if (typeof capture.contextEntries !== 'number') capture.contextEntries = 2;
+        if (typeof capture.maxFiles !== 'number') capture.maxFiles = 8;
+        if (typeof capture.maxFileBytes !== 'number') capture.maxFileBytes = 67108864;
+        if (typeof capture.redactPaths !== 'boolean') capture.redactPaths = true;
     },
     get backendNames() {
         return Object.keys(this.config.backends || {});
@@ -241,14 +247,16 @@ window.Components.classifierConfig = () => ({
                     ),
                     capture: {
                         ...(this.config.capture || {}),
-                        enabled: !!this.config.capture?.enabled,
                         // Alpine's .number modifier leaves a cleared field as
                         // '', which the Go int decoder rejects with a bare
-                        // 400; coerce the same way the fields above do.
+                        // 400; coerce the same way the fields above do. 0 is
+                        // safe: the server reads it as "unset, use default".
+                        // The booleans are deliberately NOT coerced -- !!undefined
+                        // would manufacture a false the operator never chose,
+                        // and redactPaths defaults to true server-side.
                         contextEntries: Number(this.config.capture?.contextEntries) || 0,
                         maxFiles: Number(this.config.capture?.maxFiles) || 0,
-                        maxFileBytes: Number(this.config.capture?.maxFileBytes) || 0,
-                        redactPaths: !!this.config.capture?.redactPaths
+                        maxFileBytes: Number(this.config.capture?.maxFileBytes) || 0
                     }
                 }
             };
