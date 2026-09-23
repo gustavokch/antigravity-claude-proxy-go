@@ -477,7 +477,7 @@ func (c *Client) FetchModels(ctx context.Context, token string, baseURL string) 
 	}
 
 	req.Header.Set("anthropic-version", DefaultAnthropicVersion)
-	req.Header.Set("User-Agent", "Claude-Code/2.1.246")
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, cleanToken)
 
 	resp, err := c.httpClient.Do(req)
@@ -543,7 +543,7 @@ func (c *Client) FetchRateLimits(ctx context.Context, token string) (RateLimits,
 	}
 
 	req.Header.Set("anthropic-version", DefaultAnthropicVersion)
-	req.Header.Set("User-Agent", "Claude-Code/2.1.246")
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, cleanToken)
 
 	resp, err := c.httpClient.Do(req)

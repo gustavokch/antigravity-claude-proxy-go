@@ -608,3 +608,46 @@ func TestClient_SendMessage_NormalizeFailsClosedOnBadBody(t *testing.T) {
 		t.Error("upstream was called despite the body being unusable")
 	}
 }
+
+// TestClient_DiscoveryRequestsSendTheCapturedUserAgent pins the version and the
+// case of the non-messages User-Agent.
+//
+// The capture records claude-code/2.1.280 on every GET it observed, lowercase
+// and with no parenthesised mode, which is a different family from the
+// claude-cli/ value the messages path sends. These two calls hardcoded
+// Claude-Code/2.1.246: a stale version, and a capitalisation no observed
+// request uses.
+//
+// The capture covers GET /api/claude_code/* rather than GET /v1/models, so the
+// family and version here are carried over from it, not read off it directly.
+func TestClient_DiscoveryRequestsSendTheCapturedUserAgent(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+
+	t.Run("FetchModels", func(t *testing.T) {
+		got = ""
+		if _, err := client.FetchModels(context.Background(), "sk-ant-oat01-test", ""); err != nil {
+			t.Fatalf("FetchModels: %v", err)
+		}
+		if got != ccidentity.DiscoveryUserAgent {
+			t.Errorf("User-Agent = %q, want %q", got, ccidentity.DiscoveryUserAgent)
+		}
+	})
+
+	t.Run("FetchRateLimits", func(t *testing.T) {
+		got = ""
+		if _, err := client.FetchRateLimits(context.Background(), "sk-ant-oat01-test"); err != nil {
+			t.Fatalf("FetchRateLimits: %v", err)
+		}
+		if got != ccidentity.DiscoveryUserAgent {
+			t.Errorf("User-Agent = %q, want %q", got, ccidentity.DiscoveryUserAgent)
+		}
+	})
+}

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"antigravity-go-proxy/internal/ccidentity"
 )
 
 const (
@@ -626,7 +628,7 @@ func (m *ClaudeCodeOAuthManager) ExchangeToken(code, codeVerifier, redirectURI, 
 		return nil, nil, fmt.Errorf("create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "claude-code/2.1.246")
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
@@ -677,7 +679,7 @@ func (m *ClaudeCodeOAuthManager) FetchProfile(accessToken string) (*ClaudeCodePr
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("User-Agent", "claude-code/2.1.246")
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 
 	slog.Info("fetching Claude Code user profile", "profile_url", m.profileURL)
 
@@ -730,7 +732,7 @@ func (m *ClaudeCodeOAuthManager) RefreshToken(refreshToken string) (*ClaudeCodeT
 		return nil, fmt.Errorf("create refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "claude-code/2.1.246")
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
