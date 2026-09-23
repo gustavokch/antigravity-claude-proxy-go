@@ -68,7 +68,54 @@ def baseline_record(**kwargs):
 
 def drift_of(observed, baseline=None):
     base = [baseline or baseline_record()]
-    return differ.compare_headers(base, observed) + differ.compare_body(base, observed)
+    return (
+        differ.compare_headers(base, observed)
+        + differ.compare_body(base, observed)
+        + differ.compare_correlations(observed)
+    )
+
+
+def with_ids(session_id, prompt_id):
+    """A record carrying a chosen session id and cc_prompt_id."""
+    headers = [
+        ["X-Claude-Code-Session-Id", session_id]
+        if h[0] == "X-Claude-Code-Session-Id" else h
+        for h in BASELINE_HEADERS
+    ]
+    body = json.loads(json.dumps(BASELINE_BODY))
+    body["system_first_block"] = (
+        "x-anthropic-billing-header: cc_version=2.1.280.5c2; "
+        "cc_entrypoint=sdk-cli; cch=c5b4f; "
+        f"cc_prompt_id={prompt_id}; cc_turn_origin=sdk;"
+    )
+    return record(headers, body)
+
+
+class CorrelationDriftTest(unittest.TestCase):
+    """The session id and cc_prompt_id are each exempt from value comparison,
+    so nothing else in this gate relates them. The captures show them always
+    different — 6 requests, 2 independent OAuth accounts — which makes an equal
+    pair a value no real client emits."""
+
+    def test_session_id_equal_to_prompt_id_is_drift(self):
+        same = "5c1c7cec-f043-4f01-a9f9-fe25fb98b338"
+        drifts = drift_of(with_ids(same, same))
+        self.assertTrue(
+            any("cc_prompt_id" in d and "session" in d for d in drifts),
+            f"an identical session id and cc_prompt_id passed the gate: {drifts}",
+        )
+
+    def test_distinct_ids_are_not_drift(self):
+        observed = with_ids(
+            "5c1c7cec-f043-4f01-a9f9-fe25fb98b338",
+            "7cd5023f-9b41-4558-8901-c8f46878fbf1",
+        )
+        self.assertEqual(drift_of(observed), [])
+
+    def test_redacted_placeholders_are_not_compared(self):
+        # A capture recorded with redaction on carries <uuid> in both slots.
+        # That is the redactor agreeing with itself, not a real collision.
+        self.assertEqual(differ.compare_correlations(with_ids("<uuid>", "<uuid>")), [])
 
 
 class HeaderDriftTest(unittest.TestCase):

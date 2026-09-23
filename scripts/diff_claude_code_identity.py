@@ -222,6 +222,48 @@ def compare_body(baseline: list[dict], observed: dict) -> list[str]:
     return drifts
 
 
+def compare_correlations(observed: dict) -> list[str]:
+    """Drifts in the RELATION between two values, not in either value alone.
+
+    Both x-claude-code-session-id and cc_prompt_id are exempt from value
+    comparison — one is stable per process, the other per session, and neither
+    survives across captures. That leaves the pair unchecked, and a proxy can
+    satisfy every single-field rule here while deriving both from one seed.
+
+    The captures rule that out. In all six POST /v1/messages requests, across two
+    independent OAuth accounts, the two are different UUIDs:
+
+        5c1c7cec-… / 7cd5023f-…    ca6f5fe3-… / 9f414346-…
+        ccbbdab8-… / b0f9a831-…    2ca893cf-… / fc5d5bcf-…
+
+    Redacted placeholders are skipped: a capture recorded with redaction on
+    carries <uuid> in both slots, which is the redactor agreeing with itself.
+    """
+    drifts: list[str] = []
+
+    session_pair = header_map(observed).get("x-claude-code-session-id")
+    session_id = session_pair[1] if session_pair else None
+
+    billing = observed.get("request_body", {})
+    billing = billing.get("system_first_block") if isinstance(billing, dict) else None
+    match = re.search(r"cc_prompt_id=(\S+?);", billing or "")
+    prompt_id = match.group(1) if match else None
+
+    if not isinstance(session_id, str) or not prompt_id:
+        return drifts
+    if session_id.startswith("<") or prompt_id.startswith("<"):
+        return drifts
+
+    if session_id == prompt_id:
+        drifts.append(
+            "x-claude-code-session-id and cc_prompt_id are the same value "
+            f"({session_id}); the capture shows them different in 6 of 6 requests "
+            "across two accounts, so one seed for both is a tell"
+        )
+
+    return drifts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", required=True)
@@ -246,6 +288,7 @@ def main() -> int:
         )
     drifts.extend(compare_headers(baseline, observed))
     drifts.extend(compare_body(baseline, observed))
+    drifts.extend(compare_correlations(observed))
 
     if drifts:
         print(f"{len(drifts)} drift(s) against {args.baseline}:", file=sys.stderr)
