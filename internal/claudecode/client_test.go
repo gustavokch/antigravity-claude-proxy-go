@@ -540,6 +540,50 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 	}
 }
 
+// TestClient_SendMessage_NormalizeWithAPIKeyDoesNotClaimTheOAuthIdentity pins
+// that the two cannot both be sent.
+//
+// The captured identity is an OAuth identity: defaults.go lists x-api-key among
+// the names "Never sent by Claude Code", and ApplyAuthHeaders runs last, so with
+// an API key it put that header back after the omit list had removed it. The
+// result was the full Claude Code header set plus one header that contradicts
+// it — a combination no real client emits, which is the opposite of what
+// normalization is for. The API-key wire shape is also still uncaptured, so
+// there is nothing to reproduce.
+func TestClient_SendMessage_NormalizeWithAPIKeyDoesNotClaimTheOAuthIdentity(t *testing.T) {
+	var gotAPIKey, gotUA, gotApp string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotUA = r.Header.Get("User-Agent")
+		gotApp = r.Header.Get("x-app")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	resp, err := client.SendMessage(context.Background(), MessageRequest{
+		Token:     "sk-ant-api03-not-an-oauth-token",
+		Body:      []byte(`{"model":"claude-sonnet-5"}`),
+		Normalize: true,
+		Identity:  ccidentity.Identity{SessionKey: "session-abc"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotAPIKey == "" {
+		t.Error("x-api-key was dropped; an API-key request still has to authenticate")
+	}
+	if gotUA == ccidentity.MessagesUserAgent {
+		t.Error("the captured Claude Code User-Agent was sent alongside an x-api-key; no real client does both")
+	}
+	if gotApp == "cli" {
+		t.Error("x-app=cli was sent alongside an x-api-key; no real client does both")
+	}
+}
+
 // TestClient_SendMessage_NormalizeFailsClosedOnBadBody pins that a malformed
 // body is refused rather than forwarded: forwarding it would send exactly the
 // unnormalised fingerprint normalization exists to remove.

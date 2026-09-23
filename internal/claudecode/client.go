@@ -347,14 +347,22 @@ type MessageRequest struct {
 // set, only anthropic-version, anthropic-beta and Accept are copied, exactly as
 // before.
 func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Response, error) {
+	// Normalization and API-key auth cannot both be honest. The captured identity
+	// is an OAuth identity — defaults.go lists x-api-key among the names Claude
+	// Code never sends — and ApplyAuthHeaders runs last, so it would put that
+	// header back after the omit list removed it, leaving the full Claude Code
+	// set plus one header contradicting it. The API-key wire shape is uncaptured,
+	// so there is nothing to reproduce either. An API key forwards as before.
+	normalize := req.Normalize && IsOAuthToken(strings.TrimSpace(req.Token))
+
 	path := "/v1/messages"
-	if req.Normalize {
+	if normalize {
 		path = ccidentity.DefaultProfile().Path
 	}
 	url := fmt.Sprintf("%s%s", c.baseURL, path)
 
 	body := req.Body
-	if req.Normalize {
+	if normalize {
 		normalized, err := ccidentity.ApplyBody(body, ccidentity.DefaultProfile(), req.Identity, req.Turn)
 		if err != nil {
 			// Fail closed: forwarding an unnormalised body would send exactly the
@@ -369,7 +377,7 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 		return nil, fmt.Errorf("failed to create upstream request: %w", err)
 	}
 
-	if req.Normalize {
+	if normalize {
 		// ApplyHeaders takes the map directly; it ignores req.ClientHeaders on
 		// purpose, since the omit list must be able to remove what the client
 		// sent rather than copy it.
