@@ -190,24 +190,46 @@ echo "=== [5/6] Driving one foreign-headed request ==="
 # response is ignored — the stub credential is rejected upstream, and the
 # request mitmdump recorded on the way out is the subject of this test.
 #
-# The single system block is load-bearing, not filler. Normalization puts the
-# billing marker at block 0, and it used to do that by OVERWRITING block 0 —
-# which silently deleted the caller's whole system prompt whenever it arrived as
-# one text block, exactly the shape here. A request with no system field cannot
-# catch that: it takes the "no system at all" branch, which was never
-# destructive. One block in, two blocks out is the assertion after the diff.
+# This one is OpenAI-shaped, and it is the record the differ reads (it takes the
+# FIRST POST /v1/messages record).
 curl -sS -o /dev/null --max-time 60 \
   -X POST "http://127.0.0.1:${PROXY_PORT}/v1/chat/completions" \
   -H 'Content-Type: application/json' \
   -H 'User-Agent: foreign-harness/1.0' \
   -H 'x-app: foreign-app' \
   -H 'anthropic-beta: foreign-beta-not-in-baseline' \
-  -d "{\"model\":\"${GATE_MODEL}\",\"max_tokens\":16,\"temperature\":0.7,\"system\":[{\"type\":\"text\",\"text\":\"caller system prompt the proxy must not delete\"}],\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+  -d "{\"model\":\"${GATE_MODEL}\",\"max_tokens\":16,\"temperature\":0.7,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
   >/dev/null 2>&1 || true
 
-# Give mitmdump time to flush the record.
-for _ in $(seq 1 50); do
-  [[ -s "${OBSERVED}" ]] && break
+# A second request, Anthropic-shaped, carrying a system BLOCK ARRAY.
+#
+# The shape is the whole point, and an OpenAI-shaped request cannot substitute.
+# Normalization marks system block 0, and it used to do that by OVERWRITING it,
+# which silently deleted the caller's prompt whenever it arrived as one text
+# block. Only an Anthropic-shaped body reaches that branch:
+# translateOpenAIRequest builds the Anthropic system from `messages` entries with
+# role system or developer and emits it as a STRING, so the OpenAI path always
+# lands in the string branch, which was never destructive. A top-level `system`
+# on an OpenAI request is dropped in translation, as it should be — it is not in
+# that schema — and the request then reaches ApplyBody with no system at all.
+#
+# One block in, two blocks out is the assertion after the diff.
+curl -sS -o /dev/null --max-time 60 \
+  -X POST "http://127.0.0.1:${PROXY_PORT}/v1/messages" \
+  -H 'Content-Type: application/json' \
+  -H 'User-Agent: foreign-harness/1.0' \
+  -d "{\"model\":\"${GATE_MODEL}\",\"max_tokens\":16,\"system\":[{\"type\":\"text\",\"text\":\"caller system prompt the proxy must not delete\"}],\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+  >/dev/null 2>&1 || true
+
+# Give mitmdump time to flush BOTH records. Waiting for a non-empty file would
+# race the second request and read a one-record capture, which would then fail
+# the block-count assertion for the wrong reason.
+messages_records() {
+  jq -r 'select(.method == "POST") | select(.path | startswith("/v1/messages")) | .path' \
+    "${OBSERVED}" 2>/dev/null | wc -l | tr -d ' '
+}
+for _ in $(seq 1 75); do
+  [[ -s "${OBSERVED}" ]] && [[ "$(messages_records)" -ge 2 ]] && break
   sleep 0.2
 done
 if [[ ! -s "${OBSERVED}" ]]; then
@@ -228,15 +250,36 @@ if ! REPO_ROOT="${REPO_ROOT}" python3 "${REPO_ROOT}/scripts/diff_claude_code_ide
   fail "the proxy's wire identity has drifted from the committed baseline"
 fi
 
+# Both requests must have been captured before the block-count assertion means
+# anything. With only the OpenAI-shaped record present, that assertion would read
+# it and report <x1> — the OpenAI request sends no system at all — which is the
+# right answer to the wrong question and looks exactly like the regression.
+CAPTURED_MESSAGES="$(messages_records)"
+if [[ "${CAPTURED_MESSAGES}" -lt 2 ]]; then
+  KEEP_WORK_DIR=1
+  echo "ERROR: only ${CAPTURED_MESSAGES} POST /v1/messages record(s) captured, want 2." >&2
+  echo "ERROR: the Anthropic-shaped request never reached the upstream, so the system" >&2
+  echo "ERROR: block assertion below cannot be evaluated. This is a harness failure," >&2
+  echo "ERROR: not an identity drift." >&2
+  echo "proxy log:" >&2
+  tail -20 "${PROXY_LOG}" >&2 || true
+  echo "Observed capture kept at ${OBSERVED}" >&2
+  fail "the second driven request produced no upstream record"
+fi
+
 # The caller's system prompt must still be there, after the marker.
 #
 # This assertion lives here rather than in the differ because it is about what
 # THIS request sent, and the differ only knows baseline versus observed — real
-# Claude Code's own block count is not a bound on ours. The body fingerprint
-# encodes a list as [shape-of-first, "<xN>"], so "<x2>" is the marker plus the one
-# block the curl above sent. "<x1>" means block 0 was overwritten and the caller's
-# prompt was destroyed; that was the behaviour before this branch, and the diff
-# above cannot see it, since system_first_block reports block 0 alone.
+# Claude Code's own block count is not a bound on ours (the committed captures
+# show <x4>). It reads the LAST messages record, which is the Anthropic-shaped
+# request above; the differ reads the first.
+#
+# The body fingerprint encodes a list as [shape-of-first, "<xN>"], so "<x2>" is
+# the marker plus the one block that request sent. "<x1>" means block 0 was
+# overwritten and the caller's prompt was destroyed; that was the behaviour before
+# this branch, and the diff above cannot see it, since system_first_block reports
+# block 0 alone.
 SYSTEM_SHAPE="$(jq -r '
   [ .[] | select(.method == "POST") | select(.path | startswith("/v1/messages")) ]
   | last | .request_body.shape.system[1] // "absent"
@@ -245,9 +288,9 @@ SYSTEM_SHAPE="$(jq -r '
 if [[ "${SYSTEM_SHAPE}" != "<x2>" ]]; then
   KEEP_WORK_DIR=1
   echo "ERROR: system block count is ${SYSTEM_SHAPE}, want <x2>." >&2
-  echo "ERROR: the request sent one system block and normalization prepends the billing" >&2
-  echo "ERROR: marker, so two must arrive. <x1> means block 0 was overwritten and the" >&2
-  echo "ERROR: caller's system prompt was deleted." >&2
+  echo "ERROR: the Anthropic-shaped request sent one system block and normalization" >&2
+  echo "ERROR: prepends the billing marker, so two must arrive. <x1> means block 0 was" >&2
+  echo "ERROR: overwritten and the caller's system prompt was deleted." >&2
   echo "Observed capture kept at ${OBSERVED}" >&2
   fail "normalization destroyed the caller's system prompt"
 fi

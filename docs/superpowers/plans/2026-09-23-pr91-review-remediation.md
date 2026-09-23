@@ -276,12 +276,37 @@ The second row is the point: the differ reports no drift either way, because
 `system_first_block` sees block 0 alone. The new assertion is the only thing that
 catches it.
 
-Also confirmed: the added `system` field does not create drift. Normalized
-`top_level_keys` are `max_tokens, messages, metadata, model, system`, all present
-in the baseline's set, and `temperature` is still stripped.
+### T11's first live run failed, and the test was wrong, not the code
 
-Live status: every component is proven, but the assertion has not run inside a real
-gate invocation. One `./scripts/verify-claude-code-identity.sh` settles it.
+The gate reported `<x1>` — apparently the exact regression T3 fixed. It was not.
+The driven request was OpenAI-shaped, and I had put `system` at its top level,
+which is not in that schema: `translateOpenAIRequest` builds the Anthropic
+`system` only from `messages` entries with role `system` or `developer`
+(`internal/api/openai_request.go:L44`), so the field was dropped in translation
+and `ApplyBody` received a body with no `system` at all. It took the `default:`
+branch and emitted `[marker]` — one block, correctly.
+
+The OpenAI path cannot test this at all. Line 86 of that file emits the translated
+system as a STRING, so `ApplyBody` always lands in its `case string:` branch there
+— the branch that already prepended and was never destructive. Reaching the
+`[]any` branch requires an Anthropic-shaped body.
+
+Fixed by driving a second request to `/v1/messages` with a real system block
+array. The OpenAI-shaped request is restored to its original body and stays the
+record the differ reads (`diff_claude_code_identity.py:L281` takes
+`observed_records[0]`); the new assertion reads the last record. A record-count
+check runs first, because with only one record captured the block assertion would
+read the OpenAI record, report `<x1>`, and look exactly like the regression — the
+right answer to the wrong question.
+
+Worth keeping in the record: the failure was a real result. The gate caught a
+badly built test on its first run, which is the behaviour wanted from it.
+
+Live status: the mechanism is proven — the real `ApplyBody` output for an
+Anthropic one-block body is `<x2>`, the pre-fix shape is `<x1>`, the jq path
+resolves against a committed capture, the differ still reads record 0, and
+`messages_records` returns a number on a missing file. The two-request wiring has
+not run live.
 
 RUN by the operator afterwards: `capture-claude-code-headers.sh oauth`, twice.
 The second run printed `exit=0` on a successful 7-record capture, which is the
