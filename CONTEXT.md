@@ -44,6 +44,10 @@ _Avoid_: Score, reliability index, priority weight.
 A temporary lockout duration during which an Account is ineligible for selection following rate limit or capacity exhaustion errors.
 _Avoid_: Backoff window, mute period, lockout timer.
 
+**Wire Identity**:
+The header set and body shape a request presents to Anthropic, rewritten to match the committed Claude Code capture so a foreign harness is not advertised. Distinct from an Account, which is the credential a request authenticates with: a Wire Identity claims what the client is, an Account proves who the user is. Owned by `internal/ccidentity`, applied by `internal/claudecode` on the pooled path and `internal/api` on the custom-endpoint path, and scoped by ADR-0004.
+_Avoid_: Spoof, spoofing, normalize, normalization, identity (bare — it collides with Account).
+
 ### Models & Catalog
 
 **Requested Model**:
