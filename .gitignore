@@ -9,3 +9,9 @@ benchmark_results.txt
 .impeccable/*.cache.json
 .impeccable/config.local.json
 
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Local OAuth token files for the capture harness. Never committed.
+.claude-oat*
