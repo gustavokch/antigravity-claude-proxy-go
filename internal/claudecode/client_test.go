@@ -550,11 +550,16 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 // it — a combination no real client emits, which is the opposite of what
 // normalization is for. The API-key wire shape is also still uncaptured, so
 // there is nothing to reproduce.
+//
+// The User-Agent is the one exception, and it is checked by
+// TestSendMessageNeverSendsGoDefaultUserAgent instead: both branches send the
+// captured value, because the alternative is Go's default announcing the
+// standard library. A version string alone claims no session; the headers that
+// carry the OAuth claim are the ones asserted below.
 func TestClient_SendMessage_NormalizeWithAPIKeyDoesNotClaimTheOAuthIdentity(t *testing.T) {
-	var gotAPIKey, gotUA, gotApp string
+	var gotAPIKey, gotApp string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAPIKey = r.Header.Get("x-api-key")
-		gotUA = r.Header.Get("User-Agent")
 		gotApp = r.Header.Get("x-app")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"msg_1"}`))
@@ -575,9 +580,6 @@ func TestClient_SendMessage_NormalizeWithAPIKeyDoesNotClaimTheOAuthIdentity(t *t
 
 	if gotAPIKey == "" {
 		t.Error("x-api-key was dropped; an API-key request still has to authenticate")
-	}
-	if gotUA == ccidentity.MessagesUserAgent {
-		t.Error("the captured Claude Code User-Agent was sent alongside an x-api-key; no real client does both")
 	}
 	if gotApp == "cli" {
 		t.Error("x-app=cli was sent alongside an x-api-key; no real client does both")
@@ -650,4 +652,65 @@ func TestClient_DiscoveryRequestsSendTheCapturedUserAgent(t *testing.T) {
 			t.Errorf("User-Agent = %q, want %q", got, ccidentity.DiscoveryUserAgent)
 		}
 	})
+}
+
+// TestSendMessageNeverSendsGoDefaultUserAgent is the fingerprint regression.
+//
+// Go's transport writes User-Agent: Go-http-client/1.1 when no value is set, so
+// a branch that sets none announces the Go standard library — the exact
+// fingerprint leak this feature exists to remove. The normalized branch sets the
+// captured value; the API-key branch and the /v1/models calls set nothing.
+func TestSendMessageNeverSendsGoDefaultUserAgent(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_ok","data":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
+
+	cases := []struct {
+		name string
+		send func() error
+	}{
+		{"SendMessage normalized (oauth)", func() error {
+			_, err := client.SendMessage(context.Background(), MessageRequest{
+				Token: "sk-ant-oat01-test", Body: body, Normalize: true,
+			})
+			return err
+		}},
+		{"SendMessage not normalized (api key)", func() error {
+			_, err := client.SendMessage(context.Background(), MessageRequest{
+				Token: "sk-ant-api03-test", Body: body, Normalize: true,
+			})
+			return err
+		}},
+		{"SendMessage normalization off", func() error {
+			_, err := client.SendMessage(context.Background(), MessageRequest{
+				Token: "sk-ant-oat01-test", Body: body,
+			})
+			return err
+		}},
+		{"ValidateAccount", func() error {
+			return client.ValidateAccount(context.Background(), "sk-ant-oat01-test")
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got = ""
+			if err := tc.send(); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if got == "" {
+				t.Fatal("upstream saw no User-Agent at all")
+			}
+			if strings.Contains(got, "Go-http-client") {
+				t.Errorf("User-Agent = %q; the Go default announces the standard library", got)
+			}
+		})
+	}
 }

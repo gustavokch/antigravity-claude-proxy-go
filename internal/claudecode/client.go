@@ -389,6 +389,15 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 	} else {
 		httpReq.Header.Set("Content-Type", "application/json")
 
+		// Set the captured User-Agent here too. Go's transport writes
+		// Go-http-client/1.1 when none is set, which announces the standard
+		// library — the fingerprint this package exists to remove, and a worse
+		// one than the value below. It does not make the claim the normalized
+		// branch makes: a version string carries no session, and the headers
+		// that do assert an OAuth Claude Code identity (x-app, the cc_* system
+		// block, the captured beta order) are not set on this branch.
+		httpReq.Header.Set("User-Agent", ccidentity.MessagesUserAgent)
+
 		// Set or forward anthropic-version
 		version := DefaultAnthropicVersion
 		if req.ClientHeaders != nil {
@@ -434,6 +443,7 @@ func (c *Client) ValidateAccount(ctx context.Context, token string) error {
 	}
 
 	req.Header.Set("anthropic-version", DefaultAnthropicVersion)
+	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, token)
 
 	resp, err := c.httpClient.Do(req)
