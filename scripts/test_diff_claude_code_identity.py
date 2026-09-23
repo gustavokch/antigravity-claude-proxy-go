@@ -171,12 +171,16 @@ class BodyDriftTest(unittest.TestCase):
         drifts = drift_of(record(BASELINE_HEADERS, body))
         self.assertTrue(any("metadata.user_id" in d for d in drifts))
 
-    def test_populated_account_uuid_is_exempt_pending_a_second_capture(self):
+    def test_populated_account_uuid_is_drift(self):
+        # Settled 2026-09-23: empty in 6 of 6 captured requests across two
+        # independent OAuth credentials, so a populated value is a field no
+        # real client emits.
         body = json.loads(json.dumps(BASELINE_BODY))
         body["metadata"]["user_id"] = (
             '{"device_id":"<hex>","account_uuid":"<uuid>","session_id":"<uuid>"}'
         )
-        self.assertEqual(drift_of(record(BASELINE_HEADERS, body)), [])
+        drifts = drift_of(record(BASELINE_HEADERS, body))
+        self.assertTrue(any("metadata.user_id" in d for d in drifts))
 
     def test_missing_billing_header_is_drift(self):
         body = json.loads(json.dumps(BASELINE_BODY))

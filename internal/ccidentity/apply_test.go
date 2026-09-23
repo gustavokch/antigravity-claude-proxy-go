@@ -170,11 +170,52 @@ func TestApplyBodyMetadataUserIDIsTheCapturedJSONObject(t *testing.T) {
 	if len(payload["device_id"]) != 64 {
 		t.Errorf("device_id length = %d, want 64 hex characters as captured", len(payload["device_id"]))
 	}
-	if payload["account_uuid"] != testIdentity().AccountUUID {
-		t.Errorf("account_uuid = %q, want the identity's", payload["account_uuid"])
+	// Claude Code sends account_uuid EMPTY. Observed in 6 of 6 captured
+	// requests across two independent OAuth credentials:
+	// .reference/claude-code-headers-20260923.jsonl (3) and
+	// .reference/claude-code-headers-20260923-acct2.jsonl (3). Emitting the
+	// real account UUID here would be a field no real client populates.
+	if payload["account_uuid"] != "" {
+		t.Errorf("account_uuid = %q, want empty as captured", payload["account_uuid"])
 	}
 	if !uuidRE.MatchString(payload["session_id"]) {
 		t.Errorf("session_id = %q, want a UUID", payload["session_id"])
+	}
+}
+
+// Emptying account_uuid must not cost per-account stickiness: device_id is
+// derived from the account, so two accounts still present different devices.
+func TestApplyBodyDeviceIDStillDiffersPerAccountWithEmptyAccountUUID(t *testing.T) {
+	first := testIdentity()
+	first.AccountUUID = "11111111-1111-4111-8111-111111111111"
+	second := testIdentity()
+	second.AccountUUID = "22222222-2222-4222-8222-222222222222"
+
+	read := func(id Identity) (device, account string) {
+		out, err := ApplyBody([]byte(`{}`), DefaultProfile(), id, Turn{})
+		if err != nil {
+			t.Fatalf("ApplyBody: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(out, &parsed); err != nil {
+			t.Fatalf("re-parse: %v", err)
+		}
+		userID, _ := parsed["metadata"].(map[string]any)["user_id"].(string)
+		var payload map[string]string
+		if err := json.Unmarshal([]byte(userID), &payload); err != nil {
+			t.Fatalf("user_id is not valid JSON: %v", err)
+		}
+		return payload["device_id"], payload["account_uuid"]
+	}
+
+	firstDevice, firstAccount := read(first)
+	secondDevice, secondAccount := read(second)
+
+	if firstAccount != "" || secondAccount != "" {
+		t.Errorf("account_uuid = %q and %q, want both empty", firstAccount, secondAccount)
+	}
+	if firstDevice == secondDevice {
+		t.Errorf("device_id is %q for both accounts; per-account identity was lost", firstDevice)
 	}
 }
 

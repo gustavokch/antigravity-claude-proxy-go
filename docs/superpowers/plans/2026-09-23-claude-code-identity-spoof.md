@@ -375,18 +375,30 @@ generated `system[0]` billing header.
 This also answers open question 1 from the handoff: dropping a harness beta cost nothing
 on this path. The append-inbound-extras rule is not needed on the evidence available.
 
-### New open question — account_uuid
+### Settled question — account_uuid is always empty
 
-`metadata.user_id.account_uuid` goes out **non-empty** on the pooled Claude Code path,
-carrying the real account's UUID. The capture recorded it **empty in 3/3 requests** from a
-logged-in OAuth session, and `.reference/claude-code-headers-20260923.txt:116` marks
-"whether that is specific to this token or general to the OAuth path" as `unknown`.
+`metadata.user_id.account_uuid` went out **non-empty** on the pooled Claude Code path,
+carrying the real account's UUID, while the capture recorded it **empty in 3/3 requests**.
+The artifact marked "whether that is specific to this token or general to the OAuth path"
+as `unknown`, so the operator's decision (2026-09-23) was to settle it with a second
+capture rather than change behavior against an unvaried sample.
 
-This is a distinguishable difference that the deliberate-gaps list does not cover. It is
-intentional in `internal/claudecode/types.go:117` — per-account-sticky identity — but the
-decision was taken against an unvaried sample. Operator decision (2026-09-23): settle it
-with a second capture on a different account rather than by changing behavior now. The
-drift gate exempts the field in the meantime, with a comment naming this question.
+The second capture ran the same day on an independent OAuth credential — a different
+`Authorization` hash — and sent `account_uuid` empty in all three of its messages
+requests. **Empty in 6 of 6 across two accounts.** The field is general to the OAuth path,
+so populating it was a value no real client emits.
+
+Fixed in `internal/ccidentity/apply.go`: `metadataUserID.AccountUUID` is now always `""`.
+Per-account identity is not lost — `deviceID` still derives from `id.AccountUUID`, so two
+accounts present different `device_id` values, and a test pins that.
+
+The drift gate now compares `metadata.user_id` for equality instead of exempting the
+field.
+
+Worth recording separately: the two captures are otherwise **identical**. Running
+`scripts/diff_claude_code_identity.py` with one as baseline and the other as observed
+reports no drift across 23 headers, the path, `metadata.user_id` and `system[0]` — which
+validates the baseline and the differ at the same time.
 
 
 ## Out of scope
@@ -444,8 +456,8 @@ are the bug.
   and answering that restarts the UI and re-prompts trust. `interactive` mode is
   now human-driven and documents this.
 - The API-key auth mode was never captured.
-- A second OAuth capture on a different account, to settle whether
-  `metadata.user_id.account_uuid` is ever populated. See "New open question" in
-  Phase D.
+- A second OAuth capture on a different account ran on 2026-09-23 and settled the
+  `account_uuid` question; see "Settled question" in Phase D.
 
-Every phase of this plan is otherwise complete.
+Every phase of this plan is complete. The remaining unknowns are the `cli`
+entrypoint and the API-key auth mode, both recorded above.

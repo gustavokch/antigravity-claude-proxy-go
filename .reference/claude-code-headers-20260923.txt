@@ -113,8 +113,15 @@ form this plan originally assumed. It is a STRING containing a JSON object:
 
   "{\"device_id\":\"<64 hex>\",\"account_uuid\":\"\",\"session_id\":\"<uuid>\"}"
 
-account_uuid was empty in every captured request. Whether that is specific to
-this token or general to the OAuth path is `unknown` — it was not varied.
+account_uuid was empty in every captured request. This was varied on
+2026-09-23: a second capture on an independent OAuth credential
+(claude-code-headers-20260923-acct2.jsonl, a different Authorization hash) also
+sent it empty in all three of its messages requests. Empty in 6 of 6 across two
+accounts, so it is general to the OAuth path rather than specific to one token.
+The two captures are otherwise identical — running
+scripts/diff_claude_code_identity.py with one as baseline and the other as
+observed reports no drift across 23 headers, the path, metadata.user_id and
+system[0].
 
 system[0] — the billing header, verbatim, one request each:
 

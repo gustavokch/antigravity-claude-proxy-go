@@ -146,8 +146,14 @@ func metadataWithUserID(existing any, p Profile, id Identity) map[string]any {
 		metadata = map[string]any{}
 	}
 	payload := metadataUserID{
-		DeviceID:    deviceID(id),
-		AccountUUID: id.AccountUUID,
+		DeviceID: deviceID(id),
+		// Always empty, as captured. Claude Code sent account_uuid empty in 6
+		// of 6 requests across two independent OAuth credentials
+		// (.reference/claude-code-headers-20260923.jsonl and
+		// ...-20260923-acct2.jsonl), so populating it would be a value no real
+		// client emits. Per-account identity is not lost: deviceID derives from
+		// id.AccountUUID, so two accounts still present different devices.
+		AccountUUID: "",
 		SessionID:   sessionUUID(id),
 	}
 	encoded, err := json.Marshal(payload)

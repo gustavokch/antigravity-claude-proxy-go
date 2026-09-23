@@ -200,20 +200,15 @@ def compare_body(baseline: list[dict], observed: dict) -> list[str]:
     baseline_user_id = (reference.get("metadata") or {}).get("user_id")
     if observed_user_id is None:
         drifts.append("body has no metadata.user_id")
-    else:
-        # account_uuid is exempt from equality: the capture recorded it empty in
-        # every sample, the pooled path sends the real account's UUID, and
-        # whether Claude Code ever populates it is an OPEN QUESTION pending a
-        # second capture on a different account. Do not resolve it here.
-        normalize = lambda text: re.sub(  # noqa: E731
-            r'"account_uuid":"[^"]*"', '"account_uuid":"<exempt>"', text or ""
+    elif observed_user_id != baseline_user_id:
+        # account_uuid is compared for equality, not exempted. It was empty in
+        # 6 of 6 captured requests across two independent OAuth credentials
+        # (2026-09-23), so a populated value is a field no real client emits.
+        drifts.append(
+            "metadata.user_id shape changed\n"
+            f"  baseline: {baseline_user_id!r}\n"
+            f"  observed: {observed_user_id!r}"
         )
-        if normalize(observed_user_id) != normalize(baseline_user_id):
-            drifts.append(
-                "metadata.user_id shape changed\n"
-                f"  baseline: {baseline_user_id!r}\n"
-                f"  observed: {observed_user_id!r}"
-            )
 
     observed_system = observed_body.get("system_first_block")
     if not observed_system:
