@@ -117,12 +117,14 @@ class NormalizedTest(unittest.TestCase):
 
 class PassthroughTest(unittest.TestCase):
     def test_accepts_an_unnormalized_keyed_request(self):
-        problems = policy.check_passthrough(observed_passthrough(), CALLER_UA, GATE_KEY_SHA)
+        problems = policy.check_passthrough(
+            observed_passthrough(), CALLER_UA, GATE_KEY_SHA, baseline_post()
+        )
         self.assertEqual(problems, [])
 
     def test_rejects_a_deleted_api_key(self):
         observed = observed_passthrough(headers=[["user-agent", CALLER_UA]])
-        problems = policy.check_passthrough(observed, CALLER_UA, GATE_KEY_SHA)
+        problems = policy.check_passthrough(observed, CALLER_UA, GATE_KEY_SHA, baseline_post())
         self.assertTrue(any("x-api-key" in p for p in problems), problems)
 
     def test_rejects_a_different_api_key(self):
@@ -132,7 +134,7 @@ class PassthroughTest(unittest.TestCase):
                 ["x-api-key", {"redacted": True, "sha256": "0" * 64, "len": 8}],
             ]
         )
-        problems = policy.check_passthrough(observed, CALLER_UA, GATE_KEY_SHA)
+        problems = policy.check_passthrough(observed, CALLER_UA, GATE_KEY_SHA, baseline_post())
         self.assertTrue(any("sha256" in p for p in problems), problems)
 
     def test_rejects_a_normalized_request(self):
@@ -143,13 +145,13 @@ class PassthroughTest(unittest.TestCase):
                 ["x-api-key", {"redacted": True, "sha256": GATE_KEY_SHA, "len": 8}],
             ]
         )
-        problems = policy.check_passthrough(observed, CALLER_UA, GATE_KEY_SHA)
+        problems = policy.check_passthrough(observed, CALLER_UA, GATE_KEY_SHA, baseline_post())
         self.assertTrue(any("User-Agent" in p for p in problems), problems)
         self.assertTrue(any("x-claude-code-request-class" in p for p in problems), problems)
 
     def test_rejects_the_captured_query_being_added(self):
         observed = observed_passthrough(path="/v1/messages?beta=true")
-        problems = policy.check_passthrough(observed, CALLER_UA, GATE_KEY_SHA)
+        problems = policy.check_passthrough(observed, CALLER_UA, GATE_KEY_SHA, baseline_post())
         self.assertTrue(any("beta=true" in p for p in problems), problems)
 
 
@@ -226,6 +228,44 @@ class RecordSelectionTest(unittest.TestCase):
         self.assertTrue(any("no POST /v1/messages" in p for p in problems), problems)
 
 
+class BaselineDerivationTest(unittest.TestCase):
+    """The checker writes no fingerprint value of its own.
+
+    beta=true and x-stainless-os were spelled out in the source, so a capture
+    that moved would have left them behind as stale literals the docstring
+    promised did not exist.
+    """
+
+    def test_captured_query_comes_from_the_baseline(self):
+        baseline = baseline_post()
+        baseline["path"] = "/v1/messages?beta=other"
+        self.assertEqual(policy.captured_query(baseline), "beta=other")
+
+    def test_captured_query_is_empty_when_the_baseline_has_none(self):
+        baseline = baseline_post()
+        baseline["path"] = "/v1/messages"
+        self.assertEqual(policy.captured_query(baseline), "")
+
+    def test_normalization_markers_come_from_the_baseline(self):
+        self.assertEqual(
+            policy.normalization_markers(baseline_post()),
+            ["x-claude-code-request-class", "x-stainless-os"],
+        )
+
+    def test_passthrough_rejects_any_baseline_marker(self):
+        observed = observed_passthrough(
+            headers=[
+                ["user-agent", CALLER_UA],
+                ["x-stainless-os", "Linux"],
+                ["x-api-key", {"redacted": True, "sha256": GATE_KEY_SHA, "len": 8}],
+            ]
+        )
+        problems = policy.check_passthrough(
+            observed, CALLER_UA, GATE_KEY_SHA, baseline_post()
+        )
+        self.assertTrue(any("x-stainless-os" in p for p in problems), problems)
+
+
 class LoaderErrorTest(unittest.TestCase):
     """A half-written record must not read as wire drift.
 
@@ -262,8 +302,7 @@ class LoaderTest(unittest.TestCase):
         try:
             records = policy.load_records(path)
             self.assertEqual(len(policy.messages_records(records)), 1)
-            self.assertEqual(len(policy.models_records(records)), 1)
-            # Wider than models_records on purpose: the oauth POST is a
+            # Wider than GET /v1/models on purpose: the oauth POST is a
             # discovery-family request too.
             self.assertEqual(len(policy.discovery_records(records)), 2)
         finally:

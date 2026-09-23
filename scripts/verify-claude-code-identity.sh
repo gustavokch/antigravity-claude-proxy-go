@@ -368,6 +368,7 @@ curl -sS -o /dev/null --max-time 60 \
 snapshot_phase "${OBSERVED_CUSTOM_KEYED}" "the keyed custom endpoint"
 
 if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" passthrough \
+  --baseline "${BASELINE}" \
   --observed "${OBSERVED_CUSTOM_KEYED}" \
   --caller-user-agent "${GATE_CALLER_USER_AGENT}" \
   --api-key-sha256 "${GATE_CUSTOM_API_KEY_SHA256}"; then

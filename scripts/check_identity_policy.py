@@ -16,8 +16,11 @@ Three policies, one per subcommand:
   discovery    every GET /v1/models carries the captured discovery User-Agent,
                not Go's default and not a stale version
 
-No fingerprint value is written here. Each expected value is read out of the
-committed baseline capture, so the capture stays the single source of truth.
+No fingerprint value is written here. Every expected value — the User-Agent,
+the normalization marker headers, the captured query string — is read out of
+the committed baseline capture, so the capture stays the single source of
+truth. The only literals are header-name prefixes, which name a family rather
+than a value.
 """
 
 import argparse
@@ -64,14 +67,6 @@ def messages_records(records: list[dict]) -> list[dict]:
     ]
 
 
-def models_records(records: list[dict]) -> list[dict]:
-    return [
-        r
-        for r in records
-        if r.get("method") == "GET" and str(r.get("path", "")).startswith("/v1/models")
-    ]
-
-
 def discovery_records(records: list[dict]) -> list[dict]:
     """Every request that is NOT the messages path.
 
@@ -94,6 +89,33 @@ def discovery_records(records: list[dict]) -> list[dict]:
 
 def get_records(records: list[dict]) -> list[dict]:
     return [r for r in records if r.get("method") == "GET"]
+
+
+# Header families the captured identity is made of. These are prefixes, not
+# values: the names under them come out of the baseline, so a capture that
+# grows or drops one moves the policy with it.
+MARKER_PREFIXES = ("x-claude-code-", "x-stainless-")
+
+
+def captured_query(baseline: dict) -> str:
+    """The query string the captured request carries, if any."""
+    path = str(baseline.get("path", ""))
+    _, separator, query = path.partition("?")
+    return query if separator else ""
+
+
+def normalization_markers(baseline: dict) -> list[str]:
+    """Header names that only a normalized request carries.
+
+    Read off the baseline rather than written here, so the passthrough policy
+    rejects every marker the capture actually contains instead of the two that
+    happened to be worth naming when it was written.
+    """
+    return sorted(
+        name
+        for name in header_map(baseline)
+        if name.startswith(MARKER_PREFIXES)
+    )
 
 
 def check_record_count(observed_posts: list[dict]) -> list[str]:
@@ -153,15 +175,21 @@ def check_normalized(baseline: dict, observed: dict) -> list[str]:
     if "x-api-key" in headers:
         problems.append("x-api-key reached the upstream; the captured OAuth request carries none")
 
-    if "beta=true" not in str(observed.get("path", "")):
+    expected_query = captured_query(baseline)
+    if expected_query and expected_query not in str(observed.get("path", "")):
         problems.append(
-            f"path is {observed.get('path')!r}; the captured request carries beta=true"
+            f"path is {observed.get('path')!r}; the captured request carries {expected_query}"
         )
 
     return problems
 
 
-def check_passthrough(observed: dict, caller_user_agent: str, api_key_sha256: str) -> list[str]:
+def check_passthrough(
+    observed: dict,
+    caller_user_agent: str,
+    api_key_sha256: str,
+    baseline: dict,
+) -> list[str]:
     """The observed request must present the CALLER's identity and its own key."""
     problems: list[str] = []
     headers = header_map(observed)
@@ -188,11 +216,12 @@ def check_passthrough(observed: dict, caller_user_agent: str, api_key_sha256: st
             "this endpoint must not be normalized"
         )
 
-    for name in ("x-claude-code-request-class", "x-stainless-os"):
+    for name in normalization_markers(baseline):
         if name in headers:
             problems.append(f"{name} was added; this endpoint must not be normalized")
 
-    if "beta=true" in str(observed.get("path", "")):
+    expected_query = captured_query(baseline)
+    if expected_query and expected_query in str(observed.get("path", "")):
         problems.append(
             f"path is {observed.get('path')!r}; the captured query must not be added here"
         )
@@ -249,13 +278,15 @@ def evaluate(args) -> tuple[list[str], str]:
 
     observed = observed_posts[0]
     subject = f"POST {observed.get('path')}"
+    baseline_posts = messages_records(load_records(args.baseline))
+    if not baseline_posts:
+        raise ValueError(f"no POST /v1/messages record in {args.baseline}")
     if args.policy == "normalized":
-        baseline_posts = messages_records(load_records(args.baseline))
-        if not baseline_posts:
-            raise ValueError(f"no POST /v1/messages record in {args.baseline}")
         return check_normalized(baseline_posts[0], observed), subject
     return (
-        check_passthrough(observed, args.caller_user_agent, args.api_key_sha256),
+        check_passthrough(
+            observed, args.caller_user_agent, args.api_key_sha256, baseline_posts[0]
+        ),
         subject,
     )
 
@@ -269,6 +300,7 @@ def main() -> int:
     p_norm.add_argument("--observed", required=True)
 
     p_pass = sub.add_parser("passthrough")
+    p_pass.add_argument("--baseline", required=True)
     p_pass.add_argument("--observed", required=True)
     p_pass.add_argument("--caller-user-agent", required=True)
     p_pass.add_argument("--api-key-sha256", required=True)
