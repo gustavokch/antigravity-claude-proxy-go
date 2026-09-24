@@ -15,6 +15,7 @@ Runbook: see docs/classifier-rules.md, "Checking a live laya-serve".
 Usage:
     python3 scripts/check_laya.py --url http://127.0.0.1:8000/v1/systemone
     python3 scripts/check_laya.py --url ... --action "git push origin main"
+    python3 scripts/check_laya.py --url ... --model multilingual
 
 Exit codes: 0 = the contract holds, 2 = check failed (see message).
 """
@@ -45,12 +46,12 @@ class Result:
     answer_confidence: float
 
 
-def build_payload(action):
+def build_payload(action, model=MODEL):
     """Return the request body the proxy's buildLayaPayload sends, with the
     same instructions and criteria text as the exporter's training
     examples."""
     return {
-        "model": MODEL,
+        "model": model,
         "state": {"action": action},
         "questions": {
             QUESTION: {
@@ -90,14 +91,14 @@ def parse_answer(body):
     return Result(label=label, answer_confidence=float(answer_confidence))
 
 
-def check(url, action, timeout):
+def check(url, action, timeout, model=MODEL):
     """Send one graded action and return the parsed Result.
 
     Raises CheckError on any contract violation or transport failure.
     """
     request = urllib.request.Request(
         url,
-        data=json.dumps(build_payload(action)).encode(),
+        data=json.dumps(build_payload(action, model)).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -120,10 +121,15 @@ def main(argv=None):
     parser.add_argument("--url", required=True, help="laya-serve /v1/systemone URL")
     parser.add_argument("--action", default=DEFAULT_ACTION, help="graded action to send")
     parser.add_argument("--timeout", type=float, default=30, help="request timeout seconds")
+    parser.add_argument(
+        "--model",
+        default=MODEL,
+        help="checkpoint to request; pass the backend's model when it sets one (default: %(default)s, the proxy's default)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        result = check(args.url, args.action, args.timeout)
+        result = check(args.url, args.action, args.timeout, args.model)
     except CheckError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 2

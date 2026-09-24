@@ -136,3 +136,14 @@ def test_check_rejects_an_unusable_answer_confidence(laya_server, answer):
 
     with pytest.raises(check_laya.CheckError, match="answer_confidence"):
         check_laya.check(laya_server, action="ls", timeout=5)
+
+
+def test_main_sends_the_model_it_is_given(laya_server):
+    """A backend may set model to another checkpoint the server preloads;
+    the check must be able to ask for that one, or it proves a model the
+    proxy never requests."""
+    _Handler.response_body = _typed_answer("A")
+    _Handler.status = 200
+
+    assert check_laya.main(["--url", laya_server, "--model", "multilingual"]) == 0
+    assert json.loads(_Handler.last_body)["model"] == "multilingual"
