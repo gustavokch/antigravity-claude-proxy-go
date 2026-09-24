@@ -8,6 +8,11 @@ Only rows with source == "upstream" carry a teacher label. Rows produced by
 the local model itself (source == "laya") are excluded on purpose: training on
 them would teach the model its own answers and entrench its errors.
 
+Only stage1-severity rows are kept by default. Stage 1 grades harm alone,
+while Stage 2 applies user intent the exported state does not carry, so
+mixing the two gives one action two different labels. Pass --kind once per
+classifier kind to choose other kinds.
+
 Usage:
     python3 scripts/corpus_to_laya.py ~/.config/antigravity-proxy/corpus/*.jsonl -o train.jsonl
 """
@@ -36,6 +41,11 @@ CRITERIA = {
 INSTRUCTIONS = "Classify the risk of this shell action taken by a coding agent."
 
 TRAINING_SOURCE = "upstream"
+
+# The kinds the proxy writes; see classifier.Kind.String() in Go.
+KNOWN_KINDS = ("stage1-severity", "stage2-severity", "block-prefilter")
+
+DEFAULT_KINDS = ("stage1-severity",)
 
 
 def bucket_for(severity):
@@ -66,20 +76,30 @@ def to_example(row):
     }
 
 
-def convert(rows):
-    """Return (examples, stats). Filtering is explicit and counted."""
+def convert(rows, kinds=DEFAULT_KINDS):
+    """Return (examples, stats). Filtering is explicit and counted.
+
+    kinds is the set of classifier kinds to keep. stats["models"] lists the
+    distinct teacher models behind the kept rows.
+    """
     stats = {
         "total": len(rows),
         "skipped_source": 0,
+        "skipped_kind": 0,
         "skipped_unlabelled": 0,
         "skipped_no_action": 0,
         "system_hashes": 0,
+        "models": [],
     }
     hashes = set()
+    models = set()
     examples = []
     for row in rows:
         if row.get("source") != TRAINING_SOURCE:
             stats["skipped_source"] += 1
+            continue
+        if row.get("kind") not in kinds:
+            stats["skipped_kind"] += 1
             continue
         if row.get("severity", -1) < 0:
             stats["skipped_unlabelled"] += 1
@@ -89,8 +109,11 @@ def convert(rows):
             continue
         if row.get("system_sha256"):
             hashes.add(row["system_sha256"])
+        if row.get("model"):
+            models.add(row["model"])
         examples.append(to_example(row))
     stats["system_hashes"] = len(hashes)
+    stats["models"] = sorted(models)
     return examples, stats
 
 
@@ -121,7 +144,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inputs", nargs="+", type=Path, help="corpus JSONL files")
     parser.add_argument("-o", "--output", type=Path, required=True, help="dataset JSONL to write")
+    parser.add_argument(
+        "--kind",
+        action="append",
+        choices=KNOWN_KINDS,
+        help="classifier kind to keep; repeat to keep several (default: stage1-severity only)",
+    )
     args = parser.parse_args(argv)
+    kinds = tuple(args.kind) if args.kind else DEFAULT_KINDS
 
     rows = []
     unparseable = 0
@@ -130,15 +160,19 @@ def main(argv=None):
         rows.extend(file_rows)
         unparseable += file_skipped
 
-    examples, stats = convert(rows)
+    examples, stats = convert(rows, kinds)
 
     with open(args.output, "w", encoding="utf-8") as handle:
         for example in examples:
             handle.write(json.dumps(example, ensure_ascii=False) + "\n")
 
-    print(f"read {stats['total']} rows, wrote {len(examples)} examples to {args.output}")
+    print(
+        f"read {stats['total']} rows, wrote {len(examples)} examples to {args.output} "
+        f"(kinds: {', '.join(kinds)})"
+    )
     print(
         f"skipped: {stats['skipped_source']} non-upstream, "
+        f"{stats['skipped_kind']} of another kind, "
         f"{stats['skipped_unlabelled']} unlabelled, "
         f"{stats['skipped_no_action']} without an action, "
         f"{unparseable} unparseable line{'' if unparseable == 1 else 's'}"
@@ -147,6 +181,13 @@ def main(argv=None):
         print(
             f"WARNING: {stats['system_hashes']} distinct monitor prompts in this corpus. "
             "The teacher changed mid-collection; these rows are not one dataset.",
+            file=sys.stderr,
+        )
+    if len(stats["models"]) > 1:
+        print(
+            f"WARNING: {len(stats['models'])} distinct models graded these rows "
+            f"({', '.join(stats['models'])}). Each is a different teacher; "
+            "these rows are not one dataset.",
             file=sys.stderr,
         )
     if not examples:

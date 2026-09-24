@@ -126,7 +126,9 @@ python3 scripts/corpus_to_laya.py ~/.config/antigravity-proxy/corpus/*.jsonl -o 
 
 That path is the default directory; substitute your own if either environment variable or `classifier.capture.dir` is set. Each exported row is `{state, questions, answers}`, and nothing in this repository checks that shape against what Laya's training loader expects, so confirm it against Laya's own fine-tuning notebook before a real training run. The script hard-codes the default question: the name `risk`, the default instructions, and the A-D criteria. A backend that overrides `layaQuestionName`, `layaInstructions` or `layaCriteria` will not match a checkpoint trained on this export.
 
-The script keeps a row only if it has `source: "upstream"`, a `severity` of 0 or more, and a non-empty action. The source filter excludes the rows the local model produced itself (`source: "laya"`), so it never trains on its own answers. The severity filter excludes upstream rows that carry no verdict: an upstream error is still recorded as `source: "upstream"`, with `severity: -1`.
+The script keeps a row only if it has `source: "upstream"`, `kind: "stage1-severity"`, a `severity` of 0 or more, and a non-empty action. The source filter excludes the rows the local model produced itself (`source: "laya"`), so it never trains on its own answers. The kind filter keeps Stage 1 rows alone by default: Stage 1 grades harm only, while Stage 2 also applies user intent that the exported state does not carry, so the two stages can give one action two different labels. To keep other kinds, pass `--kind` once per kind, for example `--kind stage1-severity --kind stage2-severity`; the values are `stage1-severity`, `stage2-severity` and `block-prefilter`. The severity filter excludes upstream rows that carry no verdict: an upstream error is still recorded as `source: "upstream"`, with `severity: -1`.
+
+The script prints a warning to stderr when the kept rows were graded by more than one `model`, because each model is a different teacher and the rows are then not one dataset.
 
 ## Laya Backend
 
