@@ -24,8 +24,13 @@ type Verdict struct {
 // (?s) lets . match newlines: stage 2 <thinking> blocks are multi-line.
 var (
 	severityPattern = regexp.MustCompile(`(?s)<severity>\s*(-?\d+)\s*</severity>`)
-	categoryPattern = regexp.MustCompile(`(?s)<category>(.*?)</category>`)
-	thinkingPattern = regexp.MustCompile(`(?s)<thinking>(.*?)</thinking>`)
+	// unclosedSeverityPattern recovers the severity when the teacher stopped
+	// after the digits (`<severity>10` with no closing tag), which gateway
+	// models do at their token limit. Consulted only when severityPattern
+	// finds nothing, so a well-formed tag always wins.
+	unclosedSeverityPattern = regexp.MustCompile(`<severity>\s*(-?\d+)`)
+	categoryPattern         = regexp.MustCompile(`(?s)<category>(.*?)</category>`)
+	thinkingPattern         = regexp.MustCompile(`(?s)<thinking>(.*?)</thinking>`)
 )
 
 // ParseVerdict extracts the typed fields from a verdict string. It never
@@ -38,6 +43,10 @@ func ParseVerdict(text string) Verdict {
 	verdict := Verdict{Raw: text, Severity: -1}
 	answer := thinkingPattern.ReplaceAllString(text, "")
 	if match := severityPattern.FindStringSubmatch(answer); match != nil {
+		if value, err := strconv.Atoi(match[1]); err == nil {
+			verdict.Severity = value
+		}
+	} else if match := unclosedSeverityPattern.FindStringSubmatch(answer); match != nil {
 		if value, err := strconv.Atoi(match[1]); err == nil {
 			verdict.Severity = value
 		}
