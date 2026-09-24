@@ -260,13 +260,16 @@ type TargetBackend struct {
 	TimeoutMs int           `json:"timeoutMs,omitempty"`
 
 	// Laya overrides. Each empty or zero value falls back to the default in
-	// LayaSettings. They are ignored unless Format is BackendFormatLaya.
+	// LayaSettings, except LayaMaxSeverity, where only nil does. They are
+	// ignored unless Format is BackendFormatLaya.
 	LayaQuestionName string            `json:"layaQuestionName,omitempty"`
 	LayaInstructions string            `json:"layaInstructions,omitempty"`
 	LayaCriteria     map[string]string `json:"layaCriteria,omitempty"`
 	LayaSeverityMap  map[string]int    `json:"layaSeverityMap,omitempty"`
-	LayaMaxSeverity  int               `json:"layaMaxSeverity,omitempty"`
-	LayaStateChars   int               `json:"layaStateChars,omitempty"`
+	// LayaMaxSeverity is a pointer so an explicit 0 ("never raise severity")
+	// is kept apart from "unset, use the default".
+	LayaMaxSeverity *int `json:"layaMaxSeverity,omitempty"`
+	LayaStateChars  int  `json:"layaStateChars,omitempty"`
 }
 
 // LayaSettings is a Laya backend's resolved question and mapping.
@@ -313,7 +316,7 @@ func (backend TargetBackend) LayaSettings() LayaSettings {
 		Instructions: backend.LayaInstructions,
 		Criteria:     backend.LayaCriteria,
 		SeverityMap:  backend.LayaSeverityMap,
-		MaxSeverity:  backend.LayaMaxSeverity,
+		MaxSeverity:  DefaultLayaMaxSeverity,
 		StateChars:   backend.LayaStateChars,
 	}
 	if settings.QuestionName == "" {
@@ -328,8 +331,8 @@ func (backend TargetBackend) LayaSettings() LayaSettings {
 	if len(settings.SeverityMap) == 0 {
 		settings.SeverityMap = defaultLayaSeverityMap
 	}
-	if settings.MaxSeverity <= 0 {
-		settings.MaxSeverity = DefaultLayaMaxSeverity
+	if backend.LayaMaxSeverity != nil && *backend.LayaMaxSeverity >= 0 {
+		settings.MaxSeverity = *backend.LayaMaxSeverity
 	}
 	if settings.StateChars <= 0 {
 		settings.StateChars = DefaultLayaStateChars

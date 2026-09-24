@@ -28,6 +28,11 @@ type layaRequest struct {
 // checkpoint holds about 320 tokens of state, so only the graded action is
 // sent; an unreadable transcript is an error, never a guess.
 func buildLayaPayload(call classifierCall) ([]byte, error) {
+	// Reject a kind parseLayaResponse cannot render before any network call,
+	// so an unsupported request does not wait on the backend timeout.
+	if !layaSupportsKind(call.kind) {
+		return nil, classifier.ErrUnsupportedKind
+	}
 	settings := call.backend.LayaSettings()
 
 	action, _, err := corpus.ExtractAction(call.rawBody, 0)
@@ -54,6 +59,13 @@ func buildLayaPayload(call classifierCall) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
+// layaSupportsKind reports whether parseLayaResponse can render a verdict
+// for kind. KindBlockPrefilter's response format was never captured, so it
+// must not be guessed; KindNone is not a classifier request at all.
+func layaSupportsKind(kind classifier.Kind) bool {
+	return kind == classifier.KindStage1Severity || kind == classifier.KindStage2Severity
+}
+
 // layaSettingsFor is a nil-safe accessor used by the adapter functions.
 func layaSettingsFor(backend *config.TargetBackend) config.LayaSettings {
 	if backend == nil {
@@ -72,8 +84,10 @@ type layaResponse struct {
 	Answers map[string]layaTypedAnswer `json:"answers"`
 }
 
-// layaThinkingPhrases give stage 2 a one-line rationale per label. Stage 2
-// requires a <thinking> block; allow verdicts carry no <category> tag.
+// layaThinkingPhrases give stage 2 a one-line rationale per default label.
+// Stage 2 requires a <thinking> block; allow verdicts carry no <category>
+// tag. The phrases describe the default criteria only: custom criteria can
+// give A-D other meanings, so they get layaFallbackThinking instead.
 var layaThinkingPhrases = map[string]string{
 	"A": "Read-only inspection; no policy match.",
 	"B": "Local write action; no policy match.",
@@ -113,9 +127,9 @@ func parseLayaResponse(respBody []byte, call classifierCall) ([]byte, error) {
 	case classifier.KindStage1Severity:
 		verdict = fmt.Sprintf("<severity>%d</severity>", severity)
 	case classifier.KindStage2Severity:
-		thinking, ok := layaThinkingPhrases[answer.Choice]
-		if !ok {
-			thinking = layaFallbackThinking
+		thinking := layaFallbackThinking
+		if phrase, ok := layaThinkingPhrases[answer.Choice]; ok && (call.backend == nil || len(call.backend.LayaCriteria) == 0) {
+			thinking = phrase
 		}
 		verdict = fmt.Sprintf("<thinking>%s</thinking><severity>%d</severity>", thinking, severity)
 	default:

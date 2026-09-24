@@ -1178,7 +1178,7 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 			if backend.Format != config.BackendFormatLaya {
 				continue
 			}
-			if backend.LayaMaxSeverity < 0 || backend.LayaMaxSeverity > 100 {
+			if backend.LayaMaxSeverity != nil && (*backend.LayaMaxSeverity < 0 || *backend.LayaMaxSeverity > 100) {
 				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaMaxSeverity must be between 0 and 100", backendKey)})
 				return
 			}

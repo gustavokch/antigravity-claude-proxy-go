@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -164,6 +165,39 @@ func TestBuildLayaPayloadRejectsAnUnreadableTranscript(t *testing.T) {
 	}
 }
 
+func TestBuildLayaPayloadRejectsAnUnsupportedKindBeforeTheCall(t *testing.T) {
+	for _, kind := range []classifier.Kind{classifier.KindBlockPrefilter, classifier.KindNone} {
+		_, err := buildLayaPayload(classifierCall{
+			rawBody: []byte(layaBody),
+			model:   "claude-sonnet-5",
+			kind:    kind,
+			backend: layaBackend(),
+		})
+		if !errors.Is(err, classifier.ErrUnsupportedKind) {
+			t.Errorf("kind %v: err = %v, want ErrUnsupportedKind", kind, err)
+		}
+	}
+}
+
+func TestParseLayaResponseStage2UsesTheFallbackPhraseForCustomCriteria(t *testing.T) {
+	backend := layaBackend()
+	backend.LayaCriteria = map[string]string{"A": "a", "B": "b", "C": "c", "D": "d"}
+	backend.LayaSeverityMap = map[string]int{"A": 0, "B": 5, "C": 15, "D": 35}
+
+	message, err := parseLayaResponse(layaAnswer("D"), classifierCall{
+		model:   "claude-sonnet-5",
+		kind:    classifier.KindStage2Severity,
+		backend: backend,
+	})
+	if err != nil {
+		t.Fatalf("parseLayaResponse: %v", err)
+	}
+	want := "<thinking>" + layaFallbackThinking + "</thinking><severity>35</severity>"
+	if got := verdictTextFrom(t, message); got != want {
+		t.Errorf("verdict = %q, want %q", got, want)
+	}
+}
+
 func layaAnswer(label string) []byte {
 	return []byte(`{"answers":{"risk":{"choice":"` + label + `","confidence":0.91}},
 		"usage":{"input_tokens":40,"output_tokens":0}}`)
@@ -255,7 +289,7 @@ func TestParseLayaResponseNeverReachesTheBlockBoundary(t *testing.T) {
 
 func TestParseLayaResponseHonorsAnExplicitMaxSeverity(t *testing.T) {
 	backend := layaBackend()
-	backend.LayaMaxSeverity = 10
+	backend.LayaMaxSeverity = new(10)
 
 	message, err := parseLayaResponse(layaAnswer("D"), classifierCall{
 		model:   "claude-sonnet-5",

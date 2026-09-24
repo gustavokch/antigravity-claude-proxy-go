@@ -816,7 +816,7 @@ func TestLayaSettingsHonorsOverrides(t *testing.T) {
 		LayaInstructions: "custom",
 		LayaCriteria:     map[string]string{"X": "one", "Y": "two"},
 		LayaSeverityMap:  map[string]int{"X": 1, "Y": 2},
-		LayaMaxSeverity:  10,
+		LayaMaxSeverity:  new(10),
 		LayaStateChars:   400,
 	}
 	settings := backend.LayaSettings()
@@ -838,6 +838,16 @@ func TestLayaSettingsHonorsOverrides(t *testing.T) {
 	}
 	if settings.StateChars != 400 {
 		t.Errorf("StateChars = %d, want 400", settings.StateChars)
+	}
+}
+
+func TestLayaSettingsKeepsAnExplicitZeroMaxSeverity(t *testing.T) {
+	var backend TargetBackend
+	if err := json.Unmarshal([]byte(`{"format":"laya","layaMaxSeverity":0}`), &backend); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := backend.LayaSettings().MaxSeverity; got != 0 {
+		t.Errorf("MaxSeverity = %d, want the explicit 0", got)
 	}
 }
 

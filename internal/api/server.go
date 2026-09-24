@@ -721,6 +721,12 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 
 	streamRequested, _ := anthropicRequest["stream"].(bool)
 
+	// Detect scans a body of about 125KB, so it runs at most once per
+	// request and only when some path needs the result.
+	detectClassifier := sync.OnceValues(func() (classifier.Kind, bool) {
+		return classifier.Detect(rawBody)
+	})
+
 	// Capture installs one tap and one deferred writer, before any branch can
 	// answer. Recording inside each branch instead would double-write when a
 	// branch falls through to the next.
@@ -729,7 +735,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	// The recorder is loaded once: a settings save can swap it mid-request,
 	// and the row belongs to the recorder that saw the request start.
 	if recorder := server.classifierCorpus.Load(); recorder.Enabled() {
-		if kind, detected := classifier.Detect(rawBody); detected {
+		if kind, detected := detectClassifier(); detected {
 			tap := corpus.NewResponseTap(writer)
 			writer = tap
 			captureRef = &captureSource
@@ -758,6 +764,10 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	skipClassifierDetect := false
 	if cfg.Classifier.Enabled && len(cfg.Classifier.Rules) > 0 && server.classifierMatcher != nil {
 		if rule, backend, matched := server.classifierMatcher.Match(rawBody); matched {
+			var ruleKind classifier.Kind
+			if rule.Action == config.RuleActionReroute {
+				ruleKind, _ = detectClassifier()
+			}
 			responded, skipDetect := server.applyClassifierRule(
 				writer,
 				request,
@@ -767,6 +777,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 					rawBody:         rawBody,
 					model:           model,
 					streamRequested: streamRequested,
+					kind:            ruleKind,
 					captureSource:   captureRef,
 				},
 			)
@@ -778,7 +789,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 
 	if !skipClassifierDetect && (cfg.Classifier.Enabled || config.ClassifierFallbackEnabled()) && !streamRequested {
-		if kind, detected := classifier.Detect(rawBody); detected {
+		if kind, detected := detectClassifier(); detected {
 			effectiveAction := cfg.Classifier.Action
 			if effectiveAction == "" {
 				effectiveAction = config.ActionFallbackOnExhaustion
