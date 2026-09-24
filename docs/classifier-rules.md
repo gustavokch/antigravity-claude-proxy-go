@@ -118,6 +118,8 @@ Labels only exist when classifier requests actually reach upstream. The simplest
 
 Capture keeps at most `maxFiles` day files, 8 by default, and deletes the oldest beyond that. It prunes on the first row of each new UTC day and on the first row after a restart or any config save, and it logs a warning that names each file it deletes. A `maxFiles` of 0 also resolves to 8; there is no unlimited setting. A collection window longer than 8 days therefore loses its first days before you export: raise `classifier.capture.maxFiles` (up to 365) to cover the window, or copy the files out first. A day file also stops accepting rows at `maxFileBytes`, 64 MiB by default and at most 4 GiB. Later rows that day are dropped, with a warning logged at most once per hour.
 
+Each row is written on a background goroutine after the response has gone out, so capture never delays the permission prompt. At most 64 writes run at once; if the disk stalls, rows past that are dropped and counted, and a warning is logged at most once per hour. A row that is still being written when the proxy exits is lost.
+
 Convert a corpus into a fine-tune dataset:
 
 ```bash

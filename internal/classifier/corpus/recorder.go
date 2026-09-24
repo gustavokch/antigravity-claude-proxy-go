@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -102,6 +103,12 @@ type Options struct {
 	RedactPaths  bool
 }
 
+// maxInFlightRecords bounds the row writes running at once. Classifier
+// requests arrive about one per tool call, so reaching the bound means the
+// disk has stalled; rows past it are dropped and counted rather than queued
+// without limit.
+const maxInFlightRecords = 64
+
 // Recorder appends rows as JSONL, one file per UTC date. It mirrors
 // internal/accounts/forensics.go: an empty dir disables it, files are opened
 // per record so external rotation and manual deletion stay safe, and every
@@ -112,8 +119,12 @@ type Recorder struct {
 	home     string
 	mu       sync.Mutex
 	lastDate string
-	dropped  int
-	lastWarn time.Time
+	// dropped and lastWarn are atomic so RecordAsync can count a drop without
+	// taking mu, which a stalled write may hold.
+	dropped  atomic.Int64
+	lastWarn atomic.Int64 // Unix nanoseconds of the last drop warning
+	inFlight chan struct{}
+	pending  sync.WaitGroup
 }
 
 func New(dir string, options Options) *Recorder {
@@ -121,21 +132,75 @@ func New(dir string, options Options) *Recorder {
 	if err != nil {
 		home = ""
 	}
-	return &Recorder{dir: dir, options: options, home: home}
+	return &Recorder{
+		dir:      dir,
+		options:  options,
+		home:     home,
+		inFlight: make(chan struct{}, maxInFlightRecords),
+	}
 }
 
 func (recorder *Recorder) Enabled() bool {
 	return recorder != nil && recorder.dir != ""
 }
 
-// Dropped reports how many rows the size cap rejected.
+// Dropped reports how many rows were dropped, at the size cap or at the
+// in-flight cap.
 func (recorder *Recorder) Dropped() int {
 	if recorder == nil {
 		return 0
 	}
-	recorder.mu.Lock()
-	defer recorder.mu.Unlock()
-	return recorder.dropped
+	return int(recorder.dropped.Load())
+}
+
+// RecordAsync builds and writes the row on its own goroutine, so the request
+// handler returns without waiting on the disk: a small response stays in
+// net/http's buffer until the handler returns, and the permission prompt
+// waits on that response. Call Finish on input.Tap first, and do not write to
+// the tap afterwards.
+func (recorder *Recorder) RecordAsync(input EntryInput) {
+	if !recorder.Enabled() {
+		return
+	}
+	select {
+	case recorder.inFlight <- struct{}{}:
+	default:
+		recorder.noteDrop("corpus: too many row writes in flight, dropping rows")
+		return
+	}
+	recorder.pending.Add(1)
+	go func() {
+		defer recorder.pending.Done()
+		defer func() { <-recorder.inFlight }()
+		// A panic here would take the whole proxy down, not one request: the
+		// net/http recovery that guarded the old in-handler write does not
+		// reach this goroutine.
+		defer func() {
+			if value := recover(); value != nil {
+				slog.Warn("corpus: building a row panicked", "panic", value)
+			}
+		}()
+		recorder.Record(BuildEntry(input))
+	}()
+}
+
+// Wait blocks until every row started by RecordAsync is written. The proxy
+// never calls it; tests call it before they read rows back.
+func (recorder *Recorder) Wait() {
+	if recorder == nil {
+		return
+	}
+	recorder.pending.Wait()
+}
+
+// noteDrop counts a dropped row and logs at most one warning per hour.
+func (recorder *Recorder) noteDrop(message string, attrs ...any) {
+	count := recorder.dropped.Add(1)
+	now := time.Now().UnixNano()
+	last := recorder.lastWarn.Load()
+	if now-last > int64(time.Hour) && recorder.lastWarn.CompareAndSwap(last, now) {
+		slog.Warn(message, append(attrs, "dropped", count)...)
+	}
 }
 
 func (recorder *Recorder) Record(entry Entry) {
@@ -177,12 +242,7 @@ func (recorder *Recorder) Record(entry Entry) {
 	// A MaxFileBytes of zero or less means no limit, matching MaxFiles.
 	if recorder.options.MaxFileBytes > 0 {
 		if info, err := os.Stat(path); err == nil && info.Size() >= recorder.options.MaxFileBytes {
-			recorder.dropped++
-			if time.Since(recorder.lastWarn) > time.Hour {
-				recorder.lastWarn = time.Now()
-				slog.Warn("corpus: file at its size cap, dropping rows",
-					"file", path, "dropped", recorder.dropped)
-			}
+			recorder.noteDrop("corpus: file at its size cap, dropping rows", "file", path)
 			return
 		}
 	}

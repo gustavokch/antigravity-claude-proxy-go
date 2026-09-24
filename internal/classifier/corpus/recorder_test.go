@@ -350,3 +350,82 @@ func TestRecorderRedactionOffLeavesPathsIntact(t *testing.T) {
 		t.Errorf("Action = %q, want the path untouched when redaction is off", rows[0].Action)
 	}
 }
+
+func TestRecordAsyncWritesTheRow(t *testing.T) {
+	dir := t.TempDir()
+	recorder := New(dir, Options{MaxFiles: 8, MaxFileBytes: 1 << 20})
+	tap := tapWithBody(t, `{"content":[{"type":"text","text":"<severity>7</severity>"}]}`)
+	tap.Finish()
+
+	recorder.RecordAsync(EntryInput{
+		RawBody:        []byte(stage2Body),
+		Kind:           "stage1-severity",
+		Model:          "claude-sonnet-5",
+		Source:         SourceUpstream,
+		Tap:            tap,
+		ContextEntries: 2,
+	})
+	recorder.Wait()
+
+	rows := readRows(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Severity != 7 {
+		t.Errorf("Severity = %d, want 7", rows[0].Severity)
+	}
+	if rows[0].Action != `{"Bash":"rm -rf build/"}` {
+		t.Errorf("Action = %q", rows[0].Action)
+	}
+}
+
+// TestRecordAsyncReturnsWhileAWriteIsStalled pins the reason RecordAsync
+// exists: the request handler must not wait on the disk.
+func TestRecordAsyncReturnsWhileAWriteIsStalled(t *testing.T) {
+	dir := t.TempDir()
+	recorder := New(dir, Options{MaxFiles: 8, MaxFileBytes: 1 << 20})
+	recorder.mu.Lock() // stands in for a write stuck on the disk
+
+	returned := make(chan struct{})
+	go func() {
+		recorder.RecordAsync(EntryInput{Kind: "stage1-severity", Source: SourceUpstream})
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		recorder.mu.Unlock()
+		t.Fatal("RecordAsync blocked on a stalled write")
+	}
+
+	recorder.mu.Unlock()
+	recorder.Wait()
+	if rows := readRows(t, dir); len(rows) != 1 {
+		t.Errorf("got %d rows after the stall cleared, want 1", len(rows))
+	}
+}
+
+func TestRecordAsyncDropsRowsPastTheInFlightCap(t *testing.T) {
+	dir := t.TempDir()
+	recorder := New(dir, Options{MaxFiles: 8, MaxFileBytes: 1 << 20})
+	recorder.mu.Lock() // every started write parks on the mutex
+
+	for i := 0; i < maxInFlightRecords+5; i++ {
+		recorder.RecordAsync(EntryInput{Kind: "stage1-severity", Source: SourceUpstream})
+	}
+	if got := recorder.Dropped(); got != 5 {
+		t.Errorf("Dropped = %d, want the 5 rows past the cap of %d", got, maxInFlightRecords)
+	}
+
+	recorder.mu.Unlock()
+	recorder.Wait()
+	if rows := readRows(t, dir); len(rows) != maxInFlightRecords {
+		t.Errorf("got %d rows, want %d", len(rows), maxInFlightRecords)
+	}
+}
+
+func TestRecordAsyncOnNilRecorderIsSafe(t *testing.T) {
+	var recorder *Recorder
+	recorder.RecordAsync(EntryInput{}) // must not panic
+	recorder.Wait()
+}

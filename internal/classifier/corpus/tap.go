@@ -22,6 +22,7 @@ type ResponseTap struct {
 	status    int
 	truncated bool
 	start     time.Time
+	end       time.Time
 }
 
 func NewResponseTap(inner http.ResponseWriter) *ResponseTap {
@@ -77,8 +78,21 @@ func (tap *ResponseTap) Truncated() bool {
 	return tap.truncated
 }
 
+// Finish freezes the elapsed time. The row is built after the handler
+// returns, on another goroutine, so latency must stop at the response rather
+// than at the write. A second call changes nothing.
+func (tap *ResponseTap) Finish() {
+	if tap.end.IsZero() {
+		tap.end = time.Now()
+	}
+}
+
 func (tap *ResponseTap) ElapsedMs() int64 {
-	return time.Since(tap.start).Milliseconds()
+	end := tap.end
+	if end.IsZero() {
+		end = time.Now()
+	}
+	return end.Sub(tap.start).Milliseconds()
 }
 
 type anthropicEnvelope struct {

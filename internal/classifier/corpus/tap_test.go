@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResponseTapIsTransparent(t *testing.T) {
@@ -117,5 +118,26 @@ func TestResponseTapCapsCapturedBytes(t *testing.T) {
 	}
 	if len(tap.VerdictText()) > maxCapturedResponse {
 		t.Errorf("captured %d bytes, want at most %d", len(tap.VerdictText()), maxCapturedResponse)
+	}
+}
+
+// TestResponseTapFinishFreezesElapsed pins that latency stops at the
+// response. The row is built later, on another goroutine, and must not count
+// that wait.
+func TestResponseTapFinishFreezesElapsed(t *testing.T) {
+	tap := NewResponseTap(httptest.NewRecorder())
+	time.Sleep(20 * time.Millisecond)
+	tap.Finish()
+	frozen := tap.ElapsedMs()
+	if frozen < 20 {
+		t.Errorf("ElapsedMs = %d, want at least the 20ms before Finish", frozen)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if got := tap.ElapsedMs(); got != frozen {
+		t.Errorf("ElapsedMs moved from %d to %d after Finish", frozen, got)
+	}
+	tap.Finish()
+	if got := tap.ElapsedMs(); got != frozen {
+		t.Errorf("a second Finish moved ElapsedMs from %d to %d", frozen, got)
 	}
 }

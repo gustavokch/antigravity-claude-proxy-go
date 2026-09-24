@@ -101,7 +101,7 @@ func TestClassifierCaptureUpstreamRowEndToEnd(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 
-	rows := readCaptureRows(t, dir)
+	rows := readCaptureRows(t, server, dir)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want exactly 1", len(rows))
 	}
@@ -164,7 +164,7 @@ func TestClassifierCaptureGatewayRowEndToEnd(t *testing.T) {
 		t.Fatalf("Kimi received model %q, want the rewritten kimi-k2-thinking", *receivedModel)
 	}
 
-	rows := readCaptureRows(t, dir)
+	rows := readCaptureRows(t, server, dir)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want exactly 1", len(rows))
 	}
@@ -226,7 +226,7 @@ func TestClassifierCaptureRuleRerouteRowEndToEnd(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 
-	rows := readCaptureRows(t, dir)
+	rows := readCaptureRows(t, server, dir)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want exactly 1", len(rows))
 	}
@@ -283,7 +283,7 @@ func TestClassifierCaptureFailFastRowIsLabeledStub(t *testing.T) {
 				t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
 			}
 
-			rows := readCaptureRows(t, dir)
+			rows := readCaptureRows(t, server, dir)
 			if len(rows) != 1 {
 				t.Fatalf("got %d rows, want exactly 1", len(rows))
 			}
@@ -316,6 +316,9 @@ func TestClassifierCaptureConfigSwapIsRaceFree(t *testing.T) {
 
 	body := classifierShapedBody(t, classifierTestModel, classifierStage1Footer)
 	const rounds = 50
+	// Only the swapping goroutine stores, so Load right after each apply
+	// returns the recorder that apply created.
+	created := []*corpus.Recorder{server.classifierCorpus.Load()}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -324,6 +327,7 @@ func TestClassifierCaptureConfigSwapIsRaceFree(t *testing.T) {
 			swapped := cfg.Classifier
 			swapped.Capture.Enabled = i%2 == 0
 			server.applyClassifierConfig(swapped)
+			created = append(created, server.classifierCorpus.Load())
 		}
 	}()
 	go func() {
@@ -333,4 +337,7 @@ func TestClassifierCaptureConfigSwapIsRaceFree(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+	for _, recorder := range created {
+		recorder.Wait()
+	}
 }

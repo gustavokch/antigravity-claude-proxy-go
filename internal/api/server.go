@@ -735,14 +735,19 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			captureRef = &captureSource
 			contextEntries := cfg.Classifier.Capture.Resolved().ContextEntries
 			defer func() {
-				recorder.Record(corpus.BuildEntry(corpus.EntryInput{
+				// The row is built and written off this goroutine. A small
+				// response stays in net/http's buffer until the handler
+				// returns, so a synchronous write would delay the permission
+				// prompt.
+				tap.Finish()
+				recorder.RecordAsync(corpus.EntryInput{
 					RawBody:        rawBody,
 					Kind:           kind.String(),
 					Model:          model,
 					Source:         captureSource,
 					Tap:            tap,
 					ContextEntries: contextEntries,
-				}))
+				})
 			}()
 		}
 	}

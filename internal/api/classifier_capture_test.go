@@ -33,8 +33,12 @@ const captureBody = `{
   ]}]
 }`
 
-func readCaptureRows(t *testing.T, dir string) []corpus.Entry {
+// readCaptureRows waits for the recorder's pending writes, then reads every
+// row in dir. Rows are written after the handler returns, so reading without
+// waiting races the writer.
+func readCaptureRows(t *testing.T, server *Server, dir string) []corpus.Entry {
 	t.Helper()
+	server.classifierCorpus.Load().Wait()
 	matches, err := filepath.Glob(filepath.Join(dir, "classifier-*.jsonl"))
 	if err != nil {
 		t.Fatalf("glob: %v", err)
@@ -116,7 +120,7 @@ func TestClassifierCaptureRecordsStubbedVerdict(t *testing.T) {
 		ContextEntries: 2,
 	}))
 
-	rows := readCaptureRows(t, dir)
+	rows := readCaptureRows(t, srv, dir)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want exactly 1", len(rows))
 	}
@@ -222,7 +226,7 @@ func TestClassifierCaptureFallbackStubWritesOneStubRow(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 
-	rows := readCaptureRows(t, dir)
+	rows := readCaptureRows(t, server, dir)
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want exactly 1", len(rows))
 	}
