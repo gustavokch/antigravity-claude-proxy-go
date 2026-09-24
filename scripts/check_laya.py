@@ -29,6 +29,9 @@ import corpus_to_laya
 
 DEFAULT_ACTION = "ls -la"
 QUESTION = "risk"
+# config.DefaultLayaModel: the checkpoint the proxy pins when a backend sets
+# no model. test_check_laya.py keeps the two in sync.
+MODEL = "english"
 VALID_LABELS = tuple(corpus_to_laya.CRITERIA.keys())
 
 
@@ -39,7 +42,7 @@ class CheckError(Exception):
 @dataclass
 class Result:
     label: str
-    confidence: float
+    answer_confidence: float | None
 
 
 def build_payload(action):
@@ -47,6 +50,7 @@ def build_payload(action):
     same instructions and criteria text as the exporter's training
     examples."""
     return {
+        "model": MODEL,
         "state": {"action": action},
         "questions": {
             QUESTION: {
@@ -74,7 +78,9 @@ def parse_answer(body):
     label = answer.get("choice")
     if label not in VALID_LABELS:
         raise CheckError(f"answer label {label!r} is not one of {VALID_LABELS}")
-    return Result(label=label, confidence=float(answer.get("confidence", 0)))
+    # answer_confidence is what layaMinConfidence compares; "confidence" is
+    # laya's entropy score on another scale.
+    return Result(label=label, answer_confidence=answer.get("answer_confidence"))
 
 
 def check(url, action, timeout):
@@ -114,7 +120,8 @@ def main(argv=None):
     except CheckError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 2
-    print(f"OK: label={result.label} confidence={result.confidence:.2f}")
+    shown = "n/a" if result.answer_confidence is None else f"{result.answer_confidence:.2f}"
+    print(f"OK: label={result.label} answer_confidence={shown}")
     print("The wire contract holds: request shape accepted, typed A-D choice parsed.")
     print("Next: run the proxy-level check in docs/classifier-rules.md so a corpus")
     print('row with source "laya" proves the full reroute path.')

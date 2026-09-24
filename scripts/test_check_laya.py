@@ -99,3 +99,20 @@ def test_check_rejects_http_error(laya_server):
 def test_check_unreachable_server_reports_cleanly():
     with pytest.raises(check_laya.CheckError, match="connect"):
         check_laya.check("http://127.0.0.1:1", action="ls", timeout=2)
+
+
+def test_check_pins_the_proxy_default_checkpoint(laya_server):
+    """The smoke check must name the checkpoint the proxy names, or a green
+    check proves a model the proxy never asks for."""
+    import re
+    from pathlib import Path
+
+    config_go = Path(__file__).resolve().parent.parent / "internal" / "config" / "config.go"
+    match = re.search(r'DefaultLayaModel\s*=\s*"([^"]+)"', config_go.read_text(encoding="utf-8"))
+    assert match, "DefaultLayaModel not found in config.go"
+
+    _Handler.response_body = _typed_answer("A")
+    _Handler.status = 200
+    check_laya.check(laya_server, action="ls", timeout=5)
+
+    assert json.loads(_Handler.last_body)["model"] == match.group(1)
