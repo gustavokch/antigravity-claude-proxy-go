@@ -236,14 +236,33 @@ window.Components.classifierConfig = () => ({
                         }
                     })),
                     backends: Object.fromEntries(
-                        Object.entries(this.config.backends || {}).map(([key, backend]) => [key, {
-                            ...backend,
-                            maxTokens: Number(backend.maxTokens) || 0,
-                            timeoutMs: Number(backend.timeoutMs) || 0,
-                            // An empty apiKey means "unchanged" server-side,
-                            // which is what the redacted GET forces here.
-                            apiKey: backend.apiKey || ''
-                        }])
+                        Object.entries(this.config.backends || {}).map(([key, backend]) => {
+                            const payload = {
+                                ...backend,
+                                maxTokens: Number(backend.maxTokens) || 0,
+                                timeoutMs: Number(backend.timeoutMs) || 0,
+                                // An empty apiKey means "unchanged" server-side,
+                                // which is what the redacted GET forces here.
+                                apiKey: backend.apiKey || ''
+                            };
+                            // The laya numerics are per-backend overrides, so a
+                            // cleared input ('') is dropped rather than coerced
+                            // to 0: absent resolves to the same default server-
+                            // side, and 0 would add a laya field to every
+                            // backend, openai and anthropic ones included.
+                            // Checked for every format, because a value typed
+                            // before switching away from laya stays on the
+                            // object and '' fails the Go int decoder.
+                            for (const field of ['layaMaxSeverity', 'layaStateChars']) {
+                                const value = payload[field];
+                                if (value === '' || value === null || value === undefined || !Number.isFinite(Number(value))) {
+                                    delete payload[field];
+                                } else {
+                                    payload[field] = Number(value);
+                                }
+                            }
+                            return [key, payload];
+                        })
                     ),
                     capture: {
                         ...(this.config.capture || {}),

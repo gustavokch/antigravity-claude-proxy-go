@@ -4562,6 +4562,7 @@
                                 <select class="select select-xs w-full bg-space-800" x-model="config.backends[key].format">
                                     <option value="openai">openai</option>
                                     <option value="anthropic">anthropic</option>
+                                    <option value="laya" x-text="$store.global.t('classifierBackendFormatLaya')"></option>
                                 </select>
                             </label>
                             <label class="text-xs text-gray-400">
@@ -4577,6 +4578,42 @@
                                 </label>
                                 <button class="btn btn-xs btn-error" @click="removeBackend(key)">✕</button>
                             </div>
+                            <!-- Laya overrides: a second full-width row, so the row above keeps its layout.
+                                 layaCriteria and layaSeverityMap stay config.json-only: they must share one
+                                 key set, which two free-text maps in a form invite getting wrong. -->
+                            <template x-if="config.backends[key].format === 'laya'">
+                                <div class="md:col-span-6 space-y-2 pt-2 border-t border-space-border/40">
+                                    <p class="text-xs text-gray-400" x-text="$store.global.t('classifierLayaHint')"></p>
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-start">
+                                        <div class="space-y-1">
+                                            <label class="text-xs text-gray-400 block">
+                                                <span x-text="$store.global.t('classifierLayaMaxSeverity')"></span>
+                                                <input type="number" min="0" max="100" placeholder="49"
+                                                    class="input input-xs w-full bg-space-800"
+                                                    x-model.number="config.backends[key].layaMaxSeverity">
+                                            </label>
+                                            <p class="text-xs text-amber-400/90 leading-relaxed" x-text="$store.global.t('classifierLayaMaxSeverityWarning')"></p>
+                                        </div>
+                                        <label class="text-xs text-gray-400">
+                                            <span x-text="$store.global.t('classifierLayaStateChars')"></span>
+                                            <input type="number" min="200" max="8000" placeholder="1200"
+                                                class="input input-xs w-full bg-space-800"
+                                                x-model.number="config.backends[key].layaStateChars">
+                                        </label>
+                                        <label class="text-xs text-gray-400">
+                                            <span x-text="$store.global.t('classifierLayaQuestionName')"></span>
+                                            <input type="text" placeholder="risk"
+                                                class="input input-xs w-full bg-space-800"
+                                                x-model="config.backends[key].layaQuestionName">
+                                        </label>
+                                    </div>
+                                    <label class="text-xs text-gray-400 block">
+                                        <span x-text="$store.global.t('classifierLayaInstructions')"></span>
+                                        <input type="text" class="input input-xs w-full bg-space-800"
+                                            x-model="config.backends[key].layaInstructions">
+                                    </label>
+                                </div>
+                            </template>
                         </div>
                     </template>
                 </div>
