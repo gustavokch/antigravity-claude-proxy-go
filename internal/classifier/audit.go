@@ -15,6 +15,9 @@ const (
 	EventStatusStubbed     EventStatus = "stubbed"
 	EventStatusPassthrough EventStatus = "passthrough"
 	EventStatusError       EventStatus = "error"
+	// EventStatusEscalated marks a backend that declined to answer on purpose,
+	// handing the request to built-in handling so the teacher grades it.
+	EventStatusEscalated EventStatus = "escalated"
 )
 
 // Event is one interception decision, as shown in the WebUI audit stream.

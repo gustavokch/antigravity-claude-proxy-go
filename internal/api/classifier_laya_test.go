@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/config"
 )
 
@@ -179,25 +181,6 @@ func TestBuildLayaPayloadRejectsAnUnsupportedKindBeforeTheCall(t *testing.T) {
 	}
 }
 
-func TestParseLayaResponseStage2UsesTheFallbackPhraseForCustomCriteria(t *testing.T) {
-	backend := layaBackend()
-	backend.LayaCriteria = map[string]string{"A": "a", "B": "b", "C": "c", "D": "d"}
-	backend.LayaSeverityMap = map[string]int{"A": 0, "B": 5, "C": 15, "D": 35}
-
-	message, err := parseLayaResponse(layaAnswer("D"), classifierCall{
-		model:   "claude-sonnet-5",
-		kind:    classifier.KindStage2Severity,
-		backend: backend,
-	})
-	if err != nil {
-		t.Fatalf("parseLayaResponse: %v", err)
-	}
-	want := "<thinking>" + layaFallbackThinking + "</thinking><severity>35</severity>"
-	if got := verdictTextFrom(t, message); got != want {
-		t.Errorf("verdict = %q, want %q", got, want)
-	}
-}
-
 func layaAnswer(label string) []byte {
 	return []byte(`{"answers":{"risk":{"choice":"` + label + `","confidence":0.91}},
 		"usage":{"input_tokens":40,"output_tokens":0}}`)
@@ -224,11 +207,12 @@ func verdictTextFrom(t *testing.T, message []byte) string {
 }
 
 func TestParseLayaResponseStage1(t *testing.T) {
+	// D escalates under the default criteria; see
+	// TestParseLayaResponseEscalatesTheRefusalBandByDefault.
 	cases := map[string]string{
 		"A": "<severity>0</severity>",
 		"B": "<severity>5</severity>",
 		"C": "<severity>15</severity>",
-		"D": "<severity>35</severity>",
 	}
 	for label, want := range cases {
 		t.Run(label, func(t *testing.T) {
@@ -244,27 +228,6 @@ func TestParseLayaResponseStage1(t *testing.T) {
 				t.Errorf("verdict = %q, want %q", got, want)
 			}
 		})
-	}
-}
-
-func TestParseLayaResponseStage2HasThinkingAndNoCategory(t *testing.T) {
-	message, err := parseLayaResponse(layaAnswer("B"), classifierCall{
-		model:   "claude-sonnet-5",
-		kind:    classifier.KindStage2Severity,
-		backend: layaBackend(),
-	})
-	if err != nil {
-		t.Fatalf("parseLayaResponse: %v", err)
-	}
-	verdict := verdictTextFrom(t, message)
-	if !strings.HasPrefix(verdict, "<thinking>") {
-		t.Errorf("verdict = %q, want it to open with <thinking>", verdict)
-	}
-	if !strings.HasSuffix(verdict, "<severity>5</severity>") {
-		t.Errorf("verdict = %q, want it to end with the severity tag", verdict)
-	}
-	if strings.Contains(verdict, "<category>") {
-		t.Errorf("verdict = %q, want no category tag: allow verdicts omit it", verdict)
 	}
 }
 
@@ -291,7 +254,7 @@ func TestParseLayaResponseHonorsAnExplicitMaxSeverity(t *testing.T) {
 	backend := layaBackend()
 	backend.LayaMaxSeverity = new(10)
 
-	message, err := parseLayaResponse(layaAnswer("D"), classifierCall{
+	message, err := parseLayaResponse(layaAnswer("C"), classifierCall{
 		model:   "claude-sonnet-5",
 		kind:    classifier.KindStage1Severity,
 		backend: backend,
@@ -440,5 +403,172 @@ func TestLayaRerouteEndToEnd(t *testing.T) {
 	}
 	if envelope.Model != "claude-sonnet-5" {
 		t.Errorf("envelope model = %q, want the request's model claude-sonnet-5", envelope.Model)
+	}
+}
+
+// layaStage2Footer carries the Stage 2 footer marker classifier.Detect keys on.
+const layaStage2Footer = "\nUse <thinking> first, then respond with <severity>N</severity>, plus <category>Exact BLOCK Rule Name</category> only when blocking.\n"
+
+func TestBuildLayaPayloadEscalatesStage2BeforeTheCall(t *testing.T) {
+	_, err := buildLayaPayload(classifierCall{
+		rawBody: []byte(layaBody),
+		model:   "claude-sonnet-5",
+		kind:    classifier.KindStage2Severity,
+		backend: layaBackend(),
+	})
+	if !errors.Is(err, errClassifierEscalated) {
+		t.Fatalf("err = %v, want an escalation: Stage 2 follows a teacher verdict a laya allow must not overrule", err)
+	}
+}
+
+func TestBuildLayaPayloadPinsTheEnglishCheckpointByDefault(t *testing.T) {
+	backend := layaBackend()
+	backend.Model = ""
+	payload, err := buildLayaPayload(classifierCall{
+		rawBody: []byte(layaBody),
+		model:   "claude-sonnet-5",
+		kind:    classifier.KindStage1Severity,
+		backend: backend,
+	})
+	if err != nil {
+		t.Fatalf("buildLayaPayload: %v", err)
+	}
+	var decoded struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("payload is not valid JSON: %v", err)
+	}
+	if decoded.Model != "english" {
+		t.Errorf("model = %q, want english: without it laya-serve routes by language to a checkpoint it may not have loaded", decoded.Model)
+	}
+}
+
+func TestParseLayaResponseEscalatesTheRefusalBandByDefault(t *testing.T) {
+	_, err := parseLayaResponse(layaAnswer("D"), classifierCall{
+		model:   "claude-sonnet-5",
+		kind:    classifier.KindStage1Severity,
+		backend: layaBackend(),
+	})
+	if !errors.Is(err, errClassifierEscalated) {
+		t.Fatalf("err = %v, want an escalation for D", err)
+	}
+}
+
+func TestParseLayaResponseAnswersEveryLabelWithEscalationOff(t *testing.T) {
+	backend := layaBackend()
+	backend.LayaEscalateLabels = []string{}
+
+	message, err := parseLayaResponse(layaAnswer("D"), classifierCall{
+		model:   "claude-sonnet-5",
+		kind:    classifier.KindStage1Severity,
+		backend: backend,
+	})
+	if err != nil {
+		t.Fatalf("parseLayaResponse: %v", err)
+	}
+	if got := verdictTextFrom(t, message); got != "<severity>35</severity>" {
+		t.Errorf("verdict = %q, want D's mapped severity", got)
+	}
+}
+
+func TestParseLayaResponseEscalatesBelowTheConfidenceFloor(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		escalate bool
+	}{
+		{name: "below the floor", body: `{"answers":{"risk":{"choice":"A","answer_confidence":0.41}}}`, escalate: true},
+		{name: "at the floor", body: `{"answers":{"risk":{"choice":"A","answer_confidence":0.6}}}`, escalate: false},
+		// confidence is laya's entropy score, not the calibrated one: a
+		// response carrying only it cannot clear the floor.
+		{name: "no calibrated confidence", body: `{"answers":{"risk":{"choice":"A","confidence":0.99}}}`, escalate: true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			backend := layaBackend()
+			backend.LayaMinConfidence = 0.6
+			_, err := parseLayaResponse([]byte(testCase.body), classifierCall{
+				model:   "claude-sonnet-5",
+				kind:    classifier.KindStage1Severity,
+				backend: backend,
+			})
+			if got := errors.Is(err, errClassifierEscalated); got != testCase.escalate {
+				t.Errorf("escalated = %v (err %v), want %v", got, err, testCase.escalate)
+			}
+			if !testCase.escalate && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestLayaEscalationFallsThroughToBuiltInHandling drives the whole
+// /v1/messages path. An escalated request must be answered by built-in
+// handling (always_stub here, the teacher in a real deployment), audited as
+// escalated, and never recorded as a laya row.
+func TestLayaEscalationFallsThroughToBuiltInHandling(t *testing.T) {
+	cases := []struct {
+		name        string
+		footer      string
+		wantLayaHit bool
+	}{
+		{name: "stage 1 answered D", footer: classifierStage1Footer, wantLayaHit: true},
+		{name: "stage 2 escalates before the call", footer: layaStage2Footer, wantLayaHit: false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var layaHits atomic.Int32
+			laya := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				layaHits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(layaAnswer("D"))
+			}))
+			defer laya.Close()
+
+			orig := config.Get()
+			t.Cleanup(func() { config.SetForTest(orig) })
+			server, _ := newAccountBackedTestServer(t)
+			server.classifierAudit = classifier.NewRecorder(10)
+			dir := t.TempDir()
+
+			cfg := config.Get()
+			cfg.Classifier.Enabled = true
+			cfg.Classifier.Action = config.ActionAlwaysStub
+			cfg.Classifier.Capture = config.ClassifierCaptureConfig{Enabled: true, Dir: dir}
+			cfg.Classifier.Rules = []config.Rule{{
+				ID:      "laya",
+				Name:    "Laya",
+				Enabled: true,
+				Conditions: config.RuleConditions{
+					SystemPromptPatterns: []config.MatchPattern{
+						{Type: config.PatternSubstring, Pattern: "You are a security monitor"},
+					},
+				},
+				Action:        config.RuleActionReroute,
+				TargetBackend: "laya",
+			}}
+			cfg.Classifier.Backends = map[string]config.TargetBackend{
+				"laya": {Name: "laya", URL: laya.URL + "/v1/systemone", Format: config.BackendFormatLaya},
+			}
+			config.SetForTest(cfg)
+			server.applyClassifierConfig(cfg.Classifier)
+
+			rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, testCase.footer))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+			}
+			if got := layaHits.Load() > 0; got != testCase.wantLayaHit {
+				t.Errorf("laya-serve called = %v, want %v", got, testCase.wantLayaHit)
+			}
+			history := server.classifierAudit.History()
+			if len(history) != 1 || history[0].Status != classifier.EventStatusEscalated {
+				t.Fatalf("audit = %+v, want one escalated event", history)
+			}
+			rows := readCaptureRows(t, server, dir)
+			if len(rows) != 1 || rows[0].Source != corpus.SourceStub {
+				t.Fatalf("capture rows = %+v, want one stub row: built-in handling answered, not laya", rows)
+			}
+		})
 	}
 }

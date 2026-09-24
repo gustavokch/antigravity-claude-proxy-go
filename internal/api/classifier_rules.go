@@ -30,6 +30,11 @@ const defaultLayaBackendTimeout = 5 * time.Second
 // endpoint, not a verdict.
 const maxClassifierBackendResponse = 1 << 20
 
+// errClassifierEscalated marks a backend that declined to answer on purpose.
+// The request falls through to built-in handling exactly like a failed
+// reroute, but it is not a failure, so the audit records it as escalated.
+var errClassifierEscalated = errors.New("escalated to built-in handling")
+
 // applyClassifierConfig rebuilds the rule matcher. Regexes are compiled here
 // rather than per request, and a config that fails to compile leaves the
 // previous rule set active instead of silently disabling interception.
@@ -160,6 +165,12 @@ func (server *Server) applyClassifierRule(
 			backend: req.backend,
 		})
 		if err != nil {
+			if errors.Is(err, errClassifierEscalated) {
+				server.classifierLogger().Info("[Server] classifier reroute escalated to built-in handling",
+					"rule", rule.ID, "backend", rule.TargetBackend, "reason", err)
+				record(classifier.EventStatusEscalated, err.Error())
+				return false, false
+			}
 			server.classifierLogger().Warn("[Server] classifier reroute failed; falling back to built-in handling",
 				"rule", rule.ID, "backend", rule.TargetBackend, "error", err)
 			record(classifier.EventStatusError, err.Error())
