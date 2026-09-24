@@ -130,7 +130,7 @@ That path is the default directory; substitute your own if either environment va
 
 The script keeps a row only if it has `source: "upstream"`, `kind: "stage1-severity"`, a `severity` of 0 or more, and a non-empty action. The source filter excludes the rows the local model produced itself (`source: "laya"`), so it never trains on its own answers. The kind filter keeps Stage 1 rows alone by default: Stage 1 grades harm only, while Stage 2 also applies user intent that the exported state does not carry, so the two stages can give one action two different labels. To keep other kinds, pass `--kind` once per kind, for example `--kind stage1-severity --kind stage2-severity`; the values are `stage1-severity`, `stage2-severity` and `block-prefilter`. The severity filter excludes upstream rows that carry no verdict: an upstream error is still recorded as `source: "upstream"`, with `severity: -1`.
 
-The script prints a warning to stderr when the kept rows were graded by more than one `model`, because each model is a different teacher and the rows are then not one dataset.
+The script prints a warning to stderr when the kept rows were graded by more than one `model`, because each model is a different teacher and the rows are then not one dataset. When no row survives, the warning names the cause: the kind filter, if it removed upstream rows, and otherwise the need for classifier requests to reach upstream.
 
 ## Laya Backend
 

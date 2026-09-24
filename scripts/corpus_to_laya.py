@@ -191,11 +191,17 @@ def main(argv=None):
             file=sys.stderr,
         )
     if not examples:
-        print(
-            "WARNING: no labelled rows. Capture only yields labels while classifier "
-            "requests reach upstream — check that rules were set to passthrough.",
-            file=sys.stderr,
-        )
+        if stats["skipped_kind"]:
+            hint = (
+                f"{stats['skipped_kind']} upstream rows were of another kind than "
+                f"{', '.join(kinds)}; pass --kind to include them."
+            )
+        else:
+            hint = (
+                "Capture only yields labels while classifier requests reach upstream "
+                "— check that rules were set to passthrough."
+            )
+        print(f"WARNING: no labelled rows. {hint}", file=sys.stderr)
     return 0
 
 

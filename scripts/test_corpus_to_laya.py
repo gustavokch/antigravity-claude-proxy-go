@@ -181,3 +181,27 @@ def test_load_rows_does_not_count_blank_lines_as_loss(tmp_path):
     rows, skipped = load_rows(path)
     assert len(rows) == 1
     assert skipped == 0
+
+
+def test_main_no_rows_hint_names_the_kind_filter(tmp_path, capsys):
+    corpus = tmp_path / "classifier-2026-09-23.jsonl"
+    _write_corpus(corpus, [
+        {"action": "a", "severity": 12, "source": "upstream", "kind": "stage2-severity"},
+    ])
+    assert main([str(corpus), "-o", str(tmp_path / "train.jsonl")]) == 0
+    err = capsys.readouterr().err
+    assert "no labelled rows" in err
+    assert "--kind" in err
+    assert "passthrough" not in err
+
+
+def test_main_no_rows_hint_names_passthrough_when_nothing_went_upstream(tmp_path, capsys):
+    corpus = tmp_path / "classifier-2026-09-23.jsonl"
+    _write_corpus(corpus, [
+        {"action": "a", "severity": 0, "source": "stub", "kind": STAGE1},
+    ])
+    assert main([str(corpus), "-o", str(tmp_path / "train.jsonl")]) == 0
+    err = capsys.readouterr().err
+    assert "no labelled rows" in err
+    assert "passthrough" in err
+    assert "--kind" not in err
