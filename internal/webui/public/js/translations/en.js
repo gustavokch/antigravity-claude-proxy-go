@@ -831,7 +831,7 @@ window.translations.en = {
     classifierCaptureEnabled: "Enable Corpus Capture",
     classifierCaptureDir: "Corpus Directory",
     classifierCaptureDirPlaceholder: "<config dir>/corpus",
-    classifierCaptureContextEntries: "Context Entries Kept (0 for the action only)",
+    classifierCaptureContextEntries: "Context Entries Kept (-1 for the action only, 0 for the default of 2)",
     classifierCaptureMaxFiles: "Day Files Retained",
     classifierCaptureRedact: "Replace Home Directory With ~",
     classifierRules: "Interception Rules",

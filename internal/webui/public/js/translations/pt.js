@@ -774,7 +774,7 @@ window.translations.pt = {
     classifierCaptureEnabled: "Ativar Captura de Corpus",
     classifierCaptureDir: "Diretório do Corpus",
     classifierCaptureDirPlaceholder: "<diretório de config>/corpus",
-    classifierCaptureContextEntries: "Entradas de Contexto Mantidas (0 para apenas a ação)",
+    classifierCaptureContextEntries: "Entradas de Contexto Mantidas (-1 para apenas a ação, 0 para o padrão de 2)",
     classifierCaptureMaxFiles: "Arquivos Diários Retidos",
     classifierCaptureRedact: "Substituir o Diretório Home por ~",
     classifierRules: "Regras de Interceptação",

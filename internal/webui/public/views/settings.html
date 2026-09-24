@@ -4645,7 +4645,7 @@
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div class="form-control">
-                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureContextEntries')">Context Entries Kept (0 for the action only)</label>
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureContextEntries')">Context Entries Kept (-1 for the action only, 0 for the default of 2)</label>
                             <input type="number" min="-1" max="20" x-model.number="config.capture.contextEntries"
                                 class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan">
                         </div>

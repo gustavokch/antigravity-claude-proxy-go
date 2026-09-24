@@ -355,8 +355,8 @@ type ClassifierCaptureConfig struct {
 	Enabled bool   `json:"enabled"`
 	Dir     string `json:"dir,omitempty"`
 	// ContextEntries is how many transcript entries before the graded action
-	// are kept. 0 means the action only; pass -1 to mean "explicitly zero"
-	// when the default would otherwise apply.
+	// are kept, 1 to 20. -1 keeps the action only. 0 is the unset value and
+	// resolves to the default of 2, so it cannot mean "action only".
 	ContextEntries int   `json:"contextEntries,omitempty"`
 	MaxFiles       int   `json:"maxFiles,omitempty"`
 	MaxFileBytes   int64 `json:"maxFileBytes,omitempty"`

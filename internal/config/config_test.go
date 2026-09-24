@@ -722,13 +722,13 @@ func TestClassifierCaptureResolvedKeepsExplicitValues(t *testing.T) {
 	}
 }
 
-func TestClassifierCaptureContextEntriesZeroIsHonored(t *testing.T) {
-	// 0 is a meaningful value (action only), so Resolved must not replace it
-	// with the default. It is distinguished by ContextEntries being set to -1
-	// when unset is intended; see Resolved's contract.
+func TestClassifierCaptureContextEntriesMinusOneKeepsActionOnly(t *testing.T) {
+	// -1 is how an operator asks for the action with no preceding entries.
+	// 0 cannot mean that: it is the unset value, and Resolved replaces it
+	// with the default of 2 (see TestClassifierCaptureResolvedFillsDefaults).
 	resolved := ClassifierCaptureConfig{Enabled: true, ContextEntries: -1}.Resolved()
 	if resolved.ContextEntries != 0 {
-		t.Errorf("ContextEntries = %d, want 0 when explicitly disabled with -1", resolved.ContextEntries)
+		t.Errorf("ContextEntries = %d, want 0 (action only) when set to -1", resolved.ContextEntries)
 	}
 }
 
