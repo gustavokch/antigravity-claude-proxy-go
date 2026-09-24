@@ -761,3 +761,79 @@ func TestClassifierConfigDecodesCapture(t *testing.T) {
 		t.Error("RedactPathsEnabled = true, want false")
 	}
 }
+
+func TestLayaSettingsDefaults(t *testing.T) {
+	settings := TargetBackend{Format: BackendFormatLaya}.LayaSettings()
+
+	if settings.QuestionName != "risk" {
+		t.Errorf("QuestionName = %q, want risk", settings.QuestionName)
+	}
+	if settings.MaxSeverity != 49 {
+		t.Errorf("MaxSeverity = %d, want 49", settings.MaxSeverity)
+	}
+	if settings.StateChars != 1200 {
+		t.Errorf("StateChars = %d, want 1200", settings.StateChars)
+	}
+	if len(settings.Criteria) != 4 {
+		t.Errorf("Criteria has %d entries, want 4", len(settings.Criteria))
+	}
+	for _, label := range []string{"A", "B", "C", "D"} {
+		if _, exists := settings.Criteria[label]; !exists {
+			t.Errorf("Criteria is missing %q", label)
+		}
+		if _, exists := settings.SeverityMap[label]; !exists {
+			t.Errorf("SeverityMap is missing %q", label)
+		}
+	}
+	for label, severity := range settings.SeverityMap {
+		if severity >= 50 {
+			t.Errorf("default severity for %q is %d; a laya verdict must never reach the block boundary", label, severity)
+		}
+	}
+	if settings.Instructions == "" {
+		t.Error("Instructions is empty")
+	}
+}
+
+func TestLayaSettingsHonorsOverrides(t *testing.T) {
+	backend := TargetBackend{
+		Format:           BackendFormatLaya,
+		LayaQuestionName: "danger",
+		LayaInstructions: "custom",
+		LayaCriteria:     map[string]string{"X": "one", "Y": "two"},
+		LayaSeverityMap:  map[string]int{"X": 1, "Y": 2},
+		LayaMaxSeverity:  10,
+		LayaStateChars:   400,
+	}
+	settings := backend.LayaSettings()
+
+	if settings.QuestionName != "danger" {
+		t.Errorf("QuestionName = %q", settings.QuestionName)
+	}
+	if settings.Instructions != "custom" {
+		t.Errorf("Instructions = %q", settings.Instructions)
+	}
+	if len(settings.Criteria) != 2 {
+		t.Errorf("Criteria has %d entries, want 2", len(settings.Criteria))
+	}
+	if settings.SeverityMap["Y"] != 2 {
+		t.Errorf("SeverityMap[Y] = %d, want 2", settings.SeverityMap["Y"])
+	}
+	if settings.MaxSeverity != 10 {
+		t.Errorf("MaxSeverity = %d, want 10", settings.MaxSeverity)
+	}
+	if settings.StateChars != 400 {
+		t.Errorf("StateChars = %d, want 400", settings.StateChars)
+	}
+}
+
+func TestBackendFormatLayaDecodes(t *testing.T) {
+	raw := `{"name":"laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english"}`
+	var backend TargetBackend
+	if err := json.Unmarshal([]byte(raw), &backend); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if backend.Format != BackendFormatLaya {
+		t.Errorf("Format = %q, want laya", backend.Format)
+	}
+}
