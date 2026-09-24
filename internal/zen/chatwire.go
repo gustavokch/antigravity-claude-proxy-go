@@ -26,10 +26,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	if err := json.Unmarshal(anthropicBody, &req); err != nil {
 		return nil, fmt.Errorf("parse anthropic request: %w", err)
 	}
-	chatReq, err := AnthropicToChatRequest(req)
-	if err != nil {
-		return nil, err
-	}
+	chatReq := anthropicToChatRequest(req)
 	payload, err := json.Marshal(chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal chat request: %w", err)
@@ -96,9 +93,9 @@ func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string,
 
 // --- Request translation ---
 
-// AnthropicToChatRequest converts an Anthropic Messages request body into an
+// anthropicToChatRequest converts an Anthropic Messages request body into an
 // OpenAI Chat Completions request body.
-func AnthropicToChatRequest(req map[string]any) (map[string]any, error) {
+func anthropicToChatRequest(req map[string]any) map[string]any {
 	model, _ := req["model"].(string)
 	out := map[string]any{"model": StripOpencodePrefix(model)}
 
@@ -143,7 +140,7 @@ func AnthropicToChatRequest(req map[string]any) (map[string]any, error) {
 			out["tool_choice"] = tc
 		}
 	}
-	return out, nil
+	return out
 }
 
 func systemText(v any) string {
