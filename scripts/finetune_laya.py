@@ -131,9 +131,10 @@ def save_state(out_dir, state):
 
 
 # Everything derived from dataset.jsonl. A changed corpus or configuration
-# makes all of it stale.
+# makes all of it stale, including a complete staging checkpoint that the next
+# run's recover_checkpoint would otherwise promote.
 PROGRESS_FILES = ("items.pt", "eval.json")
-PROGRESS_DIRS = ("checkpoint_latest", "model")
+PROGRESS_DIRS = ("checkpoint_latest", "checkpoint_latest.staging", "checkpoint_latest.old", "model")
 
 
 def discard_progress(out_dir):
@@ -339,21 +340,68 @@ def load_model(model_dir, cfg, device, torch, weights_path=None):
     return model.to(device)
 
 
+CHECKPOINT_META = "checkpoint_meta.json"
+
+
+def _staging(ckpt_dir):
+    return ckpt_dir.with_name(ckpt_dir.name + ".staging")
+
+
+def _retired(ckpt_dir):
+    return ckpt_dir.with_name(ckpt_dir.name + ".old")
+
+
+def commit_checkpoint(ckpt_dir):
+    """Swap the fully written staging dir in for ckpt_dir.
+
+    Two renames, never an in-place overwrite: a crash at any point leaves the
+    previous checkpoint or a complete staging dir that recover_checkpoint
+    promotes.
+    """
+    staging, retired = _staging(ckpt_dir), _retired(ckpt_dir)
+    shutil.rmtree(retired, ignore_errors=True)
+    if ckpt_dir.exists():
+        ckpt_dir.rename(retired)
+    staging.rename(ckpt_dir)
+    shutil.rmtree(retired, ignore_errors=True)
+
+
+def recover_checkpoint(ckpt_dir):
+    """Finish or roll back a checkpoint swap that a crash interrupted.
+
+    The meta file is written last: a staging dir that has one is complete and
+    newer than ckpt_dir, one without it is a torn write.
+    """
+    if (_staging(ckpt_dir) / CHECKPOINT_META).exists():
+        commit_checkpoint(ckpt_dir)
+    else:
+        shutil.rmtree(_staging(ckpt_dir), ignore_errors=True)
+    shutil.rmtree(_retired(ckpt_dir), ignore_errors=True)
+
+
 def save_checkpoint(ckpt_dir, model, optimizer, scheduler, epoch, avg_loss, tok, torch):
+    """Write the rolling checkpoint into a staging dir, meta last, then swap it in.
+
+    Weights keep the model's own dtype: resuming from fp16-rounded weights next
+    to fp32 optimizer state would round away an epoch of small updates.
+    """
     from safetensors.torch import save_file
 
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    sd = {k: v.half().contiguous().cpu() for k, v in model.state_dict().items()}
-    save_file(sd, str(ckpt_dir / "model.safetensors"))
+    staging = _staging(ckpt_dir)
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    sd = {k: v.detach().contiguous().cpu() for k, v in model.state_dict().items()}
+    save_file(sd, str(staging / "model.safetensors"))
     torch.save(
         {"optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()},
-        ckpt_dir / "trainer_state.pt",
+        staging / "trainer_state.pt",
     )
-    model.encoder.config.save_pretrained(str(ckpt_dir / "encoder"))
-    tok.save_pretrained(str(ckpt_dir / "tokenizer"))
-    (ckpt_dir / "checkpoint_meta.json").write_text(
+    model.encoder.config.save_pretrained(str(staging / "encoder"))
+    tok.save_pretrained(str(staging / "tokenizer"))
+    (staging / CHECKPOINT_META).write_text(
         json.dumps({"epoch": epoch + 1, "avg_loss": avg_loss}, indent=2) + "\n"
     )
+    commit_checkpoint(ckpt_dir)
 
 
 def stage_train(args, out_dir, state, device):
@@ -368,7 +416,8 @@ def stage_train(args, out_dir, state, device):
     train_items = items["train"]
 
     ckpt_dir = out_dir / "checkpoint_latest"
-    meta_path = ckpt_dir / "checkpoint_meta.json"
+    recover_checkpoint(ckpt_dir)
+    meta_path = ckpt_dir / CHECKPOINT_META
     start_epoch = 0
     if meta_path.exists():
         start_epoch = json.loads(meta_path.read_text())["epoch"]

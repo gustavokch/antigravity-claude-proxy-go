@@ -13,10 +13,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import finetune_laya
 from finetune_laya import (
+    commit_checkpoint,
     corpus_sha256,
     load_state,
     main,
     one_hot_target,
+    recover_checkpoint,
     save_state,
     stage_export,
 )
@@ -145,12 +147,15 @@ def _real_run_until_torch(monkeypatch, argv):
         main(argv)
 
 
-PROGRESS = ["checkpoint_latest", "eval.json", "items.pt", "model"]
+PROGRESS = ["checkpoint_latest", "checkpoint_latest.staging", "eval.json", "items.pt", "model"]
 
 
 def _seed_progress(out):
-    (out / "checkpoint_latest").mkdir()
-    (out / "checkpoint_latest" / "checkpoint_meta.json").write_text('{"epoch": 2}')
+    # The staging dir is complete (it has a meta file): the next run's
+    # recover_checkpoint would promote it unless it is discarded too.
+    for name in ("checkpoint_latest", "checkpoint_latest.staging"):
+        (out / name).mkdir()
+        (out / name / "checkpoint_meta.json").write_text('{"epoch": 2}')
     (out / "items.pt").write_bytes(b"items")
     (out / "eval.json").write_text("{}")
     (out / "model").mkdir()
@@ -211,3 +216,51 @@ def test_dry_run_keeps_progress_when_the_config_changed(tmp_path, monkeypatch, c
     assert load_state(out)["config"]["epochs"] == 2
     assert (out / "dataset.jsonl").read_text() == dataset
     assert "configuration changed" in capsys.readouterr().out
+
+
+def _checkpoint(path, epoch=None, weights="w"):
+    """A checkpoint dir; epoch=None leaves out the meta file, as a crash mid-write does."""
+    path.mkdir()
+    (path / "model.safetensors").write_text(weights)
+    if epoch is not None:
+        (path / "checkpoint_meta.json").write_text(json.dumps({"epoch": epoch}))
+    return path
+
+
+def _epoch(path):
+    return json.loads((path / "checkpoint_meta.json").read_text())["epoch"]
+
+
+def _swap_dirs(tmp_path):
+    latest = tmp_path / "checkpoint_latest"
+    return latest, tmp_path / "checkpoint_latest.staging", tmp_path / "checkpoint_latest.old"
+
+
+def test_commit_checkpoint_replaces_the_previous_one(tmp_path):
+    latest, staging, retired = _swap_dirs(tmp_path)
+    _checkpoint(latest, epoch=1)
+    _checkpoint(staging, epoch=2)
+    commit_checkpoint(latest)
+    assert _epoch(latest) == 2
+    assert not staging.exists() and not retired.exists()
+
+
+def test_recover_checkpoint_discards_an_incomplete_staging_dir(tmp_path):
+    # Crash while writing epoch 2: its weights landed, its meta did not.
+    latest, staging, _ = _swap_dirs(tmp_path)
+    _checkpoint(latest, epoch=1, weights="epoch1")
+    _checkpoint(staging, weights="epoch2-partial")
+    recover_checkpoint(latest)
+    assert _epoch(latest) == 1
+    assert (latest / "model.safetensors").read_text() == "epoch1"
+    assert not staging.exists()
+
+
+def test_recover_checkpoint_promotes_a_complete_staging_dir(tmp_path):
+    # Crash between the renames: epoch 1 retired, epoch 2 complete but not yet in place.
+    latest, staging, retired = _swap_dirs(tmp_path)
+    _checkpoint(retired, epoch=1)
+    _checkpoint(staging, epoch=2)
+    recover_checkpoint(latest)
+    assert _epoch(latest) == 2
+    assert not staging.exists() and not retired.exists()
