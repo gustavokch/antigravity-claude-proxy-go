@@ -105,3 +105,34 @@ Audit events are published over Server-Sent Events (SSE):
 - Monotonic sequence numbers (`seq`) provide gap-free streaming across reconnections.
 - Event statuses: `rerouted`, `stubbed`, `passthrough`, or `error`.
 - API keys in `classifier.backends` are automatically redacted in config management endpoints (`GET /api/config`).
+
+## Corpus Capture
+
+Set `classifier.capture.enabled` to `true` to write one JSONL row per classifier request to `<configDir>/corpus/classifier-<YYYY-MM-DD>.jsonl`, one file per UTC day. `<configDir>` is `ANTIGRAVITY_CONFIG_DIR` if set, else `CONFIG_DIR`, else `~/.config/antigravity-proxy`. `classifier.capture.dir` replaces the whole directory and must be an absolute path. Files are created with mode `0600`, in a directory with mode `0700`. Each row holds the graded action, up to `contextEntries` transcript entries before it (default 2), hashes of the system and footer blocks, and the verdict that was returned, both raw and parsed into `severity`, `category` and `thinking`. A response with no parseable `<severity>` tag is recorded with `severity: -1`.
+
+Capture does not depend on `classifier.enabled`. It is installed on the capture setting alone, so the proxy can capture classifier requests without intercepting any of them.
+
+Labels only exist when classifier requests actually reach upstream. The simplest collection setup is capture on, `classifier.enabled` off and `ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK` unset: nothing intercepts, and every classifier request goes upstream. If interception must stay on during a collection window, set rules to `passthrough` and leave the built-in stub inactive. Either way this consumes upstream quota, which is the cost of collecting. A row the proxy answered itself names the path that answered it: `source: "stub"` for a stub, `source: "rule"` for a reroute to an `anthropic` or `openai` backend, and `source: "laya"` for a Laya backend. Only `source: "upstream"` rows hold a teacher label.
+
+Convert a corpus into a fine-tune dataset:
+
+```bash
+python3 scripts/corpus_to_laya.py ~/.config/antigravity-proxy/corpus/*.jsonl -o train.jsonl
+```
+
+That path is the default directory; substitute your own if either environment variable or `classifier.capture.dir` is set. Nothing in this repository checks the emitted `questions.risk.{type, instructions, criteria}` shape against what Laya's training loader expects, so confirm it against Laya's own fine-tuning notebook before a real training run.
+
+The script keeps a row only if it has `source: "upstream"`, a `severity` of 0 or more, and a non-empty action. The source filter excludes the rows the local model produced itself (`source: "laya"`), so it never trains on its own answers. The severity filter excludes upstream rows that carry no verdict: an upstream error, or a fail-fast error the proxy returns on the built-in path, is still recorded as `source: "upstream"`, with `severity: -1`.
+
+## Laya Backend
+
+```bash
+pip install "laya[serve]"
+LAYA_MODELS=english LAYA_PRELOAD=1 LAYA_HOST=127.0.0.1 LAYA_PORT=8000 laya-serve
+```
+
+Then add a backend with `"format": "laya"` and `"url": "http://127.0.0.1:8000/v1/systemone"`, and point a `reroute` rule's `targetBackend` at it. Rules only run while `classifier.enabled` is `true`. Set `apiKey` only if the server was started with `LAYA_API_KEY`. When `timeoutMs` is unset or 0, a Laya backend times out after 5 seconds, not the 20 seconds the other formats use.
+
+The adapter sends only the graded action, as a single `choice` question over four risk buckets by default, and maps the chosen label to a severity. Every default severity is below 50, the allow/block boundary, and `layaMaxSeverity` (default 49) clamps the result, so with the defaults a Laya verdict cannot block. It can block only if an operator raises `layaMaxSeverity` to 50 or more and maps a label to 50 or more in `layaSeverityMap`. The base checkpoints score near chance on typed decisions zero-shot, so treat the verdict as a locally computed, plausible allow until a fine-tuned checkpoint and a measured agreement rate exist.
+
+If laya-serve is unreachable, times out, returns a non-200 status or a response with no answer for the question, or answers with a label the severity map does not contain, the reroute fails and the request falls through to the proxy's built-in handling. A block-prefilter request fails the same way: the adapter answers Stage 1 and Stage 2 severity requests only, because the block-prefilter response format has never been captured.
