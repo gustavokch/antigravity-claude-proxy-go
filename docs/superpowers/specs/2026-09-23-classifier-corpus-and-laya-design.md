@@ -210,15 +210,25 @@ The values name the path that produced the verdict:
   One classifier request per bash action makes this a few hundred opens per day at most.
 - Before writing, if the target file is already at or above `maxFileBytes`, the row is dropped and a
   counter increments. A warning is logged at most once per hour, naming the file and the drop count.
-- On the first write of a new UTC date, files matching `classifier-*.jsonl` in `dir` are listed and
-  all but the newest `maxFiles` are deleted.
+- On the first write of a new UTC date, and on the first write after a restart or a config save,
+  files matching `classifier-*.jsonl` in `dir` are listed and all but the newest `maxFiles` are
+  deleted. Each deletion is logged at Warn, naming the file.
+- Rows are built and written on a goroutine started when the handler returns
+  (`Recorder.RecordAsync`), so the disk write never sits in front of the response. At most 64
+  writes run at once; a row past that is dropped and counted with the size-cap drops. A row still
+  in flight when the process exits is lost.
 - All errors are logged and swallowed. Capture must never fail a user request.
 
 ### 3.6 Redaction
 
-When `redactPaths` is true (the default), every occurrence of the current user's home directory
-string inside `action` and `context` is replaced with `~` before the row is written. This is the
-entire redaction contract. No secret scanning, no token detection, no content filtering. The corpus
+When `redactPaths` is true (the default), the proxy process's home directory (`$HOME`) is replaced
+with `~` in `action`, `context`, `verdict_raw` and `thinking` before the row is written, wherever it
+stands as a whole path prefix: the byte before it is not a path character (or ends a JSON escape
+such as `\n`), and the byte after it is `/`, the end of the text, or not a path character. So
+`/home/a` is not rewritten inside `/home/abc` or `/mnt/home/a`. A home of `/` turns redaction off.
+The home is the proxy's own: when the proxy runs as a different user than Claude Code (the shipped
+`antigravity-go-proxy.service` runs as `root`), the Claude Code user's paths are not redacted. This
+is the entire redaction contract. No secret scanning, no token detection, no content filtering. The corpus
 contains the operator's own shell commands, on the operator's own machine, at mode `0600`; anything
 more would be a false promise of safety.
 
@@ -243,9 +253,9 @@ Added to `ClassifierConfig` in `internal/config/config.go:259`:
 |---|---|---|
 | `enabled` | `false` | — |
 | `dir` | `""` → `<configDir>/corpus` | Absolute path, or empty for the default. `configDir` is `config.GetConfigDir()` (`internal/config/config.go:446`). |
-| `contextEntries` | `2` | 0–20. |
-| `maxFiles` | `8` | 1–365. |
-| `maxFileBytes` | `67108864` (64 MiB) | 1 MiB – 4 GiB. |
+| `contextEntries` | `2` | −1 to 20. −1 keeps the action alone; 0 resolves to the default of 2. |
+| `maxFiles` | `8` | 0–365. 0 resolves to 8. |
+| `maxFileBytes` | `67108864` (64 MiB) | 0 – 4 GiB. 0 resolves to 64 MiB. |
 | `redactPaths` | `true` | — |
 
 Off by default, consistent with `upstream429ForensicsEnabled`.
@@ -261,9 +271,15 @@ gate `Detect` already opens with.
 
 - Reads `source == "upstream"` rows only, and asserts the filter loudly rather than silently
   dropping rows.
+- Keeps `kind == "stage1-severity"` rows by default; `--kind` (repeatable) selects other kinds.
+  Stage 1 grades harm only, while Stage 2 also applies user intent that the exported state does not
+  carry, so mixing the stages can give one action two labels.
 - Skips rows where `severity` is `-1`.
-- Warns when more than one distinct `system_sha256` appears, since that means the monitor prompt
-  changed mid-collection and the corpus mixes two teachers.
+- Warns when more than one distinct `system_sha256` appears (the monitor prompt changed
+  mid-collection), and when the kept rows were graded by more than one distinct `model` (more than
+  one teacher).
+- When no row survives, the warning names the kind filter if it removed upstream rows, and otherwise
+  the passthrough requirement of §3.9.
 - Emits a `choice` question over the four buckets of §4.5, deriving the label from the raw severity.
   Raw severity stays in the JSONL so bucket boundaries remain a script-level decision, revisable
   without touching Go or recollecting.
@@ -475,8 +491,9 @@ So `laya-serve` being down, returning 401, returning malformed JSON, returning a
 the transcript being unextractable all degrade to the current stub behavior. No new user-visible
 failure mode is introduced.
 
-Phase 1 failures — directory not writable, file at its size cap, response unparseable — are logged
-and swallowed. Capture never fails, delays, or alters a user request.
+Phase 1 failures — directory not writable, file at its size cap, too many writes in flight,
+response unparseable — are logged and swallowed. Capture never fails, delays, or alters a user
+request: the row is built and written after the handler returns, off its goroutine.
 
 ---
 
