@@ -79,7 +79,7 @@ func TestClassifierCaptureRecordsStubbedVerdict(t *testing.T) {
 		}},
 	})
 
-	if !srv.classifierCorpus.Enabled() {
+	if !srv.classifierCorpus.Load().Enabled() {
 		t.Fatal("recorder is disabled after applyClassifierConfig with capture on")
 	}
 
@@ -107,7 +107,7 @@ func TestClassifierCaptureRecordsStubbedVerdict(t *testing.T) {
 		t.Errorf("captureSource = %q, want stub", source)
 	}
 
-	srv.classifierCorpus.Record(corpus.BuildEntry(corpus.EntryInput{
+	srv.classifierCorpus.Load().Record(corpus.BuildEntry(corpus.EntryInput{
 		RawBody:        []byte(captureBody),
 		Kind:           classifier.KindStage1Severity.String(),
 		Model:          "claude-sonnet-5",
@@ -138,7 +138,7 @@ func TestClassifierCaptureRecordsStubbedVerdict(t *testing.T) {
 func TestClassifierCaptureDisabledCreatesNoRecorder(t *testing.T) {
 	srv := &Server{classifierAudit: classifier.NewRecorder(10)}
 	srv.applyClassifierConfig(config.ClassifierConfig{Enabled: true})
-	if srv.classifierCorpus.Enabled() {
+	if srv.classifierCorpus.Load().Enabled() {
 		t.Error("recorder is enabled when capture config is off")
 	}
 }
@@ -204,6 +204,8 @@ func TestClassifierCaptureStubSourceSurvivesWriteFailure(t *testing.T) {
 // fine-tune that consumes upstream rows only.
 func TestClassifierCaptureFallbackStubWritesOneStubRow(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "1")
+	orig := config.Get()
+	t.Cleanup(func() { config.SetForTest(orig) })
 	dir := t.TempDir()
 	server, backend := newAccountBackedTestServer(t)
 

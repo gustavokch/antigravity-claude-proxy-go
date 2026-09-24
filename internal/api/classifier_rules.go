@@ -35,16 +35,17 @@ const maxClassifierBackendResponse = 1 << 20
 // previous rule set active instead of silently disabling interception.
 func (server *Server) applyClassifierConfig(cfg config.ClassifierConfig) {
 	// The recorder is rebuilt on every config application so a settings save
-	// takes effect without a restart.
+	// takes effect without a restart. It is swapped atomically because
+	// requests read it concurrently.
 	if cfg.Capture.Enabled {
 		resolved := cfg.Capture.Resolved()
-		server.classifierCorpus = corpus.New(resolved.Dir, corpus.Options{
+		server.classifierCorpus.Store(corpus.New(resolved.Dir, corpus.Options{
 			MaxFiles:     resolved.MaxFiles,
 			MaxFileBytes: resolved.MaxFileBytes,
 			RedactPaths:  resolved.RedactPathsEnabled(),
-		})
+		}))
 	} else {
-		server.classifierCorpus = nil
+		server.classifierCorpus.Store(nil)
 	}
 
 	if server.classifierMatcher == nil {

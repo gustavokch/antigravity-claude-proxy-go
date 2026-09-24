@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"antigravity-go-proxy/internal/classifier"
@@ -294,4 +295,42 @@ func TestClassifierCaptureFailFastRowIsLabeledStub(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClassifierCaptureConfigSwapIsRaceFree pins that a settings save can
+// swap the recorder while classifier requests are in flight. It proves
+// nothing without -race: run it with go test -race.
+func TestClassifierCaptureConfigSwapIsRaceFree(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "")
+	orig := config.Get()
+	t.Cleanup(func() { config.SetForTest(orig) })
+	dir := t.TempDir()
+	server, _ := newAccountBackedTestServer(t)
+	server.backend = &verdictBackend{verdict: "<severity>12</severity>"}
+
+	cfg := config.Get()
+	cfg.Classifier.Enabled = false
+	cfg.Classifier.Capture = config.ClassifierCaptureConfig{Enabled: true, Dir: dir}
+	config.SetForTest(cfg)
+	server.applyClassifierConfig(cfg.Classifier)
+
+	body := classifierShapedBody(t, classifierTestModel, classifierStage1Footer)
+	const rounds = 50
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			swapped := cfg.Classifier
+			swapped.Capture.Enabled = i%2 == 0
+			server.applyClassifierConfig(swapped)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			postClassifierMessages(t, server, body)
+		}
+	}()
+	wg.Wait()
 }

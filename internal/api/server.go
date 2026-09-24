@@ -118,7 +118,7 @@ type Server struct {
 	cacheBumpSched     *cachebump.Scheduler
 	classifierMatcher  *classifier.ConfigurableMatcher
 	classifierAudit    *classifier.Recorder
-	classifierCorpus   *corpus.Recorder
+	classifierCorpus   atomic.Pointer[corpus.Recorder]
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -726,14 +726,16 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	// branch falls through to the next.
 	captureSource := corpus.SourceUpstream
 	var captureRef *corpus.Source
-	if server.classifierCorpus.Enabled() {
+	// The recorder is loaded once: a settings save can swap it mid-request,
+	// and the row belongs to the recorder that saw the request start.
+	if recorder := server.classifierCorpus.Load(); recorder.Enabled() {
 		if kind, detected := classifier.Detect(rawBody); detected {
 			tap := corpus.NewResponseTap(writer)
 			writer = tap
 			captureRef = &captureSource
 			contextEntries := cfg.Classifier.Capture.Resolved().ContextEntries
 			defer func() {
-				server.classifierCorpus.Record(corpus.BuildEntry(corpus.EntryInput{
+				recorder.Record(corpus.BuildEntry(corpus.EntryInput{
 					RawBody:        rawBody,
 					Kind:           kind.String(),
 					Model:          model,
