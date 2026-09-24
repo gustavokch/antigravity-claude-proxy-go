@@ -118,3 +118,9 @@ func TestSendChatJSONAndError(t *testing.T) {
 		t.Fatalf("error = %d %s", resp.StatusCode, b)
 	}
 }
+
+func TestMapFinishReasonContentFilter(t *testing.T) {
+	if got := mapFinishReason("content_filter"); got != "refusal" {
+		t.Fatalf("content_filter = %q, want refusal", got)
+	}
+}

@@ -427,6 +427,8 @@ func mapFinishReason(r string) string {
 		return "max_tokens"
 	case "tool_calls", "function_call":
 		return "tool_use"
+	case "content_filter":
+		return "refusal"
 	default:
 		return "end_turn"
 	}
