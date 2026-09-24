@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Smoke-check a live laya-serve against the wire contract the proxy relies on.
 
-The proxy's Laya adapter (internal/api/classifier_laya.go) was written from
-the laya-serve README and has never run against a real server. Any mismatch
-falls through to the built-in classifier path silently, so "the proxy
-works" never proves "Laya works". This script is the cheap proof: it sends
+The proxy's Laya adapter (internal/api/classifier_laya.go) was checked
+against laya-serve 0.3.20 on 2026-09-24. Any mismatch falls through to the
+built-in classifier path silently, so "the proxy works" never proves "Laya
+works". This script is the cheap proof: it sends
 one typed-decision request built exactly like the proxy builds it — same
 question name, same instructions, same criteria text the exporter bakes
 into training examples — and verifies the response carries a known A-D

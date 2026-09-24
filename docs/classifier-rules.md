@@ -196,7 +196,7 @@ If laya-serve is unreachable, times out, returns a non-200 status or a response 
 
 ### Checking a live laya-serve
 
-The wire contract (request `state`/`questions`, typed A-D `choice` response) comes from the laya-serve README. Every failure mode above is silent by design, so an untested contract means the first real user is the test. Run the check before relying on a Laya backend, and again after any laya-serve upgrade:
+The wire contract (request `state`/`questions`, typed A-D `choice` response) comes from the laya-serve README. The proxy was checked against laya-serve 0.3.20. Every failure mode above is silent by design, so run the check before relying on a Laya backend, and again after any laya-serve upgrade:
 
 ```bash
 python3 scripts/check_laya.py --url http://127.0.0.1:8000/v1/systemone
