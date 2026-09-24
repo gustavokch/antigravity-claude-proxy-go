@@ -28,6 +28,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import random
 import shutil
 import sys
@@ -306,6 +307,11 @@ def collate_train_batch(items, pad_id, torch):
     }
 
 
+def optimizer_steps(n_items, epochs):
+    """Optimizer (and scheduler) steps over a run: the partial last batch of an epoch steps too."""
+    return math.ceil(n_items / (MICRO_BATCH * GRAD_ACCUM)) * epochs
+
+
 def resolve_device(requested, torch):
     if requested != "auto":
         return requested
@@ -440,7 +446,7 @@ def stage_train(args, out_dir, state, device):
         [{"params": enc_params, "lr": LR_ENCODER}, {"params": head_params, "lr": LR_HEAD}],
         weight_decay=WEIGHT_DECAY,
     )
-    total_updates = max(1, (len(train_items) // (MICRO_BATCH * GRAD_ACCUM)) * args.epochs)
+    total_updates = max(1, optimizer_steps(len(train_items), args.epochs))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_updates, eta_min=1e-6)
     scaler = make_scaler(device)
 
@@ -596,8 +602,11 @@ def stage_evaluate(args, out_dir, state, device):
 # ---------------------------------------------------------------------------
 
 def fit_one_temp(sel, torch):
+    """Fit one temperature on held-out (logits, target) pairs; None when too few to fit."""
+    from laya.common import clamp_temperature
+
     if len(sel) < 10:
-        return 1.0
+        return None
     kmax = max(len(z) for z, _ in sel)
     logits = torch.full((len(sel), kmax), -1e4)
     targets = torch.zeros((len(sel), kmax))
@@ -614,7 +623,9 @@ def fit_one_temp(sel, torch):
         return loss
 
     opt.step(closure)
-    return float(torch.clamp(log_t.exp(), 0.1, 10.0).item())
+    # laya clamps to [TEMP_MIN, TEMP_MAX] at load and warns about anything
+    # outside; clamp here so the file holds what laya will apply.
+    return clamp_temperature(log_t.exp().item())
 
 
 def stage_finalize(args, out_dir, state, device):
@@ -655,11 +666,13 @@ def stage_finalize(args, out_dir, state, device):
             for row, it in zip(logits.float().cpu().tolist(), chunk):
                 calib.append((it["qtype"], row[: len(it["markers"])], it["target"]))
 
-    temps = [1.2, 1.2, 1.2]
+    # Types with too few held-out items keep the base checkpoint's fitted value.
+    temps = list(cfg.get("temperature", [1.2, 1.2, 1.2]))
     for qtype in range(3):
         sel = [(z, t) for qt, z, t in calib if qt == qtype]
-        if sel:
-            temps[qtype] = fit_one_temp(sel, torch)
+        fitted = fit_one_temp(sel, torch)
+        if fitted is not None:
+            temps[qtype] = fitted
 
     final_dir.mkdir(parents=True, exist_ok=True)
     sd = {k: v.half().contiguous().cpu() for k, v in model.state_dict().items()}

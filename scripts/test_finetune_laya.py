@@ -18,6 +18,7 @@ from finetune_laya import (
     load_state,
     main,
     one_hot_target,
+    optimizer_steps,
     recover_checkpoint,
     save_state,
     stage_export,
@@ -27,6 +28,14 @@ from finetune_laya import (
 def test_import_pulls_in_no_heavy_dependencies():
     assert "torch" not in sys.modules
     assert "laya" not in sys.modules
+
+
+def test_optimizer_steps_counts_the_partial_last_batch():
+    # The scheduler steps on the partial batch that ends each epoch too; a
+    # cosine horizon one step short climbs back up past its minimum.
+    assert optimizer_steps(198, 2) == 50
+    assert optimizer_steps(16, 1) == 2
+    assert optimizer_steps(17, 1) == 3
 
 
 def test_one_hot_target_marks_the_label():
