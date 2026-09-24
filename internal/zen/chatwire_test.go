@@ -124,3 +124,17 @@ func TestMapFinishReasonContentFilter(t *testing.T) {
 		t.Fatalf("content_filter = %q, want refusal", got)
 	}
 }
+
+func TestUserToChatEmptyTurnPreserved(t *testing.T) {
+	// document/file image sources have no Chat equivalent and are dropped.
+	out := userToChat([]any{
+		map[string]any{"type": "image", "source": map[string]any{"type": "file", "file_id": "f1"}},
+	})
+	if len(out) != 1 {
+		t.Fatalf("dropped turn vanished: %v", out)
+	}
+	msg := out[0].(map[string]any)
+	if msg["role"] != "user" || msg["content"] != "" {
+		t.Fatalf("fallback message = %v", msg)
+	}
+}

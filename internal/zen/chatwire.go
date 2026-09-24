@@ -199,6 +199,12 @@ func userToChat(content any) []any {
 	if len(parts) > 0 {
 		out = append(out, map[string]any{"role": "user", "content": collapseParts(parts)})
 	}
+	if len(out) == 0 {
+		// Every block was dropped (e.g. an image source with no Chat
+		// equivalent). Emit an empty user message so the turn boundary
+		// survives and role alternation upstream is preserved.
+		out = append(out, map[string]any{"role": "user", "content": ""})
+	}
 	return out
 }
 
