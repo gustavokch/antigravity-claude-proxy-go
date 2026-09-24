@@ -42,7 +42,7 @@ type ConfigurableMatcher struct {
 }
 
 // NewConfigurableMatcher builds a matcher, returning an error if any rule
-// carries a regex that does not compile.
+// carries a regex that does not compile or any laya backend is invalid.
 func NewConfigurableMatcher(rules []config.Rule, backends map[string]config.TargetBackend) (*ConfigurableMatcher, error) {
 	matcher := &ConfigurableMatcher{}
 	if err := matcher.UpdateRules(rules, backends); err != nil {
@@ -74,6 +74,14 @@ func compilePatterns(patterns []config.MatchPattern) ([]compiledPattern, error) 
 // rejected config leaves the previously working rules active rather than
 // silently disabling interception.
 func (matcher *ConfigurableMatcher) UpdateRules(rules []config.Rule, backends map[string]config.TargetBackend) error {
+	// config.json can be edited by hand and never pass the save handler, so
+	// the backends get the same checks a WebUI save applies.
+	for name, backend := range backends {
+		if err := backend.ValidateLaya(); err != nil {
+			return fmt.Errorf("classifier: backend %q: %w", name, err)
+		}
+	}
+
 	compiled := make([]compiledRule, 0, len(rules))
 	for _, rule := range rules {
 		if !rule.Enabled {
