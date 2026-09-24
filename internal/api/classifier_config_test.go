@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/logger"
 )
 
@@ -289,5 +290,48 @@ func TestLogsStreamEmitsHistoryAndLiveEntries(t *testing.T) {
 		if got := strings.Count(recorder.bodyString(), message); got != 1 {
 			t.Errorf("expected %q exactly once, got %d", message, got)
 		}
+	}
+}
+
+// TestConfigSaveAcceptsLayaBackend pins the laya case in the backend format
+// allowlist. Without it the handler rejects every laya backend as an unknown
+// format, so the wire format is configurable in the struct but unsaveable.
+func TestConfigSaveAcceptsLayaBackend(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english"}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	saved, exists := config.Get().Classifier.Backends["local"]
+	if !exists {
+		t.Fatalf("backend %q missing from saved config: %+v", "local", config.Get().Classifier.Backends)
+	}
+	if saved.Format != config.BackendFormatLaya {
+		t.Errorf("saved Format = %q, want laya", saved.Format)
+	}
+	if saved.URL != "http://127.0.0.1:8000/v1/systemone" {
+		t.Errorf("saved URL = %q", saved.URL)
+	}
+}
+
+func TestConfigSaveRejectsLayaCriteriaKeyMismatch(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	// Same key count, different key sets: criteria {X,Y} against severities
+	// {X,Z}. The adapter cannot map a Z verdict to anything, so the save must
+	// not land.
+	blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english","layaCriteria":{"X":"one","Y":"two"},"layaSeverityMap":{"X":1,"Z":2}}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "layaSeverityMap") {
+		t.Errorf("error should name layaSeverityMap, got %s", recorder.Body.String())
+	}
+	if _, exists := config.Get().Classifier.Backends["local"]; exists {
+		t.Error("rejected backend was saved anyway")
 	}
 }
