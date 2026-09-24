@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -369,6 +370,62 @@ func (backend TargetBackend) LayaSettings() LayaSettings {
 		settings.EscalateLabels = defaultLayaEscalateLabels
 	}
 	return settings
+}
+
+// layaQuestionNamePattern is spec §4.6's rule for layaQuestionName. The name
+// keys both the question sent to Laya and the answer read back, so it stays a
+// short identifier.
+var layaQuestionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}$`)
+
+// ValidateLaya reports the first Laya override that cannot be served safely,
+// or nil for any other format. The config save handler and the rule matcher
+// both call it, so a hand-edited config.json gets the same checks as a WebUI
+// save: an escalate-label typo must not silently turn escalation off.
+func (backend TargetBackend) ValidateLaya() error {
+	if backend.Format != BackendFormatLaya {
+		return nil
+	}
+	if backend.LayaMaxSeverity != nil && (*backend.LayaMaxSeverity < 0 || *backend.LayaMaxSeverity > 100) {
+		return errors.New("layaMaxSeverity must be between 0 and 100")
+	}
+	if backend.LayaStateChars != 0 && (backend.LayaStateChars < 200 || backend.LayaStateChars > 8000) {
+		return errors.New("layaStateChars must be between 200 and 8000")
+	}
+	if backend.LayaQuestionName != "" && !layaQuestionNamePattern.MatchString(backend.LayaQuestionName) {
+		return errors.New("layaQuestionName must be 1 to 32 letters, digits or underscores")
+	}
+	if backend.LayaInstructions != "" && strings.TrimSpace(backend.LayaInstructions) == "" {
+		return errors.New("layaInstructions must not be blank")
+	}
+	if backend.LayaMinConfidence < 0 || backend.LayaMinConfidence >= 1 {
+		return errors.New("layaMinConfidence must be at least 0 and below 1")
+	}
+	// Checked against the resolved criteria, so a label typo cannot
+	// silently turn escalation off under either criteria set.
+	criteria := backend.LayaSettings().Criteria
+	for _, label := range backend.LayaEscalateLabels {
+		if _, exists := criteria[label]; !exists {
+			return fmt.Errorf("layaEscalateLabels has label %q with no matching criteria entry", label)
+		}
+	}
+	if len(backend.LayaCriteria) == 0 && len(backend.LayaSeverityMap) == 0 {
+		return nil
+	}
+	if len(backend.LayaCriteria) < 2 {
+		return errors.New("layaCriteria needs at least 2 options")
+	}
+	if len(backend.LayaCriteria) != len(backend.LayaSeverityMap) {
+		return errors.New("layaCriteria and layaSeverityMap must have the same keys")
+	}
+	for label, severity := range backend.LayaSeverityMap {
+		if _, exists := backend.LayaCriteria[label]; !exists {
+			return fmt.Errorf("layaSeverityMap has label %q with no matching criteria entry", label)
+		}
+		if severity < 0 || severity > 100 {
+			return fmt.Errorf("layaSeverityMap[%q] must be between 0 and 100", label)
+		}
+	}
+	return nil
 }
 
 type ClassifierConfig struct {

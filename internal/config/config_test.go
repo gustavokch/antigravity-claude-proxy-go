@@ -916,3 +916,31 @@ func TestBackendFormatLayaDecodes(t *testing.T) {
 		t.Errorf("Format = %q, want laya", backend.Format)
 	}
 }
+
+func TestValidateLayaChecksEscalateLabelsAgainstTheResolvedCriteria(t *testing.T) {
+	custom := `"layaCriteria":{"X":"one","Y":"two"},"layaSeverityMap":{"X":1,"Y":2}`
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{name: "default criteria accept D", raw: `{"format":"laya","layaEscalateLabels":["D"]}`},
+		{name: "default criteria reject a lowercase typo", raw: `{"format":"laya","layaEscalateLabels":["d"]}`, wantErr: true},
+		{name: "custom criteria accept their own label", raw: `{"format":"laya",` + custom + `,"layaEscalateLabels":["X"]}`},
+		{name: "custom criteria reject a default label", raw: `{"format":"laya",` + custom + `,"layaEscalateLabels":["D"]}`, wantErr: true},
+		// The WebUI leaves laya fields on a backend switched to another
+		// format; they are inert there and must not block the save.
+		{name: "other formats are not laya-checked", raw: `{"format":"openai","layaEscalateLabels":["d"]}`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var backend TargetBackend
+			if err := json.Unmarshal([]byte(testCase.raw), &backend); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if err := backend.ValidateLaya(); (err != nil) != testCase.wantErr {
+				t.Errorf("ValidateLaya() = %v, wantErr %v", err, testCase.wantErr)
+			}
+		})
+	}
+}
