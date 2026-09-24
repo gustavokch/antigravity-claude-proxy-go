@@ -429,3 +429,21 @@ func TestRecordAsyncOnNilRecorderIsSafe(t *testing.T) {
 	recorder.RecordAsync(EntryInput{}) // must not panic
 	recorder.Wait()
 }
+
+// TestRecorderSkipsRedactionForRootHome pins that a home of "/" (a service
+// running as root with HOME set to /) leaves rows intact rather than turning
+// every path separator into "~".
+func TestRecorderSkipsRedactionForRootHome(t *testing.T) {
+	t.Setenv("HOME", "/")
+	dir := t.TempDir()
+	recorder := New(dir, Options{MaxFiles: 8, MaxFileBytes: 1 << 20, RedactPaths: true})
+	recorder.Record(Entry{Version: 1, Action: `{"Bash":"/usr/bin/env ls"}`})
+
+	rows := readRows(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Action != `{"Bash":"/usr/bin/env ls"}` {
+		t.Errorf("Action = %q, want it untouched for a root home", rows[0].Action)
+	}
+}

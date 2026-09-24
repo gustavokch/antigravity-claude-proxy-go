@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -135,7 +134,7 @@ func New(dir string, options Options) *Recorder {
 	return &Recorder{
 		dir:      dir,
 		options:  options,
-		home:     home,
+		home:     usableHome(home),
 		inFlight: make(chan struct{}, maxInFlightRecords),
 	}
 }
@@ -208,14 +207,14 @@ func (recorder *Recorder) Record(entry Entry) {
 		return
 	}
 	if recorder.options.RedactPaths && recorder.home != "" {
-		entry.Action = strings.ReplaceAll(entry.Action, recorder.home, "~")
+		entry.Action = redactHome(entry.Action, recorder.home)
 		for i, item := range entry.Context {
-			entry.Context[i] = strings.ReplaceAll(item, recorder.home, "~")
+			entry.Context[i] = redactHome(item, recorder.home)
 		}
 		// The verdict and its rationale quote the command under judgement, so
 		// they carry absolute paths as often as the action does.
-		entry.VerdictRaw = strings.ReplaceAll(entry.VerdictRaw, recorder.home, "~")
-		entry.Thinking = strings.ReplaceAll(entry.Thinking, recorder.home, "~")
+		entry.VerdictRaw = redactHome(entry.VerdictRaw, recorder.home)
+		entry.Thinking = redactHome(entry.Thinking, recorder.home)
 	}
 
 	line, err := json.Marshal(entry)
