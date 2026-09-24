@@ -47,6 +47,8 @@ from corpus_to_laya import (  # noqa: E402
 
 LAYA_VERSION = "0.3.20"
 BASE_MODEL_ID = "convaiinnovations/laya"
+# The files a laya checkpoint loads from; laya.Agent downloads exactly these.
+BASE_MODEL_FILES = ("rl_agent_config.json", "model.safetensors", "tokenizer/*", "encoder/*")
 QUESTION_NAME = "risk"
 HELD_OUT_FRACTION = 0.10
 
@@ -251,7 +253,9 @@ def stage_preprocess(args, out_dir, state, examples, digest):
     from transformers import AutoTokenizer
     from laya.agent import _fix_tokenizer_config
 
-    model_dir = snapshot_download(args.base_model)
+    # The hub repo bundles sibling checkpoints (multilingual/, typed-decisions/);
+    # fetch the root one alone, as laya.Agent does.
+    model_dir = snapshot_download(args.base_model, allow_patterns=list(BASE_MODEL_FILES))
     _fix_tokenizer_config(model_dir)
     tok = AutoTokenizer.from_pretrained(str(Path(model_dir) / "tokenizer"))
     cfg = json.loads((Path(model_dir) / "rl_agent_config.json").read_text())
