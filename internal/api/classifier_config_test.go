@@ -296,6 +296,35 @@ func TestLogsStreamEmitsHistoryAndLiveEntries(t *testing.T) {
 // TestConfigSaveAcceptsLayaBackend pins the laya case in the backend format
 // allowlist. Without it the handler rejects every laya backend as an unknown
 // format, so the wire format is configurable in the struct but unsaveable.
+func TestConfigSaveAcceptsCaptureMaxFilesMinusOne(t *testing.T) {
+	// -1 is how an operator asks for unlimited capture retention (the
+	// recorder's prune skips on MaxFiles <= 0). Values below -1 are typos
+	// and must not land.
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"capture":{"enabled":true,"maxFiles":-1}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if saved := config.Get().Classifier.Capture.MaxFiles; saved != -1 {
+		t.Errorf("saved maxFiles = %d, want -1", saved)
+	}
+}
+
+func TestConfigSaveRejectsCaptureMaxFilesBelowMinusOne(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"capture":{"enabled":true,"maxFiles":-2}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "maxFiles") {
+		t.Errorf("error should name maxFiles, got %s", recorder.Body.String())
+	}
+}
+
 func TestConfigSaveAcceptsLayaBackend(t *testing.T) {
 	srv, _, _ := newTestServerWithManager(t)
 	blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english"}}}`

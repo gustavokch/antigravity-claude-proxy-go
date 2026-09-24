@@ -691,8 +691,8 @@ func TestClassifierCaptureResolvedFillsDefaults(t *testing.T) {
 	if resolved.ContextEntries != 2 {
 		t.Errorf("ContextEntries = %d, want 2", resolved.ContextEntries)
 	}
-	if resolved.MaxFiles != 8 {
-		t.Errorf("MaxFiles = %d, want 8", resolved.MaxFiles)
+	if resolved.MaxFiles != DefaultCaptureMaxFiles {
+		t.Errorf("MaxFiles = %d, want %d", resolved.MaxFiles, DefaultCaptureMaxFiles)
 	}
 	if resolved.MaxFileBytes != 67108864 {
 		t.Errorf("MaxFileBytes = %d, want 67108864", resolved.MaxFileBytes)
@@ -719,6 +719,20 @@ func TestClassifierCaptureResolvedKeepsExplicitValues(t *testing.T) {
 	}
 	if resolved.MaxFileBytes != 1048576 {
 		t.Errorf("MaxFileBytes = %d", resolved.MaxFileBytes)
+	}
+}
+
+func TestClassifierCaptureResolvedMinusOneMaxFilesMeansUnlimited(t *testing.T) {
+	// -1 asks for unlimited retention: collection windows longer than any
+	// default must not silently lose their first days. It resolves to 0,
+	// which the recorder's prune skips entirely, matching how -1 already
+	// means "action only" for ContextEntries. 0 stays the unset value.
+	resolved := ClassifierCaptureConfig{Enabled: true, MaxFiles: -1}.Resolved()
+	if resolved.MaxFiles != 0 {
+		t.Errorf("MaxFiles = %d, want 0 (unlimited) when set to -1", resolved.MaxFiles)
+	}
+	if resolved2 := (ClassifierCaptureConfig{Enabled: true, MaxFiles: 0}).Resolved(); resolved2.MaxFiles != DefaultCaptureMaxFiles {
+		t.Errorf("MaxFiles = %d, want default %d when unset", resolved2.MaxFiles, DefaultCaptureMaxFiles)
 	}
 }
 

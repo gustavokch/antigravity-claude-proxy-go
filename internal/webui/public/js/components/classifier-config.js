@@ -27,7 +27,7 @@ window.Components.classifierConfig = () => ({
             enabled: false,
             dir: '',
             contextEntries: 2,
-            maxFiles: 8,
+            maxFiles: 365,
             maxFileBytes: 67108864,
             redactPaths: true
         }
@@ -70,7 +70,7 @@ window.Components.classifierConfig = () => ({
         if (typeof capture.enabled !== 'boolean') capture.enabled = false;
         if (typeof capture.dir !== 'string') capture.dir = '';
         if (typeof capture.contextEntries !== 'number') capture.contextEntries = 2;
-        if (typeof capture.maxFiles !== 'number') capture.maxFiles = 8;
+        if (typeof capture.maxFiles !== 'number') capture.maxFiles = 365;
         if (typeof capture.maxFileBytes !== 'number') capture.maxFileBytes = 67108864;
         if (typeof capture.redactPaths !== 'boolean') capture.redactPaths = true;
     },

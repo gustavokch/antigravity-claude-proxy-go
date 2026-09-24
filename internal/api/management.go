@@ -1161,8 +1161,8 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture contextEntries must be between -1 and 20"})
 			return
 		}
-		if capture.MaxFiles < 0 || capture.MaxFiles > 365 {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture maxFiles must be between 0 and 365"})
+		if capture.MaxFiles < -1 || capture.MaxFiles > 365 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture maxFiles must be between -1 and 365 (-1 keeps every day file)"})
 			return
 		}
 		if capture.MaxFileBytes < 0 || capture.MaxFileBytes > int64(4)<<30 {

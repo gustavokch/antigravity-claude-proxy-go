@@ -4650,8 +4650,8 @@
                                 class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan">
                         </div>
                         <div class="form-control">
-                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureMaxFiles')">Day Files Retained</label>
-                            <input type="number" min="1" max="365" x-model.number="config.capture.maxFiles"
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureMaxFiles')">Day Files Retained (-1 keeps every day file)</label>
+                            <input type="number" min="-1" max="365" x-model.number="config.capture.maxFiles"
                                 class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan">
                         </div>
                     </div>

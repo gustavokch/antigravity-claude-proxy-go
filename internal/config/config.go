@@ -293,12 +293,17 @@ const (
 // keys verbatim and its checkpoints can follow a semantic key instead of the
 // option description.
 var defaultLayaCriteria = map[string]string{
-	"A": "read-only inspection: listing, reading, searching, status, diff",
-	"B": "local write: edits files, installs dependencies, runs build or tests",
-	"C": "outbound or shared effect: network, push, publish, deploy, send",
-	"D": "destructive or credential-touching: deletes data, rewrites history, reads secrets",
+	"A": "0-9: routine, allow without a second thought",
+	"B": "10-24: low risk, ordinary local effect",
+	"C": "25-49: elevated risk, review before allowing",
+	"D": "50-100: high risk, the teacher refused this action",
 }
 
+// defaultLayaSeverityMap maps labels back to sub-block severities: a laya
+// verdict must never reach 50, the teacher's block boundary, so serving
+// stays a plausible-verdict source rather than a gate. The values sit
+// below the exporter's band floors on purpose; the criteria text is what
+// must match the training bands, not these serving-time numbers.
 var defaultLayaSeverityMap = map[string]int{"A": 0, "B": 5, "C": 15, "D": 35}
 
 // LayaSettings resolves the backend's overrides against the defaults.
@@ -357,19 +362,24 @@ type ClassifierCaptureConfig struct {
 	// ContextEntries is how many transcript entries before the graded action
 	// are kept, 1 to 20. -1 keeps the action only. 0 is the unset value and
 	// resolves to the default of 2, so it cannot mean "action only".
-	ContextEntries int   `json:"contextEntries,omitempty"`
-	MaxFiles       int   `json:"maxFiles,omitempty"`
-	MaxFileBytes   int64 `json:"maxFileBytes,omitempty"`
+	ContextEntries int `json:"contextEntries,omitempty"`
+	// MaxFiles is how many day files are kept, 1 to 365. -1 keeps every
+	// day file (unlimited); it resolves to 0, which the recorder's prune
+	// skips entirely. 0 is the unset value and resolves to the default.
+	MaxFiles     int   `json:"maxFiles,omitempty"`
+	MaxFileBytes int64 `json:"maxFileBytes,omitempty"`
 	// RedactPaths is a pointer because its default is true: a plain bool
 	// cannot tell an absent field from an explicit false.
 	RedactPaths *bool `json:"redactPaths,omitempty"`
 }
 
 // Capture defaults. Named rather than inlined so the WebUI, the validator and
-// Resolved cannot drift apart.
+// Resolved cannot drift apart. MaxFiles counts day files: 365 covers any
+// realistic collection window; 0 (or negative) means unlimited and is let
+// through by Resolved so the recorder's prune skips entirely.
 const (
 	DefaultCaptureContextEntries = 2
-	DefaultCaptureMaxFiles       = 8
+	DefaultCaptureMaxFiles       = 365
 	DefaultCaptureMaxFileBytes   = int64(64 << 20)
 )
 
@@ -386,7 +396,13 @@ func (capture ClassifierCaptureConfig) Resolved() ClassifierCaptureConfig {
 	case capture.ContextEntries == 0:
 		capture.ContextEntries = DefaultCaptureContextEntries
 	}
-	if capture.MaxFiles <= 0 {
+	// MaxFiles counts day files, 0 or negative. -1 asks for unlimited
+	// retention and resolves to 0, which the recorder's prune skips
+	// entirely; 0 stays the unset value and takes the default. This mirrors
+	// ContextEntries, where -1 already means "action only".
+	if capture.MaxFiles < 0 {
+		capture.MaxFiles = 0
+	} else if capture.MaxFiles == 0 {
 		capture.MaxFiles = DefaultCaptureMaxFiles
 	}
 	if capture.MaxFileBytes <= 0 {
