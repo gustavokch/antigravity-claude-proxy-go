@@ -158,6 +158,32 @@ func TestSendChatNonJSONSuccessIs502(t *testing.T) {
 	}
 }
 
+// A stream is complete only if it carried [DONE] or a finish_reason; a bare
+// clean EOF is a dropped connection and must not pass as end_turn.
+func TestStreamTerminationRequiresMarker(t *testing.T) {
+	content := "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"content\":\"The answer is\"}}]}\n\n"
+	cases := []struct {
+		name, in  string
+		wantError bool
+	}{
+		{"clean EOF, no marker", content, true},
+		{"finish_reason without [DONE]", content + "data: {\"id\":\"c\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", false},
+		{"[DONE] without finish_reason", content + "data: [DONE]\n\n", false},
+	}
+	for _, c := range cases {
+		var out bytes.Buffer
+		if err := streamChatToAnthropic(strings.NewReader(c.in), &out, "m"); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		s := out.String()
+		gotError := strings.Contains(s, "event: error")
+		gotStop := strings.Contains(s, "event: message_stop")
+		if gotError != c.wantError || gotStop == c.wantError {
+			t.Errorf("%s: error=%v message_stop=%v, want error=%v\n%s", c.name, gotError, gotStop, c.wantError, s)
+		}
+	}
+}
+
 func TestMapFinishReasonContentFilter(t *testing.T) {
 	if got := mapFinishReason("content_filter"); got != "refusal" {
 		t.Fatalf("content_filter = %q, want refusal", got)

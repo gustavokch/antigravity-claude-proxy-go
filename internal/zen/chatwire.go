@@ -564,6 +564,7 @@ func parseArgs(args string) any {
 // writes the equivalent Anthropic Messages SSE event sequence to w.
 func streamChatToAnthropic(r io.Reader, w io.Writer, model string) error {
 	s := &chatStream{w: w, model: model, current: -1, toolBlocks: map[int]int{}}
+	done := false
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
@@ -573,6 +574,7 @@ func streamChatToAnthropic(r io.Reader, w io.Writer, model string) error {
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			done = true
 			break
 		}
 		var chunk map[string]any
@@ -588,6 +590,13 @@ func streamChatToAnthropic(r io.Reader, w io.Writer, model string) error {
 	}
 	if err := scanner.Err(); err != nil {
 		s.emitError("api_error", "Zen stream read error: "+err.Error())
+		return nil
+	}
+	// Clean EOF with neither [DONE] nor a finish_reason is a truncated
+	// stream (dropped connection, proxy timeout); finishing it as end_turn
+	// would pass a partial answer off as complete.
+	if !done && s.stop == "" {
+		s.emitError("api_error", "Zen stream ended before completion")
 		return nil
 	}
 	return s.finish()
