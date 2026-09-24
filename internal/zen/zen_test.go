@@ -48,12 +48,24 @@ func TestIsAnthropicWire(t *testing.T) {
 	}
 }
 
-func TestCanonicalAnthropicWireID(t *testing.T) {
-	got, ok := CanonicalAnthropicWireID("opencode/Claude-Sonnet-4-6")
-	if !ok || got != "claude-sonnet-4-6" {
-		t.Fatalf("got %q ok=%v, want claude-sonnet-4-6 true", got, ok)
+func TestWireFor(t *testing.T) {
+	cases := []struct {
+		in        string
+		canonical string
+		wire      Wire
+	}{
+		{"opencode/Claude-Sonnet-4-6", "claude-sonnet-4-6", WireAnthropic},
+		{"OPENCODE/GLM-5.3", "glm-5.3", WireChat},
+		{"big-pickle", "big-pickle", WireChat},
+		{"gpt-5", "", WireNone},          // Responses wire
+		{"gemini-3.1-pro", "", WireNone}, // Gemini-native
+		{"jev-1.13", "", WireNone},       // systemone
+		{"muse-spark-1.3", "", WireNone}, // Responses wire
 	}
-	if _, ok := CanonicalAnthropicWireID("gpt-5"); ok {
-		t.Fatal("gpt-5 must not canonicalize")
+	for _, c := range cases {
+		got, w := WireFor(c.in)
+		if got != c.canonical || w != c.wire {
+			t.Errorf("WireFor(%q) = %q,%v; want %q,%v", c.in, got, w, c.canonical, c.wire)
+		}
 	}
 }

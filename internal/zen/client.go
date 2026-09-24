@@ -16,16 +16,27 @@ type ModelItem struct {
 	ID string `json:"id"`
 }
 
+// Wire identifies which Zen upstream endpoint a catalog id speaks.
+type Wire int
+
+const (
+	// WireNone: not forwardable (Responses, Gemini-native, systemone, or
+	// unknown ids).
+	WireNone Wire = iota
+	// WireAnthropic: POST /zen/v1/messages, transparent forward.
+	WireAnthropic
+	// WireChat: POST /zen/v1/chat/completions, translated from/to Anthropic.
+	WireChat
+)
+
 // AnthropicWireIDs is the static allowlist of Zen catalog ids that speak the
-// Anthropic /v1/messages wire format (Phase 1 forward target). Nothing in the
-// catalog marks wire format, so this list is maintained against the docs
-// endpoint table with the live catalog as authoritative. Everything else
-// (gpt-*, gemini-*, grok-*, deepseek-*, glm-*, minimax-*, kimi-*, muse-*,
-// jev-*, big-pickle, *-free) is a different wire format and must never reach
-// /zen/v1/messages.
+// Anthropic /v1/messages wire format. Nothing in the catalog marks wire
+// format, so this list is maintained against the docs endpoint table with the
+// live catalog as authoritative.
 var AnthropicWireIDs = []string{
 	"claude-fable-5-1",
 	"claude-fable-5",
+	"claude-opus-5-5",
 	"claude-opus-5",
 	"claude-opus-4-8",
 	"claude-opus-4-7",
@@ -41,12 +52,52 @@ var AnthropicWireIDs = []string{
 	"qwen3.5-plus",
 }
 
-var anthropicWireSet map[string]string
+// ChatWireIDs is the static allowlist of Zen catalog ids that speak the
+// OpenAI /v1/chat/completions wire format (docs endpoint table, cross-checked
+// against the live catalog 2026-09-24). Requests to these ids are translated
+// Anthropic→Chat Completions and the response back. Everything not in either
+// list (gpt-*, grok-*, muse-* → /v1/responses; gemini-* → Gemini-native;
+// jev-* → /v1/systemone) is not forwardable.
+var ChatWireIDs = []string{
+	"deepseek-v4.1-flash",
+	"deepseek-v4-pro",
+	"deepseek-v4-flash",
+	"deepseek-v4-flash-vision-exp",
+	"minimax-m3",
+	"minimax-m2.7",
+	"minimax-m2.5",
+	"glm-5.3-flash",
+	"glm-5.3",
+	"glm-5.2",
+	"glm-5.1",
+	"glm-5",
+	"kimi-k3",
+	"kimi-k2.7-code",
+	"kimi-k2.6",
+	"kimi-k2.5",
+	"big-pickle",
+	"space-bunny-free",
+	"mimo-v2.6-flash-free",
+	"mimo-v2.5-free",
+	"ling-3.0-flash-fin-free",
+	"nemotron-3-ultra-free",
+	"nemotron-3.5-lightning-free",
+}
+
+type wireEntry struct {
+	canonical string
+	wire      Wire
+}
+
+var wireSet map[string]wireEntry
 
 func init() {
-	anthropicWireSet = make(map[string]string, len(AnthropicWireIDs))
+	wireSet = make(map[string]wireEntry, len(AnthropicWireIDs)+len(ChatWireIDs))
 	for _, id := range AnthropicWireIDs {
-		anthropicWireSet[strings.ToLower(id)] = id
+		wireSet[strings.ToLower(id)] = wireEntry{id, WireAnthropic}
+	}
+	for _, id := range ChatWireIDs {
+		wireSet[strings.ToLower(id)] = wireEntry{id, WireChat}
 	}
 }
 
@@ -60,23 +111,32 @@ func StripOpencodePrefix(s string) string {
 	return trimmed
 }
 
-// CanonicalAnthropicWireID maps id to its canonical catalog spelling after
-// stripping an "opencode/" prefix and lowercasing. ok=false means the id is
-// not in the Anthropic-wire subset.
-func CanonicalAnthropicWireID(id string) (canonical string, ok bool) {
+// WireFor maps id to its canonical catalog spelling and wire format after
+// stripping an "opencode/" prefix and lowercasing. WireNone means the id is
+// not forwardable.
+func WireFor(id string) (canonical string, wire Wire) {
 	cleaned := StripOpencodePrefix(id)
 	if cleaned == "" {
-		return "", false
+		return "", WireNone
 	}
-	canonical, ok = anthropicWireSet[strings.ToLower(cleaned)]
-	return canonical, ok
+	e, ok := wireSet[strings.ToLower(cleaned)]
+	if !ok {
+		return "", WireNone
+	}
+	return e.canonical, e.wire
 }
 
-// IsAnthropicWire reports whether id is in the Anthropic-wire subset, after
-// stripping an "opencode/" prefix and lowercasing.
+// IsAnthropicWire reports whether id is in the Anthropic-wire subset.
 func IsAnthropicWire(id string) bool {
-	_, ok := CanonicalAnthropicWireID(id)
-	return ok
+	_, w := WireFor(id)
+	return w == WireAnthropic
+}
+
+// IsForwardable reports whether the proxy can serve id through any
+// supported Zen wire (Anthropic or Chat Completions).
+func IsForwardable(id string) bool {
+	_, w := WireFor(id)
+	return w != WireNone
 }
 
 // Client fetches and caches the Zen model catalog. Safe for concurrent use.

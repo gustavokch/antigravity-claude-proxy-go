@@ -14,7 +14,9 @@ and from the live `https://opencode.ai/zen/v1/models` endpoint):
   (Claude models, Qwen Anthropic variants). This is the only Phase 1 target.
 - Other wire formats are explicitly out of Phase 1:
   `POST /zen/v1/responses` (GPT, Grok, Muse),
-  `POST /zen/v1/chat/completions` (DeepSeek, MiniMax, GLM, Kimi, Big Pickle),
+  `POST /zen/v1/chat/completions` (DeepSeek, MiniMax, GLM, Kimi, Big Pickle) —
+  **since added**: `zen.ChatWireIDs` + `internal/zen/chatwire.go` translate
+  Anthropic↔Chat Completions on the same `/v1/messages` route,
   `POST /zen/v1/models/<gemini-id>` (Gemini-native),
   `POST /zen/v1/systemone` (Jev `state`/`questions`, non-chat structured decisions).
 - Auth: `Authorization: Bearer $OPENCODE_API_KEY`.

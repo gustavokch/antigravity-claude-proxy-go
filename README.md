@@ -513,27 +513,44 @@ The OpenRouter Gateway allows querying OpenRouter's Anthropic-compatible message
 
 ## OpenCode Zen Gateway
 
-The Zen Gateway forwards allowlisted models transparently to the OpenCode Zen
+The Zen Gateway forwards allowlisted models to the OpenCode Zen
 Anthropic-compatible endpoint (`https://opencode.ai/zen/v1/messages`) with
-`Authorization: Bearer <key>` — no payload translation, same pattern as the
-Kimi gateway. Anthropic-compatible clients (Claude Code, Hermes) reach Zen
+`Authorization: Bearer <key>`, same pattern as the Kimi gateway.
+Anthropic-compatible clients (Claude Code, Hermes) reach Zen
 models through the existing `POST /v1/messages` path.
 
-Phase 1 supports the Anthropic-wire subset only — Claude models and Qwen
-Anthropic variants:
+Two wire families are supported, both on the existing `POST /v1/messages`
+path. Anthropic-wire ids are forwarded transparently (no payload
+translation); Chat-Completions-wire ids are translated
+Anthropic→Chat Completions and back by `internal/zen/chatwire.go`, so the
+caller still sees an Anthropic-shaped answer.
 
-`claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`,
-`claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5`, `claude-sonnet-5`,
-`claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-sonnet-4`,
-`claude-haiku-4-5`, `qwen3.8-flash`, `qwen3.6-plus`, `qwen3.5-plus`.
+Anthropic-wire subset — Claude models and Qwen Anthropic variants:
 
-The other Zen wire formats are out of scope: `/zen/v1/responses` (GPT, Grok,
-Muse), `/zen/v1/chat/completions` (DeepSeek, MiniMax, GLM, Kimi, Big Pickle),
-`/zen/v1/models/<gemini-id>` (Gemini-native), and `/zen/v1/systemone` (Jev).
-The subset is a static list in code (`internal/zen`) because the Zen catalog
-carries no wire-format field; when OpenCode adds a model with an
-`@ai-sdk/anthropic` docs row, open an issue so the list can grow. A stale list
-fails closed (400 on an unknown id).
+`claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-opus-5`,
+`claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5`,
+`claude-sonnet-5`, `claude-sonnet-4-6`, `claude-sonnet-4-5`,
+`claude-sonnet-4`, `claude-haiku-4-5`, `qwen3.8-flash`, `qwen3.6-plus`,
+`qwen3.5-plus`.
+
+Chat-Completions-wire subset (`zen.ChatWireIDs`) — DeepSeek, MiniMax, GLM,
+Kimi, Big Pickle, and the `*-free` models:
+
+`deepseek-v4.1-flash`, `deepseek-v4-pro`, `deepseek-v4-flash`,
+`deepseek-v4-flash-vision-exp`, `minimax-m3`, `minimax-m2.7`, `minimax-m2.5`,
+`glm-5.3-flash`, `glm-5.3`, `glm-5.2`, `glm-5.1`, `glm-5`, `kimi-k3`,
+`kimi-k2.7-code`, `kimi-k2.6`, `kimi-k2.5`, `big-pickle`, `space-bunny-free`,
+`mimo-v2.6-flash-free`, `mimo-v2.5-free`, `ling-3.0-flash-fin-free`,
+`nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`.
+
+The remaining Zen wire formats are out of scope: `/zen/v1/responses`
+(`gpt-*`, `grok-*`, `muse-*`), `/zen/v1/models/<gemini-id>` (Gemini-native),
+and `/zen/v1/systemone` (Jev). Both subsets are static lists in code
+(`internal/zen`) because the Zen catalog carries no wire-format field; when
+OpenCode adds a model with an `@ai-sdk/anthropic` or
+OpenAI-compatible docs row, open an issue so the lists can grow. A stale
+list fails closed — the id is not claimed by the Zen route and falls through
+to the next gateway.
 
 Example `config.json`:
 

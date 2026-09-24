@@ -42,7 +42,7 @@ func gatewayOwnedModelIDs(cfg config.Config) map[string]bool {
 			if !item.Enabled {
 				continue
 			}
-			if !zen.IsAnthropicWire(zen.StripOpencodePrefix(item.ID)) {
+			if !zen.IsForwardable(item.ID) {
 				continue
 			}
 			for _, spelling := range []string{item.ID, item.Alias} {
@@ -326,7 +326,7 @@ func appendZenDiscovery(server *Server, cfg config.Config, models *[]any, seen m
 		if !item.Enabled {
 			continue
 		}
-		if !zen.IsAnthropicWire(item.ID) {
+		if !zen.IsForwardable(item.ID) {
 			continue
 		}
 		desc := item.DisplayName
