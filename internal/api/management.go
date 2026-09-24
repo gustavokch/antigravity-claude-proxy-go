@@ -1102,6 +1102,11 @@ func gatewayIDStrings(ids []config.GatewayID) []string {
 	return out
 }
 
+// layaQuestionNamePattern is spec §4.6's rule for layaQuestionName. The name
+// keys both the question sent to Laya and the answer read back, so it stays a
+// short identifier.
+var layaQuestionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}$`)
+
 func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http.Request) {
 	var updates map[string]any
 	if err := json.NewDecoder(request.Body).Decode(&updates); err != nil || len(updates) == 0 {
@@ -1179,6 +1184,14 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 			}
 			if backend.LayaStateChars != 0 && (backend.LayaStateChars < 200 || backend.LayaStateChars > 8000) {
 				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaStateChars must be between 200 and 8000", backendKey)})
+				return
+			}
+			if backend.LayaQuestionName != "" && !layaQuestionNamePattern.MatchString(backend.LayaQuestionName) {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaQuestionName must be 1 to 32 letters, digits or underscores", backendKey)})
+				return
+			}
+			if backend.LayaInstructions != "" && strings.TrimSpace(backend.LayaInstructions) == "" {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaInstructions must not be blank", backendKey)})
 				return
 			}
 			if len(backend.LayaCriteria) == 0 && len(backend.LayaSeverityMap) == 0 {

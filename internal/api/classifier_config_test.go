@@ -335,3 +335,56 @@ func TestConfigSaveRejectsLayaCriteriaKeyMismatch(t *testing.T) {
 		t.Error("rejected backend was saved anyway")
 	}
 }
+
+func TestConfigSaveRejectsInvalidLayaQuestionName(t *testing.T) {
+	for _, name := range []string{"has space", "risk-level", strings.Repeat("q", 33), "rísk"} {
+		t.Run(name, func(t *testing.T) {
+			srv, _, _ := newTestServerWithManager(t)
+			quoted, err := json.Marshal(name)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english","layaQuestionName":` + string(quoted) + `}}}`
+
+			recorder := postConfigRules(t, srv, blob)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), "layaQuestionName") {
+				t.Errorf("error should name layaQuestionName, got %s", recorder.Body.String())
+			}
+			if _, exists := config.Get().Classifier.Backends["local"]; exists {
+				t.Error("rejected backend was saved anyway")
+			}
+		})
+	}
+}
+
+func TestConfigSaveAcceptsValidLayaQuestionName(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english","layaQuestionName":"risk_2"}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := config.Get().Classifier.Backends["local"].LayaQuestionName; got != "risk_2" {
+		t.Errorf("saved LayaQuestionName = %q, want risk_2", got)
+	}
+}
+
+func TestConfigSaveRejectsBlankLayaInstructions(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english","layaInstructions":"   \n"}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "layaInstructions") {
+		t.Errorf("error should name layaInstructions, got %s", recorder.Body.String())
+	}
+	if _, exists := config.Get().Classifier.Backends["local"]; exists {
+		t.Error("rejected backend was saved anyway")
+	}
+}
