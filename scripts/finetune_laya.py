@@ -10,9 +10,12 @@ Five idempotent stages, state kept in the --out directory:
     evaluate    base vs fine-tuned accuracy on the held-out slice
     finalize    fit calibration temperatures, write the final checkpoint dir
 
-Re-running the same command resumes. --fresh wipes the state. --dry-run runs
+Re-running the same command over unchanged corpus files resumes. A changed
+corpus or configuration discards the saved progress and trains from the base
+checkpoint; the proxy appends to today's corpus file while it runs, so copy
+the files first to resume across runs. --fresh wipes the state. --dry-run runs
 only the pure-python export stage and prints the plan, so the pipeline can be
-checked on a machine without torch/laya installed.
+checked on a machine without torch/laya installed; it never discards progress.
 
 Requires laya 0.3.20 (the script imports laya internals that move between
 releases): python3 -m pip install "laya==0.3.20" torch transformers safetensors
@@ -26,6 +29,7 @@ import contextlib
 import hashlib
 import json
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -92,8 +96,13 @@ def require_heavy():
 
 
 def corpus_sha256(paths):
+    """Hash the corpus files' resolved paths and contents.
+
+    The digest decides whether saved progress is still valid, so a relative
+    and an absolute spelling of one file must hash the same.
+    """
     digest = hashlib.sha256()
-    for path in sorted(Path(p) for p in paths):
+    for path in sorted(Path(p).resolve() for p in paths):
         digest.update(str(path).encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -121,6 +130,19 @@ def save_state(out_dir, state):
     (out_dir / "state.json").write_text(json.dumps(state, indent=2) + "\n")
 
 
+# Everything derived from dataset.jsonl. A changed corpus or configuration
+# makes all of it stale.
+PROGRESS_FILES = ("items.pt", "eval.json")
+PROGRESS_DIRS = ("checkpoint_latest", "model")
+
+
+def discard_progress(out_dir):
+    for name in PROGRESS_FILES:
+        (out_dir / name).unlink(missing_ok=True)
+    for name in PROGRESS_DIRS:
+        shutil.rmtree(out_dir / name, ignore_errors=True)
+
+
 def one_hot_target(label, keys):
     """Map a hard bucket label to a target distribution over the criteria keys.
 
@@ -138,13 +160,15 @@ def one_hot_target(label, keys):
 # ---------------------------------------------------------------------------
 
 
-def stage_export(args, out_dir, state):
-    digest = corpus_sha256(args.corpus)
+def stage_export(args, out_dir, state, digest, write=True):
+    """Return the exported examples, reusing dataset.jsonl for an unchanged corpus.
+
+    write=False computes the export without touching the run directory.
+    """
     dataset = out_dir / "dataset.jsonl"
     if state.get("corpus_sha256") == digest and dataset.exists():
         print("export: corpus unchanged, keeping dataset.jsonl")
-        rows = [json.loads(line) for line in dataset.read_text().splitlines() if line.strip()]
-        return rows, digest
+        return [json.loads(line) for line in dataset.read_text().splitlines() if line.strip()]
     rows = []
     unparseable = 0
     for path in args.corpus:
@@ -162,11 +186,12 @@ def stage_export(args, out_dir, state):
             f"(skipped: {stats['skipped_source']} source, {stats['skipped_kind']} kind, "
             f"{stats['skipped_unlabelled']} unlabelled, {stats['skipped_no_action']} no action)"
         )
-    with open(dataset, "w", encoding="utf-8") as handle:
-        for example in examples:
-            handle.write(json.dumps(example, ensure_ascii=False) + "\n")
+    if write:
+        with open(dataset, "w", encoding="utf-8") as handle:
+            for example in examples:
+                handle.write(json.dumps(example, ensure_ascii=False) + "\n")
     print(
-        f"export: wrote {len(examples)} examples "
+        f"export: {'wrote' if write else 'would write'} {len(examples)} examples "
         f"({stats['recovered']} recovered from unclosed tags, {unparseable} unparseable lines)"
     )
     if len(stats["models"]) > 1:
@@ -175,7 +200,7 @@ def stage_export(args, out_dir, state):
             f"({', '.join(stats['models'])}); each is a different teacher.",
             file=sys.stderr,
         )
-    return examples, digest
+    return examples
 
 
 # ---------------------------------------------------------------------------
@@ -626,29 +651,39 @@ def main(argv=None):
     args = parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     if args.fresh:
-        for name in ("state.json", "dataset.jsonl", "items.pt", "eval.json", "base_config.json", "base_model_dir"):
+        for name in ("state.json", "dataset.jsonl", "base_config.json", "base_model_dir"):
             (args.out / name).unlink(missing_ok=True)
-        import shutil
-
-        shutil.rmtree(args.out / "checkpoint_latest", ignore_errors=True)
-        shutil.rmtree(args.out / "model", ignore_errors=True)
+        discard_progress(args.out)
 
     state = load_state(args.out)
     signature = config_signature(args)
-    if state.get("config") != signature:
-        if state:
-            print("configuration changed; training restarts from the base checkpoint")
-            import shutil
+    digest = corpus_sha256(args.corpus)
+    changed = [
+        name
+        for name, same in (
+            ("configuration", state.get("config") == signature),
+            ("corpus", state.get("corpus_sha256") == digest),
+        )
+        if not same
+    ]
+    # A dry run over stale state only previews: it neither discards progress
+    # nor records the new corpus/config, which would let the next real run
+    # resume the old checkpoint against them.
+    preview = bool(state and changed and args.dry_run)
+    if state and changed:
+        what = " and ".join(changed)
+        if preview:
+            print(f"dry-run: {what} changed; a real run discards the saved progress and trains from the base checkpoint")
+        else:
+            print(f"{what} changed; training restarts from the base checkpoint")
+            discard_progress(args.out)
+        state = {}
 
-            shutil.rmtree(args.out / "checkpoint_latest", ignore_errors=True)
-            for name in ("items.pt", "eval.json"):
-                (args.out / name).unlink(missing_ok=True)
-            state = {}
-
-    examples, digest = stage_export(args, args.out, state)
-    state["corpus_sha256"] = digest
-    state["config"] = signature
-    save_state(args.out, state)
+    examples = stage_export(args, args.out, state, digest, write=not preview)
+    if not preview:
+        state["corpus_sha256"] = digest
+        state["config"] = signature
+        save_state(args.out, state)
 
     if args.dry_run:
         device_note = "auto (cuda -> mps -> cpu)" if args.device == "auto" else args.device
