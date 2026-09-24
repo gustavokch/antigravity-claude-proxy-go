@@ -1194,6 +1194,19 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaInstructions must not be blank", backendKey)})
 				return
 			}
+			if backend.LayaMinConfidence < 0 || backend.LayaMinConfidence >= 1 {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaMinConfidence must be at least 0 and below 1", backendKey)})
+				return
+			}
+			// Checked against the resolved criteria, so a label typo cannot
+			// silently turn escalation off under either criteria set.
+			criteria := backend.LayaSettings().Criteria
+			for _, label := range backend.LayaEscalateLabels {
+				if _, exists := criteria[label]; !exists {
+					writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaEscalateLabels has label %q with no matching criteria entry", backendKey, label)})
+					return
+				}
+			}
 			if len(backend.LayaCriteria) == 0 && len(backend.LayaSeverityMap) == 0 {
 				continue
 			}

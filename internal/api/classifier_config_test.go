@@ -417,3 +417,46 @@ func TestConfigSaveRejectsBlankLayaInstructions(t *testing.T) {
 		t.Error("rejected backend was saved anyway")
 	}
 }
+
+func TestConfigSaveRejectsLayaEscalateLabelOutsideCriteria(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","layaEscalateLabels":["E"]}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "layaEscalateLabels") {
+		t.Errorf("error should name layaEscalateLabels, got %s", recorder.Body.String())
+	}
+	if _, exists := config.Get().Classifier.Backends["local"]; exists {
+		t.Error("rejected backend was saved anyway")
+	}
+}
+
+func TestConfigSaveAcceptsLayaEscalateLabelsUnderDefaultCriteria(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","layaEscalateLabels":["C","D"],"layaMinConfidence":0.55}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: labels of the default criteria are valid; body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestConfigSaveRejectsLayaMinConfidenceOutOfRange(t *testing.T) {
+	for _, value := range []string{"-0.1", "1", "1.5"} {
+		t.Run(value, func(t *testing.T) {
+			srv, _, _ := newTestServerWithManager(t)
+			blob := `{"backends":{"local":{"name":"Local Laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","layaMinConfidence":` + value + `}}}`
+
+			recorder := postConfigRules(t, srv, blob)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), "layaMinConfidence") {
+				t.Errorf("error should name layaMinConfidence, got %s", recorder.Body.String())
+			}
+		})
+	}
+}

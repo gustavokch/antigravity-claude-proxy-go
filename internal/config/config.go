@@ -260,8 +260,8 @@ type TargetBackend struct {
 	TimeoutMs int           `json:"timeoutMs,omitempty"`
 
 	// Laya overrides. Each empty or zero value falls back to the default in
-	// LayaSettings, except LayaMaxSeverity, where only nil does. They are
-	// ignored unless Format is BackendFormatLaya.
+	// LayaSettings, except LayaMaxSeverity and LayaEscalateLabels, where only
+	// nil does. They are ignored unless Format is BackendFormatLaya.
 	LayaQuestionName string            `json:"layaQuestionName,omitempty"`
 	LayaInstructions string            `json:"layaInstructions,omitempty"`
 	LayaCriteria     map[string]string `json:"layaCriteria,omitempty"`
@@ -270,16 +270,29 @@ type TargetBackend struct {
 	// is kept apart from "unset, use the default".
 	LayaMaxSeverity *int `json:"layaMaxSeverity,omitempty"`
 	LayaStateChars  int  `json:"layaStateChars,omitempty"`
+	// LayaEscalateLabels are the labels the adapter hands to built-in
+	// handling instead of answering, so the teacher grades them. nil means
+	// the default: D under the default criteria, none under custom criteria,
+	// whose labels mean whatever the operator wrote. An explicit empty list
+	// turns label escalation off, and omitzero keeps that [] through a save.
+	LayaEscalateLabels []string `json:"layaEscalateLabels,omitzero"`
+	// LayaMinConfidence escalates an answer whose calibrated
+	// answer_confidence is below it. 0 turns the floor off.
+	LayaMinConfidence float64 `json:"layaMinConfidence,omitempty"`
 }
 
-// LayaSettings is a Laya backend's resolved question and mapping.
+// LayaSettings is a Laya backend's resolved question, mapping and
+// escalation policy.
 type LayaSettings struct {
-	QuestionName string
-	Instructions string
-	Criteria     map[string]string
-	SeverityMap  map[string]int
-	MaxSeverity  int
-	StateChars   int
+	Model          string
+	QuestionName   string
+	Instructions   string
+	Criteria       map[string]string
+	SeverityMap    map[string]int
+	MaxSeverity    int
+	StateChars     int
+	EscalateLabels []string
+	MinConfidence  float64
 }
 
 // Laya defaults. Severity is 0-100 with 50 as the allow/block boundary, so
@@ -290,6 +303,10 @@ const (
 	DefaultLayaMaxSeverity  = 49
 	DefaultLayaStateChars   = 1200
 	DefaultLayaInstructions = "Classify the risk of this shell action taken by a coding agent."
+	// DefaultLayaModel pins laya-serve's English checkpoint. With no model,
+	// laya-serve routes by the action's language and can build a checkpoint
+	// it did not preload on the request path.
+	DefaultLayaModel = "english"
 )
 
 // defaultLayaCriteria uses opaque A-D keys on purpose: laya renders choice
@@ -309,15 +326,26 @@ var defaultLayaCriteria = map[string]string{
 // must match the training bands, not these serving-time numbers.
 var defaultLayaSeverityMap = map[string]int{"A": 0, "B": 5, "C": 15, "D": 35}
 
+// defaultLayaEscalateLabels sends D, the band where the teacher refused the
+// action, back to the teacher: a capped laya allow must not stand in for a
+// refusal.
+var defaultLayaEscalateLabels = []string{"D"}
+
 // LayaSettings resolves the backend's overrides against the defaults.
 func (backend TargetBackend) LayaSettings() LayaSettings {
 	settings := LayaSettings{
-		QuestionName: backend.LayaQuestionName,
-		Instructions: backend.LayaInstructions,
-		Criteria:     backend.LayaCriteria,
-		SeverityMap:  backend.LayaSeverityMap,
-		MaxSeverity:  DefaultLayaMaxSeverity,
-		StateChars:   backend.LayaStateChars,
+		Model:          backend.Model,
+		QuestionName:   backend.LayaQuestionName,
+		Instructions:   backend.LayaInstructions,
+		Criteria:       backend.LayaCriteria,
+		SeverityMap:    backend.LayaSeverityMap,
+		MaxSeverity:    DefaultLayaMaxSeverity,
+		StateChars:     backend.LayaStateChars,
+		EscalateLabels: backend.LayaEscalateLabels,
+		MinConfidence:  backend.LayaMinConfidence,
+	}
+	if settings.Model == "" {
+		settings.Model = DefaultLayaModel
 	}
 	if settings.QuestionName == "" {
 		settings.QuestionName = DefaultLayaQuestionName
@@ -336,6 +364,9 @@ func (backend TargetBackend) LayaSettings() LayaSettings {
 	}
 	if settings.StateChars <= 0 {
 		settings.StateChars = DefaultLayaStateChars
+	}
+	if settings.EscalateLabels == nil && len(backend.LayaCriteria) == 0 {
+		settings.EscalateLabels = defaultLayaEscalateLabels
 	}
 	return settings
 }

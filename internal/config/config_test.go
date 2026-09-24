@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -807,6 +808,12 @@ func TestLayaSettingsDefaults(t *testing.T) {
 	if settings.Instructions == "" {
 		t.Error("Instructions is empty")
 	}
+	if settings.Model != "english" {
+		t.Errorf("Model = %q, want english: an empty model lets laya-serve route a non-English action to a checkpoint it did not preload", settings.Model)
+	}
+	if !slices.Equal(settings.EscalateLabels, []string{"D"}) {
+		t.Errorf("EscalateLabels = %v, want [D]: the band where the teacher refused goes back to the teacher", settings.EscalateLabels)
+	}
 }
 
 func TestLayaSettingsHonorsOverrides(t *testing.T) {
@@ -848,6 +855,54 @@ func TestLayaSettingsKeepsAnExplicitZeroMaxSeverity(t *testing.T) {
 	}
 	if got := backend.LayaSettings().MaxSeverity; got != 0 {
 		t.Errorf("MaxSeverity = %d, want the explicit 0", got)
+	}
+}
+
+func TestLayaSettingsEscalation(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{
+			name: "custom criteria escalate nothing by default",
+			raw:  `{"format":"laya","layaCriteria":{"X":"one","Y":"two"},"layaSeverityMap":{"X":1,"Y":2}}`,
+			want: nil,
+		},
+		{
+			name: "an explicit list replaces the default",
+			raw:  `{"format":"laya","layaEscalateLabels":["C","D"]}`,
+			want: []string{"C", "D"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var backend TargetBackend
+			if err := json.Unmarshal([]byte(testCase.raw), &backend); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := backend.LayaSettings().EscalateLabels; !slices.Equal(got, testCase.want) {
+				t.Errorf("EscalateLabels = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestLayaSettingsKeepsAnExplicitEmptyEscalationListThroughASave(t *testing.T) {
+	var backend TargetBackend
+	if err := json.Unmarshal([]byte(`{"format":"laya","layaEscalateLabels":[]}`), &backend); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	saved, err := json.Marshal(backend)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var reloaded TargetBackend
+	if err := json.Unmarshal(saved, &reloaded); err != nil {
+		t.Fatalf("unmarshal saved: %v", err)
+	}
+	if got := reloaded.LayaSettings().EscalateLabels; len(got) != 0 {
+		t.Errorf("EscalateLabels after a save = %v, want none: an operator's explicit off must not revert to [D]", got)
 	}
 }
 
