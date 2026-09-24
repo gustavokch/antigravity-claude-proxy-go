@@ -835,6 +835,8 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 				} else {
 					logger.Warn("[Server] classifier interception: no canned verdict for this variant; failing fast instead of retrying",
 						"kind", kind, "model", stubModel)
+					// The proxy answered this itself; no teacher graded it.
+					captureSource = corpus.SourceStub
 					writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No canned verdict for this classifier variant, so the request fails fast instead of retrying.")
 					return
 				}
@@ -894,6 +896,12 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		writer: writer, request: request, cfg: cfg,
 		body: anthropicRequest, rawBody: rawBody, mutated: bodyMutated, model: model,
 	}) {
+		// A gateway answered with whatever model it routes to, not the
+		// upstream teacher, so the row must not be labeled upstream. Gateways
+		// rewrite the model on this same map, so reading it back records the
+		// model that actually graded the request.
+		captureSource = corpus.SourceGateway
+		model = stringFrom(anthropicRequest["model"])
 		return
 	}
 
@@ -923,6 +931,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			// which is exactly the stall this fallback exists to remove.
 			logger.Warn("[Server] classifier fallback: no canned verdict for this variant; failing fast instead of retrying",
 				"kind", classifierFallbackKind, "model", model)
+			captureSource = corpus.SourceStub
 			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No account capacity for model "+model+"; classifier fallback active and this classifier variant has no canned verdict, so the request fails fast instead of retrying.")
 			return
 		}

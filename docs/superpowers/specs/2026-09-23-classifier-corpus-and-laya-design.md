@@ -163,7 +163,7 @@ One JSON object per line. Field order is not significant; every field is always 
 | `status` | int | HTTP status written to the client. |
 | `latency_ms` | int | Time from tap installation to `Finish`. |
 | `truncated` | bool | True when the captured response exceeded the 64 KiB cap. |
-| `source` | string | `upstream` \| `stub` \| `rule` \| `laya`. |
+| `source` | string | `upstream` \| `stub` \| `rule` \| `laya` \| `gateway`. |
 
 Two field choices carry design weight and must not be simplified away:
 
@@ -174,6 +174,18 @@ row instead of 125 KB per row.
 **`source`.** A fine-tune must consume `source == "upstream"` rows only. Without this field, Phase 2
 would train Laya on Laya's own output, which entrenches its errors rather than correcting them. The
 export script in §3.8 enforces the filter, and the field is written by every producer.
+
+The values name the path that produced the verdict:
+
+- `upstream`: the request reached the account-backed upstream, so the teacher model graded it.
+- `stub`: the proxy answered itself, with a canned verdict or with the fail-fast 400 it returns
+  when a variant has no canned verdict.
+- `rule`: an operator rule rerouted the request to an `anthropic` or `openai` backend.
+- `laya`: an operator rule rerouted the request to a Laya backend.
+- `gateway`: an alternate-backend gateway (Kimi, Zen, Claude Code, OpenRouter or a custom endpoint)
+  answered. The grader is whichever model that gateway routed to, so the row's `model` records the
+  model after the gateway rewrote it, not the name the client sent. Claude Code gateway rows are
+  labeled `gateway` too: the path, not the vendor, decides the label.
 
 ### 3.4 `ResponseTap`
 

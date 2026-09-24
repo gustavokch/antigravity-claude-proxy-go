@@ -13,7 +13,10 @@ import (
 
 // Source names the code path that produced a row. A fine-tune consumes
 // SourceUpstream rows only: training on SourceLaya rows would teach the local
-// model its own answers and entrench its errors.
+// model its own answers and entrench its errors. SourceGateway marks a request
+// that an alternate-backend gateway (Kimi, Zen, Claude Code, OpenRouter or a
+// custom endpoint) answered, whose grader is whatever model that gateway
+// routed to rather than the upstream teacher.
 type Source string
 
 const (
@@ -21,6 +24,7 @@ const (
 	SourceStub     Source = "stub"
 	SourceRule     Source = "rule"
 	SourceLaya     Source = "laya"
+	SourceGateway  Source = "gateway"
 )
 
 // Entry is one JSONL row. Schema version 1; see the design spec.
