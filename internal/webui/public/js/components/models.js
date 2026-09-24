@@ -945,7 +945,7 @@ window.Components.models = () => ({
         }
         if (verified === false) {
             this.zenError = (store.t && store.t('zenNotAnthropicWire')) ||
-                ('Model "' + id + '" is not in the Zen Anthropic-wire subset and cannot be forwarded.');
+                ('Model "' + id + '" is not a forwardable Zen model (Anthropic or Chat Completions wire).');
             return;
         }
         this.zenConfig.allowlist.push({

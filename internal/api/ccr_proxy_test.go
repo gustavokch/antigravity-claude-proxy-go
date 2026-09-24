@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"antigravity-go-proxy/internal/zen"
 )
 
 func TestCCRProxyStream_SingleHydration(t *testing.T) {
@@ -428,6 +430,72 @@ func TestCCRProxyStream_DisabledCCR(t *testing.T) {
 
 	if atomic.LoadInt32(&callCount) != 1 {
 		t.Fatalf("Expected 1 call when CCR disabled, got %d", callCount)
+	}
+}
+
+// Translated upstreams (Zen Chat wire) learn prompt usage only at stream end:
+// message_start reports zero and message_delta carries the real figures.
+func TestCCRProxyStream_UsageFromMessageDelta(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range []string{
+			`{"id":"c1","choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}`,
+			`{"id":"c1","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":400}}}`,
+		} {
+			_, _ = io.WriteString(w, "data: "+c+"\n\n")
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	var in, out, cacheRead int
+	opts := CCRProxyOptions{
+		IsCCREnabled: func() bool { return true },
+		Sender: func(ctx context.Context, body []byte) (*http.Response, error) {
+			return zen.SendChat(ctx, upstream.Client(), upstream.URL, "k", body)
+		},
+		OnUsage: func(i, o, cr, _ int) { in, out, cacheRead = i, o, cr },
+	}
+	reqMap := map[string]any{"model": "glm-5.3", "stream": true,
+		"messages": []any{map[string]any{"role": "user", "content": "q"}}}
+	if err := ProxyAnthropicStreamWithCCR(context.Background(), httptest.NewRecorder(), reqMap, opts); err != nil {
+		t.Fatal(err)
+	}
+	if in != 600 || out != 7 || cacheRead != 400 {
+		t.Fatalf("OnUsage in=%d out=%d cacheRead=%d, want 600/7/400", in, out, cacheRead)
+	}
+}
+
+// Upstreams that report usage in both message_start and message_delta (the
+// Anthropic API does, cumulatively) must not be double-counted.
+func TestCCRProxyStream_UsageNotDoubleCounted(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":50,\"cache_read_input_tokens\":30,\"output_tokens\":1}}}\n\n")
+		fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":50,\"cache_read_input_tokens\":30,\"output_tokens\":5}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer upstream.Close()
+
+	var in, cacheRead int
+	opts := CCRProxyOptions{
+		IsCCREnabled: func() bool { return true },
+		Sender: func(ctx context.Context, body []byte) (*http.Response, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.URL, bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			return http.DefaultClient.Do(req)
+		},
+		OnUsage: func(i, _, cr, _ int) { in, cacheRead = i, cr },
+	}
+	reqMap := map[string]any{"model": "m", "stream": true,
+		"messages": []any{map[string]any{"role": "user", "content": "q"}}}
+	if err := ProxyAnthropicStreamWithCCR(context.Background(), httptest.NewRecorder(), reqMap, opts); err != nil {
+		t.Fatal(err)
+	}
+	if in != 50 || cacheRead != 30 {
+		t.Fatalf("OnUsage in=%d cacheRead=%d, want 50/30 (no double count)", in, cacheRead)
 	}
 }
 

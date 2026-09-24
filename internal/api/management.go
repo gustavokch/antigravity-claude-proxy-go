@@ -2174,21 +2174,30 @@ func (server *Server) handleZenModelsFetch(writer http.ResponseWriter, request *
 	if models == nil {
 		models = []zen.ModelItem{}
 	}
-	anthropic := make([]zen.ModelItem, 0, len(models))
+	usable := make([]zen.ModelItem, 0, len(models))
 	other := make([]zen.ModelItem, 0)
+	anthropicCount := 0
+	chatCount := 0
 	for _, m := range models {
-		if zen.IsAnthropicWire(m.ID) {
-			anthropic = append(anthropic, m)
-		} else {
+		_, wire := zen.WireFor(m.ID)
+		switch wire {
+		case zen.WireAnthropic:
+			anthropicCount++
+			usable = append(usable, m)
+		case zen.WireChat:
+			chatCount++
+			usable = append(usable, m)
+		default:
 			other = append(other, m)
 		}
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":    "ok",
-		"models":    anthropic,
+		"models":    usable,
 		"other":     other,
 		"total":     len(models),
-		"anthropic": len(anthropic),
+		"anthropic": anthropicCount,
+		"chat":      chatCount,
 	})
 }
 

@@ -9,12 +9,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
+	"antigravity-go-proxy/internal/headroom"
+	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/zen"
 )
 
@@ -641,5 +644,135 @@ func TestMatchZenModelEntry(t *testing.T) {
 	}
 	if got := zenTargetModel(config.ZenModelConfig{ID: "opencode/claude-sonnet-4-6"}); got != "claude-sonnet-4-6" {
 		t.Errorf("zenTargetModel = %q, want claude-sonnet-4-6", got)
+	}
+}
+
+// Chat-wire allowlist entries must be claimed by the Zen route, canonicalized,
+// forwarded to /v1/chat/completions, and the client must receive an
+// Anthropic-shaped answer. Regression pin for the whole chat-wire dispatch:
+// matchZenModelEntry → zenTargetModel → forwardToZen wire branch → SendChat.
+func TestServer_ForwardToZen_ChatWireRouting(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	var gotPath, gotAuth string
+	var gotReq map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotReq)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"c1","choices":[{"message":{"content":"yo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	saveZenTestConfig(t, map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-zen-test",
+		"baseUrl": upstream.URL,
+		"allowlist": []map[string]any{
+			{"id": "glm-5.3", "alias": "glm", "enabled": true},
+		},
+	})
+
+	rec := postZenMessages(t, newZenTestServer(t),
+		`{"model":"glm","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
+
+	if rec.Code != 200 {
+		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("upstream path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gotAuth != "Bearer sk-zen-test" {
+		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)
+	}
+	if gotReq["model"] != "glm-5.3" {
+		t.Errorf("upstream model = %v, want glm-5.3 (alias resolved to canonical)", gotReq["model"])
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &msg); err != nil {
+		t.Fatalf("response not JSON: %v; body = %s", err, rec.Body.String())
+	}
+	if msg["type"] != "message" || msg["stop_reason"] != "end_turn" {
+		t.Errorf("response not Anthropic-shaped: %s", rec.Body.String())
+	}
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["text"] != "yo" {
+		t.Errorf("content = %v", content)
+	}
+	usage, _ := msg["usage"].(map[string]any)
+	if usage["input_tokens"] != 5.0 || usage["output_tokens"] != 2.0 {
+		t.Errorf("usage = %v", usage)
+	}
+}
+
+// With CCR enabled, a Chat-wire model's headroom_retrieve call must be
+// hydrated through the translator (tool_result → role:"tool") and the client
+// must receive Anthropic SSE with the retrieve call suppressed.
+func TestServer_ForwardToZen_ChatWireCCRHydrates(t *testing.T) {
+	store := ccr.NewCCRStore(1024 * 1024)
+	chunkID, ok := store.Put("secret chunk payload")
+	if !ok {
+		t.Fatal("store.Put rejected chunk")
+	}
+	engine := headroom.NewEngine(headroom.Config{Enabled: true, CCR: headroom.CCRConfig{Enabled: true}}, nil, ccr.NewStage(store))
+	server := &Server{headroom: engine, ccrStore: store}
+
+	var calls int32
+	var second map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		n := atomic.AddInt32(&calls, 1)
+		if n == 2 {
+			_ = json.NewDecoder(r.Body).Decode(&second)
+		}
+		var chunk any
+		if n == 1 {
+			chunk = map[string]any{"id": "c1", "choices": []any{map[string]any{
+				"delta": map[string]any{"tool_calls": []any{map[string]any{
+					"index": 0, "id": "call_r",
+					"function": map[string]any{"name": "headroom_retrieve", "arguments": `{"chunk_id":"` + chunkID + `"}`},
+				}}},
+				"finish_reason": "tool_calls",
+			}}}
+		} else {
+			chunk = map[string]any{"id": "c2", "choices": []any{map[string]any{
+				"delta": map[string]any{"content": "answer"}, "finish_reason": "stop",
+			}}}
+		}
+		b, _ := json.Marshal(chunk)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+string(b)+"\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"glm-5.3","stream":true,"max_tokens":100,"messages":[{"role":"user","content":"q"}],"tools":[{"name":"headroom_retrieve","input_schema":{"type":"object"}}]}`)
+	var reqMap map[string]any
+	_ = json.Unmarshal(body, &reqMap)
+	rec := httptest.NewRecorder()
+	server.forwardToZen(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+		config.ZenConfig{Enabled: true, APIKey: "sk-zen-test", BaseURL: upstream.URL},
+		body, reqMap, "glm-5.3", config.ZenModelConfig{ID: "glm-5.3", Enabled: true})
+
+	if n := atomic.LoadInt32(&calls); n != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (retrieve + hydrated follow-up)", n)
+	}
+	msgs, _ := second["messages"].([]any)
+	last, _ := msgs[len(msgs)-1].(map[string]any)
+	if last["role"] != "tool" || last["tool_call_id"] != "call_r" || last["content"] != "secret chunk payload" {
+		t.Fatalf("hydrated follow-up tail = %v, want role:tool call_r with chunk payload", last)
+	}
+	out := rec.Body.String()
+	if strings.Contains(out, "headroom_retrieve") {
+		t.Fatalf("client stream leaked headroom_retrieve:\n%s", out)
+	}
+	for _, want := range []string{`"text":"answer"`, `"stop_reason":"end_turn"`, "event: message_stop"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("client stream missing %s\n%s", want, out)
+		}
 	}
 }

@@ -1427,10 +1427,11 @@ func zenAPIKey(cfg config.ZenConfig) string {
 	return os.Getenv("OPENCODE_API_KEY")
 }
 
-// forwardToZen transparently forwards an /v1/messages request to the OpenCode
-// Zen gateway. The Zen Anthropic-wire endpoint needs no translation: we
-// rewrite Authorization, preserve the Anthropic version/beta headers, and
-// stream the response back. When CCR is enabled, it hydrates headroom_retrieve calls.
+// forwardToZen forwards an /v1/messages request to the OpenCode Zen gateway.
+// Anthropic-wire models are forwarded transparently (Authorization rewritten,
+// Anthropic version/beta headers preserved); Chat-Completions-wire models are
+// translated to /v1/chat/completions and the response translated back. When
+// CCR is enabled, it hydrates headroom_retrieve calls.
 func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Request, zenCfg config.ZenConfig, body []byte, anthropicRequest map[string]any, model string, zenEntry config.ZenModelConfig) {
 	key := zenAPIKey(zenCfg)
 	if key == "" {
@@ -1439,11 +1440,12 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 		writeAPIError(writer, http.StatusInternalServerError, "api_error", "Zen route claimed without a resolved API key (zen.apiKey or OPENCODE_API_KEY)")
 		return
 	}
-	if !zen.IsAnthropicWire(model) {
-		// Defence-in-depth: matchZenModelEntry must reject non-wire entries
-		// before this point, so reaching here is a programming error.
+	_, wire := zen.WireFor(model)
+	if wire == zen.WireNone {
+		// Defence-in-depth: matchZenModelEntry must reject non-forwardable
+		// entries before this point, so reaching here is a programming error.
 		writeAPIError(writer, http.StatusInternalServerError, "api_error",
-			"Model "+model+" claimed the Zen route but is not in the Anthropic-wire subset")
+			"Model "+model+" claimed the Zen route but has no supported wire format")
 		return
 	}
 	// max_tokens fill, not clamp: the Zen catalog carries no output limit, so
@@ -1469,11 +1471,40 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	body = applyMaxTokensPolicy(body, anthropicRequest, zenEntry.MaxOutputTokens, 0)
 
 	if server.logger != nil {
-		server.logger.Info("zen forward", "model", model)
+		server.logger.Info("zen forward", "model", model, "chatWire", wire == zen.WireChat)
 	}
 
 	startTime := server.nowTime()
 	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
+
+	if wire == zen.WireChat {
+		// Cache-bump replay posts to /v1/messages, which a Chat-wire model
+		// cannot serve, so no bump is recorded on this path.
+		if !server.isCCREnabled() {
+			zen.ForwardChat(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
+				if resp.StatusCode < 400 {
+					server.zenInstrumentResponse(resp, model, sessionKey, startTime)
+				}
+				return nil
+			})
+			return
+		}
+		var reqMap map[string]any
+		if err := json.Unmarshal(body, &reqMap); err != nil {
+			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to parse Zen request: "+err.Error())
+			return
+		}
+		opts := server.defaultCCROptions(func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
+			return zen.SendChat(ctx, http.DefaultClient, zenCfg.BaseURL, key, reqBytes)
+		})
+		opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
+		if isStreaming, _ := reqMap["stream"].(bool); isStreaming {
+			_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
+		} else {
+			_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
+		}
+		return
+	}
 
 	if !server.isCCREnabled() {
 		modify := func(resp *http.Response) error {
@@ -1523,23 +1554,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	}
 
 	opts := server.defaultCCROptions(sender)
-	opts.OnUsage = func(in, out, cr, cw int) {
-		latency := server.nowTime().Sub(startTime)
-		metrics := zen.RequestMetrics{
-			Model:               model,
-			SessionID:           sessionKey,
-			InputTokens:         in,
-			OutputTokens:        out,
-			CacheReadTokens:     cr,
-			CacheCreationTokens: cw,
-			Latency:             latency,
-		}
-		metrics.ComputeFinalMetrics()
-		zen.LogObservability(server.logger, metrics)
-		if server.tracker != nil {
-			server.tracker.TrackRequest(model, latency, in, out, cr)
-		}
-	}
+	opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
 
 	isStreaming, _ := reqMap["stream"].(bool)
 	if isStreaming {
@@ -1549,8 +1564,10 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	}
 }
 
-func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionID string, startTime time.Time) {
-	onComplete := func(in, out, cr, cw int) {
+// zenUsageRecorder returns the usage callback shared by every Zen path:
+// observability log plus tracker accounting.
+func (server *Server) zenUsageRecorder(model, sessionID string, startTime time.Time) func(in, out, cr, cw int) {
+	return func(in, out, cr, cw int) {
 		latency := server.nowTime().Sub(startTime)
 		metrics := zen.RequestMetrics{
 			Model:               model,
@@ -1567,6 +1584,10 @@ func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionI
 			server.tracker.TrackRequest(model, latency, in, out, cr)
 		}
 	}
+}
+
+func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionID string, startTime time.Time) {
+	onComplete := server.zenUsageRecorder(model, sessionID, startTime)
 	if ccIsSSEResponse(resp.Header) {
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
 		return
@@ -1792,9 +1813,9 @@ func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConf
 			continue
 		}
 		// Wire gate on the entry ID — the value actually forwarded upstream.
-		// A non-wire entry never claims the route, so it cannot shadow a
-		// backend that can serve the model.
-		if !zen.IsAnthropicWire(zen.StripOpencodePrefix(item.ID)) {
+		// A non-forwardable entry never claims the route, so it cannot shadow
+		// a backend that can serve the model.
+		if !zen.IsForwardable(item.ID) {
 			continue
 		}
 		if item.ID != "" && strings.EqualFold(zen.StripOpencodePrefix(item.ID), cleanModel) {
@@ -1813,7 +1834,7 @@ func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConf
 // this an allowlist entry spelled `Claude-Sonnet-4-6` would be forwarded
 // verbatim after passing the case-insensitive wire guard.
 func zenTargetModel(entry config.ZenModelConfig) string {
-	if canonical, ok := zen.CanonicalAnthropicWireID(entry.ID); ok {
+	if canonical, wire := zen.WireFor(entry.ID); wire != zen.WireNone {
 		return canonical
 	}
 	return zen.StripOpencodePrefix(entry.ID)
