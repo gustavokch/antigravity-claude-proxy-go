@@ -29,6 +29,41 @@ func TestParseVerdict(t *testing.T) {
 			category: "Destructive Git",
 		},
 		{
+			// Gateway teachers stop at their token limit after the digits.
+			name:     "unclosed severity tag",
+			text:     "<severity>10",
+			severity: 10,
+		},
+		{
+			name:     "unclosed severity tag with trailing text",
+			text:     "<severity>15\nThe action",
+			severity: 15,
+		},
+		{
+			// A well-formed tag still wins over an earlier unclosed one.
+			name:     "closed tag wins over an earlier unclosed one",
+			text:     "<severity>9 <severity>20</severity>",
+			severity: 20,
+		},
+		{
+			// A truncated tag quoted inside thinking is rationale, not verdict.
+			name:     "unclosed tag inside thinking is not recovered",
+			text:     "<thinking>A force push would be <severity>90</thinking>",
+			severity: -1,
+			thinking: "A force push would be <severity>90",
+		},
+		{
+			// A teacher cut off inside its rationale left no verdict at all.
+			name:     "unclosed tag inside truncated thinking is not recovered",
+			text:     "<thinking>A force push would be <severity>90",
+			severity: -1,
+		},
+		{
+			name:     "closed tag inside truncated thinking is not a verdict",
+			text:     "<thinking>A force push would be <severity>90</severity>, but",
+			severity: -1,
+		},
+		{
 			name:     "multiline thinking",
 			text:     "<thinking>line one\nline two</thinking><severity>12</severity>",
 			severity: 12,

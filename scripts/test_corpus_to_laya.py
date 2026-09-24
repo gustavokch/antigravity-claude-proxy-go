@@ -116,6 +116,62 @@ def test_convert_lists_the_models_of_kept_rows_only():
     assert stats["models"] == ["claude-opus-5-5", "claude-sonnet-5"]
 
 
+def test_convert_recovers_an_unclosed_severity_tag():
+    # A teacher that stops at its token limit leaves `<severity>10` with no
+    # closing tag; the proxy records severity -1 and the label sits in
+    # verdict_raw.
+    rows = [
+        {"action": "a", "severity": -1, "verdict_raw": "<severity>10", "source": "upstream", "kind": STAGE1},
+    ]
+    examples, stats = convert(rows)
+    assert len(examples) == 1
+    assert examples[0]["answers"]["risk"] == "B"
+    assert stats["recovered"] == 1
+    assert stats["skipped_unlabelled"] == 0
+
+
+def test_convert_does_not_recover_a_tag_quoted_in_thinking():
+    rows = [
+        {
+            "action": "a",
+            "severity": -1,
+            "verdict_raw": "<thinking>A force push would be <severity>90</thinking>",
+            "source": "upstream",
+            "kind": STAGE1,
+        },
+    ]
+    examples, stats = convert(rows)
+    assert examples == []
+    assert stats["recovered"] == 0
+    assert stats["skipped_unlabelled"] == 1
+
+
+def test_convert_does_not_recover_a_tag_in_truncated_thinking():
+    # The teacher was cut off inside its rationale: no verdict was given.
+    rows = [
+        {
+            "action": "a",
+            "severity": -1,
+            "verdict_raw": "<thinking>A force push would be <severity>90",
+            "source": "upstream",
+            "kind": STAGE1,
+        },
+    ]
+    examples, stats = convert(rows)
+    assert examples == []
+    assert stats["recovered"] == 0
+
+
+def test_convert_keeps_the_sources_asked_for():
+    rows = [
+        {"action": "a", "severity": 1, "source": "upstream", "kind": STAGE1},
+        {"action": "b", "severity": 2, "source": "gateway", "kind": STAGE1},
+    ]
+    examples, stats = convert(rows, sources=("upstream", "gateway"))
+    assert [example["state"]["action"] for example in examples] == ["a", "b"]
+    assert stats["skipped_source"] == 0
+
+
 def _write_corpus(path, rows):
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
@@ -171,6 +227,21 @@ def test_load_rows_skips_blank_and_broken_lines(tmp_path):
     assert len(rows) == 2
     # The blank line is not corpus loss; the unparseable line is, so only it counts.
     assert skipped == 1
+
+
+def test_main_source_flag_is_repeatable(tmp_path):
+    corpus = tmp_path / "classifier-2026-09-24.jsonl"
+    output = tmp_path / "train.jsonl"
+    _write_corpus(corpus, [
+        {"action": "a", "severity": 1, "source": "upstream", "kind": STAGE1},
+        {"action": "b", "severity": -1, "verdict_raw": "<severity>10", "source": "gateway", "kind": STAGE1},
+        {"action": "c", "severity": 3, "source": "stub", "kind": STAGE1},
+    ])
+    assert main([
+        str(corpus), "-o", str(output), "--source", "upstream", "--source", "gateway",
+    ]) == 0
+    actions = [json.loads(line)["state"]["action"] for line in output.read_text().splitlines()]
+    assert actions == ["a", "b"]
 
 
 def test_load_rows_does_not_count_blank_lines_as_loss(tmp_path):

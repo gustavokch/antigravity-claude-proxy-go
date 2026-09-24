@@ -4,9 +4,17 @@
 Reads the JSONL written by the proxy's classifier capture and emits one
 example per labelled row, as a `choice` question over four risk buckets.
 
-Only rows with source == "upstream" carry a teacher label. Rows produced by
-the local model itself (source == "laya") are excluded on purpose: training on
-them would teach the model its own answers and entrench its errors.
+Rows with source == "upstream" carry a teacher label and are the only ones
+kept by default. Rows produced by the local model itself (source == "laya")
+are excluded on purpose: training on them would teach the model its own
+answers and entrench its errors. Pass --source once per source to keep other
+sources, for example gateway rows that a gateway model graded.
+
+A row whose severity is -1 but whose verdict_raw carries an unclosed
+<severity>NN tag (the teacher stopped at its token limit after the digits)
+has the severity recovered at export time; a tag quoted inside <thinking>,
+closed or cut off by truncation, is rationale, not verdict, and is never
+recovered.
 
 Only stage1-severity rows are kept by default. Stage 1 grades harm alone,
 while Stage 2 applies user intent the exported state does not carry, so
@@ -18,6 +26,7 @@ Usage:
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -42,6 +51,17 @@ INSTRUCTIONS = "Classify the risk of this shell action taken by a coding agent."
 
 TRAINING_SOURCE = "upstream"
 
+# The sources the proxy writes; see corpus.Source in Go.
+KNOWN_SOURCES = ("upstream", "stub", "rule", "laya", "gateway")
+
+DEFAULT_SOURCES = (TRAINING_SOURCE,)
+
+# Mirror thinkingPattern, unclosedThinkingPattern and unclosedSeverityPattern
+# in internal/classifier/corpus/verdict.go.
+THINKING_PATTERN = re.compile(r"<thinking>.*?</thinking>", re.DOTALL)
+UNCLOSED_THINKING_PATTERN = re.compile(r"<thinking>.*\Z", re.DOTALL)
+UNCLOSED_SEVERITY_PATTERN = re.compile(r"<severity>\s*(-?\d+)")
+
 # The kinds the proxy writes; see classifier.Kind.String() in Go.
 KNOWN_KINDS = ("stage1-severity", "stage2-severity", "block-prefilter")
 
@@ -61,6 +81,21 @@ def bucket_for(severity):
     return BUCKETS[-1][0]
 
 
+def recover_severity(row):
+    """Return the severity from an unclosed <severity>NN tag, or -1.
+
+    Only consulted when the row's severity is -1: rows captured before the
+    proxy's parser learned the unclosed fallback left the label in
+    verdict_raw. Thinking spans, including one a truncated answer never
+    closed, are stripped first — a tag quoted in a rationale must not become
+    the verdict.
+    """
+    answer = THINKING_PATTERN.sub("", row.get("verdict_raw") or "")
+    answer = UNCLOSED_THINKING_PATTERN.sub("", answer)
+    match = UNCLOSED_SEVERITY_PATTERN.search(answer)
+    return int(match.group(1)) if match else -1
+
+
 def to_example(row):
     """Return one Laya training example for a labelled row."""
     return {
@@ -76,11 +111,13 @@ def to_example(row):
     }
 
 
-def convert(rows, kinds=DEFAULT_KINDS):
+def convert(rows, kinds=DEFAULT_KINDS, sources=DEFAULT_SOURCES):
     """Return (examples, stats). Filtering is explicit and counted.
 
-    kinds is the set of classifier kinds to keep. stats["models"] lists the
-    distinct teacher models behind the kept rows.
+    kinds is the set of classifier kinds to keep; sources the set of row
+    sources to keep. stats["models"] lists the distinct teacher models behind
+    the kept rows; stats["recovered"] counts rows whose severity came from an
+    unclosed <severity>NN tag in verdict_raw.
     """
     stats = {
         "total": len(rows),
@@ -89,19 +126,25 @@ def convert(rows, kinds=DEFAULT_KINDS):
         "skipped_unlabelled": 0,
         "skipped_no_action": 0,
         "system_hashes": 0,
+        "recovered": 0,
         "models": [],
     }
     hashes = set()
     models = set()
     examples = []
     for row in rows:
-        if row.get("source") != TRAINING_SOURCE:
+        if row.get("source") not in sources:
             stats["skipped_source"] += 1
             continue
         if row.get("kind") not in kinds:
             stats["skipped_kind"] += 1
             continue
-        if row.get("severity", -1) < 0:
+        severity = row.get("severity", -1)
+        if severity < 0:
+            severity = recover_severity(row)
+            if severity >= 0:
+                stats["recovered"] += 1
+        if severity < 0:
             stats["skipped_unlabelled"] += 1
             continue
         if not row.get("action"):
@@ -111,7 +154,7 @@ def convert(rows, kinds=DEFAULT_KINDS):
             hashes.add(row["system_sha256"])
         if row.get("model"):
             models.add(row["model"])
-        examples.append(to_example(row))
+        examples.append(to_example({**row, "severity": severity}))
     stats["system_hashes"] = len(hashes)
     stats["models"] = sorted(models)
     return examples, stats
@@ -150,8 +193,16 @@ def main(argv=None):
         choices=KNOWN_KINDS,
         help="classifier kind to keep; repeat to keep several (default: stage1-severity only)",
     )
+    parser.add_argument(
+        "--source",
+        action="append",
+        choices=KNOWN_SOURCES,
+        help="row source to keep; repeat to keep several (default: upstream only). "
+        "Keeping laya trains the model on its own answers.",
+    )
     args = parser.parse_args(argv)
     kinds = tuple(args.kind) if args.kind else DEFAULT_KINDS
+    sources = tuple(args.source) if args.source else DEFAULT_SOURCES
 
     rows = []
     unparseable = 0
@@ -160,7 +211,7 @@ def main(argv=None):
         rows.extend(file_rows)
         unparseable += file_skipped
 
-    examples, stats = convert(rows, kinds)
+    examples, stats = convert(rows, kinds, sources)
 
     with open(args.output, "w", encoding="utf-8") as handle:
         for example in examples:
@@ -168,15 +219,19 @@ def main(argv=None):
 
     print(
         f"read {stats['total']} rows, wrote {len(examples)} examples to {args.output} "
-        f"(kinds: {', '.join(kinds)})"
+        f"(kinds: {', '.join(kinds)}; sources: {', '.join(sources)})"
     )
     print(
-        f"skipped: {stats['skipped_source']} non-upstream, "
+        f"skipped: {stats['skipped_source']} of another source, "
         f"{stats['skipped_kind']} of another kind, "
         f"{stats['skipped_unlabelled']} unlabelled, "
         f"{stats['skipped_no_action']} without an action, "
         f"{unparseable} unparseable line{'' if unparseable == 1 else 's'}"
     )
+    if stats["recovered"]:
+        print(
+            f"recovered {stats['recovered']} severities from unclosed <severity> tags"
+        )
     if stats["system_hashes"] > 1:
         print(
             f"WARNING: {stats['system_hashes']} distinct monitor prompts in this corpus. "
@@ -193,8 +248,8 @@ def main(argv=None):
     if not examples:
         if stats["skipped_kind"]:
             hint = (
-                f"{stats['skipped_kind']} upstream rows were of another kind than "
-                f"{', '.join(kinds)}; pass --kind to include them."
+                f"{stats['skipped_kind']} rows from the selected sources were of "
+                f"another kind than {', '.join(kinds)}; pass --kind to include them."
             )
         else:
             hint = (

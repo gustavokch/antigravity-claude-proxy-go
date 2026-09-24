@@ -24,20 +24,34 @@ type Verdict struct {
 // (?s) lets . match newlines: stage 2 <thinking> blocks are multi-line.
 var (
 	severityPattern = regexp.MustCompile(`(?s)<severity>\s*(-?\d+)\s*</severity>`)
-	categoryPattern = regexp.MustCompile(`(?s)<category>(.*?)</category>`)
-	thinkingPattern = regexp.MustCompile(`(?s)<thinking>(.*?)</thinking>`)
+	// unclosedSeverityPattern recovers the severity when the teacher stopped
+	// after the digits (`<severity>10` with no closing tag), which gateway
+	// models do at their token limit. Consulted only when severityPattern
+	// finds nothing, so a well-formed tag always wins.
+	unclosedSeverityPattern = regexp.MustCompile(`<severity>\s*(-?\d+)`)
+	categoryPattern         = regexp.MustCompile(`(?s)<category>(.*?)</category>`)
+	thinkingPattern         = regexp.MustCompile(`(?s)<thinking>(.*?)</thinking>`)
+	// unclosedThinkingPattern matches a rationale the teacher never closed:
+	// everything from the opener to the end of a truncated answer is still
+	// rationale, so a tag quoted in it is not a verdict.
+	unclosedThinkingPattern = regexp.MustCompile(`(?s)<thinking>.*$`)
 )
 
 // ParseVerdict extracts the typed fields from a verdict string. It never
 // fails: an unrecognized shape yields Severity -1 with Raw preserved.
 //
-// Severity and category are read with every <thinking> span removed. A
-// rationale can quote a tag, and the first quoted tag would otherwise win over
-// the final verdict that follows the rationale.
+// Severity and category are read with every <thinking> span removed, including
+// a trailing span a truncated answer never closed. A rationale can quote a tag,
+// and the first quoted tag would otherwise win over the final verdict that
+// follows the rationale.
 func ParseVerdict(text string) Verdict {
 	verdict := Verdict{Raw: text, Severity: -1}
-	answer := thinkingPattern.ReplaceAllString(text, "")
+	answer := unclosedThinkingPattern.ReplaceAllString(thinkingPattern.ReplaceAllString(text, ""), "")
 	if match := severityPattern.FindStringSubmatch(answer); match != nil {
+		if value, err := strconv.Atoi(match[1]); err == nil {
+			verdict.Severity = value
+		}
+	} else if match := unclosedSeverityPattern.FindStringSubmatch(answer); match != nil {
 		if value, err := strconv.Atoi(match[1]); err == nil {
 			verdict.Severity = value
 		}
