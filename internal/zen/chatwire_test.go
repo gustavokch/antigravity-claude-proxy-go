@@ -190,6 +190,19 @@ func TestMapFinishReasonContentFilter(t *testing.T) {
 	}
 }
 
+func TestToolResultImageLeavesPlaceholder(t *testing.T) {
+	out := userToChat([]any{map[string]any{
+		"type": "tool_result", "tool_use_id": "t1",
+		"content": []any{map[string]any{"type": "image", "source": map[string]any{
+			"type": "base64", "media_type": "image/png", "data": "AAAA",
+		}}},
+	}})
+	tool := out[0].(map[string]any)
+	if tool["role"] != "tool" || !strings.Contains(tool["content"].(string), "image omitted") {
+		t.Fatalf("tool message = %v, want an image-omitted placeholder", tool)
+	}
+}
+
 func TestUserToChatEmptyTurnPreserved(t *testing.T) {
 	// document/file image sources have no Chat equivalent and are dropped.
 	out := userToChat([]any{

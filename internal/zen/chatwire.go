@@ -247,9 +247,18 @@ func toolResultText(content any) string {
 	case []any:
 		parts := make([]string, 0, len(c))
 		for _, b := range c {
-			if block, ok := b.(map[string]any); ok && block["type"] == "text" {
+			block, ok := b.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch block["type"] {
+			case "text":
 				t, _ := block["text"].(string)
 				parts = append(parts, t)
+			case "image":
+				// Chat tool messages are text-only; tell the model something
+				// was there rather than returning an empty result.
+				parts = append(parts, "[image omitted: tool results are text-only on this model]")
 			}
 		}
 		return strings.Join(parts, "\n")
