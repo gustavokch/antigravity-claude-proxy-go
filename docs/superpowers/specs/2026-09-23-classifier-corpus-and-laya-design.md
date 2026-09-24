@@ -554,3 +554,15 @@ The existing `anthropic` and `openai` adapter tests
    checkpoint is trained, and `layaSeverityMap` is pointed at the fine-tuned checkpoint's labels.
 5. Only then is promoting Laya to a real gate worth discussing, and that discussion needs a measured
    agreement rate against held-out `source == "upstream"` rows.
+
+---
+
+## 8. Amendment (2026-09-24): escalation
+
+Implemented by `docs/superpowers/plans/2026-09-24-laya-serve-escalation.md`. Where it conflicts with §4.5, §5 and §6.3, it supersedes them:
+
+- The Laya backend no longer answers Stage 2. Every Stage 2 request escalates before the laya call: Stage 2 applies user intent the action-only state lacks, and it follows a Stage 1 verdict that a capped laya allow must not overrule.
+- A Stage 1 answer escalates when its label is in `layaEscalateLabels` (default `["D"]` under the default criteria) or its `answer_confidence` is below `layaMinConfidence` (default 0, off).
+- An escalation falls through to built-in handling like a failed reroute, audited as `escalated`, not `error`.
+- `model` defaults to `english`, so laya-serve never builds an unpreloaded checkpoint on the request path.
+- The clamp in §4.5 is unchanged: a Laya verdict still cannot block with the defaults.
