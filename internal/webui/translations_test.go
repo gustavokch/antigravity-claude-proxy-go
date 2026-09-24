@@ -118,6 +118,13 @@ var classifierKeys = []string{
 	"classifierRuleFooterPattern", "classifierRuleMaxTokensMin",
 	"classifierRuleMaxTokensMax", "classifierRuleVerdict", "classifierAudit",
 	"classifierAuditEmpty",
+	"classifierBackendFormatLaya", "classifierLayaHint", "classifierLayaMaxSeverity",
+	"classifierLayaMaxSeverityWarning", "classifierLayaStateChars",
+	"classifierLayaQuestionName", "classifierLayaInstructions",
+	"classifierLayaEscalateLabels", "classifierLayaEscalateDefault",
+	"classifierLayaEscalateNone", "classifierLayaEscalateCustom",
+	"classifierLayaEscalateOff", "classifierLayaEscalateHint",
+	"classifierLayaMinConfidence", "classifierLayaMinConfidenceHint",
 }
 
 // claudeCodeIdentityKeys are the i18n keys referenced by the Claude Code

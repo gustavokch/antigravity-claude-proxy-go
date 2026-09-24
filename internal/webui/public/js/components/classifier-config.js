@@ -116,6 +116,45 @@ window.Components.classifierConfig = () => ({
             if (rule.targetBackend === key) rule.targetBackend = '';
         });
     },
+    // The labels a laya backend answers with, resolved the way
+    // config.LayaSettings does: custom criteria replace A-D wholesale.
+    layaLabels(backend) {
+        const custom = Object.keys(backend?.layaCriteria || {}).sort();
+        return custom.length > 0 ? custom : ['A', 'B', 'C', 'D'];
+    },
+    // What an absent layaEscalateLabels resolves to server-side: D under the
+    // default criteria, none under custom criteria.
+    layaDefaultEscalateLabels(backend) {
+        return Object.keys(backend?.layaCriteria || {}).length > 0 ? [] : ['D'];
+    },
+    // An absent field follows the server default, an array (even an empty one,
+    // which turns label escalation off) is the operator's own list. The two
+    // must stay apart through a save, so the mode is read off the field itself.
+    layaEscalateMode(backend) {
+        return Array.isArray(backend?.layaEscalateLabels) ? 'custom' : 'default';
+    },
+    layaEscalateDefaultText(backend) {
+        const global = Alpine.store('global');
+        const labels = this.layaDefaultEscalateLabels(backend);
+        return `${global.t('classifierLayaEscalateDefault')} (${labels.length > 0 ? labels.join(', ') : global.t('classifierLayaEscalateNone')})`;
+    },
+    setLayaEscalateMode(backend, mode) {
+        if (mode === 'custom') {
+            // Start from what the default resolves to, so switching modes
+            // alone never changes which answers escalate.
+            if (!Array.isArray(backend.layaEscalateLabels)) {
+                backend.layaEscalateLabels = this.layaDefaultEscalateLabels(backend);
+            }
+        } else {
+            delete backend.layaEscalateLabels;
+        }
+    },
+    toggleLayaEscalateLabel(backend, label, checked) {
+        const current = Array.isArray(backend.layaEscalateLabels) ? backend.layaEscalateLabels : [];
+        const next = new Set(current);
+        if (checked) next.add(label); else next.delete(label);
+        backend.layaEscalateLabels = this.layaLabels(backend).filter((candidate) => next.has(candidate));
+    },
     // The editor exposes one pattern per field, which is the shape the
     // captured fingerprints actually need. Patterns are stored as arrays so
     // the backend schema does not have to change when multi-pattern editing
@@ -252,8 +291,8 @@ window.Components.classifierConfig = () => ({
                             // backend, openai and anthropic ones included.
                             // Checked for every format, because a value typed
                             // before switching away from laya stays on the
-                            // object and '' fails the Go int decoder.
-                            for (const field of ['layaMaxSeverity', 'layaStateChars']) {
+                            // object and '' fails the Go number decoders.
+                            for (const field of ['layaMaxSeverity', 'layaStateChars', 'layaMinConfidence']) {
                                 const value = payload[field];
                                 if (value === '' || value === null || value === undefined || !Number.isFinite(Number(value))) {
                                     delete payload[field];
