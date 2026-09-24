@@ -1,9 +1,11 @@
 package zen
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,5 +138,24 @@ func TestUserToChatEmptyTurnPreserved(t *testing.T) {
 	msg := out[0].(map[string]any)
 	if msg["role"] != "user" || msg["content"] != "" {
 		t.Fatalf("fallback message = %v", msg)
+	}
+}
+
+func TestStreamLogsDroppedInterleavedArgs(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	in := "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"f\",\"arguments\":\"{\"}}]}}]}\n\n" +
+		"data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"g\",\"arguments\":\"{\"}}]}}]}\n\n" +
+		"data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\n\n" +
+		"data: [DONE]\n\n"
+	var out bytes.Buffer
+	if err := streamChatToAnthropic(strings.NewReader(in), &out, "m"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "dropping interleaved tool_call arguments") {
+		t.Fatalf("no drop logged:\n%s", buf.String())
 	}
 }

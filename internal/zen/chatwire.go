@@ -714,6 +714,8 @@ func (s *chatStream) handle(chunk map[string]any) error {
 			if blockIdx != s.current {
 				// Interleaved argument fragments for an earlier call cannot
 				// be reopened in Anthropic SSE; drop rather than corrupt.
+				slog.Debug("zen chat stream: dropping interleaved tool_call arguments",
+					"callIndex", callIdx, "openBlock", s.current)
 				continue
 			}
 			if err := s.delta(map[string]any{"type": "input_json_delta", "partial_json": args}); err != nil {
