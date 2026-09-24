@@ -20,6 +20,11 @@ import (
 // must surface as a fast failure, not an indefinite stall.
 const defaultClassifierBackendTimeout = 20 * time.Second
 
+// defaultLayaBackendTimeout is shorter than the general backend timeout: laya
+// answers in well under a second even on CPU, and this call sits in front of
+// the user's permission prompt.
+const defaultLayaBackendTimeout = 5 * time.Second
+
 // maxClassifierBackendResponse caps what is read from a rerouted backend. A
 // verdict is a few dozen bytes; anything near this bound is a misconfigured
 // endpoint, not a verdict.
@@ -163,7 +168,11 @@ func (server *Server) applyClassifierRule(
 		// reason as the stub branch above. A backend call that failed returns
 		// earlier and leaves the source alone, so a fall-through to built-in
 		// handling is still labeled by whichever path answers.
-		req.setCaptureSource(corpus.SourceRule)
+		if req.backend != nil && req.backend.Format == config.BackendFormatLaya {
+			req.setCaptureSource(corpus.SourceLaya)
+		} else {
+			req.setCaptureSource(corpus.SourceRule)
+		}
 		if err := writeClassifierResponse(writer, message, req.streamRequested); err != nil {
 			record(classifier.EventStatusError, err.Error())
 			return true, false
@@ -223,10 +232,14 @@ var anthropicFormatAdapter = backendFormatAdapter{
 }
 
 func getBackendFormatAdapter(format config.BackendFormat) backendFormatAdapter {
-	if format == config.BackendFormatOpenAI {
+	switch format {
+	case config.BackendFormatOpenAI:
 		return openAIFormatAdapter
+	case config.BackendFormatLaya:
+		return layaFormatAdapter
+	default:
+		return anthropicFormatAdapter
 	}
-	return anthropicFormatAdapter
 }
 
 // callClassifierBackend posts the request to backend and returns an Anthropic
@@ -239,6 +252,9 @@ func (server *Server) callClassifierBackend(
 	timeout := time.Duration(call.backend.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = defaultClassifierBackendTimeout
+		if call.backend.Format == config.BackendFormatLaya {
+			timeout = defaultLayaBackendTimeout
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

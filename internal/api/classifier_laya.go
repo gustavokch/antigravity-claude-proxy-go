@@ -2,7 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 
+	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/config"
 )
@@ -57,4 +60,80 @@ func layaSettingsFor(backend *config.TargetBackend) config.LayaSettings {
 		return config.TargetBackend{}.LayaSettings()
 	}
 	return backend.LayaSettings()
+}
+
+// layaTypedAnswer is one typed answer in a /v1/systemone response.
+type layaTypedAnswer struct {
+	Choice     string  `json:"choice"`
+	Confidence float64 `json:"confidence"`
+}
+
+type layaResponse struct {
+	Answers map[string]layaTypedAnswer `json:"answers"`
+}
+
+// layaThinkingPhrases give stage 2 a one-line rationale per label. Stage 2
+// requires a <thinking> block; allow verdicts carry no <category> tag.
+var layaThinkingPhrases = map[string]string{
+	"A": "Read-only inspection; no policy match.",
+	"B": "Local write action; no policy match.",
+	"C": "Outbound effect; no policy match.",
+	"D": "Destructive shape; no policy match.",
+}
+
+const layaFallbackThinking = "Routine action, no policy match."
+
+// parseLayaResponse maps a laya label to a severity and renders the verdict
+// shape the detected variant requires. Severity is clamped below the 50
+// allow/block boundary by MaxSeverity, so a laya answer cannot block.
+func parseLayaResponse(respBody []byte, call classifierCall) ([]byte, error) {
+	settings := layaSettingsFor(call.backend)
+
+	var decoded layaResponse
+	if err := json.Unmarshal(respBody, &decoded); err != nil {
+		return nil, fmt.Errorf("laya: response is not JSON: %w", err)
+	}
+	answer, exists := decoded.Answers[settings.QuestionName]
+	if !exists {
+		return nil, fmt.Errorf("laya: response carries no answer for question %q", settings.QuestionName)
+	}
+	severity, known := settings.SeverityMap[answer.Choice]
+	if !known {
+		return nil, fmt.Errorf("laya: answer label %q is not in the severity map", answer.Choice)
+	}
+	if severity > settings.MaxSeverity {
+		severity = settings.MaxSeverity
+	}
+	if severity < 0 {
+		severity = 0
+	}
+
+	var verdict string
+	switch call.kind {
+	case classifier.KindStage1Severity:
+		verdict = fmt.Sprintf("<severity>%d</severity>", severity)
+	case classifier.KindStage2Severity:
+		thinking, ok := layaThinkingPhrases[answer.Choice]
+		if !ok {
+			thinking = layaFallbackThinking
+		}
+		verdict = fmt.Sprintf("<thinking>%s</thinking><severity>%d</severity>", thinking, severity)
+	default:
+		// KindBlockPrefilter's response format was never captured, so it must
+		// not be guessed; KindNone is not a classifier request at all.
+		return nil, classifier.ErrUnsupportedKind
+	}
+
+	return classifier.StubWithText(call.model, verdict)
+}
+
+var layaFormatAdapter = backendFormatAdapter{
+	preparePayload: buildLayaPayload,
+	setHeaders: func(req *http.Request, apiKey string) {
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	},
+	parseResponse: parseLayaResponse,
 }

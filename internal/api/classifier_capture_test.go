@@ -228,3 +228,42 @@ func TestClassifierCaptureFallbackStubWritesOneStubRow(t *testing.T) {
 		t.Errorf("Source = %q, want stub", rows[0].Source)
 	}
 }
+
+func TestClassifierCaptureMarksLayaRows(t *testing.T) {
+	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{"risk":{"choice":"A","confidence":0.9}}}`))
+	}))
+	defer backendServer.Close()
+
+	srv := &Server{classifierAudit: classifier.NewRecorder(10)}
+	srv.applyClassifierConfig(config.ClassifierConfig{Enabled: true})
+
+	source := corpus.SourceUpstream
+	backend := config.TargetBackend{
+		Name:   "laya",
+		URL:    backendServer.URL + "/v1/systemone",
+		Format: config.BackendFormatLaya,
+		Model:  "english",
+	}
+	rule := config.Rule{ID: "r", Name: "r", Action: config.RuleActionReroute, TargetBackend: "laya"}
+
+	responded, _ := srv.applyClassifierRule(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(captureBody)),
+		classifierRequest{
+			rule:          &rule,
+			backend:       &backend,
+			rawBody:       []byte(captureBody),
+			model:         "claude-sonnet-5",
+			kind:          classifier.KindStage1Severity,
+			captureSource: &source,
+		},
+	)
+	if !responded {
+		t.Fatal("expected the laya reroute to answer")
+	}
+	if source != corpus.SourceLaya {
+		t.Errorf("captureSource = %q, want laya: a row marked otherwise would feed the model its own answers", source)
+	}
+}
