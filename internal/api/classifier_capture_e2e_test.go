@@ -79,6 +79,8 @@ func anthropicVerdictServer(t *testing.T, verdict string) (*httptest.Server, *st
 // severity.
 func TestClassifierCaptureUpstreamRowEndToEnd(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "")
+	orig := config.Get()
+	t.Cleanup(func() { config.SetForTest(orig) })
 	dir := t.TempDir()
 	server, _ := newAccountBackedTestServer(t)
 	backend := &verdictBackend{verdict: "<severity>12</severity>"}
@@ -130,6 +132,8 @@ func TestClassifierCaptureUpstreamRowEndToEnd(t *testing.T) {
 // that rewritten model, not the alias the client sent.
 func TestClassifierCaptureGatewayRowEndToEnd(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "")
+	orig := config.Get()
+	t.Cleanup(func() { config.SetForTest(orig) })
 	dir := t.TempDir()
 	kimiServer, receivedModel := anthropicVerdictServer(t, "<severity>7</severity>")
 	server, backend := newAccountBackedTestServer(t)
@@ -180,6 +184,8 @@ func TestClassifierCaptureGatewayRowEndToEnd(t *testing.T) {
 // own model, so its row is labeled rule, not upstream.
 func TestClassifierCaptureRuleRerouteRowEndToEnd(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK", "")
+	orig := config.Get()
+	t.Cleanup(func() { config.SetForTest(orig) })
 	dir := t.TempDir()
 	sidecar, _ := anthropicVerdictServer(t, "<severity>4</severity>")
 	server, backend := newAccountBackedTestServer(t)
@@ -256,6 +262,8 @@ func TestClassifierCaptureFailFastRowIsLabeledStub(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			orig := config.Get()
+			t.Cleanup(func() { config.SetForTest(orig) })
 			dir := t.TempDir()
 			server, backend := newAccountBackedTestServer(t)
 
