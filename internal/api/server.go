@@ -31,6 +31,7 @@ import (
 	"antigravity-go-proxy/internal/cachebump"
 	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
@@ -117,6 +118,7 @@ type Server struct {
 	cacheBumpSched     *cachebump.Scheduler
 	classifierMatcher  *classifier.ConfigurableMatcher
 	classifierAudit    *classifier.Recorder
+	classifierCorpus   atomic.Pointer[corpus.Recorder]
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -719,12 +721,53 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 
 	streamRequested, _ := anthropicRequest["stream"].(bool)
 
+	// Detect scans a body of about 125KB, so it runs at most once per
+	// request and only when some path needs the result.
+	detectClassifier := sync.OnceValues(func() (classifier.Kind, bool) {
+		return classifier.Detect(rawBody)
+	})
+
+	// Capture installs one tap and one deferred writer, before any branch can
+	// answer. Recording inside each branch instead would double-write when a
+	// branch falls through to the next.
+	captureSource := corpus.SourceUpstream
+	var captureRef *corpus.Source
+	// The recorder is loaded once: a settings save can swap it mid-request,
+	// and the row belongs to the recorder that saw the request start.
+	if recorder := server.classifierCorpus.Load(); recorder.Enabled() {
+		if kind, detected := detectClassifier(); detected {
+			tap := corpus.NewResponseTap(writer)
+			writer = tap
+			captureRef = &captureSource
+			contextEntries := cfg.Classifier.Capture.Resolved().ContextEntries
+			defer func() {
+				// The row is built and written off this goroutine. A small
+				// response stays in net/http's buffer until the handler
+				// returns, so a synchronous write would delay the permission
+				// prompt.
+				tap.Finish()
+				recorder.RecordAsync(corpus.EntryInput{
+					RawBody:        rawBody,
+					Kind:           kind.String(),
+					Model:          model,
+					Source:         captureSource,
+					Tap:            tap,
+					ContextEntries: contextEntries,
+				})
+			}()
+		}
+	}
+
 	// Operator rules are consulted first. Anything they decline to handle —
 	// including a reroute whose backend failed — falls through to the
 	// built-in Detect path below, so today's behavior is the default.
 	skipClassifierDetect := false
 	if cfg.Classifier.Enabled && len(cfg.Classifier.Rules) > 0 && server.classifierMatcher != nil {
 		if rule, backend, matched := server.classifierMatcher.Match(rawBody); matched {
+			var ruleKind classifier.Kind
+			if rule.Action == config.RuleActionReroute {
+				ruleKind, _ = detectClassifier()
+			}
 			responded, skipDetect := server.applyClassifierRule(
 				writer,
 				request,
@@ -734,6 +777,8 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 					rawBody:         rawBody,
 					model:           model,
 					streamRequested: streamRequested,
+					kind:            ruleKind,
+					captureSource:   captureRef,
 				},
 			)
 			if responded {
@@ -744,7 +789,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	}
 
 	if !skipClassifierDetect && (cfg.Classifier.Enabled || config.ClassifierFallbackEnabled()) && !streamRequested {
-		if kind, detected := classifier.Detect(rawBody); detected {
+		if kind, detected := detectClassifier(); detected {
 			effectiveAction := cfg.Classifier.Action
 			if effectiveAction == "" {
 				effectiveAction = config.ActionFallbackOnExhaustion
@@ -792,6 +837,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 				if stub, stubErr := classifier.BuildStub(kind, stubModel, verdictTmpl, thinkingTmpl); stubErr == nil {
 					logger.Warn("[Server] classifier interception: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
 						"kind", kind, "model", stubModel)
+					captureSource = corpus.SourceStub
 					writer.Header().Set("Content-Type", "application/json")
 					writer.WriteHeader(http.StatusOK)
 					_, _ = writer.Write(stub)
@@ -807,6 +853,8 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 				} else {
 					logger.Warn("[Server] classifier interception: no canned verdict for this variant; failing fast instead of retrying",
 						"kind", kind, "model", stubModel)
+					// The proxy answered this itself; no teacher graded it.
+					captureSource = corpus.SourceStub
 					writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No canned verdict for this classifier variant, so the request fails fast instead of retrying.")
 					return
 				}
@@ -866,6 +914,12 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		writer: writer, request: request, cfg: cfg,
 		body: anthropicRequest, rawBody: rawBody, mutated: bodyMutated, model: model,
 	}) {
+		// A gateway answered with whatever model it routes to, not the
+		// upstream teacher, so the row must not be labeled upstream. Gateways
+		// rewrite the model on this same map, so reading it back records the
+		// model that actually graded the request.
+		captureSource = corpus.SourceGateway
+		model = stringFrom(anthropicRequest["model"])
 		return
 	}
 
@@ -885,6 +939,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			if stub, stubErr := classifier.BuildStub(classifierFallbackKind, model, classifierFallbackVerdictTmpl, classifierFallbackThinkingTmpl); stubErr == nil {
 				logger.Warn("[Server] classifier fallback: answering a security-monitor call with a canned allow verdict; its real injection/scope-creep check is skipped",
 					"kind", classifierFallbackKind, "model", model)
+				captureSource = corpus.SourceStub
 				writer.Header().Set("Content-Type", "application/json")
 				writer.WriteHeader(http.StatusOK)
 				_, _ = writer.Write(stub)
@@ -894,6 +949,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			// which is exactly the stall this fallback exists to remove.
 			logger.Warn("[Server] classifier fallback: no canned verdict for this variant; failing fast instead of retrying",
 				"kind", classifierFallbackKind, "model", model)
+			captureSource = corpus.SourceStub
 			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "No account capacity for model "+model+"; classifier fallback active and this classifier variant has no canned verdict, so the request fails fast instead of retrying.")
 			return
 		}

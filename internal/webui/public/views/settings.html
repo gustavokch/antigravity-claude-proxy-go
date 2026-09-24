@@ -4562,6 +4562,7 @@
                                 <select class="select select-xs w-full bg-space-800" x-model="config.backends[key].format">
                                     <option value="openai">openai</option>
                                     <option value="anthropic">anthropic</option>
+                                    <option value="laya" x-text="$store.global.t('classifierBackendFormatLaya')"></option>
                                 </select>
                             </label>
                             <label class="text-xs text-gray-400">
@@ -4577,8 +4578,92 @@
                                 </label>
                                 <button class="btn btn-xs btn-error" @click="removeBackend(key)">✕</button>
                             </div>
+                            <!-- Laya overrides: a second full-width row, so the row above keeps its layout.
+                                 layaCriteria and layaSeverityMap stay config.json-only: they must share one
+                                 key set, which two free-text maps in a form invite getting wrong. -->
+                            <template x-if="config.backends[key].format === 'laya'">
+                                <div class="md:col-span-6 space-y-2 pt-2 border-t border-space-border/40">
+                                    <p class="text-xs text-gray-400" x-text="$store.global.t('classifierLayaHint')"></p>
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-start">
+                                        <div class="space-y-1">
+                                            <label class="text-xs text-gray-400 block">
+                                                <span x-text="$store.global.t('classifierLayaMaxSeverity')"></span>
+                                                <input type="number" min="0" max="100" placeholder="49"
+                                                    class="input input-xs w-full bg-space-800"
+                                                    x-model.number="config.backends[key].layaMaxSeverity">
+                                            </label>
+                                            <p class="text-xs text-amber-400/90 leading-relaxed" x-text="$store.global.t('classifierLayaMaxSeverityWarning')"></p>
+                                        </div>
+                                        <label class="text-xs text-gray-400">
+                                            <span x-text="$store.global.t('classifierLayaStateChars')"></span>
+                                            <input type="number" min="200" max="8000" placeholder="1200"
+                                                class="input input-xs w-full bg-space-800"
+                                                x-model.number="config.backends[key].layaStateChars">
+                                        </label>
+                                        <label class="text-xs text-gray-400">
+                                            <span x-text="$store.global.t('classifierLayaQuestionName')"></span>
+                                            <input type="text" placeholder="risk"
+                                                class="input input-xs w-full bg-space-800"
+                                                x-model="config.backends[key].layaQuestionName">
+                                        </label>
+                                    </div>
+                                    <label class="text-xs text-gray-400 block">
+                                        <span x-text="$store.global.t('classifierLayaInstructions')"></span>
+                                        <input type="text" class="input input-xs w-full bg-space-800"
+                                            x-model="config.backends[key].layaInstructions">
+                                    </label>
+                                </div>
+                            </template>
                         </div>
                     </template>
+                </div>
+
+                <!-- Corpus Capture -->
+                <div class="card bg-space-900/30 border border-space-border/60 p-6 space-y-4" x-show="config.capture">
+                    <h4 class="text-sm font-bold text-white uppercase tracking-wider"
+                        x-text="$store.global.t('classifierCaptureTitle')">Corpus Capture</h4>
+                    <p class="text-xs text-gray-400" x-text="$store.global.t('classifierCaptureDesc')">
+                        Write each classifier request and the verdict returned for it to local JSONL, as training data for a local decision model.
+                    </p>
+                    <p class="text-xs text-amber-400/90 leading-relaxed" x-text="$store.global.t('classifierCaptureCost')">
+                        Verdict labels are only collected while classifier requests reach upstream. During a collection window, rules must be set to passthrough, which consumes upstream quota.
+                    </p>
+                    <div class="flex items-center justify-between p-3 bg-space-800/40 rounded-lg border border-space-border/40">
+                        <span class="text-xs font-medium text-gray-200" x-text="$store.global.t('classifierCaptureEnabled')">Enable Corpus Capture</span>
+                        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                            <input type="checkbox" class="sr-only peer"
+                                x-model="config.capture.enabled"
+                                aria-label="Enable corpus capture toggle">
+                            <div class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black"></div>
+                        </label>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureDir')">Corpus Directory</label>
+                        <input type="text" x-model="config.capture.dir"
+                            class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
+                            :placeholder="$store.global.t('classifierCaptureDirPlaceholder')">
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureContextEntries')">Context Entries Kept (-1 for the action only, 0 for the default of 2)</label>
+                            <input type="number" min="-1" max="20" x-model.number="config.capture.contextEntries"
+                                class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan">
+                        </div>
+                        <div class="form-control">
+                            <label class="label pt-0 pb-1 text-xs text-gray-300 font-semibold" x-text="$store.global.t('classifierCaptureMaxFiles')">Day Files Retained (-1 keeps every day file)</label>
+                            <input type="number" min="-1" max="365" x-model.number="config.capture.maxFiles"
+                                class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan">
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between p-3 bg-space-800/40 rounded-lg border border-space-border/40">
+                        <span class="text-xs font-medium text-gray-200" x-text="$store.global.t('classifierCaptureRedact')">Replace Home Directory With ~</span>
+                        <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                            <input type="checkbox" class="sr-only peer"
+                                x-model="config.capture.redactPaths"
+                                aria-label="Redact home directory toggle">
+                            <div class="w-9 h-5 bg-space-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-gray-600 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-neon-cyan peer-checked:after:bg-black"></div>
+                        </label>
+                    </div>
                 </div>
 
                 <!-- Rules -->

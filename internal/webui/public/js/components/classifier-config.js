@@ -22,7 +22,15 @@ window.Components.classifierConfig = () => ({
             'block-prefilter': { targetModel: '', cannedVerdict: '' }
         },
         rules: [],
-        backends: {}
+        backends: {},
+        capture: {
+            enabled: false,
+            dir: '',
+            contextEntries: 2,
+            maxFiles: 365,
+            maxFileBytes: 67108864,
+            redactPaths: true
+        }
     },
     init() {
         this.loadConfig();
@@ -47,6 +55,24 @@ window.Components.classifierConfig = () => ({
         }
         if (!Array.isArray(this.config.rules)) this.config.rules = [];
         if (!this.config.backends || typeof this.config.backends !== 'object') this.config.backends = {};
+    },
+    // Every capture field except enabled is omitempty server-side, so an
+    // untouched config arrives as {"enabled":false} and nothing else. Backfill
+    // per field, not just when the whole object is missing: a field left
+    // undefined would otherwise be sent back as a value the operator never
+    // chose, and for redactPaths (a *bool whose nil default is true) that
+    // silently turns path redaction off.
+    ensureCapture() {
+        if (!this.config.capture || typeof this.config.capture !== 'object') {
+            this.config.capture = {};
+        }
+        const capture = this.config.capture;
+        if (typeof capture.enabled !== 'boolean') capture.enabled = false;
+        if (typeof capture.dir !== 'string') capture.dir = '';
+        if (typeof capture.contextEntries !== 'number') capture.contextEntries = 2;
+        if (typeof capture.maxFiles !== 'number') capture.maxFiles = 365;
+        if (typeof capture.maxFileBytes !== 'number') capture.maxFileBytes = 67108864;
+        if (typeof capture.redactPaths !== 'boolean') capture.redactPaths = true;
     },
     get backendNames() {
         return Object.keys(this.config.backends || {});
@@ -138,6 +164,7 @@ window.Components.classifierConfig = () => ({
         if (raw) {
             this.config = JSON.parse(JSON.stringify(raw));
             this.ensureVariants();
+            this.ensureCapture();
             return;
         }
 
@@ -157,6 +184,7 @@ window.Components.classifierConfig = () => ({
                 if (data?.config?.classifier) {
                     this.config = JSON.parse(JSON.stringify(data.config.classifier));
                     this.ensureVariants();
+                    this.ensureCapture();
                 }
             }
         } catch (err) {
@@ -208,15 +236,47 @@ window.Components.classifierConfig = () => ({
                         }
                     })),
                     backends: Object.fromEntries(
-                        Object.entries(this.config.backends || {}).map(([key, backend]) => [key, {
-                            ...backend,
-                            maxTokens: Number(backend.maxTokens) || 0,
-                            timeoutMs: Number(backend.timeoutMs) || 0,
-                            // An empty apiKey means "unchanged" server-side,
-                            // which is what the redacted GET forces here.
-                            apiKey: backend.apiKey || ''
-                        }])
-                    )
+                        Object.entries(this.config.backends || {}).map(([key, backend]) => {
+                            const payload = {
+                                ...backend,
+                                maxTokens: Number(backend.maxTokens) || 0,
+                                timeoutMs: Number(backend.timeoutMs) || 0,
+                                // An empty apiKey means "unchanged" server-side,
+                                // which is what the redacted GET forces here.
+                                apiKey: backend.apiKey || ''
+                            };
+                            // The laya numerics are per-backend overrides, so a
+                            // cleared input ('') is dropped rather than coerced
+                            // to 0: absent resolves to the same default server-
+                            // side, and 0 would add a laya field to every
+                            // backend, openai and anthropic ones included.
+                            // Checked for every format, because a value typed
+                            // before switching away from laya stays on the
+                            // object and '' fails the Go int decoder.
+                            for (const field of ['layaMaxSeverity', 'layaStateChars']) {
+                                const value = payload[field];
+                                if (value === '' || value === null || value === undefined || !Number.isFinite(Number(value))) {
+                                    delete payload[field];
+                                } else {
+                                    payload[field] = Number(value);
+                                }
+                            }
+                            return [key, payload];
+                        })
+                    ),
+                    capture: {
+                        ...(this.config.capture || {}),
+                        // Alpine's .number modifier leaves a cleared field as
+                        // '', which the Go int decoder rejects with a bare
+                        // 400; coerce the same way the fields above do. 0 is
+                        // safe: the server reads it as "unset, use default".
+                        // The booleans are deliberately NOT coerced -- !!undefined
+                        // would manufacture a false the operator never chose,
+                        // and redactPaths defaults to true server-side.
+                        contextEntries: Number(this.config.capture?.contextEntries) || 0,
+                        maxFiles: Number(this.config.capture?.maxFiles) || 0,
+                        maxFileBytes: Number(this.config.capture?.maxFileBytes) || 0
+                    }
                 }
             };
 

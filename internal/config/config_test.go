@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"antigravity-go-proxy/internal/openrouter"
@@ -675,5 +676,188 @@ func TestGetPublicConfigRedactsClassifierBackendKeys(t *testing.T) {
 	}
 	if _, present := local["apiKey"]; present {
 		t.Error("apiKey key should be absent entirely, not blanked")
+	}
+}
+
+func TestClassifierCaptureResolvedFillsDefaults(t *testing.T) {
+	resolved := ClassifierCaptureConfig{Enabled: true}.Resolved()
+
+	if resolved.Dir == "" {
+		t.Error("Dir is empty, want the default corpus directory")
+	}
+	if !strings.HasSuffix(resolved.Dir, filepath.Join("corpus")) {
+		t.Errorf("Dir = %q, want it to end in corpus", resolved.Dir)
+	}
+	if resolved.ContextEntries != 2 {
+		t.Errorf("ContextEntries = %d, want 2", resolved.ContextEntries)
+	}
+	if resolved.MaxFiles != DefaultCaptureMaxFiles {
+		t.Errorf("MaxFiles = %d, want %d", resolved.MaxFiles, DefaultCaptureMaxFiles)
+	}
+	if resolved.MaxFileBytes != 67108864 {
+		t.Errorf("MaxFileBytes = %d, want 67108864", resolved.MaxFileBytes)
+	}
+}
+
+func TestClassifierCaptureResolvedKeepsExplicitValues(t *testing.T) {
+	resolved := ClassifierCaptureConfig{
+		Enabled:        true,
+		Dir:            "/tmp/custom",
+		ContextEntries: 5,
+		MaxFiles:       3,
+		MaxFileBytes:   1048576,
+	}.Resolved()
+
+	if resolved.Dir != "/tmp/custom" {
+		t.Errorf("Dir = %q", resolved.Dir)
+	}
+	if resolved.ContextEntries != 5 {
+		t.Errorf("ContextEntries = %d, want 5", resolved.ContextEntries)
+	}
+	if resolved.MaxFiles != 3 {
+		t.Errorf("MaxFiles = %d, want 3", resolved.MaxFiles)
+	}
+	if resolved.MaxFileBytes != 1048576 {
+		t.Errorf("MaxFileBytes = %d", resolved.MaxFileBytes)
+	}
+}
+
+func TestClassifierCaptureResolvedMinusOneMaxFilesMeansUnlimited(t *testing.T) {
+	// -1 asks for unlimited retention: collection windows longer than any
+	// default must not silently lose their first days. It resolves to 0,
+	// which the recorder's prune skips entirely, matching how -1 already
+	// means "action only" for ContextEntries. 0 stays the unset value.
+	resolved := ClassifierCaptureConfig{Enabled: true, MaxFiles: -1}.Resolved()
+	if resolved.MaxFiles != 0 {
+		t.Errorf("MaxFiles = %d, want 0 (unlimited) when set to -1", resolved.MaxFiles)
+	}
+	if resolved2 := (ClassifierCaptureConfig{Enabled: true, MaxFiles: 0}).Resolved(); resolved2.MaxFiles != DefaultCaptureMaxFiles {
+		t.Errorf("MaxFiles = %d, want default %d when unset", resolved2.MaxFiles, DefaultCaptureMaxFiles)
+	}
+}
+
+func TestClassifierCaptureContextEntriesMinusOneKeepsActionOnly(t *testing.T) {
+	// -1 is how an operator asks for the action with no preceding entries.
+	// 0 cannot mean that: it is the unset value, and Resolved replaces it
+	// with the default of 2 (see TestClassifierCaptureResolvedFillsDefaults).
+	resolved := ClassifierCaptureConfig{Enabled: true, ContextEntries: -1}.Resolved()
+	if resolved.ContextEntries != 0 {
+		t.Errorf("ContextEntries = %d, want 0 (action only) when set to -1", resolved.ContextEntries)
+	}
+}
+
+func TestClassifierCaptureRedactPathsDefaultsToTrue(t *testing.T) {
+	if !(ClassifierCaptureConfig{}).RedactPathsEnabled() {
+		t.Error("RedactPathsEnabled = false when unset, want true")
+	}
+	off := false
+	if (ClassifierCaptureConfig{RedactPaths: &off}).RedactPathsEnabled() {
+		t.Error("RedactPathsEnabled = true when explicitly false")
+	}
+}
+
+func TestClassifierConfigDecodesCapture(t *testing.T) {
+	raw := `{"enabled":true,"capture":{"enabled":true,"dir":"/tmp/c","contextEntries":4,"maxFiles":2,"maxFileBytes":2048,"redactPaths":false}}`
+	var decoded ClassifierConfig
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !decoded.Capture.Enabled {
+		t.Error("Capture.Enabled = false")
+	}
+	if decoded.Capture.Dir != "/tmp/c" {
+		t.Errorf("Capture.Dir = %q", decoded.Capture.Dir)
+	}
+	if decoded.Capture.ContextEntries != 4 {
+		t.Errorf("Capture.ContextEntries = %d", decoded.Capture.ContextEntries)
+	}
+	if decoded.Capture.RedactPathsEnabled() {
+		t.Error("RedactPathsEnabled = true, want false")
+	}
+}
+
+func TestLayaSettingsDefaults(t *testing.T) {
+	settings := TargetBackend{Format: BackendFormatLaya}.LayaSettings()
+
+	if settings.QuestionName != "risk" {
+		t.Errorf("QuestionName = %q, want risk", settings.QuestionName)
+	}
+	if settings.MaxSeverity != 49 {
+		t.Errorf("MaxSeverity = %d, want 49", settings.MaxSeverity)
+	}
+	if settings.StateChars != 1200 {
+		t.Errorf("StateChars = %d, want 1200", settings.StateChars)
+	}
+	if len(settings.Criteria) != 4 {
+		t.Errorf("Criteria has %d entries, want 4", len(settings.Criteria))
+	}
+	for _, label := range []string{"A", "B", "C", "D"} {
+		if _, exists := settings.Criteria[label]; !exists {
+			t.Errorf("Criteria is missing %q", label)
+		}
+		if _, exists := settings.SeverityMap[label]; !exists {
+			t.Errorf("SeverityMap is missing %q", label)
+		}
+	}
+	for label, severity := range settings.SeverityMap {
+		if severity >= 50 {
+			t.Errorf("default severity for %q is %d; a laya verdict must never reach the block boundary", label, severity)
+		}
+	}
+	if settings.Instructions == "" {
+		t.Error("Instructions is empty")
+	}
+}
+
+func TestLayaSettingsHonorsOverrides(t *testing.T) {
+	backend := TargetBackend{
+		Format:           BackendFormatLaya,
+		LayaQuestionName: "danger",
+		LayaInstructions: "custom",
+		LayaCriteria:     map[string]string{"X": "one", "Y": "two"},
+		LayaSeverityMap:  map[string]int{"X": 1, "Y": 2},
+		LayaMaxSeverity:  new(10),
+		LayaStateChars:   400,
+	}
+	settings := backend.LayaSettings()
+
+	if settings.QuestionName != "danger" {
+		t.Errorf("QuestionName = %q", settings.QuestionName)
+	}
+	if settings.Instructions != "custom" {
+		t.Errorf("Instructions = %q", settings.Instructions)
+	}
+	if len(settings.Criteria) != 2 {
+		t.Errorf("Criteria has %d entries, want 2", len(settings.Criteria))
+	}
+	if settings.SeverityMap["Y"] != 2 {
+		t.Errorf("SeverityMap[Y] = %d, want 2", settings.SeverityMap["Y"])
+	}
+	if settings.MaxSeverity != 10 {
+		t.Errorf("MaxSeverity = %d, want 10", settings.MaxSeverity)
+	}
+	if settings.StateChars != 400 {
+		t.Errorf("StateChars = %d, want 400", settings.StateChars)
+	}
+}
+
+func TestLayaSettingsKeepsAnExplicitZeroMaxSeverity(t *testing.T) {
+	var backend TargetBackend
+	if err := json.Unmarshal([]byte(`{"format":"laya","layaMaxSeverity":0}`), &backend); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := backend.LayaSettings().MaxSeverity; got != 0 {
+		t.Errorf("MaxSeverity = %d, want the explicit 0", got)
+	}
+}
+
+func TestBackendFormatLayaDecodes(t *testing.T) {
+	raw := `{"name":"laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english"}`
+	var backend TargetBackend
+	if err := json.Unmarshal([]byte(raw), &backend); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if backend.Format != BackendFormatLaya {
+		t.Errorf("Format = %q, want laya", backend.Format)
 	}
 }

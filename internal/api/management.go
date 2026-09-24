@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -1101,6 +1102,11 @@ func gatewayIDStrings(ids []config.GatewayID) []string {
 	return out
 }
 
+// layaQuestionNamePattern is spec §4.6's rule for layaQuestionName. The name
+// keys both the question sent to Laya and the answer read back, so it stays a
+// short identifier.
+var layaQuestionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}$`)
+
 func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http.Request) {
 	var updates map[string]any
 	if err := json.NewDecoder(request.Body).Decode(&updates); err != nil || len(updates) == 0 {
@@ -1150,6 +1156,67 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 			}
 		}
 
+		capture := classifierReq.Capture
+		if capture.ContextEntries < -1 || capture.ContextEntries > 20 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture contextEntries must be between -1 and 20"})
+			return
+		}
+		if capture.MaxFiles < -1 || capture.MaxFiles > 365 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture maxFiles must be between -1 and 365 (-1 keeps every day file)"})
+			return
+		}
+		if capture.MaxFileBytes < 0 || capture.MaxFileBytes > int64(4)<<30 {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture maxFileBytes must be between 0 and 4294967296"})
+			return
+		}
+		if capture.Dir != "" && !filepath.IsAbs(capture.Dir) {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "classifier capture dir must be an absolute path"})
+			return
+		}
+
+		for backendKey, backend := range classifierReq.Backends {
+			if backend.Format != config.BackendFormatLaya {
+				continue
+			}
+			if backend.LayaMaxSeverity != nil && (*backend.LayaMaxSeverity < 0 || *backend.LayaMaxSeverity > 100) {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaMaxSeverity must be between 0 and 100", backendKey)})
+				return
+			}
+			if backend.LayaStateChars != 0 && (backend.LayaStateChars < 200 || backend.LayaStateChars > 8000) {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaStateChars must be between 200 and 8000", backendKey)})
+				return
+			}
+			if backend.LayaQuestionName != "" && !layaQuestionNamePattern.MatchString(backend.LayaQuestionName) {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaQuestionName must be 1 to 32 letters, digits or underscores", backendKey)})
+				return
+			}
+			if backend.LayaInstructions != "" && strings.TrimSpace(backend.LayaInstructions) == "" {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaInstructions must not be blank", backendKey)})
+				return
+			}
+			if len(backend.LayaCriteria) == 0 && len(backend.LayaSeverityMap) == 0 {
+				continue
+			}
+			if len(backend.LayaCriteria) < 2 {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaCriteria needs at least 2 options", backendKey)})
+				return
+			}
+			if len(backend.LayaCriteria) != len(backend.LayaSeverityMap) {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaCriteria and layaSeverityMap must have the same keys", backendKey)})
+				return
+			}
+			for label, severity := range backend.LayaSeverityMap {
+				if _, exists := backend.LayaCriteria[label]; !exists {
+					writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaSeverityMap has label %q with no matching criteria entry", backendKey, label)})
+					return
+				}
+				if severity < 0 || severity > 100 {
+					writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("backend %q: layaSeverityMap[%q] must be between 0 and 100", backendKey, label)})
+					return
+				}
+			}
+		}
+
 		for key, backend := range classifierReq.Backends {
 			if strings.TrimSpace(backend.URL) == "" {
 				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q must set a url", key)})
@@ -1161,10 +1228,10 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 				return
 			}
 			switch backend.Format {
-			case "", config.BackendFormatAnthropic, config.BackendFormatOpenAI:
+			case "", config.BackendFormatAnthropic, config.BackendFormatOpenAI, config.BackendFormatLaya:
 				// valid
 			default:
-				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q format must be anthropic or openai", key)})
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q format must be anthropic, openai or laya", key)})
 				return
 			}
 			if backend.TimeoutMs < 0 || backend.MaxTokens < 0 {

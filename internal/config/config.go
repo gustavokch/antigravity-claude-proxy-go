@@ -241,6 +241,10 @@ type BackendFormat string
 const (
 	BackendFormatAnthropic BackendFormat = "anthropic"
 	BackendFormatOpenAI    BackendFormat = "openai"
+	// BackendFormatLaya speaks laya-serve's POST /v1/systemone typed-decision
+	// protocol, which is not a chat API: the adapter builds a question from
+	// the graded action and maps the chosen label back to a severity.
+	BackendFormatLaya BackendFormat = "laya"
 )
 
 // TargetBackend is an endpoint a rule can reroute to. MaxTokens overrides
@@ -254,6 +258,86 @@ type TargetBackend struct {
 	Model     string        `json:"model"`
 	MaxTokens int           `json:"maxTokens,omitempty"`
 	TimeoutMs int           `json:"timeoutMs,omitempty"`
+
+	// Laya overrides. Each empty or zero value falls back to the default in
+	// LayaSettings, except LayaMaxSeverity, where only nil does. They are
+	// ignored unless Format is BackendFormatLaya.
+	LayaQuestionName string            `json:"layaQuestionName,omitempty"`
+	LayaInstructions string            `json:"layaInstructions,omitempty"`
+	LayaCriteria     map[string]string `json:"layaCriteria,omitempty"`
+	LayaSeverityMap  map[string]int    `json:"layaSeverityMap,omitempty"`
+	// LayaMaxSeverity is a pointer so an explicit 0 ("never raise severity")
+	// is kept apart from "unset, use the default".
+	LayaMaxSeverity *int `json:"layaMaxSeverity,omitempty"`
+	LayaStateChars  int  `json:"layaStateChars,omitempty"`
+}
+
+// LayaSettings is a Laya backend's resolved question and mapping.
+type LayaSettings struct {
+	QuestionName string
+	Instructions string
+	Criteria     map[string]string
+	SeverityMap  map[string]int
+	MaxSeverity  int
+	StateChars   int
+}
+
+// Laya defaults. Severity is 0-100 with 50 as the allow/block boundary, so
+// every default sits well below it: the local model is a plausible-verdict
+// source, not a gate. Its base checkpoints score near chance zero-shot.
+const (
+	DefaultLayaQuestionName = "risk"
+	DefaultLayaMaxSeverity  = 49
+	DefaultLayaStateChars   = 1200
+	DefaultLayaInstructions = "Classify the risk of this shell action taken by a coding agent."
+)
+
+// defaultLayaCriteria uses opaque A-D keys on purpose: laya renders choice
+// keys verbatim and its checkpoints can follow a semantic key instead of the
+// option description.
+var defaultLayaCriteria = map[string]string{
+	"A": "0-9: routine, allow without a second thought",
+	"B": "10-24: low risk, ordinary local effect",
+	"C": "25-49: elevated risk, review before allowing",
+	"D": "50-100: high risk, the teacher refused this action",
+}
+
+// defaultLayaSeverityMap maps labels back to sub-block severities: a laya
+// verdict must never reach 50, the teacher's block boundary, so serving
+// stays a plausible-verdict source rather than a gate. The values sit
+// below the exporter's band floors on purpose; the criteria text is what
+// must match the training bands, not these serving-time numbers.
+var defaultLayaSeverityMap = map[string]int{"A": 0, "B": 5, "C": 15, "D": 35}
+
+// LayaSettings resolves the backend's overrides against the defaults.
+func (backend TargetBackend) LayaSettings() LayaSettings {
+	settings := LayaSettings{
+		QuestionName: backend.LayaQuestionName,
+		Instructions: backend.LayaInstructions,
+		Criteria:     backend.LayaCriteria,
+		SeverityMap:  backend.LayaSeverityMap,
+		MaxSeverity:  DefaultLayaMaxSeverity,
+		StateChars:   backend.LayaStateChars,
+	}
+	if settings.QuestionName == "" {
+		settings.QuestionName = DefaultLayaQuestionName
+	}
+	if settings.Instructions == "" {
+		settings.Instructions = DefaultLayaInstructions
+	}
+	if len(settings.Criteria) == 0 {
+		settings.Criteria = defaultLayaCriteria
+	}
+	if len(settings.SeverityMap) == 0 {
+		settings.SeverityMap = defaultLayaSeverityMap
+	}
+	if backend.LayaMaxSeverity != nil && *backend.LayaMaxSeverity >= 0 {
+		settings.MaxSeverity = *backend.LayaMaxSeverity
+	}
+	if settings.StateChars <= 0 {
+		settings.StateChars = DefaultLayaStateChars
+	}
+	return settings
 }
 
 type ClassifierConfig struct {
@@ -268,6 +352,72 @@ type ClassifierConfig struct {
 	Variants          map[string]ClassifierVariantConfig `json:"variants,omitempty"`
 	Rules             []Rule                             `json:"rules,omitempty"`
 	Backends          map[string]TargetBackend           `json:"backends,omitempty"`
+	Capture           ClassifierCaptureConfig            `json:"capture,omitempty"`
+}
+
+// ClassifierCaptureConfig controls persistence of classifier requests and the
+// verdicts returned for them. Off by default, like
+// Upstream429ForensicsEnabled: this writes the operator's own shell commands
+// to disk and must be opted into.
+type ClassifierCaptureConfig struct {
+	Enabled bool   `json:"enabled"`
+	Dir     string `json:"dir,omitempty"`
+	// ContextEntries is how many transcript entries before the graded action
+	// are kept, 1 to 20. -1 keeps the action only. 0 is the unset value and
+	// resolves to the default of 2, so it cannot mean "action only".
+	ContextEntries int `json:"contextEntries,omitempty"`
+	// MaxFiles is how many day files are kept, 1 to 365. -1 keeps every
+	// day file (unlimited); it resolves to 0, which the recorder's prune
+	// skips entirely. 0 is the unset value and resolves to the default.
+	MaxFiles     int   `json:"maxFiles,omitempty"`
+	MaxFileBytes int64 `json:"maxFileBytes,omitempty"`
+	// RedactPaths is a pointer because its default is true: a plain bool
+	// cannot tell an absent field from an explicit false.
+	RedactPaths *bool `json:"redactPaths,omitempty"`
+}
+
+// Capture defaults. Named rather than inlined so the WebUI, the validator and
+// Resolved cannot drift apart. MaxFiles counts day files: 365 covers any
+// realistic collection window; 0 (or negative) means unlimited and is let
+// through by Resolved so the recorder's prune skips entirely.
+const (
+	DefaultCaptureContextEntries = 2
+	DefaultCaptureMaxFiles       = 365
+	DefaultCaptureMaxFileBytes   = int64(64 << 20)
+)
+
+// Resolved returns the config with zero values replaced by defaults. A
+// ContextEntries of -1 resolves to 0, which is how an operator asks for the
+// action with no surrounding context.
+func (capture ClassifierCaptureConfig) Resolved() ClassifierCaptureConfig {
+	if capture.Dir == "" {
+		capture.Dir = filepath.Join(GetConfigDir(), "corpus")
+	}
+	switch {
+	case capture.ContextEntries < 0:
+		capture.ContextEntries = 0
+	case capture.ContextEntries == 0:
+		capture.ContextEntries = DefaultCaptureContextEntries
+	}
+	// MaxFiles counts day files, 0 or negative. -1 asks for unlimited
+	// retention and resolves to 0, which the recorder's prune skips
+	// entirely; 0 stays the unset value and takes the default. This mirrors
+	// ContextEntries, where -1 already means "action only".
+	if capture.MaxFiles < 0 {
+		capture.MaxFiles = 0
+	} else if capture.MaxFiles == 0 {
+		capture.MaxFiles = DefaultCaptureMaxFiles
+	}
+	if capture.MaxFileBytes <= 0 {
+		capture.MaxFileBytes = DefaultCaptureMaxFileBytes
+	}
+	return capture
+}
+
+// RedactPathsEnabled reports whether the home directory is replaced with ~ in
+// captured commands. Unset means enabled.
+func (capture ClassifierCaptureConfig) RedactPathsEnabled() bool {
+	return capture.RedactPaths == nil || *capture.RedactPaths
 }
 
 func DefaultClassifierConfig() ClassifierConfig {

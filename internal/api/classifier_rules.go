@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/config"
 )
 
@@ -18,6 +19,11 @@ import (
 // request sits in front of the user's permission prompt, so a hung sidecar
 // must surface as a fast failure, not an indefinite stall.
 const defaultClassifierBackendTimeout = 20 * time.Second
+
+// defaultLayaBackendTimeout is shorter than the general backend timeout: laya
+// answers in well under a second even on CPU, and this call sits in front of
+// the user's permission prompt.
+const defaultLayaBackendTimeout = 5 * time.Second
 
 // maxClassifierBackendResponse caps what is read from a rerouted backend. A
 // verdict is a few dozen bytes; anything near this bound is a misconfigured
@@ -28,6 +34,20 @@ const maxClassifierBackendResponse = 1 << 20
 // rather than per request, and a config that fails to compile leaves the
 // previous rule set active instead of silently disabling interception.
 func (server *Server) applyClassifierConfig(cfg config.ClassifierConfig) {
+	// The recorder is rebuilt on every config application so a settings save
+	// takes effect without a restart. It is swapped atomically because
+	// requests read it concurrently.
+	if cfg.Capture.Enabled {
+		resolved := cfg.Capture.Resolved()
+		server.classifierCorpus.Store(corpus.New(resolved.Dir, corpus.Options{
+			MaxFiles:     resolved.MaxFiles,
+			MaxFileBytes: resolved.MaxFileBytes,
+			RedactPaths:  resolved.RedactPathsEnabled(),
+		}))
+	} else {
+		server.classifierCorpus.Store(nil)
+	}
+
 	if server.classifierMatcher == nil {
 		matcher, err := classifier.NewConfigurableMatcher(cfg.Rules, cfg.Backends)
 		if err != nil {
@@ -56,6 +76,20 @@ type classifierRequest struct {
 	rawBody         []byte
 	model           string
 	streamRequested bool
+	// kind is the detected variant. Rules match on their own patterns, so it
+	// is resolved here rather than taken from the rule.
+	kind classifier.Kind
+	// captureSource is the corpus source for this request. A rule that
+	// answers assigns through it so the single deferred recorder in messages
+	// writes one row with the right provenance.
+	captureSource *corpus.Source
+}
+
+// setCaptureSource records which path answered, when capture is on.
+func (req classifierRequest) setCaptureSource(source corpus.Source) {
+	if req.captureSource != nil {
+		*req.captureSource = source
+	}
 }
 
 // applyClassifierRule carries out a matched rule.
@@ -98,6 +132,11 @@ func (server *Server) applyClassifierRule(
 			record(classifier.EventStatusError, err.Error())
 			return false, false
 		}
+		// Set before the write: the source names the path that produced the
+		// verdict, not the delivery. A stub whose write failed is still a
+		// stub, and labeling it upstream would claim a teacher model graded
+		// an action the proxy graded itself.
+		req.setCaptureSource(corpus.SourceStub)
 		if err := writeClassifierResponse(writer, stub, req.streamRequested); err != nil {
 			record(classifier.EventStatusError, err.Error())
 			return true, false
@@ -110,12 +149,30 @@ func (server *Server) applyClassifierRule(
 			record(classifier.EventStatusError, "target backend not found")
 			return false, false
 		}
-		message, err := server.callClassifierBackend(request.Context(), req.backend, req.rawBody, req.model)
+		kind := req.kind
+		if kind == classifier.KindNone {
+			kind, _ = classifier.Detect(req.rawBody)
+		}
+		message, err := server.callClassifierBackend(request.Context(), classifierCall{
+			rawBody: req.rawBody,
+			model:   req.model,
+			kind:    kind,
+			backend: req.backend,
+		})
 		if err != nil {
 			server.classifierLogger().Warn("[Server] classifier reroute failed; falling back to built-in handling",
 				"rule", rule.ID, "backend", rule.TargetBackend, "error", err)
 			record(classifier.EventStatusError, err.Error())
 			return false, false
+		}
+		// Set once the backend has answered, before the write, for the same
+		// reason as the stub branch above. A backend call that failed returns
+		// earlier and leaves the source alone, so a fall-through to built-in
+		// handling is still labeled by whichever path answers.
+		if req.backend != nil && req.backend.Format == config.BackendFormatLaya {
+			req.setCaptureSource(corpus.SourceLaya)
+		} else {
+			req.setCaptureSource(corpus.SourceRule)
 		}
 		if err := writeClassifierResponse(writer, message, req.streamRequested); err != nil {
 			record(classifier.EventStatusError, err.Error())
@@ -128,15 +185,25 @@ func (server *Server) applyClassifierRule(
 	return false, false
 }
 
+// classifierCall is one backend invocation. It carries the detected variant
+// because Stage 1 and Stage 2 require different answer shapes, and
+// parseResponse would otherwise have no way to tell them apart.
+type classifierCall struct {
+	rawBody []byte
+	model   string
+	kind    classifier.Kind
+	backend *config.TargetBackend
+}
+
 type backendFormatAdapter struct {
-	preparePayload func(rawBody []byte, backend *config.TargetBackend) ([]byte, error)
+	preparePayload func(call classifierCall) ([]byte, error)
 	setHeaders     func(req *http.Request, apiKey string)
-	parseResponse  func(respBody []byte, clientModel string) ([]byte, error)
+	parseResponse  func(respBody []byte, call classifierCall) ([]byte, error)
 }
 
 var openAIFormatAdapter = backendFormatAdapter{
-	preparePayload: func(rawBody []byte, backend *config.TargetBackend) ([]byte, error) {
-		return classifier.TranslateAnthropicToOpenAI(rawBody, backend.Model, backend.MaxTokens)
+	preparePayload: func(call classifierCall) ([]byte, error) {
+		return classifier.TranslateAnthropicToOpenAI(call.rawBody, call.backend.Model, call.backend.MaxTokens)
 	},
 	setHeaders: func(req *http.Request, apiKey string) {
 		req.Header.Set("Content-Type", "application/json")
@@ -144,14 +211,14 @@ var openAIFormatAdapter = backendFormatAdapter{
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 	},
-	parseResponse: func(respBody []byte, clientModel string) ([]byte, error) {
-		return classifier.TranslateOpenAIToAnthropic(respBody, clientModel)
+	parseResponse: func(respBody []byte, call classifierCall) ([]byte, error) {
+		return classifier.TranslateOpenAIToAnthropic(respBody, call.model)
 	},
 }
 
 var anthropicFormatAdapter = backendFormatAdapter{
-	preparePayload: func(rawBody []byte, backend *config.TargetBackend) ([]byte, error) {
-		return rawBody, nil
+	preparePayload: func(call classifierCall) ([]byte, error) {
+		return call.rawBody, nil
 	},
 	setHeaders: func(req *http.Request, apiKey string) {
 		req.Header.Set("Content-Type", "application/json")
@@ -160,16 +227,20 @@ var anthropicFormatAdapter = backendFormatAdapter{
 			req.Header.Set("anthropic-version", "2023-06-01")
 		}
 	},
-	parseResponse: func(respBody []byte, clientModel string) ([]byte, error) {
+	parseResponse: func(respBody []byte, call classifierCall) ([]byte, error) {
 		return respBody, nil
 	},
 }
 
 func getBackendFormatAdapter(format config.BackendFormat) backendFormatAdapter {
-	if format == config.BackendFormatOpenAI {
+	switch format {
+	case config.BackendFormatOpenAI:
 		return openAIFormatAdapter
+	case config.BackendFormatLaya:
+		return layaFormatAdapter
+	default:
+		return anthropicFormatAdapter
 	}
-	return anthropicFormatAdapter
 }
 
 // callClassifierBackend posts the request to backend and returns an Anthropic
@@ -177,29 +248,30 @@ func getBackendFormatAdapter(format config.BackendFormat) backendFormatAdapter {
 // speaks OpenAI.
 func (server *Server) callClassifierBackend(
 	ctx context.Context,
-	backend *config.TargetBackend,
-	rawBody []byte,
-	model string,
+	call classifierCall,
 ) ([]byte, error) {
-	timeout := time.Duration(backend.TimeoutMs) * time.Millisecond
+	timeout := time.Duration(call.backend.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = defaultClassifierBackendTimeout
+		if call.backend.Format == config.BackendFormatLaya {
+			timeout = defaultLayaBackendTimeout
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	adapter := getBackendFormatAdapter(backend.Format)
+	adapter := getBackendFormatAdapter(call.backend.Format)
 
-	payload, err := adapter.preparePayload(rawBody, backend)
+	payload, err := adapter.preparePayload(call)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, backend.URL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, call.backend.URL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	adapter.setHeaders(req, backend.APIKey)
+	adapter.setHeaders(req, call.backend.APIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -215,7 +287,7 @@ func (server *Server) callClassifierBackend(
 		return nil, fmt.Errorf("classifier backend returned %d", resp.StatusCode)
 	}
 
-	return adapter.parseResponse(body, model)
+	return adapter.parseResponse(body, call)
 }
 
 // writeClassifierResponse sends a completed Anthropic message, re-emitting it
