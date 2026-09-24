@@ -39,7 +39,7 @@ def laya_server():
 
 def _typed_answer(label):
     return json.dumps(
-        {"answers": {"risk": {"choice": label, "confidence": 0.9}}}
+        {"answers": {"risk": {"choice": label, "confidence": 0.9, "answer_confidence": 0.49}}}
     ).encode()
 
 
@@ -50,6 +50,7 @@ def test_check_accepts_valid_choice_answer(laya_server):
     result = check_laya.check(laya_server, action="git status", timeout=5)
 
     assert result.label == "C"
+    assert result.answer_confidence == 0.49
     request = json.loads(_Handler.last_body)
     assert request["state"]["action"] == "git status"
     assert request["questions"]["risk"]["type"] == "choice"
@@ -116,3 +117,22 @@ def test_check_pins_the_proxy_default_checkpoint(laya_server):
     check_laya.check(laya_server, action="ls", timeout=5)
 
     assert json.loads(_Handler.last_body)["model"] == match.group(1)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param({"choice": "A", "confidence": 0.9}, id="missing"),
+        pytest.param({"choice": "A", "answer_confidence": "high"}, id="not-a-number"),
+        pytest.param({"choice": "A", "answer_confidence": 1.5}, id="above-one"),
+    ],
+)
+def test_check_rejects_an_unusable_answer_confidence(laya_server, answer):
+    """layaMinConfidence compares answer_confidence. A server that drops or
+    mangles it makes every answer escalate under a floor, silently, so the
+    smoke check must fail loudly instead."""
+    _Handler.response_body = json.dumps({"answers": {"risk": answer}}).encode()
+    _Handler.status = 200
+
+    with pytest.raises(check_laya.CheckError, match="answer_confidence"):
+        check_laya.check(laya_server, action="ls", timeout=5)

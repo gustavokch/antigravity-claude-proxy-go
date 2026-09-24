@@ -8,7 +8,7 @@ works". This script is the cheap proof: it sends
 one typed-decision request built exactly like the proxy builds it — same
 question name, same instructions, same criteria text the exporter bakes
 into training examples — and verifies the response carries a known A-D
-choice for the question asked.
+choice and a calibrated answer_confidence for the question asked.
 
 Runbook: see docs/classifier-rules.md, "Checking a live laya-serve".
 
@@ -42,7 +42,7 @@ class CheckError(Exception):
 @dataclass
 class Result:
     label: str
-    answer_confidence: float | None
+    answer_confidence: float
 
 
 def build_payload(action):
@@ -79,8 +79,15 @@ def parse_answer(body):
     if label not in VALID_LABELS:
         raise CheckError(f"answer label {label!r} is not one of {VALID_LABELS}")
     # answer_confidence is what layaMinConfidence compares; "confidence" is
-    # laya's entropy score on another scale.
-    return Result(label=label, answer_confidence=answer.get("answer_confidence"))
+    # laya's entropy score on another scale. Under a floor the proxy
+    # escalates every answer without a usable one, so a missing or mangled
+    # value breaks the contract even though the label parsed.
+    answer_confidence = answer.get("answer_confidence")
+    if isinstance(answer_confidence, bool) or not isinstance(answer_confidence, (int, float)):
+        raise CheckError(f"answer_confidence {answer_confidence!r} is not a number")
+    if not 0 <= answer_confidence <= 1:
+        raise CheckError(f"answer_confidence {answer_confidence} is outside [0, 1]")
+    return Result(label=label, answer_confidence=float(answer_confidence))
 
 
 def check(url, action, timeout):
@@ -120,8 +127,7 @@ def main(argv=None):
     except CheckError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 2
-    shown = "n/a" if result.answer_confidence is None else f"{result.answer_confidence:.2f}"
-    print(f"OK: label={result.label} answer_confidence={shown}")
+    print(f"OK: label={result.label} answer_confidence={result.answer_confidence:.2f}")
     print("The wire contract holds: request shape accepted, typed A-D choice parsed.")
     print("Next: run the proxy-level check in docs/classifier-rules.md so a corpus")
     print('row with source "laya" proves the full reroute path.')
