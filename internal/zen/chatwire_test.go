@@ -141,6 +141,23 @@ func TestChatResponseToolCallStopReason(t *testing.T) {
 	}
 }
 
+func TestSendChatNonJSONSuccessIs502(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, "<html>gateway</html>")
+	}))
+	defer srv.Close()
+
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k", []byte(`{"model":"glm-5.3","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(b), `"type":"api_error"`) {
+		t.Fatalf("got %d %s, want 502 api_error", resp.StatusCode, b)
+	}
+}
+
 func TestMapFinishReasonContentFilter(t *testing.T) {
 	if got := mapFinishReason("content_filter"); got != "refusal" {
 		t.Fatalf("content_filter = %q, want refusal", got)

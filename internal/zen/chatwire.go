@@ -370,11 +370,11 @@ func translateChatResponse(resp *http.Response, model string) *http.Response {
 	raw, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
-		return rebody(resp, "application/json", anthropicError(http.StatusBadGateway, "api_error", "Zen response read error: "+err.Error()))
+		return failResponse(resp, "Zen response read error: "+err.Error())
 	}
 	var chat map[string]any
 	if err := json.Unmarshal(raw, &chat); err != nil {
-		return rebody(resp, "application/json", anthropicError(http.StatusBadGateway, "api_error", "Zen returned non-JSON chat response"))
+		return failResponse(resp, "Zen returned non-JSON chat response")
 	}
 	out, _ := json.Marshal(ChatResponseToAnthropic(chat, model))
 	return rebody(resp, "application/json", out)
@@ -389,7 +389,16 @@ func rebody(resp *http.Response, contentType string, body []byte) *http.Response
 	return resp
 }
 
-func anthropicError(status int, kind, msg string) []byte {
+// failResponse rewrites resp into a 502 carrying an Anthropic api_error
+// envelope, so callers branch on the status instead of parsing an error body
+// as a successful message.
+func failResponse(resp *http.Response, msg string) *http.Response {
+	resp.StatusCode = http.StatusBadGateway
+	resp.Status = strconv.Itoa(http.StatusBadGateway) + " " + http.StatusText(http.StatusBadGateway)
+	return rebody(resp, "application/json", anthropicError("api_error", msg))
+}
+
+func anthropicError(kind, msg string) []byte {
 	b, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": kind, "message": msg}})
 	return b
 }
@@ -424,7 +433,7 @@ func chatErrorToAnthropic(status int, raw []byte) []byte {
 	case status == 529:
 		kind = "overloaded_error"
 	}
-	return anthropicError(status, kind, "Zen: "+msg)
+	return anthropicError(kind, "Zen: "+msg)
 }
 
 func mapFinishReason(r string) string {
