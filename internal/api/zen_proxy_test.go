@@ -643,3 +643,64 @@ func TestMatchZenModelEntry(t *testing.T) {
 		t.Errorf("zenTargetModel = %q, want claude-sonnet-4-6", got)
 	}
 }
+
+// Chat-wire allowlist entries must be claimed by the Zen route, canonicalized,
+// forwarded to /v1/chat/completions, and the client must receive an
+// Anthropic-shaped answer. Regression pin for the whole chat-wire dispatch:
+// matchZenModelEntry → zenTargetModel → forwardToZen wire branch → SendChat.
+func TestServer_ForwardToZen_ChatWireRouting(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	var gotPath, gotAuth string
+	var gotReq map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotReq)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"c1","choices":[{"message":{"content":"yo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	saveZenTestConfig(t, map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-zen-test",
+		"baseUrl": upstream.URL,
+		"allowlist": []map[string]any{
+			{"id": "glm-5.3", "alias": "glm", "enabled": true},
+		},
+	})
+
+	rec := postZenMessages(t, newZenTestServer(t),
+		`{"model":"glm","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
+
+	if rec.Code != 200 {
+		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("upstream path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gotAuth != "Bearer sk-zen-test" {
+		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)
+	}
+	if gotReq["model"] != "glm-5.3" {
+		t.Errorf("upstream model = %v, want glm-5.3 (alias resolved to canonical)", gotReq["model"])
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &msg); err != nil {
+		t.Fatalf("response not JSON: %v; body = %s", err, rec.Body.String())
+	}
+	if msg["type"] != "message" || msg["stop_reason"] != "end_turn" {
+		t.Errorf("response not Anthropic-shaped: %s", rec.Body.String())
+	}
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["text"] != "yo" {
+		t.Errorf("content = %v", content)
+	}
+	usage, _ := msg["usage"].(map[string]any)
+	if usage["input_tokens"] != 5.0 || usage["output_tokens"] != 2.0 {
+		t.Errorf("usage = %v", usage)
+	}
+}
