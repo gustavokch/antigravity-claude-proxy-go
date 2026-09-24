@@ -1,8 +1,10 @@
 package corpus
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -232,6 +234,45 @@ func TestRecorderPrunesToMaxFiles(t *testing.T) {
 	today := filepath.Join(dir, "classifier-"+time.Now().UTC().Format("2006-01-02")+".jsonl")
 	if _, err := os.Stat(today); err != nil {
 		t.Errorf("today's file was pruned: %v", err)
+	}
+}
+
+// TestRecorderLogsEachPrunedFile pins that retention never deletes a day file
+// in silence: those rows cost upstream quota to collect.
+func TestRecorderLogsEachPrunedFile(t *testing.T) {
+	var logBuffer bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	dir := t.TempDir()
+	var seeded []string
+	for _, day := range []string{"2026-09-01", "2026-09-02", "2026-09-03"} {
+		path := filepath.Join(dir, "classifier-"+day+".jsonl")
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", path, err)
+		}
+		seeded = append(seeded, path)
+	}
+
+	// Two slots, one reserved for today's new file: the two oldest go.
+	recorder := New(dir, Options{MaxFiles: 2, MaxFileBytes: 1 << 20})
+	recorder.Record(Entry{Version: 1, Action: "today"})
+
+	logged := logBuffer.String()
+	for _, path := range seeded[:2] {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("%s still exists, want it pruned", path)
+		}
+		if !strings.Contains(logged, path) {
+			t.Errorf("no log line names pruned file %s; log:\n%s", path, logged)
+		}
+	}
+	if strings.Contains(logged, seeded[2]) {
+		t.Errorf("log names the kept file %s; log:\n%s", seeded[2], logged)
+	}
+	if got := strings.Count(logged, "level=WARN"); got != 2 {
+		t.Errorf("got %d warnings, want one per pruned file; log:\n%s", got, logged)
 	}
 }
 

@@ -218,6 +218,11 @@ func (recorder *Recorder) prune(today string) {
 	for _, path := range matches[:len(matches)-keep] {
 		if err := os.Remove(path); err != nil {
 			slog.Warn("corpus: prune old file", "file", path, "error", err)
+			continue
 		}
+		// Each deleted file holds rows that cost upstream quota to collect, so
+		// the loss is logged rather than silent.
+		slog.Warn("corpus: pruned old day file to stay within maxFiles",
+			"file", path, "maxFiles", recorder.options.MaxFiles)
 	}
 }
