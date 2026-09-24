@@ -30,14 +30,19 @@ var (
 
 // ParseVerdict extracts the typed fields from a verdict string. It never
 // fails: an unrecognized shape yields Severity -1 with Raw preserved.
+//
+// Severity and category are read with every <thinking> span removed. A
+// rationale can quote a tag, and the first quoted tag would otherwise win over
+// the final verdict that follows the rationale.
 func ParseVerdict(text string) Verdict {
 	verdict := Verdict{Raw: text, Severity: -1}
-	if match := severityPattern.FindStringSubmatch(text); match != nil {
+	answer := thinkingPattern.ReplaceAllString(text, "")
+	if match := severityPattern.FindStringSubmatch(answer); match != nil {
 		if value, err := strconv.Atoi(match[1]); err == nil {
 			verdict.Severity = value
 		}
 	}
-	if match := categoryPattern.FindStringSubmatch(text); match != nil {
+	if match := categoryPattern.FindStringSubmatch(answer); match != nil {
 		verdict.Category = strings.TrimSpace(match[1])
 	}
 	if match := thinkingPattern.FindStringSubmatch(text); match != nil {

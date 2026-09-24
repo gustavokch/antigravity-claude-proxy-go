@@ -35,6 +35,20 @@ func TestParseVerdict(t *testing.T) {
 			thinking: "line one\nline two",
 		},
 		{
+			// A rationale that quotes a severity tag must not hide the final
+			// verdict: the quoted 90 would mislabel an allow as a block.
+			name:     "thinking quotes a severity tag before the final verdict",
+			text:     "<thinking>A force push would be <severity>90</severity>; this is a local edit.</thinking><severity>10</severity>",
+			severity: 10,
+			thinking: "A force push would be <severity>90</severity>; this is a local edit.",
+		},
+		{
+			name:     "thinking quotes a category the final verdict does not carry",
+			text:     "<thinking>Not <category>Destructive Git</category>, only a status check.</thinking><severity>3</severity>",
+			severity: 3,
+			thinking: "Not <category>Destructive Git</category>, only a status check.",
+		},
+		{
 			name:     "no severity tag",
 			text:     "<block>true</block>",
 			severity: -1,
