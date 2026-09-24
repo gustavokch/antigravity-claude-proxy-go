@@ -511,7 +511,9 @@ func ChatResponseToAnthropic(chat map[string]any, model string) map[string]any {
 		}
 		fr, _ := choice["finish_reason"].(string)
 		stop = mapFinishReason(fr)
-		if len(calls) > 0 {
+		// Some backends report "stop" on tool-call turns; promote only a
+		// normal end. "length" means the arguments were truncated.
+		if len(calls) > 0 && stop == "end_turn" {
 			stop = "tool_use"
 		}
 	}

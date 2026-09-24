@@ -121,6 +121,26 @@ func TestSendChatJSONAndError(t *testing.T) {
 	}
 }
 
+// "length" with a tool call means the arguments were truncated: the client
+// must see max_tokens, not a tool_use it would execute with {} input. Some
+// backends report "stop" on tool-call turns; that must still promote.
+func TestChatResponseToolCallStopReason(t *testing.T) {
+	resp := func(finish string) map[string]any {
+		return ChatResponseToAnthropic(map[string]any{"choices": []any{map[string]any{
+			"message": map[string]any{"tool_calls": []any{map[string]any{
+				"id": "x", "function": map[string]any{"name": "Write", "arguments": `{"path":"/tmp/a","content":"trunc`},
+			}}},
+			"finish_reason": finish,
+		}}}, "m")
+	}
+	if got := resp("length")["stop_reason"]; got != "max_tokens" {
+		t.Errorf("length + tool_calls: stop_reason = %v, want max_tokens", got)
+	}
+	if got := resp("stop")["stop_reason"]; got != "tool_use" {
+		t.Errorf("stop + tool_calls: stop_reason = %v, want tool_use", got)
+	}
+}
+
 func TestMapFinishReasonContentFilter(t *testing.T) {
 	if got := mapFinishReason("content_filter"); got != "refusal" {
 		t.Fatalf("content_filter = %q, want refusal", got)
