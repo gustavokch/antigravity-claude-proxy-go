@@ -762,7 +762,7 @@ window.translations.pt = {
     classifierBackendModel: "Modelo",
     classifierBackendApiKey: "Chave de API",
     classifierBackendFormatLaya: "Laya (decisões tipadas locais)",
-    classifierLayaHint: "As respostas são calculadas por uma instância local do laya-serve em POST /v1/systemone. Inicie-a você mesmo; o proxy não gerencia esse processo.",
+    classifierLayaHint: "As respostas são calculadas por uma instância local do laya-serve em POST /v1/systemone. Inicie-a você mesmo; o proxy não gerencia esse processo. O checkpoint padrão classificou como permitida toda recusa do professor numa reprodução de 217 linhas, então mantenha uma regra Laya desativada até que um checkpoint ajustado seja medido.",
     classifierLayaMaxSeverity: "Severidade Máxima",
     classifierLayaMaxSeverityWarning: "Severidade 50 ou acima bloqueia a ação. O padrão 49 significa que um veredito do Laya nunca bloqueia. Elevar acima de 49 permite que um modelo com desempenho próximo do acaso bloqueie seus próprios comandos.",
     classifierLayaStateChars: "Caracteres da Ação Enviados",

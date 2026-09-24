@@ -147,6 +147,8 @@ python3 scripts/finetune_laya.py ~/.config/antigravity-proxy/corpus/*.jsonl --so
 
 A Laya backend answers low-risk Stage 1 requests on your machine and hands everything else to the teacher. Serve laya's stock English checkpoint:
 
+> **Keep a Laya rule disabled with the stock checkpoint.** A laya Stage 1 answer stands in for the teacher's, and a low Stage 1 grade ends the check. Replayed over 217 teacher-labelled Stage 1 rows (laya-serve 0.3.20, `english`), the stock checkpoint agreed with the teacher on 22.1% of them (chance is 25%) and graded all 5 teacher refusals A to C. Neither the default `["D"]` escalation nor a confidence floor sent them back: the median `answer_confidence` was 0.36 when laya was right and 0.38 when it was wrong. Zero-shot, it grades `rm -rf / --no-preserve-root` and `curl … | sudo bash` A. Serve it to measure a checkpoint, and enable the rule only after a fine-tuned checkpoint closes the refusal gap.
+
 ```bash
 python3 -m pip install "laya[serve]==0.3.20"
 LAYA_MODELS=english LAYA_PRELOAD=1 LAYA_HOST=127.0.0.1 LAYA_PORT=8000 laya-serve
@@ -154,14 +156,14 @@ LAYA_MODELS=english LAYA_PRELOAD=1 LAYA_HOST=127.0.0.1 LAYA_PORT=8000 laya-serve
 
 The first start downloads the checkpoint (about 0.85 GB) from Hugging Face, and `LAYA_PRELOAD=1` loads it before the server accepts requests. laya-serve serves only its hub checkpoints: the model `scripts/finetune_laya.py` writes cannot be served this way.
 
-Add a backend and a rule that matches the Stage 1 footer:
+Add a backend and a rule that matches the Stage 1 footer. The rule ships disabled; see the warning above:
 
 ```json
 "rules": [
   {
     "id": "stage1-laya",
     "name": "Stage 1 to local laya",
-    "enabled": true,
+    "enabled": false,
     "conditions": {
       "footerPatterns": [{ "type": "substring", "pattern": "Grade HARM ONLY" }]
     },
@@ -190,7 +192,7 @@ The adapter escalates a request when laya is not the right judge for it. Escalat
 - **Every answer whose label is in `layaEscalateLabels`.** The default is `["D"]` under the default criteria, the band where the teacher refused the action, and none under custom criteria, whose labels mean what you wrote. `[]` turns label escalation off. Every label must be a key of the backend's criteria.
 - **Every answer whose `answer_confidence` is below `layaMinConfidence`**, and, while a floor is set, every answer that reports no `answer_confidence`. `answer_confidence` is laya's calibrated confidence, the probability of the label it reported. laya's `confidence` field is a normalized entropy on another scale and is never compared. The default 0 turns the floor off; the value must be at least 0 and below 1.
 
-An escalation only turns a Laya allow into a teacher call, so it never weakens a verdict. It costs one laya call on top of the teacher call. With capture enabled, an escalated request is recorded by the path that answered it, never as `laya`. Under a teacher it becomes a labelled training row, which aims collection at exactly the actions laya found risky.
+With the default clamp every Laya answer is an allow, so an escalation only turns a Laya allow into a teacher call and never weakens a verdict. An operator who lets a label block (see above) and also escalates that label hands the block to the teacher instead. It costs one laya call on top of the teacher call. With capture enabled, an escalated request is recorded by the path that answered it, never as `laya`. Under a teacher it becomes a labelled training row, which aims collection at exactly the actions laya found risky.
 
 If laya-serve is unreachable, times out, returns a non-200 status or a response with no answer for the question, or answers with a label the severity map does not contain, the reroute fails. The request falls through the same way, and the audit event is `error`. A block-prefilter request fails the same way, because its response format has never been captured.
 
@@ -202,7 +204,9 @@ The wire contract (request `state`/`questions`, typed A-D `choice` response) com
 python3 scripts/check_laya.py --url http://127.0.0.1:8000/v1/systemone
 ```
 
-Exit 0 means the server accepted the proxy's request shape and returned a parseable A-D choice. Exit 2 names the break: unreachable host, non-200, malformed body, or an unknown label.
+If the backend sets `model`, pass the same value with `--model`.
+
+Exit 0 means the server accepted the proxy's request shape and returned a parseable A-D choice with an `answer_confidence` in [0, 1]. Exit 2 names the break: unreachable host, non-200, malformed body, an unknown label, or a missing or out-of-range `answer_confidence`.
 
 The script proves the wire only. To prove the full reroute path through the proxy, with capture enabled, send one graded action through a proxy whose rule targets the Laya backend, then confirm the newest row in the capture directory has `"source": "laya"`:
 

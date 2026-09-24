@@ -819,7 +819,7 @@ window.translations.en = {
     classifierBackendModel: "Model",
     classifierBackendApiKey: "API key",
     classifierBackendFormatLaya: "Laya (local typed decisions)",
-    classifierLayaHint: "Answers are computed by a local laya-serve instance at POST /v1/systemone. Start it yourself; the proxy does not manage the process.",
+    classifierLayaHint: "Answers are computed by a local laya-serve instance at POST /v1/systemone. Start it yourself; the proxy does not manage the process. The stock checkpoint graded every teacher refusal in a 217-row replay as allowable, so keep a Laya rule disabled until a fine-tuned checkpoint is measured.",
     classifierLayaMaxSeverity: "Maximum Severity",
     classifierLayaMaxSeverityWarning: "Severity 50 and above blocks the action. The default of 49 means a Laya verdict can never block. Raising it past 49 makes a model that scores near chance zero-shot able to block your own commands.",
     classifierLayaStateChars: "Action Characters Sent",
