@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -260,8 +261,8 @@ type TargetBackend struct {
 	TimeoutMs int           `json:"timeoutMs,omitempty"`
 
 	// Laya overrides. Each empty or zero value falls back to the default in
-	// LayaSettings, except LayaMaxSeverity, where only nil does. They are
-	// ignored unless Format is BackendFormatLaya.
+	// LayaSettings, except LayaMaxSeverity and LayaEscalateLabels, where only
+	// nil does. They are ignored unless Format is BackendFormatLaya.
 	LayaQuestionName string            `json:"layaQuestionName,omitempty"`
 	LayaInstructions string            `json:"layaInstructions,omitempty"`
 	LayaCriteria     map[string]string `json:"layaCriteria,omitempty"`
@@ -270,16 +271,29 @@ type TargetBackend struct {
 	// is kept apart from "unset, use the default".
 	LayaMaxSeverity *int `json:"layaMaxSeverity,omitempty"`
 	LayaStateChars  int  `json:"layaStateChars,omitempty"`
+	// LayaEscalateLabels are the labels the adapter hands to built-in
+	// handling instead of answering, so the teacher grades them. nil means
+	// the default: D under the default criteria, none under custom criteria,
+	// whose labels mean whatever the operator wrote. An explicit empty list
+	// turns label escalation off, and omitzero keeps that [] through a save.
+	LayaEscalateLabels []string `json:"layaEscalateLabels,omitzero"`
+	// LayaMinConfidence escalates an answer whose calibrated
+	// answer_confidence is below it. 0 turns the floor off.
+	LayaMinConfidence float64 `json:"layaMinConfidence,omitempty"`
 }
 
-// LayaSettings is a Laya backend's resolved question and mapping.
+// LayaSettings is a Laya backend's resolved question, mapping and
+// escalation policy.
 type LayaSettings struct {
-	QuestionName string
-	Instructions string
-	Criteria     map[string]string
-	SeverityMap  map[string]int
-	MaxSeverity  int
-	StateChars   int
+	Model          string
+	QuestionName   string
+	Instructions   string
+	Criteria       map[string]string
+	SeverityMap    map[string]int
+	MaxSeverity    int
+	StateChars     int
+	EscalateLabels []string
+	MinConfidence  float64
 }
 
 // Laya defaults. Severity is 0-100 with 50 as the allow/block boundary, so
@@ -290,6 +304,10 @@ const (
 	DefaultLayaMaxSeverity  = 49
 	DefaultLayaStateChars   = 1200
 	DefaultLayaInstructions = "Classify the risk of this shell action taken by a coding agent."
+	// DefaultLayaModel pins laya-serve's English checkpoint. With no model,
+	// laya-serve routes by the action's language and can build a checkpoint
+	// it did not preload on the request path.
+	DefaultLayaModel = "english"
 )
 
 // defaultLayaCriteria uses opaque A-D keys on purpose: laya renders choice
@@ -309,15 +327,26 @@ var defaultLayaCriteria = map[string]string{
 // must match the training bands, not these serving-time numbers.
 var defaultLayaSeverityMap = map[string]int{"A": 0, "B": 5, "C": 15, "D": 35}
 
+// defaultLayaEscalateLabels sends D, the band where the teacher refused the
+// action, back to the teacher: a capped laya allow must not stand in for a
+// refusal.
+var defaultLayaEscalateLabels = []string{"D"}
+
 // LayaSettings resolves the backend's overrides against the defaults.
 func (backend TargetBackend) LayaSettings() LayaSettings {
 	settings := LayaSettings{
-		QuestionName: backend.LayaQuestionName,
-		Instructions: backend.LayaInstructions,
-		Criteria:     backend.LayaCriteria,
-		SeverityMap:  backend.LayaSeverityMap,
-		MaxSeverity:  DefaultLayaMaxSeverity,
-		StateChars:   backend.LayaStateChars,
+		Model:          backend.Model,
+		QuestionName:   backend.LayaQuestionName,
+		Instructions:   backend.LayaInstructions,
+		Criteria:       backend.LayaCriteria,
+		SeverityMap:    backend.LayaSeverityMap,
+		MaxSeverity:    DefaultLayaMaxSeverity,
+		StateChars:     backend.LayaStateChars,
+		EscalateLabels: backend.LayaEscalateLabels,
+		MinConfidence:  backend.LayaMinConfidence,
+	}
+	if settings.Model == "" {
+		settings.Model = DefaultLayaModel
 	}
 	if settings.QuestionName == "" {
 		settings.QuestionName = DefaultLayaQuestionName
@@ -337,7 +366,66 @@ func (backend TargetBackend) LayaSettings() LayaSettings {
 	if settings.StateChars <= 0 {
 		settings.StateChars = DefaultLayaStateChars
 	}
+	if settings.EscalateLabels == nil && len(backend.LayaCriteria) == 0 {
+		settings.EscalateLabels = defaultLayaEscalateLabels
+	}
 	return settings
+}
+
+// layaQuestionNamePattern is spec §4.6's rule for layaQuestionName. The name
+// keys both the question sent to Laya and the answer read back, so it stays a
+// short identifier.
+var layaQuestionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}$`)
+
+// ValidateLaya reports the first Laya override that cannot be served safely,
+// or nil for any other format. The config save handler and the rule matcher
+// both call it, so a hand-edited config.json gets the same checks as a WebUI
+// save: an escalate-label typo must not silently turn escalation off.
+func (backend TargetBackend) ValidateLaya() error {
+	if backend.Format != BackendFormatLaya {
+		return nil
+	}
+	if backend.LayaMaxSeverity != nil && (*backend.LayaMaxSeverity < 0 || *backend.LayaMaxSeverity > 100) {
+		return errors.New("layaMaxSeverity must be between 0 and 100")
+	}
+	if backend.LayaStateChars != 0 && (backend.LayaStateChars < 200 || backend.LayaStateChars > 8000) {
+		return errors.New("layaStateChars must be between 200 and 8000")
+	}
+	if backend.LayaQuestionName != "" && !layaQuestionNamePattern.MatchString(backend.LayaQuestionName) {
+		return errors.New("layaQuestionName must be 1 to 32 letters, digits or underscores")
+	}
+	if backend.LayaInstructions != "" && strings.TrimSpace(backend.LayaInstructions) == "" {
+		return errors.New("layaInstructions must not be blank")
+	}
+	if backend.LayaMinConfidence < 0 || backend.LayaMinConfidence >= 1 {
+		return errors.New("layaMinConfidence must be at least 0 and below 1")
+	}
+	// Checked against the resolved criteria, so a label typo cannot
+	// silently turn escalation off under either criteria set.
+	criteria := backend.LayaSettings().Criteria
+	for _, label := range backend.LayaEscalateLabels {
+		if _, exists := criteria[label]; !exists {
+			return fmt.Errorf("layaEscalateLabels has label %q with no matching criteria entry", label)
+		}
+	}
+	if len(backend.LayaCriteria) == 0 && len(backend.LayaSeverityMap) == 0 {
+		return nil
+	}
+	if len(backend.LayaCriteria) < 2 {
+		return errors.New("layaCriteria needs at least 2 options")
+	}
+	if len(backend.LayaCriteria) != len(backend.LayaSeverityMap) {
+		return errors.New("layaCriteria and layaSeverityMap must have the same keys")
+	}
+	for label, severity := range backend.LayaSeverityMap {
+		if _, exists := backend.LayaCriteria[label]; !exists {
+			return fmt.Errorf("layaSeverityMap has label %q with no matching criteria entry", label)
+		}
+		if severity < 0 || severity > 100 {
+			return fmt.Errorf("layaSeverityMap[%q] must be between 0 and 100", label)
+		}
+	}
+	return nil
 }
 
 type ClassifierConfig struct {

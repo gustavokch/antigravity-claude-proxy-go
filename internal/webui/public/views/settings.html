@@ -4567,7 +4567,8 @@
                             </label>
                             <label class="text-xs text-gray-400">
                                 <span x-text="$store.global.t('classifierBackendModel')">Model</span>
-                                <input type="text" class="input input-xs w-full bg-space-800" x-model="config.backends[key].model">
+                                <input type="text" class="input input-xs w-full bg-space-800" x-model="config.backends[key].model"
+                                    :placeholder="config.backends[key].format === 'laya' ? 'english' : ''">
                             </label>
                             <div class="flex items-center gap-2">
                                 <label class="text-xs text-gray-400 flex-1">
@@ -4612,6 +4613,46 @@
                                         <input type="text" class="input input-xs w-full bg-space-800"
                                             x-model="config.backends[key].layaInstructions">
                                     </label>
+                                    <!-- Escalation: the adapter hands these answers to built-in handling (the
+                                         teacher). layaEscalateLabels has three states the save must keep apart:
+                                         absent (Default mode), [] (Custom, nothing checked: off) and a list. -->
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-start">
+                                        <div class="md:col-span-2 space-y-1">
+                                            <label class="text-xs text-gray-400 block">
+                                                <span x-text="$store.global.t('classifierLayaEscalateLabels')"></span>
+                                                <select class="select select-xs w-full bg-space-800"
+                                                    :value="layaEscalateMode(config.backends[key])"
+                                                    @change="setLayaEscalateMode(config.backends[key], $event.target.value)">
+                                                    <option value="default" x-text="layaEscalateDefaultText(config.backends[key])"></option>
+                                                    <option value="custom" x-text="$store.global.t('classifierLayaEscalateCustom')"></option>
+                                                </select>
+                                            </label>
+                                            <div class="flex flex-wrap gap-3" x-show="layaEscalateMode(config.backends[key]) === 'custom'">
+                                                <template x-for="label in layaLabels(config.backends[key])" :key="label">
+                                                    <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer"
+                                                        :title="config.backends[key].layaCriteria?.[label] || ''">
+                                                        <input type="checkbox" class="checkbox checkbox-xs"
+                                                            :checked="(config.backends[key].layaEscalateLabels || []).includes(label)"
+                                                            @change="toggleLayaEscalateLabel(config.backends[key], label, $event.target.checked)">
+                                                        <span class="font-mono" x-text="label"></span>
+                                                    </label>
+                                                </template>
+                                            </div>
+                                            <p class="text-xs text-amber-400/90"
+                                                x-show="layaEscalateMode(config.backends[key]) === 'custom' && (config.backends[key].layaEscalateLabels || []).length === 0"
+                                                x-text="$store.global.t('classifierLayaEscalateOff')"></p>
+                                            <p class="text-xs text-gray-500 leading-relaxed" x-text="$store.global.t('classifierLayaEscalateHint')"></p>
+                                        </div>
+                                        <div class="space-y-1">
+                                            <label class="text-xs text-gray-400 block">
+                                                <span x-text="$store.global.t('classifierLayaMinConfidence')"></span>
+                                                <input type="number" min="0" max="0.99" step="0.05" placeholder="0"
+                                                    class="input input-xs w-full bg-space-800"
+                                                    x-model.number="config.backends[key].layaMinConfidence">
+                                            </label>
+                                            <p class="text-xs text-gray-500 leading-relaxed" x-text="$store.global.t('classifierLayaMinConfidenceHint')"></p>
+                                        </div>
+                                    </div>
                                 </div>
                             </template>
                         </div>

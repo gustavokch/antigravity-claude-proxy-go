@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -807,6 +808,12 @@ func TestLayaSettingsDefaults(t *testing.T) {
 	if settings.Instructions == "" {
 		t.Error("Instructions is empty")
 	}
+	if settings.Model != "english" {
+		t.Errorf("Model = %q, want english: an empty model lets laya-serve route a non-English action to a checkpoint it did not preload", settings.Model)
+	}
+	if !slices.Equal(settings.EscalateLabels, []string{"D"}) {
+		t.Errorf("EscalateLabels = %v, want [D]: the band where the teacher refused goes back to the teacher", settings.EscalateLabels)
+	}
 }
 
 func TestLayaSettingsHonorsOverrides(t *testing.T) {
@@ -851,6 +858,54 @@ func TestLayaSettingsKeepsAnExplicitZeroMaxSeverity(t *testing.T) {
 	}
 }
 
+func TestLayaSettingsEscalation(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{
+			name: "custom criteria escalate nothing by default",
+			raw:  `{"format":"laya","layaCriteria":{"X":"one","Y":"two"},"layaSeverityMap":{"X":1,"Y":2}}`,
+			want: nil,
+		},
+		{
+			name: "an explicit list replaces the default",
+			raw:  `{"format":"laya","layaEscalateLabels":["C","D"]}`,
+			want: []string{"C", "D"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var backend TargetBackend
+			if err := json.Unmarshal([]byte(testCase.raw), &backend); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := backend.LayaSettings().EscalateLabels; !slices.Equal(got, testCase.want) {
+				t.Errorf("EscalateLabels = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestLayaSettingsKeepsAnExplicitEmptyEscalationListThroughASave(t *testing.T) {
+	var backend TargetBackend
+	if err := json.Unmarshal([]byte(`{"format":"laya","layaEscalateLabels":[]}`), &backend); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	saved, err := json.Marshal(backend)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var reloaded TargetBackend
+	if err := json.Unmarshal(saved, &reloaded); err != nil {
+		t.Fatalf("unmarshal saved: %v", err)
+	}
+	if got := reloaded.LayaSettings().EscalateLabels; len(got) != 0 {
+		t.Errorf("EscalateLabels after a save = %v, want none: an operator's explicit off must not revert to [D]", got)
+	}
+}
+
 func TestBackendFormatLayaDecodes(t *testing.T) {
 	raw := `{"name":"laya","url":"http://127.0.0.1:8000/v1/systemone","format":"laya","model":"english"}`
 	var backend TargetBackend
@@ -859,5 +914,33 @@ func TestBackendFormatLayaDecodes(t *testing.T) {
 	}
 	if backend.Format != BackendFormatLaya {
 		t.Errorf("Format = %q, want laya", backend.Format)
+	}
+}
+
+func TestValidateLayaChecksEscalateLabelsAgainstTheResolvedCriteria(t *testing.T) {
+	custom := `"layaCriteria":{"X":"one","Y":"two"},"layaSeverityMap":{"X":1,"Y":2}`
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{name: "default criteria accept D", raw: `{"format":"laya","layaEscalateLabels":["D"]}`},
+		{name: "default criteria reject a lowercase typo", raw: `{"format":"laya","layaEscalateLabels":["d"]}`, wantErr: true},
+		{name: "custom criteria accept their own label", raw: `{"format":"laya",` + custom + `,"layaEscalateLabels":["X"]}`},
+		{name: "custom criteria reject a default label", raw: `{"format":"laya",` + custom + `,"layaEscalateLabels":["D"]}`, wantErr: true},
+		// The WebUI leaves laya fields on a backend switched to another
+		// format; they are inert there and must not block the save.
+		{name: "other formats are not laya-checked", raw: `{"format":"openai","layaEscalateLabels":["d"]}`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var backend TargetBackend
+			if err := json.Unmarshal([]byte(testCase.raw), &backend); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if err := backend.ValidateLaya(); (err != nil) != testCase.wantErr {
+				t.Errorf("ValidateLaya() = %v, wantErr %v", err, testCase.wantErr)
+			}
+		})
 	}
 }

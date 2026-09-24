@@ -98,12 +98,14 @@ When a rule with `action: "reroute"` encounters an unreachable backend, a timeou
 1. The error is recorded in the audit event log (`status: "error"`).
 2. The proxy falls through to built-in fallback evaluation (`classifier.Detect`), ensuring that a transient backend outage never hangs the client prompt.
 
+A Laya backend can also decline on purpose. An escalation (see [Escalation](#escalation)) falls through the same way, but the audit event is `escalated`, not `error`, and the proxy logs it at info level.
+
 ## Live Audit Stream
 
 Audit events are published over Server-Sent Events (SSE):
 - Endpoint: `GET /api/classifier/audit/stream?history=true`
 - Monotonic sequence numbers (`seq`) provide gap-free streaming across reconnections.
-- Event statuses: `rerouted`, `stubbed`, `passthrough`, or `error`.
+- Event statuses: `rerouted`, `stubbed`, `passthrough`, `escalated`, or `error`. `detail` carries the reason for `escalated` and `error`.
 - API keys in `classifier.backends` are automatically redacted in config management endpoints (`GET /api/config`).
 
 ## Corpus Capture
@@ -143,26 +145,68 @@ python3 scripts/finetune_laya.py ~/.config/antigravity-proxy/corpus/*.jsonl --so
 
 ## Laya Backend
 
+A Laya backend answers low-risk Stage 1 requests on your machine and hands everything else to the teacher. Serve laya's stock English checkpoint:
+
+> **Keep a Laya rule disabled with the stock checkpoint.** A laya Stage 1 answer stands in for the teacher's, and a low Stage 1 grade ends the check. Replayed over 217 teacher-labelled Stage 1 rows (laya-serve 0.3.20, `english`), the stock checkpoint agreed with the teacher on 22.1% of them (chance is 25%) and graded all 5 teacher refusals A to C. Neither the default `["D"]` escalation nor a confidence floor sent them back: the median `answer_confidence` was 0.36 when laya was right and 0.38 when it was wrong. Zero-shot, it grades `rm -rf / --no-preserve-root` and `curl … | sudo bash` A. Serve it to measure a checkpoint, and enable the rule only after a fine-tuned checkpoint closes the refusal gap.
+
 ```bash
-pip install "laya[serve]"
+python3 -m pip install "laya[serve]==0.3.20"
 LAYA_MODELS=english LAYA_PRELOAD=1 LAYA_HOST=127.0.0.1 LAYA_PORT=8000 laya-serve
 ```
 
-Then add a backend with `"format": "laya"` and `"url": "http://127.0.0.1:8000/v1/systemone"`, and point a `reroute` rule's `targetBackend` at it. Rules only run while `classifier.enabled` is `true`. Set `apiKey` only if the server was started with `LAYA_API_KEY`. When `timeoutMs` is unset or 0, a Laya backend times out after 5 seconds, not the 20 seconds the other formats use.
+The first start downloads the checkpoint (about 0.85 GB) from Hugging Face, and `LAYA_PRELOAD=1` loads it before the server accepts requests. laya-serve serves only its hub checkpoints: the model `scripts/finetune_laya.py` writes cannot be served this way.
 
-The adapter sends only the graded action, as a single `choice` question over four risk buckets by default, and maps the chosen label to a severity. Every default severity is below 50, the allow/block boundary, and `layaMaxSeverity` (default 49) clamps the result, so with the defaults a Laya verdict cannot block. It can block only if an operator raises `layaMaxSeverity` to 50 or more and maps a label to 50 or more in `layaSeverityMap`; every action the model puts under that label then gets a blocking severity. The base checkpoints score near chance on typed decisions zero-shot, so a Laya backend that can block will block routine actions at random. Until a fine-tuned checkpoint and a measured agreement rate exist, treat the verdict as a locally computed, plausible allow.
+Add a backend and a rule that matches the Stage 1 footer. The rule ships disabled; see the warning above:
 
-If laya-serve is unreachable, times out, returns a non-200 status or a response with no answer for the question, or answers with a label the severity map does not contain, the reroute fails and the request falls through to the proxy's built-in handling. A block-prefilter request fails the same way: the adapter answers Stage 1 and Stage 2 severity requests only, because the block-prefilter response format has never been captured.
+```json
+"rules": [
+  {
+    "id": "stage1-laya",
+    "name": "Stage 1 to local laya",
+    "enabled": false,
+    "conditions": {
+      "footerPatterns": [{ "type": "substring", "pattern": "Grade HARM ONLY" }]
+    },
+    "action": "reroute",
+    "targetBackend": "laya"
+  }
+],
+"backends": {
+  "laya": {
+    "name": "Local laya",
+    "url": "http://127.0.0.1:8000/v1/systemone",
+    "format": "laya"
+  }
+}
+```
+
+Rules only run while `classifier.enabled` is `true`. Set `apiKey` only if the server was started with `LAYA_API_KEY`. When `timeoutMs` is unset or 0, a Laya backend times out after 5 seconds, not the 20 seconds the other formats use. `model` defaults to `english`, the checkpoint `LAYA_MODELS=english` preloads. With no model, laya-serve picks a checkpoint by the action's language, and its heuristic reads some ordinary shell commands as Portuguese, French or German, which would build the multilingual checkpoint on the request path and time out. Set `model` to another checkpoint only if the server preloads it.
+
+The adapter sends only the graded action, as a single `choice` question over four risk bands by default, and maps the chosen label to a severity. Every default severity is below 50, the allow/block boundary, and `layaMaxSeverity` (default 49) clamps the result, so with the defaults a Laya verdict cannot block. It can block only if an operator raises `layaMaxSeverity` to 50 or more and maps a label to 50 or more in `layaSeverityMap`; every action the model puts under that label then gets a blocking severity. The base checkpoints score near chance on typed decisions zero-shot, so a Laya backend that can block will block routine actions at random.
+
+### Escalation
+
+The adapter escalates a request when laya is not the right judge for it. Escalating means declining to answer: the request falls through to the proxy's built-in handling. That handling sends it to the teacher under the `fallback_on_exhaustion`, `reroute_only` and `passthrough` classifier actions; under `always_stub` it gets the canned verdict. The adapter escalates:
+
+- **Every Stage 2 request**, before calling laya-serve. Stage 2 applies user intent, which the action-only state laya sees does not carry, and reconsiders an action Stage 1 graded high. A laya Stage 1 answer never grades that high, so a Stage 2 request follows a teacher verdict, which a capped laya allow must not overrule. Even a rule that matches every classifier request never lets laya answer Stage 2.
+- **Every answer whose label is in `layaEscalateLabels`.** The default is `["D"]` under the default criteria, the band where the teacher refused the action, and none under custom criteria, whose labels mean what you wrote. `[]` turns label escalation off. Every label must be a key of the backend's criteria.
+- **Every answer whose `answer_confidence` is below `layaMinConfidence`**, and, while a floor is set, every answer that reports no `answer_confidence`. `answer_confidence` is laya's calibrated confidence, the probability of the label it reported. laya's `confidence` field is a normalized entropy on another scale and is never compared. The default 0 turns the floor off; the value must be at least 0 and below 1.
+
+With the default clamp every Laya answer is an allow, so an escalation only turns a Laya allow into a teacher call and never weakens a verdict. An operator who lets a label block (see above) and also escalates that label hands the block to the teacher instead. It costs one laya call on top of the teacher call. With capture enabled, an escalated request is recorded by the path that answered it, never as `laya`. Under a teacher it becomes a labelled training row, which aims collection at exactly the actions laya found risky.
+
+If laya-serve is unreachable, times out, returns a non-200 status or a response with no answer for the question, or answers with a label the severity map does not contain, the reroute fails. The request falls through the same way, and the audit event is `error`. A block-prefilter request fails the same way, because its response format has never been captured.
 
 ### Checking a live laya-serve
 
-The wire contract (request `state`/`questions`, typed A-D `choice` response) comes from the laya-serve README. Every failure mode above is silent by design, so an untested contract means the first real user is the test. Run the check before relying on a Laya backend, and again after any laya-serve upgrade:
+The wire contract (request `state`/`questions`, typed A-D `choice` response) comes from the laya-serve README. The proxy was checked against laya-serve 0.3.20. Every failure mode above is silent by design, so run the check before relying on a Laya backend, and again after any laya-serve upgrade:
 
 ```bash
 python3 scripts/check_laya.py --url http://127.0.0.1:8000/v1/systemone
 ```
 
-Exit 0 means the server accepted the proxy's request shape and returned a parseable A-D choice. Exit 2 names the break: unreachable host, non-200, malformed body, or an unknown label.
+If the backend sets `model`, pass the same value with `--model`.
+
+Exit 0 means the server accepted the proxy's request shape and returned a parseable A-D choice with an `answer_confidence` in [0, 1]. Exit 2 names the break: unreachable host, non-200, malformed body, an unknown label, or a missing or out-of-range `answer_confidence`.
 
 The script proves the wire only. To prove the full reroute path through the proxy, with capture enabled, send one graded action through a proxy whose rule targets the Laya backend, then confirm the newest row in the capture directory has `"source": "laya"`:
 

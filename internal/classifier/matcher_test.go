@@ -186,3 +186,28 @@ func TestFlattenTextHandlesStringAndBlocks(t *testing.T) {
 		t.Errorf("nil form: got %q", got)
 	}
 }
+
+func TestUpdateRulesRejectsAnInvalidLayaBackend(t *testing.T) {
+	matcher, err := NewConfigurableMatcher([]config.Rule{stage1Rule()}, testBackends())
+	if err != nil {
+		t.Fatalf("NewConfigurableMatcher: %v", err)
+	}
+
+	// A hand-edited config.json never passes the save handler, so this is
+	// the only place its escalate-label typo can be caught.
+	handEdited := map[string]config.TargetBackend{
+		"local": {
+			Name:               "Local laya",
+			URL:                "http://127.0.0.1:8000/v1/systemone",
+			Format:             config.BackendFormatLaya,
+			LayaEscalateLabels: []string{"d"},
+		},
+	}
+	if err := matcher.UpdateRules([]config.Rule{stage1Rule()}, handEdited); err == nil {
+		t.Fatal(`UpdateRules accepted escalate label "d": a typo would silently turn D escalation off`)
+	}
+	_, backend, matched := matcher.Match([]byte(stage1Body))
+	if !matched || backend == nil || backend.Format != config.BackendFormatOpenAI {
+		t.Errorf("Match = %v, backend %+v; want the previous openai backend still active", matched, backend)
+	}
+}
