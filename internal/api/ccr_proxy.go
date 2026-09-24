@@ -110,6 +110,13 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 		state := newCCRStreamState(baseBlockIndex)
 		var pendingTerminalEvents [][2]string // pairs of [eventName, dataStr]
 
+		// Usage already accounted for this iteration. Translated upstreams
+		// (Zen Chat wire) report zero in message_start and the real figures in
+		// message_delta; fall back to message_delta only for fields
+		// message_start left at zero, so upstreams reporting in both events
+		// are not double-counted.
+		var iterInput, iterCacheRead, iterCacheCreation int
+
 		scanner := bufio.NewScanner(resp.Body)
 		// Support large lines in SSE
 		scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
@@ -148,6 +155,15 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 						}
 						if crTok, ok := usage["cache_creation_input_tokens"].(float64); ok {
 							totalCacheCreationTokens += int(crTok)
+						}
+						if inTok, ok := usage["input_tokens"].(float64); ok {
+							iterInput = int(inTok)
+						}
+						if readTok, ok := usage["cache_read_input_tokens"].(float64); ok {
+							iterCacheRead = int(readTok)
+						}
+						if crTok, ok := usage["cache_creation_input_tokens"].(float64); ok {
+							iterCacheCreation = int(crTok)
 						}
 					}
 				}
@@ -204,6 +220,20 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 				if usage, ok := event["usage"].(map[string]any); ok {
 					if outTok, ok := usage["output_tokens"].(float64); ok {
 						totalOutputTokens += int(outTok)
+					}
+					if inTok, ok := usage["input_tokens"].(float64); ok && inTok > 0 && iterInput == 0 {
+						if iter == 0 {
+							totalInputTokens = int(inTok)
+						}
+						iterInput = int(inTok)
+					}
+					if readTok, ok := usage["cache_read_input_tokens"].(float64); ok && readTok > 0 && iterCacheRead == 0 {
+						totalCacheReadTokens += int(readTok)
+						iterCacheRead = int(readTok)
+					}
+					if crTok, ok := usage["cache_creation_input_tokens"].(float64); ok && crTok > 0 && iterCacheCreation == 0 {
+						totalCacheCreationTokens += int(crTok)
+						iterCacheCreation = int(crTok)
 					}
 				}
 				pendingTerminalEvents = append(pendingTerminalEvents, [2]string{curEvent, dataStr})
