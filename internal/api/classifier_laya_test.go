@@ -396,4 +396,15 @@ func TestLayaRerouteEndToEnd(t *testing.T) {
 	if got := verdictTextFrom(t, recorder.Body.Bytes()); got != "<severity>15</severity>" {
 		t.Errorf("client received %q, want the mapped severity for label C", got)
 	}
+	// The client must see the model it asked for, not the laya checkpoint
+	// name, or the envelope no longer looks like an answer to its request.
+	var envelope struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("response is not an Anthropic message: %v", err)
+	}
+	if envelope.Model != "claude-sonnet-5" {
+		t.Errorf("envelope model = %q, want the request's model claude-sonnet-5", envelope.Model)
+	}
 }
