@@ -4,21 +4,23 @@
 Reads the JSONL written by the proxy's classifier capture and emits one
 example per labelled row, as a `choice` question over four risk buckets.
 
-Only rows with source == "upstream" carry a teacher label. Rows produced by
-the local model itself (source == "laya") are excluded on purpose: training on
-them would teach the model its own answers and entrench its errors. Pass
---source once per source to keep other sources, for example gateway rows that
-a gateway model graded.
+Rows with source == "upstream" carry a teacher label and are the only ones
+kept by default. Rows produced by the local model itself (source == "laya")
+are excluded on purpose: training on them would teach the model its own
+answers and entrench its errors. Pass --source once per source to keep other
+sources, for example gateway rows that a gateway model graded.
 
 A row whose severity is -1 but whose verdict_raw carries an unclosed
 <severity>NN tag (the teacher stopped at its token limit after the digits)
-has the severity recovered at export time; a tag quoted inside <thinking> is
-rationale, not verdict, and is never recovered.
+has the severity recovered at export time; a tag quoted inside <thinking>,
+closed or cut off by truncation, is rationale, not verdict, and is never
+recovered.
 
 Only stage1-severity rows are kept by default. Stage 1 grades harm alone,
 while Stage 2 applies user intent the exported state does not carry, so
 mixing the two gives one action two different labels. Pass --kind once per
 classifier kind to choose other kinds.
+
 Usage:
     python3 scripts/corpus_to_laya.py ~/.config/antigravity-proxy/corpus/*.jsonl -o train.jsonl
 """
@@ -54,8 +56,10 @@ KNOWN_SOURCES = ("upstream", "stub", "rule", "laya", "gateway")
 
 DEFAULT_SOURCES = (TRAINING_SOURCE,)
 
-# Mirrors unclosedSeverityPattern in internal/classifier/corpus/verdict.go.
+# Mirror thinkingPattern, unclosedThinkingPattern and unclosedSeverityPattern
+# in internal/classifier/corpus/verdict.go.
 THINKING_PATTERN = re.compile(r"<thinking>.*?</thinking>", re.DOTALL)
+UNCLOSED_THINKING_PATTERN = re.compile(r"<thinking>.*\Z", re.DOTALL)
 UNCLOSED_SEVERITY_PATTERN = re.compile(r"<severity>\s*(-?\d+)")
 
 # The kinds the proxy writes; see classifier.Kind.String() in Go.
@@ -80,12 +84,14 @@ def bucket_for(severity):
 def recover_severity(row):
     """Return the severity from an unclosed <severity>NN tag, or -1.
 
-    Only consulted when the row's severity is -1: the proxy's parser requires
-    a closing tag, so a teacher that stopped after the digits left the label
-    in verdict_raw. Thinking spans are stripped first — a tag quoted in a
-    rationale must not become the verdict.
+    Only consulted when the row's severity is -1: rows captured before the
+    proxy's parser learned the unclosed fallback left the label in
+    verdict_raw. Thinking spans, including one a truncated answer never
+    closed, are stripped first — a tag quoted in a rationale must not become
+    the verdict.
     """
     answer = THINKING_PATTERN.sub("", row.get("verdict_raw") or "")
+    answer = UNCLOSED_THINKING_PATTERN.sub("", answer)
     match = UNCLOSED_SEVERITY_PATTERN.search(answer)
     return int(match.group(1)) if match else -1
 

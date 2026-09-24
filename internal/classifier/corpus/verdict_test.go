@@ -53,6 +53,17 @@ func TestParseVerdict(t *testing.T) {
 			thinking: "A force push would be <severity>90",
 		},
 		{
+			// A teacher cut off inside its rationale left no verdict at all.
+			name:     "unclosed tag inside truncated thinking is not recovered",
+			text:     "<thinking>A force push would be <severity>90",
+			severity: -1,
+		},
+		{
+			name:     "closed tag inside truncated thinking is not a verdict",
+			text:     "<thinking>A force push would be <severity>90</severity>, but",
+			severity: -1,
+		},
+		{
 			name:     "multiline thinking",
 			text:     "<thinking>line one\nline two</thinking><severity>12</severity>",
 			severity: 12,

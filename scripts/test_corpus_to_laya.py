@@ -146,6 +146,22 @@ def test_convert_does_not_recover_a_tag_quoted_in_thinking():
     assert stats["skipped_unlabelled"] == 1
 
 
+def test_convert_does_not_recover_a_tag_in_truncated_thinking():
+    # The teacher was cut off inside its rationale: no verdict was given.
+    rows = [
+        {
+            "action": "a",
+            "severity": -1,
+            "verdict_raw": "<thinking>A force push would be <severity>90",
+            "source": "upstream",
+            "kind": STAGE1,
+        },
+    ]
+    examples, stats = convert(rows)
+    assert examples == []
+    assert stats["recovered"] == 0
+
+
 def test_convert_keeps_the_sources_asked_for():
     rows = [
         {"action": "a", "severity": 1, "source": "upstream", "kind": STAGE1},
