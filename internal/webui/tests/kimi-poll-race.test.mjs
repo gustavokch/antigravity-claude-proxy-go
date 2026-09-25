@@ -281,6 +281,24 @@ async function t9b_cancelDuringBodyRead_models() {
     assert.equal(refreshed, 1, 'server-committed login not reflected in settings');
 }
 
+// add-account-modal.js: modal closed (resetState) while a status request is in
+// flight; the server answers 'completed'. The accounts store must resync.
+async function t10_committedCompletionAfterReset_modal() {
+    const { component: c, requests, toasts } = loadComponent(MODAL, 'addAccountModal');
+    let refreshed = 0;
+    c._refreshKimiStore = async () => { refreshed++; };
+    c.kimiOAuth = { polling: true, sessionId: 's1', status: 'pending', error: '' };
+
+    const loop = c._pollKimiLogin();
+    await pendingTick();
+    c.resetState();                             // modal closed
+    requests[0].resolve({ response: okResponse({ status: 'completed' }), newPassword: null });
+    await loop;
+
+    assert.equal(refreshed, 1, 'server-committed login not reflected in accounts store');
+    assert.equal(toasts.length, 0, 'toasted success for a cancelled login');
+}
+
 const cases = [
     ['t1 old completed after re-login (models.js)', t1_oldSessionCompleted_models],
     ['t1 old rejection after re-login (models.js)', t1_oldSessionRejection_models],
@@ -297,6 +315,7 @@ const cases = [
     ['t8 orphaned sleeping loop exits on re-login (add-account-modal.js)', t8_orphanLoopExits_modal],
     ['t9 committed completion after cancel resyncs config (models.js)', t9_committedCompletionAfterCancel_models],
     ['t9b cancel during body read (models.js)', t9b_cancelDuringBodyRead_models],
+    ['t10 committed completion after reset resyncs store (add-account-modal.js)', t10_committedCompletionAfterReset_modal],
 ];
 
 for (const [name, fn] of cases) {
