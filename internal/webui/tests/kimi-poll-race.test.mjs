@@ -156,6 +156,32 @@ async function t5_passwordRotation(path, exportName, pollMethod, stub) {
     assert.equal(store.webuiPassword, 'rotated', `${path}: rotated password dropped after in-flight cancel`);
 }
 
+// models.js: a stale cancel resolving after a new login reopened the dialog
+// must not close it (closing fires @close → cancels the NEW session).
+async function t6_staleCancelKeepsNewDialog() {
+    const { component: c, requests, dialog } = loadComponent(MODELS, 'models');
+    const dlg = dialog('kimi_oauth_modal');
+    dlg.onclose = () => c.cancelKimiOAuthLogin();       // mirrors @close in settings.html
+
+    c.kimiOAuth = { polling: true, sessionId: 'old', status: 'pending', error: '' };
+    const cancel = c.cancelKimiOAuthLogin();            // Esc: dialog already closed
+    await pendingTick();                                // cancel POST for 'old' in flight
+    assert.equal(requests.length, 1);
+
+    // New login starts and reopens the dialog during the cancel round-trip.
+    c.kimiOAuth.sessionId = 'new';
+    c.kimiOAuth.status = 'pending';
+    c.kimiOAuth.polling = true;
+    dlg.showModal();
+
+    requests[0].resolve({ response: okResponse({ status: 'ok' }), newPassword: null });
+    await cancel;
+
+    assert.equal(dlg.open, true, 'stale cancel closed the new login dialog');
+    assert.equal(c.kimiOAuth.polling, true, 'stale cancel stopped the new poll');
+    assert.equal(requests.length, 1, 'stale cancel fired a cancel POST for the new session');
+}
+
 const cases = [
     ['t1 old completed after re-login (models.js)', t1_oldSessionCompleted_models],
     ['t1 old rejection after re-login (models.js)', t1_oldSessionRejection_models],
@@ -167,6 +193,7 @@ const cases = [
         t5_passwordRotation(MODELS, 'models', '_pollKimiOAuth', (c) => { c.fetchKimiConfig = async () => {}; })],
     ['t5 rotated password applied (add-account-modal.js)', () =>
         t5_passwordRotation(MODAL, 'addAccountModal', '_pollKimiLogin', (c) => { c._refreshKimiStore = async () => {}; })],
+    ['t6 stale cancel keeps new login dialog open (models.js)', t6_staleCancelKeepsNewDialog],
 ];
 
 for (const [name, fn] of cases) {

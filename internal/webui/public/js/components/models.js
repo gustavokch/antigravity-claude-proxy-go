@@ -805,9 +805,9 @@ window.Components.models = () => ({
                 // Best-effort; the session expires on its own.
             }
         }
-        if (wasPending && this.kimiOAuth.sessionId === sessionId) {
-            this.kimiOAuth.status = 'cancelled';
-        }
+        // A newer login may have started during the cancel round-trip; leave it alone.
+        if (this.kimiOAuth.sessionId !== sessionId) return;
+        if (wasPending) this.kimiOAuth.status = 'cancelled';
         const dialog = document.getElementById('kimi_oauth_modal');
         if (dialog && dialog.open) dialog.close();
     },
