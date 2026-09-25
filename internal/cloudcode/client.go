@@ -103,7 +103,9 @@ func collectHTTPErrors(err error, out *[]*HTTPError) {
 		return
 	}
 	if httpErr, ok := err.(*HTTPError); ok {
-		*out = append(*out, httpErr)
+		if httpErr != nil {
+			*out = append(*out, httpErr)
+		}
 		return
 	}
 	switch u := err.(type) {
@@ -127,7 +129,7 @@ func FindHTTPError(err error) *HTTPError {
 	collectHTTPErrors(err, &httpErrors)
 	if len(httpErrors) == 0 {
 		var upstreamError *HTTPError
-		if errors.As(err, &upstreamError) {
+		if errors.As(err, &upstreamError) && upstreamError != nil {
 			return upstreamError
 		}
 		return nil

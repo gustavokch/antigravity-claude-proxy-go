@@ -303,4 +303,15 @@ func TestFindHTTPError(t *testing.T) {
 	if got := FindHTTPError(errors.New("other")); got != nil {
 		t.Errorf("expected nil for non-HTTPError, got %v", got)
 	}
+
+	// Typed nil HTTPError
+	var nilHTTP *HTTPError
+	var typedNil error = nilHTTP
+	if got := FindHTTPError(typedNil); got != nil {
+		t.Errorf("expected nil for typed nil HTTPError, got %v", got)
+	}
+	joinedWithNil := errors.Join(typedNil, err429)
+	if got := FindHTTPError(joinedWithNil); got != err429 {
+		t.Errorf("expected err429 for joined with typed nil, got %v", got)
+	}
 }
