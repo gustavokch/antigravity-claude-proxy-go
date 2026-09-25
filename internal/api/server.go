@@ -3495,13 +3495,7 @@ func retryAfterSeconds(err error) int {
 		return ceilSeconds(rateLimitError.RetryAfter)
 	}
 	if upstreamError := cloudcode.FindHTTPError(err); upstreamError != nil && upstreamError.StatusCode == http.StatusTooManyRequests {
-		if wait := accounts.ParseResetTime(upstreamError.Header, upstreamError.Body, time.Now()); wait > 0 {
-			return ceilSeconds(wait)
-		}
-		reason := accounts.ClassifyError(upstreamError.Body, upstreamError.StatusCode)
-		if wait := accounts.SmartBackoff(reason, 0, 0); wait > 0 {
-			return ceilSeconds(wait)
-		}
+		return ceilSeconds(accounts.UpstreamCooldown(upstreamError, 0, time.Now()).Wait)
 	}
 	return 0
 }

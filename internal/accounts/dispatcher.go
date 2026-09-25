@@ -466,10 +466,10 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				continue
 			}
 			if upstreamError != nil && upstreamError.StatusCode == http.StatusTooManyRequests {
-				reason := ClassifyError(upstreamError.Body, upstreamError.StatusCode)
-				reset := ParseResetTime(upstreamError.Header, upstreamError.Body, dispatcher.now())
 				failures := dispatcher.manager.FailureCount(account)
-				wait := Decorrelate(SmartBackoff(reason, reset, failures), dispatcher.random)
+				cooldown := UpstreamCooldown(upstreamError, failures, dispatcher.now())
+				reason, reset := cooldown.Reason, cooldown.Reset
+				wait := Decorrelate(cooldown.Wait, dispatcher.random)
 				if reason == ReasonCapacity && capacityAttempt >= dispatcher.maxCapacityRetries {
 					dispatcher.manager.MarkRateLimited(account, model, 15*time.Second)
 					break
@@ -759,7 +759,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 	case http.StatusBadRequest, http.StatusNotFound:
 		return false
 	case http.StatusTooManyRequests:
-		wait := Decorrelate(SmartBackoff(ClassifyError(body, upstreamError.StatusCode), ParseResetTime(upstreamError.Header, body, dispatcher.now()), dispatcher.manager.FailureCount(account)), dispatcher.random)
+		wait := Decorrelate(UpstreamCooldown(upstreamError, dispatcher.manager.FailureCount(account), dispatcher.now()).Wait, dispatcher.random)
 		email := ""
 		if account != nil {
 			email = account.Email
