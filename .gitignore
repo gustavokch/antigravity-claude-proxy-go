@@ -15,6 +15,3 @@ benchmark_results.txt
 
 # Local OAuth token files for the capture harness. Never committed.
 .claude-oat*
-
-# Machine-local OMP config (absolute tool paths).
-/.omp/
