@@ -340,6 +340,15 @@ func (m *KimiOAuthManager) StartDeviceAuth(ctx context.Context) (*KimiAuthSessio
 	if verificationURIComplete == "" && verificationURI == "" {
 		return nil, errors.New("Device authorization response missing verification_uri_complete")
 	}
+	// The UI binds these to an href; only https may reach it.
+	for _, uri := range []string{verificationURI, verificationURIComplete} {
+		if uri == "" {
+			continue
+		}
+		if u, err := url.Parse(uri); err != nil || u.Scheme != "https" {
+			return nil, fmt.Errorf("Device authorization response has a non-https verification URI: %q", uri)
+		}
+	}
 	interval := 5
 	if v, ok := data["interval"].(float64); ok && v > 0 {
 		interval = int(v)

@@ -343,3 +343,24 @@ func TestKimiStartDeviceAuthSupersedesEarlierSession(t *testing.T) {
 		t.Error("second session not registered")
 	}
 }
+
+func TestKimiStartDeviceAuthRejectsNonHTTPSVerificationURI(t *testing.T) {
+	var sleeps []time.Duration
+	srv, _ := newKimiFake(t, `{
+		"device_code": "dc-1",
+		"user_code": "ABCD-1234",
+		"verification_uri": "https://www.kimi.ai/code/authorize_device",
+		"verification_uri_complete": "javascript:alert(1)",
+		"expires_in": 1800,
+		"interval": 5
+	}`, func() (int, string) { return 400, `{"error":"authorization_pending"}` })
+	mgr := newKimiTestManager(t, srv, &sleeps)
+
+	session, err := mgr.StartDeviceAuth(context.Background())
+	if session != nil {
+		mgr.CancelSession(session.ID)
+	}
+	if err == nil {
+		t.Fatal("StartDeviceAuth accepted a javascript: verification URI")
+	}
+}
