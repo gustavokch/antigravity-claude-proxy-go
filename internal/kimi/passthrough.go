@@ -35,12 +35,13 @@ func ForwardMessagesWithHook(w http.ResponseWriter, r *http.Request, baseURL, ap
 			return nil
 		}
 	}
-	ForwardMessagesWithModify(w, r, baseURL, apiKey, body, modify)
+	ForwardMessagesWithModify(w, r, baseURL, apiKey, body, nil, modify)
 }
 
 // ForwardMessagesWithModify behaves like ForwardMessages and accepts a custom
-// ModifyResponse function.
-func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
+// ModifyResponse function. identity, when non-nil, overrides request headers
+// (e.g. KimiCLI fingerprint headers for OAuth-authenticated upstreams).
+func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, identity http.Header, modify func(*http.Response) error) {
 	target, err := url.Parse(NormalizeBaseURL(baseURL) + "/v1/messages")
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request_error", "Invalid Kimi target URL: "+err.Error())
@@ -64,6 +65,13 @@ func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, 
 			// also covered because we strip any prior auth header.
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 			req.Header.Del("x-api-key")
+
+			// Identity headers (e.g. KimiCLI fingerprint) override the client's.
+			for k, vs := range identity {
+				if len(vs) > 0 {
+					req.Header.Set(k, vs[0])
+				}
+			}
 
 			// Forward Anthropic protocol headers if the client sent them.
 			if av := r.Header.Get("anthropic-version"); av != "" {

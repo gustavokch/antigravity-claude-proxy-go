@@ -53,7 +53,7 @@ type kimiModelsResponse struct {
 
 // FetchModels GETs /v1/models from Kimi, returns the parsed list, and caches
 // it. The cache is consulted by GetCachedModels.
-func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string) ([]ModelItem, error) {
+func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string, headers http.Header) ([]ModelItem, error) {
 	base := NormalizeBaseURL(baseURL)
 	if strings.HasSuffix(strings.ToLower(base), "/anthropic") {
 		base = base[:len(base)-len("/anthropic")]
@@ -63,6 +63,11 @@ func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string) ([]Mod
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build Kimi models request: %w", err)
+	}
+	for k, vs := range headers {
+		if len(vs) > 0 {
+			req.Header.Set(k, vs[0])
+		}
 	}
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)

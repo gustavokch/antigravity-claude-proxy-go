@@ -944,3 +944,126 @@ func TestValidateLayaChecksEscalateLabelsAgainstTheResolvedCriteria(t *testing.T
 		})
 	}
 }
+
+func TestKimiOAuthMergeOnSave(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	if _, err := Save(map[string]any{"kimi": map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-kimi-secret-123",
+		"baseUrl": "https://api.moonshot.ai/anthropic",
+		"oauth": map[string]any{
+			"token":        "tok-1234567890abcd",
+			"refreshToken": "rt",
+			"email":        "a@b.c",
+		},
+	}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := Save(map[string]any{"kimi": map[string]any{
+		"enabled":   true,
+		"hasApiKey": true,
+		"allowlist": []any{},
+	}}); err != nil {
+		t.Fatalf("Save settings-only: %v", err)
+	}
+
+	cfg := Get()
+	if cfg.Kimi.OAuth == nil || cfg.Kimi.OAuth.Token != "tok-1234567890abcd" {
+		t.Fatalf("OAuth.Token = %+v, want preserved", cfg.Kimi.OAuth)
+	}
+	if cfg.Kimi.APIKey != "sk-kimi-secret-123" {
+		t.Errorf("APIKey = %q, want preserved", cfg.Kimi.APIKey)
+	}
+	if cfg.Kimi.BaseURL != "https://api.moonshot.ai/anthropic" {
+		t.Errorf("BaseURL = %q, want preserved", cfg.Kimi.BaseURL)
+	}
+}
+
+func TestKimiOAuthLogoutSave(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	if _, err := Save(map[string]any{"kimi": map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-kimi-secret-123",
+		"baseUrl": "https://api.moonshot.ai/anthropic",
+		"oauth":   map[string]any{"token": "tok-1", "refreshToken": "rt"},
+	}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := Save(map[string]any{"kimi": map[string]any{"oauth": nil}}); err != nil {
+		t.Fatalf("Save logout: %v", err)
+	}
+
+	cfg := Get()
+	if cfg.Kimi.OAuth != nil {
+		t.Errorf("OAuth = %+v, want nil after logout", cfg.Kimi.OAuth)
+	}
+	if cfg.Kimi.APIKey != "sk-kimi-secret-123" {
+		t.Errorf("APIKey = %q, want kept", cfg.Kimi.APIKey)
+	}
+	if cfg.Kimi.BaseURL != "https://api.moonshot.ai/anthropic" {
+		t.Errorf("BaseURL = %q, want kept", cfg.Kimi.BaseURL)
+	}
+}
+
+func TestGetPublicConfig_KimiOAuthRedaction(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	if _, err := Save(map[string]any{"kimi": map[string]any{
+		"enabled": true,
+		"oauth": map[string]any{
+			"token":        "tok-1234567890abcd",
+			"refreshToken": "rt",
+			"email":        "a@b.c",
+			"userId":       "u1",
+		},
+	}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	pub := GetPublicConfig()
+	kimi, ok := pub["kimi"].(map[string]any)
+	if !ok {
+		t.Fatalf("public config missing kimi map")
+	}
+	oauth, ok := kimi["oauth"].(map[string]any)
+	if !ok {
+		t.Fatalf("public config missing oauth map: %v", kimi["oauth"])
+	}
+	if _, leaked := oauth["token"]; leaked {
+		t.Fatalf("token must be redacted, got %v", oauth["token"])
+	}
+	if _, leaked := oauth["refreshToken"]; leaked {
+		t.Fatalf("refreshToken must be redacted, got %v", oauth["refreshToken"])
+	}
+	if has, _ := oauth["hasToken"].(bool); !has {
+		t.Error("public oauth should expose hasToken=true")
+	}
+	if has, _ := oauth["hasRefreshToken"].(bool); !has {
+		t.Error("public oauth should expose hasRefreshToken=true")
+	}
+	if masked, _ := oauth["maskedToken"].(string); masked != "tok-12...abcd" {
+		t.Errorf("maskedToken = %q, want tok-12...abcd", masked)
+	}
+	if email, _ := oauth["email"].(string); email != "a@b.c" {
+		t.Errorf("email = %q, want a@b.c", email)
+	}
+
+	// A redacted public echo must not clobber the stored credential.
+	if _, err := Save(pub); err != nil {
+		t.Fatalf("Save on public config: %v", err)
+	}
+	cfg := Get()
+	if cfg.Kimi.OAuth == nil || cfg.Kimi.OAuth.Token != "tok-1234567890abcd" || cfg.Kimi.OAuth.RefreshToken != "rt" {
+		t.Fatalf("OAuth after public echo = %+v, want token and refresh preserved", cfg.Kimi.OAuth)
+	}
+}

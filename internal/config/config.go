@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/headroom"
@@ -97,6 +98,20 @@ type KimiConfig struct {
 	BaseURL   string            `json:"baseUrl"`
 	APIKey    string            `json:"apiKey,omitempty"`
 	Allowlist []KimiModelConfig `json:"allowlist,omitempty"`
+	OAuth     *KimiOAuthConfig  `json:"oauth,omitempty"`
+}
+
+// KimiOAuthConfig is the Kimi Code subscription credential from the device
+// flow (global auth.kimi.ai / api.kimi.ai only).
+type KimiOAuthConfig struct {
+	Token        string     `json:"token"`
+	RefreshToken string     `json:"refreshToken,omitempty"`
+	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
+	Email        string     `json:"email,omitempty"`
+	UserID       string     `json:"userId,omitempty"`
+	Nickname     string     `json:"nickname,omitempty"`
+	OAuthHost    string     `json:"oauthHost,omitempty"` // issuing host; refresh goes here
+	BaseURL      string     `json:"baseUrl,omitempty"`   // API base, …/coding/v1
 }
 
 // ZenModelConfig describes one OpenCode Zen model the proxy may forward to.
@@ -876,19 +891,45 @@ func Save(updates map[string]any) (Config, error) {
 		}
 		if k == "kimi" {
 			if vMap, ok := v.(map[string]any); ok {
+				// Start from the persisted section so keys absent from the
+				// update (e.g. oauth on a settings-only save) survive.
 				kimiCopy := make(map[string]any)
+				existingKimi, _ := currentMap["kimi"].(map[string]any)
+				for ek, ev := range existingKimi {
+					kimiCopy[ek] = ev
+				}
 				for kk, vv := range vMap {
+					if kk == "oauth" {
+						continue
+					}
 					kimiCopy[kk] = vv
 				}
 				hasApiKey, _ := kimiCopy["hasApiKey"].(bool)
 				apiKey, _ := kimiCopy["apiKey"].(string)
-				existingKimi, _ := currentMap["kimi"].(map[string]any)
 				if hasApiKey && apiKey == "" && existingKimi != nil {
 					if existingKey, ok := existingKimi["apiKey"].(string); ok && existingKey != "" {
 						kimiCopy["apiKey"] = existingKey
 					}
 				}
 				delete(kimiCopy, "hasApiKey")
+				if postedOAuth, posted := vMap["oauth"]; posted {
+					if postedOAuth == nil {
+						delete(kimiCopy, "oauth")
+					} else if oMap, ok := postedOAuth.(map[string]any); ok {
+						if tok, _ := oMap["token"].(string); tok != "" {
+							oCopy := make(map[string]any)
+							for ok2, ov := range oMap {
+								oCopy[ok2] = ov
+							}
+							delete(oCopy, "hasToken")
+							delete(oCopy, "maskedToken")
+							delete(oCopy, "hasRefreshToken")
+							kimiCopy["oauth"] = oCopy
+						}
+						// An empty/missing token is a redacted echo; keep the
+						// persisted value.
+					}
+				}
 				currentMap[k] = kimiCopy
 			} else {
 				currentMap[k] = v
@@ -1013,6 +1054,14 @@ func Save(updates map[string]any) (Config, error) {
 	return currentConfig, nil
 }
 
+// maskToken renders a token for public config output.
+func maskToken(tok string) string {
+	if len(tok) > 10 {
+		return tok[:6] + "..." + tok[len(tok)-4:]
+	}
+	return "******"
+}
+
 // GetPublicConfig returns config with sensitive fields redacted or safe for UI.
 func GetPublicConfig() map[string]any {
 	mu.RLock()
@@ -1106,6 +1155,27 @@ func GetPublicConfig() map[string]any {
 				if strKey, isStr := vv.(string); isStr && strKey != "" {
 					kimiCopy["hasApiKey"] = true
 				}
+			} else if kk == "oauth" {
+				if oMap, isMap := vv.(map[string]any); isMap {
+					oCopy := make(map[string]any)
+					for okk, ovv := range oMap {
+						if okk == "token" {
+							if strTok, isStr := ovv.(string); isStr && strTok != "" {
+								oCopy["hasToken"] = true
+								oCopy["maskedToken"] = maskToken(strTok)
+							}
+						} else if okk == "refreshToken" {
+							if strTok, isStr := ovv.(string); isStr && strTok != "" {
+								oCopy["hasRefreshToken"] = true
+							}
+						} else {
+							oCopy[okk] = ovv
+						}
+					}
+					kimiCopy["oauth"] = oCopy
+				} else {
+					kimiCopy[kk] = vv
+				}
 			} else {
 				kimiCopy[kk] = vv
 			}
@@ -1140,11 +1210,7 @@ func GetPublicConfig() map[string]any {
 								if ak == "token" {
 									if strTok, isStr := av.(string); isStr && strTok != "" {
 										aCopy["hasToken"] = true
-										if len(strTok) > 10 {
-											aCopy["maskedToken"] = strTok[:6] + "..." + strTok[len(strTok)-4:]
-										} else {
-											aCopy["maskedToken"] = "******"
-										}
+										aCopy["maskedToken"] = maskToken(strTok)
 									}
 								} else if ak == "refreshToken" {
 									if strTok, isStr := av.(string); isStr && strTok != "" {

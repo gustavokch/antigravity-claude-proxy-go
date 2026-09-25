@@ -1252,6 +1252,36 @@
                         </div>
                     </div>
 
+                    <!-- Kimi Code OAuth login -->
+                    <div class="pt-1">
+                        <template x-if="kimiConfig.oauth && kimiConfig.oauth.hasToken">
+                            <div class="flex flex-wrap items-center gap-3">
+                                <span class="text-xs text-gray-300">
+                                    <span class="text-gray-500" x-text="$store.global.t('kimiOAuthLoggedInAs') || 'Logged in as'">Logged in as</span>
+                                    <span class="font-mono text-cyan-300" x-text="kimiConfig.oauth.email || kimiConfig.oauth.nickname || kimiConfig.oauth.userId"></span>
+                                    <span class="text-gray-500" x-show="kimiConfig.oauth.expiresAt" x-text="'· ' + kimiConfig.oauth.expiresAt"></span>
+                                </span>
+                                <button class="btn btn-xs bg-space-800 hover:bg-space-700 border border-space-border text-gray-300 px-3"
+                                    @click="kimiOAuthLogout()"
+                                    aria-label="Log out of Kimi Code">
+                                    <span x-text="$store.global.t('kimiOAuthLogout') || 'Log out'">Log out</span>
+                                </button>
+                                <span class="text-[11px] text-gray-500 w-full" x-text="$store.global.t('kimiOAuthPrecedence') || 'Kimi Code login is used for requests; Base URL and API key apply only when logged out.'">
+                                    Kimi Code login is used for requests; Base URL and API key apply only when logged out.
+                                </span>
+                            </div>
+                        </template>
+                        <template x-if="!(kimiConfig.oauth && kimiConfig.oauth.hasToken)">
+                            <div>
+                                <button class="btn btn-sm bg-cyan-600/80 hover:bg-cyan-500 border-none text-white text-xs px-4"
+                                    @click="startKimiOAuthLogin()"
+                                    aria-label="Login with Kimi Code">
+                                    <span x-text="$store.global.t('kimiOAuthLogin') || 'Login with Kimi Code'">Login with Kimi Code</span>
+                                </button>
+                            </div>
+                        </template>
+                    </div>
+
                     <div class="flex items-center gap-2 pt-1">
                         <button class="btn btn-sm bg-cyan-600 hover:bg-cyan-500 border-none text-white text-xs px-4"
                             @click="saveKimiConfig()" :disabled="kimiSaving"
@@ -2614,6 +2644,31 @@
                         <div class="modal-action">
                             <button class="btn btn-sm btn-ghost" @click="document.getElementById('kimi_discover_modal').close()" x-text="$store.global.t('close') || 'Close'">Close</button>
                             <button class="btn btn-sm btn-primary" @click="importKimiDiscovered()" x-text="$store.global.t('kimiDiscoverImport') || 'Import'">Import</button>
+                        </div>
+                    </div>
+                </dialog>
+
+                <!-- Kimi Code OAuth Login Modal -->
+                <dialog id="kimi_oauth_modal" class="modal" @close="cancelKimiOAuthLogin()">
+                    <div class="modal-box bg-space-900 border-2 border-cyan-500/50 max-w-lg p-6">
+                        <div class="flex items-center justify-between pb-3 border-b border-space-border/60">
+                            <h3 class="font-bold text-lg text-cyan-400" x-text="$store.global.t('kimiOAuthModalTitle') || 'Kimi Code Login'">Kimi Code Login</h3>
+                            <button class="btn btn-xs btn-circle btn-ghost text-gray-400 hover:text-white" @click="document.getElementById('kimi_oauth_modal').close()">✕</button>
+                        </div>
+                        <p class="text-xs text-gray-400 mt-3" x-text="$store.global.t('kimiOAuthEnterCode') || 'Open the link and confirm this code:'">
+                            Open the link and confirm this code:
+                        </p>
+                        <div class="text-center my-4">
+                            <div class="font-mono text-3xl tracking-widest text-white" x-text="kimiOAuth.userCode"></div>
+                            <a class="link link-primary text-xs break-all" :href="kimiOAuth.verificationUri" target="_blank" rel="noopener" x-text="kimiOAuth.verificationUri"></a>
+                        </div>
+                        <div class="flex items-center justify-center gap-2 text-xs text-gray-400" x-show="kimiOAuth.status === 'pending'">
+                            <span class="loading loading-spinner loading-xs"></span>
+                            <span x-text="$store.global.t('kimiOAuthWaiting') || 'Waiting for authorization…'">Waiting for authorization…</span>
+                        </div>
+                        <p class="text-xs text-rose-400 font-mono text-center" x-show="kimiOAuth.error" x-text="kimiOAuth.error"></p>
+                        <div class="modal-action">
+                            <button class="btn btn-sm btn-ghost" @click="document.getElementById('kimi_oauth_modal').close()" x-text="$store.global.t('cancel') || 'Cancel'">Cancel</button>
                         </div>
                     </div>
                 </dialog>

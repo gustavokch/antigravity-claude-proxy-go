@@ -28,7 +28,7 @@ func TestClient_FetchModels_ParsesResponse(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{}
-	got, err := c.FetchModels(context.Background(), "test-key", srv.URL+"/anthropic")
+	got, err := c.FetchModels(context.Background(), "test-key", srv.URL+"/anthropic", nil)
 	if err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestClient_FetchModels_BaseURLVariations(t *testing.T) {
 	c := &Client{}
 	for _, base := range variations {
 		requestedPath = ""
-		got, err := c.FetchModels(context.Background(), "test-key", base)
+		got, err := c.FetchModels(context.Background(), "test-key", base, nil)
 		if err != nil {
 			t.Fatalf("FetchModels(%q): %v", base, err)
 		}
