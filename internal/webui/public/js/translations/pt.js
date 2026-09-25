@@ -559,6 +559,8 @@ window.translations.pt = {
     kimiDiscoverDesc: "Buscar o catálogo de modelos da API Kimi. Escolha quais permitir.",
     kimiDiscoverImport: "Importar",
     kimiOAuthLogin: "Entrar com Kimi Code",
+    providerKimiCode: "Kimi Code",
+    connectKimiCodeDesc: "Entre com sua conta Kimi Code (kimi.ai) usando autorização por dispositivo. O login é global e vale para todas as requisições do gateway Kimi Code.",
     kimiOAuthLoggedInAs: "Conectado como",
     kimiOAuthLogout: "Sair",
     kimiOAuthLogoutConfirm: "Sair do Kimi Code?",
