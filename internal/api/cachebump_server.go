@@ -250,12 +250,19 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 
 // sendKimiBump replays a bump against the currently configured Kimi gateway.
 func (server *Server) sendKimiBump(ctx context.Context, rec cachebump.Record) (cachebump.BumpResult, error) {
-	kimiCfg := config.Get().Kimi
-	if kimiCfg.BaseURL == "" {
+	cred, err := server.resolveKimiCredential(ctx, config.Get().Kimi)
+	if err != nil || cred.baseURL == "" {
 		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
 	}
-	return postBumpRequest(ctx, rec, kimi.NormalizeBaseURL(kimiCfg.BaseURL)+"/v1/messages", func(hdr http.Header) {
-		hdr.Set("Authorization", "Bearer "+kimiCfg.APIKey)
+	return postBumpRequest(ctx, rec, kimi.NormalizeBaseURL(cred.baseURL)+"/v1/messages", func(hdr http.Header) {
+		hdr.Set("Authorization", "Bearer "+cred.token)
+		if cred.oauth {
+			for k, vs := range server.kimiIdentityHeaders() {
+				if len(vs) > 0 {
+					hdr.Set(k, vs[0])
+				}
+			}
+		}
 	})
 }
 

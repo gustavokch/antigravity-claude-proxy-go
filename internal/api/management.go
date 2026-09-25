@@ -217,6 +217,18 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	case path == "/api/kimi/models/fetch" && method == http.MethodPost:
 		server.handleKimiModelsFetch(writer, request)
 		return true
+	case path == "/api/kimi/auth/start" && method == http.MethodPost:
+		server.handleKimiAuthStartPost(writer, request)
+		return true
+	case path == "/api/kimi/auth/status" && method == http.MethodGet:
+		server.handleKimiAuthStatusGet(writer, request)
+		return true
+	case path == "/api/kimi/auth/cancel" && method == http.MethodPost:
+		server.handleKimiAuthCancelPost(writer, request)
+		return true
+	case path == "/api/kimi/auth/logout" && method == http.MethodPost:
+		server.handleKimiAuthLogoutPost(writer, request)
+		return true
 	case path == "/api/zen/config" && method == http.MethodGet:
 		server.handleZenConfigGet(writer, request)
 		return true
@@ -1996,18 +2008,45 @@ func (server *Server) handleKimiModelsFetch(writer http.ResponseWriter, request 
 	}
 	_ = json.NewDecoder(request.Body).Decode(&req)
 	cfg := config.Get()
-	apiKey := req.APIKey
-	if apiKey == "" {
-		apiKey = cfg.Kimi.APIKey
+
+	var apiKey, baseURL string
+	var headers http.Header
+	if req.APIKey != "" {
+		// Explicit key from the picker: the current behaviour.
+		apiKey = req.APIKey
+		baseURL = req.BaseURL
+		if baseURL == "" {
+			baseURL = cfg.Kimi.BaseURL
+		}
+		if baseURL == "" {
+			baseURL = "https://api.moonshot.ai/anthropic"
+		}
+	} else {
+		cred, err := server.resolveKimiCredential(request.Context(), cfg.Kimi)
+		if err != nil {
+			writeJSON(writer, http.StatusBadGateway, map[string]any{
+				"status": "error",
+				"error":  err.Error(),
+			})
+			return
+		}
+		apiKey = cred.token
+		if cred.oauth {
+			// The OAuth token is valid only on api.kimi.ai; ignore req.BaseURL.
+			baseURL = cred.baseURL
+			headers = server.kimiIdentityHeaders()
+		} else {
+			baseURL = req.BaseURL
+			if baseURL == "" {
+				baseURL = cred.baseURL
+			}
+			if baseURL == "" {
+				baseURL = "https://api.moonshot.ai/anthropic"
+			}
+		}
 	}
-	baseURL := req.BaseURL
-	if baseURL == "" {
-		baseURL = cfg.Kimi.BaseURL
-	}
-	if baseURL == "" {
-		baseURL = "https://api.moonshot.ai/anthropic"
-	}
-	models, err := kimi.DefaultClient.FetchModels(request.Context(), apiKey, baseURL)
+
+	models, err := kimi.DefaultClient.FetchModels(request.Context(), apiKey, baseURL, headers)
 	if err != nil {
 		writeJSON(writer, http.StatusBadGateway, map[string]any{
 			"status": "error",

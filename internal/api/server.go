@@ -112,6 +112,10 @@ type Server struct {
 	oauthHandler       http.Handler
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	tracker            *stats.Tracker
+	kimiOAuthMgr       *auth.KimiOAuthManager
+	kimiIdentityOnce   sync.Once
+	kimiIdentity       http.Header
+	kimiRefreshMu      sync.Mutex
 	headroom           *headroom.Engine
 	ccrStore           *ccr.CCRStore
 	cacheBumpStore     *cachebump.Store
@@ -167,6 +171,7 @@ func New(options Options) (*Server, error) {
 		claudeCodeOAuthMgr: options.ClaudeCodeOAuthMgr,
 		projects:           make(map[string]string),
 	}
+	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
 
 	cfg := config.Get()
 	srv.classifierAudit = classifier.NewRecorder(200)
@@ -1282,14 +1287,117 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	proxy.ServeHTTP(writer, request)
 }
 
+// kimiIdentityHeaders lazily computes the KimiCLI fingerprint headers. Callers
+// must only read the returned header. Lazy means New never writes a device-id
+// file, so tests without ANTIGRAVITY_CONFIG_DIR never touch the real config dir.
+func (server *Server) kimiIdentityHeaders() http.Header {
+	server.kimiIdentityOnce.Do(func() {
+		server.kimiIdentity = kimi.IdentityHeaders(kimi.EnsureDeviceID(config.GetConfigDir()))
+	})
+	return server.kimiIdentity
+}
+
+var (
+	errKimiNoCredential = errors.New("Kimi gateway enabled but no credential configured (log in with Kimi Code or set an API key)")
+	errKimiLoginExpired = errors.New("Kimi Code login expired — sign in again")
+)
+
+type kimiCredential struct {
+	token, baseURL string
+	oauth          bool
+}
+
+// resolveKimiCredential picks the credential for a Kimi upstream call. The
+// OAuth credential wins over apiKey when present; a stale OAuth token is
+// refreshed and persisted.
+func (server *Server) resolveKimiCredential(ctx context.Context, cfg config.KimiConfig) (kimiCredential, error) {
+	if cfg.OAuth != nil && cfg.OAuth.Token != "" {
+		o := cfg.OAuth
+		if o.ExpiresAt != nil && time.Until(*o.ExpiresAt) <= 60*time.Second {
+			server.kimiRefreshMu.Lock()
+			defer server.kimiRefreshMu.Unlock()
+			current := config.Get().Kimi.OAuth
+			if current == nil || current.Token == "" {
+				return kimiCredential{}, errKimiLoginExpired
+			}
+			if current.ExpiresAt == nil || time.Until(*current.ExpiresAt) > 60*time.Second {
+				o = current
+			} else {
+				// WithoutCancel: a client disconnect must not strand a rotated
+				// refresh token half-persisted.
+				tok, err := server.kimiOAuthMgr.RefreshToken(context.WithoutCancel(ctx), o.RefreshToken, o.OAuthHost)
+				if err != nil {
+					if errors.Is(err, auth.ErrKimiOAuthUnauthorized) {
+						return kimiCredential{}, errKimiLoginExpired
+					}
+					return kimiCredential{}, fmt.Errorf("Kimi OAuth token refresh failed: %w", err)
+				}
+				oauthMap := map[string]any{
+					"token":        tok.AccessToken,
+					"refreshToken": tok.RefreshToken,
+					"expiresAt":    tok.ExpiresAt.Format(time.RFC3339),
+					"oauthHost":    o.OAuthHost,
+					"baseUrl":      o.BaseURL,
+				}
+				if o.Email != "" {
+					oauthMap["email"] = o.Email
+				}
+				if o.UserID != "" {
+					oauthMap["userId"] = o.UserID
+				}
+				if o.Nickname != "" {
+					oauthMap["nickname"] = o.Nickname
+				}
+				saved, err := config.Save(map[string]any{"kimi": map[string]any{"oauth": oauthMap}})
+				if err != nil {
+					server.logger.Warn("kimi oauth refresh persist failed", "error", err)
+				} else if updater, ok := server.backend.(ConfigUpdater); ok {
+					updater.UpdateConfig(saved)
+				}
+				o = &config.KimiOAuthConfig{
+					Token:        tok.AccessToken,
+					RefreshToken: tok.RefreshToken,
+					ExpiresAt:    &tok.ExpiresAt,
+					Email:        o.Email,
+					UserID:       o.UserID,
+					Nickname:     o.Nickname,
+					OAuthHost:    o.OAuthHost,
+					BaseURL:      o.BaseURL,
+				}
+			}
+		}
+		baseURL := o.BaseURL
+		if baseURL == "" {
+			baseURL = auth.KimiCodeBaseURL
+		}
+		return kimiCredential{token: o.Token, baseURL: baseURL, oauth: true}, nil
+	}
+	if cfg.APIKey != "" {
+		return kimiCredential{token: cfg.APIKey, baseURL: cfg.BaseURL}, nil
+	}
+	return kimiCredential{}, errKimiNoCredential
+}
+
 // forwardToKimi transparently forwards an /v1/messages request to the Kimi
 // Code gateway. The Kimi endpoint is Anthropic-compatible, so no translation
 // is needed: we rewrite Authorization, preserve the Anthropic version/beta
 // headers, and stream the response back. When CCR is enabled, it hydrates headroom_retrieve calls.
 func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Request, kimiCfg config.KimiConfig, body []byte, model string) {
-	if kimiCfg.APIKey == "" {
-		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Kimi gateway enabled but no API key configured")
+	cred, err := server.resolveKimiCredential(request.Context(), kimiCfg)
+	if err != nil {
+		switch {
+		case errors.Is(err, errKimiNoCredential):
+			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		case errors.Is(err, errKimiLoginExpired):
+			writeAPIError(writer, http.StatusUnauthorized, "authentication_error", err.Error())
+		default:
+			writeAPIError(writer, http.StatusBadGateway, "api_error", err.Error())
+		}
 		return
+	}
+	var identity http.Header
+	if cred.oauth {
+		identity = server.kimiIdentityHeaders()
 	}
 	if server.logger != nil {
 		server.logger.Info("kimi forward", "model", model)
@@ -1306,7 +1414,7 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 			}
 			return nil
 		}
-		kimi.ForwardMessagesWithModify(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body, modify)
+		kimi.ForwardMessagesWithModify(writer, request, cred.baseURL, cred.token, body, identity, modify)
 		return
 	}
 
@@ -1318,18 +1426,23 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 			}
 			return nil
 		}
-		kimi.ForwardMessagesWithModify(writer, request, kimiCfg.BaseURL, kimiCfg.APIKey, body, modify)
+		kimi.ForwardMessagesWithModify(writer, request, cred.baseURL, cred.token, body, identity, modify)
 		return
 	}
 
-	targetURL := kimi.NormalizeBaseURL(kimiCfg.BaseURL) + "/v1/messages"
+	targetURL := kimi.NormalizeBaseURL(cred.baseURL) + "/v1/messages"
 	sender := func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBytes))
 		if err != nil {
 			return nil, err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+kimiCfg.APIKey)
+		httpReq.Header.Set("Authorization", "Bearer "+cred.token)
+		for k, vs := range identity {
+			if len(vs) > 0 {
+				httpReq.Header.Set(k, vs[0])
+			}
+		}
 		if v := request.Header.Get("anthropic-version"); v != "" {
 			httpReq.Header.Set("anthropic-version", v)
 		} else {

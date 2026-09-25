@@ -363,10 +363,12 @@ window.Components.models = () => ({
         baseUrl: 'https://api.moonshot.ai/anthropic',
         apiKey: '',
         hasApiKey: false,
-        allowlist: []
+        allowlist: [],
+        oauth: null
     },
     kimiSaving: false,
     kimiError: '',
+    kimiOAuth: { sessionId: '', userCode: '', verificationUri: '', status: '', error: '', polling: false },
     kimiDiscovered: [],
     kimiNewId: '',
     kimiNewAlias: '',
@@ -659,7 +661,8 @@ window.Components.models = () => ({
                     baseUrl: data.config.baseUrl || 'https://api.moonshot.ai/anthropic',
                     apiKey: '',
                     hasApiKey: !!data.config.hasApiKey,
-                    allowlist: data.config.allowlist || []
+                    allowlist: data.config.allowlist || [],
+                    oauth: data.config.oauth || null
                 };
                 Alpine.store('data').kimi = this.kimiConfig;
             }
@@ -707,6 +710,118 @@ window.Components.models = () => ({
             store.showToast(this.kimiError, 'error');
         } finally {
             this.kimiSaving = false;
+        }
+    },
+
+    async startKimiOAuthLogin() {
+        const store = Alpine.store('global');
+        const password = store.webuiPassword;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/kimi/auth/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            }, password);
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.status !== 'ok') {
+                store.showToast(data.error || `HTTP ${response.status}`, 'error');
+                return;
+            }
+            this.kimiOAuth.sessionId = data.session_id || '';
+            this.kimiOAuth.userCode = data.user_code || '';
+            this.kimiOAuth.verificationUri = data.verification_uri_complete || data.verification_uri || '';
+            this.kimiOAuth.status = 'pending';
+            this.kimiOAuth.error = '';
+            this.kimiOAuth.polling = true;
+            const dialog = document.getElementById('kimi_oauth_modal');
+            if (dialog && typeof dialog.showModal === 'function') {
+                dialog.showModal();
+            }
+            this._pollKimiOAuth();
+        } catch (e) {
+            store.showToast(e.message || 'Failed to start Kimi Code login', 'error');
+        }
+    },
+
+    async _pollKimiOAuth() {
+        const store = Alpine.store('global');
+        while (this.kimiOAuth.polling) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            if (!this.kimiOAuth.polling) return;
+            try {
+                const { response, newPassword } = await window.utils.request(
+                    `/api/kimi/auth/status?session_id=${encodeURIComponent(this.kimiOAuth.sessionId)}`,
+                    {}, store.webuiPassword);
+                if (newPassword) store.webuiPassword = newPassword;
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    this.kimiOAuth.status = 'error';
+                    this.kimiOAuth.error = data.error || `HTTP ${response.status}`;
+                    this.kimiOAuth.polling = false;
+                    return;
+                }
+                if (data.status === 'completed') {
+                    this.kimiOAuth.status = 'completed';
+                    this.kimiOAuth.polling = false;
+                    const dialog = document.getElementById('kimi_oauth_modal');
+                    if (dialog && dialog.open) dialog.close();
+                    store.showToast(store.t('kimiOAuthSuccess') || 'Kimi Code login complete', 'success');
+                    await this.fetchKimiConfig();
+                    return;
+                }
+                if (['expired', 'denied', 'cancelled', 'error'].includes(data.status)) {
+                    this.kimiOAuth.status = data.status;
+                    this.kimiOAuth.error = data.error || '';
+                    this.kimiOAuth.polling = false;
+                    return;
+                }
+            } catch (e) {
+                this.kimiOAuth.status = 'error';
+                this.kimiOAuth.error = e.message || 'Login status check failed';
+                this.kimiOAuth.polling = false;
+                return;
+            }
+        }
+    },
+
+    async cancelKimiOAuthLogin() {
+        const store = Alpine.store('global');
+        if (this.kimiOAuth.status === 'pending') {
+            try {
+                const { response, newPassword } = await window.utils.request('/api/kimi/auth/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: this.kimiOAuth.sessionId })
+                }, store.webuiPassword);
+                if (newPassword) store.webuiPassword = newPassword;
+            } catch (e) {
+                // Best-effort; the session expires on its own.
+            }
+            this.kimiOAuth.status = 'cancelled';
+        }
+        this.kimiOAuth.polling = false;
+        const dialog = document.getElementById('kimi_oauth_modal');
+        if (dialog && dialog.open) dialog.close();
+    },
+
+    async kimiOAuthLogout() {
+        const store = Alpine.store('global');
+        if (!confirm(store.t('kimiOAuthLogoutConfirm') || 'Log out of Kimi Code?')) return;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/kimi/auth/logout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+            await this.fetchKimiConfig();
+        } catch (e) {
+            store.showToast(e.message || 'Failed to log out of Kimi Code', 'error');
         }
     },
 
