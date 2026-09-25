@@ -274,7 +274,6 @@ window.Components.addAccountModal = () => ({
         const store = Alpine.store('global');
         const sessionId = this.kimiOAuth.sessionId;
         this.kimiOAuth.polling = false;
-        this.kimiOAuth.status = 'cancelled';
         try {
             const { newPassword } = await window.utils.request('/api/kimi/auth/cancel', {
                 method: 'POST',
