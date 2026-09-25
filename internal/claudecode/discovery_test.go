@@ -143,7 +143,16 @@ func TestDiscoverLocalCredentials_MillisecondTimestamp(t *testing.T) {
 		t.Fatalf("expected at least 1 account, got 0")
 	}
 
-	acc := accounts[0]
+	var acc *AccountConfig
+	for _, a := range accounts {
+		if a.Token == "sk-ant-oat-token-milli" {
+			acc = &a
+			break
+		}
+	}
+	if acc == nil {
+		t.Fatalf("expected oauth account with token sk-ant-oat-token-milli")
+	}
 	if acc.ExpiresAt == nil {
 		t.Fatalf("expected non-nil ExpiresAt")
 	}
