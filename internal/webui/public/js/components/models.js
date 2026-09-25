@@ -778,6 +778,7 @@ window.Components.models = () => ({
                     return;
                 }
             } catch (e) {
+                if (!this.kimiOAuth.polling) return; // cancelled/reset while in flight
                 this.kimiOAuth.status = 'error';
                 this.kimiOAuth.error = e.message || 'Login status check failed';
                 this.kimiOAuth.polling = false;
