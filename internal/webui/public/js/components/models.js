@@ -788,12 +788,15 @@ window.Components.models = () => ({
 
     async cancelKimiOAuthLogin() {
         const store = Alpine.store('global');
-        if (this.kimiOAuth.status === 'pending') {
+        const sessionId = this.kimiOAuth.sessionId;
+        const wasPending = this.kimiOAuth.status === 'pending';
+        this.kimiOAuth.polling = false; // stop the poll loop before any await
+        if (wasPending && sessionId) {
             try {
                 const { response, newPassword } = await window.utils.request('/api/kimi/auth/cancel', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: this.kimiOAuth.sessionId })
+                    body: JSON.stringify({ session_id: sessionId })
                 }, store.webuiPassword);
                 if (newPassword) store.webuiPassword = newPassword;
             } catch (e) {
@@ -801,7 +804,6 @@ window.Components.models = () => ({
             }
             this.kimiOAuth.status = 'cancelled';
         }
-        this.kimiOAuth.polling = false;
         const dialog = document.getElementById('kimi_oauth_modal');
         if (dialog && dialog.open) dialog.close();
     },
