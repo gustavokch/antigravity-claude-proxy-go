@@ -3,12 +3,12 @@
 import assert from 'node:assert/strict';
 import { loadComponent, okResponse, pendingTick } from './kimi-poll-race.harness.mjs';
 
-const MODELS = 'internal/webui/public/js/components/models.js';
-const MODAL = 'internal/webui/public/js/components/add-account-modal.js';
+const MODELS = 'models.js';
+const MODAL = 'add-account-modal.js';
 
 // models.js: old in-flight 'completed' resolves after cancel → re-login.
 async function t1_oldSessionCompleted_models() {
-    const { component: c, requests, toasts, closedDialogs } =
+    const { component: c, requests, toasts, closedDialogs, dialog } =
         loadComponent(MODELS, 'models');
 
     c.fetchKimiConfig = async () => {};
@@ -23,6 +23,7 @@ async function t1_oldSessionCompleted_models() {
     c.kimiOAuth.sessionId = 'new';
     c.kimiOAuth.status = 'pending';
     c.kimiOAuth.polling = true;
+    dialog('kimi_oauth_modal').showModal();     // new login's dialog
 
     requests[0].resolve({ response: okResponse({ status: 'completed' }), newPassword: null });
     await loop;
@@ -59,7 +60,7 @@ async function t1_oldSessionRejection_models() {
 // add-account-modal.js: resetState() replaces this.kimiOAuth with a fresh
 // object; old in-flight 'completed' resolves after reset → re-login.
 async function t2_oldSessionCompleted_modal() {
-    const { component: c, requests, closedDialogs } =
+    const { component: c, requests, closedDialogs, dialog } =
         loadComponent(MODAL, 'addAccountModal');
 
     c._refreshKimiStore = async () => {};
@@ -72,6 +73,7 @@ async function t2_oldSessionCompleted_modal() {
 
     // resetState() replaced the object; a fresh login is pending on it.
     c.kimiOAuth = { sessionId: 'new', userCode: '', verificationUri: '', status: 'pending', error: '', polling: true };
+    dialog('add_account_modal').showModal();    // new login's dialog
 
     requests[0].resolve({ response: okResponse({ status: 'completed' }), newPassword: null });
     await loop;
