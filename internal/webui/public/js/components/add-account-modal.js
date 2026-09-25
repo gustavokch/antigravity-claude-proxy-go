@@ -231,8 +231,8 @@ window.Components.addAccountModal = () => ({
                 const { response, newPassword } = await window.utils.request(
                     `/api/kimi/auth/status?session_id=${encodeURIComponent(sessionId)}`,
                     {}, store.webuiPassword);
-                if (!this.kimiOAuth.polling || this.kimiOAuth.sessionId !== sessionId) return; // cancelled/reset/superseded while in flight
                 if (newPassword) store.webuiPassword = newPassword;
+                if (!this.kimiOAuth.polling || this.kimiOAuth.sessionId !== sessionId) return; // cancelled/reset/superseded while in flight
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) {
                     this.kimiOAuth.status = 'error';
