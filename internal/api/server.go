@@ -124,6 +124,9 @@ type Server struct {
 	classifierAudit    *classifier.Recorder
 	classifierCorpus   atomic.Pointer[corpus.Recorder]
 
+	// Kimi OAuth refresh state, guarded by kimiRefreshMu.
+	kimiDeadRefreshToken string // refresh token Kimi rejected
+
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
 	upstreamToken     string
@@ -1350,11 +1353,18 @@ func (server *Server) refreshKimiOAuth(ctx context.Context) (*config.KimiOAuthCo
 	if !kimiOAuthExpiring(stored) {
 		return stored, nil
 	}
+	// A refresh token Kimi already rejected fails fast; re-sending it on every
+	// request only hammers auth.kimi.ai. An empty one matches the zero value
+	// and could never refresh anyway.
+	if stored.RefreshToken == server.kimiDeadRefreshToken {
+		return nil, errKimiLoginExpired
+	}
 	// WithoutCancel: a client disconnect must not strand a rotated refresh
 	// token half-persisted.
 	tok, err := server.kimiOAuthMgr.RefreshToken(context.WithoutCancel(ctx), stored.RefreshToken, stored.OAuthHost)
 	if err != nil {
 		if errors.Is(err, auth.ErrKimiOAuthUnauthorized) {
+			server.kimiDeadRefreshToken = stored.RefreshToken
 			return nil, errKimiLoginExpired
 		}
 		return nil, fmt.Errorf("Kimi OAuth token refresh failed: %w", err)

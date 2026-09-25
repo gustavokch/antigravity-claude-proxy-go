@@ -166,7 +166,9 @@ func TestServer_ForwardToKimi_OAuthInvalidGrant(t *testing.T) {
 
 	upstream := newKimiOAuthUpstream(t)
 
+	var refreshCalls atomic.Int64
 	fakeAuth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
 		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
@@ -174,25 +176,38 @@ func TestServer_ForwardToKimi_OAuthInvalidGrant(t *testing.T) {
 	defer fakeAuth.Close()
 
 	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
-	seedKimiOAuthConfig(t, map[string]any{
+	oauth := map[string]any{
 		"token":        "oauth-tok-1",
 		"refreshToken": "rt-1",
 		"expiresAt":    past,
 		"oauthHost":    fakeAuth.URL,
 		"baseUrl":      upstream.srv.URL + "/coding/v1",
-	}, nil)
+	}
+	seedKimiOAuthConfig(t, oauth, nil)
 
 	server := newKimiTestServer(t)
-	rec := postKimiMessage(t, server)
-
-	if rec.Code != 401 {
-		t.Fatalf("client status = %d, want 401; body = %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "authentication_error") {
-		t.Errorf("body = %s, want authentication_error", rec.Body.String())
+	for i := range 3 {
+		rec := postKimiMessage(t, server)
+		if rec.Code != 401 {
+			t.Fatalf("request %d: client status = %d, want 401; body = %s", i, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "authentication_error") {
+			t.Errorf("request %d: body = %s, want authentication_error", i, rec.Body.String())
+		}
 	}
 	if upstream.called.Load() != 0 {
 		t.Errorf("upstream called %d times, want 0", upstream.called.Load())
+	}
+	if got := refreshCalls.Load(); got != 1 {
+		t.Errorf("refresh POSTs after 3 requests = %d, want 1 (a rejected refresh token must not be re-sent)", got)
+	}
+
+	// A new login carries a new refresh token, which is tried again.
+	oauth["token"], oauth["refreshToken"] = "oauth-tok-new", "rt-new"
+	seedKimiOAuthConfig(t, oauth, nil)
+	postKimiMessage(t, server)
+	if got := refreshCalls.Load(); got != 2 {
+		t.Errorf("refresh POSTs after a new login = %d, want 2", got)
 	}
 }
 
