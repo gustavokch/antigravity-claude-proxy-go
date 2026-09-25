@@ -753,6 +753,7 @@ window.Components.models = () => ({
                 const { response, newPassword } = await window.utils.request(
                     `/api/kimi/auth/status?session_id=${encodeURIComponent(this.kimiOAuth.sessionId)}`,
                     {}, store.webuiPassword);
+                if (!this.kimiOAuth.polling) return; // cancelled/reset while in flight
                 if (newPassword) store.webuiPassword = newPassword;
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) {
