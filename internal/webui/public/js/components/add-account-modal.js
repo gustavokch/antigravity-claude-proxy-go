@@ -226,11 +226,12 @@ window.Components.addAccountModal = () => ({
         while (this.kimiOAuth.polling) {
             await new Promise(resolve => setTimeout(resolve, 2000));
             if (!this.kimiOAuth.polling) return;
+            const sessionId = this.kimiOAuth.sessionId;
             try {
                 const { response, newPassword } = await window.utils.request(
-                    `/api/kimi/auth/status?session_id=${encodeURIComponent(this.kimiOAuth.sessionId)}`,
+                    `/api/kimi/auth/status?session_id=${encodeURIComponent(sessionId)}`,
                     {}, store.webuiPassword);
-                if (!this.kimiOAuth.polling) return; // cancelled/reset while in flight
+                if (!this.kimiOAuth.polling || this.kimiOAuth.sessionId !== sessionId) return; // cancelled/reset/superseded while in flight
                 if (newPassword) store.webuiPassword = newPassword;
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) {
@@ -257,7 +258,7 @@ window.Components.addAccountModal = () => ({
                     return;
                 }
             } catch (e) {
-                if (!this.kimiOAuth.polling) return; // cancelled/reset while in flight
+                if (!this.kimiOAuth.polling || this.kimiOAuth.sessionId !== sessionId) return; // cancelled/reset/superseded while in flight
                 this.kimiOAuth.status = 'error';
                 this.kimiOAuth.error = e.message || 'Login status check failed';
                 this.kimiOAuth.polling = false;
