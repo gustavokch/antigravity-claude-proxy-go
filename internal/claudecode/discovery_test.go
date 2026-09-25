@@ -95,10 +95,9 @@ func TestDiscoverLocalCredentials_OAuthWithRefreshToken(t *testing.T) {
 	}
 
 	var oauthAcc *AccountConfig
-	for _, a := range accounts {
-		if a.Token == "sk-ant-oat-token-abc" {
-			accCopy := a
-			oauthAcc = &accCopy
+	for i := range accounts {
+		if accounts[i].Token == "sk-ant-oat-token-abc" {
+			oauthAcc = &accounts[i]
 			break
 		}
 	}
@@ -144,9 +143,9 @@ func TestDiscoverLocalCredentials_MillisecondTimestamp(t *testing.T) {
 	}
 
 	var acc *AccountConfig
-	for _, a := range accounts {
-		if a.Token == "sk-ant-oat-token-milli" {
-			acc = &a
+	for i := range accounts {
+		if accounts[i].Token == "sk-ant-oat-token-milli" {
+			acc = &accounts[i]
 			break
 		}
 	}
