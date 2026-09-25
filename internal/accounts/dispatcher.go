@@ -452,7 +452,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 				return response, requestErr
 			}
-			upstreamError := findHTTPError(requestErr)
+			upstreamError := cloudcode.FindHTTPError(requestErr)
 			if upstreamError != nil && isCapacityHTTPError(upstreamError) && capacityAttempt < dispatcher.maxCapacityRetries {
 				wait := ParseResetTime(upstreamError.Header, upstreamError.Body, dispatcher.now())
 				if wait == 0 {
@@ -731,7 +731,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 	if isCanceled(err) {
 		return false
 	}
-	upstreamError := findHTTPError(err)
+	upstreamError := cloudcode.FindHTTPError(err)
 	if upstreamError == nil {
 		dispatcher.manager.MarkFailure(account, model)
 		return true
@@ -969,10 +969,6 @@ func (dispatcher *Dispatcher) recordQuotaExhaustion(account *Account, model, bod
 		return
 	}
 	dispatcher.manager.MarkQuotaExhausted(account.Email, dispatcher.quotaKeyFor(model, exhaustion.Model), exhaustion.ResetTime)
-}
-
-func findHTTPError(err error) *cloudcode.HTTPError {
-	return cloudcode.FindHTTPError(err)
 }
 
 // maxLoggedBodyLen caps upstream error bodies in logs: enough to keep the
