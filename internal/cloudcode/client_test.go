@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -153,7 +154,7 @@ func TestDoSSEDecompressesGzipStream(t *testing.T) {
 	defer server.Close()
 
 	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
-	client.contentEndpoints = []string{server.URL}
+	client.generationEndpoints = []string{server.URL}
 	var events []SSEEvent
 	if _, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
 		events = append(events, event)
@@ -175,7 +176,7 @@ func TestDoSSEClosesBodyOnGunzipError(t *testing.T) {
 	defer server.Close()
 
 	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
-	client.contentEndpoints = []string{server.URL}
+	client.generationEndpoints = []string{server.URL}
 	_, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
 		return nil
 	})
@@ -204,16 +205,50 @@ func TestLoadCodeAssistMetadata(t *testing.T) {
 	}
 }
 
-func TestContentTargetsProductionAndProvisioningIncludesDailyFallback(t *testing.T) {
+func TestEndpointDefaults(t *testing.T) {
 	t.Parallel()
-	// Content generation only targets ProdEndpoint to prevent daily from rejecting
-	// conversation turns with corrupted thought signatures.
-	if len(ContentEndpoints) != 1 || ContentEndpoints[0] != ProdEndpoint {
-		t.Fatalf("content endpoint order = %#v, want [%q]", ContentEndpoints, ProdEndpoint)
+	// Generation is pinned to agy's host with no cross-host fallback: agy
+	// 1.2.10 sends streamGenerateContent to daily (SNI parity), and a thought
+	// signature issued by one host is rejected by the other.
+	if want := []string{DailyEndpoint}; !reflect.DeepEqual(GenerationEndpoints, want) {
+		t.Errorf("GenerationEndpoints = %#v, want %#v", GenerationEndpoints, want)
 	}
-	// Provisioning endpoints retain DailyEndpoint fallback.
-	if len(ProvisioningEndpoints) != 2 || ProvisioningEndpoints[0] != ProdEndpoint || ProvisioningEndpoints[1] != DailyEndpoint {
-		t.Fatalf("provisioning endpoint order = %#v, want [%q, %q]", ProvisioningEndpoints, ProdEndpoint, DailyEndpoint)
+	if want := []string{ProdEndpoint, DailyEndpoint}; !reflect.DeepEqual(ContentEndpoints, want) {
+		t.Errorf("ContentEndpoints = %#v, want %#v", ContentEndpoints, want)
+	}
+	if want := []string{ProdEndpoint, DailyEndpoint}; !reflect.DeepEqual(ProvisioningEndpoints, want) {
+		t.Errorf("ProvisioningEndpoints = %#v, want %#v", ProvisioningEndpoints, want)
+	}
+}
+
+func TestGenerationTargetsOnlyGenerationEndpoints(t *testing.T) {
+	t.Parallel()
+	var metadataCalls, generationCalls atomic.Int32
+	metadata := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		metadataCalls.Add(1)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer metadata.Close()
+	generation := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		generationCalls.Add(1)
+		http.Error(writer, `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}`, http.StatusTooManyRequests)
+	}))
+	defer generation.Close()
+
+	client := New(Options{AccessToken: "token", HTTPClient: generation.Client()})
+	client.contentEndpoints = []string{metadata.URL}
+	client.generationEndpoints = []string{generation.URL}
+
+	_, streamErr := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(SSEEvent) error { return nil })
+	_, jsonErr := client.GenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{})
+	for name, err := range map[string]error{"stream": streamErr, "json": jsonErr} {
+		if got := FindHTTPError(err); got == nil || got.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("%s error = %v, want upstream 429", name, err)
+		}
+	}
+	if metadataCalls.Load() != 0 || generationCalls.Load() != 2 {
+		t.Fatalf("metadata=%d generation=%d, want 0 and 2: a generation 429 must not reach another host",
+			metadataCalls.Load(), generationCalls.Load())
 	}
 }
 

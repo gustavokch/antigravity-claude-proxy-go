@@ -36,7 +36,13 @@ const (
 )
 
 var (
-	ContentEndpoints      = []string{ProdEndpoint}
+	// GenerationEndpoints carries generateContent/streamGenerateContent. It
+	// holds exactly one host: agy 1.2.10 generates on daily (SNI parity), and
+	// a thought signature issued by one host is rejected by the other
+	// ("Corrupted thought signature"), so a cross-host fallback turns a
+	// retryable 429 into a permanent 400.
+	GenerationEndpoints   = []string{DailyEndpoint}
+	ContentEndpoints      = []string{ProdEndpoint, DailyEndpoint}
 	ProvisioningEndpoints = []string{ProdEndpoint, DailyEndpoint}
 )
 
@@ -54,6 +60,7 @@ type Client struct {
 	accessToken           string
 	userAgent             string
 	contentEndpoints      []string
+	generationEndpoints   []string
 	provisioningEndpoints []string
 	defaultHeader         http.Header
 }
@@ -203,6 +210,7 @@ func New(options Options) *Client {
 		accessToken:           options.AccessToken,
 		userAgent:             userAgent,
 		contentEndpoints:      append([]string(nil), ContentEndpoints...),
+		generationEndpoints:   append([]string(nil), GenerationEndpoints...),
 		provisioningEndpoints: append([]string(nil), ProvisioningEndpoints...),
 		defaultHeader:         header,
 	}
@@ -260,11 +268,11 @@ func (c *Client) RetrieveUserQuota(ctx context.Context, projectID string) (Respo
 }
 
 func (c *Client) GenerateContent(ctx context.Context, payload any, options RequestOptions) (Response, error) {
-	return c.DoJSON(ctx, c.contentEndpoints, PathGenerateContent, payload, options)
+	return c.DoJSON(ctx, c.generationEndpoints, PathGenerateContent, payload, options)
 }
 
 func (c *Client) StreamGenerateContent(ctx context.Context, payload any, options RequestOptions, consume func(SSEEvent) error) (Response, error) {
-	return c.DoSSE(ctx, c.contentEndpoints, PathStreamGenerate, payload, options, consume)
+	return c.DoSSE(ctx, c.generationEndpoints, PathStreamGenerate, payload, options, consume)
 }
 
 func (c *Client) DoJSON(ctx context.Context, endpoints []string, path string, payload any, options RequestOptions) (Response, error) {
