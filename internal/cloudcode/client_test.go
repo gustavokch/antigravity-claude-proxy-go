@@ -296,6 +296,18 @@ func TestFindHTTPError(t *testing.T) {
 		t.Errorf("got status %d, want 500", got.StatusCode)
 	}
 
+	// Joined errors prioritizing 401 and 403 over 500
+	err401 := &HTTPError{StatusCode: http.StatusUnauthorized, Status: "401", Body: "Unauthorized"}
+	err403 := &HTTPError{StatusCode: http.StatusForbidden, Status: "403", Body: "Forbidden"}
+	joined500And401 := errors.Join(err500, err401)
+	if got := FindHTTPError(joined500And401); got != err401 {
+		t.Errorf("got status %d, want 401", got.StatusCode)
+	}
+	joined500And403 := errors.Join(err500, err403)
+	if got := FindHTTPError(joined500And403); got != err403 {
+		t.Errorf("got status %d, want 403", got.StatusCode)
+	}
+
 	// Nil or unrelated error
 	if got := FindHTTPError(nil); got != nil {
 		t.Errorf("expected nil for nil error, got %v", got)

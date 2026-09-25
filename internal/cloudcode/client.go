@@ -140,12 +140,12 @@ func FindHTTPError(err error) *HTTPError {
 		}
 	}
 	for _, httpErr := range httpErrors {
-		if httpErr.StatusCode >= 500 {
+		if httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden {
 			return httpErr
 		}
 	}
 	for _, httpErr := range httpErrors {
-		if httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden {
+		if httpErr.StatusCode >= 500 {
 			return httpErr
 		}
 	}
