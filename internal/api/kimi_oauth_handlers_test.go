@@ -281,3 +281,38 @@ func TestKimiOAuthHandlers_TerminalStatusDropsSession(t *testing.T) {
 		t.Errorf("poll after a terminal status: code=%d body=%v, want 404", code, body)
 	}
 }
+
+func TestKimiOAuthHandlers_SaveFailureAllowsRetry(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	fake := newKimiAuthFake(t)
+	fake.attach(t, server)
+
+	_, start := doKimiRequest(t, server, http.MethodPost, "/api/kimi/auth/start", "{}")
+	sessionID, _ := start["session_id"].(string)
+
+	restore := breakConfigWrites(t)
+	fake.approved.Store(true)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		code, status := doKimiRequest(t, server, http.MethodGet, "/api/kimi/auth/status?session_id="+sessionID, "")
+		if code == http.StatusInternalServerError {
+			break
+		}
+		if status["status"] == "completed" {
+			t.Fatalf("reported completed while config writes fail: %v", status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the save failure; last=%v", status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	restore()
+
+	code, status := doKimiRequest(t, server, http.MethodGet, "/api/kimi/auth/status?session_id="+sessionID, "")
+	if code != http.StatusOK || status["status"] != "completed" {
+		t.Fatalf("retry poll: code=%d body=%v, want 200 completed", code, status)
+	}
+	if tok := config.Get().Kimi.OAuth; tok == nil || tok.Token != "at-123456789012" {
+		t.Fatalf("OAuth after retry = %+v, want at-123456789012 persisted", tok)
+	}
+}

@@ -78,6 +78,8 @@ func (server *Server) handleKimiAuthStatusGet(writer http.ResponseWriter, reques
 	if snap.Status == "completed" {
 		if session.ClaimCompletion() {
 			if err := server.registerAuthenticatedKimiOAuth(snap); err != nil {
+				// Let the next poll retry the save.
+				session.ReleaseCompletion()
 				writeJSON(writer, http.StatusInternalServerError, map[string]any{
 					"status": "error",
 					"error":  "Failed to save Kimi login: " + err.Error(),

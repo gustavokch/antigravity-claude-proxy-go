@@ -117,8 +117,8 @@ func (s *KimiAuthSession) Snapshot() KimiAuthSessionSnapshot {
 }
 
 // ClaimCompletion marks the session's completed token as consumed. It returns
-// true exactly once per completion, so later status polls cannot re-save a
-// stale token over one that was refreshed since.
+// true once per completion (again only after ReleaseCompletion), so later
+// status polls cannot re-save a stale token over one refreshed since.
 func (s *KimiAuthSession) ClaimCompletion() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,6 +127,14 @@ func (s *KimiAuthSession) ClaimCompletion() bool {
 		return true
 	}
 	return false
+}
+
+// ReleaseCompletion undoes a ClaimCompletion whose save failed, so a later
+// status poll can retry persisting the token.
+func (s *KimiAuthSession) ReleaseCompletion() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registered = false
 }
 
 // finish sets the terminal status while the session is still pending.
