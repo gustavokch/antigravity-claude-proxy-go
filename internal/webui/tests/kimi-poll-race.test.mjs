@@ -299,6 +299,29 @@ async function t10_committedCompletionAfterReset_modal() {
     assert.equal(toasts.length, 0, 'toasted success for a cancelled login');
 }
 
+// add-account-modal.js: user closes the modal while /auth/start is in flight.
+// The start response must not revive a hidden pending login; cancel it server-side.
+async function t11_resetDuringStart_modal() {
+    const { component: c, requests, flushTimers } =
+        loadComponent(MODAL, 'addAccountModal', { manualTimers: true });
+
+    const start = c.startKimiLogin();
+    await pendingTick();
+    assert.equal(requests.length, 1);           // /auth/start in flight
+    c.resetState();                             // user closes the modal
+    requests[0].resolve({ response: okResponse({ status: 'ok', session_id: 's1', user_code: 'ABCD' }),
+                          newPassword: null });
+    await start;
+    flushTimers();                              // a revived loop would poll now
+    await pendingTick();
+
+    assert.equal(c.kimiOAuth.status, '', 'closed modal revived a pending login');
+    assert.equal(c.kimiOAuth.polling, false, 'hidden poll loop started after close');
+    assert.deepEqual(requests.slice(1).map((r) => [r.url, r.options.body]),
+        [['/api/kimi/auth/cancel', '{"session_id":"s1"}']],
+        'orphaned server session not cancelled');
+}
+
 const cases = [
     ['t1 old completed after re-login (models.js)', t1_oldSessionCompleted_models],
     ['t1 old rejection after re-login (models.js)', t1_oldSessionRejection_models],
@@ -316,6 +339,7 @@ const cases = [
     ['t9 committed completion after cancel resyncs config (models.js)', t9_committedCompletionAfterCancel_models],
     ['t9b cancel during body read (models.js)', t9b_cancelDuringBodyRead_models],
     ['t10 committed completion after reset resyncs store (add-account-modal.js)', t10_committedCompletionAfterReset_modal],
+    ['t11 reset during start does not revive a hidden login (add-account-modal.js)', t11_resetDuringStart_modal],
 ];
 
 for (const [name, fn] of cases) {
