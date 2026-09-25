@@ -252,7 +252,7 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 		retrieveCalls := state.Finalize()
 
 		ccrEnabled := opts.IsCCREnabled == nil || opts.IsCCREnabled()
-		needsHydration := len(retrieveCalls) > 0 && iter < maxHydrations && ccrEnabled
+		needsHydration := len(retrieveCalls) > 0 && !state.HasVisibleToolUse() && iter < maxHydrations && ccrEnabled
 
 		if needsHydration {
 			totalCCRRetrievals += len(retrieveCalls)
@@ -414,7 +414,7 @@ func ProxyAnthropicJSONWithCCR(ctx context.Context, writer http.ResponseWriter, 
 
 		retrieveCalls := findRetrieveToolUsesFromResponse(respMap)
 		ccrEnabled := opts.IsCCREnabled == nil || opts.IsCCREnabled()
-		needsHydration := len(retrieveCalls) > 0 && iter < maxHydrations && ccrEnabled
+		needsHydration := len(retrieveCalls) > 0 && !hasNonRetrieveToolUse(respMap) && iter < maxHydrations && ccrEnabled
 
 		if needsHydration {
 			totalCCRRetrievals += len(retrieveCalls)

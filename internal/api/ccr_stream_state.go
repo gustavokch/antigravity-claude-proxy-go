@@ -271,3 +271,28 @@ func stripRetrieveBlocksJSON(body []byte) []byte {
 	}
 	return out
 }
+
+// hasNonRetrieveToolUse reports whether the response contains any tool_use block
+// other than headroom_retrieve. When true, the turn contains client-visible tool
+// calls and cannot be hydrated internally without the client's results.
+func hasNonRetrieveToolUse(resp map[string]any) bool {
+	if resp == nil {
+		return false
+	}
+	content, ok := resp["content"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range content {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if bType, _ := block["type"].(string); bType == "tool_use" {
+			if bName, _ := block["name"].(string); bName != retrieveToolName {
+				return true
+			}
+		}
+	}
+	return false
+}

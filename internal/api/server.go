@@ -2367,7 +2367,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				// Check for headroom_retrieve calls
 				retrieveCalls := state.Finalize()
 
-				if len(retrieveCalls) > 0 && ccrHydrations < maxCCRHydrations {
+				if len(retrieveCalls) > 0 && !state.HasVisibleToolUse() && ccrHydrations < maxCCRHydrations {
 					ccrHydrations++
 					totalCCRRetrievals += len(retrieveCalls)
 					// Suppressed blocks consumed no downstream index, so
@@ -2468,7 +2468,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				var respObj map[string]any
 				if json.Unmarshal(bodyBytes, &respObj) == nil {
 					retrieveCalls := findRetrieveToolUsesFromResponse(respObj)
-					if len(retrieveCalls) > 0 {
+					if len(retrieveCalls) > 0 && !hasNonRetrieveToolUse(respObj) {
 						ccrHydrations++
 						totalCCRRetrievals += len(retrieveCalls)
 						assistantMsg := map[string]any{
@@ -3084,7 +3084,7 @@ func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Req
 		response := accumulator.Response(model, server.builder.Cache, "")
 		retrieveCalls := findRetrieveToolUsesFromResponse(response)
 
-		if len(retrieveCalls) == 0 || iter == maxCCRHydrations || !server.isCCREnabled() {
+		if len(retrieveCalls) == 0 || hasNonRetrieveToolUse(response) || iter == maxCCRHydrations || !server.isCCREnabled() {
 			stripRetrieveBlocks(response)
 			if usage, ok := response["usage"].(map[string]any); ok {
 				usage["input_tokens"] = totalInput
@@ -3298,7 +3298,7 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 
 		retrieveCalls := state.Finalize()
 
-		needsHydration := len(retrieveCalls) > 0 && iter < maxCCRHydrations && server.isCCREnabled()
+		needsHydration := len(retrieveCalls) > 0 && !state.HasVisibleToolUse() && iter < maxCCRHydrations && server.isCCREnabled()
 
 		if !needsHydration {
 			for _, ev := range pendingTerminalEvents {

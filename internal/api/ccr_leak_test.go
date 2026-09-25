@@ -24,8 +24,7 @@ func TestCCRLeak_Stream_NoLeakAndGaplessIndexes(t *testing.T) {
 		if curr == 1 {
 			// Iteration 1:
 			// Block 0: text
-			// Block 1: headroom_retrieve (should be suppressed)
-			// Block 2: Read tool_use (should be emitted as index 1)
+			// Block 1: headroom_retrieve (suppressed)
 			fmt.Fprintf(w, "event: message_start\n")
 			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":50,\"output_tokens\":10}}}\n\n")
 
@@ -48,16 +47,6 @@ func TestCCRLeak_Stream_NoLeakAndGaplessIndexes(t *testing.T) {
 			fmt.Fprintf(w, "event: content_block_stop\n")
 			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n")
 
-			// Block 2: Read
-			fmt.Fprintf(w, "event: content_block_start\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_read_1\",\"name\":\"Read\",\"input\":{}}}\n\n")
-
-			fmt.Fprintf(w, "event: content_block_delta\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\\\"foo.go\\\"}\"}}\n\n")
-
-			fmt.Fprintf(w, "event: content_block_stop\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":2}\n\n")
-
 			fmt.Fprintf(w, "event: message_delta\n")
 			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":20}}\n\n")
 
@@ -65,21 +54,31 @@ func TestCCRLeak_Stream_NoLeakAndGaplessIndexes(t *testing.T) {
 			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
 		} else {
 			// Iteration 2:
-			// Block 0: final text response (should be emitted as index 2)
+			// Block 0: Read tool_use (should be emitted as downstream index 1)
+			// Block 1: final text response (should be emitted as downstream index 2)
 			fmt.Fprintf(w, "event: message_start\n")
 			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":100,\"output_tokens\":10}}}\n\n")
 
 			fmt.Fprintf(w, "event: content_block_start\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_read_1\",\"name\":\"Read\",\"input\":{}}}\n\n")
 
 			fmt.Fprintf(w, "event: content_block_delta\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done!\"}}\n\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\\\"foo.go\\\"}\"}}\n\n")
 
 			fmt.Fprintf(w, "event: content_block_stop\n")
 			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
 
+			fmt.Fprintf(w, "event: content_block_start\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_delta\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done!\"}}\n\n")
+
+			fmt.Fprintf(w, "event: content_block_stop\n")
+			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n")
+
 			fmt.Fprintf(w, "event: message_delta\n")
-			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n")
+			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":10}}\n\n")
 
 			fmt.Fprintf(w, "event: message_stop\n")
 			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
@@ -411,5 +410,158 @@ func TestStripRetrieveBlocks_ReconcilesStopReason(t *testing.T) {
 	stripRetrieveBlocks(kept)
 	if got, _ := kept["stop_reason"].(string); got != "tool_use" {
 		t.Fatalf("stop_reason = %q; want \"tool_use\" (Bash survived)", got)
+	}
+}
+
+// When a turn contains both headroom_retrieve and a client-visible tool_use,
+// CCR hydration must not run: the proxy cannot supply results for the client
+// tool, and upstream rejects requests with tool_use blocks that lack matching
+// tool_result blocks in the following user message.
+func TestCCR_Stream_VisibleToolUseDoesNotHydrate(t *testing.T) {
+	var callCount int32
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		curr := atomic.AddInt32(&callCount, 1)
+		if curr > 1 {
+			// Real Anthropic validation: reject if any tool_use lacks a tool_result
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			msgs, _ := req["messages"].([]any)
+			lastAsst := msgs[len(msgs)-2].(map[string]any)
+			lastUser := msgs[len(msgs)-1].(map[string]any)
+			asstContent, _ := lastAsst["content"].([]any)
+			userContent, _ := lastUser["content"].([]any)
+
+			userResults := make(map[string]bool)
+			for _, b := range userContent {
+				bm, _ := b.(map[string]any)
+				if bm["type"] == "tool_result" {
+					if id, ok := bm["tool_use_id"].(string); ok {
+						userResults[id] = true
+					}
+				}
+			}
+			for _, b := range asstContent {
+				bm, _ := b.(map[string]any)
+				if bm["type"] == "tool_use" {
+					id, _ := bm["id"].(string)
+					if !userResults[id] {
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = w.Write([]byte(fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":"messages.66: tool_use ids were found without tool_result blocks immediately after: %s"}}`, id)))
+						return
+					}
+				}
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: message_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_013cMYRUoDyR9NmPeWEoc9Ar\",\"name\":\"Read\",\"input\":{\"path\":\"main.go\"}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		fmt.Fprintf(w, "event: content_block_start\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_ret_1\",\"name\":\"headroom_retrieve\",\"input\":{\"chunk_id\":\"c1\"}}}\n\n")
+		fmt.Fprintf(w, "event: content_block_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n")
+		fmt.Fprintf(w, "event: message_delta\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":4}}\n\n")
+		fmt.Fprintf(w, "event: message_stop\n")
+		fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
+	})
+
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{"model": "test", "messages": []any{
+		map[string]any{"role": "user", "content": "hi"},
+	}}
+	opts := CCRProxyOptions{
+		IsCCREnabled:  func() bool { return true },
+		MaxHydrations: 3,
+		Sender:        senderTo(server.URL),
+	}
+	if err := ProxyAnthropicStreamWithCCR(context.Background(), rec, reqMap, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if atomic.LoadInt32(&callCount) != 1 {
+		t.Fatalf("expected exactly 1 call (no hydration attempted); got %d", callCount)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "headroom_retrieve") {
+		t.Fatalf("leak detected: headroom_retrieve leaked downstream: %s", body)
+	}
+	if !strings.Contains(body, "toolu_013cMYRUoDyR9NmPeWEoc9Ar") {
+		t.Fatalf("expected toolu_013cMYRUoDyR9NmPeWEoc9Ar in downstream output: %s", body)
+	}
+	if strings.Contains(body, "invalid_request_error") {
+		t.Fatalf("unexpected invalid_request_error in output: %s", body)
+	}
+	if got := stopReasonFromSSE(t, body); got != "tool_use" {
+		t.Fatalf("stop_reason = %q; want \"tool_use\"", got)
+	}
+}
+
+func TestCCR_Unary_VisibleToolUseDoesNotHydrate(t *testing.T) {
+	var callCount int32
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		curr := atomic.AddInt32(&callCount, 1)
+		if curr > 1 {
+			t.Fatalf("unexpected call %d: hydration must not be attempted when visible tool_use is present", curr)
+		}
+		resp := map[string]any{
+			"id":   "msg_1",
+			"role": "assistant",
+			"content": []any{
+				map[string]any{"type": "text", "text": "Result"},
+				map[string]any{"type": "tool_use", "id": "call_ccr_1", "name": "headroom_retrieve", "input": map[string]any{"chunk_id": "c1"}},
+				map[string]any{"type": "tool_use", "id": "toolu_013cMYRUoDyR9NmPeWEoc9Ar", "name": "Read", "input": map[string]any{"path": "foo.go"}},
+			},
+			"stop_reason": "tool_use",
+			"usage": map[string]any{
+				"input_tokens":  10,
+				"output_tokens": 20,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+
+	rec := httptest.NewRecorder()
+	reqMap := map[string]any{"model": "test", "messages": []any{
+		map[string]any{"role": "user", "content": "read file"},
+	}}
+	opts := CCRProxyOptions{
+		IsCCREnabled:  func() bool { return true },
+		MaxHydrations: 3, // Non-zero!
+		Sender:        senderTo(server.URL),
+	}
+	if err := ProxyAnthropicJSONWithCCR(context.Background(), rec, reqMap, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if atomic.LoadInt32(&callCount) != 1 {
+		t.Fatalf("expected exactly 1 call; got %d", callCount)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if strings.Contains(rec.Body.String(), "headroom_retrieve") {
+		t.Fatalf("headroom_retrieve leaked in unary response: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "toolu_013cMYRUoDyR9NmPeWEoc9Ar") {
+		t.Fatalf("expected toolu_013cMYRUoDyR9NmPeWEoc9Ar in unary response: %s", rec.Body.String())
+	}
+	if got, _ := resp["stop_reason"].(string); got != "tool_use" {
+		t.Fatalf("stop_reason = %q; want \"tool_use\"", got)
 	}
 }
