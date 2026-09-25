@@ -231,6 +231,56 @@ async function t8_orphanLoopExits_modal() {
         'orphaned loop adopted the new session');
 }
 
+// Response whose body read stays pending until release(): lets a test cancel mid-body-read.
+function deferredResponse(data) {
+    let release;
+    const body = new Promise((r) => { release = () => r(data); });
+    return { response: { ok: true, status: 200, json: () => body }, release };
+}
+
+// models.js: Esc while a status request is in flight; the server answers 'completed'
+// (already persisted by ClaimCompletion). Settings must resync, without a toast.
+async function t9_committedCompletionAfterCancel_models() {
+    const { component: c, requests, toasts } = loadComponent(MODELS, 'models');
+    let refreshed = 0;
+    c.fetchKimiConfig = async () => { refreshed++; };
+    c.kimiOAuth = { polling: true, sessionId: 's1', status: 'pending', error: '' };
+
+    const loop = c._pollKimiOAuth();
+    await pendingTick();                        // status request in flight
+    const cancel = c.cancelKimiOAuthLogin();    // Esc → @close
+    await pendingTick();
+    assert.equal(requests.length, 2);           // status + cancel POST
+
+    requests[0].resolve({ response: okResponse({ status: 'completed' }), newPassword: null });
+    requests[1].resolve({ response: okResponse({ status: 'ok' }), newPassword: null });
+    await loop;
+    await cancel;
+
+    assert.equal(refreshed, 1, 'server-committed login not reflected in settings');
+    assert.equal(toasts.length, 0, 'toasted success for a cancelled login');
+}
+
+// models.js: cancel lands after headers but before the body is read.
+async function t9b_cancelDuringBodyRead_models() {
+    const { component: c, requests, toasts } = loadComponent(MODELS, 'models');
+    let refreshed = 0;
+    c.fetchKimiConfig = async () => { refreshed++; };
+    c.kimiOAuth = { polling: true, sessionId: 's1', status: 'pending', error: '' };
+
+    const loop = c._pollKimiOAuth();
+    await pendingTick();
+    const { response, release } = deferredResponse({ status: 'completed' });
+    requests[0].resolve({ response, newPassword: null });
+    await pendingTick();                        // headers in, body read pending
+    c.cancelKimiOAuthLogin();                   // Esc mid-body-read
+    release();
+    await loop;
+
+    assert.equal(toasts.length, 0, 'toasted success after cancel during body read');
+    assert.equal(refreshed, 1, 'server-committed login not reflected in settings');
+}
+
 const cases = [
     ['t1 old completed after re-login (models.js)', t1_oldSessionCompleted_models],
     ['t1 old rejection after re-login (models.js)', t1_oldSessionRejection_models],
@@ -245,6 +295,8 @@ const cases = [
     ['t6 stale cancel keeps new login dialog open (models.js)', t6_staleCancelKeepsNewDialog],
     ['t7 orphaned sleeping loop exits on re-login (models.js)', t7_orphanLoopExits_models],
     ['t8 orphaned sleeping loop exits on re-login (add-account-modal.js)', t8_orphanLoopExits_modal],
+    ['t9 committed completion after cancel resyncs config (models.js)', t9_committedCompletionAfterCancel_models],
+    ['t9b cancel during body read (models.js)', t9b_cancelDuringBodyRead_models],
 ];
 
 for (const [name, fn] of cases) {

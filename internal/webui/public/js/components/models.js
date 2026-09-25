@@ -757,8 +757,13 @@ window.Components.models = () => ({
                     `/api/kimi/auth/status?session_id=${encodeURIComponent(sessionId)}`,
                     {}, store.webuiPassword);
                 if (newPassword) store.webuiPassword = newPassword;
-                if (!live()) return; // cancelled/reset/superseded while in flight
                 const data = await response.json().catch(() => ({}));
+                if (!live()) {
+                    // Cancelled/reset/superseded while in flight. The server persists a
+                    // login before answering 'completed', so resync config anyway.
+                    if (response.ok && data.status === 'completed') await this.fetchKimiConfig();
+                    return;
+                }
                 if (!response.ok) {
                     this.kimiOAuth.status = 'error';
                     this.kimiOAuth.error = data.error || `HTTP ${response.status}`;
