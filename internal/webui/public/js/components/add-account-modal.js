@@ -223,16 +223,18 @@ window.Components.addAccountModal = () => ({
 
     async _pollKimiLogin() {
         const store = Alpine.store('global');
-        while (this.kimiOAuth.polling) {
+        const sessionId = this.kimiOAuth.sessionId;
+        // Live only while polling THIS session; a cancel or newer login ends the loop.
+        const live = () => this.kimiOAuth.polling && this.kimiOAuth.sessionId === sessionId;
+        while (live()) {
             await new Promise(resolve => setTimeout(resolve, 2000));
-            if (!this.kimiOAuth.polling) return;
-            const sessionId = this.kimiOAuth.sessionId;
+            if (!live()) return;
             try {
                 const { response, newPassword } = await window.utils.request(
                     `/api/kimi/auth/status?session_id=${encodeURIComponent(sessionId)}`,
                     {}, store.webuiPassword);
                 if (newPassword) store.webuiPassword = newPassword;
-                if (!this.kimiOAuth.polling || this.kimiOAuth.sessionId !== sessionId) return; // cancelled/reset/superseded while in flight
+                if (!live()) return; // cancelled/reset/superseded while in flight
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) {
                     this.kimiOAuth.status = 'error';
@@ -258,7 +260,7 @@ window.Components.addAccountModal = () => ({
                     return;
                 }
             } catch (e) {
-                if (!this.kimiOAuth.polling || this.kimiOAuth.sessionId !== sessionId) return; // cancelled/reset/superseded while in flight
+                if (!live()) return; // cancelled/reset/superseded while in flight
                 this.kimiOAuth.status = 'error';
                 this.kimiOAuth.error = e.message || 'Login status check failed';
                 this.kimiOAuth.polling = false;

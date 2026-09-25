@@ -208,6 +208,29 @@ async function t7_orphanLoopExits_models() {
         'orphaned loop adopted the new session');
 }
 
+// add-account-modal.js: resetState() → startKimiLogin() inside the 2 s sleep.
+async function t8_orphanLoopExits_modal() {
+    const { component: c, requests, flushTimers } =
+        loadComponent(MODAL, 'addAccountModal', { manualTimers: true });
+    c._refreshKimiStore = async () => {};
+
+    c.kimiOAuth = { polling: true, sessionId: 'old', status: 'pending', error: '' };
+    c._pollKimiLogin();                                 // loop A sleeping
+    await pendingTick();
+
+    // resetState() replaced the object; a fresh login is pending on it.
+    c.kimiOAuth = { sessionId: 'new', userCode: '', verificationUri: '', status: 'pending', error: '', polling: true };
+    c._pollKimiLogin();                                 // loop B sleeping
+    await pendingTick();
+
+    flushTimers();
+    await pendingTick();
+
+    assert.deepEqual(requests.map((r) => r.url),
+        ['/api/kimi/auth/status?session_id=new'],
+        'orphaned loop adopted the new session');
+}
+
 const cases = [
     ['t1 old completed after re-login (models.js)', t1_oldSessionCompleted_models],
     ['t1 old rejection after re-login (models.js)', t1_oldSessionRejection_models],
@@ -221,6 +244,7 @@ const cases = [
         t5_passwordRotation(MODAL, 'addAccountModal', '_pollKimiLogin', (c) => { c._refreshKimiStore = async () => {}; })],
     ['t6 stale cancel keeps new login dialog open (models.js)', t6_staleCancelKeepsNewDialog],
     ['t7 orphaned sleeping loop exits on re-login (models.js)', t7_orphanLoopExits_models],
+    ['t8 orphaned sleeping loop exits on re-login (add-account-modal.js)', t8_orphanLoopExits_modal],
 ];
 
 for (const [name, fn] of cases) {
