@@ -1313,57 +1313,10 @@ type kimiCredential struct {
 func (server *Server) resolveKimiCredential(ctx context.Context, cfg config.KimiConfig) (kimiCredential, error) {
 	if cfg.OAuth != nil && cfg.OAuth.Token != "" {
 		o := cfg.OAuth
-		if o.ExpiresAt != nil && time.Until(*o.ExpiresAt) <= 60*time.Second {
-			server.kimiRefreshMu.Lock()
-			defer server.kimiRefreshMu.Unlock()
-			current := config.Get().Kimi.OAuth
-			if current == nil || current.Token == "" {
-				return kimiCredential{}, errKimiLoginExpired
-			}
-			if current.ExpiresAt == nil || time.Until(*current.ExpiresAt) > 60*time.Second {
-				o = current
-			} else {
-				// WithoutCancel: a client disconnect must not strand a rotated
-				// refresh token half-persisted.
-				tok, err := server.kimiOAuthMgr.RefreshToken(context.WithoutCancel(ctx), o.RefreshToken, o.OAuthHost)
-				if err != nil {
-					if errors.Is(err, auth.ErrKimiOAuthUnauthorized) {
-						return kimiCredential{}, errKimiLoginExpired
-					}
-					return kimiCredential{}, fmt.Errorf("Kimi OAuth token refresh failed: %w", err)
-				}
-				oauthMap := map[string]any{
-					"token":        tok.AccessToken,
-					"refreshToken": tok.RefreshToken,
-					"expiresAt":    tok.ExpiresAt.Format(time.RFC3339),
-					"oauthHost":    o.OAuthHost,
-					"baseUrl":      o.BaseURL,
-				}
-				if o.Email != "" {
-					oauthMap["email"] = o.Email
-				}
-				if o.UserID != "" {
-					oauthMap["userId"] = o.UserID
-				}
-				if o.Nickname != "" {
-					oauthMap["nickname"] = o.Nickname
-				}
-				saved, err := config.Save(map[string]any{"kimi": map[string]any{"oauth": oauthMap}})
-				if err != nil {
-					server.logger.Warn("kimi oauth refresh persist failed", "error", err)
-				} else if updater, ok := server.backend.(ConfigUpdater); ok {
-					updater.UpdateConfig(saved)
-				}
-				o = &config.KimiOAuthConfig{
-					Token:        tok.AccessToken,
-					RefreshToken: tok.RefreshToken,
-					ExpiresAt:    &tok.ExpiresAt,
-					Email:        o.Email,
-					UserID:       o.UserID,
-					Nickname:     o.Nickname,
-					OAuthHost:    o.OAuthHost,
-					BaseURL:      o.BaseURL,
-				}
+		if kimiOAuthExpiring(o) {
+			var err error
+			if o, err = server.refreshKimiOAuth(ctx); err != nil {
+				return kimiCredential{}, err
 			}
 		}
 		baseURL := o.BaseURL
@@ -1376,6 +1329,95 @@ func (server *Server) resolveKimiCredential(ctx context.Context, cfg config.Kimi
 		return kimiCredential{token: cfg.APIKey, baseURL: cfg.BaseURL}, nil
 	}
 	return kimiCredential{}, errKimiNoCredential
+}
+
+// kimiOAuthExpiring reports whether o must be refreshed before use.
+func kimiOAuthExpiring(o *config.KimiOAuthConfig) bool {
+	return o.ExpiresAt != nil && time.Until(*o.ExpiresAt) <= 60*time.Second
+}
+
+// refreshKimiOAuth returns the stored OAuth credential, refreshing and
+// persisting it first when it is about to expire. It holds kimiRefreshMu,
+// which login and logout also take, so a refresh never interleaves with them.
+func (server *Server) refreshKimiOAuth(ctx context.Context) (*config.KimiOAuthConfig, error) {
+	server.kimiRefreshMu.Lock()
+	defer server.kimiRefreshMu.Unlock()
+
+	stored := config.Get().Kimi.OAuth
+	if stored == nil || stored.Token == "" {
+		return nil, errKimiLoginExpired
+	}
+	if !kimiOAuthExpiring(stored) {
+		return stored, nil
+	}
+	// WithoutCancel: a client disconnect must not strand a rotated refresh
+	// token half-persisted.
+	tok, err := server.kimiOAuthMgr.RefreshToken(context.WithoutCancel(ctx), stored.RefreshToken, stored.OAuthHost)
+	if err != nil {
+		if errors.Is(err, auth.ErrKimiOAuthUnauthorized) {
+			return nil, errKimiLoginExpired
+		}
+		return nil, fmt.Errorf("Kimi OAuth token refresh failed: %w", err)
+	}
+	refreshed := &config.KimiOAuthConfig{
+		Token:        tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		ExpiresAt:    &tok.ExpiresAt,
+		Email:        stored.Email,
+		UserID:       stored.UserID,
+		Nickname:     stored.Nickname,
+		OAuthHost:    stored.OAuthHost,
+		BaseURL:      stored.BaseURL,
+	}
+	// Compare-and-swap: /api/config saves do not take kimiRefreshMu, so the
+	// stored credential may have been replaced during the network call.
+	latest := config.Get().Kimi.OAuth
+	if latest == nil || latest.Token == "" {
+		return nil, errKimiLoginExpired
+	}
+	if latest.Token != stored.Token || latest.RefreshToken != stored.RefreshToken {
+		return latest, nil
+	}
+	if err := server.saveKimiLocked(map[string]any{"oauth": kimiOAuthMap(refreshed)}); err != nil {
+		server.logger.Warn("kimi oauth refresh persist failed", "error", err)
+	}
+	return refreshed, nil
+}
+
+// kimiOAuthMap renders o in the config.Save update shape for kimi.oauth.
+func kimiOAuthMap(o *config.KimiOAuthConfig) map[string]any {
+	m := map[string]any{
+		"token":        o.Token,
+		"refreshToken": o.RefreshToken,
+		"oauthHost":    o.OAuthHost,
+		"baseUrl":      o.BaseURL,
+	}
+	if o.ExpiresAt != nil {
+		m["expiresAt"] = o.ExpiresAt.Format(time.RFC3339)
+	}
+	if o.Email != "" {
+		m["email"] = o.Email
+	}
+	if o.UserID != "" {
+		m["userId"] = o.UserID
+	}
+	if o.Nickname != "" {
+		m["nickname"] = o.Nickname
+	}
+	return m
+}
+
+// saveKimiLocked persists a kimi section update and pushes the saved config
+// to the backend. Every kimi.oauth writer calls it with kimiRefreshMu held.
+func (server *Server) saveKimiLocked(update map[string]any) error {
+	saved, err := config.Save(map[string]any{"kimi": update})
+	if err != nil {
+		return err
+	}
+	if updater, ok := server.backend.(ConfigUpdater); ok {
+		updater.UpdateConfig(saved)
+	}
+	return nil
 }
 
 // forwardToKimi transparently forwards an /v1/messages request to the Kimi

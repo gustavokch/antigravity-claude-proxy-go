@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -292,5 +293,117 @@ func TestServer_SendKimiBump_OAuthCredential(t *testing.T) {
 	}
 	if got := upstream.load(upstream.platform); got != "kimi_cli" {
 		t.Errorf("X-Msh-Platform = %q, want kimi_cli", got)
+	}
+}
+
+// blockingKimiAuth is a fake auth host whose refresh answers only after
+// release runs, so a test can act while a refresh is in flight.
+func blockingKimiAuth(t *testing.T) (host string, arrived <-chan struct{}, release func()) {
+	t.Helper()
+	arrivedCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+	var arriveOnce, releaseOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arriveOnce.Do(func() { close(arrivedCh) })
+		<-releaseCh
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"oauth-tok-2","refresh_token":"rt-2","expires_in":3600}`))
+	}))
+	t.Cleanup(srv.Close)
+	release = func() { releaseOnce.Do(func() { close(releaseCh) }) }
+	t.Cleanup(release) // LIFO: runs before srv.Close, so a failed test never hangs
+	return srv.URL, arrivedCh, release
+}
+
+func TestServer_KimiLogoutDuringRefreshStaysLoggedOut(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	upstream := newKimiOAuthUpstream(t)
+	authHost, refreshArrived, releaseRefresh := blockingKimiAuth(t)
+	seedKimiOAuthConfig(t, map[string]any{
+		"token":        "oauth-tok-1",
+		"refreshToken": "rt-1",
+		"expiresAt":    time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"oauthHost":    authHost,
+		"baseUrl":      upstream.srv.URL + "/coding/v1",
+	}, nil)
+	server := newKimiTestServer(t)
+
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		postKimiMessage(t, server)
+	}()
+	<-refreshArrived
+
+	var logoutCode atomic.Int64
+	logoutDone := make(chan struct{})
+	go func() {
+		defer close(logoutDone)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/kimi/auth/logout", nil))
+		logoutCode.Store(int64(rec.Code))
+	}()
+	// Unfixed, logout returns at once and the refresh then re-saves the
+	// credential. Fixed, logout waits for the refresh to finish.
+	select {
+	case <-logoutDone:
+	case <-time.After(200 * time.Millisecond):
+	}
+	releaseRefresh()
+	<-requestDone
+	<-logoutDone
+
+	if code := logoutCode.Load(); code != http.StatusOK {
+		t.Fatalf("logout status = %d, want 200", code)
+	}
+	if tok := config.Get().Kimi.OAuth; tok != nil {
+		t.Errorf("OAuth after logout = %+v, want nil (refresh must not resurrect it)", tok)
+	}
+}
+
+func TestServer_KimiRefreshKeepsCredentialReplacedMidFlight(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	upstream := newKimiOAuthUpstream(t)
+	authHost, refreshArrived, releaseRefresh := blockingKimiAuth(t)
+	seedKimiOAuthConfig(t, map[string]any{
+		"token":        "oauth-tok-1",
+		"refreshToken": "rt-1",
+		"expiresAt":    time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"oauthHost":    authHost,
+		"baseUrl":      upstream.srv.URL + "/coding/v1",
+	}, nil)
+	server := newKimiTestServer(t)
+
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		postKimiMessage(t, server)
+	}()
+	<-refreshArrived
+
+	// A /api/config save does not take kimiRefreshMu.
+	if _, err := config.Save(map[string]any{"kimi": map[string]any{"oauth": map[string]any{
+		"token":        "manual-tok",
+		"refreshToken": "rt-manual",
+		"expiresAt":    time.Now().Add(time.Hour).Format(time.RFC3339),
+		"oauthHost":    authHost,
+		"baseUrl":      upstream.srv.URL + "/coding/v1",
+	}}}); err != nil {
+		t.Fatalf("replace Save: %v", err)
+	}
+	releaseRefresh()
+	<-requestDone
+
+	if tok := config.Get().Kimi.OAuth; tok == nil || tok.Token != "manual-tok" || tok.RefreshToken != "rt-manual" {
+		t.Errorf("stored OAuth = %+v, want the mid-flight replacement kept", tok)
+	}
+	if got := upstream.load(upstream.auth); got != "Bearer manual-tok" {
+		t.Errorf("Authorization = %q, want Bearer manual-tok", got)
 	}
 }

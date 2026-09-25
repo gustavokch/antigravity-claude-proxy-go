@@ -143,15 +143,15 @@ func (server *Server) handleKimiAuthCancelPost(writer http.ResponseWriter, reque
 
 // handleKimiAuthLogoutPost clears the stored Kimi Code credential.
 func (server *Server) handleKimiAuthLogoutPost(writer http.ResponseWriter, request *http.Request) {
-	if _, err := config.Save(map[string]any{"kimi": map[string]any{"oauth": nil}}); err != nil {
+	server.kimiRefreshMu.Lock()
+	err := server.saveKimiLocked(map[string]any{"oauth": nil})
+	server.kimiRefreshMu.Unlock()
+	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{
 			"status": "error",
 			"error":  "Failed to save config: " + err.Error(),
 		})
 		return
-	}
-	if updater, ok := server.backend.(ConfigUpdater); ok {
-		updater.UpdateConfig(config.Get())
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",
@@ -164,33 +164,17 @@ func (server *Server) registerAuthenticatedKimiOAuth(snap auth.KimiAuthSessionSn
 	if snap.Token == nil {
 		return nil
 	}
-	oauthMap := map[string]any{
-		"token":        snap.Token.AccessToken,
-		"refreshToken": snap.Token.RefreshToken,
-		"expiresAt":    snap.Token.ExpiresAt.Format(time.RFC3339),
-		"oauthHost":    snap.OAuthHost,
-		"baseUrl":      snap.BaseURL,
+	o := &config.KimiOAuthConfig{
+		Token:        snap.Token.AccessToken,
+		RefreshToken: snap.Token.RefreshToken,
+		ExpiresAt:    &snap.Token.ExpiresAt,
+		OAuthHost:    snap.OAuthHost,
+		BaseURL:      snap.BaseURL,
 	}
 	if snap.User != nil {
-		if snap.User.Email != "" {
-			oauthMap["email"] = snap.User.Email
-		}
-		if snap.User.UserID != "" {
-			oauthMap["userId"] = snap.User.UserID
-		}
-		if snap.User.Nickname != "" {
-			oauthMap["nickname"] = snap.User.Nickname
-		}
+		o.Email, o.UserID, o.Nickname = snap.User.Email, snap.User.UserID, snap.User.Nickname
 	}
-	saved, err := config.Save(map[string]any{"kimi": map[string]any{
-		"enabled": true,
-		"oauth":   oauthMap,
-	}})
-	if err != nil {
-		return err
-	}
-	if updater, ok := server.backend.(ConfigUpdater); ok {
-		updater.UpdateConfig(saved)
-	}
-	return nil
+	server.kimiRefreshMu.Lock()
+	defer server.kimiRefreshMu.Unlock()
+	return server.saveKimiLocked(map[string]any{"enabled": true, "oauth": kimiOAuthMap(o)})
 }
