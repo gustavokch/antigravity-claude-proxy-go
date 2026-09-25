@@ -84,6 +84,8 @@ func (server *Server) handleKimiAuthStatusGet(writer http.ResponseWriter, reques
 				})
 				return
 			}
+			// Persisted: drop the session so its token copy leaves memory.
+			server.kimiOAuthMgr.CancelSession(sessionID)
 		}
 		account := map[string]any{"expires_at": ""}
 		if snap.Token != nil {
@@ -107,6 +109,8 @@ func (server *Server) handleKimiAuthStatusGet(writer http.ResponseWriter, reques
 
 	switch snap.Status {
 	case "expired", "denied", "cancelled", "error":
+		// Terminal: report it once, then drop the session.
+		server.kimiOAuthMgr.CancelSession(sessionID)
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status": snap.Status,
 			"error":  snap.Error,

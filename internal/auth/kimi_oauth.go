@@ -361,34 +361,30 @@ func (m *KimiOAuthManager) StartDeviceAuth(ctx context.Context) (*KimiAuthSessio
 		},
 	}
 
-	m.registerSession(session)
-
 	pollCtx, cancel := context.WithCancel(context.Background())
-	session.mu.Lock()
-	session.cancel = cancel
-	session.mu.Unlock()
+	session.cancel = cancel // before registerSession publishes the session
+	m.registerSession(session)
 	go m.pollDeviceGrant(pollCtx, session)
 	return session, nil
 }
 
-// registerSession stores the session, pruning polls older than 1h.
+// registerSession stores session as the only login in flight. A new device
+// flow supersedes every earlier one: its poller is cancelled and its state,
+// including any unclaimed token, is dropped.
 func (m *KimiOAuthManager) registerSession(session *KimiAuthSession) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now()
 	for id, s := range m.sessions {
-		if s == nil {
-			delete(m.sessions, id)
-			continue
-		}
 		s.mu.Lock()
-		if now.Sub(s.CreatedAt) > time.Hour {
-			if s.cancel != nil {
-				s.cancel()
-			}
-			delete(m.sessions, id)
+		if s.cancel != nil {
+			s.cancel()
+		}
+		if s.Status == "pending" {
+			s.Status = "cancelled"
+			s.Error = "superseded by a newer login"
 		}
 		s.mu.Unlock()
+		delete(m.sessions, id)
 	}
 	m.sessions[session.ID] = session
 }

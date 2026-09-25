@@ -19,6 +19,7 @@ import (
 type kimiAuthFake struct {
 	srv      *httptest.Server
 	approved atomic.Bool
+	denied   atomic.Bool
 }
 
 func newKimiAuthFake(t *testing.T) *kimiAuthFake {
@@ -37,6 +38,11 @@ func newKimiAuthFake(t *testing.T) *kimiAuthFake {
 				"interval": 5
 			}`))
 		case "/api/oauth/token":
+			if f.denied.Load() {
+				w.WriteHeader(400)
+				_, _ = w.Write([]byte(`{"error":"access_denied","error_description":"user rejected"}`))
+				return
+			}
 			if !f.approved.Load() {
 				w.WriteHeader(400)
 				_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
@@ -189,9 +195,9 @@ func TestKimiOAuthHandlers_ClaimOnceKeepsRefreshedToken(t *testing.T) {
 	}}}); err != nil {
 		t.Fatalf("rotate Save: %v", err)
 	}
-	_, status := doKimiRequest(t, server, http.MethodGet, "/api/kimi/auth/status?session_id="+sessionID, "")
-	if status["status"] != "completed" {
-		t.Fatalf("second poll status = %v", status)
+	code, status := doKimiRequest(t, server, http.MethodGet, "/api/kimi/auth/status?session_id="+sessionID, "")
+	if code != http.StatusNotFound {
+		t.Fatalf("second poll: code=%d body=%v, want 404 (session dropped once persisted)", code, status)
 	}
 	if tok := config.Get().Kimi.OAuth; tok == nil || tok.Token != "rotated-tok" {
 		t.Errorf("token after second poll = %+v, want rotated-tok kept", tok)
@@ -248,5 +254,30 @@ func TestKimiOAuthHandlers_Logout(t *testing.T) {
 	respCfg, _ := body["config"].(map[string]any)
 	if _, has := respCfg["oauth"]; has {
 		t.Errorf("response config should not contain oauth: %v", respCfg["oauth"])
+	}
+}
+
+func TestKimiOAuthHandlers_TerminalStatusDropsSession(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	fake := newKimiAuthFake(t)
+	fake.attach(t, server)
+	fake.denied.Store(true)
+
+	_, start := doKimiRequest(t, server, http.MethodPost, "/api/kimi/auth/start", "{}")
+	sessionID, _ := start["session_id"].(string)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, status := doKimiRequest(t, server, http.MethodGet, "/api/kimi/auth/status?session_id="+sessionID, "")
+		if status["status"] == "denied" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for denied; last=%v", status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if code, body := doKimiRequest(t, server, http.MethodGet, "/api/kimi/auth/status?session_id="+sessionID, ""); code != http.StatusNotFound {
+		t.Errorf("poll after a terminal status: code=%d body=%v, want 404", code, body)
 	}
 }

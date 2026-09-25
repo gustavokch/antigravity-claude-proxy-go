@@ -315,3 +315,31 @@ func TestKimiTokenFromResponseExpiresInAsString(t *testing.T) {
 		t.Errorf("ExpiresAt in %v, want ~3600s", until)
 	}
 }
+
+func TestKimiStartDeviceAuthSupersedesEarlierSession(t *testing.T) {
+	var sleeps []time.Duration
+	srv, _ := newKimiFake(t, kimiFakeDeviceJSON,
+		func() (int, string) { return 400, `{"error":"authorization_pending"}` },
+	)
+	mgr := newKimiTestManager(t, srv, &sleeps)
+
+	first, err := mgr.StartDeviceAuth(context.Background())
+	if err != nil {
+		t.Fatalf("first StartDeviceAuth: %v", err)
+	}
+	second, err := mgr.StartDeviceAuth(context.Background())
+	if err != nil {
+		t.Fatalf("second StartDeviceAuth: %v", err)
+	}
+	defer mgr.CancelSession(second.ID)
+
+	if snap := first.Snapshot(); snap.Status != "cancelled" {
+		t.Errorf("first session status = %q, want cancelled", snap.Status)
+	}
+	if _, ok := mgr.GetSession(first.ID); ok {
+		t.Error("first session still registered after a newer login started")
+	}
+	if _, ok := mgr.GetSession(second.ID); !ok {
+		t.Error("second session not registered")
+	}
+}
