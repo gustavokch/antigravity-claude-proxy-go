@@ -5,6 +5,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -420,5 +422,73 @@ func TestServer_KimiRefreshKeepsCredentialReplacedMidFlight(t *testing.T) {
 	}
 	if got := upstream.load(upstream.auth); got != "Bearer manual-tok" {
 		t.Errorf("Authorization = %q, want Bearer manual-tok", got)
+	}
+}
+
+// breakConfigWrites makes config.Save fail until restore runs: its temp file
+// path becomes a directory, which fails even as root.
+func breakConfigWrites(t *testing.T) (restore func()) {
+	t.Helper()
+	path, err := config.ConfigFilePath()
+	if err != nil {
+		t.Fatalf("ConfigFilePath: %v", err)
+	}
+	blocker := path + ".tmp"
+	if err := os.Mkdir(blocker, 0o700); err != nil {
+		t.Fatalf("create write blocker: %v", err)
+	}
+	return func() {
+		if err := os.Remove(blocker); err != nil {
+			t.Fatalf("remove write blocker: %v", err)
+		}
+	}
+}
+
+func TestServer_KimiRefreshPersistFailureKeepsRotatedToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	upstream := newKimiOAuthUpstream(t)
+	var mu sync.Mutex
+	var spent []string
+	fakeAuth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		spent = append(spent, r.PostForm.Get("refresh_token"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"oauth-tok-2","refresh_token":"rt-2","expires_in":3600}`))
+	}))
+	defer fakeAuth.Close()
+	seedKimiOAuthConfig(t, map[string]any{
+		"token":        "oauth-tok-1",
+		"refreshToken": "rt-1",
+		"expiresAt":    time.Now().Add(-time.Hour).Format(time.RFC3339),
+		"oauthHost":    fakeAuth.URL,
+		"baseUrl":      upstream.srv.URL + "/coding/v1",
+	}, nil)
+	server := newKimiTestServer(t)
+
+	restore := breakConfigWrites(t)
+	for i := range 2 {
+		if rec := postKimiMessage(t, server); rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, body = %s", i, rec.Code, rec.Body.String())
+		}
+		if got := upstream.load(upstream.auth); got != "Bearer oauth-tok-2" {
+			t.Errorf("request %d: Authorization = %q, want Bearer oauth-tok-2", i, got)
+		}
+	}
+	mu.Lock()
+	sent := slices.Clone(spent)
+	mu.Unlock()
+	if !slices.Equal(sent, []string{"rt-1"}) {
+		t.Errorf("refresh tokens sent = %v, want [rt-1] (the rotated token must be reused)", sent)
+	}
+
+	restore()
+	postKimiMessage(t, server)
+	if tok := config.Get().Kimi.OAuth; tok == nil || tok.Token != "oauth-tok-2" || tok.RefreshToken != "rt-2" {
+		t.Errorf("stored OAuth after writes recover = %+v, want oauth-tok-2 / rt-2", tok)
 	}
 }

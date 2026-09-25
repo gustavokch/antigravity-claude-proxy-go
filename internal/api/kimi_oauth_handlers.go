@@ -145,6 +145,7 @@ func (server *Server) handleKimiAuthCancelPost(writer http.ResponseWriter, reque
 func (server *Server) handleKimiAuthLogoutPost(writer http.ResponseWriter, request *http.Request) {
 	server.kimiRefreshMu.Lock()
 	err := server.saveKimiLocked(map[string]any{"oauth": nil})
+	server.kimiUnsaved, server.kimiUnsavedFrom = nil, ""
 	server.kimiRefreshMu.Unlock()
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{

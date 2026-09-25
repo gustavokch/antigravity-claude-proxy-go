@@ -125,7 +125,9 @@ type Server struct {
 	classifierCorpus   atomic.Pointer[corpus.Recorder]
 
 	// Kimi OAuth refresh state, guarded by kimiRefreshMu.
-	kimiDeadRefreshToken string // refresh token Kimi rejected
+	kimiDeadRefreshToken string                  // refresh token Kimi rejected
+	kimiUnsaved          *config.KimiOAuthConfig // refreshed credential whose persist failed
+	kimiUnsavedFrom      string                  // stored refresh token kimiUnsaved replaced
 
 	mu                sync.Mutex
 	cachedCredentials auth.Credentials
@@ -1350,21 +1352,35 @@ func (server *Server) refreshKimiOAuth(ctx context.Context) (*config.KimiOAuthCo
 	if stored == nil || stored.Token == "" {
 		return nil, errKimiLoginExpired
 	}
-	if !kimiOAuthExpiring(stored) {
-		return stored, nil
+	current := stored
+	if server.kimiUnsaved != nil {
+		if server.kimiUnsavedFrom == stored.RefreshToken {
+			// An earlier refresh rotated the stored refresh token upstream but
+			// could not persist the result: use it and retry the persist.
+			current = server.kimiUnsaved
+			if err := server.saveKimiLocked(map[string]any{"oauth": kimiOAuthMap(current)}); err == nil {
+				stored = current
+				server.kimiUnsaved, server.kimiUnsavedFrom = nil, ""
+			}
+		} else {
+			server.kimiUnsaved, server.kimiUnsavedFrom = nil, ""
+		}
+	}
+	if !kimiOAuthExpiring(current) {
+		return current, nil
 	}
 	// A refresh token Kimi already rejected fails fast; re-sending it on every
 	// request only hammers auth.kimi.ai. An empty one matches the zero value
 	// and could never refresh anyway.
-	if stored.RefreshToken == server.kimiDeadRefreshToken {
+	if current.RefreshToken == server.kimiDeadRefreshToken {
 		return nil, errKimiLoginExpired
 	}
 	// WithoutCancel: a client disconnect must not strand a rotated refresh
 	// token half-persisted.
-	tok, err := server.kimiOAuthMgr.RefreshToken(context.WithoutCancel(ctx), stored.RefreshToken, stored.OAuthHost)
+	tok, err := server.kimiOAuthMgr.RefreshToken(context.WithoutCancel(ctx), current.RefreshToken, current.OAuthHost)
 	if err != nil {
 		if errors.Is(err, auth.ErrKimiOAuthUnauthorized) {
-			server.kimiDeadRefreshToken = stored.RefreshToken
+			server.kimiDeadRefreshToken = current.RefreshToken
 			return nil, errKimiLoginExpired
 		}
 		return nil, fmt.Errorf("Kimi OAuth token refresh failed: %w", err)
@@ -1373,11 +1389,11 @@ func (server *Server) refreshKimiOAuth(ctx context.Context) (*config.KimiOAuthCo
 		Token:        tok.AccessToken,
 		RefreshToken: tok.RefreshToken,
 		ExpiresAt:    &tok.ExpiresAt,
-		Email:        stored.Email,
-		UserID:       stored.UserID,
-		Nickname:     stored.Nickname,
-		OAuthHost:    stored.OAuthHost,
-		BaseURL:      stored.BaseURL,
+		Email:        current.Email,
+		UserID:       current.UserID,
+		Nickname:     current.Nickname,
+		OAuthHost:    current.OAuthHost,
+		BaseURL:      current.BaseURL,
 	}
 	// Compare-and-swap: /api/config saves do not take kimiRefreshMu, so the
 	// stored credential may have been replaced during the network call.
@@ -1389,7 +1405,10 @@ func (server *Server) refreshKimiOAuth(ctx context.Context) (*config.KimiOAuthCo
 		return latest, nil
 	}
 	if err := server.saveKimiLocked(map[string]any{"oauth": kimiOAuthMap(refreshed)}); err != nil {
-		server.logger.Warn("kimi oauth refresh persist failed", "error", err)
+		server.logger.Warn("kimi oauth refresh persist failed; keeping the rotated token in memory", "error", err)
+		server.kimiUnsaved, server.kimiUnsavedFrom = refreshed, stored.RefreshToken
+	} else {
+		server.kimiUnsaved, server.kimiUnsavedFrom = nil, ""
 	}
 	return refreshed, nil
 }
