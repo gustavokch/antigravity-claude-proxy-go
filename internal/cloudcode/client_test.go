@@ -204,13 +204,16 @@ func TestLoadCodeAssistMetadata(t *testing.T) {
 	}
 }
 
-func TestContentAndProvisioningUseProductionBeforeDaily(t *testing.T) {
+func TestContentTargetsProductionAndProvisioningIncludesDailyFallback(t *testing.T) {
 	t.Parallel()
+	// Content generation only targets ProdEndpoint to prevent daily from rejecting
+	// conversation turns with corrupted thought signatures.
 	if len(ContentEndpoints) != 1 || ContentEndpoints[0] != ProdEndpoint {
-		t.Fatalf("content endpoint order = %#v", ContentEndpoints)
+		t.Fatalf("content endpoint order = %#v, want [%q]", ContentEndpoints, ProdEndpoint)
 	}
+	// Provisioning endpoints retain DailyEndpoint fallback.
 	if len(ProvisioningEndpoints) != 2 || ProvisioningEndpoints[0] != ProdEndpoint || ProvisioningEndpoints[1] != DailyEndpoint {
-		t.Fatalf("provisioning endpoint order = %#v", ProvisioningEndpoints)
+		t.Fatalf("provisioning endpoint order = %#v, want [%q, %q]", ProvisioningEndpoints, ProdEndpoint, DailyEndpoint)
 	}
 }
 

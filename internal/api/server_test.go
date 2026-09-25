@@ -1863,8 +1863,8 @@ func TestRetryAfterSecondsFallsBackToSmartBackoffWhenNoHeader(t *testing.T) {
 		Body:       `{ "error": { "code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED" } }`,
 	}
 	got := retryAfterSeconds(err)
-	if got <= 0 {
-		t.Fatalf("retryAfterSeconds should provide non-zero fallback, got %d", got)
+	if got != 30 {
+		t.Fatalf("retryAfterSeconds = %d, want 30", got)
 	}
 }
 
@@ -1889,7 +1889,7 @@ func TestClassifyAndRetryAfterWithJoined429And400(t *testing.T) {
 		t.Fatalf("classifyError kind = %q, want rate_limit_error", kind)
 	}
 	got := retryAfterSeconds(joined)
-	if got <= 0 {
-		t.Fatalf("retryAfterSeconds on joined error should provide non-zero fallback, got %d", got)
+	if got != 30 {
+		t.Fatalf("retryAfterSeconds on joined error = %d, want 30", got)
 	}
 }
