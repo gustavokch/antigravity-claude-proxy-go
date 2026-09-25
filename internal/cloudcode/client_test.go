@@ -205,19 +205,14 @@ func TestLoadCodeAssistMetadata(t *testing.T) {
 	}
 }
 
-func TestEndpointDefaults(t *testing.T) {
+// Generation is pinned to agy's host with no cross-host fallback: agy 1.2.10
+// sends streamGenerateContent to daily (SNI parity), and a thought signature
+// issued by one host is rejected by the other. The no-fallback behaviour itself
+// is covered by TestGenerationTargetsOnlyGenerationEndpoints.
+func TestGenerationEndpointsMatchAgyHost(t *testing.T) {
 	t.Parallel()
-	// Generation is pinned to agy's host with no cross-host fallback: agy
-	// 1.2.10 sends streamGenerateContent to daily (SNI parity), and a thought
-	// signature issued by one host is rejected by the other.
 	if want := []string{DailyEndpoint}; !reflect.DeepEqual(GenerationEndpoints, want) {
 		t.Errorf("GenerationEndpoints = %#v, want %#v", GenerationEndpoints, want)
-	}
-	if want := []string{ProdEndpoint, DailyEndpoint}; !reflect.DeepEqual(ContentEndpoints, want) {
-		t.Errorf("ContentEndpoints = %#v, want %#v", ContentEndpoints, want)
-	}
-	if want := []string{ProdEndpoint, DailyEndpoint}; !reflect.DeepEqual(ProvisioningEndpoints, want) {
-		t.Errorf("ProvisioningEndpoints = %#v, want %#v", ProvisioningEndpoints, want)
 	}
 }
 

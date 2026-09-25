@@ -420,37 +420,10 @@ func TestStripRetrieveBlocks_ReconcilesStopReason(t *testing.T) {
 func TestCCR_Stream_VisibleToolUseDoesNotHydrate(t *testing.T) {
 	var callCount int32
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		curr := atomic.AddInt32(&callCount, 1)
-		if curr > 1 {
-			// Real Anthropic validation: reject if any tool_use lacks a tool_result
-			var req map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			msgs, _ := req["messages"].([]any)
-			lastAsst := msgs[len(msgs)-2].(map[string]any)
-			lastUser := msgs[len(msgs)-1].(map[string]any)
-			asstContent, _ := lastAsst["content"].([]any)
-			userContent, _ := lastUser["content"].([]any)
-
-			userResults := make(map[string]bool)
-			for _, b := range userContent {
-				bm, _ := b.(map[string]any)
-				if bm["type"] == "tool_result" {
-					if id, ok := bm["tool_use_id"].(string); ok {
-						userResults[id] = true
-					}
-				}
-			}
-			for _, b := range asstContent {
-				bm, _ := b.(map[string]any)
-				if bm["type"] == "tool_use" {
-					id, _ := bm["id"].(string)
-					if !userResults[id] {
-						w.WriteHeader(http.StatusBadRequest)
-						_, _ = w.Write([]byte(fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":"messages.66: tool_use ids were found without tool_result blocks immediately after: %s"}}`, id)))
-						return
-					}
-				}
-			}
+		if n := atomic.AddInt32(&callCount, 1); n > 1 {
+			t.Errorf("unexpected upstream call %d: a turn with a client-visible tool_use must not be hydrated", n)
+			http.Error(w, "unexpected hydration call", http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -509,9 +482,10 @@ func TestCCR_Stream_VisibleToolUseDoesNotHydrate(t *testing.T) {
 func TestCCR_Unary_VisibleToolUseDoesNotHydrate(t *testing.T) {
 	var callCount int32
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		curr := atomic.AddInt32(&callCount, 1)
-		if curr > 1 {
-			t.Fatalf("unexpected call %d: hydration must not be attempted when visible tool_use is present", curr)
+		if n := atomic.AddInt32(&callCount, 1); n > 1 {
+			t.Errorf("unexpected upstream call %d: a turn with a client-visible tool_use must not be hydrated", n)
+			http.Error(w, "unexpected hydration call", http.StatusInternalServerError)
+			return
 		}
 		resp := map[string]any{
 			"id":   "msg_1",
