@@ -182,6 +182,32 @@ async function t6_staleCancelKeepsNewDialog() {
     assert.equal(requests.length, 1, 'stale cancel fired a cancel POST for the new session');
 }
 
+// models.js: a loop sleeping through cancel → re-login must exit, not adopt
+// the new session (otherwise two loops poll it concurrently).
+async function t7_orphanLoopExits_models() {
+    const { component: c, requests, flushTimers } =
+        loadComponent(MODELS, 'models', { manualTimers: true });
+    c.fetchKimiConfig = async () => {};
+
+    c.kimiOAuth = { polling: true, sessionId: 'old', status: 'pending', error: '' };
+    c._pollKimiOAuth();                                 // loop A sleeping
+    await pendingTick();
+
+    c.kimiOAuth.polling = false;                        // cancel while A sleeps
+    c.kimiOAuth.sessionId = 'new';                      // immediate re-login
+    c.kimiOAuth.status = 'pending';
+    c.kimiOAuth.polling = true;
+    c._pollKimiOAuth();                                 // loop B sleeping
+    await pendingTick();
+
+    flushTimers();                                      // both sleeps elapse
+    await pendingTick();
+
+    assert.deepEqual(requests.map((r) => r.url),
+        ['/api/kimi/auth/status?session_id=new'],
+        'orphaned loop adopted the new session');
+}
+
 const cases = [
     ['t1 old completed after re-login (models.js)', t1_oldSessionCompleted_models],
     ['t1 old rejection after re-login (models.js)', t1_oldSessionRejection_models],
@@ -194,6 +220,7 @@ const cases = [
     ['t5 rotated password applied (add-account-modal.js)', () =>
         t5_passwordRotation(MODAL, 'addAccountModal', '_pollKimiLogin', (c) => { c._refreshKimiStore = async () => {}; })],
     ['t6 stale cancel keeps new login dialog open (models.js)', t6_staleCancelKeepsNewDialog],
+    ['t7 orphaned sleeping loop exits on re-login (models.js)', t7_orphanLoopExits_models],
 ];
 
 for (const [name, fn] of cases) {
