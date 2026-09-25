@@ -316,3 +316,38 @@ func TestKimiOAuthHandlers_SaveFailureAllowsRetry(t *testing.T) {
 		t.Fatalf("OAuth after retry = %+v, want at-123456789012 persisted", tok)
 	}
 }
+
+func TestKimiModelsFetch_CredentialErrorStatus(t *testing.T) {
+	deadAuth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer deadAuth.Close()
+
+	tests := []struct {
+		name string
+		kimi map[string]any
+		want int
+	}{
+		{"no credential", map[string]any{"enabled": true}, http.StatusBadRequest},
+		{"login expired", map[string]any{"enabled": true, "oauth": map[string]any{
+			"token":        "at-1",
+			"refreshToken": "rt-1",
+			"expiresAt":    time.Now().Add(-time.Hour).Format(time.RFC3339),
+			"oauthHost":    deadAuth.URL,
+		}}, http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, _, _ := newTestServerWithManager(t)
+			if _, err := config.Save(map[string]any{"kimi": tt.kimi}); err != nil {
+				t.Fatalf("seed Save: %v", err)
+			}
+			code, body := doKimiRequest(t, server, http.MethodPost, "/api/kimi/models/fetch", "{}")
+			if code != tt.want {
+				t.Errorf("code = %d, want %d; body=%v", code, tt.want, body)
+			}
+		})
+	}
+}

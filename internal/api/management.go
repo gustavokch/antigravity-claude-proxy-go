@@ -2024,7 +2024,8 @@ func (server *Server) handleKimiModelsFetch(writer http.ResponseWriter, request 
 	} else {
 		cred, err := server.resolveKimiCredential(request.Context(), cfg.Kimi)
 		if err != nil {
-			writeJSON(writer, http.StatusBadGateway, map[string]any{
+			status, _ := kimiCredentialErrorStatus(err)
+			writeJSON(writer, status, map[string]any{
 				"status": "error",
 				"error":  err.Error(),
 			})

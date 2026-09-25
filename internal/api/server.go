@@ -1449,6 +1449,19 @@ func (server *Server) saveKimiLocked(update map[string]any) error {
 	return nil
 }
 
+// kimiCredentialErrorStatus maps a resolveKimiCredential error to the HTTP
+// status and Anthropic error type returned to the client.
+func kimiCredentialErrorStatus(err error) (int, string) {
+	switch {
+	case errors.Is(err, errKimiNoCredential):
+		return http.StatusBadRequest, "invalid_request_error"
+	case errors.Is(err, errKimiLoginExpired):
+		return http.StatusUnauthorized, "authentication_error"
+	default:
+		return http.StatusBadGateway, "api_error"
+	}
+}
+
 // forwardToKimi transparently forwards an /v1/messages request to the Kimi
 // Code gateway. The Kimi endpoint is Anthropic-compatible, so no translation
 // is needed: we rewrite Authorization, preserve the Anthropic version/beta
@@ -1456,14 +1469,8 @@ func (server *Server) saveKimiLocked(update map[string]any) error {
 func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Request, kimiCfg config.KimiConfig, body []byte, model string) {
 	cred, err := server.resolveKimiCredential(request.Context(), kimiCfg)
 	if err != nil {
-		switch {
-		case errors.Is(err, errKimiNoCredential):
-			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
-		case errors.Is(err, errKimiLoginExpired):
-			writeAPIError(writer, http.StatusUnauthorized, "authentication_error", err.Error())
-		default:
-			writeAPIError(writer, http.StatusBadGateway, "api_error", err.Error())
-		}
+		status, kind := kimiCredentialErrorStatus(err)
+		writeAPIError(writer, status, kind, err.Error())
 		return
 	}
 	var identity http.Header
