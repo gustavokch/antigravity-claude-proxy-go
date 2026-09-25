@@ -136,10 +136,6 @@ func FindHTTPError(err error) *HTTPError {
 	var httpErrors []*HTTPError
 	collectHTTPErrors(err, &httpErrors)
 	if len(httpErrors) == 0 {
-		var upstreamError *HTTPError
-		if errors.As(err, &upstreamError) && upstreamError != nil {
-			return upstreamError
-		}
 		return nil
 	}
 	for _, httpErr := range httpErrors {
