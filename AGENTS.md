@@ -34,7 +34,10 @@ Overriding anything *breaks* the match.
 - agy OAuth token: `~/.gemini/antigravity-cli/antigravity-oauth-token`.
   Never commit OAuth client credentials; obtain refresh values from the
   installed `agy` executable only when a refresh is needed.
-- Target host: `cloudcode-pa.googleapis.com:443` (daily fallback: `daily-cloudcode-pa.googleapis.com`).
+- Target host: generation goes only to `daily-cloudcode-pa.googleapis.com:443`
+  (agy 1.2.10 parity; thought signatures are tied to the issuing host, so there
+  is no cross-host fallback); metadata and provisioning go to
+  `cloudcode-pa.googleapis.com` and then daily.
 - Local port **8091**.
 - Fingerprint gate command:
   `tshark -r <cap.pcap> -Y 'tls.handshake.type==1' -T fields -e tls.handshake.ja4`
