@@ -248,7 +248,6 @@ window.Components.addAccountModal = () => ({
                         'success');
                     await this._refreshKimiStore();
                     document.getElementById('add_account_modal')?.close();
-                    this.resetState();
                     return;
                 }
                 if (['expired', 'denied', 'cancelled', 'error'].includes(data.status)) {
