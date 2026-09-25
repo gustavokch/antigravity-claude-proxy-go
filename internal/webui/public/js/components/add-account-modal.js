@@ -261,7 +261,10 @@ window.Components.addAccountModal = () => ({
                         (store.t('kimiOAuthSuccess') || 'Kimi Code login complete') + (email ? ': ' + email : ''),
                         'success');
                     await this._refreshKimiStore();
-                    document.getElementById('add_account_modal')?.close();
+                    // A reset or newer login during the refresh owns the modal now.
+                    if (this.kimiOAuth.sessionId === sessionId) {
+                        document.getElementById('add_account_modal')?.close();
+                    }
                     return;
                 }
                 if (['expired', 'denied', 'cancelled', 'error'].includes(data.status)) {

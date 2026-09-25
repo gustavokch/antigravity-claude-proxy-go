@@ -322,6 +322,36 @@ async function t11_resetDuringStart_modal() {
         'orphaned server session not cancelled');
 }
 
+// add-account-modal.js: completion refresh in flight; the user closes the modal,
+// reopens it and starts a new login. The stale close must not fire @close → resetState().
+async function t12_staleCloseAfterRefresh_modal() {
+    const { component: c, requests, dialog } = loadComponent(MODAL, 'addAccountModal');
+    const dlg = dialog('add_account_modal');
+    dlg.onclose = () => c.resetState();         // mirrors @close in index.html
+    dlg.showModal();
+    let releaseRefresh;
+    c._refreshKimiStore = () => new Promise((r) => { releaseRefresh = r; });
+    c.kimiOAuth = { polling: true, sessionId: 'old', status: 'pending', error: '' };
+
+    const loop = c._pollKimiLogin();
+    await pendingTick();
+    requests[0].resolve({ response: okResponse({ status: 'completed' }), newPassword: null });
+    await pendingTick();                        // now awaiting _refreshKimiStore
+    assert.equal(typeof releaseRefresh, 'function');
+
+    dlg.close();                                // user closes → resetState
+    dlg.showModal();                            // reopens and starts a new login
+    c.kimiOAuth = { sessionId: 'new', userCode: 'X', verificationUri: '', status: 'pending', error: '', polling: true };
+    const before = requests.length;
+
+    releaseRefresh();
+    await loop;
+
+    assert.equal(dlg.open, true, 'stale close closed the new login modal');
+    assert.equal(c.kimiOAuth.status, 'pending', 'stale close reset the new login');
+    assert.equal(requests.length, before, 'stale close cancelled the new session');
+}
+
 const cases = [
     ['t1 old completed after re-login (models.js)', t1_oldSessionCompleted_models],
     ['t1 old rejection after re-login (models.js)', t1_oldSessionRejection_models],
@@ -340,6 +370,7 @@ const cases = [
     ['t9b cancel during body read (models.js)', t9b_cancelDuringBodyRead_models],
     ['t10 committed completion after reset resyncs store (add-account-modal.js)', t10_committedCompletionAfterReset_modal],
     ['t11 reset during start does not revive a hidden login (add-account-modal.js)', t11_resetDuringStart_modal],
+    ['t12 stale completion close keeps new login modal (add-account-modal.js)', t12_staleCloseAfterRefresh_modal],
 ];
 
 for (const [name, fn] of cases) {
