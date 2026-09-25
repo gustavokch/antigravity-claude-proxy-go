@@ -5,7 +5,7 @@
 window.Components = window.Components || {};
 
 window.Components.addAccountModal = () => ({
-    provider: 'google', // 'google' | 'claudecode'
+    provider: 'google', // 'google' | 'claudecode' | 'kimi'
 
     // Google OAuth State
     manualMode: false,
@@ -21,10 +21,17 @@ window.Components.addAccountModal = () => ({
     claudeCodeCallbackInput: '',
     claudeCodeSubmitting: false,
 
+    // Kimi Code Device-Flow Login State
+    kimiStarting: false,
+    kimiOAuth: { sessionId: '', userCode: '', verificationUri: '', status: '', error: '', polling: false },
+
     /**
      * Reset all state to initial values
      */
     resetState() {
+        this._cancelKimiSession();
+        this.kimiStarting = false;
+        this.kimiOAuth = { sessionId: '', userCode: '', verificationUri: '', status: '', error: '', polling: false };
         this.provider = 'google';
         this.manualMode = false;
         this.authUrl = '';
@@ -44,6 +51,10 @@ window.Components.addAccountModal = () => ({
     },
 
     setProvider(prov) {
+        if (this.provider === 'kimi' && prov !== 'kimi' && this.kimiOAuth.status === 'pending') {
+            this._cancelKimiSession();
+            this.kimiOAuth = { sessionId: '', userCode: '', verificationUri: '', status: '', error: '', polling: false };
+        }
         this.provider = prov;
     },
 
@@ -177,6 +188,113 @@ window.Components.addAccountModal = () => ({
             Alpine.store('global').showToast(e.message, 'error');
         } finally {
             this.claudeCodeSubmitting = false;
+        }
+    },
+
+    // --- Kimi Code Device-Flow Login Methods ---
+    async startKimiLogin() {
+        const store = Alpine.store('global');
+        this.kimiStarting = true;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/kimi/auth/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.status !== 'ok') {
+                store.showToast(data.error || `HTTP ${response.status}`, 'error');
+                return;
+            }
+            this.kimiOAuth.sessionId = data.session_id || '';
+            this.kimiOAuth.userCode = data.user_code || '';
+            this.kimiOAuth.verificationUri = data.verification_uri_complete || data.verification_uri || '';
+            this.kimiOAuth.status = 'pending';
+            this.kimiOAuth.error = '';
+            this.kimiOAuth.polling = true;
+            this._pollKimiLogin();
+        } catch (e) {
+            store.showToast(e.message || 'Failed to start Kimi Code login', 'error');
+        } finally {
+            this.kimiStarting = false;
+        }
+    },
+
+    async _pollKimiLogin() {
+        const store = Alpine.store('global');
+        while (this.kimiOAuth.polling) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            if (!this.kimiOAuth.polling) return;
+            try {
+                const { response, newPassword } = await window.utils.request(
+                    `/api/kimi/auth/status?session_id=${encodeURIComponent(this.kimiOAuth.sessionId)}`,
+                    {}, store.webuiPassword);
+                if (!this.kimiOAuth.polling) return; // cancelled/reset while in flight
+                if (newPassword) store.webuiPassword = newPassword;
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    this.kimiOAuth.status = 'error';
+                    this.kimiOAuth.error = data.error || `HTTP ${response.status}`;
+                    this.kimiOAuth.polling = false;
+                    return;
+                }
+                if (data.status === 'completed') {
+                    this.kimiOAuth.status = 'completed';
+                    this.kimiOAuth.polling = false;
+                    const email = data.account && (data.account.email || data.account.nickname || data.account.user_id);
+                    store.showToast(
+                        (store.t('kimiOAuthSuccess') || 'Kimi Code login complete') + (email ? ': ' + email : ''),
+                        'success');
+                    await this._refreshKimiStore();
+                    document.getElementById('add_account_modal')?.close();
+                    return;
+                }
+                if (['expired', 'denied', 'cancelled', 'error'].includes(data.status)) {
+                    this.kimiOAuth.status = data.status;
+                    this.kimiOAuth.error = data.error || '';
+                    this.kimiOAuth.polling = false;
+                    return;
+                }
+            } catch (e) {
+                this.kimiOAuth.status = 'error';
+                this.kimiOAuth.error = e.message || 'Login status check failed';
+                this.kimiOAuth.polling = false;
+                return;
+            }
+        }
+    },
+
+    async _cancelKimiSession() {
+        if (this.kimiOAuth.status !== 'pending' || !this.kimiOAuth.sessionId) {
+            this.kimiOAuth.polling = false;
+            return;
+        }
+        const store = Alpine.store('global');
+        const sessionId = this.kimiOAuth.sessionId;
+        this.kimiOAuth.polling = false;
+        try {
+            const { newPassword } = await window.utils.request('/api/kimi/auth/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId })
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+        } catch (e) {
+            // Best-effort; the session expires on its own.
+        }
+    },
+
+    async _refreshKimiStore() {
+        const store = Alpine.store('global');
+        try {
+            const { response, newPassword } = await window.utils.request('/api/kimi/config', {}, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) return;
+            const data = await response.json();
+            if (data.config) Alpine.store('data').kimi = data.config;
+        } catch (e) {
+            // Non-fatal: the settings page refetches the config on load.
         }
     }
 });

@@ -64,6 +64,8 @@ window.translations.en = {
     connectClaudeCodeDesc: "Connect your Claude.ai account using Claude Code OAuth PKCE flow. The account will be used to proxy Claude requests via Claude Code Gateway.",
     providerGoogle: "Google (Antigravity)",
     providerClaudeCode: "Claude Code (Claude.ai)",
+    providerKimiCode: "Kimi Code",
+    connectKimiCodeDesc: "Sign in with your Kimi Code account (kimi.ai) using device authorization. The login is global and applies to all Kimi Code gateway requests.",
     googleCloudCode: "Google Cloud Code",
     claudeCode: "Claude Code",
     readyStatus: "Ready",

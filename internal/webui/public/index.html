@@ -272,7 +272,7 @@
     </div>
 
     <!-- Add Account Modal -->
-    <dialog id="add_account_modal" class="modal backdrop-blur-sm" x-data="addAccountModal">
+    <dialog id="add_account_modal" class="modal backdrop-blur-sm" x-data="addAccountModal" @close="resetState()">
         <div class="modal-box max-w-lg w-full bg-space-900 border border-space-border text-gray-300 shadow-xl p-6">
             <h3 class="font-bold text-lg text-white mb-4" x-text="$store.global.t('addAccount')">Add New Account</h3>
 
@@ -287,6 +287,11 @@
                         :class="provider === 'claudecode' ? 'text-amber-400 border-amber-400' : 'text-gray-400 border-transparent hover:text-gray-200'"
                         @click="setProvider('claudecode')">
                     <span x-text="$store.global.t('providerClaudeCode') || 'Claude Code (Claude.ai)'">Claude Code (Claude.ai)</span>
+                </button>
+                <button type="button" class="px-4 py-2 text-sm font-medium transition-colors border-b-2"
+                        :class="provider === 'kimi' ? 'text-cyan-400 border-cyan-400' : 'text-gray-400 border-transparent hover:text-gray-200'"
+                        @click="setProvider('kimi')">
+                    <span x-text="$store.global.t('providerKimiCode') || 'Kimi Code'">Kimi Code</span>
                 </button>
             </div>
 
@@ -447,9 +452,50 @@
                 </div>
             </div>
 
+            <!-- Kimi Code Device-Flow Login -->
+            <div class="flex flex-col gap-4" x-show="provider === 'kimi'">
+                <p class="text-sm text-gray-400 leading-relaxed" x-text="$store.global.t('connectKimiCodeDesc') || 'Sign in with your Kimi Code account (kimi.ai) using device authorization. The login is global and applies to all Kimi Code gateway requests.'">Sign in with your Kimi Code account (kimi.ai) using device authorization. The login is global and applies to all Kimi Code gateway requests.</p>
+
+                <!-- Already-logged-in hint (credential is global, managed on Settings) -->
+                <template x-if="$store.data.kimi && $store.data.kimi.oauth">
+                    <p class="text-xs text-gray-300">
+                        <span class="text-gray-500" x-text="$store.global.t('kimiOAuthLoggedInAs') || 'Logged in as'">Logged in as</span>
+                        <span class="font-mono text-cyan-300" x-text="$store.data.kimi.oauth.email || $store.data.kimi.oauth.nickname || $store.data.kimi.oauth.userId"></span>
+                        <span class="text-gray-500" x-show="$store.data.kimi.oauth.expiresAt" x-text="'· ' + $store.data.kimi.oauth.expiresAt"></span>
+                    </p>
+                </template>
+
+                <button class="btn bg-cyan-600 hover:bg-cyan-500 text-white border-none flex items-center justify-center gap-3 h-11"
+                        @click="startKimiLogin()"
+                        :disabled="kimiStarting || kimiOAuth.status === 'pending'"
+                        :class="{ 'loading': kimiStarting }">
+                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 7a3 3 0 11-6 0 3 3 0 016 0zM6 21v-1a4 4 0 014-4h4a4 4 0 014 4v1" />
+                    </svg>
+                    <span x-text="$store.global.t('kimiOAuthLogin') || 'Login with Kimi Code'">Login with Kimi Code</span>
+                </button>
+
+                <!-- Pending device authorization -->
+                <template x-if="kimiOAuth.status === 'pending'">
+                    <div class="p-3 bg-space-950 rounded border border-space-border text-xs">
+                        <p class="text-gray-400 mb-2" x-text="$store.global.t('kimiOAuthEnterCode') || 'Open the link and confirm this code:'">Open the link and confirm this code:</p>
+                        <div class="text-center my-3">
+                            <div class="font-mono text-2xl tracking-widest text-white" x-text="kimiOAuth.userCode"></div>
+                            <a class="link link-primary break-all" :href="kimiOAuth.verificationUri" target="_blank" rel="noopener" x-text="kimiOAuth.verificationUri"></a>
+                        </div>
+                        <div class="flex items-center justify-center gap-2 text-gray-400">
+                            <span class="loading loading-spinner loading-xs"></span>
+                            <span x-text="$store.global.t('kimiOAuthWaiting') || 'Waiting for authorization…'">Waiting for authorization…</span>
+                        </div>
+                    </div>
+                </template>
+
+                <p class="text-xs text-rose-400 font-mono" x-show="kimiOAuth.error" x-text="kimiOAuth.error"></p>
+            </div>
+
             <div class="modal-action mt-6">
                 <form method="dialog">
-                    <button type="submit" class="btn btn-ghost text-gray-400 hover:text-white hover:bg-space-800" @click="resetState()" x-text="$store.global.t('close')">Close</button>
+                    <button type="submit" class="btn btn-ghost text-gray-400 hover:text-white hover:bg-space-800" x-text="$store.global.t('close')">Close</button>
                 </form>
             </div>
         </div>
