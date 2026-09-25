@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -634,5 +635,17 @@ func TestModelFetchCountsAgainstTheAccountRate(t *testing.T) {
 	}
 	if inFlight != 0 {
 		t.Fatalf("inFlight after the call returned: got %d, want 0", inFlight)
+	}
+}
+
+func TestFindHTTPErrorPrioritizes429(t *testing.T) {
+	t.Parallel()
+	err429 := &cloudcode.HTTPError{StatusCode: http.StatusTooManyRequests, Status: "429", Body: "RESOURCE_EXHAUSTED"}
+	err400 := &cloudcode.HTTPError{StatusCode: http.StatusBadRequest, Status: "400", Body: "Corrupted thought signature"}
+
+	joined := fmt.Errorf("max retries exceeded: %w", errors.Join(err400, err429))
+	got := findHTTPError(joined)
+	if got == nil || got.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("findHTTPError(joined) = %#v, want 429", got)
 	}
 }

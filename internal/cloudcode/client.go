@@ -36,7 +36,7 @@ const (
 )
 
 var (
-	ContentEndpoints      = []string{ProdEndpoint, DailyEndpoint}
+	ContentEndpoints      = []string{ProdEndpoint}
 	ProvisioningEndpoints = []string{ProdEndpoint, DailyEndpoint}
 )
 
@@ -96,6 +96,58 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("Cloud Code request to %s failed (%s): %s", e.Endpoint, e.Status, e.Body)
+}
+
+func collectHTTPErrors(err error, out *[]*HTTPError) {
+	if err == nil {
+		return
+	}
+	if httpErr, ok := err.(*HTTPError); ok {
+		*out = append(*out, httpErr)
+		return
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			collectHTTPErrors(e, out)
+		}
+	case interface{ Unwrap() error }:
+		collectHTTPErrors(u.Unwrap(), out)
+	}
+}
+
+// FindHTTPError finds the most actionable HTTPError in err's error tree.
+// StatusTooManyRequests (429) is prioritized over other errors so rate limits
+// are not masked by secondary errors in joined failure sets.
+func FindHTTPError(err error) *HTTPError {
+	if err == nil {
+		return nil
+	}
+	var httpErrors []*HTTPError
+	collectHTTPErrors(err, &httpErrors)
+	if len(httpErrors) == 0 {
+		var upstreamError *HTTPError
+		if errors.As(err, &upstreamError) {
+			return upstreamError
+		}
+		return nil
+	}
+	for _, httpErr := range httpErrors {
+		if httpErr.StatusCode == http.StatusTooManyRequests {
+			return httpErr
+		}
+	}
+	for _, httpErr := range httpErrors {
+		if httpErr.StatusCode >= 500 {
+			return httpErr
+		}
+	}
+	for _, httpErr := range httpErrors {
+		if httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden {
+			return httpErr
+		}
+	}
+	return httpErrors[0]
 }
 
 type RequestOptions struct {

@@ -3469,8 +3469,7 @@ func classifyError(err error) (int, string, string) {
 	if errors.As(err, &selectionError) {
 		return http.StatusBadRequest, "invalid_request_error", selectionError.Error()
 	}
-	var upstreamError *cloudcode.HTTPError
-	if errors.As(err, &upstreamError) {
+	if upstreamError := cloudcode.FindHTTPError(err); upstreamError != nil {
 		switch upstreamError.StatusCode {
 		case http.StatusUnauthorized:
 			return http.StatusUnauthorized, "authentication_error", "Authentication failed. Make sure Antigravity has a valid token."
@@ -3495,9 +3494,12 @@ func retryAfterSeconds(err error) int {
 	if errors.As(err, &rateLimitError) && rateLimitError.RetryAfter > 0 {
 		return ceilSeconds(rateLimitError.RetryAfter)
 	}
-	var upstreamError *cloudcode.HTTPError
-	if errors.As(err, &upstreamError) && upstreamError.StatusCode == http.StatusTooManyRequests {
+	if upstreamError := cloudcode.FindHTTPError(err); upstreamError != nil && upstreamError.StatusCode == http.StatusTooManyRequests {
 		if wait := accounts.ParseResetTime(upstreamError.Header, upstreamError.Body, time.Now()); wait > 0 {
+			return ceilSeconds(wait)
+		}
+		reason := accounts.ClassifyError(upstreamError.Body, upstreamError.StatusCode)
+		if wait := accounts.SmartBackoff(reason, 0, 0); wait > 0 {
 			return ceilSeconds(wait)
 		}
 	}

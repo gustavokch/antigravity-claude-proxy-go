@@ -972,11 +972,7 @@ func (dispatcher *Dispatcher) recordQuotaExhaustion(account *Account, model, bod
 }
 
 func findHTTPError(err error) *cloudcode.HTTPError {
-	var upstreamError *cloudcode.HTTPError
-	if errors.As(err, &upstreamError) {
-		return upstreamError
-	}
-	return nil
+	return cloudcode.FindHTTPError(err)
 }
 
 // maxLoggedBodyLen caps upstream error bodies in logs: enough to keep the

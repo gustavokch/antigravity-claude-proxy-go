@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -204,7 +206,7 @@ func TestLoadCodeAssistMetadata(t *testing.T) {
 
 func TestContentAndProvisioningUseProductionBeforeDaily(t *testing.T) {
 	t.Parallel()
-	if len(ContentEndpoints) != 2 || ContentEndpoints[0] != ProdEndpoint || ContentEndpoints[1] != DailyEndpoint {
+	if len(ContentEndpoints) != 1 || ContentEndpoints[0] != ProdEndpoint {
 		t.Fatalf("content endpoint order = %#v", ContentEndpoints)
 	}
 	if len(ProvisioningEndpoints) != 2 || ProvisioningEndpoints[0] != ProdEndpoint || ProvisioningEndpoints[1] != DailyEndpoint {
@@ -255,5 +257,50 @@ func assertNoHeader(t *testing.T, request *http.Request, name string) {
 	t.Helper()
 	if got := request.Header.Get(name); got != "" {
 		t.Errorf("%s unexpectedly present: %q", name, got)
+	}
+}
+
+func TestFindHTTPError(t *testing.T) {
+	t.Parallel()
+
+	err429 := &HTTPError{StatusCode: http.StatusTooManyRequests, Status: "429", Body: "RESOURCE_EXHAUSTED"}
+	err400 := &HTTPError{StatusCode: http.StatusBadRequest, Status: "400", Body: "Corrupted thought signature"}
+	err500 := &HTTPError{StatusCode: http.StatusInternalServerError, Status: "500", Body: "Internal Error"}
+
+	// Single error
+	if got := FindHTTPError(err429); got != err429 {
+		t.Errorf("got %v, want %v", got, err429)
+	}
+
+	// Wrapped error
+	wrapped := fmt.Errorf("outer: %w", err429)
+	if got := FindHTTPError(wrapped); got != err429 {
+		t.Errorf("got %v, want %v", got, err429)
+	}
+
+	// Joined errors prioritizing 429 over 400 even when 400 is first
+	joined400First := errors.Join(err400, err429)
+	if got := FindHTTPError(joined400First); got != err429 {
+		t.Errorf("got status %d, want 429", got.StatusCode)
+	}
+
+	// Joined errors prioritizing 429 over 500
+	joinedWith500 := errors.Join(err500, err429)
+	if got := FindHTTPError(joinedWith500); got != err429 {
+		t.Errorf("got status %d, want 429", got.StatusCode)
+	}
+
+	// Joined errors without 429 prioritizing 500 over 400
+	joined500And400 := errors.Join(err400, err500)
+	if got := FindHTTPError(joined500And400); got != err500 {
+		t.Errorf("got status %d, want 500", got.StatusCode)
+	}
+
+	// Nil or unrelated error
+	if got := FindHTTPError(nil); got != nil {
+		t.Errorf("expected nil for nil error, got %v", got)
+	}
+	if got := FindHTTPError(errors.New("other")); got != nil {
+		t.Errorf("expected nil for non-HTTPError, got %v", got)
 	}
 }

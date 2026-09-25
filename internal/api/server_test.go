@@ -1855,3 +1855,41 @@ func TestRetryAfterSecondsIsZeroForOtherErrors(t *testing.T) {
 		t.Fatalf("retryAfterSeconds = %d, want 0", got)
 	}
 }
+
+func TestRetryAfterSecondsFallsBackToSmartBackoffWhenNoHeader(t *testing.T) {
+	err := &cloudcode.HTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Status:     "429",
+		Body:       `{ "error": { "code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED" } }`,
+	}
+	got := retryAfterSeconds(err)
+	if got <= 0 {
+		t.Fatalf("retryAfterSeconds should provide non-zero fallback, got %d", got)
+	}
+}
+
+func TestClassifyAndRetryAfterWithJoined429And400(t *testing.T) {
+	err429 := &cloudcode.HTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Status:     "429",
+		Body:       `{ "error": { "code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED" } }`,
+	}
+	err400 := &cloudcode.HTTPError{
+		StatusCode: http.StatusBadRequest,
+		Status:     "400",
+		Body:       `{ "error": { "code": 400, "message": "Corrupted thought signature.", "status": "INVALID_ARGUMENT" } }`,
+	}
+	joined := fmt.Errorf("max retries exceeded: %w", errors.Join(err400, err429))
+
+	status, kind, _ := classifyError(joined)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("classifyError status = %d, want 429", status)
+	}
+	if kind != "rate_limit_error" {
+		t.Fatalf("classifyError kind = %q, want rate_limit_error", kind)
+	}
+	got := retryAfterSeconds(joined)
+	if got <= 0 {
+		t.Fatalf("retryAfterSeconds on joined error should provide non-zero fallback, got %d", got)
+	}
+}
