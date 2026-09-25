@@ -125,9 +125,10 @@ func collectHTTPErrors(err error, out *[]*HTTPError) {
 	}
 }
 
-// FindHTTPError finds the most actionable HTTPError in err's error tree.
-// StatusTooManyRequests (429) is prioritized over other errors so rate limits
-// are not masked by secondary errors in joined failure sets.
+// FindHTTPError returns the most actionable *HTTPError in err's tree,
+// walking both Unwrap() error and Unwrap() []error (errors.Join).
+// Precedence: 429 (rotate with backoff) > 401/403 (invalidate the
+// account) > 5xx > first found. Typed-nil *HTTPError values are skipped.
 func FindHTTPError(err error) *HTTPError {
 	if err == nil {
 		return nil

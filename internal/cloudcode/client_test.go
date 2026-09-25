@@ -300,68 +300,34 @@ func assertNoHeader(t *testing.T, request *http.Request, name string) {
 
 func TestFindHTTPError(t *testing.T) {
 	t.Parallel()
-
-	err429 := &HTTPError{StatusCode: http.StatusTooManyRequests, Status: "429", Body: "RESOURCE_EXHAUSTED"}
 	err400 := &HTTPError{StatusCode: http.StatusBadRequest, Status: "400", Body: "Corrupted thought signature"}
-	err500 := &HTTPError{StatusCode: http.StatusInternalServerError, Status: "500", Body: "Internal Error"}
-
-	// Single error
-	if got := FindHTTPError(err429); got != err429 {
-		t.Errorf("got %v, want %v", got, err429)
-	}
-
-	// Wrapped error
-	wrapped := fmt.Errorf("outer: %w", err429)
-	if got := FindHTTPError(wrapped); got != err429 {
-		t.Errorf("got %v, want %v", got, err429)
-	}
-
-	// Joined errors prioritizing 429 over 400 even when 400 is first
-	joined400First := errors.Join(err400, err429)
-	if got := FindHTTPError(joined400First); got != err429 {
-		t.Errorf("got status %d, want 429", got.StatusCode)
-	}
-
-	// Joined errors prioritizing 429 over 500
-	joinedWith500 := errors.Join(err500, err429)
-	if got := FindHTTPError(joinedWith500); got != err429 {
-		t.Errorf("got status %d, want 429", got.StatusCode)
-	}
-
-	// Joined errors without 429 prioritizing 500 over 400
-	joined500And400 := errors.Join(err400, err500)
-	if got := FindHTTPError(joined500And400); got != err500 {
-		t.Errorf("got status %d, want 500", got.StatusCode)
-	}
-
-	// Joined errors prioritizing 401 and 403 over 500
 	err401 := &HTTPError{StatusCode: http.StatusUnauthorized, Status: "401", Body: "Unauthorized"}
 	err403 := &HTTPError{StatusCode: http.StatusForbidden, Status: "403", Body: "Forbidden"}
-	joined500And401 := errors.Join(err500, err401)
-	if got := FindHTTPError(joined500And401); got != err401 {
-		t.Errorf("got status %d, want 401", got.StatusCode)
-	}
-	joined500And403 := errors.Join(err500, err403)
-	if got := FindHTTPError(joined500And403); got != err403 {
-		t.Errorf("got status %d, want 403", got.StatusCode)
-	}
+	err429 := &HTTPError{StatusCode: http.StatusTooManyRequests, Status: "429", Body: "RESOURCE_EXHAUSTED"}
+	err500 := &HTTPError{StatusCode: http.StatusInternalServerError, Status: "500", Body: "Internal Error"}
+	var typedNil *HTTPError
 
-	// Nil or unrelated error
-	if got := FindHTTPError(nil); got != nil {
-		t.Errorf("expected nil for nil error, got %v", got)
+	cases := []struct {
+		name string
+		err  error
+		want *HTTPError
+	}{
+		{"nil", nil, nil},
+		{"unrelated", errors.New("other"), nil},
+		{"typed nil", error(typedNil), nil},
+		{"single", err429, err429},
+		{"wrapped", fmt.Errorf("outer: %w", err429), err429},
+		{"429 beats earlier 400", errors.Join(err400, err429), err429},
+		{"429 beats earlier 500", errors.Join(err500, err429), err429},
+		{"401 beats earlier 500", errors.Join(err500, err401), err401},
+		{"403 beats earlier 500", errors.Join(err500, err403), err403},
+		{"500 beats earlier 400", errors.Join(err400, err500), err500},
+		{"typed nil skipped in join", errors.Join(error(typedNil), err429), err429},
+		{"429 inside wrapped join", fmt.Errorf("max retries exceeded: %w", errors.Join(err400, err429)), err429},
 	}
-	if got := FindHTTPError(errors.New("other")); got != nil {
-		t.Errorf("expected nil for non-HTTPError, got %v", got)
-	}
-
-	// Typed nil HTTPError
-	var nilHTTP *HTTPError
-	var typedNil error = nilHTTP
-	if got := FindHTTPError(typedNil); got != nil {
-		t.Errorf("expected nil for typed nil HTTPError, got %v", got)
-	}
-	joinedWithNil := errors.Join(typedNil, err429)
-	if got := FindHTTPError(joinedWithNil); got != err429 {
-		t.Errorf("expected err429 for joined with typed nil, got %v", got)
+	for _, tc := range cases {
+		if got := FindHTTPError(tc.err); got != tc.want {
+			t.Errorf("%s: FindHTTPError = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
