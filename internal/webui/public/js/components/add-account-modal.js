@@ -194,6 +194,7 @@ window.Components.addAccountModal = () => ({
     // --- Kimi Code Device-Flow Login Methods ---
     async startKimiLogin() {
         const store = Alpine.store('global');
+        const state = this.kimiOAuth; // resetState() swaps this object out
         this.kimiStarting = true;
         try {
             const { response, newPassword } = await window.utils.request('/api/kimi/auth/start', {
@@ -203,6 +204,11 @@ window.Components.addAccountModal = () => ({
             }, store.webuiPassword);
             if (newPassword) store.webuiPassword = newPassword;
             const data = await response.json().catch(() => ({}));
+            if (this.kimiOAuth !== state) {
+                // Modal closed while starting: drop the new server session, stay idle.
+                if (response.ok && data.session_id) this._postKimiCancel(data.session_id);
+                return;
+            }
             if (!response.ok || data.status !== 'ok') {
                 store.showToast(data.error || `HTTP ${response.status}`, 'error');
                 return;
@@ -223,16 +229,24 @@ window.Components.addAccountModal = () => ({
 
     async _pollKimiLogin() {
         const store = Alpine.store('global');
-        while (this.kimiOAuth.polling) {
+        const sessionId = this.kimiOAuth.sessionId;
+        // Live only while polling THIS session; a cancel or newer login ends the loop.
+        const live = () => this.kimiOAuth.polling && this.kimiOAuth.sessionId === sessionId;
+        while (live()) {
             await new Promise(resolve => setTimeout(resolve, 2000));
-            if (!this.kimiOAuth.polling) return;
+            if (!live()) return;
             try {
                 const { response, newPassword } = await window.utils.request(
-                    `/api/kimi/auth/status?session_id=${encodeURIComponent(this.kimiOAuth.sessionId)}`,
+                    `/api/kimi/auth/status?session_id=${encodeURIComponent(sessionId)}`,
                     {}, store.webuiPassword);
-                if (!this.kimiOAuth.polling) return; // cancelled/reset while in flight
                 if (newPassword) store.webuiPassword = newPassword;
                 const data = await response.json().catch(() => ({}));
+                if (!live()) {
+                    // Cancelled/reset/superseded while in flight. The server persists a
+                    // login before answering 'completed', so resync the store anyway.
+                    if (response.ok && data.status === 'completed') await this._refreshKimiStore();
+                    return;
+                }
                 if (!response.ok) {
                     this.kimiOAuth.status = 'error';
                     this.kimiOAuth.error = data.error || `HTTP ${response.status}`;
@@ -247,7 +261,10 @@ window.Components.addAccountModal = () => ({
                         (store.t('kimiOAuthSuccess') || 'Kimi Code login complete') + (email ? ': ' + email : ''),
                         'success');
                     await this._refreshKimiStore();
-                    document.getElementById('add_account_modal')?.close();
+                    // A reset or newer login during the refresh owns the modal now.
+                    if (this.kimiOAuth.sessionId === sessionId) {
+                        document.getElementById('add_account_modal')?.close();
+                    }
                     return;
                 }
                 if (['expired', 'denied', 'cancelled', 'error'].includes(data.status)) {
@@ -257,6 +274,7 @@ window.Components.addAccountModal = () => ({
                     return;
                 }
             } catch (e) {
+                if (!live()) return; // cancelled/reset/superseded while in flight
                 this.kimiOAuth.status = 'error';
                 this.kimiOAuth.error = e.message || 'Login status check failed';
                 this.kimiOAuth.polling = false;
@@ -266,13 +284,13 @@ window.Components.addAccountModal = () => ({
     },
 
     async _cancelKimiSession() {
-        if (this.kimiOAuth.status !== 'pending' || !this.kimiOAuth.sessionId) {
-            this.kimiOAuth.polling = false;
-            return;
-        }
-        const store = Alpine.store('global');
-        const sessionId = this.kimiOAuth.sessionId;
+        const { status, sessionId } = this.kimiOAuth;
         this.kimiOAuth.polling = false;
+        if (status === 'pending' && sessionId) await this._postKimiCancel(sessionId);
+    },
+
+    async _postKimiCancel(sessionId) {
+        const store = Alpine.store('global');
         try {
             const { newPassword } = await window.utils.request('/api/kimi/auth/cancel', {
                 method: 'POST',
