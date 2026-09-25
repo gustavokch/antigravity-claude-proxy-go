@@ -95,10 +95,9 @@ func TestDiscoverLocalCredentials_OAuthWithRefreshToken(t *testing.T) {
 	}
 
 	var oauthAcc *AccountConfig
-	for _, a := range accounts {
-		if a.Token == "sk-ant-oat-token-abc" {
-			accCopy := a
-			oauthAcc = &accCopy
+	for i := range accounts {
+		if accounts[i].Token == "sk-ant-oat-token-abc" {
+			oauthAcc = &accounts[i]
 			break
 		}
 	}
@@ -143,7 +142,16 @@ func TestDiscoverLocalCredentials_MillisecondTimestamp(t *testing.T) {
 		t.Fatalf("expected at least 1 account, got 0")
 	}
 
-	acc := accounts[0]
+	var acc *AccountConfig
+	for i := range accounts {
+		if accounts[i].Token == "sk-ant-oat-token-milli" {
+			acc = &accounts[i]
+			break
+		}
+	}
+	if acc == nil {
+		t.Fatalf("expected oauth account with token sk-ant-oat-token-milli")
+	}
 	if acc.ExpiresAt == nil {
 		t.Fatalf("expected non-nil ExpiresAt")
 	}
