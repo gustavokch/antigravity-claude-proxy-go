@@ -54,10 +54,9 @@ func (s *ccrStreamState) StartBlock(upstreamIdx int, block map[string]any) (int,
 	}
 	s.blocks[upstreamIdx] = block
 
-	bType, _ := block["type"].(string)
-	if bType == "tool_use" {
+	if isToolUse(block) {
 		s.jsonBufs[upstreamIdx] = &bytes.Buffer{}
-		if name, _ := block["name"].(string); name == retrieveToolName {
+		if isRetrieveToolUse(block) {
 			s.suppressed[upstreamIdx] = true
 			return 0, false
 		}
@@ -143,10 +142,8 @@ func (s *ccrStreamState) Finalize() []map[string]any {
 				block["input"] = inputMap
 			}
 		}
-		if bType, _ := block["type"].(string); bType == "tool_use" {
-			if bName, _ := block["name"].(string); bName == retrieveToolName {
-				retrieveCalls = append(retrieveCalls, block)
-			}
+		if isRetrieveToolUse(block) {
+			retrieveCalls = append(retrieveCalls, block)
 		}
 	}
 	return retrieveCalls
@@ -186,15 +183,8 @@ func stripRetrieveBlocks(resp map[string]any) {
 	}
 	filtered := make([]any, 0, len(content))
 	for _, item := range content {
-		m, ok := item.(map[string]any)
-		if !ok {
-			filtered = append(filtered, item)
+		if m, ok := item.(map[string]any); ok && isRetrieveToolUse(m) {
 			continue
-		}
-		if bType, _ := m["type"].(string); bType == "tool_use" {
-			if bName, _ := m["name"].(string); bName == retrieveToolName {
-				continue
-			}
 		}
 		filtered = append(filtered, item)
 	}
@@ -202,11 +192,9 @@ func stripRetrieveBlocks(resp map[string]any) {
 
 	hasToolUse := false
 	for _, item := range filtered {
-		if m, ok := item.(map[string]any); ok {
-			if bType, _ := m["type"].(string); bType == "tool_use" {
-				hasToolUse = true
-				break
-			}
+		if m, ok := item.(map[string]any); ok && isToolUse(m) {
+			hasToolUse = true
+			break
 		}
 	}
 	reconcileStopReason(resp, hasToolUse)
@@ -246,22 +234,7 @@ func stripRetrieveBlocksJSON(body []byte) []byte {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return body
 	}
-	content, ok := resp["content"].([]any)
-	if !ok || len(content) == 0 {
-		return body
-	}
-	hasRetrieve := false
-	for _, item := range content {
-		if m, ok := item.(map[string]any); ok {
-			if bType, _ := m["type"].(string); bType == "tool_use" {
-				if bName, _ := m["name"].(string); bName == retrieveToolName {
-					hasRetrieve = true
-					break
-				}
-			}
-		}
-	}
-	if !hasRetrieve {
+	if len(findRetrieveToolUsesFromResponse(resp)) == 0 {
 		return body
 	}
 	stripRetrieveBlocks(resp)
@@ -270,4 +243,51 @@ func stripRetrieveBlocksJSON(body []byte) []byte {
 		return body
 	}
 	return out
+}
+
+// isToolUse reports whether block is an Anthropic tool_use content block.
+func isToolUse(block map[string]any) bool {
+	bType, _ := block["type"].(string)
+	return bType == "tool_use"
+}
+
+// isRetrieveToolUse reports whether block is a headroom_retrieve call: one the
+// proxy answers itself and never shows the client.
+func isRetrieveToolUse(block map[string]any) bool {
+	name, _ := block["name"].(string)
+	return isToolUse(block) && name == retrieveToolName
+}
+
+// findRetrieveToolUsesFromResponse returns the headroom_retrieve calls of a
+// decoded Anthropic response, in content order.
+func findRetrieveToolUsesFromResponse(resp map[string]any) []map[string]any {
+	content, _ := resp["content"].([]any)
+	var calls []map[string]any
+	for _, raw := range content {
+		if block, ok := raw.(map[string]any); ok && isRetrieveToolUse(block) {
+			calls = append(calls, block)
+		}
+	}
+	return calls
+}
+
+// hasVisibleToolUse is (*ccrStreamState).HasVisibleToolUse for a decoded unary
+// response: true when any tool_use other than headroom_retrieve will reach the
+// client.
+func hasVisibleToolUse(resp map[string]any) bool {
+	content, _ := resp["content"].([]any)
+	for _, raw := range content {
+		if block, ok := raw.(map[string]any); ok && isToolUse(block) && !isRetrieveToolUse(block) {
+			return true
+		}
+	}
+	return false
+}
+
+// hydratable reports whether the proxy alone can answer a turn's retrieve
+// calls. A turn that also carries a client-visible tool_use cannot be
+// hydrated: the replayed assistant message would hold a tool_use with no
+// tool_result, which upstream rejects with 400.
+func hydratable(retrieveCalls []map[string]any, visibleToolUse bool) bool {
+	return len(retrieveCalls) > 0 && !visibleToolUse
 }

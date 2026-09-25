@@ -452,7 +452,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 				return response, requestErr
 			}
-			upstreamError := findHTTPError(requestErr)
+			upstreamError := cloudcode.FindHTTPError(requestErr)
 			if upstreamError != nil && isCapacityHTTPError(upstreamError) && capacityAttempt < dispatcher.maxCapacityRetries {
 				wait := ParseResetTime(upstreamError.Header, upstreamError.Body, dispatcher.now())
 				if wait == 0 {
@@ -466,10 +466,10 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				continue
 			}
 			if upstreamError != nil && upstreamError.StatusCode == http.StatusTooManyRequests {
-				reason := ClassifyError(upstreamError.Body, upstreamError.StatusCode)
-				reset := ParseResetTime(upstreamError.Header, upstreamError.Body, dispatcher.now())
 				failures := dispatcher.manager.FailureCount(account)
-				wait := Decorrelate(SmartBackoff(reason, reset, failures), dispatcher.random)
+				cooldown := UpstreamCooldown(upstreamError, failures, dispatcher.now())
+				reason, reset := cooldown.Reason, cooldown.Reset
+				wait := Decorrelate(cooldown.Wait, dispatcher.random)
 				if reason == ReasonCapacity && capacityAttempt >= dispatcher.maxCapacityRetries {
 					dispatcher.manager.MarkRateLimited(account, model, 15*time.Second)
 					break
@@ -731,7 +731,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 	if isCanceled(err) {
 		return false
 	}
-	upstreamError := findHTTPError(err)
+	upstreamError := cloudcode.FindHTTPError(err)
 	if upstreamError == nil {
 		dispatcher.manager.MarkFailure(account, model)
 		return true
@@ -759,7 +759,7 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 	case http.StatusBadRequest, http.StatusNotFound:
 		return false
 	case http.StatusTooManyRequests:
-		wait := Decorrelate(SmartBackoff(ClassifyError(body, upstreamError.StatusCode), ParseResetTime(upstreamError.Header, body, dispatcher.now()), dispatcher.manager.FailureCount(account)), dispatcher.random)
+		wait := Decorrelate(UpstreamCooldown(upstreamError, dispatcher.manager.FailureCount(account), dispatcher.now()).Wait, dispatcher.random)
 		email := ""
 		if account != nil {
 			email = account.Email
@@ -969,14 +969,6 @@ func (dispatcher *Dispatcher) recordQuotaExhaustion(account *Account, model, bod
 		return
 	}
 	dispatcher.manager.MarkQuotaExhausted(account.Email, dispatcher.quotaKeyFor(model, exhaustion.Model), exhaustion.ResetTime)
-}
-
-func findHTTPError(err error) *cloudcode.HTTPError {
-	var upstreamError *cloudcode.HTTPError
-	if errors.As(err, &upstreamError) {
-		return upstreamError
-	}
-	return nil
 }
 
 // maxLoggedBodyLen caps upstream error bodies in logs: enough to keep the

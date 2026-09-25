@@ -871,7 +871,7 @@ func TestHeadroomCCR_OpenRouterStream_NoRetrieveLeak(t *testing.T) {
 		}})
 
 		if n == 0 {
-			// Block 0 text, block 1 headroom_retrieve (suppressed), block 2 Read.
+			// Block 0 text, block 1 headroom_retrieve (suppressed).
 			writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
 				"content_block": map[string]any{"type": "text", "text": ""}})
 			writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
@@ -884,23 +884,24 @@ func TestHeadroomCCR_OpenRouterStream_NoRetrieveLeak(t *testing.T) {
 				"delta": map[string]any{"type": "input_json_delta", "partial_json": fmt.Sprintf(`{"chunk_id":%q}`, chunkID)}})
 			writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 1})
 
-			writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 2,
-				"content_block": map[string]any{"type": "tool_use", "id": "tu_read", "name": "Read", "input": map[string]any{}}})
-			writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 2,
-				"delta": map[string]any{"type": "input_json_delta", "partial_json": `{"file_path":"foo.go"}`}})
-			writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 2})
-
 			writeSSE("message_delta", map[string]any{"type": "message_delta",
 				"delta": map[string]any{"stop_reason": "tool_use"}, "usage": map[string]any{"output_tokens": 20}})
 			writeSSE("message_stop", map[string]any{"type": "message_stop"})
 			return
 		}
 
+		// Iteration 2: Read tool_use (downstream index 1) + final text (downstream index 2).
 		writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
-			"content_block": map[string]any{"type": "text", "text": "Done."}})
+			"content_block": map[string]any{"type": "tool_use", "id": "tu_read", "name": "Read", "input": map[string]any{}}})
+		writeSSE("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": `{"file_path":"foo.go"}`}})
 		writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+
+		writeSSE("content_block_start", map[string]any{"type": "content_block_start", "index": 1,
+			"content_block": map[string]any{"type": "text", "text": "Done."}})
+		writeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": 1})
 		writeSSE("message_delta", map[string]any{"type": "message_delta",
-			"delta": map[string]any{"stop_reason": "end_turn"}, "usage": map[string]any{"output_tokens": 30}})
+			"delta": map[string]any{"stop_reason": "tool_use"}, "usage": map[string]any{"output_tokens": 30}})
 		writeSSE("message_stop", map[string]any{"type": "message_stop"})
 	}))
 	defer mockOR.Close()

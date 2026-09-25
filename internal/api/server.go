@@ -2367,7 +2367,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				// Check for headroom_retrieve calls
 				retrieveCalls := state.Finalize()
 
-				if len(retrieveCalls) > 0 && ccrHydrations < maxCCRHydrations {
+				if hydratable(retrieveCalls, state.HasVisibleToolUse()) && ccrHydrations < maxCCRHydrations {
 					ccrHydrations++
 					totalCCRRetrievals += len(retrieveCalls)
 					// Suppressed blocks consumed no downstream index, so
@@ -2468,7 +2468,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				var respObj map[string]any
 				if json.Unmarshal(bodyBytes, &respObj) == nil {
 					retrieveCalls := findRetrieveToolUsesFromResponse(respObj)
-					if len(retrieveCalls) > 0 {
+					if hydratable(retrieveCalls, hasVisibleToolUse(respObj)) {
 						ccrHydrations++
 						totalCCRRetrievals += len(retrieveCalls)
 						assistantMsg := map[string]any{
@@ -3021,24 +3021,6 @@ func (server *Server) getCCRChunkPayload(chunkID string) (string, bool) {
 	return payload, false
 }
 
-func findRetrieveToolUsesFromResponse(resp map[string]any) []map[string]any {
-	content, ok := resp["content"].([]any)
-	if !ok {
-		return nil
-	}
-	var calls []map[string]any
-	for _, raw := range content {
-		block, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		if block["type"] == "tool_use" && block["name"] == "headroom_retrieve" {
-			calls = append(calls, block)
-		}
-	}
-	return calls
-}
-
 func intValue(v any, defaultVal int) int {
 	switch n := v.(type) {
 	case int:
@@ -3084,7 +3066,7 @@ func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Req
 		response := accumulator.Response(model, server.builder.Cache, "")
 		retrieveCalls := findRetrieveToolUsesFromResponse(response)
 
-		if len(retrieveCalls) == 0 || iter == maxCCRHydrations || !server.isCCREnabled() {
+		if !hydratable(retrieveCalls, hasVisibleToolUse(response)) || iter == maxCCRHydrations || !server.isCCREnabled() {
 			stripRetrieveBlocks(response)
 			if usage, ok := response["usage"].(map[string]any); ok {
 				usage["input_tokens"] = totalInput
@@ -3298,7 +3280,7 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 
 		retrieveCalls := state.Finalize()
 
-		needsHydration := len(retrieveCalls) > 0 && iter < maxCCRHydrations && server.isCCREnabled()
+		needsHydration := hydratable(retrieveCalls, state.HasVisibleToolUse()) && iter < maxCCRHydrations && server.isCCREnabled()
 
 		if !needsHydration {
 			for _, ev := range pendingTerminalEvents {
@@ -3469,8 +3451,7 @@ func classifyError(err error) (int, string, string) {
 	if errors.As(err, &selectionError) {
 		return http.StatusBadRequest, "invalid_request_error", selectionError.Error()
 	}
-	var upstreamError *cloudcode.HTTPError
-	if errors.As(err, &upstreamError) {
+	if upstreamError := cloudcode.FindHTTPError(err); upstreamError != nil {
 		switch upstreamError.StatusCode {
 		case http.StatusUnauthorized:
 			return http.StatusUnauthorized, "authentication_error", "Authentication failed. Make sure Antigravity has a valid token."
@@ -3495,11 +3476,8 @@ func retryAfterSeconds(err error) int {
 	if errors.As(err, &rateLimitError) && rateLimitError.RetryAfter > 0 {
 		return ceilSeconds(rateLimitError.RetryAfter)
 	}
-	var upstreamError *cloudcode.HTTPError
-	if errors.As(err, &upstreamError) && upstreamError.StatusCode == http.StatusTooManyRequests {
-		if wait := accounts.ParseResetTime(upstreamError.Header, upstreamError.Body, time.Now()); wait > 0 {
-			return ceilSeconds(wait)
-		}
+	if upstreamError := cloudcode.FindHTTPError(err); upstreamError != nil && upstreamError.StatusCode == http.StatusTooManyRequests {
+		return ceilSeconds(accounts.UpstreamCooldown(upstreamError, 0, time.Now()).Wait)
 	}
 	return 0
 }

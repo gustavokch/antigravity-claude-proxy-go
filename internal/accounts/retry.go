@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"antigravity-go-proxy/internal/cloudcode"
 )
 
 type ErrorReason string
@@ -217,6 +219,23 @@ func SmartBackoff(reason ErrorReason, serverReset time.Duration, failures int) t
 	default:
 		return time.Minute
 	}
+}
+
+// Cooldown is how long an account must rest after an upstream 429.
+type Cooldown struct {
+	Reason ErrorReason   // classification of the 429 body/status
+	Reset  time.Duration // server-supplied reset; 0 when upstream sent none
+	Wait   time.Duration // SmartBackoff(Reason, Reset, failures), before jitter
+}
+
+// UpstreamCooldown classifies a 429 once for every consumer. The dispatcher
+// decorrelates Wait before locking the account; the API layer sends the
+// failures=0 Wait as Retry-After so the client never retries before the
+// account's first lock expires.
+func UpstreamCooldown(upstreamError *cloudcode.HTTPError, failures int, now time.Time) Cooldown {
+	reason := ClassifyError(upstreamError.Body, upstreamError.StatusCode)
+	reset := ParseResetTime(upstreamError.Header, upstreamError.Body, now)
+	return Cooldown{Reason: reason, Reset: reset, Wait: SmartBackoff(reason, reset, failures)}
 }
 
 func sanitizeReset(value time.Duration) time.Duration {

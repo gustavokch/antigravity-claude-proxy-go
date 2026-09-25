@@ -36,6 +36,12 @@ const (
 )
 
 var (
+	// GenerationEndpoints carries generateContent/streamGenerateContent. It
+	// holds exactly one host: agy 1.2.10 generates on daily (SNI parity), and
+	// a thought signature issued by one host is rejected by the other
+	// ("Corrupted thought signature"), so a cross-host fallback turns a
+	// retryable 429 into a permanent 400.
+	GenerationEndpoints   = []string{DailyEndpoint}
 	ContentEndpoints      = []string{ProdEndpoint, DailyEndpoint}
 	ProvisioningEndpoints = []string{ProdEndpoint, DailyEndpoint}
 )
@@ -54,6 +60,7 @@ type Client struct {
 	accessToken           string
 	userAgent             string
 	contentEndpoints      []string
+	generationEndpoints   []string
 	provisioningEndpoints []string
 	defaultHeader         http.Header
 }
@@ -96,6 +103,57 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("Cloud Code request to %s failed (%s): %s", e.Endpoint, e.Status, e.Body)
+}
+
+func collectHTTPErrors(err error, out *[]*HTTPError) {
+	if err == nil {
+		return
+	}
+	if httpErr, ok := err.(*HTTPError); ok {
+		if httpErr != nil {
+			*out = append(*out, httpErr)
+		}
+		return
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			collectHTTPErrors(e, out)
+		}
+	case interface{ Unwrap() error }:
+		collectHTTPErrors(u.Unwrap(), out)
+	}
+}
+
+// FindHTTPError returns the most actionable *HTTPError in err's tree,
+// walking both Unwrap() error and Unwrap() []error (errors.Join).
+// Precedence: 429 (rotate with backoff) > 401/403 (invalidate the
+// account) > 5xx > first found. Typed-nil *HTTPError values are skipped.
+func FindHTTPError(err error) *HTTPError {
+	if err == nil {
+		return nil
+	}
+	var httpErrors []*HTTPError
+	collectHTTPErrors(err, &httpErrors)
+	if len(httpErrors) == 0 {
+		return nil
+	}
+	for _, httpErr := range httpErrors {
+		if httpErr.StatusCode == http.StatusTooManyRequests {
+			return httpErr
+		}
+	}
+	for _, httpErr := range httpErrors {
+		if httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden {
+			return httpErr
+		}
+	}
+	for _, httpErr := range httpErrors {
+		if httpErr.StatusCode >= 500 {
+			return httpErr
+		}
+	}
+	return httpErrors[0]
 }
 
 type RequestOptions struct {
@@ -149,6 +207,7 @@ func New(options Options) *Client {
 		accessToken:           options.AccessToken,
 		userAgent:             userAgent,
 		contentEndpoints:      append([]string(nil), ContentEndpoints...),
+		generationEndpoints:   append([]string(nil), GenerationEndpoints...),
 		provisioningEndpoints: append([]string(nil), ProvisioningEndpoints...),
 		defaultHeader:         header,
 	}
@@ -206,11 +265,11 @@ func (c *Client) RetrieveUserQuota(ctx context.Context, projectID string) (Respo
 }
 
 func (c *Client) GenerateContent(ctx context.Context, payload any, options RequestOptions) (Response, error) {
-	return c.DoJSON(ctx, c.contentEndpoints, PathGenerateContent, payload, options)
+	return c.DoJSON(ctx, c.generationEndpoints, PathGenerateContent, payload, options)
 }
 
 func (c *Client) StreamGenerateContent(ctx context.Context, payload any, options RequestOptions, consume func(SSEEvent) error) (Response, error) {
-	return c.DoSSE(ctx, c.contentEndpoints, PathStreamGenerate, payload, options, consume)
+	return c.DoSSE(ctx, c.generationEndpoints, PathStreamGenerate, payload, options, consume)
 }
 
 func (c *Client) DoJSON(ctx context.Context, endpoints []string, path string, payload any, options RequestOptions) (Response, error) {

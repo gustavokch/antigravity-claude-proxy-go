@@ -34,7 +34,10 @@ Overriding anything *breaks* the match.
 - agy OAuth token: `~/.gemini/antigravity-cli/antigravity-oauth-token`.
   Never commit OAuth client credentials; obtain refresh values from the
   installed `agy` executable only when a refresh is needed.
-- Target host: `cloudcode-pa.googleapis.com:443` (daily fallback: `daily-cloudcode-pa.googleapis.com`).
+- Target host: generation goes only to `daily-cloudcode-pa.googleapis.com:443`
+  (agy 1.2.10 parity; thought signatures are tied to the issuing host, so there
+  is no cross-host fallback); metadata and provisioning go to
+  `cloudcode-pa.googleapis.com` and then daily.
 - Local port **8091**.
 - Fingerprint gate command:
   `tshark -r <cap.pcap> -Y 'tls.handshake.type==1' -T fields -e tls.handshake.ja4`
@@ -44,7 +47,7 @@ Overriding anything *breaks* the match.
 - Build: `go build -o bin/proxy ./cmd/proxy`
 - Git hooks (opt-in): `make install-hooks` points `core.hooksPath` at `scripts/git-hooks`, which refuses a commit whose staged Go files are not gofmt-clean. Bypass once with `git commit --no-verify` or `SKIP_GOFMT_HOOK=1`.
 - Proto: `protodump -output ./proto /root/.local/bin/agy` then `protoc --go_out=gen --go-grpc_out=gen ...`
-- Fingerprint test: capture with `tcpdump -i any -w /tmp/go.pcap host cloudcode-pa.googleapis.com -c 30` while hitting the proxy, then run the tshark gate above.
+- Fingerprint test: capture with `tcpdump -i any -w /tmp/go.pcap host daily-cloudcode-pa.googleapis.com -c 30` while hitting the proxy (generation only goes to daily; on macOS use `tcpdump -i pktap,all -P` as in `.reference/fingerprint-recheck-20260924.txt`), then run the tshark gate above.
 
 ## Definition of done
 

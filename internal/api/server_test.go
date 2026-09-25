@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1853,5 +1854,47 @@ func TestRetryAfterSecondsReadsUpstreamHeader(t *testing.T) {
 func TestRetryAfterSecondsIsZeroForOtherErrors(t *testing.T) {
 	if got := retryAfterSeconds(errors.New("boom")); got != 0 {
 		t.Fatalf("retryAfterSeconds = %d, want 0", got)
+	}
+}
+
+// A bare RESOURCE_EXHAUSTED 429 carries no reset hint. Claude Code must still
+// receive a Retry-After no shorter than the cooldown the dispatcher puts on the
+// account, or it retries into a pool that is still locked. A 400 joined in
+// from another endpoint must not hide the 429.
+func TestWriteErrorRetryAfterCoversDispatcherCooldown(t *testing.T) {
+	bare429 := &cloudcode.HTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Status:     "429",
+		Body:       `{ "error": { "code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED" } }`,
+	}
+	corrupted400 := &cloudcode.HTTPError{
+		StatusCode: http.StatusBadRequest,
+		Status:     "400",
+		Body:       `{ "error": { "code": 400, "message": "Corrupted thought signature.", "status": "INVALID_ARGUMENT" } }`,
+	}
+	floor := accounts.UpstreamCooldown(bare429, 0, time.Now()).Wait
+	cases := map[string]error{
+		"bare 429":             bare429,
+		"429 joined after 400": fmt.Errorf("max retries exceeded: %w", errors.Join(corrupted400, bare429)),
+	}
+	for name, err := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			rec := httptest.NewRecorder()
+			server.writeError(rec, err)
+			if rec.Code != http.StatusTooManyRequests {
+				t.Fatalf("status = %d, want 429", rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), `"rate_limit_error"`) {
+				t.Fatalf("body = %s, want rate_limit_error", rec.Body.String())
+			}
+			seconds, convErr := strconv.Atoi(rec.Header().Get("Retry-After"))
+			if convErr != nil {
+				t.Fatalf("Retry-After = %q, want integer seconds", rec.Header().Get("Retry-After"))
+			}
+			if got := time.Duration(seconds) * time.Second; got < floor {
+				t.Fatalf("Retry-After = %s, shorter than dispatcher cooldown %s", got, floor)
+			}
+		})
 	}
 }

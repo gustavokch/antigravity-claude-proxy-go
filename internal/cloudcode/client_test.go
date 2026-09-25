@@ -6,11 +6,14 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -151,7 +154,7 @@ func TestDoSSEDecompressesGzipStream(t *testing.T) {
 	defer server.Close()
 
 	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
-	client.contentEndpoints = []string{server.URL}
+	client.generationEndpoints = []string{server.URL}
 	var events []SSEEvent
 	if _, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
 		events = append(events, event)
@@ -173,7 +176,7 @@ func TestDoSSEClosesBodyOnGunzipError(t *testing.T) {
 	defer server.Close()
 
 	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
-	client.contentEndpoints = []string{server.URL}
+	client.generationEndpoints = []string{server.URL}
 	_, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
 		return nil
 	})
@@ -202,13 +205,45 @@ func TestLoadCodeAssistMetadata(t *testing.T) {
 	}
 }
 
-func TestContentAndProvisioningUseProductionBeforeDaily(t *testing.T) {
+// Generation is pinned to agy's host with no cross-host fallback: agy 1.2.10
+// sends streamGenerateContent to daily (SNI parity), and a thought signature
+// issued by one host is rejected by the other. The no-fallback behaviour itself
+// is covered by TestGenerationTargetsOnlyGenerationEndpoints.
+func TestGenerationEndpointsMatchAgyHost(t *testing.T) {
 	t.Parallel()
-	if len(ContentEndpoints) != 2 || ContentEndpoints[0] != ProdEndpoint || ContentEndpoints[1] != DailyEndpoint {
-		t.Fatalf("content endpoint order = %#v", ContentEndpoints)
+	if want := []string{DailyEndpoint}; !reflect.DeepEqual(GenerationEndpoints, want) {
+		t.Errorf("GenerationEndpoints = %#v, want %#v", GenerationEndpoints, want)
 	}
-	if len(ProvisioningEndpoints) != 2 || ProvisioningEndpoints[0] != ProdEndpoint || ProvisioningEndpoints[1] != DailyEndpoint {
-		t.Fatalf("provisioning endpoint order = %#v", ProvisioningEndpoints)
+}
+
+func TestGenerationTargetsOnlyGenerationEndpoints(t *testing.T) {
+	t.Parallel()
+	var metadataCalls, generationCalls atomic.Int32
+	metadata := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		metadataCalls.Add(1)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer metadata.Close()
+	generation := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		generationCalls.Add(1)
+		http.Error(writer, `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}`, http.StatusTooManyRequests)
+	}))
+	defer generation.Close()
+
+	client := New(Options{AccessToken: "token", HTTPClient: generation.Client()})
+	client.contentEndpoints = []string{metadata.URL}
+	client.generationEndpoints = []string{generation.URL}
+
+	_, streamErr := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(SSEEvent) error { return nil })
+	_, jsonErr := client.GenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{})
+	for name, err := range map[string]error{"stream": streamErr, "json": jsonErr} {
+		if got := FindHTTPError(err); got == nil || got.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("%s error = %v, want upstream 429", name, err)
+		}
+	}
+	if metadataCalls.Load() != 0 || generationCalls.Load() != 2 {
+		t.Fatalf("metadata=%d generation=%d, want 0 and 2: a generation 429 must not reach another host",
+			metadataCalls.Load(), generationCalls.Load())
 	}
 }
 
@@ -255,5 +290,39 @@ func assertNoHeader(t *testing.T, request *http.Request, name string) {
 	t.Helper()
 	if got := request.Header.Get(name); got != "" {
 		t.Errorf("%s unexpectedly present: %q", name, got)
+	}
+}
+
+func TestFindHTTPError(t *testing.T) {
+	t.Parallel()
+	err400 := &HTTPError{StatusCode: http.StatusBadRequest, Status: "400", Body: "Corrupted thought signature"}
+	err401 := &HTTPError{StatusCode: http.StatusUnauthorized, Status: "401", Body: "Unauthorized"}
+	err403 := &HTTPError{StatusCode: http.StatusForbidden, Status: "403", Body: "Forbidden"}
+	err429 := &HTTPError{StatusCode: http.StatusTooManyRequests, Status: "429", Body: "RESOURCE_EXHAUSTED"}
+	err500 := &HTTPError{StatusCode: http.StatusInternalServerError, Status: "500", Body: "Internal Error"}
+	var typedNil *HTTPError
+
+	cases := []struct {
+		name string
+		err  error
+		want *HTTPError
+	}{
+		{"nil", nil, nil},
+		{"unrelated", errors.New("other"), nil},
+		{"typed nil", error(typedNil), nil},
+		{"single", err429, err429},
+		{"wrapped", fmt.Errorf("outer: %w", err429), err429},
+		{"429 beats earlier 400", errors.Join(err400, err429), err429},
+		{"429 beats earlier 500", errors.Join(err500, err429), err429},
+		{"401 beats earlier 500", errors.Join(err500, err401), err401},
+		{"403 beats earlier 500", errors.Join(err500, err403), err403},
+		{"500 beats earlier 400", errors.Join(err400, err500), err500},
+		{"typed nil skipped in join", errors.Join(error(typedNil), err429), err429},
+		{"429 inside wrapped join", fmt.Errorf("max retries exceeded: %w", errors.Join(err400, err429)), err429},
+	}
+	for _, tc := range cases {
+		if got := FindHTTPError(tc.err); got != tc.want {
+			t.Errorf("%s: FindHTTPError = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -1,0 +1,78 @@
+Live agy/proxy fingerprint recheck (PR #97 endpoint remediation)
+=================================================================
+
+Captured: 2026-09-24 23:01 America/Sao_Paulo (darwin/arm64)
+Official binary: /Users/gus/.local/bin/agy (agy 1.2.10)
+Go proxy commit: 961d399 (PR #97 branch fix/upstream-429-thought-signature)
+Go proxy toolchain: public go1.27rc2 darwin/arm64
+
+Official agy invocation:
+
+  /Users/gus/.local/bin/agy \
+    --log-file=/tmp/pr97-endpoint-capture/agy.log \
+    --print='Reply with exactly ENDPOINT_PROBE_OK' \
+    --print-timeout=90s
+
+Observed agy response:
+
+  ENDPOINT_PROBE_OK
+
+Go proxy invocation:
+
+  env ANTIGRAVITY_CONFIG_DIR=... /tmp/pr97proxy -listen "127.0.0.1:18091"
+  curl -sS -m 120 "http://127.0.0.1:18091/v1/messages" \
+    -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+    -d '{"model":"gemini-3.8-flash","max_tokens":64,"messages":[{"role":"user","content":"Reply with exactly ENDPOINT_PROBE_OK"}]}'
+
+Observed proxy response:
+
+  {"content":[{"text":"ENDPOINT_PROBE_OK","type":"text"}],"id":"msg_70aa0e35f565c6b8ab084bb0d0500a62","model":"gemini-3.8-flash","role":"assistant","stop_reason":"end_turn",...}
+
+Both captures used:
+
+  tcpdump -i pktap,all -P -w /tmp/pr97-endpoint-capture/capture.pcapng 'tcp port 443'
+
+Capture SHA-256:
+
+  49dd48cdc2fdef43dd0ff68cb9614c510d836d29176358f89b142740fd022ba4
+
+tshark command:
+
+  tshark -r capture.pcapng \
+    -Y 'tls.handshake.type==1 && tls.handshake.extensions_server_name contains "cloudcode-pa"' \
+    -T fields -E separator=$'\t' -E occurrence=f \
+    -e frame.darwin.process_info.pname \
+    -e tls.handshake.extensions_server_name \
+    -e tls.handshake.extensions_alpn_str \
+    -e tls.handshake.ja4
+
+Observed ClientHello table:
+
+  count  process    SNI                                ALPN    JA4
+  1                 daily-cloudcode-pa.googleapis.com          t13d131100_f57a46bbacb6_f50d94e863eb
+  7      agy        daily-cloudcode-pa.googleapis.com          t13d131100_f57a46bbacb6_f50d94e863eb
+  1      pr97proxy  cloudcode-pa.googleapis.com                t13d131100_f57a46bbacb6_f50d94e863eb
+  1      pr97proxy  daily-cloudcode-pa.googleapis.com          t13d131100_f57a46bbacb6_f50d94e863eb
+
+Reference baselines:
+
+  SNI:  daily-cloudcode-pa.googleapis.com
+  JA4:  t13d131100_f57a46bbacb6_f50d94e863eb
+
+agy 1.2.10 URL log breakdown:
+
+  1 https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels
+  4 https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist
+  2 https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent
+
+Conclusion:
+
+1. Official agy 1.2.10 sends streamGenerateContent to daily-cloudcode-pa.googleapis.com.
+2. The remediated Go proxy (PR #97) sends streamGenerateContent and generateContent
+   only to daily-cloudcode-pa.googleapis.com, matching agy 1.2.10 SNI parity and
+   preventing "Corrupted thought signature" errors across hosts.
+3. Metadata RPCs (fetchAvailableModels / retrieveUserQuotaSummary) retain main's
+   [ProdEndpoint, DailyEndpoint] order (the single pr97proxy ClientHello to
+   cloudcode-pa.googleapis.com is the initial metadata query).
+4. Both official agy 1.2.10 and pr97proxy produce the exact JA4 fingerprint:
+   t13d131100_f57a46bbacb6_f50d94e863eb, with no ALPN.
