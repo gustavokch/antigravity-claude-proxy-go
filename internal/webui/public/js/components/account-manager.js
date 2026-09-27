@@ -72,6 +72,22 @@ window.QuotaView = (() => {
         return 'bg-red-500';
     }
 
+    // Bar and text colour for a used fraction, on the same bands as the
+    // pools read from the other side: above 80% used red, above 50% yellow.
+    function usedBarClass(fraction) {
+        if (!isNum(fraction)) return 'bg-gray-600';
+        if (fraction > 0.8) return 'bg-red-500';
+        if (fraction > 0.5) return 'bg-yellow-500';
+        return 'bg-emerald-500';
+    }
+
+    function usedTextClass(fraction) {
+        if (!isNum(fraction)) return 'text-gray-500';
+        if (fraction > 0.8) return 'text-red-400';
+        if (fraction > 0.5) return 'text-yellow-400';
+        return 'text-gray-300';
+    }
+
     // Burn level from tokensPerMinuteForIndicator: above 1000 HIGH, above
     // 500 MODERATE, otherwise NORMAL. Null when the rate is unknown.
     function burnLevel(burnRate) {
@@ -170,7 +186,11 @@ window.QuotaView = (() => {
         const rows = sortedPools(pools);
         if (rows.length === 0) return '';
         const items = rows.map((p) => {
-            const pct = p.percent === null ? 'N/A' : p.percent + '%';
+            const pct = p.percent === null ? 'N/A' : t('poolRemaining', { pct: p.percent + '%' });
+            const label = poolLabel(p, t);
+            const aria = `role="progressbar" aria-valuemin="0" aria-valuemax="100"`
+                + (p.percent === null ? '' : ` aria-valuenow="${p.percent}"`)
+                + ` aria-label="${escapeHTML(label + ': ' + pct)}"`;
             const reset = p.resetTime
                 ? (compact ? timeUntil(p.resetTime) : t('resetsIn', { time: timeUntil(p.resetTime) }))
                 : '';
@@ -181,9 +201,9 @@ window.QuotaView = (() => {
             if (compact) {
                 return `<div class="leading-tight" data-pool-id="${escapeHTML(p.id)}">`
                     + `<div class="flex items-center justify-between gap-1 text-[10px] font-mono text-gray-500">`
-                    + `<span class="truncate">${escapeHTML(poolLabel(p, t))}</span>`
-                    + `<span class="${pctClass}">${escapeHTML(pct)}</span></div>`
-                    + `<div class="w-full bg-gray-700 rounded-full overflow-hidden" style="height:4px">`
+                    + `<span class="truncate">${escapeHTML(label)}</span>`
+                    + `<span class="${pctClass}" style="white-space:nowrap">${escapeHTML(pct)}</span></div>`
+                    + `<div class="w-full bg-gray-700 rounded-full overflow-hidden" style="height:4px" ${aria}>`
                     + `<div class="h-full rounded-full ${remainingBarClass(p.percent)}" style="width:${p.percent ?? 0}%"></div></div>`
                     + ((reset || badge)
                         ? `<div class="flex items-center justify-between gap-1 text-[10px] font-mono text-gray-500" style="font-size:9px">`
@@ -193,21 +213,24 @@ window.QuotaView = (() => {
             }
             return `<div class="p-3 bg-space-800/50 border border-space-border/30 rounded-lg" data-pool-id="${escapeHTML(p.id)}">`
                 + `<div class="flex justify-between items-center mb-2">`
-                + `<span class="text-sm font-semibold text-gray-200">${escapeHTML(poolLabel(p, t))}</span>`
+                + `<span class="text-sm font-semibold text-gray-200">${escapeHTML(label)}</span>`
                 + `<div class="flex items-center gap-2 text-[10px] font-mono">${badge}`
                 + `<span class="text-xs font-mono ${pctClass}">${escapeHTML(pct)}</span></div></div>`
-                + `<div class="w-full bg-gray-700 rounded-full h-2.5 mb-2 overflow-hidden">`
+                + `<div class="w-full bg-gray-700 rounded-full h-2.5 mb-2 overflow-hidden" ${aria}>`
                 + `<div class="h-full rounded-full transition-all duration-500 ${remainingBarClass(p.percent)}" style="width:${p.percent ?? 0}%"></div></div>`
                 + `<div class="flex justify-between items-center">`
                 + `<span class="text-[10px] text-gray-500 font-mono">${escapeHTML(p.id)}</span>`
                 + (reset ? `<span class="text-[10px] text-yellow-500/80 font-mono italic">${escapeHTML(reset)}</span>` : '')
                 + `</div></div>`;
         });
-        return `<div class="${compact ? 'mt-1.5 space-y-1' : 'grid grid-cols-1 gap-3'}" data-pool-bars>${items.join('')}</div>`;
+        return compact
+            ? `<div class="mt-1.5 space-y-1" style="min-width:11rem" data-pool-bars>${items.join('')}</div>`
+            : `<div class="grid grid-cols-1 gap-3" data-pool-bars>${items.join('')}</div>`;
     }
 
     return {
         splitPoolId, poolPercent, sortedPools, poolFamilyLabel, remainingBarClass,
+        usedBarClass, usedTextClass,
         burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
         reportRows, reportPeriod, usageURL, escapeHTML, poolLabel, poolSourceLabel,
         renderPoolBars,
@@ -227,11 +250,14 @@ window.Components.accountManager = () => ({
     selectedAccountLimits: {},
     selectedAccountId: '',
     selectedAccountProvider: '',
-    selectedAccountPools: null,
-    selectedAccountUsage: null,
+    // Bumped every 30s so countdowns in the quota modal re-render.
+    nowTick: 0,
+    _tickTimer: null,
 
-    // Claude Code usage history per account id:
-    // { open, report: 'daily'|'weekly', loading, error, data: { daily, weekly } }
+    // Claude Code usage history per account id: { open, report, disabled,
+    // loading: {daily, weekly}, error: {daily, weekly}, data: {daily, weekly} }.
+    // loading, error and data are per report so switching reports mid-load
+    // neither blocks the other report nor shows its error.
     ccHistory: {},
 
     // Claude Code Accounts & Gateway State
@@ -262,6 +288,11 @@ window.Components.accountManager = () => ({
         }
         this.loadCCAccounts();
         this.loadCCConfig();
+        this._tickTimer = setInterval(() => { this.nowTick = Date.now(); }, 30000);
+    },
+
+    destroy() {
+        if (this._tickTimer) clearInterval(this._tickTimer);
     },
 
     get googleAccounts() {
@@ -470,7 +501,9 @@ window.Components.accountManager = () => ({
         }, this, 'reloading', { errorMessage: 'Failed to reload accounts' });
     },
 
-    openQuotaModal(account) {
+    // provider is passed by the table the row lives in ('google' or
+    // 'claudecode') rather than inferred from the row.
+    openQuotaModal(account, provider = 'google') {
         this.selectedAccountEmail = account.email || account.id;
         // Email-like "names" (backend sends email as name for google rows and
         // for CC rows without a display name) bypass Redact when rendered
@@ -482,9 +515,7 @@ window.Components.accountManager = () => ({
             Object.entries(account.limits || {}).filter(([, v]) => v != null)
         );
         this.selectedAccountId = account.id || account.email || '';
-        this.selectedAccountProvider = account.provider || 'google';
-        this.selectedAccountPools = (account.quota && account.quota.pools) || null;
-        this.selectedAccountUsage = this.accountUsage(account);
+        this.selectedAccountProvider = provider;
         document.getElementById('quota_modal').showModal();
     },
 
@@ -494,6 +525,33 @@ window.Components.accountManager = () => ({
 
     get qv() {
         return window.QuotaView;
+    },
+
+    // The modal's account, looked up live so refreshed pools and usage show
+    // while it is open.
+    get selectedAccount() {
+        const id = this.selectedAccountId;
+        if (!id) return null;
+        const list = this.selectedAccountProvider === 'claudecode'
+            ? this.filteredCCAccounts.concat(this.claudeStoreAccounts)
+            : (Alpine.store('data').accounts || []);
+        return list.find(a => (a.id || a.email) === id || a.email === id) || null;
+    },
+
+    get selectedAccountUsage() {
+        return this.accountUsage(this.selectedAccount);
+    },
+
+    // Pools for the modal. Claude Code accounts with usage show their 5h and
+    // weekly pools in the window panel instead, so those cards are dropped.
+    get selectedAccountPools() {
+        const acc = this.selectedAccount;
+        const pools = acc && acc.quota && acc.quota.pools;
+        if (!pools || typeof pools !== 'object') return null;
+        if (this.selectedAccountProvider !== 'claudecode' || !this.selectedAccountUsage) return pools;
+        const rest = Object.fromEntries(Object.entries(pools)
+            .filter(([id]) => id !== 'claude-5h' && id !== 'claude-weekly'));
+        return Object.keys(rest).length ? rest : null;
     },
 
     accountPools(acc) {
@@ -509,6 +567,7 @@ window.Components.accountManager = () => ({
 
     // Shared pool-bar HTML for a raw quota.pools object (see QuotaView.renderPoolBars).
     renderPools(pools, compact = false) {
+        void this.nowTick; // re-render countdowns on the tick
         const store = Alpine.store('global');
         return window.QuotaView.renderPoolBars(pools, {
             t: (k, p) => store.t(k, p),
@@ -527,6 +586,11 @@ window.Components.accountManager = () => ({
         return keys[level] ? Alpine.store('global').t(keys[level]) : '';
     },
 
+    usedLabel(fraction) {
+        const pct = window.QuotaView.usedPercent(fraction);
+        return pct === null ? 'N/A' : Alpine.store('global').t('ccUsed', { pct: pct + '%' });
+    },
+
     // Colour classes for an ok/warning/exceeds level.
     levelBg(level) {
         return level === 'exceeds' ? 'bg-red-500' : (level === 'warning' ? 'bg-yellow-500' : 'bg-emerald-500');
@@ -534,11 +598,6 @@ window.Components.accountManager = () => ({
 
     levelText(level) {
         return level === 'exceeds' ? 'text-red-400' : (level === 'warning' ? 'text-yellow-400' : 'text-gray-300');
-    },
-
-    // Level of the current utilization, on the same thresholds as the projection.
-    nowLevel(win) {
-        return window.QuotaView.projectedLevel({ projectedUtilization: win && win.utilization });
     },
 
     usageWindows(usage) {
@@ -550,13 +609,28 @@ window.Components.accountManager = () => ({
     },
 
     windowTimeLeft(win) {
+        void this.nowTick;
         if (!win || !win.end) return '-';
         return window.utils.formatTimeUntil(win.end);
     },
 
     historyState(accountId) {
         return this.ccHistory[accountId] ||
-            { open: false, report: 'daily', loading: false, error: '', data: {} };
+            { open: false, report: 'daily', disabled: false, loading: {}, error: {}, data: {} };
+    },
+
+    historyLoading(accountId) {
+        const st = this.historyState(accountId);
+        return !!st.loading[st.report];
+    },
+
+    historyError(accountId) {
+        const st = this.historyState(accountId);
+        return st.error[st.report] || '';
+    },
+
+    historyDisabled(accountId) {
+        return !!this.historyState(accountId).disabled;
     },
 
     historyRows(accountId) {
@@ -583,22 +657,31 @@ window.Components.accountManager = () => ({
         this.loadHistory(accountId, report);
     },
 
-    // Loads a report once per account and report kind. Placeholder accounts
-    // get generated rows so the table can be seen without live data.
+    // Loads a report once per account and report kind. A server that answers
+    // {enabled:false} (usage tracking off) is not cached, so turning tracking
+    // on and reopening works. Placeholder accounts get generated rows so the
+    // table can be seen without live data.
     async loadHistory(accountId, report, force = false) {
         const cur = this.historyState(accountId);
-        if (!force && (cur.data[report] || cur.loading)) return;
-        const patch = (fields) => {
+        if (!force && (cur.data[report] || cur.loading[report])) return;
+        const patch = (fn) => {
             const st = this.historyState(accountId);
-            this.ccHistory = { ...this.ccHistory, [accountId]: { ...st, ...fields } };
+            this.ccHistory = { ...this.ccHistory, [accountId]: { ...st, ...fn(st) } };
         };
-        patch({ loading: true, error: '' });
+        const done = (fields) => patch((st) => ({
+            loading: { ...st.loading, [report]: false },
+            ...fields(st),
+        }));
+        patch((st) => ({
+            loading: { ...st.loading, [report]: true },
+            error: { ...st.error, [report]: '' },
+        }));
 
         const dataStore = Alpine.store('data');
         if (dataStore.placeholderMode && String(accountId).startsWith('cc-placeholder-') &&
             typeof dataStore.placeholderUsageReport === 'function') {
-            const st = this.historyState(accountId);
-            patch({ loading: false, data: { ...st.data, [report]: dataStore.placeholderUsageReport(accountId, report) } });
+            const report_ = dataStore.placeholderUsageReport(accountId, report);
+            done((st) => ({ disabled: false, data: { ...st.data, [report]: report_ } }));
             return;
         }
 
@@ -611,11 +694,15 @@ window.Components.accountManager = () => ({
                 const err = await response.json().catch(() => ({}));
                 throw new Error(err.error || `HTTP ${response.status}`);
             }
-            const data = await response.json();
-            const st = this.historyState(accountId);
-            patch({ loading: false, data: { ...st.data, [report]: data || {} } });
+            const data = (await response.json()) || {};
+            if (data.enabled === false) {
+                done(() => ({ disabled: true }));
+                return;
+            }
+            done((st) => ({ disabled: false, data: { ...st.data, [report]: data } }));
         } catch (e) {
-            patch({ loading: false, error: (store.t('ccHistoryLoadFailed')) + ': ' + (e.message || e) });
+            const msg = store.t('ccHistoryLoadFailed') + ': ' + (e.message || e);
+            done((st) => ({ error: { ...st.error, [report]: msg } }));
         }
     },
 

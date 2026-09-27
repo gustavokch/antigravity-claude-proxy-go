@@ -71,44 +71,17 @@ function poolPercent() {
     assert.equal(qv.remainingBarClass(20), 'bg-red-500');
 }
 
-function burnLevels() {
-    // The usage history loads lazily on open, once per report kind, and records a
-// failure instead of throwing.
-async function historyLoading() {
-    const { component: c, requests } = loadComponent('account-manager.js', 'accountManager');
-    assert.equal(requests.length, 0, 'nothing is fetched before the history is opened');
-
-    c.toggleHistory('acct-1');
-    await pendingTick();
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].url, '/api/claudecode/usage?report=daily&account=acct-1');
-    assert.equal(requests[0].options.headers, undefined);
-    requests[0].resolve({ response: okResponse({ daily: [{ date: '2026-09-27', totalCost: 1 }], totals: { totalCost: 1 } }), newPassword: null });
-    await pendingTick();
-    await pendingTick();
-    assert.equal(c.historyRows('acct-1').length, 1);
-    assert.equal(c.historyTotals('acct-1').totalCost, 1);
-
-    // Closing and reopening reuses the loaded report.
-    c.toggleHistory('acct-1');
-    c.toggleHistory('acct-1');
-    await pendingTick();
-    assert.equal(requests.length, 1, 'reopening refetched a loaded report');
-
-    c.setHistoryReport('acct-1', 'weekly');
-    await pendingTick();
-    assert.equal(requests.length, 2);
-    assert.equal(requests[1].url, '/api/claudecode/usage?report=weekly&account=acct-1');
-    requests[1].resolve({ response: { ok: false, status: 404, json: async () => ({ error: 'not found' }) }, newPassword: null });
-    await pendingTick();
-    await pendingTick();
-    const st = c.historyState('acct-1');
-    assert.equal(st.loading, false);
-    assert.ok(st.error.includes('not found'), `error not recorded: ${st.error}`);
-    assert.equal(c.historyRows('acct-1').length, 0);
+function usedColours() {
+    assert.equal(qv.usedBarClass(0.81), 'bg-red-500');
+    assert.equal(qv.usedBarClass(0.8), 'bg-yellow-500');
+    assert.equal(qv.usedBarClass(0.51), 'bg-yellow-500');
+    assert.equal(qv.usedBarClass(0.5), 'bg-emerald-500');
+    assert.equal(qv.usedBarClass(null), 'bg-gray-600');
+    assert.equal(qv.usedTextClass(0.94), 'text-red-400');
 }
 
-const cases = [
+function burnLevels() {
+    const cases = [
         [1001, 'HIGH'], [1000, 'MODERATE'], [501, 'MODERATE'], [500, 'NORMAL'], [0, 'NORMAL'],
     ];
     for (const [tpm, want] of cases) {
@@ -159,7 +132,7 @@ function reports() {
 }
 
 function renderer() {
-    const t = (k, p) => (p && p.time ? `${k}:${p.time}` : k);
+    const t = (k, p) => (p && p.time ? `${k}:${p.time}` : (p && p.pct ? `${p.pct} left` : k));
     const html = qv.renderPoolBars({
         'gemini-weekly': { remainingFraction: 0.5, resetTime: 'R2' },
         'gemini-5h': { remainingFraction: 0.25, resetTime: 'R1', source: 'headers' },
@@ -167,7 +140,10 @@ function renderer() {
     }, { t, timeUntil: (ts) => `in-${ts}` });
     const ids = [...html.matchAll(/data-pool-id="([^"]*)"/g)].map((m) => m[1]);
     assert.deepEqual(ids, ['gemini-5h', 'gemini-weekly', '&lt;b&gt;-5h']);
-    assert.ok(html.includes('25%'));
+    assert.ok(html.includes('25% left'), 'pools are labelled as remaining');
+    assert.ok(html.includes('role="progressbar"'));
+    assert.ok(html.includes('aria-valuenow="25"'));
+    assert.ok(html.includes('aria-label="Gemini · poolWindow5h: 25% left"'));
     assert.ok(html.includes('N/A'));
     assert.ok(html.includes('resetsIn:in-R1'), 'modal layout shows the reset countdown');
     assert.ok(html.includes('poolSourceHeaders'), 'source badge is translated');
@@ -182,8 +158,12 @@ function renderer() {
     assert.equal(qv.renderPoolBars({}, { t }), '');
 }
 
+const errorResponse = (status, error) =>
+    ({ ok: false, status, json: async () => ({ error }) });
+const settle = async () => { await pendingTick(); await pendingTick(); };
+
 // The usage history loads lazily on open, once per report kind, and records a
-// failure instead of throwing.
+// failure against the report that failed.
 async function historyLoading() {
     const { component: c, requests } = loadComponent('account-manager.js', 'accountManager');
     assert.equal(requests.length, 0, 'nothing is fetched before the history is opened');
@@ -192,10 +172,10 @@ async function historyLoading() {
     await pendingTick();
     assert.equal(requests.length, 1);
     assert.equal(requests[0].url, '/api/claudecode/usage?report=daily&account=acct-1');
-    assert.equal(requests[0].options.headers, undefined);
+    assert.equal(c.historyLoading('acct-1'), true);
     requests[0].resolve({ response: okResponse({ daily: [{ date: '2026-09-27', totalCost: 1 }], totals: { totalCost: 1 } }), newPassword: null });
-    await pendingTick();
-    await pendingTick();
+    await settle();
+    assert.equal(c.historyLoading('acct-1'), false);
     assert.equal(c.historyRows('acct-1').length, 1);
     assert.equal(c.historyTotals('acct-1').totalCost, 1);
 
@@ -209,25 +189,85 @@ async function historyLoading() {
     await pendingTick();
     assert.equal(requests.length, 2);
     assert.equal(requests[1].url, '/api/claudecode/usage?report=weekly&account=acct-1');
-    requests[1].resolve({ response: { ok: false, status: 404, json: async () => ({ error: 'not found' }) }, newPassword: null });
-    await pendingTick();
-    await pendingTick();
-    const st = c.historyState('acct-1');
-    assert.equal(st.loading, false);
-    assert.ok(st.error.includes('not found'), `error not recorded: ${st.error}`);
+    requests[1].resolve({ response: errorResponse(404, 'not found'), newPassword: null });
+    await settle();
+    assert.equal(c.historyLoading('acct-1'), false);
+    assert.ok(c.historyError('acct-1').includes('not found'), `error not recorded: ${c.historyError('acct-1')}`);
     assert.equal(c.historyRows('acct-1').length, 0);
+
+    // The weekly error does not leak into the daily view.
+    c.setHistoryReport('acct-1', 'daily');
+    assert.equal(c.historyError('acct-1'), '');
+    assert.equal(c.historyRows('acct-1').length, 1);
+}
+
+// Switching reports while the first is still loading loads the second too.
+async function historySwitchWhileLoading() {
+    const { component: c, requests } = loadComponent('account-manager.js', 'accountManager');
+    c.toggleHistory('acct-1');
+    await pendingTick();
+    assert.equal(requests.length, 1, 'daily request in flight');
+
+    c.setHistoryReport('acct-1', 'weekly');
+    await pendingTick();
+    assert.equal(requests.length, 2, 'weekly was not requested while daily was pending');
+    assert.equal(requests[1].url, '/api/claudecode/usage?report=weekly&account=acct-1');
+    assert.equal(c.historyLoading('acct-1'), true, 'weekly shows as loading');
+
+    // Daily fails after the switch; the weekly view shows no error.
+    requests[0].resolve({ response: errorResponse(500, 'boom'), newPassword: null });
+    await settle();
+    assert.equal(c.historyError('acct-1'), '', 'daily error leaked into weekly');
+    assert.equal(c.historyLoading('acct-1'), true, 'daily completion cleared weekly loading');
+
+    requests[1].resolve({ response: okResponse({ weekly: [{ week: '2026-09-21' }], totals: {} }), newPassword: null });
+    await settle();
+    assert.equal(c.historyLoading('acct-1'), false);
+    assert.equal(c.historyRows('acct-1').length, 1);
+
+    // The daily failure stays recorded against daily; switching back retries it.
+    assert.ok(c.historyState('acct-1').error.daily.includes('boom'));
+    c.setHistoryReport('acct-1', 'daily');
+    await pendingTick();
+    assert.equal(requests.length, 3, 'switching back did not retry the failed report');
+}
+
+// {enabled:false} shows the disabled state and is not cached.
+async function historyDisabled() {
+    const { component: c, requests } = loadComponent('account-manager.js', 'accountManager');
+    c.toggleHistory('acct-1');
+    await pendingTick();
+    requests[0].resolve({ response: okResponse({ enabled: false }), newPassword: null });
+    await settle();
+    assert.equal(c.historyDisabled('acct-1'), true);
+    assert.equal(c.historyLoading('acct-1'), false);
+    assert.equal(c.historyError('acct-1'), '');
+    assert.equal(c.historyRows('acct-1').length, 0);
+
+    // Reopening asks again; once tracking is on, the data shows.
+    c.toggleHistory('acct-1');
+    c.toggleHistory('acct-1');
+    await pendingTick();
+    assert.equal(requests.length, 2, 'the disabled answer was cached');
+    requests[1].resolve({ response: okResponse({ daily: [{ date: '2026-09-27' }], totals: {} }), newPassword: null });
+    await settle();
+    assert.equal(c.historyDisabled('acct-1'), false);
+    assert.equal(c.historyRows('acct-1').length, 1);
 }
 
 const cases = [
     ['pools order 5h before weekly, grouped by family', poolOrder],
     ['pools tolerate missing and null fields', poolTolerance],
     ['pool percent and bar colour', poolPercent],
+    ['used bar colours', usedColours],
     ['burn level thresholds', burnLevels],
     ['projected marker levels', projectedLevels],
     ['number formatting', formatting],
     ['usage report rows and URL', reports],
     ['shared pool-bar renderer', renderer],
     ['usage history loads lazily per report', historyLoading],
+    ['switching reports while one is loading loads both', historySwitchWhileLoading],
+    ['usage tracking disabled is shown and not cached', historyDisabled],
 ];
 
 for (const [name, fn] of cases) {

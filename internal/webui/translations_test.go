@@ -456,6 +456,7 @@ var quotaUsageKeys = []string{
 	"quotaPools", "perModelQuota", "poolWindow5h", "poolWindowWeekly",
 	"poolSourceHeaders", "poolSourceCalibrated", "poolSourceConfig", "poolSourceMax",
 	"ccUsageWindows", "ccWindow5h", "ccWindow7d", "ccUtilNow", "ccProjected",
+	"poolRemaining", "ccUsed", "ccHistoryDisabled",
 	"ccTimeLeft", "ccApiEquivalent", "ccBurnRate", "ccBurnHigh", "ccBurnModerate",
 	"ccBurnNormal", "ccTokensPerMinute", "ccPerHour", "ccTodayCost", "ccTokens",
 	"ccCostBasisNote", "ccUsageHistory", "ccHistoryDaily", "ccHistoryWeekly",

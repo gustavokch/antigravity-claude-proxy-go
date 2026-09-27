@@ -241,9 +241,9 @@
                                   x-text="(acc.subscription?.tier || 'free').toUpperCase()">
                             </span>
                         </td>
-                        <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
+                        <td class="py-4 cursor-pointer" @click="openQuotaModal(acc, 'google')">
                             <div x-data="{ get quota() { return getMainModelQuota(acc); } }">
-                                <template x-if="quota.percent !== null">
+                                <template x-if="quota.percent !== null && accountPools(acc).length === 0">
                                     <div class="flex items-center gap-2">
                                         <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
                                             <div class="h-full rounded-full transition-all"
@@ -439,9 +439,9 @@
                             </td>
 
                             <!-- Quota -->
-                            <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
+                            <td class="py-4 cursor-pointer" @click="openQuotaModal(acc, 'claudecode')">
                                 <div x-data="{ get quota() { return getMainModelQuota(acc); } }">
-                                    <template x-if="quota.percent !== null">
+                                    <template x-if="quota.percent !== null && accountPools(acc).length === 0">
                                         <div class="flex items-center gap-2">
                                             <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
                                                 <div class="h-full rounded-full transition-all"
@@ -756,26 +756,32 @@
                                                   class="px-1 rounded border border-space-border text-gray-400 uppercase"
                                                   x-text="poolSourceLabel(w.win.source)"></span>
                                             <span class="text-xs font-mono"
-                                                  :class="levelText(nowLevel(w.win))"
-                                                  x-text="qv.usedPercent(w.win.utilization) === null ? 'N/A' : qv.usedPercent(w.win.utilization) + '%'"></span>
+                                                  :class="qv.usedTextClass(w.win.utilization)"
+                                                  x-text="usedLabel(w.win.utilization)"></span>
                                         </div>
                                     </div>
                                     <!-- Utilization now, with the projected marker -->
-                                    <div class="relative w-full bg-gray-700 rounded-full h-2.5 mb-2">
+                                    <div class="relative w-full bg-gray-700 rounded-full h-2.5 mb-2"
+                                         role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                                         :aria-valuenow="qv.usedPercent(w.win.utilization) === null ? null : Math.min(100, qv.usedPercent(w.win.utilization))"
+                                         :aria-label="$store.global.t(w.label) + ': ' + usedLabel(w.win.utilization)">
                                         <div class="h-full rounded-full transition-all duration-500"
-                                             :class="levelBg(nowLevel(w.win))"
+                                             :class="qv.usedBarClass(w.win.utilization)"
                                              :style="`width: ${qv.barPosition(w.win.utilization)}%`"></div>
                                         <template x-if="qv.usedPercent(w.win.projectedUtilization) !== null">
                                             <div class="absolute rounded"
                                                  :class="levelBg(qv.projectedLevel(w.win))"
                                                  :style="`top:-3px; bottom:-3px; width:3px; left: calc(${qv.barPosition(w.win.projectedUtilization)}% - ${qv.barPosition(w.win.projectedUtilization) >= 100 ? 3 : 1.5}px)`"
+                                                 role="img"
                                                  :title="$store.global.t('ccProjected') + ' ' + qv.usedPercent(w.win.projectedUtilization) + '%'"
+                                                 :aria-label="$store.global.t('ccProjected') + ' ' + qv.usedPercent(w.win.projectedUtilization) + '%'"
                                                  data-cc-projected-marker></div>
                                         </template>
                                     </div>
                                     <div class="flex flex-wrap justify-between items-center gap-3 gap-y-1 text-[10px] font-mono text-gray-500">
                                         <span>
-                                            <span x-text="$store.global.t('ccUtilNow') + ' ' + (qv.usedPercent(w.win.utilization) === null ? 'N/A' : qv.usedPercent(w.win.utilization) + '%')"></span>
+                                            <span x-text="$store.global.t('ccUtilNow') + ' ' + (qv.usedPercent(w.win.utilization) === null ? 'N/A' : qv.usedPercent(w.win.utilization) + '%')"
+                                                  :class="qv.usedTextClass(w.win.utilization)"></span>
                                             <template x-if="qv.usedPercent(w.win.projectedUtilization) !== null">
                                                 <span :class="levelText(qv.projectedLevel(w.win))"
                                                       x-text="' · ' + $store.global.t('ccProjected') + ' ' + qv.usedPercent(w.win.projectedUtilization) + '%'"></span>
@@ -820,16 +826,19 @@
                         </div>
                         <template x-if="historyState(selectedAccountId).open">
                             <div class="bg-space-800/50 border border-space-border/30 rounded-lg overflow-x-auto">
-                                <template x-if="historyState(selectedAccountId).loading">
+                                <template x-if="historyLoading(selectedAccountId)">
                                     <div class="py-4 text-center text-xs text-gray-500" x-text="$store.global.t('loading')"></div>
                                 </template>
-                                <template x-if="!historyState(selectedAccountId).loading && historyState(selectedAccountId).error">
-                                    <div class="py-4 text-center text-xs text-red-400" x-text="historyState(selectedAccountId).error"></div>
+                                <template x-if="!historyLoading(selectedAccountId) && historyDisabled(selectedAccountId)">
+                                    <div class="py-4 text-center text-xs text-gray-500" data-cc-history-disabled x-text="$store.global.t('ccHistoryDisabled')"></div>
                                 </template>
-                                <template x-if="!historyState(selectedAccountId).loading && !historyState(selectedAccountId).error && historyRows(selectedAccountId).length === 0">
+                                <template x-if="!historyLoading(selectedAccountId) && !historyDisabled(selectedAccountId) && historyError(selectedAccountId)">
+                                    <div class="py-4 text-center text-xs text-red-400" x-text="historyError(selectedAccountId)"></div>
+                                </template>
+                                <template x-if="!historyLoading(selectedAccountId) && !historyDisabled(selectedAccountId) && !historyError(selectedAccountId) && historyRows(selectedAccountId).length === 0">
                                     <div class="py-4 text-center text-xs text-gray-500" x-text="$store.global.t('ccHistoryEmpty')"></div>
                                 </template>
-                                <template x-if="!historyState(selectedAccountId).loading && historyRows(selectedAccountId).length > 0">
+                                <template x-if="!historyLoading(selectedAccountId) && !historyDisabled(selectedAccountId) && historyRows(selectedAccountId).length > 0">
                                     <table class="w-full text-[11px] font-mono" data-cc-history-table>
                                         <thead>
                                             <tr class="border-b border-space-border/50 text-[10px] text-gray-500 uppercase">
@@ -843,7 +852,7 @@
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            <template x-for="row in historyRows(selectedAccountId)" :key="qv.reportPeriod(row)">
+                                            <template x-for="(row, i) in historyRows(selectedAccountId)" :key="qv.reportPeriod(row) || i">
                                                 <tr class="border-b border-space-border/20 last:border-0 text-gray-300">
                                                     <td class="px-2 py-1" :title="(row.modelsUsed || []).join(', ')" x-text="qv.reportPeriod(row)"></td>
                                                     <td class="px-2 py-1 text-right" x-text="qv.formatTokens(row.inputTokens)"></td>
@@ -868,7 +877,7 @@
                                         </tbody>
                                     </table>
                                 </template>
-                                <p x-show="historyRows(selectedAccountId).length > 0"
+                                <p x-show="!historyDisabled(selectedAccountId) && historyRows(selectedAccountId).length > 0"
                                    class="px-2 py-1 text-[10px] text-gray-600" x-text="$store.global.t('ccCostBasisNote')"></p>
                             </div>
                         </template>
