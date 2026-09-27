@@ -15,7 +15,6 @@ import (
 
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
-	"antigravity-go-proxy/internal/openrouter"
 )
 
 var (
@@ -251,27 +250,42 @@ type ccAttempt struct {
 	startTime   time.Time
 	pool        *claudecode.AccountPool
 	rateLimits  claudecode.RateLimits
+	requestID   string // upstream "request-id" response header
 }
 
 // recordClaudeCodeMetrics is the single place a completed Claude Code call
 // becomes metrics, logs, pool accounting and dashboard stats. Mirrors
-// recordOpenRouterMetrics.
-func (server *Server) recordClaudeCodeMetrics(a ccAttempt, in, out, cr, cw int) claudecode.RequestMetrics {
+// recordOpenRouterMetrics. u is the detailed usage captured from the upstream
+// response; its cost comes from claudecode.UsageCost via ComputeFinalMetrics.
+func (server *Server) recordClaudeCodeMetrics(a ccAttempt, u claudecode.Usage) claudecode.RequestMetrics {
 	latency := time.Since(a.startTime)
+	in, out, cr, cw := int(u.Input), int(u.Output), int(u.CacheRead), int(u.CacheCreate)
 	metrics := claudecode.RequestMetrics{
-		Model:               a.model,
-		AccountID:           a.accountID,
-		AccountName:         a.accountName,
-		SessionID:           a.sessionID,
-		InputTokens:         in,
-		OutputTokens:        out,
-		CacheReadTokens:     cr,
-		CacheCreationTokens: cw,
-		Latency:             latency,
+		Model:                 a.model,
+		AccountID:             a.accountID,
+		AccountName:           a.accountName,
+		SessionID:             a.sessionID,
+		InputTokens:           in,
+		OutputTokens:          out,
+		CacheReadTokens:       cr,
+		CacheCreationTokens:   cw,
+		CacheCreation1hTokens: int(u.CacheCreate1h),
+		Speed:                 u.Speed,
+		Latency:               latency,
 	}
 	metrics.ComputeFinalMetrics(claudecode.DefaultSessionTracker)
 	if server.logger != nil {
 		claudecode.LogObservability(server.logger, metrics)
+		server.logger.Debug("claudecode usage detail",
+			"account", a.accountID,
+			"message_id", u.MessageID,
+			"served_model", u.Model,
+			"request_id", u.RequestID,
+			"cache_creation_5m", u.CacheCreate5m,
+			"cache_creation_1h", u.CacheCreate1h,
+			"speed", u.Speed,
+			"iterations", len(u.Iterations),
+		)
 	}
 	if a.pool != nil {
 		a.pool.RecordSuccess(a.accountID, int64(in+out), metrics.CallCost, a.rateLimits)
@@ -294,12 +308,15 @@ func ccIsSSEResponse(h http.Header) bool {
 // and parsed — the same split the OpenRouter gateway makes between its stream
 // and unary paths.
 //
-// The usage parsers are shared with the OpenRouter gateway because they are
-// wire-format generic (they read Anthropic and OpenAI shapes alike).
+// The capture is Anthropic-specific (claudecode.UsageInterceptor and
+// ParseUsageJSON) so it also records the message ID, served model, upstream
+// request ID and the 5m/1h cache write split.
 func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
+	a.requestID = resp.Header.Get("request-id")
 	if ccIsSSEResponse(resp.Header) {
-		resp.Body = openrouter.NewSSEInterceptor(resp.Body, func(in, out, cr, cw int) {
-			server.recordClaudeCodeMetrics(a, in, out, cr, cw)
+		resp.Body = claudecode.NewUsageInterceptor(resp.Body, func(u claudecode.Usage) {
+			u.RequestID = a.requestID
+			server.recordClaudeCodeMetrics(a, u)
 		})
 		return
 	}
@@ -313,8 +330,9 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return
 	}
-	in, out, cr, cw := openrouter.ParseUsageFromJSON(body)
-	server.recordClaudeCodeMetrics(a, in, out, cr, cw)
+	u := claudecode.ParseUsageJSON(body)
+	u.RequestID = a.requestID
+	server.recordClaudeCodeMetrics(a, u)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 }
 
