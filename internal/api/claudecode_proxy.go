@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
 )
 
@@ -293,6 +294,7 @@ func (server *Server) recordClaudeCodeMetrics(a ccAttempt, u claudecode.Usage) c
 	if a.pool != nil {
 		a.pool.RecordSuccess(a.accountID, int64(in+out), metrics.CallCost, a.rateLimits)
 	}
+	server.recordClaudeCodeUsage(a.accountID, a.sessionID, a.model, ccusage.OriginProxy, u)
 	if server.tracker != nil {
 		server.tracker.TrackRequest(a.model, latency, in, out, cr)
 	}

@@ -33,6 +33,7 @@ import (
 	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
@@ -95,6 +96,8 @@ type Options struct {
 	OAuthHandler       http.Handler
 	Tracker            *stats.Tracker
 	ClaudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
+	// CCUsage is the Claude Code usage engine; nil turns usage tracking off.
+	CCUsage *ccusage.Engine
 }
 
 type Server struct {
@@ -112,6 +115,7 @@ type Server struct {
 	oauthHandler       http.Handler
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	tracker            *stats.Tracker
+	ccUsage            *ccusage.Engine
 	kimiOAuthMgr       *auth.KimiOAuthManager
 	kimiIdentityOnce   sync.Once
 	kimiIdentity       http.Header
@@ -174,6 +178,7 @@ func New(options Options) (*Server, error) {
 		accountManager: options.AccountManager, broadcaster: options.Broadcaster,
 		webUI: options.WebUI, oauthHandler: options.OAuthHandler, tracker: options.Tracker,
 		claudeCodeOAuthMgr: options.ClaudeCodeOAuthMgr,
+		ccUsage:            options.CCUsage,
 		projects:           make(map[string]string),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)

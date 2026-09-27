@@ -221,6 +221,17 @@ func runServer(args []string) {
 	oauthMgr := auth.NewOAuthManager(accountManager)
 	uiHandler := webui.Handler()
 
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+
+	// The usage engine also installs the shared Claude Code pricer, so it is
+	// built even when tracking is off (it then returns nil).
+	ccUsage, err := api.NewClaudeCodeUsage(bgCtx, cfg.ClaudeCode, slogger)
+	if err != nil {
+		slogger.Warn("claudecode usage tracking disabled", "error", err)
+		ccUsage = nil
+	}
+
 	handler, err := api.New(api.Options{
 		APIKey:         *apiKey,
 		Backend:        dispatcher,
@@ -231,16 +242,16 @@ func runServer(args []string) {
 		WebUI:          uiHandler,
 		OAuthHandler:   oauthMgr,
 		Tracker:        tracker,
+		CCUsage:        ccUsage,
 	})
 	if err != nil {
 		slogger.Error("invalid proxy configuration", "error", err)
 		os.Exit(2)
 	}
 
-	bgCtx, bgCancel := context.WithCancel(context.Background())
-	defer bgCancel()
 	handler.StartClaudeCodeBackgroundWorker(bgCtx)
 	handler.StartCacheBumpScheduler(bgCtx)
+	handler.StartClaudeCodeUsage(bgCtx)
 
 	httpServer := &http.Server{
 		Addr:              *listen,
@@ -252,7 +263,9 @@ func runServer(args []string) {
 
 	shutdownSignals := make(chan os.Signal, 1)
 	signal.Notify(shutdownSignals, syscall.SIGINT, syscall.SIGTERM)
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-shutdownSignals
 		slogger.Info("shutting down proxy server...")
 		if tracker != nil {
@@ -266,6 +279,11 @@ func runServer(args []string) {
 		if err := httpServer.Shutdown(ctx); err != nil {
 			slogger.Error("graceful shutdown failed", "error", err)
 		}
+		// After the drain, so usage recorded by the last requests reaches
+		// the ledger.
+		if err := handler.Close(); err != nil {
+			slogger.Warn("close usage ledger", "error", err)
+		}
 	}()
 
 	slogger.Info("Antigravity proxy server listening", "address", *listen, "accounts", accountManager.Count(), "strategy", *strategy)
@@ -273,6 +291,9 @@ func runServer(args []string) {
 		slogger.Error("HTTP server failed", "error", err)
 		os.Exit(1)
 	}
+	// ListenAndServe returns as soon as Shutdown starts; wait for the drain
+	// and the ledger flush before exiting.
+	<-shutdownDone
 }
 
 func envOr(name, fallback string) string {
