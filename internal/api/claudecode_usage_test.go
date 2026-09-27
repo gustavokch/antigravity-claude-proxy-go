@@ -14,6 +14,7 @@ import (
 	"antigravity-go-proxy/internal/cachebump"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/claudecode/ccusage"
+	"antigravity-go-proxy/internal/config"
 )
 
 // isolateClaudeDirs points every directory the usage engine could read at
@@ -264,5 +265,61 @@ func TestClaudeCodeUsage_CacheBumpRecorded(t *testing.T) {
 	}
 	if !strings.HasPrefix(got[1].MessageID, "bump:acc-a:") || got[1].Model != "claude-sonnet-5" {
 		t.Errorf("synthetic bump entry = %q model %q", got[1].MessageID, got[1].Model)
+	}
+}
+
+// TestClaudeCodeUsage_AutoImportAttribution follows an auto-imported
+// account from discovery through the saved config to the attribution list.
+func TestClaudeCodeUsage_AutoImportAttribution(t *testing.T) {
+	isolateClaudeDirs(t)
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_TOKEN", "ANTHROPIC_AUTH_TOKEN"} {
+		t.Setenv(k, "")
+	}
+	home, _ := os.UserHomeDir()
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"oauthToken":"sk-ant-oat01-usage-attribution"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := config.DefaultConfig()
+	base.ClaudeCode.Accounts = []claudecode.AccountConfig{
+		{ID: "manual", Token: "sk-ant-manual", Type: "api_key", Enabled: true, Source: "manual",
+			UsageLimits: &claudecode.UsageLimits{CostUSD5h: 12}},
+	}
+	persistTestConfig(t, base)
+	ccResetPool()
+	defer ccResetPool()
+
+	w := httptest.NewRecorder()
+	(&Server{}).handleClaudeCodeAutoImport(w, httptest.NewRequest(http.MethodPost, "/api/claudecode/import", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"imported":1`) {
+		t.Fatalf("import: %d %s", w.Code, w.Body.String())
+	}
+
+	refs := claudeCodeUsageAccounts()
+	if len(refs) != 2 || refs[0].ID != "manual" || refs[0].AutoImport || !refs[1].AutoImport {
+		t.Fatalf("accounts = %+v", refs)
+	}
+	accts := config.Get().ClaudeCode.Accounts
+	if accts[1].Source != "auto_import" {
+		t.Errorf("imported source = %q", accts[1].Source)
+	}
+	// Rewriting the account list keeps the configured limits.
+	if l := accts[0].UsageLimits; l == nil || l.CostUSD5h != 12 {
+		t.Errorf("usage limits after import = %+v", l)
+	}
+}
+
+func TestIsAutoImportedAccount(t *testing.T) {
+	for _, tc := range []struct {
+		acct claudecode.AccountConfig
+		want bool
+	}{
+		{claudecode.AccountConfig{ID: "x", Source: "auto_import"}, true},
+		{claudecode.AccountConfig{ID: "auto-claude-json-abc"}, true}, // imported before the source was saved
+		{claudecode.AccountConfig{ID: "acc1", Source: "oauth"}, false},
+	} {
+		if got := isAutoImportedAccount(tc.acct); got != tc.want {
+			t.Errorf("%+v: %v", tc.acct, got)
+		}
 	}
 }

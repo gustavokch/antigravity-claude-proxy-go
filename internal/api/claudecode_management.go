@@ -54,6 +54,7 @@ func ccAccountToMap(a claudecode.AccountConfig) map[string]any {
 		"priority":         a.Priority,
 		"enabled":          a.Enabled,
 		"source":           a.Source,
+		"usageLimits":      a.UsageLimits,
 	}
 }
 
@@ -321,6 +322,7 @@ func (server *Server) handleClaudeCodeAutoImport(writer http.ResponseWriter, _ *
 				"token":   d.Token,
 				"type":    d.Type,
 				"enabled": d.Enabled,
+				"source":  d.Source,
 			})
 			imported++
 		}

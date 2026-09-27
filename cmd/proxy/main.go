@@ -13,6 +13,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// Embedded zone data, so claudecode.usage.timezone works on hosts
+	// without a system zoneinfo database (about 450KB).
+	_ "time/tzdata"
 
 	"antigravity-go-proxy/internal/accounts"
 	"antigravity-go-proxy/internal/api"
@@ -267,6 +270,9 @@ func runServer(args []string) {
 	go func() {
 		defer close(shutdownDone)
 		<-shutdownSignals
+		// Restore the default handling, so a second Ctrl-C force-quits a
+		// shutdown that hangs.
+		signal.Stop(shutdownSignals)
 		slogger.Info("shutting down proxy server...")
 		if tracker != nil {
 			_ = tracker.Close()

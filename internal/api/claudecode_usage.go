@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"antigravity-go-proxy/internal/claudecode"
@@ -139,9 +141,16 @@ func claudeCodeUsageAccounts() []ccusage.AccountRef {
 	accts := config.Get().ClaudeCode.Accounts
 	out := make([]ccusage.AccountRef, 0, len(accts))
 	for _, a := range accts {
-		out = append(out, ccusage.AccountRef{ID: a.ID, AutoImport: a.Source == "auto_import"})
+		out = append(out, ccusage.AccountRef{ID: a.ID, AutoImport: isAutoImportedAccount(a)})
 	}
 	return out
+}
+
+// isAutoImportedAccount reports whether an account came from the local
+// Claude Code login. Imports saved before the source was persisted are
+// recognised by the "auto-" ID prefix discovery gives them.
+func isAutoImportedAccount(a claudecode.AccountConfig) bool {
+	return a.Source == "auto_import" || strings.HasPrefix(a.ID, "auto-")
 }
 
 // claudeCodeUsageAnchors turns a unified snapshot into the 5-hour window
@@ -183,6 +192,9 @@ func (server *Server) recordClaudeCodeUsage(accountID, sessionID, requestedModel
 	model := u.Model
 	if model == "" {
 		model = requestedModel
+	}
+	if u.RequestID == "" {
+		server.warnMissingRequestID(accountID, origin)
 	}
 	now := time.Now()
 	cost := claudecode.UsageCost(model, u)
@@ -238,4 +250,23 @@ func (server *Server) recordClaudeCodeUsage(accountID, sessionID, requestedModel
 		})
 		n++
 	}
+}
+
+// missingRequestIDWarned makes the missing request-id warning once per
+// process; later occurrences log at debug.
+var missingRequestIDWarned atomic.Bool
+
+// warnMissingRequestID notes a served response without a request-id
+// header. Without it the ledger entry cannot dedupe against Claude Code's
+// transcript of the same turn, so that turn may be counted twice.
+func (server *Server) warnMissingRequestID(accountID, origin string) {
+	logger := server.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if missingRequestIDWarned.CompareAndSwap(false, true) {
+		logger.Warn("claudecode usage: upstream response has no request-id; it cannot dedupe against local transcripts", "account", accountID, "origin", origin)
+		return
+	}
+	logger.Debug("claudecode usage: upstream response has no request-id", "account", accountID, "origin", origin)
 }
