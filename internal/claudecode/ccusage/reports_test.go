@@ -311,7 +311,7 @@ func TestBlocksReport(t *testing.T) {
 	e[1].UsageLimitResetAt = &reset
 	now := mustTime(t, "2026-01-02T21:00:00Z")
 	blocks := identify(e, now)
-	r := Blocks(blocks, now, BlocksOptions{Location: time.UTC, TokenLimit: "max"})
+	r := Blocks(blocks, now, BlocksOptions{Location: time.UTC, TokenLimit: new("max")})
 	if len(r.Blocks) != 3 {
 		t.Fatalf("blocks = %+v", r.Blocks)
 	}
@@ -343,7 +343,7 @@ func TestBlocksReport(t *testing.T) {
 	if got := Blocks(blocks, now, BlocksOptions{Location: time.UTC}).Blocks[2].TokenLimitStatus; got != nil {
 		t.Errorf("status without a limit = %+v", got)
 	}
-	if got := Blocks(blocks, now, BlocksOptions{Location: time.UTC, TokenLimit: "100000"}).Blocks[2].TokenLimitStatus; got == nil || got.Status != LimitOK {
+	if got := Blocks(blocks, now, BlocksOptions{Location: time.UTC, TokenLimit: new("100000")}).Blocks[2].TokenLimitStatus; got == nil || got.Status != LimitOK {
 		t.Errorf("status with a numeric limit = %+v", got)
 	}
 	if got := Blocks(blocks, now, BlocksOptions{Location: time.UTC, Since: "20260103"}).Blocks; len(got) != 0 {
@@ -431,7 +431,7 @@ func TestReportJSONFieldNames(t *testing.T) {
 func TestBlocksJSONFieldNames(t *testing.T) {
 	now := mustTime(t, "2026-01-02T10:30:00Z")
 	e := blockEntries(t, "2026-01-02T03:00:00Z", "2026-01-02T10:00:00Z", "2026-01-02T10:20:00Z")
-	r := Blocks(identify(e, now), now, BlocksOptions{Location: time.UTC, TokenLimit: "max"})
+	r := Blocks(identify(e, now), now, BlocksOptions{Location: time.UTC, TokenLimit: new("max")})
 	if got := jsonKeys(t, r); !slices.Equal(got, []string{"blocks"}) {
 		t.Errorf("report keys = %v", got)
 	}
@@ -457,6 +457,32 @@ func TestBlocksJSONFieldNames(t *testing.T) {
 	for _, tt := range tests {
 		if got := jsonKeys(t, tt.v); !slices.Equal(got, tt.want) {
 			t.Errorf("%s keys = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestBlocksReport_TokenLimitValues(t *testing.T) {
+	e := blockEntries(t, "2026-01-02T10:05:00Z", "2026-01-02T11:00:00Z", "2026-01-02T20:00:00Z", "2026-01-02T20:30:00Z")
+	now := mustTime(t, "2026-01-02T21:00:00Z")
+	blocks := identify(e, now)
+	for _, tt := range []struct {
+		limit *string
+		want  int64 // 0: no status
+	}{
+		{nil, 0},
+		{new(""), 3000}, // empty means "max", as in ccusage
+		{new("max"), 3000},
+		{new("50000"), 50000},
+		{new("0"), 0},
+		{new("-5"), 0},
+		{new("12abc"), 0},
+	} {
+		st := Blocks(blocks, now, BlocksOptions{Location: time.UTC, TokenLimit: tt.limit}).Blocks[2].TokenLimitStatus
+		switch {
+		case tt.want == 0 && st != nil:
+			t.Errorf("limit %v: status %+v, want none", tt.limit, st)
+		case tt.want != 0 && (st == nil || st.Limit != tt.want):
+			t.Errorf("limit %v: status %+v, want limit %d", tt.limit, st, tt.want)
 		}
 	}
 }

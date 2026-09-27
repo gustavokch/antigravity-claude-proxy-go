@@ -181,7 +181,7 @@ func Session(entries []Entry, opts ReportOptions) SessionReport {
 	index := make(map[sessionKey]int)
 	for i := range entries {
 		e := &entries[i]
-		if !withinDateRange(dateKey(e.Timestamp, loc), since, until) {
+		if !withinDateRange(dateKey(e.Timestamp.Truncate(time.Millisecond), loc), since, until) {
 			continue
 		}
 		key := sessionKey{project: e.ProjectPath, session: e.PathSessionID}
@@ -258,7 +258,7 @@ func dailyRows(entries []Entry, opts ReportOptions) []SummaryRow {
 	groups := make(map[dayKey]*accumulator)
 	for i := range entries {
 		e := &entries[i]
-		key := dayKey{date: dateKey(e.Timestamp, loc)}
+		key := dayKey{date: dateKey(e.Timestamp.Truncate(time.Millisecond), loc)}
 		if !withinDateRange(key.date, since, until) {
 			continue
 		}
@@ -518,10 +518,10 @@ type BlocksOptions struct {
 	// date; empty means unbounded.
 	Since string
 	Until string
-	// TokenLimit adds a tokenLimitStatus to an active block's row: "max"
-	// uses MaxTokensFromHistory of the reported blocks, a number is used as
-	// is, and "" (or a limit of 0 or less) adds none.
-	TokenLimit string
+	// TokenLimit adds a tokenLimitStatus to an active block's row, like
+	// ccusage's --token-limit: nil adds none, "" or "max" uses
+	// MaxTokensFromHistory of the reported blocks, and a number is used as is.
+	TokenLimit *string
 }
 
 // BlockTokenCounts is a block row's token buckets.
@@ -589,16 +589,20 @@ func Blocks(blocks []Block, now time.Time, opts BlocksOptions) BlocksReport {
 	return BlocksReport{Blocks: rows}
 }
 
-// tokenLimit resolves BlocksOptions.TokenLimit; 0 means none.
-func tokenLimit(s string, blocks []Block) int64 {
-	switch s {
-	case "":
+// tokenLimit resolves BlocksOptions.TokenLimit as ccusage's
+// parse_token_limit does; 0 means none.
+func tokenLimit(s *string, blocks []Block) int64 {
+	if s == nil {
 		return 0
-	case "max":
+	}
+	switch *s {
+	case "", "max":
 		return MaxTokensFromHistory(blocks)
 	}
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
+	// Unlike ccusage, a limit that does not parse or is 0 or less adds no
+	// status rather than failing or reporting an infinite percentage.
+	n, err := strconv.ParseInt(*s, 10, 64)
+	if err != nil || n <= 0 {
 		return 0
 	}
 	return n

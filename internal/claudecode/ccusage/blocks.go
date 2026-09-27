@@ -80,8 +80,9 @@ func (b Block) TotalTokens() int64 {
 // means the earlier window ended early. An entry inside an anchor window joins
 // that window's block, which starts at the anchor and ends at the window end.
 // Entries outside every anchor window follow the unanchored rule, except that
-// such a block never starts before the end of the previous anchor window and
-// never ends after the start of the next one. Gap blocks use the same "more
+// such a block never starts before the end of the previous anchor window or of
+// the previous block, and never ends after the start of the next anchor
+// window. Gap blocks use the same "more
 // than dur since the previous entry" test on both kinds of block; a gap before
 // an anchored block ends at the anchor, and is left out if that leaves it
 // empty.
@@ -108,7 +109,8 @@ func IdentifyBlocks(entries []Entry, dur time.Duration, now time.Time, anchors [
 		end      time.Time
 		anchored bool
 		lo       int
-		ai       int // first anchor whose window has not ended before the current entry
+		prevEnd  time.Time // end of the last closed block
+		ai       int       // first anchor whose window has not ended before the current entry
 	)
 	closeBlock := func(hi int) {
 		blocks = append(blocks, newBlock(start, end, anchored, sorted[lo:hi:hi], now, dur, mode, p))
@@ -133,6 +135,7 @@ func IdentifyBlocks(entries []Entry, dur time.Duration, now time.Time, anchors [
 				continue
 			}
 			closeBlock(i)
+			prevEnd = end
 			if sinceLast > dur {
 				gapEnd := ts
 				if inAnchor && anchors[ai].Before(gapEnd) {
@@ -149,11 +152,16 @@ func IdentifyBlocks(entries []Entry, dur time.Duration, now time.Time, anchors [
 			start, end, anchored = anchors[ai], ends[ai], true
 			continue
 		}
+		// An unanchored block starts no earlier than the end of the previous
+		// anchor window or of the previous block. Without anchors every block
+		// ends on the hour, so the floored start is never earlier and this
+		// matches ccusage exactly.
 		start, anchored = floorToHour(ts), false
-		if ai > 0 {
-			if prevEnd := ends[ai-1]; start.Before(prevEnd) {
-				start = prevEnd
-			}
+		if ai > 0 && start.Before(ends[ai-1]) {
+			start = ends[ai-1]
+		}
+		if start.Before(prevEnd) {
+			start = prevEnd
 		}
 		end = start.Add(dur)
 		if ai < len(anchors) && end.After(anchors[ai]) {

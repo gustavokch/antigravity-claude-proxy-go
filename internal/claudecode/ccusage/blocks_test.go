@@ -503,3 +503,15 @@ func TestIdentifyBlocks_TruncatesToMilliseconds(t *testing.T) {
 		t.Fatalf("blocks = %+v, want one anchored block", blocks)
 	}
 }
+
+func TestIdentifyBlocks_UnanchoredAfterClampedStartDoesNotOverlap(t *testing.T) {
+	// 12:20 starts an unanchored block clamped to the 12:10 window end, which
+	// runs to 17:10. 17:15 floors to 17:00 but must not start before 17:10.
+	anchors := []time.Time{mustTime(t, "2026-09-23T07:10:00Z")}
+	e := blockEntries(t, "2026-09-23T08:00:00Z", "2026-09-23T12:20:00Z", "2026-09-23T17:15:00Z")
+	checkBlocks(t, identify(e, farFuture, anchors...), []blockShape{
+		{id: "2026-09-23T07:10:00.000Z", start: "2026-09-23T07:10:00Z", end: "2026-09-23T12:10:00Z", entries: 1},
+		{id: "2026-09-23T12:10:00.000Z", start: "2026-09-23T12:10:00Z", end: "2026-09-23T17:10:00Z", entries: 1},
+		{id: "2026-09-23T17:10:00.000Z", start: "2026-09-23T17:10:00Z", end: "2026-09-23T22:10:00Z", entries: 1},
+	})
+}
