@@ -209,3 +209,78 @@ func numbersMatch(w, g jsonv1.Number) bool {
 	}
 	return math.Abs(wf-gf) <= parityCostRelTol*math.Max(math.Abs(wf), math.Abs(gf))
 }
+
+// TestParityLedger checks that ccusage reads the proxy's ledger: a ledger
+// written by Ledger under a temporary CLAUDE_CONFIG_DIR must give the same
+// daily report from ccusage as from the Go reader. It covers several days
+// and accounts, an unattributed entry, cache writes with and without a
+// 5m/1h breakdown, logged and missing costUSD, fast speed, cache-bump lines
+// without IDs, and a duplicate of one response.
+func TestParityLedger(t *testing.T) {
+	npx, err := exec.LookPath("npx")
+	if err != nil {
+		t.Skip("npx not found")
+	}
+	root := t.TempDir()
+	l, err := NewLedger(root, LedgerOptions{Now: func() time.Time { return time.Date(2025, 3, 5, 0, 0, 0, 0, time.UTC) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cost := func(v float64) *float64 { return &v }
+	day := func(d, h, m int) time.Time {
+		return time.Date(2025, 3, d, h, m, 7, 250*int(time.Millisecond), time.UTC)
+	}
+	in := []Entry{
+		{Timestamp: day(1, 9, 0), SessionID: "s1", RequestID: "req_a", MessageID: "msg_a", Model: "claude-sonnet-4-20250514",
+			Input: 1200, Output: 300, CacheCreate: 5000, CacheCreate5m: 5000, CacheRead: 20000, AccountID: "acct-1"},
+		{Timestamp: day(1, 9, 5), SessionID: "s1", RequestID: "req_b", MessageID: "msg_b", Model: "claude-sonnet-4-20250514",
+			Input: 10, Output: 900, CacheCreate: 3000, CacheCreate5m: 1000, CacheCreate1h: 2000, CacheRead: 25000,
+			CostUSD: cost(0.0421), AccountID: "acct-1"},
+		{Timestamp: day(1, 9, 5), SessionID: "s1", RequestID: "req_b", MessageID: "msg_b", Model: "claude-sonnet-4-20250514",
+			Input: 10, Output: 900, CacheCreate: 3000, CacheCreate5m: 1000, CacheCreate1h: 2000, CacheRead: 25000,
+			CostUSD: cost(0.0421), AccountID: "acct-1"},
+		{Timestamp: day(1, 23, 59), SessionID: "s2", RequestID: "req_c", MessageID: "msg_c", Model: "claude-opus-4-20250514",
+			Speed: "fast", Input: 250000, Output: 4000, CacheRead: 1000, AccountID: "user@example.com"},
+		{Timestamp: day(2, 0, 1), SessionID: "s2", RequestID: "req_d", MessageID: "msg_d", Model: "claude-opus-4-20250514",
+			Speed: "standard", Input: 50, Output: 60, CacheCreate: 700, AccountID: "user@example.com"},
+		{Timestamp: day(2, 4, 0), Model: "claude-sonnet-4-20250514", Input: 3, Output: 1, CacheRead: 90000,
+			AccountID: "acct-1", Origin: OriginCacheBump},
+		{Timestamp: day(3, 12, 0), SessionID: "s3", RequestID: "req_e", MessageID: "msg_e", Model: "claude-haiku-4-5-20251001",
+			Input: 400, Output: 80, CacheCreate: 100, CacheCreate1h: 100},
+	}
+	for _, e := range in {
+		if !l.Append(e) {
+			t.Fatal("Append failed")
+		}
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var entries []Entry
+	for _, f := range UsageFiles([]string{root}) {
+		es, err := ReadLedgerFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, es...)
+	}
+	entries = Dedupe(entries)
+	if len(entries) != len(in)-1 {
+		t.Fatalf("got %d entries after dedupe, want %d", len(entries), len(in)-1)
+	}
+	opts := ReportOptions{Location: time.UTC, Mode: CostModeAuto, Pricer: NewLiteLLMPricer()}
+	want := runCCUsage(t, npx, root, "daily")
+	if w, _ := want.(map[string]any); w == nil || len(w["daily"].([]any)) != 3 {
+		t.Fatalf("ccusage did not report the three ledger days: %v", want)
+	}
+	got := roundTrip(t, Daily(entries, opts))
+	var diffs []string
+	parityDiff("daily", want, got, &diffs)
+	for _, d := range diffs {
+		t.Error(d)
+	}
+	if len(diffs) == 0 {
+		t.Logf("ledger daily: identical to %s", parityVersion)
+	}
+}
