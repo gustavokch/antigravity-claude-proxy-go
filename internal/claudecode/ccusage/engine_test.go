@@ -503,3 +503,155 @@ func TestEngine_StartAndClose(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// touchLater moves a file's mtime forward, so a rewrite is visible even on
+// file systems with coarse timestamps.
+func touchLater(t *testing.T, path string, d time.Duration) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, info.ModTime().Add(d), info.ModTime().Add(d)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEngine_TailDetectsRewrites(t *testing.T) {
+	cases := []struct {
+		name    string
+		rewrite func(t *testing.T, path, content string)
+		grow    bool
+	}{
+		{"replaced inode", func(t *testing.T, path, content string) {
+			tmp := path + ".tmp"
+			writeFile(t, tmp, content)
+			if err := os.Rename(tmp, path); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"larger in-place rewrite", func(t *testing.T, path, content string) {
+			writeFile(t, path, content)
+			touchLater(t, path, 2*time.Second)
+		}, true},
+		{"same-size in-place rewrite", func(t *testing.T, path, content string) {
+			writeFile(t, path, content)
+			touchLater(t, path, 2*time.Second)
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newEngineFixture(t)
+			ts := f.clock.Now().Add(-time.Hour)
+			path := f.transcript("sess-1")
+			line := func(i int) string {
+				return transcriptLine(ts.Add(time.Duration(i)*time.Second), fmt.Sprintf("req_011C%d", i), fmt.Sprintf("msg_01%d", i), "claude-sonnet-5", 1, 1)
+			}
+			writeFile(t, path, line(1)+line(2))
+			en := f.engine(t, nil)
+			en.Refresh()
+			if n := len(en.Entries()); n != 2 {
+				t.Fatalf("initial entries = %d", n)
+			}
+
+			// The same byte count (or more) with other lines: an offset kept
+			// from the old file would skip them.
+			content := line(3) + line(4)
+			if tc.grow {
+				content += line(5)
+			}
+			if !tc.grow && len(content) != len(line(1)+line(2)) {
+				t.Fatal("fixture lines differ in length")
+			}
+			tc.rewrite(t, path, content)
+			en.Refresh()
+			ids := messageIDs(en.Entries())
+			want := 4
+			if tc.grow {
+				want = 5
+			}
+			if len(ids) != want || ids[2] != "msg_013" {
+				t.Fatalf("after rewrite: %v", ids)
+			}
+		})
+	}
+}
+
+func TestEngine_AppendKeepsOffset(t *testing.T) {
+	f := newEngineFixture(t)
+	ts := f.clock.Now().Add(-time.Hour)
+	path := f.transcript("sess-1")
+	// A line without a message ID is never deduplicated, so a reread from
+	// the start would count it twice.
+	noID := fmt.Sprintf(`{"timestamp":%q,"requestId":"req_011CX","message":{"model":"claude-sonnet-5","usage":{"input_tokens":1,"output_tokens":1}}}`+"\n", ts.UTC().Format("2006-01-02T15:04:05.000Z07:00"))
+	writeFile(t, path, noID)
+	en := f.engine(t, nil)
+	en.Refresh()
+	appendFile(t, path, transcriptLine(ts.Add(time.Second), "req_011C2", "msg_012", "claude-sonnet-5", 1, 1))
+	touchLater(t, path, 2*time.Second)
+	en.Refresh()
+	if n := len(en.Entries()); n != 2 {
+		t.Fatalf("entries after append = %d, want 2", n)
+	}
+}
+
+func TestEngine_TailStopsOnCancel(t *testing.T) {
+	f := newEngineFixture(t)
+	ts := f.clock.Now().Add(-time.Hour)
+	var b strings.Builder
+	for i := range 3 * ctxCheckLines {
+		b.WriteString(transcriptLine(ts, fmt.Sprintf("req_011C%d", i), fmt.Sprintf("msg_01%d", i), "claude-sonnet-5", 1, 1))
+	}
+	writeFile(t, f.transcript("sess-1"), b.String())
+	en := f.engine(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	en.refresh(ctx)
+	if n := len(en.Entries()); n >= 3*ctxCheckLines {
+		t.Fatalf("cancelled refresh read everything (%d)", n)
+	}
+	// The next pass resumes where the cancelled one stopped.
+	en.Refresh()
+	if n := len(en.Entries()); n != 3*ctxCheckLines {
+		t.Fatalf("entries after resume = %d", n)
+	}
+}
+
+func TestEngine_DropsStaleLocalFiles(t *testing.T) {
+	f := newEngineFixture(t)
+	path := f.transcript("sess-1")
+	writeFile(t, path, transcriptLine(f.clock.Now().Add(-time.Hour), "req_011CA", "msg_01A", "claude-sonnet-5", 1, 1))
+	en := f.engine(t, nil)
+	en.Refresh()
+	if st := en.Stats(); st.Files != 1 {
+		t.Fatalf("files = %d", st.Files)
+	}
+	old := f.clock.Now().Add(-DefaultEngineWindow - time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	en.Refresh()
+	if st := en.Stats(); st.Files != 0 {
+		t.Errorf("stale file still tracked: %d", st.Files)
+	}
+}
+
+func TestEngine_UnattributedSummaryNotSaved(t *testing.T) {
+	f := newEngineFixture(t)
+	now := f.clock.Now()
+	en := f.engine(t, nil)
+	en.Record(Entry{Timestamp: now.Add(-8 * time.Hour), MessageID: "m1", RequestID: "r1", Model: "claude-sonnet-5", Input: 5})
+	en.Record(Entry{Timestamp: now.Add(-8 * time.Hour), MessageID: "m2", RequestID: "r2", Model: "claude-sonnet-5", Input: 5, AccountID: "a"})
+	en.Snapshot("", now, nil)
+	en.Snapshot("a", now, nil)
+	if err := en.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(f.ledgerRoot, SummaryFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"":`) || !strings.Contains(string(data), `"a":`) {
+		t.Errorf("summary file = %s", data)
+	}
+}

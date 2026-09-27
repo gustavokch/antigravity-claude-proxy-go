@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +36,16 @@ const (
 const (
 	// maxSummaryAnchors caps the window starts a summary remembers.
 	maxSummaryAnchors = 64
+	// pruneSlack is how far past the cutoff the oldest entry may be before
+	// the deduper is compacted; reads filter by the cutoff regardless.
+	pruneSlack = time.Hour
+	// addChunk is how many entries a refresh adds per hold of the lock.
+	addChunk = 2048
+	// ctxCheckLines is how often a tail checks for cancellation.
+	ctxCheckLines = 1024
+	// tailMarkBytes is how much of a file before its offset is kept to
+	// tell an append from a rewrite.
+	tailMarkBytes = 256
 	// anchorMergeGap merges anchors observed with clock jitter, as
 	// IdentifyBlocks does.
 	anchorMergeGap = time.Minute
@@ -181,9 +192,11 @@ type Engine struct {
 	// refreshMu serialises refreshes; files belongs to the refresh.
 	refreshMu sync.Mutex
 	files     map[string]*tailFile
+	nFiles    atomic.Int64
 
 	mu        sync.Mutex
 	dedup     *Deduper
+	oldest    time.Time // lower bound on the kept entries' timestamps
 	summaries map[string]*Summary
 	dirty     bool
 	cache     map[string]cachedSnapshot
@@ -199,6 +212,11 @@ type Engine struct {
 
 type tailFile struct {
 	offset int64
+	// info is the file as last read; mark is up to tailMarkBytes read just
+	// before offset. A different file or different mark bytes mean the
+	// file was replaced or rewritten, and it is read again from the start.
+	info   os.FileInfo
+	mark   []byte
 	ledger bool
 	// dirAccount is the account a ledger file's directory names.
 	dirAccount string
@@ -349,13 +367,10 @@ func (en *Engine) Stats() EngineStats {
 	if en == nil {
 		return EngineStats{}
 	}
-	en.refreshMu.Lock()
-	files := len(en.files)
-	en.refreshMu.Unlock()
 	en.mu.Lock()
 	entries := en.dedup.Len()
 	en.mu.Unlock()
-	return EngineStats{Entries: entries, Files: files, Ledger: en.ledger.Stats()}
+	return EngineStats{Entries: entries, Files: int(en.nFiles.Load()), Ledger: en.ledger.Stats()}
 }
 
 // Record is the hot path for usage the proxy served or caused: it queues e
@@ -397,10 +412,33 @@ func (en *Engine) Record(e Entry) {
 	en.mu.Lock()
 	for _, p := range parsed {
 		if !p.Timestamp.Before(cutoff) {
-			en.dedup.Add(p)
+			en.addLocked(p)
 		}
 	}
 	en.mu.Unlock()
+}
+
+// addLocked adds e to the deduper and keeps oldest a lower bound. Callers
+// hold en.mu.
+func (en *Engine) addLocked(e Entry) {
+	if _, kept := en.dedup.Add(e); kept && (en.oldest.IsZero() || e.Timestamp.Before(en.oldest)) {
+		en.oldest = e.Timestamp
+	}
+}
+
+// pruneLocked compacts the deduper once its oldest entry is well past the
+// cutoff. Callers hold en.mu.
+func (en *Engine) pruneLocked(cutoff time.Time) {
+	if en.oldest.IsZero() || !en.oldest.Before(cutoff.Add(-pruneSlack)) {
+		return
+	}
+	en.dedup.Prune(cutoff)
+	en.oldest = time.Time{}
+	for i := range en.dedup.entries {
+		if ts := en.dedup.entries[i].Timestamp; en.oldest.IsZero() || ts.Before(en.oldest) {
+			en.oldest = ts
+		}
+	}
 }
 
 // Refresh reads whatever the ledger and local files gained since the last
@@ -434,7 +472,7 @@ func (en *Engine) refresh(ctx context.Context) {
 			break
 		}
 		seen[path] = true
-		batch = append(batch, en.tail(path, i < nLedger, cutoff)...)
+		batch = append(batch, en.tail(ctx, path, i < nLedger, cutoff)...)
 	}
 	if complete {
 		for path := range en.files {
@@ -443,12 +481,19 @@ func (en *Engine) refresh(ctx context.Context) {
 			}
 		}
 	}
+	en.nFiles.Store(int64(len(en.files)))
 
-	en.mu.Lock()
-	for _, e := range batch {
-		en.dedup.Add(e)
+	// The first pass can load days of transcripts; add them in chunks so
+	// Record and Snapshot are not held up for the whole batch.
+	for start := 0; start < len(batch); start += addChunk {
+		en.mu.Lock()
+		for _, e := range batch[start:min(start+addChunk, len(batch))] {
+			en.addLocked(e)
+		}
+		en.mu.Unlock()
 	}
-	en.dedup.Prune(cutoff)
+	en.mu.Lock()
+	en.pruneLocked(cutoff)
 	en.mu.Unlock()
 	en.saveSummaries()
 }
@@ -472,9 +517,9 @@ func (en *Engine) ledgerFiles(cutoff time.Time) []string {
 	return out
 }
 
-// localFiles lists the transcripts to tail: those already tailed and those
-// modified after cutoff. A config directory that is the ledger itself is
-// skipped.
+// localFiles lists the transcripts modified after cutoff; older ones hold
+// nothing inside the window, so a tracked one is dropped. A config
+// directory that is the ledger itself is skipped.
 func (en *Engine) localFiles(cutoff time.Time) []string {
 	root := filepath.Clean(en.root)
 	var paths []string
@@ -490,21 +535,21 @@ func (en *Engine) localFiles(cutoff time.Time) []string {
 	}
 	var out []string
 	for _, path := range UsageFiles(paths) {
-		if _, tracked := en.files[path]; !tracked {
-			info, err := os.Stat(path)
-			if err != nil || info.ModTime().Before(cutoff) {
-				continue
-			}
+		info, err := os.Stat(path)
+		if err != nil || info.ModTime().Before(cutoff) {
+			continue
 		}
 		out = append(out, path)
 	}
 	return out
 }
 
-// tail reads the complete lines path gained since its stored offset. A file
-// that shrank is read again from the start; a trailing line without a
-// newline is left for the next read.
-func (en *Engine) tail(path string, ledger bool, cutoff time.Time) []Entry {
+// tail reads the complete lines path gained since its stored offset. A
+// file that was replaced (a different inode), shrank, or was rewritten in
+// place (the bytes before the offset changed) is read again from the
+// start; a trailing line without a newline is left for the next read. It
+// stops early, keeping what it consumed, when ctx is done.
+func (en *Engine) tail(ctx context.Context, path string, ledger bool, cutoff time.Time) []Entry {
 	st := en.files[path]
 	if st == nil {
 		st = &tailFile{ledger: ledger}
@@ -531,18 +576,29 @@ func (en *Engine) tail(path string, ledger bool, cutoff time.Time) []Entry {
 		return nil
 	}
 	size := info.Size()
-	if size < st.offset {
+	switch {
+	case st.info != nil && !os.SameFile(st.info, info):
+		st.offset = 0
+	case size < st.offset:
+		st.offset = 0
+	case st.offset > 0 && !info.ModTime().Equal(st.info.ModTime()) && !st.markMatches(f):
 		st.offset = 0
 	}
+	st.info = info
 	if size == st.offset {
+		st.updateMark(f)
 		return nil
 	}
+	defer st.updateMark(f)
 	if _, err := f.Seek(st.offset, io.SeekStart); err != nil {
 		return nil
 	}
 	r := bufio.NewReaderSize(io.LimitReader(f, size-st.offset), 64<<10)
 	var out []Entry
-	for {
+	for n := 1; ; n++ {
+		if n%ctxCheckLines == 0 && ctx.Err() != nil {
+			return out
+		}
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			st.offset += int64(len(line))
@@ -555,6 +611,34 @@ func (en *Engine) tail(path string, ledger bool, cutoff time.Time) []Entry {
 			return out
 		}
 	}
+}
+
+// markMatches reports whether the bytes before the offset are still the
+// ones last read there.
+func (st *tailFile) markMatches(f *os.File) bool {
+	if len(st.mark) == 0 {
+		return true
+	}
+	buf := make([]byte, len(st.mark))
+	if _, err := f.ReadAt(buf, st.offset-int64(len(buf))); err != nil {
+		return false
+	}
+	return bytes.Equal(buf, st.mark)
+}
+
+// updateMark remembers the bytes just before the offset.
+func (st *tailFile) updateMark(f *os.File) {
+	n := min(st.offset, tailMarkBytes)
+	if n == 0 {
+		st.mark = nil
+		return
+	}
+	buf := make([]byte, n)
+	if _, err := f.ReadAt(buf, st.offset-n); err != nil {
+		st.mark = nil
+		return
+	}
+	st.mark = buf
 }
 
 func (st *tailFile) parse(out []Entry, line []byte, cutoff time.Time) []Entry {
@@ -628,11 +712,15 @@ func (en *Engine) localAttribution() (string, bool) {
 // every entry when all is set, with AccountID and Inferred resolved.
 func (en *Engine) collect(accountID string, all bool) []Entry {
 	localID, inferred := en.localAttribution()
+	cutoff := en.now().Add(-en.window)
 	en.mu.Lock()
 	defer en.mu.Unlock()
 	var out []Entry
 	for i := range en.dedup.entries {
 		e := &en.dedup.entries[i]
+		if e.Timestamp.Before(cutoff) {
+			continue
+		}
 		acct, inf := e.AccountID, false
 		if e.Source == SourceLocal {
 			acct, inf = localID, inferred && localID != ""
@@ -890,7 +978,10 @@ func (en *Engine) saveSummaries() {
 	}
 	stored := make(map[string]Summary, len(en.summaries))
 	for id, s := range en.summaries {
-		stored[id] = s.clone()
+		// Unattributed usage has no account to keep a summary for.
+		if id != "" {
+			stored[id] = s.clone()
+		}
 	}
 	en.dirty = false
 	en.mu.Unlock()
