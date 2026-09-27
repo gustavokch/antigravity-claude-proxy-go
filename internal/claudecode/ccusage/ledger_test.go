@@ -448,3 +448,212 @@ func TestLedger_AppendDuringClose(t *testing.T) {
 		t.Errorf("Stats = %+v", s)
 	}
 }
+
+func TestLedgerAccountDir_LongTraversal(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	for _, id := range []string{
+		strings.Repeat("a", 96) + "/../../../x",
+		strings.Repeat("a", 127) + "/",
+		strings.Repeat(".", 200),
+	} {
+		dir := LedgerAccountDir(id)
+		if strings.ContainsAny(dir, `/\`) || dir == ".." || strings.HasPrefix(dir, ".") {
+			t.Errorf("LedgerAccountDir(%q) = %q", id, dir)
+		}
+		p := filepath.Join(projects, dir, "2026-09-27.jsonl")
+		if rel, err := filepath.Rel(projects, p); err != nil || strings.HasPrefix(rel, "..") || filepath.Dir(rel) != dir {
+			t.Errorf("path for %q escapes projects/: %s", id, p)
+		}
+	}
+	l := newTestLedger(t, root, LedgerOptions{})
+	e := sampleLedgerEntry()
+	e.AccountID = strings.Repeat("a", 96) + "/../../../x"
+	l.Append(e)
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	filepath.WalkDir(filepath.Dir(root), func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".jsonl") {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if len(found) != 1 || !strings.HasPrefix(found[0], projects+string(filepath.Separator)) {
+		t.Errorf("ledger files = %v, want one under %s", found, projects)
+	}
+}
+
+func TestLedger_TerminatesPartialLine(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "projects", "acct-1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "2026-09-27.jsonl")
+	if err := os.WriteFile(path, []byte(`{"timestamp":"2026-09-27T01:00:00Z","mess`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := newTestLedger(t, root, LedgerOptions{})
+	l.Append(sampleLedgerEntry())
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lines := readLines(t, path)
+	if len(lines) != 2 || len(ParseLedgerLine(lines[1])) != 1 {
+		t.Fatalf("lines = %q", lines)
+	}
+}
+
+func TestLedger_ReopensAfterWriteError(t *testing.T) {
+	root := t.TempDir()
+	var l *Ledger
+	n := 0
+	l = newTestLedger(t, root, LedgerOptions{writeHook: func(Entry) {
+		n++
+		if n == 2 {
+			// Break the open handle under the writer.
+			for _, f := range l.files {
+				f.Close()
+			}
+		}
+	}})
+	for i := range 3 {
+		e := sampleLedgerEntry()
+		e.MessageID = fmt.Sprintf("msg_%d", i)
+		l.Append(e)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if s := l.Stats(); s.Written != 2 || s.Errors != 1 {
+		t.Errorf("Stats = %+v, want 2 written, 1 error", s)
+	}
+	lines := readLines(t, filepath.Join(root, "projects", "acct-1", "2026-09-27.jsonl"))
+	if len(lines) != 2 || ParseLedgerLine(lines[1])[0].MessageID != "msg_2" {
+		t.Errorf("lines = %q", lines)
+	}
+}
+
+func TestMarshalLedgerLine_CacheSplit(t *testing.T) {
+	ts := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		total, c5, c1 int64
+		want          string // cache_creation, or "" when left out
+		want5, want1  int64
+	}{
+		{300, 100, 200, `{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}`, 100, 200},
+		{300, 0, 200, `{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}`, 100, 200},
+		{300, 250, 200, `{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":200}`, 100, 200},
+		{300, 300, 0, `{"ephemeral_5m_input_tokens":300,"ephemeral_1h_input_tokens":0}`, 300, 0},
+		{300, 0, 400, "", 300, 0},
+		{300, 0, 0, "", 300, 0},
+		{0, 0, 0, "", 0, 0},
+	} {
+		line, err := MarshalLedgerLine(Entry{Timestamp: ts, CacheCreate: tc.total, CacheCreate5m: tc.c5, CacheCreate1h: tc.c1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		has := bytes.Contains(line, []byte(`"cache_creation":`+tc.want))
+		if tc.want == "" {
+			has = !bytes.Contains(line, []byte(`"cache_creation":`))
+		}
+		if !has {
+			t.Errorf("%+v: line %s, want cache_creation %q", tc, line, tc.want)
+		}
+		e := ParseLedgerLine(bytes.TrimSpace(line))[0]
+		if e.CacheCreate != tc.total || e.CacheCreate5m != tc.want5 || e.CacheCreate1h != tc.want1 {
+			t.Errorf("%+v: read back %d = %d + %d", tc, e.CacheCreate, e.CacheCreate5m, e.CacheCreate1h)
+		}
+	}
+}
+
+func TestMarshalLedgerLine_NegativeCost(t *testing.T) {
+	line, err := MarshalLedgerLine(Entry{Timestamp: time.Now(), CostUSD: ptr(-1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(line, []byte("costUSD")) {
+		t.Errorf("negative cost written: %s", line)
+	}
+}
+
+func TestLedger_FixesPermissions(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "projects", "acct-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "2026-09-27.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{root, filepath.Join(root, "projects"), dir} {
+		os.Chmod(p, 0o755)
+	}
+	os.Chmod(path, 0o644)
+	l := newTestLedger(t, root, LedgerOptions{})
+	l.Append(sampleLedgerEntry())
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]os.FileMode{root: 0o700, filepath.Join(root, "projects"): 0o700, dir: 0o700, path: 0o600} {
+		if info, err := os.Stat(p); err != nil || info.Mode().Perm() != want {
+			t.Errorf("%s mode = %v, %v; want %v", p, info, err, want)
+		}
+	}
+}
+
+func TestReadLedgerFile_HashedDirIsNotAnAccount(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "projects", LedgerAccountDir("a/b"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"timestamp":"2026-09-27T01:00:00Z","message":{"usage":{"input_tokens":1,"output_tokens":2}}}` + "\n"
+	path := filepath.Join(dir, "2026-09-27.jsonl")
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	es, err := ReadLedgerFile(path)
+	if err != nil || len(es) != 1 || es[0].AccountID != "" {
+		t.Errorf("entries = %+v, %v; want one unattributed entry", es, err)
+	}
+}
+
+func TestLedger_KeepsPreviousDayOpen(t *testing.T) {
+	root := t.TempDir()
+	var l *Ledger
+	var open []string
+	l = newTestLedger(t, root, LedgerOptions{writeHook: func(Entry) {
+		var keys []string
+		for k := range l.files {
+			keys = append(keys, k.date)
+		}
+		slices.Sort(keys)
+		open = append(open, strings.Join(keys, ","))
+	}})
+	for _, day := range []int{26, 27, 26, 28, 25, 28} {
+		e := sampleLedgerEntry()
+		e.Timestamp = time.Date(2026, 9, day, 12, 0, 0, 0, time.UTC)
+		l.Append(e)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Open files seen before each write.
+	want := []string{
+		"",
+		"2026-09-26",
+		"2026-09-26,2026-09-27",
+		"2026-09-26,2026-09-27",
+		"2026-09-27,2026-09-28", // 26 closed when 28 arrived
+		"2026-09-27,2026-09-28", // late 25 written and closed
+	}
+	if !slices.Equal(open, want) {
+		t.Errorf("open files = %q, want %q", open, want)
+	}
+	if n := len(readLines(t, filepath.Join(root, "projects", "acct-1", "2026-09-26.jsonl"))); n != 2 {
+		t.Errorf("2026-09-26 lines = %d, want 2", n)
+	}
+}

@@ -26,6 +26,19 @@ const (
 // unattributedDir holds ledger entries that carry no account.
 const unattributedDir = "_unattributed"
 
+// hashedDirMark separates the cleaned prefix of a hashed account directory
+// from its hash. It is outside the characters an ID may use as its own
+// directory name, so a hashed directory is recognisable by it.
+const hashedDirMark = "="
+
+// Account ID length limits: an ID up to maxAccountDirLen bytes may be its
+// own directory name; a hashed name keeps at most hashedPrefixLen bytes of
+// the cleaned ID.
+const (
+	maxAccountDirLen = 128
+	hashedPrefixLen  = 96
+)
+
 const ledgerDateLayout = "2006-01-02"
 
 // LedgerOptions configures a Ledger. Zero values take the defaults.
@@ -71,14 +84,14 @@ type Ledger struct {
 	dropped atomic.Uint64
 	errs    atomic.Uint64
 
-	// Writer goroutine state.
-	files map[string]*ledgerFile // by account directory
+	// Writer goroutine state: open files by account directory and date, and
+	// the latest date written. Files of the latest date and the day before
+	// stay open, so entries straddling midnight do not reopen files.
+	files  map[ledgerFileKey]*os.File
+	latest string
 }
 
-type ledgerFile struct {
-	date string
-	f    *os.File
-}
+type ledgerFileKey struct{ dir, date string }
 
 // NewLedger creates <root>/projects, prunes files past retention, and starts
 // the writer goroutine.
@@ -98,8 +111,10 @@ func NewLedger(root string, opts LedgerOptions) (*Ledger, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	if err := os.MkdirAll(filepath.Join(root, "projects"), 0o700); err != nil {
-		return nil, fmt.Errorf("ccusage: create ledger directory: %w", err)
+	for _, dir := range []string{root, filepath.Join(root, "projects")} {
+		if err := mkdirPrivate(dir); err != nil {
+			return nil, fmt.Errorf("ccusage: create ledger directory: %w", err)
+		}
 	}
 	l := &Ledger{
 		root:      root,
@@ -109,7 +124,7 @@ func NewLedger(root string, opts LedgerOptions) (*Ledger, error) {
 		writeHook: opts.writeHook,
 		queue:     make(chan Entry, opts.QueueSize),
 		done:      make(chan struct{}),
-		files:     make(map[string]*ledgerFile),
+		files:     make(map[ledgerFileKey]*os.File),
 	}
 	l.prune()
 	go l.run()
@@ -185,51 +200,118 @@ func (l *Ledger) write(e Entry) {
 		l.fail("marshal ledger line", err)
 		return
 	}
-	dir := LedgerAccountDir(e.AccountID)
-	f, err := l.fileFor(dir, e.Timestamp.UTC().Format(ledgerDateLayout))
+	key := ledgerFileKey{dir: LedgerAccountDir(e.AccountID), date: e.Timestamp.UTC().Format(ledgerDateLayout)}
+	l.rotate(key.date)
+	f, err := l.fileFor(key)
 	if err != nil {
 		l.fail("open ledger file", err)
 		return
 	}
 	if _, err := f.Write(line); err != nil {
+		// A short write can leave a partial line. Dropping the handle makes
+		// the next write reopen the file and terminate that line first.
+		delete(l.files, key)
+		f.Close()
 		l.fail("write ledger line", err)
 		return
 	}
 	l.written.Add(1)
+	if key.date < previousDate(l.latest) {
+		// A late entry for an older day: do not keep its file open.
+		delete(l.files, key)
+		if err := syncClose(f); err != nil {
+			l.fail("close ledger file", err)
+		}
+	}
 }
 
-// fileFor returns the open file for an account and day. A different day
-// rotates the account's file: the old one is fsynced and closed.
-func (l *Ledger) fileFor(dir, date string) (*os.File, error) {
-	if lf := l.files[dir]; lf != nil {
-		if lf.date == date {
-			return lf.f, nil
-		}
-		delete(l.files, dir)
-		if err := syncClose(lf.f); err != nil {
-			l.fail("rotate ledger file", err)
+// rotate records date as the latest when it is newer, and fsyncs and closes
+// the files older than the day before the latest.
+func (l *Ledger) rotate(date string) {
+	if date <= l.latest {
+		return
+	}
+	l.latest = date
+	keep := previousDate(date)
+	for key, f := range l.files {
+		if key.date < keep {
+			delete(l.files, key)
+			if err := syncClose(f); err != nil {
+				l.fail("rotate ledger file", err)
+			}
 		}
 	}
-	accountDir := filepath.Join(l.root, "projects", dir)
-	if err := os.MkdirAll(accountDir, 0o700); err != nil {
+}
+
+// previousDate returns the YYYY-MM-DD before date, or "" when date does not
+// parse.
+func previousDate(date string) string {
+	t, err := time.Parse(ledgerDateLayout, date)
+	if err != nil {
+		return ""
+	}
+	return t.AddDate(0, 0, -1).Format(ledgerDateLayout)
+}
+
+// fileFor returns the open file for an account and day, opening it when
+// needed. A file whose last byte is not a newline, left by a crash or a
+// failed write, gets one before any new line is appended.
+func (l *Ledger) fileFor(key ledgerFileKey) (*os.File, error) {
+	if f := l.files[key]; f != nil {
+		return f, nil
+	}
+	accountDir := filepath.Join(l.root, "projects", key.dir)
+	if err := mkdirPrivate(accountDir); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(accountDir, date+".jsonl"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(filepath.Join(accountDir, key.date+".jsonl"), os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	l.files[dir] = &ledgerFile{date: date, f: f}
+	if err := terminateLastLine(f); err != nil {
+		f.Close()
+		return nil, err
+	}
+	l.files[key] = f
 	return f, nil
+}
+
+// terminateLastLine makes a private, newline-terminated file of f.
+func terminateLastLine(f *os.File) error {
+	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return err
+	}
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
+		return err
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	_, err = f.Write([]byte{'\n'})
+	return err
+}
+
+// mkdirPrivate creates dir if needed and makes it 0700 either way.
+func mkdirPrivate(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
 }
 
 func (l *Ledger) closeAll() error {
 	var errs []error
-	for dir, lf := range l.files {
-		if err := syncClose(lf.f); err != nil {
+	for key, f := range l.files {
+		if err := syncClose(f); err != nil {
 			l.fail("close ledger file", err)
 			errs = append(errs, err)
 		}
-		delete(l.files, dir)
+		delete(l.files, key)
 	}
 	return errors.Join(errs...)
 }
@@ -294,34 +376,53 @@ func ledgerFileDate(name string) (time.Time, bool) {
 }
 
 // LedgerAccountDir maps an account ID to its directory name under projects/.
-// IDs made of letters, digits and "._@+-" that do not start with a dot are
-// used as they are. Any other ID has its other characters replaced with "_"
-// and a short hash of the original appended, so distinct IDs stay apart. An
-// empty ID maps to "_unattributed".
+// IDs of at most 128 bytes made of letters, digits and "._@+-" that do not
+// start with a dot are used as they are. Any other ID becomes the first 96
+// bytes of its cleaned form (other characters replaced with "_", leading dots
+// removed), "=" and a short hash of the original, so distinct IDs stay
+// apart. An empty ID maps to "_unattributed".
 func LedgerAccountDir(accountID string) string {
 	if accountID == "" {
 		return unattributedDir
 	}
-	safe := len(accountID) <= 128 && accountID[0] != '.' && accountID != unattributedDir
+	if isPlainAccountDir(accountID) {
+		return accountID
+	}
 	var b strings.Builder
-	for i := 0; i < len(accountID) && b.Len() < 96; i++ {
-		c := accountID[i]
-		if isASCIIAlnum(c) || strings.IndexByte("._@+-", c) >= 0 {
+	for i := 0; i < len(accountID); i++ {
+		if c := accountID[i]; isAccountDirByte(c) {
 			b.WriteByte(c)
 		} else {
 			b.WriteByte('_')
-			safe = false
 		}
 	}
-	if safe {
-		return accountID
-	}
-	sum := sha256.Sum256([]byte(accountID))
 	name := strings.TrimLeft(b.String(), ".")
+	if len(name) > hashedPrefixLen {
+		name = name[:hashedPrefixLen]
+	}
 	if name == "" {
 		name = "account"
 	}
-	return name + "-" + hex.EncodeToString(sum[:4])
+	sum := sha256.Sum256([]byte(accountID))
+	return name + hashedDirMark + hex.EncodeToString(sum[:4])
+}
+
+// isPlainAccountDir reports whether an account ID can be its own directory
+// name. Every byte is checked.
+func isPlainAccountDir(id string) bool {
+	if len(id) > maxAccountDirLen || id[0] == '.' || id == unattributedDir {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if !isAccountDirByte(id[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isAccountDirByte(c byte) bool {
+	return isASCIIAlnum(c) || strings.IndexByte("._@+-", c) >= 0
 }
 
 type ledgerLine struct {
@@ -352,11 +453,13 @@ type ledgerUsage struct {
 
 // MarshalLedgerLine renders e as one newline-terminated ledger line that
 // ParseLine accepts. The timestamp is written in UTC with milliseconds;
-// empty IDs, an empty model, a non-finite cost and a speed other than
-// "standard" or "fast" are left out; negative token counts are written as 0.
-// The cache_creation breakdown is written only when CacheCreate5m and
-// CacheCreate1h add up to CacheCreate, so a total without a breakdown reads
-// back as 5-minute writes. An empty Origin is written as "proxy".
+// empty IDs, an empty model, a negative or non-finite cost and a speed other
+// than "standard" or "fast" are left out; negative token counts are written
+// as 0. CacheCreate is the cache write total. Its breakdown is written as
+// {5m: CacheCreate-CacheCreate1h, 1h: CacheCreate1h}, so 1-hour writes keep
+// their price and the rest count as 5-minute writes. It is left out, and the
+// total reads back as 5-minute writes, when both parts are zero or the
+// 1-hour part exceeds the total. An empty Origin is written as "proxy".
 func MarshalLedgerLine(e Entry) ([]byte, error) {
 	nonNeg := func(v int64) int64 { return max(v, 0) }
 	origin := e.Origin
@@ -381,15 +484,16 @@ func MarshalLedgerLine(e Entry) ([]byte, error) {
 		AccountID: e.AccountID,
 		Source:    origin,
 	}
-	if e.CostUSD != nil && !math.IsNaN(*e.CostUSD) && !math.IsInf(*e.CostUSD, 0) {
+	if e.CostUSD != nil && *e.CostUSD >= 0 && !math.IsInf(*e.CostUSD, 0) {
 		cost := *e.CostUSD
 		line.CostUSD = &cost
 	}
 	if e.Speed == "standard" || e.Speed == "fast" {
 		line.Message.Usage.Speed = e.Speed
 	}
-	if c5, c1 := nonNeg(e.CacheCreate5m), nonNeg(e.CacheCreate1h); satAdd(c5, c1) == line.Message.Usage.CacheCreationInputTokens {
-		line.Message.Usage.CacheCreation = &rawCacheCreation{Ephemeral5m: uint64(c5), Ephemeral1h: uint64(c1)}
+	total := line.Message.Usage.CacheCreationInputTokens
+	if c5, c1 := nonNeg(e.CacheCreate5m), nonNeg(e.CacheCreate1h); (c5 != 0 || c1 != 0) && c1 <= total {
+		line.Message.Usage.CacheCreation = &rawCacheCreation{Ephemeral5m: uint64(total - c1), Ephemeral1h: uint64(c1)}
 	}
 	data, err := json.Marshal(&line)
 	if err != nil {
@@ -436,14 +540,16 @@ func setLedgerMeta(e *Entry) {
 }
 
 // ReadLedgerFile parses every line of a ledger file. A line without an
-// accountId takes the account from the file's directory.
+// accountId takes the account from the file's directory, unless that is the
+// unattributed directory or a hashed name (see LedgerAccountDir), which does
+// not give the ID back.
 func ReadLedgerFile(path string) ([]Entry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	dirAccount := filepath.Base(filepath.Dir(path))
-	if dirAccount == unattributedDir {
+	if dirAccount == unattributedDir || strings.Contains(dirAccount, hashedDirMark) {
 		dirAccount = ""
 	}
 	var entries []Entry
