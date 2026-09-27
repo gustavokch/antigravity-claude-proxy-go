@@ -5,6 +5,9 @@ at commit bbbb9a1, `apps/ccusage/test/fixtures/claude`. Inline test lines in
 the `_test.go` files are taken from ccusage's Rust unit tests at the same
 commit.
 
+`parity/projects/` is written for this port. The build-tagged parity test
+(`parity_test.go`) runs a pinned ccusage over it and diffs the JSON reports.
+
 ccusage is distributed under the MIT License:
 
     MIT License
