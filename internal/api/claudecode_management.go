@@ -404,6 +404,12 @@ func (server *Server) routeClaudeCodeManagement(writer http.ResponseWriter, requ
 	case path == "/api/claudecode/auth/cancel" && method == http.MethodPost:
 		server.handleClaudeCodeAuthCancelPost(writer, request)
 		return true
+	case path == "/api/claudecode/usage" && method == http.MethodGet:
+		server.handleClaudeCodeUsageReport(writer, request)
+		return true
+	case path == "/api/claudecode/usage/reload" && method == http.MethodPost:
+		server.handleClaudeCodeUsageReload(writer, request)
+		return true
 	case (path == "/api/claudecode/models" || path == "/api/claudecode/models/fetch") && method == http.MethodPost:
 		server.handleClaudeCodeModelsFetch(writer, request)
 		return true

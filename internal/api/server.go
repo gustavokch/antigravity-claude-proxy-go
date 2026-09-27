@@ -492,13 +492,26 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	writeJSON(writer, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
+// usage reports the Cloud Code quota windows followed by the Claude Code
+// subscription windows. The two are independent: when the catalog fetch
+// fails but Claude windows exist, the Claude windows are served with an
+// empty models list, and only a failure with no Claude windows fails the
+// call.
 func (server *Server) usage(writer http.ResponseWriter, request *http.Request) {
 	catalog, err := server.fetchModelCatalog(request.Context())
-	if err != nil {
+	claudeWindows := server.claudeCodeUsageWindows(server.now())
+	if err != nil && len(claudeWindows) == 0 {
 		server.writeError(writer, err)
 		return
 	}
-	selectable := catalog.Selectable()
+	var selectable []modelcatalog.Model
+	if err != nil {
+		if server.logger != nil {
+			server.logger.Warn("usage: Cloud Code catalog fetch failed; serving Claude Code windows only", "error", err)
+		}
+	} else {
+		selectable = catalog.Selectable()
+	}
 	models := make([]any, 0, len(selectable))
 	for _, details := range selectable {
 		if details.QuotaRemainingFraction == nil {
@@ -518,7 +531,7 @@ func (server *Server) usage(writer http.ResponseWriter, request *http.Request) {
 		"provider":   "antigravity-proxy",
 		"source":     "cloudcode.fetchAvailableModels",
 		"fetched_at": server.now().UTC().Format(time.RFC3339Nano),
-		"windows":    groupQuotaWindows(selectable),
+		"windows":    append(groupQuotaWindows(selectable), claudeWindows...),
 		"models":     models,
 	})
 }

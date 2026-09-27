@@ -279,6 +279,91 @@ func claudeCodePoolsForModel(string) []string {
 	return []string{claudeCodePool5h, claudeCodePoolWeekly}
 }
 
+// claudeCodeAccountSnapshots lists the Claude Code accounts from the live
+// pool, or from the configuration when the pool has none. It is empty when
+// the gateway is off and no account is configured.
+func (server *Server) claudeCodeAccountSnapshots(cc claudecode.Config) []claudecode.AccountSnapshot {
+	if !cc.Enabled && len(cc.Accounts) == 0 {
+		return nil
+	}
+	var snapshots []claudecode.AccountSnapshot
+	pool, _ := server.getOrCreateCCPool(cc)
+	if pool != nil {
+		snapshots = pool.Snapshots()
+	}
+	if len(snapshots) == 0 && len(cc.Accounts) > 0 {
+		for _, acc := range cc.Accounts {
+			status := "healthy"
+			if !acc.Enabled {
+				status = "disabled"
+			}
+			snapshots = append(snapshots, claudecode.AccountSnapshot{
+				ID:        acc.ID,
+				Name:      acc.Name,
+				Email:     acc.Email,
+				Type:      acc.Type,
+				Priority:  acc.Priority,
+				Enabled:   acc.Enabled,
+				Source:    acc.Source,
+				Status:    status,
+				CreatedAt: server.now(),
+			})
+		}
+	}
+	return snapshots
+}
+
+// claudeCodeUsageLimitsByID maps account IDs to their configured usage
+// limits, for the accounts that have any.
+func claudeCodeUsageLimitsByID(cc claudecode.Config) map[string]*claudecode.UsageLimits {
+	out := make(map[string]*claudecode.UsageLimits, len(cc.Accounts))
+	for _, a := range cc.Accounts {
+		if a.UsageLimits != nil {
+			out[a.ID] = a.UsageLimits
+		}
+	}
+	return out
+}
+
+// forEachClaudeCodeModel calls fn for every model ID and alias the Claude
+// Code gateway serves: the configured allowlist, or the default catalogue
+// when there is none. contextLen is the allowlist's context length, or 0.
+func forEachClaudeCodeModel(cc claudecode.Config, fn func(id string, contextLen int)) {
+	if len(cc.Allowlist) > 0 {
+		for _, m := range cc.Allowlist {
+			if m.ID != "" {
+				fn(m.ID, m.ContextLen)
+			}
+			for _, alias := range m.ExpandAliases() {
+				fn(alias, m.ContextLen)
+			}
+		}
+		return
+	}
+	for _, m := range claudecode.DefaultClaudeCatalogue() {
+		if m.ID != "" {
+			fn(m.ID, 0)
+		}
+		for _, alias := range m.Aliases {
+			if alias != "" {
+				fn(alias, 0)
+			}
+		}
+	}
+}
+
+// claudeCodeDisplayName is the name a Claude Code account is shown by: its
+// name, else its email, else its ID.
+func claudeCodeDisplayName(acc claudecode.AccountSnapshot) string {
+	switch {
+	case acc.Name != "":
+		return acc.Name
+	case acc.Email != "":
+		return acc.Email
+	}
+	return acc.ID
+}
+
 // claudeCodeQuotaPools turns the unified subscription windows into quota
 // pools. A window that is missing, has no utilization or has already reset
 // at now is left out. lastChecked is the observation time in milliseconds,
@@ -413,32 +498,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		return
 	}
 
-	var ccSnapshots []claudecode.AccountSnapshot
-	if cfg.ClaudeCode.Enabled || len(cfg.ClaudeCode.Accounts) > 0 {
-		pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
-		if pool != nil {
-			ccSnapshots = pool.Snapshots()
-		}
-		if len(ccSnapshots) == 0 && len(cfg.ClaudeCode.Accounts) > 0 {
-			for _, acc := range cfg.ClaudeCode.Accounts {
-				status := "healthy"
-				if !acc.Enabled {
-					status = "disabled"
-				}
-				ccSnapshots = append(ccSnapshots, claudecode.AccountSnapshot{
-					ID:        acc.ID,
-					Name:      acc.Name,
-					Email:     acc.Email,
-					Type:      acc.Type,
-					Priority:  acc.Priority,
-					Enabled:   acc.Enabled,
-					Source:    acc.Source,
-					Status:    status,
-					CreatedAt: server.now(),
-				})
-			}
-		}
-	}
+	ccSnapshots := server.claudeCodeAccountSnapshots(cfg.ClaudeCode)
 
 	modelSet := make(map[string]bool)
 	modelContext := make(map[string]any)
@@ -490,33 +550,12 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	}
 
 	if cfg.ClaudeCode.Enabled || len(ccSnapshots) > 0 {
-		if len(cfg.ClaudeCode.Allowlist) > 0 {
-			for _, m := range cfg.ClaudeCode.Allowlist {
-				if m.ID != "" {
-					modelSet[m.ID] = true
-					if m.ContextLen > 0 {
-						modelContext[m.ID] = m.ContextLen
-					}
-				}
-				for _, alias := range m.ExpandAliases() {
-					modelSet[alias] = true
-					if m.ContextLen > 0 {
-						modelContext[alias] = m.ContextLen
-					}
-				}
+		forEachClaudeCodeModel(cfg.ClaudeCode, func(id string, contextLen int) {
+			modelSet[id] = true
+			if contextLen > 0 {
+				modelContext[id] = contextLen
 			}
-		} else {
-			for _, m := range claudecode.DefaultClaudeCatalogue() {
-				if m.ID != "" {
-					modelSet[m.ID] = true
-				}
-				for _, alias := range m.Aliases {
-					if alias != "" {
-						modelSet[alias] = true
-					}
-				}
-			}
-		}
+		})
 	}
 
 	if cfg.OpenRouter.Enabled {
@@ -676,12 +715,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	}
 
 	// 2. Claude Code accounts
-	ccLimits := make(map[string]*claudecode.UsageLimits, len(cfg.ClaudeCode.Accounts))
-	for _, a := range cfg.ClaudeCode.Accounts {
-		if a.UsageLimits != nil {
-			ccLimits[a.ID] = a.UsageLimits
-		}
-	}
+	ccLimits := claudeCodeUsageLimitsByID(cfg.ClaudeCode)
 	for _, ccAcc := range ccSnapshots {
 		limits := make(map[string]any, len(sortedModels))
 		rl := ccAcc.RateLimits
@@ -769,13 +803,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			}
 		}
 
-		displayName := ccAcc.Name
-		if displayName == "" {
-			displayName = ccAcc.Email
-		}
-		if displayName == "" {
-			displayName = ccAcc.ID
-		}
+		displayName := claudeCodeDisplayName(ccAcc)
 
 		var lastUsedMS int64
 		if !ccAcc.LastUsed.IsZero() {

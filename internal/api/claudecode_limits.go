@@ -99,6 +99,13 @@ type claudeCodeResolvedWindow struct {
 // header pools and no usage. Calibrations from fresh headers are saved to
 // the engine summary.
 func (server *Server) claudeCodeLimitsAndUsage(acc claudecode.AccountSnapshot, limits *claudecode.UsageLimits, now time.Time) (map[string]claudeCodePool, any, *claudeCodeUsage) {
+	return server.claudeCodePoolsAndUsage(acc, limits, now, true)
+}
+
+// claudeCodePoolsAndUsage is claudeCodeLimitsAndUsage; saveCalibration
+// false leaves the engine summary's calibration alone, for read paths that
+// only report the pools.
+func (server *Server) claudeCodePoolsAndUsage(acc claudecode.AccountSnapshot, limits *claudecode.UsageLimits, now time.Time, saveCalibration bool) (map[string]claudeCodePool, any, *claudeCodeUsage) {
 	subscription := acc.Type == "oauth" || acc.Type == "setup_token"
 	u := acc.RateLimits.Unified
 	pools := map[string]claudeCodePool{}
@@ -128,8 +135,8 @@ func (server *Server) claudeCodeLimitsAndUsage(acc claudecode.AccountSnapshot, l
 	if u != nil && u.SevenDay.Reset.After(sum.Reset7d) {
 		reset7d = u.SevenDay.Reset
 	}
-	if cal5h > 0 && !claudeCodeSameFloat(cal5h, sum.CalibratedCostUSD5h) ||
-		cal7d > 0 && !claudeCodeSameFloat(cal7d, sum.CalibratedCostUSD7d) || !reset7d.IsZero() {
+	if saveCalibration && (cal5h > 0 && !claudeCodeSameFloat(cal5h, sum.CalibratedCostUSD5h) ||
+		cal7d > 0 && !claudeCodeSameFloat(cal7d, sum.CalibratedCostUSD7d) || !reset7d.IsZero()) {
 		en.UpdateSummary(acc.ID, func(s *ccusage.Summary) {
 			if cal5h > 0 {
 				s.CalibratedCostUSD5h, s.CalibratedAt = cal5h, now

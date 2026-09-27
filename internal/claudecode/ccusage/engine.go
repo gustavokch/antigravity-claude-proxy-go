@@ -350,6 +350,16 @@ func (en *Engine) Root() string {
 	return en.root
 }
 
+// ReportSettings returns what the engine prices and groups entries with,
+// so reports over Entries match its snapshots: the block length, the cost
+// mode, the pricer and the location of "today".
+func (en *Engine) ReportSettings() (dur time.Duration, mode CostMode, p Pricer, loc *time.Location) {
+	if en == nil {
+		return DefaultBlockDuration, CostModeAuto, nil, time.Local
+	}
+	return en.dur, en.mode, en.pricer, en.loc
+}
+
 // Start loads the files in the background and keeps tailing them every
 // poll interval until ctx is done or Close is called. Later calls do
 // nothing.
