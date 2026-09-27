@@ -111,10 +111,14 @@ func NewLedger(root string, opts LedgerOptions) (*Ledger, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	for _, dir := range []string{root, filepath.Join(root, "projects")} {
-		if err := mkdirPrivate(dir); err != nil {
-			return nil, fmt.Errorf("ccusage: create ledger directory: %w", err)
-		}
+	// The root may be a directory the user chose, so its mode is left
+	// alone; only a root created here is private. Everything below
+	// projects/ is the ledger's own and is kept private.
+	if err := mkdirRoot(root); err != nil {
+		return nil, fmt.Errorf("ccusage: create ledger directory: %w", err)
+	}
+	if err := mkdirPrivate(filepath.Join(root, "projects")); err != nil {
+		return nil, fmt.Errorf("ccusage: create ledger directory: %w", err)
 	}
 	l := &Ledger{
 		root:      root,
@@ -201,7 +205,11 @@ func (l *Ledger) write(e Entry) {
 		return
 	}
 	key := ledgerFileKey{dir: LedgerAccountDir(e.AccountID), date: e.Timestamp.UTC().Format(ledgerDateLayout)}
-	l.rotate(key.date)
+	// A timestamp skewed into the future must not become the latest date,
+	// or every normal entry after it would count as late.
+	limit := l.now().UTC().AddDate(0, 0, 1).Format(ledgerDateLayout)
+	future := key.date > limit
+	l.rotate(min(key.date, limit))
 	f, err := l.fileFor(key)
 	if err != nil {
 		l.fail("open ledger file", err)
@@ -216,8 +224,9 @@ func (l *Ledger) write(e Entry) {
 		return
 	}
 	l.written.Add(1)
-	if key.date < previousDate(l.latest) {
-		// A late entry for an older day: do not keep its file open.
+	if future || key.date < previousDate(l.latest) {
+		// A late entry for an older day, or one past tomorrow: do not keep
+		// its file open.
 		delete(l.files, key)
 		if err := syncClose(f); err != nil {
 			l.fail("close ledger file", err)
@@ -294,6 +303,18 @@ func terminateLastLine(f *os.File) error {
 	}
 	_, err = f.Write([]byte{'\n'})
 	return err
+}
+
+// mkdirRoot creates dir with mode 0700 when it does not exist, and leaves
+// an existing directory's mode unchanged.
+func mkdirRoot(dir string) error {
+	if info, err := os.Stat(dir); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", dir)
+		}
+		return nil
+	}
+	return os.MkdirAll(dir, 0o700)
 }
 
 // mkdirPrivate creates dir if needed and makes it 0700 either way.

@@ -598,7 +598,8 @@ func TestLedger_FixesPermissions(t *testing.T) {
 	if err := l.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for p, want := range map[string]os.FileMode{root: 0o700, filepath.Join(root, "projects"): 0o700, dir: 0o700, path: 0o600} {
+	// The root is the user's directory and keeps its mode.
+	for p, want := range map[string]os.FileMode{root: 0o755, filepath.Join(root, "projects"): 0o700, dir: 0o700, path: 0o600} {
 		if info, err := os.Stat(p); err != nil || info.Mode().Perm() != want {
 			t.Errorf("%s mode = %v, %v; want %v", p, info, err, want)
 		}
@@ -655,5 +656,55 @@ func TestLedger_KeepsPreviousDayOpen(t *testing.T) {
 	}
 	if n := len(readLines(t, filepath.Join(root, "projects", "acct-1", "2026-09-26.jsonl"))); n != 2 {
 		t.Errorf("2026-09-26 lines = %d, want 2", n)
+	}
+}
+
+func TestLedger_FutureTimestampDoesNotMoveLatest(t *testing.T) {
+	root := t.TempDir()
+	var l *Ledger
+	var open []string
+	l = newTestLedger(t, root, LedgerOptions{writeHook: func(Entry) {
+		var keys []string
+		for k := range l.files {
+			keys = append(keys, k.date)
+		}
+		slices.Sort(keys)
+		open = append(open, strings.Join(keys, ","))
+	}})
+	for _, ts := range []time.Time{
+		time.Date(2026, 9, 27, 11, 0, 0, 0, time.UTC),
+		time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), // clock skew
+		time.Date(2026, 9, 27, 11, 30, 0, 0, time.UTC),
+		time.Date(2026, 9, 26, 23, 0, 0, 0, time.UTC),
+	} {
+		e := sampleLedgerEntry()
+		e.Timestamp = ts
+		l.Append(e)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"", "2026-09-27", "2026-09-27", "2026-09-27"}
+	if !slices.Equal(open, want) {
+		t.Errorf("open files = %q, want %q", open, want)
+	}
+	if l.latest > "2026-09-28" {
+		t.Errorf("latest = %s, want at most tomorrow", l.latest)
+	}
+	for day, n := range map[string]int{"2026-09-27": 2, "2026-10-10": 1, "2026-09-26": 1} {
+		if got := len(readLines(t, filepath.Join(root, "projects", "acct-1", day+".jsonl"))); got != n {
+			t.Errorf("%s lines = %d, want %d", day, got, n)
+		}
+	}
+}
+
+func TestLedger_NewRootIsPrivate(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "new-root")
+	l := newTestLedger(t, root, LedgerOptions{})
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(root); err != nil || info.Mode().Perm() != 0o700 {
+		t.Errorf("new root mode = %v, %v; want 0700", info, err)
 	}
 }
