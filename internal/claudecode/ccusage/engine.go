@@ -519,12 +519,13 @@ func (en *Engine) pruneLocked(cutoff time.Time) {
 
 // Refresh reads whatever the ledger and local files gained since the last
 // read and prunes entries older than the window. Start calls it on every
-// poll; calling it directly is for tests and reloads.
+// poll; calling it directly is for tests and reloads. It runs under the
+// engine's own context, so Close cuts a pass short.
 func (en *Engine) Refresh() {
 	if en == nil {
 		return
 	}
-	en.refresh(context.Background())
+	en.refresh(en.baseCtx)
 }
 
 // Reload starts a Refresh in the background unless one it started is

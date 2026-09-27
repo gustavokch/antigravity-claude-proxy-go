@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,6 +52,9 @@ type AccountPool struct {
 	savePending bool
 	retired     bool
 	saveWG      sync.WaitGroup
+	// unsaved is set when a unified snapshot change was held back by the
+	// save throttle, and cleared when a save pass starts. Flush uses it.
+	unsaved atomic.Bool
 }
 
 // NewAccountPool creates a new AccountPool initialized with the provided accounts.
@@ -167,6 +171,7 @@ func (p *AccountPool) SaveStoredAccounts() error {
 	p.saveWG.Add(1)
 	p.saveMu.Unlock()
 	defer p.saveWG.Done()
+	p.unsaved.Store(false)
 	return p.writeStore()
 }
 
@@ -461,6 +466,7 @@ func (p *AccountPool) setRateLimitsLocked(acc *Account, rl RateLimits, now time.
 	}
 	flipped := unifiedRejected(prev) != unifiedRejected(next)
 	if !flipped && !acc.unifiedSavedAt.IsZero() && now.Sub(acc.unifiedSavedAt) < p.saveInterval() {
+		p.unsaved.Store(true)
 		return false
 	}
 	acc.unifiedSavedAt = now
@@ -528,6 +534,7 @@ func (p *AccountPool) saveLoop() {
 		p.savePending = false
 		p.saveMu.Unlock()
 
+		p.unsaved.Store(false)
 		persist := p.persist
 		if persist == nil {
 			// saveLoop is already counted in saveWG and checked
@@ -538,6 +545,35 @@ func (p *AccountPool) saveLoop() {
 			slog.Warn("claudecode: failed to persist unified limit snapshot", "error", err)
 		}
 	}
+}
+
+// Flush saves the account store now if a unified snapshot change is still
+// held back by the save throttle. It does nothing without a storage path,
+// without such a change, or on a retired pool. Call it before Retire on
+// shutdown so the last subscription windows seen are not lost.
+func (p *AccountPool) Flush() error {
+	p.mu.RLock()
+	path := p.storagePath
+	p.mu.RUnlock()
+	if path == "" || !p.unsaved.Load() {
+		return nil
+	}
+
+	p.saveMu.Lock()
+	if p.retired {
+		p.saveMu.Unlock()
+		return nil
+	}
+	p.saveWG.Add(1)
+	p.saveMu.Unlock()
+	defer p.saveWG.Done()
+
+	p.unsaved.Store(false)
+	persist := p.persist
+	if persist == nil {
+		persist = p.writeStore
+	}
+	return persist()
 }
 
 // Retire stops p from saving the account store: background saves and

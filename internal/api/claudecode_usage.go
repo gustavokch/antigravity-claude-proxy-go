@@ -172,12 +172,31 @@ func (server *Server) StartClaudeCodeUsage(ctx context.Context) {
 func (server *Server) ClaudeCodeUsage() *ccusage.Engine { return server.ccUsage }
 
 // Close releases what the server holds beyond in-flight requests: it waits
-// for background calibrations and starts no more, then stops the usage
-// engine and flushes and closes its ledger. Call it after the HTTP server
-// has shut down. It is safe to call more than once.
+// for background calibrations and starts no more, saves a subscription
+// snapshot the live Claude Code pool still holds back, retires that pool so
+// its background saves are drained, then stops the usage engine and
+// flushes and closes its ledger. Call it after the HTTP server has shut
+// down. It is safe to call more than once.
 func (server *Server) Close() error {
 	server.ccCalibration.close()
+	closeCCPool()
 	return server.ccUsage.Close()
+}
+
+// closeCCPool flushes and retires the live Claude Code pool. The pool is
+// marked stale, so a later use rebuilds it and inherits its snapshots
+// rather than serving from a pool that can no longer save.
+func closeCCPool() {
+	ccPoolMu.Lock()
+	defer ccPoolMu.Unlock()
+	if ccPoolInst == nil {
+		return
+	}
+	if err := ccPoolInst.Flush(); err != nil {
+		slog.Warn("claudecode: failed to save unified limit snapshots on shutdown", "error", err)
+	}
+	ccPoolInst.Retire()
+	invalidateCCPoolLocked()
 }
 
 // recordClaudeCodeUsage sends one served response to the usage engine: the

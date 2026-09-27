@@ -41,7 +41,7 @@ func ccPublicConfig() any {
 // expiry, email, UUIDs and source; dropping any of these breaks token refresh
 // after a restart.
 func ccAccountToMap(a claudecode.AccountConfig) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"id":               a.ID,
 		"name":             a.Name,
 		"token":            a.Token,
@@ -54,8 +54,29 @@ func ccAccountToMap(a claudecode.AccountConfig) map[string]any {
 		"priority":         a.Priority,
 		"enabled":          a.Enabled,
 		"source":           a.Source,
-		"usageLimits":      a.UsageLimits,
 	}
+	if a.UsageLimits != nil {
+		out["usageLimits"] = a.UsageLimits
+	}
+	return out
+}
+
+// validateJSONSection checks that body[key], when present and not null,
+// decodes into target. A value of the wrong type would otherwise be stored
+// and then make the whole config fail to decode on the next load.
+func validateJSONSection(body map[string]any, key, label string, target any) error {
+	raw, ok := body[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("%s: invalid %s: %w", label, key, err)
+	}
+	if err := json.Unmarshal(encoded, target); err != nil {
+		return fmt.Errorf("%s: invalid %s: %w", label, key, err)
+	}
+	return nil
 }
 
 // validateIdentityOverrides checks every claudecode.IdentityConfig reachable in a
@@ -141,6 +162,11 @@ func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, req
 		}
 	}
 
+	if err := validateJSONSection(body, "usage", "claudecode", &claudecode.UsageConfig{}); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+
 	_, err := config.Save(map[string]any{"claudecode": body})
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": err.Error()})
@@ -177,6 +203,11 @@ func (server *Server) handleClaudeCodeAccountsPost(writer http.ResponseWriter, r
 	var body map[string]any
 	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid JSON"})
+		return
+	}
+
+	if err := validateJSONSection(body, "usageLimits", "claudecode account", &claudecode.UsageLimits{}); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
 		return
 	}
 
