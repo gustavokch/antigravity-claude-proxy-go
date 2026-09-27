@@ -1,6 +1,8 @@
 package claudecode
 
 import (
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,5 +109,60 @@ func TestAccountPool_InheritUnified(t *testing.T) {
 	}
 	if u := *oldA.FiveHour.Utilization; u != 0.2 {
 		t.Errorf("old snapshot mutated: utilization %v", u)
+	}
+}
+
+// A token refresh on a retired pool (a request still holding it after a
+// rebuild) must not write the stale account set, but the new token stays
+// usable in memory.
+func TestAccountPool_RetiredPoolRefreshDoesNotSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claudecode_accounts.json")
+	soon := time.Now().Add(time.Minute)
+	pool := NewAccountPool([]AccountConfig{{
+		ID: "cc-r", Token: "old", RefreshToken: "rt", ExpiresAt: &soon,
+		Type: "oauth", Enabled: true, Source: "oauth",
+	}})
+	pool.SetStoragePath(path)
+	var refreshes atomic.Int32
+	pool.SetTokenRefresher(func(string) (string, string, int, error) {
+		n := refreshes.Add(1)
+		return "new-" + string(rune('0'+n)), "rt2", 3600, nil
+	})
+	pool.Retire()
+
+	acc, _ := pool.GetAccount("cc-r")
+	if err := pool.RefreshTokenIfNeeded(acc); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.RefreshAccountToken("cc-r"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.SaveStoredAccounts(); err != nil {
+		t.Fatal(err)
+	}
+	if refreshes.Load() != 2 {
+		t.Fatalf("refresher called %d times, want 2", refreshes.Load())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("retired pool wrote the account store (stat err %v)", err)
+	}
+	acc, _ = pool.GetAccount("cc-r")
+	if acc.Token != "new-2" || acc.RefreshToken != "rt2" {
+		t.Errorf("refreshed credentials not kept in memory: token %q refresh %q", acc.Token, acc.RefreshToken)
+	}
+}
+
+// Before retirement the same refresh does save, so the test above is not
+// passing for an unrelated reason.
+func TestAccountPool_RefreshSavesBeforeRetire(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claudecode_accounts.json")
+	pool := NewAccountPool([]AccountConfig{{ID: "cc-r", Token: "old", RefreshToken: "rt", Type: "oauth", Enabled: true, Source: "oauth"}})
+	pool.SetStoragePath(path)
+	pool.SetTokenRefresher(func(string) (string, string, int, error) { return "new", "", 3600, nil })
+	if err := pool.RefreshAccountToken("cc-r"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("live pool did not save after refresh: %v", err)
 	}
 }

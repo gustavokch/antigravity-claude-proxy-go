@@ -155,7 +155,24 @@ func persistentSource(source string) bool {
 }
 
 // SaveStoredAccounts persists all accounts marked as persistent (source "oauth" or "manual") to disk.
+// It is a no-op on a retired pool, and Retire waits for a call already
+// writing, so a replaced pool cannot overwrite the new pool's account set
+// (for example after a token refresh on a request still holding it).
 func (p *AccountPool) SaveStoredAccounts() error {
+	p.saveMu.Lock()
+	if p.retired {
+		p.saveMu.Unlock()
+		return nil
+	}
+	p.saveWG.Add(1)
+	p.saveMu.Unlock()
+	defer p.saveWG.Done()
+	return p.writeStore()
+}
+
+// writeStore writes the persistent accounts to the store. Callers must
+// have checked retirement and be counted in saveWG.
+func (p *AccountPool) writeStore() error {
 	p.mu.RLock()
 	path := p.storagePath
 	if path == "" {
@@ -513,7 +530,9 @@ func (p *AccountPool) saveLoop() {
 
 		persist := p.persist
 		if persist == nil {
-			persist = p.SaveStoredAccounts
+			// saveLoop is already counted in saveWG and checked
+			// retirement above, so write directly.
+			persist = p.writeStore
 		}
 		if err := persist(); err != nil {
 			slog.Warn("claudecode: failed to persist unified limit snapshot", "error", err)
@@ -521,11 +540,14 @@ func (p *AccountPool) saveLoop() {
 	}
 }
 
-// Retire stops p from saving the account store and waits for a save that
-// is already running to finish. Call it on a pool that is being replaced,
-// before the replacement can save, so the old pool's account set can never
-// overwrite the new one on disk. Later changes to a retired pool are kept
-// in memory only. Retire is idempotent.
+// Retire stops p from saving the account store: background saves and
+// direct SaveStoredAccounts calls (including those made after a token
+// refresh) become no-ops, a queued background pass is dropped, and Retire
+// waits for any write already in progress to finish. Call it on a pool that
+// is being replaced, before the replacement can save, so the old pool's
+// account set can never overwrite the new one on disk. Later changes to a
+// retired pool, refreshed tokens included, are kept in memory only. Retire
+// is idempotent.
 func (p *AccountPool) Retire() {
 	p.saveMu.Lock()
 	p.retired = true

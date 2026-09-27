@@ -70,6 +70,7 @@ func (server *Server) getOrCreateCCPool(cfg claudecode.Config) (*claudecode.Acco
 		// queued cannot overwrite the new account set on disk.
 		if oldPool != nil {
 			newPool.InheritUnified(oldPool)
+			// May block getOrCreateCCPool callers on one atomic file write.
 			oldPool.Retire()
 		}
 
@@ -474,6 +475,9 @@ func (server *Server) forwardToClaudeCode(
 			}
 
 			opts := server.defaultCCROptions(sender)
+			if ccCfg.ForwardUnifiedHeadersEnabled() {
+				opts.ResponseHeaderFilter = ccCopyUnifiedHeaders
+			}
 			isStreaming, _ := reqMap["stream"].(bool)
 			if isStreaming {
 				_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
