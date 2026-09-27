@@ -199,6 +199,33 @@ type RateLimits struct {
 	OutputTokensReset     time.Time `json:"outputTokensReset,omitempty"`
 	RetryAfter            int       `json:"retryAfter,omitempty"` // Seconds
 	LastUpdated           time.Time `json:"lastUpdated"`
+	// Unified is nil unless the response carried subscription
+	// (anthropic-ratelimit-unified-*) headers, so API-key accounts keep
+	// their existing JSON shape.
+	Unified *Unified `json:"unified,omitempty"`
+}
+
+// UnifiedWindow is one subscription window (5h or 7d) from the unified
+// rate-limit headers. Utilization is a 0-1 fraction; nil means the header
+// was absent or malformed.
+type UnifiedWindow struct {
+	Utilization *float64  `json:"utilization,omitempty"`
+	Reset       time.Time `json:"reset,omitzero"`
+	Status      string    `json:"status,omitempty"`
+}
+
+// Unified is the subscription limit state reported by the
+// anthropic-ratelimit-unified-* response headers.
+type Unified struct {
+	Status                string        `json:"status,omitempty"`
+	Reset                 time.Time     `json:"reset,omitzero"`
+	RepresentativeClaim   string        `json:"representativeClaim,omitempty"`
+	FallbackPercentage    *float64      `json:"fallbackPercentage,omitempty"`
+	OverageStatus         string        `json:"overageStatus,omitempty"`
+	OverageDisabledReason string        `json:"overageDisabledReason,omitempty"`
+	FiveHour              UnifiedWindow `json:"fiveHour,omitzero"`
+	SevenDay              UnifiedWindow `json:"sevenDay,omitzero"`
+	ObservedAt            time.Time     `json:"observedAt"`
 }
 
 // Account represents an active, runtime-managed Claude Code credential.
