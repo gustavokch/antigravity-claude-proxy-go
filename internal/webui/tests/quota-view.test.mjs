@@ -126,9 +126,13 @@ function reports() {
     assert.deepEqual(local(qv.reportRows(null, 'daily')), []);
     assert.equal(qv.reportPeriod({ week: '2026-09-21' }), '2026-09-21');
     assert.equal(qv.reportPeriod({ date: '2026-09-27' }), '2026-09-27');
-    assert.equal(qv.usageURL('acct 1&x', 'weekly'),
-        '/api/claudecode/usage?report=weekly&account=acct%201%26x');
-    assert.equal(qv.usageURL('', 'daily'), '/api/claudecode/usage?report=daily');
+    const now = new Date(2026, 8, 27, 10, 0, 0);
+    assert.equal(qv.historySince(now), '20260828');
+    assert.equal(qv.historySince(new Date(2026, 2, 1, 0, 5)), '20260130', 'crosses month ends by local date');
+    assert.equal(qv.usageURL('acct 1&x', 'weekly', now),
+        '/api/claudecode/usage?report=weekly&account=acct%201%26x&since=20260828');
+    assert.equal(qv.usageURL('', 'daily', now), '/api/claudecode/usage?report=daily&since=20260828');
+    assert.ok(qv.usageURL('', 'daily').endsWith('&since=' + qv.historySince()), 'since defaults to now');
 }
 
 function renderer() {
@@ -171,7 +175,7 @@ async function historyLoading() {
     c.toggleHistory('acct-1');
     await pendingTick();
     assert.equal(requests.length, 1);
-    assert.equal(requests[0].url, '/api/claudecode/usage?report=daily&account=acct-1');
+    assert.equal(requests[0].url, '/api/claudecode/usage?report=daily&account=acct-1&since=' + qv.historySince());
     assert.equal(c.historyLoading('acct-1'), true);
     requests[0].resolve({ response: okResponse({ daily: [{ date: '2026-09-27', totalCost: 1 }], totals: { totalCost: 1 } }), newPassword: null });
     await settle();
@@ -188,7 +192,7 @@ async function historyLoading() {
     c.setHistoryReport('acct-1', 'weekly');
     await pendingTick();
     assert.equal(requests.length, 2);
-    assert.equal(requests[1].url, '/api/claudecode/usage?report=weekly&account=acct-1');
+    assert.equal(requests[1].url, '/api/claudecode/usage?report=weekly&account=acct-1&since=' + qv.historySince());
     requests[1].resolve({ response: errorResponse(404, 'not found'), newPassword: null });
     await settle();
     assert.equal(c.historyLoading('acct-1'), false);
@@ -211,7 +215,7 @@ async function historySwitchWhileLoading() {
     c.setHistoryReport('acct-1', 'weekly');
     await pendingTick();
     assert.equal(requests.length, 2, 'weekly was not requested while daily was pending');
-    assert.equal(requests[1].url, '/api/claudecode/usage?report=weekly&account=acct-1');
+    assert.equal(requests[1].url, '/api/claudecode/usage?report=weekly&account=acct-1&since=' + qv.historySince());
     assert.equal(c.historyLoading('acct-1'), true, 'weekly shows as loading');
 
     // Daily fails after the switch; the weekly view shows no error.

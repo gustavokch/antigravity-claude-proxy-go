@@ -148,10 +148,22 @@ window.QuotaView = (() => {
         return row.date || row.week || row.month || '';
     }
 
-    function usageURL(accountId, report) {
+    // Usage history covers the last 30 days, so a request does not make the
+    // server read the whole ledger retention.
+    const HISTORY_DAYS = 30;
+
+    // The since bound for a history request: the local date HISTORY_DAYS
+    // before now, as YYYYMMDD.
+    function historySince(now = new Date()) {
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - HISTORY_DAYS);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+    }
+
+    function usageURL(accountId, report, now = new Date()) {
         let url = '/api/claudecode/usage?report=' + encodeURIComponent(report);
         if (accountId) url += '&account=' + encodeURIComponent(accountId);
-        return url;
+        return url + '&since=' + historySince(now);
     }
 
     function escapeHTML(s) {
@@ -232,7 +244,7 @@ window.QuotaView = (() => {
         splitPoolId, poolPercent, sortedPools, poolFamilyLabel, remainingBarClass,
         usedBarClass, usedTextClass,
         burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
-        reportRows, reportPeriod, usageURL, escapeHTML, poolLabel, poolSourceLabel,
+        reportRows, reportPeriod, usageURL, historySince, escapeHTML, poolLabel, poolSourceLabel,
         renderPoolBars,
     };
 })();
