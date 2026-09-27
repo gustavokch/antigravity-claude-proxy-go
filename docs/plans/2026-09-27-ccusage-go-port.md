@@ -18,6 +18,8 @@ ccusage (https://github.com/ccusage/ccusage) computes all of this from Claude Co
 Decisions confirmed with the user:
 - **Data source: both, merged.** A ccusage-compatible ledger written by the proxy, plus local Claude Code logs. The review below adds a filter the local logs must pass.
 - **Limit basis: headers first, then ccusage.** The unified headers are the source of truth. ccusage math is the fallback and provides the projection.
+- **Local-log scanning is on by default** whenever a Claude config dir exists.
+- **Unified headers are forwarded to clients** by default, with a config switch to turn this off.
 
 ## Review changes (revision 1 → 2)
 Each point was verified against the code or the reference captures.
@@ -93,7 +95,16 @@ This PR has no ccusage code yet. It delivers Google-shaped pools for OAuth accou
   - `limits[modelId]` = the minimum over the Claude pools. Every Claude Code model maps to both pools through a local helper; do not use `quotaPoolsForModel`.
   - `api_key` accounts keep today's classic-header behaviour and get no subscription pools.
   - Update `…UnknownQuotaIsNull` to cover API-key and no-data accounts. Add `…UnifiedPools`, which uses real header values copied from `.reference`.
-- **Header forwarding (optional, flag-gated, off by default):** add the unified headers to `ccCopyResponseHeaders`, so a Claude Code client behind the proxy keeps its native limit warnings. This is off by default because it changes what the client sees. Confirm with the user before enabling it.
+- **Header forwarding (approved; on by default).** Forward the unified headers so a Claude Code client behind the proxy keeps its native limit warnings and reset messages.
+  - The config switch is `claudecode.forwardUnifiedHeaders`, default `true`.
+  - There are two header allowlists, and both must change:
+    - `ccCopyResponseHeaders` (`claudecode_proxy.go:609`), for success responses;
+    - the list inside `writeCCUpstream429` (`claudecode_proxy.go:~585`), for mirrored 429s.
+  - Match every `Anthropic-Ratelimit-Unified-*` header by prefix rather than by a fixed list, so new unified headers such as overage headers pass through without code changes.
+  - The values forwarded are the serving account's own. With several accounts, the client sees the numbers for whichever account served that turn.
+    - Claude Code acts on `fallback-percentage` and `status`, for example by warning or by suggesting a model fallback. That is the same as running natively on that account, so values are not rewritten to reflect the whole pool.
+  - The 503 "all accounts unavailable" path stays as it is.
+  - Test: a proxied success response and a mirrored 429 both carry the upstream `anthropic-ratelimit-unified-*` headers. With the switch off, neither does.
 
 ## PR 2: `internal/claudecode/ccusage/` (pure library)
 This package imports no proxy code. Pricing is injected through an interface to avoid an import cycle with `claudecode`.
@@ -181,7 +192,7 @@ Tests:
   - `Snapshot(accountID, now)` returns the window blocks, burn rate, projection, the 5h/7d cost and tokens, today's cost and the per-model split. It is cached for 5s.
   - Construct it in `api.New`. `Options.CCUsage` may be nil in tests.
 - **Config:** `claudecode.usage` in `claudecode.Config` (`types.go:175`) holds `{enabled, ledgerDir, scanLocalLogs, localAccountId, sessionHours:5, costMode:"auto", timezone, onlinePricing:false, retentionDays:60}`. `AccountConfig` holds per-account `usageLimits{costUsd5h, costUsd7d, tokens5h, tokens7d}`.
-  - `scanLocalLogs` defaults to true when a Claude config dir exists, matching the "both, merged" decision. Revisit this default if local-log privacy matters for server deployments.
+  - `scanLocalLogs` defaults to true when a Claude config dir exists. The user confirmed this default. Only usage fields are parsed, and message content is never retained.
 
 ## PR 4: Fallback math, APIs, WebUI
 - **Pool values**, in order of precedence:
