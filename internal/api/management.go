@@ -686,7 +686,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			status = "rate_limited"
 		}
 
-		computedFrac, hasLimits := rl.MinRemainingFraction()
+		computedFrac, hasLimits := rl.MinRemainingFractionAt(server.now())
 		computedReset := rl.ResetTime(server.now())
 		// A subscription account refused with unified status "rejected"
 		// carries no classic reset, so its wait comes from the binding

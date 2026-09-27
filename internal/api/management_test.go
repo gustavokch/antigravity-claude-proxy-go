@@ -1934,6 +1934,8 @@ func TestManagement_AccountLimits_ClaudeCodeUnifiedPools(t *testing.T) {
 		{ID: "cc-expired", Email: "expired@example.com", Token: "t2", Type: "setup_token", Priority: 1, Enabled: true, Source: "config"},
 		{ID: "cc-key", Email: "key@example.com", Token: "t3", Type: "api_key", Priority: 1, Enabled: true, Source: "config"},
 		{ID: "cc-rejected", Email: "rejected@example.com", Token: "t4", Type: "oauth", Priority: 1, Enabled: true, Source: "config"},
+		{ID: "cc-cooldown", Email: "cooldown@example.com", Token: "t5", Type: "oauth", Priority: 1, Enabled: true, Source: "config"},
+		{ID: "cc-rejected-classic", Email: "rejected-classic@example.com", Token: "t6", Type: "oauth", Priority: 1, Enabled: true, Source: "config"},
 	}
 	cfg.ClaudeCode.Allowlist = []claudecode.ModelConfig{{ID: model}}
 	config.SetForTest(cfg)
@@ -1955,7 +1957,7 @@ func TestManagement_AccountLimits_ClaudeCodeUnifiedPools(t *testing.T) {
 		LastUpdated: now,
 		Unified: &claudecode.Unified{
 			Status:              "allowed",
-			Reset:               reset7d,
+			Reset:               reset5h,
 			RepresentativeClaim: "five_hour",
 			FiveHour:            claudecode.UnifiedWindow{Utilization: util(0.04), Reset: reset5h, Status: "allowed"},
 			SevenDay:            claudecode.UnifiedWindow{Utilization: util(0.22), Reset: reset7d, Status: "allowed"},
@@ -1979,6 +1981,44 @@ func TestManagement_AccountLimits_ClaudeCodeUnifiedPools(t *testing.T) {
 	})
 	pool.UpdateAccountRateLimits("cc-rejected", claudecode.RateLimits{
 		LastUpdated: now,
+		Unified: &claudecode.Unified{
+			Status:              "rejected",
+			Reset:               reset5h,
+			RepresentativeClaim: "seven_day",
+			FiveHour:            claudecode.UnifiedWindow{Utilization: util(0.5), Reset: reset5h},
+			SevenDay:            claudecode.UnifiedWindow{Utilization: util(1.0), Reset: reset7d, Status: "rejected"},
+			ObservedAt:          now,
+		},
+	})
+
+	pool.UpdateAccountRateLimits("cc-cooldown", claudecode.RateLimits{
+		LastUpdated: now,
+		Unified: &claudecode.Unified{
+			Status:     "allowed",
+			FiveHour:   claudecode.UnifiedWindow{Utilization: util(0.04), Reset: reset5h},
+			SevenDay:   claudecode.UnifiedWindow{Utilization: util(0.22), Reset: reset7d},
+			ObservedAt: now,
+		},
+	})
+	// The pool stamps cooldowns with its own wall clock, which is after
+	// the test clock, so the cooldown is still active at now.
+	pool.RecordFailure("cc-cooldown", true, time.Hour)
+	ccAcc, ok := pool.GetAccount("cc-cooldown")
+	if !ok {
+		t.Fatalf("cc-cooldown not in pool")
+	}
+	cooldownUntil := ccAcc.Snapshot().CooldownUntil
+	if !cooldownUntil.After(now) {
+		t.Fatalf("cooldown %v must be after test clock %v", cooldownUntil, now)
+	}
+	// An exhausted classic dimension resetting after the binding window
+	// keeps its later reset.
+	classicReset := reset7d.Add(time.Hour)
+	pool.UpdateAccountRateLimits("cc-rejected-classic", claudecode.RateLimits{
+		TokensLimit:     100,
+		TokensRemaining: 0,
+		TokensReset:     classicReset,
+		LastUpdated:     now,
 		Unified: &claudecode.Unified{
 			Status:              "rejected",
 			Reset:               reset5h,
@@ -2024,12 +2064,34 @@ func TestManagement_AccountLimits_ClaudeCodeUnifiedPools(t *testing.T) {
 			id:     "cc-fresh",
 			status: "ok",
 			pools: map[string]wantPool{
-				"claude-5h":     {1 - 0.04, rfc(reset5h)},
-				"claude-weekly": {1 - 0.22, rfc(reset7d)},
+				"claude-5h":     {1 - 0.04, "2026-09-23T12:10:00Z"},
+				"claude-weekly": {1 - 0.22, "2026-09-23T09:00:00Z"},
 			},
 			fraction:   1 - 0.22,
 			remaining:  fmt.Sprintf("%d%%", int((1-0.22)*100)),
-			limitReset: rfc(reset7d),
+			limitReset: "2026-09-23T09:00:00Z",
+		},
+		{
+			id:     "cc-cooldown",
+			status: "cooldown",
+			pools: map[string]wantPool{
+				"claude-5h":     {1 - 0.04, rfc(reset5h)},
+				"claude-weekly": {1 - 0.22, rfc(reset7d)},
+			},
+			fraction:   0,
+			remaining:  "0%",
+			limitReset: rfc(cooldownUntil),
+		},
+		{
+			id:     "cc-rejected-classic",
+			status: "rate_limited",
+			pools: map[string]wantPool{
+				"claude-5h":     {0.5, rfc(reset5h)},
+				"claude-weekly": {0, rfc(reset7d)},
+			},
+			fraction:   0,
+			remaining:  "0%",
+			limitReset: rfc(classicReset),
 		},
 		{
 			id:     "cc-expired",
