@@ -1,5 +1,7 @@
 package ccusage
 
+import "time"
+
 type dedupeKind uint8
 
 const (
@@ -197,4 +199,43 @@ func shouldReplace(candidate, existing *Entry) bool {
 		return ct > xt
 	}
 	return candidate.Speed != "" && existing.Speed == ""
+}
+
+// Prune drops the kept entries whose timestamp is before the cutoff and
+// returns how many it dropped. Survivors keep their order and every index
+// route they had, remapped to their new positions, so later entries dedupe
+// against them exactly as before. A dropped entry is forgotten: a copy of it
+// added afterwards is kept as new, so callers that re-read old data should
+// drop entries older than the cutoff before adding them.
+func (d *Deduper) Prune(before time.Time) int {
+	remap := make([]int, len(d.entries))
+	survivors := make([]Entry, 0, len(d.entries))
+	for i := range d.entries {
+		if d.entries[i].Timestamp.Before(before) {
+			remap[i] = -1
+			continue
+		}
+		remap[i] = len(survivors)
+		survivors = append(survivors, d.entries[i])
+	}
+	dropped := len(d.entries) - len(survivors)
+	if dropped == 0 {
+		return 0
+	}
+	index := make(map[dedupeKey][]dedupeRef, len(d.index))
+	for key, refs := range d.index {
+		var kept []dedupeRef
+		for _, ref := range refs {
+			if ni := remap[ref.index]; ni >= 0 {
+				ref.index = ni
+				kept = append(kept, ref)
+			}
+		}
+		if len(kept) > 0 {
+			index[key] = kept
+		}
+	}
+	d.entries = survivors
+	d.index = index
+	return dropped
 }
