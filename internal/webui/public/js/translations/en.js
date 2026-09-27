@@ -761,6 +761,8 @@ window.translations.en = {
     ccNoAccounts: "No Claude Code Accounts",
     ccNoAccountsDesc: "Add an Anthropic API key or OAuth token, or auto-import existing credentials from ~/.claude.json.",
     ccAutoImport: "Auto Import",
+    ccForwardUnifiedHeaders: "Forward subscription limit headers",
+    ccForwardUnifiedHeadersDesc: "Pass the upstream anthropic-ratelimit-unified-* headers (5-hour and weekly windows) through to clients.",
 
     // Cache Bump
     cacheBumpSettings: "Cache Bump",

@@ -185,6 +185,17 @@ type Config struct {
 	Allowlist  []ModelConfig   `json:"allowlist,omitempty"`
 	Routing    RoutingConfig   `json:"routing,omitempty"`
 	Identity   IdentityConfig  `json:"identity,omitempty"`
+	// ForwardUnifiedHeaders controls whether the upstream
+	// anthropic-ratelimit-unified-* headers reach the client. nil means
+	// true; use ForwardUnifiedHeadersEnabled for the effective value.
+	ForwardUnifiedHeaders *bool `json:"forwardUnifiedHeaders,omitempty"`
+}
+
+// ForwardUnifiedHeadersEnabled reports whether the subscription rate-limit
+// (anthropic-ratelimit-unified-*) headers are forwarded to clients. It
+// defaults to true when the setting is absent.
+func (c Config) ForwardUnifiedHeadersEnabled() bool {
+	return c.ForwardUnifiedHeaders == nil || *c.ForwardUnifiedHeaders
 }
 
 // RateLimits tracks Anthropic API rate limits extracted from response headers.

@@ -22,7 +22,19 @@ var (
 	ccPoolMu   sync.Mutex
 	ccPoolInst *claudecode.AccountPool
 	ccPoolKey  string // tracks config identity to detect changes
+	// ccPoolStale forces the next getOrCreateCCPool to rebuild while keeping
+	// the old pool reachable, so its live state can be carried over.
+	ccPoolStale bool
 )
+
+// invalidateCCPoolLocked marks the pool for rebuild on next use after a
+// config change. ccPoolMu must be held. Unlike dropping ccPoolInst, the old
+// pool stays reachable so the rebuild can inherit its unified snapshots and
+// retire it.
+func invalidateCCPoolLocked() {
+	ccPoolStale = true
+	ccHTTPClient = nil
+}
 
 var ccHTTPClient *claudecode.Client
 
@@ -48,8 +60,21 @@ func (server *Server) getOrCreateCCPool(cfg claudecode.Config) (*claudecode.Acco
 	defer ccPoolMu.Unlock()
 
 	key := cfg.BaseURL
-	if ccPoolInst == nil || ccPoolKey != key || !ccAccountsEqual(ccPoolCfg.Accounts, cfg.Accounts) {
-		ccPoolInst = claudecode.NewAccountPool(cfg.Accounts)
+	if ccPoolInst == nil || ccPoolStale || ccPoolKey != key || !ccAccountsEqual(ccPoolCfg.Accounts, cfg.Accounts) {
+		oldPool := ccPoolInst
+		newPool := claudecode.NewAccountPool(cfg.Accounts)
+
+		// Surviving accounts keep their in-memory subscription windows,
+		// which are at least as fresh as the stored ones. The old pool is
+		// retired before the new one is published, so a save it still had
+		// queued cannot overwrite the new account set on disk.
+		if oldPool != nil {
+			newPool.InheritUnified(oldPool)
+			oldPool.Retire()
+		}
+
+		ccPoolInst = newPool
+		ccPoolStale = false
 		ccHTTPClient = claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.BaseURL), nil)
 		ccPoolKey = key
 		ccPoolCfg = cfg
@@ -57,6 +82,7 @@ func (server *Server) getOrCreateCCPool(cfg claudecode.Config) (*claudecode.Acco
 		// Pick up the last known subscription limits so a restart (or a
 		// pool rebuilt after a config change) does not start blank. The
 		// explicit path also enables saving unified snapshot changes.
+		// Accounts that inherited a snapshot above are skipped.
 		ccPoolInst.SetStoragePath(claudecode.DefaultStoragePath())
 		if err := ccPoolInst.RestoreStoredUnified(); err != nil {
 			slog.Warn("claudecode: failed to restore unified limit snapshots", "error", err)
@@ -467,7 +493,7 @@ func (server *Server) forwardToClaudeCode(
 		acc, err := pool.SelectAccount(sessionKey, excluded)
 		if err != nil {
 			if last429Body != nil {
-				writeCCUpstream429(writer, last429Body, last429Header)
+				writeCCUpstream429(writer, last429Body, last429Header, ccCfg.ForwardUnifiedHeadersEnabled())
 				return
 			}
 			writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "No Claude Code accounts available: "+err.Error())
@@ -568,7 +594,7 @@ func (server *Server) forwardToClaudeCode(
 		defer resp.Body.Close()
 		defer pool.Release(acc.ID)
 
-		ccCopyResponseHeaders(writer.Header(), resp.Header)
+		ccCopyResponseHeaders(writer.Header(), resp.Header, ccCfg.ForwardUnifiedHeadersEnabled())
 		writer.WriteHeader(resp.StatusCode)
 
 		ccCopyStream(writer, resp.Body)
@@ -577,7 +603,7 @@ func (server *Server) forwardToClaudeCode(
 	}
 
 	if last429Body != nil {
-		writeCCUpstream429(writer, last429Body, last429Header)
+		writeCCUpstream429(writer, last429Body, last429Header, ccCfg.ForwardUnifiedHeadersEnabled())
 		return
 	}
 	writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "All Claude Code accounts rate-limited or unavailable")
@@ -586,8 +612,9 @@ func (server *Server) forwardToClaudeCode(
 // writeCCUpstream429 mirrors an upstream rate-limit rejection to the client
 // instead of the generic 503, so callers (and humans) see the real cause.
 // Retry guidance (Retry-After, Anthropic-Ratelimit-*) is forwarded when the
-// upstream supplied it.
-func writeCCUpstream429(w http.ResponseWriter, body []byte, header http.Header) {
+// upstream supplied it, and the subscription (Anthropic-Ratelimit-Unified-*)
+// headers too when forwardUnified is set.
+func writeCCUpstream429(w http.ResponseWriter, body []byte, header http.Header, forwardUnified bool) {
 	if !json.Valid(body) {
 		body = []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"upstream rate limit exceeded"}}`)
 	}
@@ -608,14 +635,18 @@ func writeCCUpstream429(w http.ResponseWriter, body []byte, header http.Header) 
 				w.Header().Set(k, v)
 			}
 		}
+		if forwardUnified {
+			ccCopyUnifiedHeaders(w.Header(), header)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusTooManyRequests)
 	_, _ = w.Write(body)
 }
 
-// ccCopyResponseHeaders forwards relevant upstream headers to the downstream response.
-func ccCopyResponseHeaders(dst, src http.Header) {
+// ccCopyResponseHeaders forwards relevant upstream headers to the downstream
+// response. forwardUnified adds every Anthropic-Ratelimit-Unified-* header.
+func ccCopyResponseHeaders(dst, src http.Header, forwardUnified bool) {
 	for _, k := range []string{
 		"Content-Type",
 		"X-Request-Id",
@@ -633,5 +664,21 @@ func ccCopyResponseHeaders(dst, src http.Header) {
 		if v := src.Get(k); v != "" {
 			dst.Set(k, v)
 		}
+	}
+	if forwardUnified {
+		ccCopyUnifiedHeaders(dst, src)
+	}
+}
+
+// ccCopyUnifiedHeaders copies every header whose name starts with the
+// subscription rate-limit prefix (anthropic-ratelimit-unified-), matched
+// case-insensitively, so new unified windows reach clients without a code
+// change. All values of a header are copied.
+func ccCopyUnifiedHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		if len(vs) == 0 || !strings.HasPrefix(strings.ToLower(k), claudecode.HeaderUnifiedPrefix) {
+			continue
+		}
+		dst[http.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
 	}
 }

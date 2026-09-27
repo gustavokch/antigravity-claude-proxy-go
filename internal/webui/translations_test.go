@@ -401,3 +401,49 @@ func TestTranslations_StoreFallbackSafety(t *testing.T) {
 		t.Errorf("store.js unconditionally indexes this.translations[this.lang][key]; must provide safe fallback")
 	}
 }
+
+// ccForwardUnifiedKeys are the i18n keys referenced by the Claude Code
+// forward-unified-headers toggle in views/settings.html.
+var ccForwardUnifiedKeys = []string{"ccForwardUnifiedHeaders", "ccForwardUnifiedHeadersDesc"}
+
+func TestTranslations_ClaudeCodeForwardUnifiedKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range ccForwardUnifiedKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+	b, err := Assets.ReadFile("public/views/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	for _, key := range ccForwardUnifiedKeys {
+		if !strings.Contains(string(b), fmt.Sprintf("t('%s')", key)) {
+			t.Errorf("settings.html does not reference %q", key)
+		}
+	}
+}
+
+// saveCCConfig sends an explicit field list, so the toggle must be named there
+// or it never persists.
+func TestClaudeCodeForwardUnified_RidesThroughTheSave(t *testing.T) {
+	b, err := Assets.ReadFile("public/js/components/models.js")
+	if err != nil {
+		t.Fatalf("read models.js: %v", err)
+	}
+	src := string(b)
+	idx := strings.Index(src, "async saveCCConfig()")
+	if idx < 0 {
+		t.Fatal("models.js has no saveCCConfig")
+	}
+	end := strings.Index(src[idx:], "\n    },")
+	if end < 0 {
+		t.Fatal("could not find the end of saveCCConfig")
+	}
+	if !strings.Contains(src[idx:idx+end], "forwardUnifiedHeaders") {
+		t.Error("saveCCConfig does not send forwardUnifiedHeaders")
+	}
+}

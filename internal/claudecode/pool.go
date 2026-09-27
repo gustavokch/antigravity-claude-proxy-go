@@ -49,6 +49,7 @@ type AccountPool struct {
 	saveMu      sync.Mutex
 	saving      bool
 	savePending bool
+	retired     bool
 	saveWG      sync.WaitGroup
 }
 
@@ -481,6 +482,10 @@ func (p *AccountPool) requestSave() {
 	}
 
 	p.saveMu.Lock()
+	if p.retired {
+		p.saveMu.Unlock()
+		return
+	}
 	p.savePending = true
 	if p.saving {
 		p.saveMu.Unlock()
@@ -497,7 +502,8 @@ func (p *AccountPool) saveLoop() {
 	defer p.saveWG.Done()
 	for {
 		p.saveMu.Lock()
-		if !p.savePending {
+		if !p.savePending || p.retired {
+			p.savePending = false
 			p.saving = false
 			p.saveMu.Unlock()
 			return
@@ -512,6 +518,52 @@ func (p *AccountPool) saveLoop() {
 		if err := persist(); err != nil {
 			slog.Warn("claudecode: failed to persist unified limit snapshot", "error", err)
 		}
+	}
+}
+
+// Retire stops p from saving the account store and waits for a save that
+// is already running to finish. Call it on a pool that is being replaced,
+// before the replacement can save, so the old pool's account set can never
+// overwrite the new one on disk. Later changes to a retired pool are kept
+// in memory only. Retire is idempotent.
+func (p *AccountPool) Retire() {
+	p.saveMu.Lock()
+	p.retired = true
+	p.savePending = false
+	p.saveMu.Unlock()
+	p.saveWG.Wait()
+}
+
+// InheritUnified copies each account's unified snapshot from old into the
+// account with the same ID in p, where p's account holds none yet. The
+// *Unified is shared, never mutated, so a pointer copy is safe. Use it when
+// a pool is rebuilt so a config change does not blank the live
+// subscription windows of accounts that survive it.
+func (p *AccountPool) InheritUnified(old *AccountPool) {
+	if old == nil || old == p {
+		return
+	}
+	for _, prev := range old.ListAccounts() {
+		prev.mu.RLock()
+		u := prev.RateLimits.Unified
+		prev.mu.RUnlock()
+		if u == nil {
+			continue
+		}
+		p.mu.RLock()
+		acc := p.accounts[prev.ID]
+		p.mu.RUnlock()
+		if acc == nil {
+			continue
+		}
+		acc.mu.Lock()
+		if acc.RateLimits.Unified == nil {
+			acc.RateLimits.Unified = u
+			if acc.RateLimits.LastUpdated.IsZero() {
+				acc.RateLimits.LastUpdated = u.ObservedAt
+			}
+		}
+		acc.mu.Unlock()
 	}
 }
 

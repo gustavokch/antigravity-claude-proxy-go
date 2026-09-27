@@ -704,6 +704,8 @@ window.translations.pt = {
     ccNoAccounts: "Nenhuma Conta Claude Code",
     ccNoAccountsDesc: "Adicione uma chave de API Anthropic ou token OAuth, ou importe credenciais existentes de ~/.claude.json.",
     ccAutoImport: "Importação Automática",
+    ccForwardUnifiedHeaders: "Encaminhar cabeçalhos de limite da assinatura",
+    ccForwardUnifiedHeadersDesc: "Repassa aos clientes os cabeçalhos anthropic-ratelimit-unified-* do upstream (janelas de 5 horas e semanal).",
 
     // Cache Bump
     cacheBumpSettings: "Cache Bump",
