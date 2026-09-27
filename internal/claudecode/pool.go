@@ -3,6 +3,7 @@ package claudecode
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,11 @@ var (
 // maxStickyEntries bounds the sticky session map to prevent unbounded memory growth.
 const maxStickyEntries = 10000
 
+// defaultUnifiedSaveInterval is the least time between two store saves
+// caused by unified snapshot changes on one account. A status change to or
+// from "rejected" is always saved at once.
+const defaultUnifiedSaveInterval = 30 * time.Second
+
 // TokenRefresher is a callback function to refresh an OAuth access token using a refresh token.
 type TokenRefresher func(refreshToken string) (accessToken string, newRefreshToken string, expiresIn int, err error)
 
@@ -31,6 +37,19 @@ type AccountPool struct {
 	stickyAt       map[string]time.Time
 	storagePath    string
 	tokenRefresher TokenRefresher
+
+	// now and persist are test seams; nil means time.Now and
+	// SaveStoredAccounts. unifiedSaveInterval zero means the default.
+	now                 func() time.Time
+	persist             func() error
+	unifiedSaveInterval time.Duration
+
+	// saveMu guards the background save state. At most one save goroutine
+	// runs at a time; savePending asks it for one more pass.
+	saveMu      sync.Mutex
+	saving      bool
+	savePending bool
+	saveWG      sync.WaitGroup
 }
 
 // NewAccountPool creates a new AccountPool initialized with the provided accounts.
@@ -73,10 +92,65 @@ func (p *AccountPool) LoadStoredAccounts() error {
 		return err
 	}
 
+	now := p.clock()
 	for _, cfg := range stored {
-		p.AddOrUpdateAccount(cfg)
+		acc := p.AddOrUpdateAccount(cfg)
+		restoreAccountUnified(acc, cfg.Unified, now)
 	}
 	return nil
+}
+
+// RestoreStoredUnified loads the persisted unified snapshots into the
+// accounts already in the pool. Unlike LoadStoredAccounts it never adds an
+// account, so a pool built from config picks up its last known subscription
+// limits without resurrecting accounts the config no longer lists.
+func (p *AccountPool) RestoreStoredUnified() error {
+	p.mu.RLock()
+	path := p.storagePath
+	p.mu.RUnlock()
+
+	stored, err := LoadStoredAccounts(path)
+	if err != nil {
+		return err
+	}
+
+	now := p.clock()
+	for _, cfg := range stored {
+		if cfg.Unified == nil {
+			continue
+		}
+		p.mu.RLock()
+		acc := p.accounts[cfg.ID]
+		p.mu.RUnlock()
+		if acc != nil {
+			restoreAccountUnified(acc, cfg.Unified, now)
+		}
+	}
+	return nil
+}
+
+// restoreAccountUnified installs a persisted snapshot on acc unless the
+// account already holds unified data, which is newer than anything stored.
+func restoreAccountUnified(acc *Account, u *Unified, now time.Time) {
+	restored := restoreUnified(u, now)
+	if restored == nil {
+		return
+	}
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
+	if acc.RateLimits.Unified != nil {
+		return
+	}
+	acc.RateLimits.Unified = restored
+	if acc.RateLimits.LastUpdated.IsZero() {
+		acc.RateLimits.LastUpdated = restored.ObservedAt
+	}
+}
+
+// persistentSource reports whether accounts from source are written to the
+// account store.
+func persistentSource(source string) bool {
+	return source == "oauth" || source == "manual"
 }
 
 // SaveStoredAccounts persists all accounts marked as persistent (source "oauth" or "manual") to disk.
@@ -91,7 +165,7 @@ func (p *AccountPool) SaveStoredAccounts() error {
 	for _, acc := range p.accounts {
 		acc.mu.RLock()
 		// Only persist dynamic accounts (e.g. oauth, manual)
-		if acc.Source == "oauth" || acc.Source == "manual" {
+		if persistentSource(acc.Source) {
 			toSave = append(toSave, AccountConfig{
 				ID:               acc.ID,
 				Name:             acc.Name,
@@ -105,6 +179,8 @@ func (p *AccountPool) SaveStoredAccounts() error {
 				Priority:         acc.Priority,
 				Enabled:          acc.Enabled,
 				Source:           acc.Source,
+				// Shared, never mutated, so safe to marshal unlocked.
+				Unified: acc.RateLimits.Unified,
 			})
 		}
 		acc.mu.RUnlock()
@@ -345,9 +421,103 @@ func (p *AccountPool) UpdateAccountRateLimits(accountID string, rl RateLimits) {
 
 	if ok && acc != nil && (rl.HasLimits() || rl.RetryAfter > 0) {
 		acc.mu.Lock()
-		acc.RateLimits = mergeRateLimits(acc.RateLimits, rl, time.Now())
+		save := p.setRateLimitsLocked(acc, rl, p.clock())
 		acc.mu.Unlock()
+		if save {
+			p.requestSave()
+		}
 	}
+}
+
+// setRateLimitsLocked stores rl on acc, carrying over a live unified
+// snapshot, and reports whether the account store should be saved because
+// the unified snapshot changed. Saves are throttled per account to one per
+// unifiedSaveInterval, except that a status change to or from "rejected" is
+// always saved. acc.mu must be held for writing.
+func (p *AccountPool) setRateLimitsLocked(acc *Account, rl RateLimits, now time.Time) bool {
+	prev := acc.RateLimits.Unified
+	acc.RateLimits = mergeRateLimits(acc.RateLimits, rl, now)
+	next := acc.RateLimits.Unified
+	if next == nil || next == prev || !persistentSource(acc.Source) {
+		return false
+	}
+	flipped := unifiedRejected(prev) != unifiedRejected(next)
+	if !flipped && !acc.unifiedSavedAt.IsZero() && now.Sub(acc.unifiedSavedAt) < p.saveInterval() {
+		return false
+	}
+	acc.unifiedSavedAt = now
+	return true
+}
+
+func unifiedRejected(u *Unified) bool {
+	return u != nil && strings.EqualFold(u.Status, "rejected")
+}
+
+func (p *AccountPool) clock() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
+}
+
+func (p *AccountPool) saveInterval() time.Duration {
+	if p.unifiedSaveInterval > 0 {
+		return p.unifiedSaveInterval
+	}
+	return defaultUnifiedSaveInterval
+}
+
+// requestSave saves the account store in the background so the request
+// that changed the snapshot never waits on disk. Requests made while a save
+// is running collapse into one more pass, which reads the state current at
+// that time. Nothing is saved unless a storage path was configured, and the
+// goroutine exits as soon as no pass is pending.
+func (p *AccountPool) requestSave() {
+	p.mu.RLock()
+	path := p.storagePath
+	p.mu.RUnlock()
+	if path == "" {
+		return
+	}
+
+	p.saveMu.Lock()
+	p.savePending = true
+	if p.saving {
+		p.saveMu.Unlock()
+		return
+	}
+	p.saving = true
+	p.saveWG.Add(1)
+	p.saveMu.Unlock()
+
+	go p.saveLoop()
+}
+
+func (p *AccountPool) saveLoop() {
+	defer p.saveWG.Done()
+	for {
+		p.saveMu.Lock()
+		if !p.savePending {
+			p.saving = false
+			p.saveMu.Unlock()
+			return
+		}
+		p.savePending = false
+		p.saveMu.Unlock()
+
+		persist := p.persist
+		if persist == nil {
+			persist = p.SaveStoredAccounts
+		}
+		if err := persist(); err != nil {
+			slog.Warn("claudecode: failed to persist unified limit snapshot", "error", err)
+		}
+	}
+}
+
+// waitSaves blocks until no background save is running. Tests use it.
+func (p *AccountPool) waitSaves() {
+	p.saveWG.Wait()
 }
 
 // mergeRateLimits returns next, carrying over prev's unified snapshot when
@@ -564,10 +734,14 @@ func (p *AccountPool) RecordSuccess(accountID string, tokens int64, cost float64
 		acc.ConsecutiveFailures = 0
 		acc.TotalTokens += tokens
 		acc.TotalCost += cost
+		save := false
 		if rl.HasLimits() || rl.RetryAfter > 0 {
-			acc.RateLimits = mergeRateLimits(acc.RateLimits, rl, time.Now())
+			save = p.setRateLimitsLocked(acc, rl, p.clock())
 		}
 		acc.mu.Unlock()
+		if save {
+			p.requestSave()
+		}
 	}
 }
 
@@ -578,13 +752,20 @@ func (p *AccountPool) RecordRateLimit(accountID string, rl RateLimits, defaultCo
 	p.mu.RUnlock()
 
 	if ok {
+		// Registered first so it runs after the unlock below.
+		save := false
+		defer func() {
+			if save {
+				p.requestSave()
+			}
+		}()
 		acc.mu.Lock()
 		defer acc.mu.Unlock()
 
-		now := time.Now()
+		now := p.clock()
 		acc.TotalErrors++
 		if rl.HasLimits() || rl.RetryAfter > 0 {
-			acc.RateLimits = mergeRateLimits(acc.RateLimits, rl, now)
+			save = p.setRateLimitsLocked(acc, rl, now)
 		}
 
 		cooldown := defaultCooldown
@@ -614,7 +795,10 @@ func (p *AccountPool) RecordRateLimit(accountID string, rl RateLimits, defaultCo
 			cooldown = defaultCooldown
 		}
 
-		acc.CooldownUntil = now.Add(cooldown)
+		// A shorter 429 must not cut an existing longer cooldown short.
+		if until := now.Add(cooldown); until.After(acc.CooldownUntil) {
+			acc.CooldownUntil = until
+		}
 	}
 }
 
@@ -632,8 +816,11 @@ func (p *AccountPool) RecordFailure(accountID string, is5xx bool, defaultCooldow
 		acc.ConsecutiveFailures++
 
 		// If consecutive failures reach 3 or on server error, set temporary cooldown
+		// Only ever extend: a 5xx must not cut a long unified cooldown short.
 		if acc.ConsecutiveFailures >= 3 || is5xx {
-			acc.CooldownUntil = time.Now().Add(defaultCooldown)
+			if until := p.clock().Add(defaultCooldown); until.After(acc.CooldownUntil) {
+				acc.CooldownUntil = until
+			}
 		}
 	}
 }

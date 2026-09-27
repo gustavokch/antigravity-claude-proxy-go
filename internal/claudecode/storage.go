@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 var (
@@ -91,4 +92,23 @@ func SaveStoredAccounts(path string, accounts []AccountConfig) error {
 	}
 
 	return nil
+}
+
+// restoreUnified returns a copy of a persisted unified snapshot fit to load
+// at now. A window whose reset has passed describes a period that is over,
+// so it becomes a zero-value (unknown) window; when the 5h, 7d and overall
+// resets have all passed the snapshot says nothing current and nil is
+// returned. The stored value is never modified.
+func restoreUnified(u *Unified, now time.Time) *Unified {
+	if !unifiedLive(u, now) {
+		return nil
+	}
+	restored := *u
+	if !restored.FiveHour.Reset.After(now) {
+		restored.FiveHour = UnifiedWindow{}
+	}
+	if !restored.SevenDay.Reset.After(now) {
+		restored.SevenDay = UnifiedWindow{}
+	}
+	return &restored
 }

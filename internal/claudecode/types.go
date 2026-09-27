@@ -26,6 +26,10 @@ type AccountConfig struct {
 	Priority         int        `json:"priority"` // Lower number = higher priority
 	Enabled          bool       `json:"enabled"`
 	Source           string     `json:"source,omitempty"` // "oauth", "manual", "auto_import", "cli"
+	// Unified is the last subscription limit snapshot, carried only by the
+	// persistent account store so it survives a restart. AddOrUpdateAccount
+	// ignores it; the pool restores it through its store load path.
+	Unified *Unified `json:"unified,omitempty"`
 }
 
 // ModelConfig defines a supported Claude model and its routing attributes.
@@ -257,6 +261,10 @@ type Account struct {
 	TotalCost     float64   `json:"totalCost"`
 	LastUsed      time.Time `json:"lastUsed"`
 	CreatedAt     time.Time `json:"createdAt"`
+
+	// unifiedSavedAt is when a unified snapshot change last scheduled a
+	// store save; it throttles those saves. Guarded by mu.
+	unifiedSavedAt time.Time
 }
 
 // AccountSnapshot is an immutable view of an Account for UI/API consumption.

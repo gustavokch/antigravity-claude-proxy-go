@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -52,6 +53,14 @@ func (server *Server) getOrCreateCCPool(cfg claudecode.Config) (*claudecode.Acco
 		ccHTTPClient = claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.BaseURL), nil)
 		ccPoolKey = key
 		ccPoolCfg = cfg
+
+		// Pick up the last known subscription limits so a restart (or a
+		// pool rebuilt after a config change) does not start blank. The
+		// explicit path also enables saving unified snapshot changes.
+		ccPoolInst.SetStoragePath(claudecode.DefaultStoragePath())
+		if err := ccPoolInst.RestoreStoredUnified(); err != nil {
+			slog.Warn("claudecode: failed to restore unified limit snapshots", "error", err)
+		}
 
 		if server != nil && server.claudeCodeOAuthMgr != nil {
 			oauthMgr := server.claudeCodeOAuthMgr
