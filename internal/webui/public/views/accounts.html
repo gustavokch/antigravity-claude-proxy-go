@@ -241,9 +241,9 @@
                                   x-text="(acc.subscription?.tier || 'free').toUpperCase()">
                             </span>
                         </td>
-                        <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
+                        <td class="py-4 cursor-pointer" @click="openQuotaModal(acc, 'google')">
                             <div x-data="{ get quota() { return getMainModelQuota(acc); } }">
-                                <template x-if="quota.percent !== null">
+                                <template x-if="quota.percent !== null && accountPools(acc).length === 0">
                                     <div class="flex items-center gap-2">
                                         <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
                                             <div class="h-full rounded-full transition-all"
@@ -258,9 +258,11 @@
                                         <span class="text-xs font-mono text-gray-400" x-text="quota.percent + '%'"></span>
                                     </div>
                                 </template>
-                                <template x-if="quota.percent === null">
+                                <template x-if="quota.percent === null && accountPools(acc).length === 0">
                                     <span class="text-xs text-gray-600">-</span>
                                 </template>
+                                <!-- Quota pools (shared renderer) -->
+                                <div x-html="renderPools(acc.quota && acc.quota.pools, true)"></div>
                                 <div x-show="acc.quotaThreshold !== undefined"
                                      class="text-[10px] font-mono text-amber-400/80 mt-0.5"
                                      x-text="'min: ' + getEffectiveThreshold(acc)"></div>
@@ -437,9 +439,9 @@
                             </td>
 
                             <!-- Quota -->
-                            <td class="py-4 cursor-pointer" @click="openQuotaModal(acc)">
+                            <td class="py-4 cursor-pointer" @click="openQuotaModal(acc, 'claudecode')">
                                 <div x-data="{ get quota() { return getMainModelQuota(acc); } }">
-                                    <template x-if="quota.percent !== null">
+                                    <template x-if="quota.percent !== null && accountPools(acc).length === 0">
                                         <div class="flex items-center gap-2">
                                             <div class="w-16 bg-gray-700 rounded-full h-2 overflow-hidden">
                                                 <div class="h-full rounded-full transition-all"
@@ -454,8 +456,26 @@
                                             <span class="text-xs font-mono text-gray-400" x-text="quota.percent + '%'"></span>
                                         </div>
                                     </template>
-                                    <template x-if="quota.percent === null">
+                                    <template x-if="quota.percent === null && accountPools(acc).length === 0 && !accountUsage(acc)">
                                         <span class="text-xs text-gray-600">-</span>
+                                    </template>
+                                    <!-- Quota pools (shared renderer) -->
+                                    <div x-html="renderPools(acc.quota && acc.quota.pools, true)"></div>
+                                    <!-- Burn indicator and today's API-equivalent cost -->
+                                    <template x-if="accountUsage(acc)">
+                                        <div class="mt-1 flex items-center gap-1 text-[10px] font-mono text-gray-500" data-cc-burn-summary>
+                                            <span x-show="qv.burnLevel(acc.usage.burnRate)"
+                                                  class="px-1 rounded border"
+                                                  :class="{
+                                                      'border-red-500/50 text-red-400': qv.burnLevel(acc.usage.burnRate) === 'HIGH',
+                                                      'border-yellow-500/50 text-yellow-400': qv.burnLevel(acc.usage.burnRate) === 'MODERATE',
+                                                      'border-space-border text-gray-400': qv.burnLevel(acc.usage.burnRate) === 'NORMAL'
+                                                  }"
+                                                  :title="$store.global.t('ccBurnRate')"
+                                                  x-text="burnLabel(qv.burnLevel(acc.usage.burnRate))"></span>
+                                            <span :title="$store.global.t('ccTodayCost') + ' (' + $store.global.t('ccApiEquivalent') + ')'"
+                                                  x-text="qv.formatUSD(acc.usage.todayCostUSD)"></span>
+                                        </div>
                                     </template>
                                 </div>
                             </td>
@@ -693,6 +713,181 @@
             <p class="text-sm text-gray-500 font-mono mb-6" x-text="selectedAccountName ? selectedAccountName + ' (' + Redact.email(selectedAccountEmail) + ')' : Redact.email(selectedAccountEmail)"></p>
 
             <div class="grid grid-cols-1 gap-4 overflow-y-auto max-h-[60vh] pr-2 custom-scrollbar">
+                <!-- Quota pools (shared renderer) -->
+                <template x-if="selectedAccountPools && Object.keys(selectedAccountPools).length > 0">
+                    <div data-quota-pools>
+                        <div class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2" x-text="$store.global.t('quotaPools')">Quota Pools</div>
+                        <div x-html="renderPools(selectedAccountPools, false)"></div>
+                    </div>
+                </template>
+
+                <!-- Claude usage windows -->
+                <template x-if="selectedAccountUsage">
+                    <div data-cc-usage-panel>
+                        <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+                            <span class="text-[10px] font-bold text-gray-500 uppercase tracking-wider" x-text="$store.global.t('ccUsageWindows')">Claude Usage Windows</span>
+                            <div class="flex items-center gap-2 text-[10px] font-mono text-gray-400">
+                                <template x-if="qv.burnLevel(selectedAccountUsage.burnRate)">
+                                    <span class="flex items-center gap-1" data-cc-burn>
+                                        <span x-text="$store.global.t('ccBurnRate') + ':'"></span>
+                                        <span class="px-1 rounded border font-bold"
+                                              :class="{
+                                                  'border-red-500/50 text-red-400': qv.burnLevel(selectedAccountUsage.burnRate) === 'HIGH',
+                                                  'border-yellow-500/50 text-yellow-400': qv.burnLevel(selectedAccountUsage.burnRate) === 'MODERATE',
+                                                  'border-space-border text-gray-300': qv.burnLevel(selectedAccountUsage.burnRate) === 'NORMAL'
+                                              }"
+                                              x-text="burnLabel(qv.burnLevel(selectedAccountUsage.burnRate))"></span>
+                                        <span x-text="qv.formatTokens(selectedAccountUsage.burnRate.tokensPerMinute) + ' ' + $store.global.t('ccTokensPerMinute')"></span>
+                                        <span x-show="selectedAccountUsage.burnRate.costPerHour != null"
+                                              x-text="'· ' + qv.formatUSD(selectedAccountUsage.burnRate.costPerHour) + $store.global.t('ccPerHour')"></span>
+                                    </span>
+                                </template>
+                                <span x-show="selectedAccountUsage.todayCostUSD != null"
+                                      x-text="$store.global.t('ccTodayCost') + ': ' + qv.formatUSD(selectedAccountUsage.todayCostUSD)"></span>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 gap-3">
+                            <template x-for="w in usageWindows(selectedAccountUsage)" :key="w.key">
+                                <div class="p-3 bg-space-800/50 border border-space-border/30 rounded-lg" :data-cc-window="w.key">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <span class="text-sm font-semibold text-gray-200" x-text="$store.global.t(w.label)"></span>
+                                        <div class="flex items-center gap-2 text-[10px] font-mono">
+                                            <span x-show="w.win.source"
+                                                  class="px-1 rounded border border-space-border text-gray-400 uppercase"
+                                                  x-text="poolSourceLabel(w.win.source)"></span>
+                                            <span class="text-xs font-mono"
+                                                  :class="qv.usedTextClass(w.win.utilization)"
+                                                  x-text="usedLabel(w.win.utilization)"></span>
+                                        </div>
+                                    </div>
+                                    <!-- Utilization now, with the projected marker -->
+                                    <div class="relative w-full bg-gray-700 rounded-full h-2.5 mb-2"
+                                         role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                                         :aria-valuenow="qv.usedPercent(w.win.utilization) === null ? null : Math.min(100, qv.usedPercent(w.win.utilization))"
+                                         :aria-label="$store.global.t(w.label) + ': ' + usedLabel(w.win.utilization)">
+                                        <div class="h-full rounded-full transition-all duration-500"
+                                             :class="qv.usedBarClass(w.win.utilization)"
+                                             :style="`width: ${qv.barPosition(w.win.utilization)}%`"></div>
+                                        <template x-if="qv.usedPercent(w.win.projectedUtilization) !== null">
+                                            <div class="absolute rounded"
+                                                 :class="levelBg(qv.projectedLevel(w.win))"
+                                                 :style="`top:-3px; bottom:-3px; width:3px; left: calc(${qv.barPosition(w.win.projectedUtilization)}% - ${qv.barPosition(w.win.projectedUtilization) >= 100 ? 3 : 1.5}px)`"
+                                                 role="img"
+                                                 :title="$store.global.t('ccProjected') + ' ' + qv.usedPercent(w.win.projectedUtilization) + '%'"
+                                                 :aria-label="$store.global.t('ccProjected') + ' ' + qv.usedPercent(w.win.projectedUtilization) + '%'"
+                                                 data-cc-projected-marker></div>
+                                        </template>
+                                    </div>
+                                    <div class="flex flex-wrap justify-between items-center gap-3 gap-y-1 text-[10px] font-mono text-gray-500">
+                                        <span>
+                                            <span x-text="$store.global.t('ccUtilNow') + ' ' + (qv.usedPercent(w.win.utilization) === null ? 'N/A' : qv.usedPercent(w.win.utilization) + '%')"
+                                                  :class="qv.usedTextClass(w.win.utilization)"></span>
+                                            <template x-if="qv.usedPercent(w.win.projectedUtilization) !== null">
+                                                <span :class="levelText(qv.projectedLevel(w.win))"
+                                                      x-text="' · ' + $store.global.t('ccProjected') + ' ' + qv.usedPercent(w.win.projectedUtilization) + '%'"></span>
+                                            </template>
+                                        </span>
+                                        <span>
+                                            <span x-text="qv.formatUSD(w.win.costUSD)"></span>
+                                            <span class="text-gray-600" x-text="$store.global.t('ccApiEquivalent')"></span>
+                                            <span x-text="'· ' + qv.formatTokens(w.win.tokens) + ' ' + $store.global.t('ccTokens')"></span>
+                                        </span>
+                                        <span class="text-yellow-500/80 italic"
+                                              x-text="$store.global.t('ccTimeLeft') + ': ' + windowTimeLeft(w.win)"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                        <p class="text-[10px] text-gray-600 mt-2" x-text="$store.global.t('ccCostBasisNote')"></p>
+                    </div>
+                </template>
+
+                <!-- Claude Code usage history (loaded when opened) -->
+                <template x-if="selectedAccountProvider === 'claudecode' && selectedAccountId">
+                    <div data-cc-history>
+                        <div class="flex items-center justify-between gap-2 mb-2">
+                            <span class="text-[10px] font-bold text-gray-500 uppercase tracking-wider" x-text="$store.global.t('ccUsageHistory')">Usage History</span>
+                            <div class="flex items-center gap-1">
+                                <template x-if="historyState(selectedAccountId).open">
+                                    <div class="flex items-center gap-1">
+                                        <template x-for="r in ['daily', 'weekly']" :key="r">
+                                            <button class="px-2 py-0.5 rounded text-[10px] font-semibold transition-all"
+                                                    :class="historyState(selectedAccountId).report === r ? 'bg-space-800 text-white border border-space-border' : 'text-zinc-400 hover:text-white'"
+                                                    @click="setHistoryReport(selectedAccountId, r)"
+                                                    x-text="$store.global.t(r === 'daily' ? 'ccHistoryDaily' : 'ccHistoryWeekly')"></button>
+                                        </template>
+                                    </div>
+                                </template>
+                                <button class="btn btn-xs btn-ghost text-sky-400"
+                                        @click="toggleHistory(selectedAccountId)"
+                                        data-cc-history-toggle
+                                        x-text="historyState(selectedAccountId).open ? $store.global.t('ccHistoryHide') : $store.global.t('ccHistoryShow')"></button>
+                            </div>
+                        </div>
+                        <template x-if="historyState(selectedAccountId).open">
+                            <div class="bg-space-800/50 border border-space-border/30 rounded-lg overflow-x-auto">
+                                <template x-if="historyLoading(selectedAccountId)">
+                                    <div class="py-4 text-center text-xs text-gray-500" x-text="$store.global.t('loading')"></div>
+                                </template>
+                                <template x-if="!historyLoading(selectedAccountId) && historyDisabled(selectedAccountId)">
+                                    <div class="py-4 text-center text-xs text-gray-500" data-cc-history-disabled x-text="$store.global.t('ccHistoryDisabled')"></div>
+                                </template>
+                                <template x-if="!historyLoading(selectedAccountId) && !historyDisabled(selectedAccountId) && historyError(selectedAccountId)">
+                                    <div class="py-4 text-center text-xs text-red-400" x-text="historyError(selectedAccountId)"></div>
+                                </template>
+                                <template x-if="!historyLoading(selectedAccountId) && !historyDisabled(selectedAccountId) && !historyError(selectedAccountId) && historyRows(selectedAccountId).length === 0">
+                                    <div class="py-4 text-center text-xs text-gray-500" x-text="$store.global.t('ccHistoryEmpty')"></div>
+                                </template>
+                                <template x-if="!historyLoading(selectedAccountId) && !historyDisabled(selectedAccountId) && historyRows(selectedAccountId).length > 0">
+                                    <table class="w-full text-[11px] font-mono" data-cc-history-table>
+                                        <thead>
+                                            <tr class="border-b border-space-border/50 text-[10px] text-gray-500 uppercase">
+                                                <th class="px-2 py-1.5 text-left" x-text="$store.global.t('ccHistoryPeriod')"></th>
+                                                <th class="px-2 py-1.5 text-right" x-text="$store.global.t('ccHistoryInput')"></th>
+                                                <th class="px-2 py-1.5 text-right" x-text="$store.global.t('ccHistoryOutput')"></th>
+                                                <th class="px-2 py-1.5 text-right" x-text="$store.global.t('ccHistoryCacheWrite')"></th>
+                                                <th class="px-2 py-1.5 text-right" x-text="$store.global.t('ccHistoryCacheRead')"></th>
+                                                <th class="px-2 py-1.5 text-right" x-text="$store.global.t('ccHistoryTotalTokens')"></th>
+                                                <th class="px-2 py-1.5 text-right" x-text="$store.global.t('ccHistoryCost')"></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <template x-for="(row, i) in historyRows(selectedAccountId)" :key="qv.reportPeriod(row) || i">
+                                                <tr class="border-b border-space-border/20 last:border-0 text-gray-300">
+                                                    <td class="px-2 py-1" :title="(row.modelsUsed || []).join(', ')" x-text="qv.reportPeriod(row)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(row.inputTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(row.outputTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(row.cacheCreationTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(row.cacheReadTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(row.totalTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatUSD(row.totalCost)"></td>
+                                                </tr>
+                                            </template>
+                                            <template x-if="historyTotals(selectedAccountId)">
+                                                <tr class="border-t border-space-border/50 text-white font-semibold">
+                                                    <td class="px-2 py-1" x-text="$store.global.t('ccHistoryTotal')"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(historyTotals(selectedAccountId).inputTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(historyTotals(selectedAccountId).outputTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(historyTotals(selectedAccountId).cacheCreationTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(historyTotals(selectedAccountId).cacheReadTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatTokens(historyTotals(selectedAccountId).totalTokens)"></td>
+                                                    <td class="px-2 py-1 text-right" x-text="qv.formatUSD(historyTotals(selectedAccountId).totalCost)"></td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </template>
+                                <p x-show="!historyDisabled(selectedAccountId) && historyRows(selectedAccountId).length > 0"
+                                   class="px-2 py-1 text-[10px] text-gray-600" x-text="$store.global.t('ccCostBasisNote')"></p>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <!-- Per-model limits -->
+                <template x-if="Object.keys(selectedAccountLimits).length > 0 && ((selectedAccountPools && Object.keys(selectedAccountPools).length > 0) || selectedAccountUsage)">
+                    <div class="text-[10px] font-bold text-gray-500 uppercase tracking-wider" x-text="$store.global.t('perModelQuota')">Per-Model Quota</div>
+                </template>
                 <template x-for="(limit, modelId) in selectedAccountLimits" :key="modelId">
                     <div class="p-3 bg-space-800/50 border border-space-border/30 rounded-lg">
                         <div class="flex justify-between items-center mb-2">
@@ -721,7 +916,7 @@
                     </div>
                 </template>
 
-                <template x-if="Object.keys(selectedAccountLimits).length === 0">
+                <template x-if="Object.keys(selectedAccountLimits).length === 0 && !(selectedAccountPools && Object.keys(selectedAccountPools).length > 0) && !selectedAccountUsage">
                     <div class="text-center py-8 text-gray-500" x-text="$store.global.t('noQuotaData')">
                         No quota data available for this account yet.
                     </div>

@@ -597,6 +597,9 @@ document.addEventListener('alpine:init', () => {
                 'gemini-3.1-flash-lite'
             ];
 
+            const inMinutes = (m) => new Date(Date.now() + m * 60000).toISOString();
+            const minutesAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
+
             const tiers = ['ultra', 'pro', 'pro', 'free'];
             const names = ['alice', 'bob', 'charlie', 'diana'];
             const domains = ['workspace.dev', 'company.io', 'example.org', 'test.net'];
@@ -638,7 +641,17 @@ document.addEventListener('alpine:init', () => {
                     quotaThreshold: i === 1 ? 0.15 : undefined,
                     modelQuotaThresholds: i === 0 ? { 'claude-opus-4-6-thinking': 0.25 } : {},
                     subscription: { tier, projectId: `proj-${name}-${1000 + i}`, detectedAt: Date.now() },
-                    limits
+                    limits,
+                    // Two accounts carry quota pools so the pool bars can be seen;
+                    // the rest have none, as older servers send.
+                    quota: i < 2 ? {
+                        pools: {
+                            'gemini-weekly': { remainingFraction: 0.64 - i * 0.3, resetTime: inMinutes(3 * 24 * 60 + 200), source: 'headers' },
+                            'gemini-5h': { remainingFraction: 0.82 - i * 0.6, resetTime: inMinutes(95 + i * 60), source: 'headers' },
+                            '3p-5h': { remainingFraction: i === 0 ? 0.47 : null, resetTime: inMinutes(140) },
+                            '3p-weekly': { remainingFraction: 0.91, resetTime: inMinutes(5 * 24 * 60) }
+                        }
+                    } : undefined
                 };
             });
 
@@ -676,7 +689,30 @@ document.addEventListener('alpine:init', () => {
                     tokensLimit: 100000,
                     tokensRemaining: 95000
                 },
-                limits: ccLimits1
+                limits: ccLimits1,
+                quota: {
+                    pools: {
+                        'claude-weekly': { remainingFraction: 0.78, resetTime: inMinutes(4 * 24 * 60 + 90), source: 'headers' },
+                        'claude-5h': { remainingFraction: 0.58, resetTime: inMinutes(170), source: 'headers' }
+                    }
+                },
+                usage: {
+                    window5h: {
+                        start: minutesAgo(130), end: inMinutes(170),
+                        costUSD: 6.42, tokens: 3810000,
+                        utilization: 0.42, projectedUtilization: 0.87,
+                        status: 'warning', source: 'headers'
+                    },
+                    window7d: {
+                        start: minutesAgo(2 * 24 * 60 + 1350), end: inMinutes(4 * 24 * 60 + 90),
+                        costUSD: 48.9, tokens: 29400000,
+                        utilization: 0.22, projectedUtilization: 0.51,
+                        status: 'ok', source: 'headers'
+                    },
+                    burnRate: { tokensPerMinute: 29300, tokensPerMinuteForIndicator: 742, costPerHour: 2.96 },
+                    todayCostUSD: 9.18,
+                    costBasis: 'api-equivalent'
+                }
             });
 
             accounts.push({
@@ -695,10 +731,75 @@ document.addEventListener('alpine:init', () => {
                     tokensLimit: 200000,
                     tokensRemaining: 140000
                 },
-                limits: ccLimits2
+                limits: ccLimits2,
+                quota: {
+                    pools: {
+                        'claude-5h': { remainingFraction: 0.06, resetTime: inMinutes(45), source: 'calibrated' },
+                        'claude-weekly': { remainingFraction: 0.35, resetTime: null, source: 'calibrated' }
+                    }
+                },
+                usage: {
+                    window5h: {
+                        start: minutesAgo(255), end: inMinutes(45),
+                        costUSD: 21.7, tokens: 12650000,
+                        utilization: 0.94, projectedUtilization: 1.18,
+                        status: 'exceeds', source: 'calibrated'
+                    },
+                    window7d: {
+                        start: minutesAgo(5 * 24 * 60), end: null,
+                        costUSD: 131.4, tokens: 80100000,
+                        utilization: 0.65, projectedUtilization: null,
+                        status: 'ok', source: 'calibrated'
+                    },
+                    burnRate: { tokensPerMinute: 82000, tokensPerMinuteForIndicator: 1480, costPerHour: 8.12 },
+                    todayCostUSD: 27.35,
+                    costBasis: 'api-equivalent'
+                }
             });
 
             return { accounts, models };
+        },
+
+        /**
+         * Placeholder ccusage-shaped report ({daily:[…]|weekly:[…], totals})
+         * for a placeholder Claude Code account, so the usage history table
+         * can be seen without live data.
+         */
+        placeholderUsageReport(accountId, report) {
+            const scale = accountId === 'cc-placeholder-2' ? 2.6 : 1;
+            const days = report === 'weekly' ? 4 : 7;
+            const step = report === 'weekly' ? 7 : 1;
+            const modelsUsed = (this.models || []).filter(m => m.startsWith('claude-')).slice(0, 2);
+            const rows = [];
+            for (let i = days - 1; i >= 0; i--) {
+                const d = new Date(Date.now() - i * step * 86400000);
+                const seed = ((i * 37 + 11) % 17) / 17 + 0.4;
+                const mult = scale * seed * (report === 'weekly' ? 6 : 1);
+                const inputTokens = Math.round(42000 * mult);
+                const outputTokens = Math.round(118000 * mult);
+                const cacheCreationTokens = Math.round(610000 * mult);
+                const cacheReadTokens = Math.round(3900000 * mult);
+                const row = {
+                    inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens,
+                    totalTokens: inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens,
+                    totalCost: Math.round(9.4 * mult * 100) / 100,
+                    modelsUsed,
+                    modelBreakdowns: [],
+                    accountId
+                };
+                row[report === 'weekly' ? 'week' : 'date'] = d.toISOString().slice(0, 10);
+                rows.push(row);
+            }
+            const sum = (k) => rows.reduce((a, r) => a + r[k], 0);
+            return {
+                [report]: rows,
+                totals: {
+                    inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'),
+                    cacheCreationTokens: sum('cacheCreationTokens'), cacheReadTokens: sum('cacheReadTokens'),
+                    totalTokens: sum('totalTokens'),
+                    totalCost: Math.round(sum('totalCost') * 100) / 100
+                }
+            };
         },
 
         /**

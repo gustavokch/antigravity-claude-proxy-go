@@ -447,3 +447,50 @@ func TestClaudeCodeForwardUnified_RidesThroughTheSave(t *testing.T) {
 		t.Error("saveCCConfig does not send forwardUnifiedHeaders")
 	}
 }
+
+// quotaUsageKeys are the i18n keys referenced by the quota pool bars, the
+// Claude usage-window panel and the usage history table in
+// views/accounts.html and js/components/account-manager.js. Every locale must
+// define them.
+var quotaUsageKeys = []string{
+	"quotaPools", "perModelQuota", "poolWindow5h", "poolWindowWeekly",
+	"poolSourceHeaders", "poolSourceCalibrated", "poolSourceConfig", "poolSourceMax",
+	"ccUsageWindows", "ccWindow5h", "ccWindow7d", "ccUtilNow", "ccProjected",
+	"poolRemaining", "ccUsed", "ccHistoryDisabled",
+	"ccTimeLeft", "ccApiEquivalent", "ccBurnRate", "ccBurnHigh", "ccBurnModerate",
+	"ccBurnNormal", "ccTokensPerMinute", "ccPerHour", "ccTodayCost", "ccTokens",
+	"ccCostBasisNote", "ccUsageHistory", "ccHistoryDaily", "ccHistoryWeekly",
+	"ccHistoryShow", "ccHistoryHide", "ccHistoryEmpty", "ccHistoryLoadFailed",
+	"ccHistoryPeriod", "ccHistoryInput", "ccHistoryOutput", "ccHistoryCacheWrite",
+	"ccHistoryCacheRead", "ccHistoryTotalTokens", "ccHistoryCost", "ccHistoryTotal",
+}
+
+func TestTranslations_QuotaUsageKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range quotaUsageKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+// Every quota/usage key must be used by the accounts view or its component,
+// so the list above cannot drift into dead keys.
+func TestTranslations_QuotaUsageKeysReferenced(t *testing.T) {
+	var src string
+	for _, f := range []string{"public/views/accounts.html", "public/js/components/account-manager.js"} {
+		b, err := Assets.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		src += string(b)
+	}
+	for _, key := range quotaUsageKeys {
+		if !strings.Contains(src, "'"+key+"'") {
+			t.Errorf("translation key %q is not referenced by the accounts view", key)
+		}
+	}
+}
