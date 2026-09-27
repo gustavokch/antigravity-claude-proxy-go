@@ -30,8 +30,8 @@ type Block struct {
 	ID    string
 	Start time.Time
 	// End is Start plus the block duration, clipped to the start of the next
-	// anchored window for an unanchored block that would overlap it. A gap
-	// block ends at the next entry.
+	// anchored window for a block that would overlap it. A gap block ends at
+	// the next entry, or at the next anchored window if that starts first.
 	End time.Time
 	// ActualEnd is the last entry's timestamp; zero for a gap block.
 	ActualEnd time.Time
@@ -72,22 +72,34 @@ func (b Block) TotalTokens() int64 {
 // that entry plus dur to the new entry.
 //
 // Anchors are known window starts, such as a 5h reset from the unified rate
-// limit headers minus five hours. They are sorted and deduplicated; when two
-// anchors are less than dur apart the later one wins and the earlier one is
-// dropped, since real windows never overlap and the later observation is the
-// fresher one. An entry in [anchor, anchor+dur) joins that anchor's block,
-// which starts at the anchor and ends at anchor+dur. Entries outside every
-// anchor window follow the unanchored rule, except that such a block never
-// starts before the end of the previous anchor window and never ends after the
-// start of the next one. Gap blocks use the same "more than dur since the
-// previous entry" test on both kinds of block.
+// limit headers minus five hours. They are truncated to the millisecond,
+// sorted and deduplicated, and anchors less than a minute apart are merged
+// into the later one, since they are the same window observed twice with
+// clock jitter. An anchor window runs from its anchor for dur, or to the next
+// anchor if that comes sooner: real windows never overlap, so a later anchor
+// means the earlier window ended early. An entry inside an anchor window joins
+// that window's block, which starts at the anchor and ends at the window end.
+// Entries outside every anchor window follow the unanchored rule, except that
+// such a block never starts before the end of the previous anchor window and
+// never ends after the start of the next one. Gap blocks use the same "more
+// than dur since the previous entry" test on both kinds of block; a gap before
+// an anchored block ends at the anchor, and is left out if that leaves it
+// empty.
+//
+// Timestamps are truncated to the millisecond first, as ccusage compares
+// milliseconds, so sub-millisecond ledger times cannot move a boundary. The
+// blocks' entries carry the truncated timestamps.
 func IdentifyBlocks(entries []Entry, dur time.Duration, now time.Time, anchors []time.Time, mode CostMode, p Pricer) []Block {
 	if len(entries) == 0 || dur <= 0 {
 		return nil
 	}
 	sorted := slices.Clone(entries)
+	for i := range sorted {
+		sorted[i].Timestamp = sorted[i].Timestamp.Truncate(time.Millisecond)
+	}
 	slices.SortStableFunc(sorted, func(a, b Entry) int { return a.Timestamp.Compare(b.Timestamp) })
 	anchors = normalizeAnchors(anchors, dur)
+	ends := anchorEnds(anchors, dur)
 
 	var (
 		blocks   []Block
@@ -103,7 +115,7 @@ func IdentifyBlocks(entries []Entry, dur time.Duration, now time.Time, anchors [
 	}
 	for i := range sorted {
 		ts := sorted[i].Timestamp
-		for ai < len(anchors) && !ts.Before(anchors[ai].Add(dur)) {
+		for ai < len(anchors) && !ts.Before(ends[ai]) {
 			ai++
 		}
 		inAnchor := ai < len(anchors) && !ts.Before(anchors[ai])
@@ -122,18 +134,24 @@ func IdentifyBlocks(entries []Entry, dur time.Duration, now time.Time, anchors [
 			}
 			closeBlock(i)
 			if sinceLast > dur {
-				blocks = append(blocks, newGapBlock(last, ts, dur))
+				gapEnd := ts
+				if inAnchor && anchors[ai].Before(gapEnd) {
+					gapEnd = anchors[ai]
+				}
+				if gapEnd.After(last.Add(dur)) {
+					blocks = append(blocks, newGapBlock(last, gapEnd, dur))
+				}
 			}
 		}
 
 		open, lo = true, i
 		if inAnchor {
-			start, end, anchored = anchors[ai], anchors[ai].Add(dur), true
+			start, end, anchored = anchors[ai], ends[ai], true
 			continue
 		}
 		start, anchored = floorToHour(ts), false
 		if ai > 0 {
-			if prevEnd := anchors[ai-1].Add(dur); start.Before(prevEnd) {
+			if prevEnd := ends[ai-1]; start.Before(prevEnd) {
 				start = prevEnd
 			}
 		}
@@ -148,8 +166,13 @@ func IdentifyBlocks(entries []Entry, dur time.Duration, now time.Time, anchors [
 	return blocks
 }
 
-// normalizeAnchors sorts and deduplicates anchors and, of two anchors less
-// than dur apart, keeps the later.
+// anchorMergeWindow is how close two anchors must be to count as the same
+// window.
+const anchorMergeWindow = time.Minute
+
+// normalizeAnchors truncates anchors to the millisecond, sorts and
+// deduplicates them, and merges anchors less than anchorMergeWindow (or dur,
+// if shorter) apart into the later one.
 func normalizeAnchors(anchors []time.Time, dur time.Duration) []time.Time {
 	if len(anchors) == 0 {
 		return nil
@@ -157,19 +180,33 @@ func normalizeAnchors(anchors []time.Time, dur time.Duration) []time.Time {
 	sorted := make([]time.Time, 0, len(anchors))
 	for _, a := range anchors {
 		if !a.IsZero() {
-			sorted = append(sorted, a.UTC())
+			sorted = append(sorted, a.UTC().Truncate(time.Millisecond))
 		}
 	}
 	slices.SortFunc(sorted, func(a, b time.Time) int { return a.Compare(b) })
+	merge := min(anchorMergeWindow, dur)
 	out := sorted[:0]
 	for _, a := range sorted {
-		if n := len(out); n > 0 && a.Sub(out[n-1]) < dur {
+		if n := len(out); n > 0 && a.Sub(out[n-1]) < merge {
 			out[n-1] = a
 			continue
 		}
 		out = append(out, a)
 	}
 	return out
+}
+
+// anchorEnds returns where each anchor window ends: dur after its anchor, or
+// at the next anchor if that is sooner.
+func anchorEnds(anchors []time.Time, dur time.Duration) []time.Time {
+	ends := make([]time.Time, len(anchors))
+	for i, a := range anchors {
+		ends[i] = a.Add(dur)
+		if i+1 < len(anchors) && anchors[i+1].Before(ends[i]) {
+			ends[i] = anchors[i+1]
+		}
+	}
+	return ends
 }
 
 // floorToHour floors t to the UTC hour, as ccusage does in milliseconds.

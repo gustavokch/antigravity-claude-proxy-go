@@ -424,3 +424,82 @@ func TestIdentifyBlocks_EntriesDoNotAlias(t *testing.T) {
 		t.Errorf("appending to one block's entries overwrote the next block")
 	}
 }
+
+func TestIdentifyBlocks_GapStopsAtNextAnchor(t *testing.T) {
+	// 08:00 is in the 07:10 window and 17:30 in the 17:20 window. The gap
+	// from 13:00 would run to 17:30, inside the second window, so it stops at
+	// 17:20.
+	e := blockEntries(t, "2026-09-23T08:00:00Z", "2026-09-23T17:30:00Z")
+	checkBlocks(t, identify(e, farFuture, referenceAnchors()...), []blockShape{
+		{id: "2026-09-23T07:10:00.000Z", end: "2026-09-23T12:10:00Z", entries: 1},
+		{id: "gap-2026-09-23T13:00:00.000Z", start: "2026-09-23T13:00:00Z", end: "2026-09-23T17:20:00Z", gap: true},
+		{id: "2026-09-23T17:20:00.000Z", start: "2026-09-23T17:20:00Z", end: "2026-09-23T22:20:00Z", entries: 1},
+	})
+
+	// Back-to-back windows: the gap would start at 05:30, after the second
+	// window's 05:00 start, so there is no gap block at all.
+	anchors := []time.Time{mustTime(t, "2026-09-23T00:00:00Z"), mustTime(t, "2026-09-23T05:00:00Z")}
+	e = blockEntries(t, "2026-09-23T00:30:00Z", "2026-09-23T05:40:00Z")
+	checkBlocks(t, identify(e, farFuture, anchors...), []blockShape{
+		{id: "2026-09-23T00:00:00.000Z", end: "2026-09-23T05:00:00Z", entries: 1},
+		{id: "2026-09-23T05:00:00.000Z", end: "2026-09-23T10:00:00Z", entries: 1},
+	})
+}
+
+func TestIdentifyBlocks_CloseAnchorsKeepBothWindows(t *testing.T) {
+	// Anchors three hours apart are two real windows: the first ends early
+	// at the second's start instead of being dropped.
+	anchors := []time.Time{mustTime(t, "2026-09-23T00:00:00Z"), mustTime(t, "2026-09-23T03:00:00Z")}
+	e := blockEntries(t, "2026-09-23T00:30:00Z", "2026-09-23T02:00:00Z", "2026-09-23T03:30:00Z")
+	blocks := identify(e, farFuture, anchors...)
+	checkBlocks(t, blocks, []blockShape{
+		{id: "2026-09-23T00:00:00.000Z", start: "2026-09-23T00:00:00Z", end: "2026-09-23T03:00:00Z", entries: 2},
+		{id: "2026-09-23T03:00:00.000Z", start: "2026-09-23T03:00:00Z", end: "2026-09-23T08:00:00Z", entries: 1},
+	})
+	if !blocks[0].Anchored || !blocks[1].Anchored {
+		t.Errorf("both blocks should be anchored")
+	}
+}
+
+func TestNormalizeAnchors_MergesOnlyWithinAMinute(t *testing.T) {
+	base := mustTime(t, "2026-09-23T07:10:00Z")
+	got := normalizeAnchors([]time.Time{
+		base,
+		base.Add(30 * time.Second), // same window: the later wins
+		base.Add(2 * time.Hour),    // a distinct window
+		base.Add(2*time.Hour + 59*time.Second + 999*time.Millisecond + 500*time.Microsecond),
+	}, DefaultBlockDuration)
+	want := []time.Time{base.Add(30 * time.Second), base.Add(2*time.Hour + 59*time.Second + 999*time.Millisecond)}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if !got[i].Equal(want[i]) {
+			t.Errorf("anchor %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+	ends := anchorEnds([]time.Time{base, base.Add(2 * time.Hour)}, DefaultBlockDuration)
+	if !ends[0].Equal(base.Add(2*time.Hour)) || !ends[1].Equal(base.Add(7*time.Hour)) {
+		t.Errorf("ends = %v", ends)
+	}
+}
+
+func TestIdentifyBlocks_TruncatesToMilliseconds(t *testing.T) {
+	// 900µs past the block end is the same millisecond as the end, which
+	// ccusage keeps in the block.
+	e := blockEntries(t, "2026-09-23T10:00:00Z", "2026-09-23T15:00:00.000900Z")
+	blocks := identify(e, farFuture)
+	checkBlocks(t, blocks, []blockShape{
+		{id: "2026-09-23T10:00:00.000Z", end: "2026-09-23T15:00:00Z", entries: 2},
+	})
+	if got := blocks[0].ActualEnd; !got.Equal(mustTime(t, "2026-09-23T15:00:00Z")) {
+		t.Errorf("actual end = %s", got.Format(time.RFC3339Nano))
+	}
+
+	// A sub-millisecond anchor still admits an entry at its millisecond.
+	anchor := mustTime(t, "2026-09-23T07:10:00.000400Z")
+	blocks = identify(blockEntries(t, "2026-09-23T07:10:00Z"), farFuture, anchor)
+	if len(blocks) != 1 || !blocks[0].Anchored {
+		t.Fatalf("blocks = %+v, want one anchored block", blocks)
+	}
+}
