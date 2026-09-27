@@ -71,6 +71,9 @@ type Entry struct {
 	// Origin is the ledger line's source field (OriginProxy or
 	// OriginCacheBump); it is empty for local entries.
 	Origin string
+	// Inferred marks a local entry that an Engine attributed to the only
+	// auto-imported account because nothing named its account.
+	Inferred bool
 }
 
 // TotalTokens is the sum of all four token buckets.
