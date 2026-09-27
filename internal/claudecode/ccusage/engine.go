@@ -102,10 +102,18 @@ type Summary struct {
 	MaxBlockCostUSD float64   `json:"maxBlockCostUSD"`
 	MaxBlockStart   time.Time `json:"maxBlockStart,omitzero"`
 	// Calibrated limits are implied window costs derived from the unified
-	// rate-limit headers; zero means none yet.
-	CalibratedCostUSD5h float64   `json:"calibratedCostUSD5h,omitzero"`
-	CalibratedCostUSD7d float64   `json:"calibratedCostUSD7d,omitzero"`
-	CalibratedAt        time.Time `json:"calibratedAt,omitzero"`
+	// rate-limit headers; zero means none yet. CalibratedAt5h and
+	// CalibratedAt7d say when each was taken and CalibratedUtilization5h
+	// and CalibratedUtilization7d from which header utilization.
+	// CalibratedAt is the latest of the two; summaries written before the
+	// per-window times existed carry only it.
+	CalibratedCostUSD5h     float64   `json:"calibratedCostUSD5h,omitzero"`
+	CalibratedCostUSD7d     float64   `json:"calibratedCostUSD7d,omitzero"`
+	CalibratedAt            time.Time `json:"calibratedAt,omitzero"`
+	CalibratedAt5h          time.Time `json:"calibratedAt5h,omitzero"`
+	CalibratedAt7d          time.Time `json:"calibratedAt7d,omitzero"`
+	CalibratedUtilization5h float64   `json:"calibratedUtilization5h,omitzero"`
+	CalibratedUtilization7d float64   `json:"calibratedUtilization7d,omitzero"`
 	// Anchors5h are the known 5-hour window starts inside the engine window.
 	Anchors5h []time.Time `json:"anchors5h,omitempty"`
 	// Reset7d is the last known 7-day window reset from the unified

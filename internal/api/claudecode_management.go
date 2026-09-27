@@ -509,6 +509,7 @@ func (server *Server) handleClaudeCodeAccountRateLimits(writer http.ResponseWrit
 	}
 
 	pool.UpdateAccountRateLimits(accountID, rl)
+	server.noteClaudeCodeRateLimits(accountID, rl)
 
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":      "ok",
@@ -569,6 +570,7 @@ func (server *Server) handleClaudeCodeAllRateLimits(writer http.ResponseWriter, 
 		}
 		if rl, err := client.FetchRateLimits(request.Context(), acc.Token); err == nil {
 			pool.UpdateAccountRateLimits(acc.ID, rl)
+			server.noteClaudeCodeRateLimits(acc.ID, rl)
 			results[acc.ID] = rl
 		}
 	}

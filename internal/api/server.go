@@ -116,6 +116,7 @@ type Server struct {
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	tracker            *stats.Tracker
 	ccUsage            *ccusage.Engine
+	ccCalibration      claudeCodeCalibrator
 	kimiOAuthMgr       *auth.KimiOAuthManager
 	kimiIdentityOnce   sync.Once
 	kimiIdentity       http.Header

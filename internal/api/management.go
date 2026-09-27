@@ -744,7 +744,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		// the unified headers or the usage engine's fallbacks. API-key
 		// accounts have no such windows and get pools only from configured
 		// limits.
-		ccPools, lastChecked, ccUsage := server.claudeCodeLimitsAndUsage(ccAcc, ccLimits[ccAcc.ID], server.now())
+		ccPools, lastChecked, ccUsage := server.claudeCodePoolsAndUsage(ccAcc, ccLimits[ccAcc.ID], server.now())
 		var ccQuota map[string]any
 		if ccAcc.Type == "oauth" || ccAcc.Type == "setup_token" || len(ccPools) > 0 {
 			ccQuota = map[string]any{
@@ -782,6 +782,16 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			} else if q, ok := minClaudeCodePool(ccPools, claudeCodePoolsForModel(modelId)); ok {
 				frac = q.RemainingFraction
 				resetTime = q.ResetTime
+				// An API key's pools are the user's own budgets; its
+				// classic rate limits still apply, and the tighter wins.
+				if ccAcc.Type == "api_key" && hasLimits && computedFrac < *frac {
+					f := computedFrac
+					frac = &f
+					resetTime = nil
+					if !computedReset.IsZero() {
+						resetTime = computedReset.UTC().Format(time.RFC3339)
+					}
+				}
 			} else if hasLimits {
 				f := computedFrac
 				frac = &f

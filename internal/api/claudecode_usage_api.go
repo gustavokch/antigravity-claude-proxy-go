@@ -27,8 +27,7 @@ var claudeCodeReloadTimeout = 30 * time.Second
 
 // claudeCodeUsageWindows returns the /v1/usage windows of the Claude Code
 // subscription accounts: a 5h and a weekly window for each enabled
-// subscription account that has pool data, in account order. Calibrations
-// are not saved from here; /v1/usage only reads.
+// subscription account that has pool data, in account order.
 func (server *Server) claudeCodeUsageWindows(now time.Time) []any {
 	cc := config.Get().ClaudeCode
 	snapshots := server.claudeCodeAccountSnapshots(cc)
@@ -42,7 +41,7 @@ func (server *Server) claudeCodeUsageWindows(now time.Time) []any {
 		if !acc.Enabled || acc.Type != "oauth" && acc.Type != "setup_token" {
 			continue
 		}
-		pools, _, _ := server.claudeCodePoolsAndUsage(acc, limits[acc.ID], now, false)
+		pools, _, _ := server.claudeCodePoolsAndUsage(acc, limits[acc.ID], now)
 		name := claudeCodeDisplayName(acc)
 		for _, w := range []struct{ pool, label string }{
 			{claudeCodePool5h, "Claude 5h"},

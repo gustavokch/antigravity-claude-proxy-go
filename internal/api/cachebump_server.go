@@ -231,6 +231,7 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
 		pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+		server.noteClaudeCodeRateLimits(acc.ID, rl)
 		return cachebump.BumpResult{}, &cachebump.UpstreamError{Status: resp.StatusCode}
 	case resp.StatusCode >= 500:
 		pool.RecordFailure(acc.ID, true, 30*time.Second)
@@ -240,6 +241,7 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 		return cachebump.BumpResult{}, &cachebump.UpstreamError{Status: resp.StatusCode}
 	}
 	pool.UpdateAccountRateLimits(acc.ID, rl)
+	server.noteClaudeCodeRateLimits(acc.ID, rl)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {

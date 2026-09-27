@@ -295,6 +295,7 @@ func (server *Server) recordClaudeCodeMetrics(a ccAttempt, u claudecode.Usage) c
 		a.pool.RecordSuccess(a.accountID, int64(in+out), metrics.CallCost, a.rateLimits)
 	}
 	server.recordClaudeCodeUsage(a.accountID, a.sessionID, a.model, ccusage.OriginProxy, u)
+	server.noteClaudeCodeRateLimits(a.accountID, a.rateLimits)
 	if server.tracker != nil {
 		server.tracker.TrackRequest(a.model, latency, in, out, cr)
 	}
@@ -453,6 +454,7 @@ func (server *Server) forwardToClaudeCode(
 						_ = resp.Body.Close()
 						pool.Release(acc.ID)
 						pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+						server.noteClaudeCodeRateLimits(acc.ID, rl)
 						if server.logger != nil {
 							server.logger.Warn("claudecode 429, failing over", "account", acc.ID, "body", strings.TrimSpace(string(last429Body)))
 						}
@@ -590,6 +592,7 @@ func (server *Server) forwardToClaudeCode(
 			_ = resp.Body.Close()
 			pool.Release(acc.ID)
 			pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+			server.noteClaudeCodeRateLimits(acc.ID, rl)
 			if server.logger != nil {
 				server.logger.Warn("claudecode 429, failing over", "account", acc.ID, "body", strings.TrimSpace(string(last429Body)))
 			}

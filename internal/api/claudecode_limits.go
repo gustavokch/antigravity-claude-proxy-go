@@ -2,6 +2,7 @@ package api
 
 import (
 	"math"
+	"sync"
 	"time"
 
 	"antigravity-go-proxy/internal/accounts"
@@ -21,6 +22,24 @@ const (
 // calibration is taken from. The headers carry two decimals, too coarse
 // below this to imply a limit.
 const claudeCodeCalibrationMinUtilization = 0.20
+
+// claudeCodeCalibrationMaxAge is how long a calibration is trusted: plans
+// and limits change, and an old one would silently keep answering.
+const claudeCodeCalibrationMaxAge = 21 * 24 * time.Hour
+
+// claudeCodeCalibrationMinChange is the relative move of an implied limit
+// worth saving when the header utilization has not changed.
+const claudeCodeCalibrationMinChange = 0.01
+
+// claudeCodeCalibrationInterval throttles calibration per account: headers
+// arrive with every response, and one calibration per interval is plenty.
+const claudeCodeCalibrationInterval = 30 * time.Second
+
+// claudeCodeMaxProjectedUtilization caps projectedUtilization. The burn
+// rate of a young block rests on a few entries minutes apart and can
+// extrapolate to absurd multiples; ten times the limit already says
+// "exceeds" as loudly as any larger number.
+const claudeCodeMaxProjectedUtilization = 10.0
 
 // claudeCodeCostBasis labels usage costs: API list prices, not what a
 // subscription is billed.
@@ -93,19 +112,12 @@ type claudeCodeResolvedWindow struct {
 	byTokens bool
 }
 
-// claudeCodeLimitsAndUsage works out an account's quota pools and usage
+// claudeCodePoolsAndUsage works out an account's quota pools and usage
 // object. Pools go only to subscription accounts, and to API-key accounts
 // with configured limits. Without a usage engine this is exactly the
-// header pools and no usage. Calibrations from fresh headers are saved to
-// the engine summary.
-func (server *Server) claudeCodeLimitsAndUsage(acc claudecode.AccountSnapshot, limits *claudecode.UsageLimits, now time.Time) (map[string]claudeCodePool, any, *claudeCodeUsage) {
-	return server.claudeCodePoolsAndUsage(acc, limits, now, true)
-}
-
-// claudeCodePoolsAndUsage is claudeCodeLimitsAndUsage; saveCalibration
-// false leaves the engine summary's calibration alone, for read paths that
-// only report the pools.
-func (server *Server) claudeCodePoolsAndUsage(acc claudecode.AccountSnapshot, limits *claudecode.UsageLimits, now time.Time, saveCalibration bool) (map[string]claudeCodePool, any, *claudeCodeUsage) {
+// header pools and no usage. It only reads: calibrations are taken where
+// the headers arrive, by noteClaudeCodeRateLimits.
+func (server *Server) claudeCodePoolsAndUsage(acc claudecode.AccountSnapshot, limits *claudecode.UsageLimits, now time.Time) (map[string]claudeCodePool, any, *claudeCodeUsage) {
 	subscription := acc.Type == "oauth" || acc.Type == "setup_token"
 	u := acc.RateLimits.Unified
 	pools := map[string]claudeCodePool{}
@@ -127,28 +139,8 @@ func (server *Server) claudeCodePoolsAndUsage(acc claudecode.AccountSnapshot, li
 	if subscription && u != nil {
 		fresh5h, fresh7d = u.FiveHour, u.SevenDay
 	}
-	var cal5h, cal7d float64
-	w5 := claudeCodeResolveWindow(snap, claudeCodeWindow5h, fresh5h, now, &cal5h)
-	w7 := claudeCodeResolveWindow(snap, claudeCodeWindow7d, fresh7d, now, &cal7d)
-
-	var reset7d time.Time
-	if u != nil && u.SevenDay.Reset.After(sum.Reset7d) {
-		reset7d = u.SevenDay.Reset
-	}
-	if saveCalibration && (cal5h > 0 && !claudeCodeSameFloat(cal5h, sum.CalibratedCostUSD5h) ||
-		cal7d > 0 && !claudeCodeSameFloat(cal7d, sum.CalibratedCostUSD7d) || !reset7d.IsZero()) {
-		en.UpdateSummary(acc.ID, func(s *ccusage.Summary) {
-			if cal5h > 0 {
-				s.CalibratedCostUSD5h, s.CalibratedAt = cal5h, now
-			}
-			if cal7d > 0 {
-				s.CalibratedCostUSD7d, s.CalibratedAt = cal7d, now
-			}
-			if reset7d.After(s.Reset7d) {
-				s.Reset7d = reset7d
-			}
-		})
-	}
+	w5 := claudeCodeResolveWindow(snap, claudeCodeWindow5h, fresh5h, now)
+	w7 := claudeCodeResolveWindow(snap, claudeCodeWindow7d, fresh7d, now)
 
 	// Stale or missing headers fall back to calibration (subscriptions
 	// only), then configured limits, then the largest completed block.
@@ -157,10 +149,7 @@ func (server *Server) claudeCodePoolsAndUsage(acc claudecode.AccountSnapshot, li
 			continue
 		}
 		is5h := w.spec == claudeCodeWindow5h
-		calibrated := sum.CalibratedCostUSD7d
-		if is5h {
-			calibrated = sum.CalibratedCostUSD5h
-		}
+		calibrated := claudeCodeCalibratedLimit(sum, is5h, now)
 		switch {
 		case subscription && calibrated > 0:
 			w.set(claudeCodeSourceCalibrated, w.usage.CostUSD/calibrated, false)
@@ -200,22 +189,39 @@ func (server *Server) claudeCodePoolsAndUsage(acc claudecode.AccountSnapshot, li
 	}
 }
 
+// claudeCodeCalibratedLimit returns a window's calibrated limit, or 0 when
+// there is none or it is older than claudeCodeCalibrationMaxAge. A
+// calibration without a per-window time falls back to CalibratedAt. One
+// with no time at all cannot be aged and is used; every calibration the
+// proxy saves carries a time.
+func claudeCodeCalibratedLimit(sum ccusage.Summary, is5h bool, now time.Time) float64 {
+	limit, at := sum.CalibratedCostUSD7d, sum.CalibratedAt7d
+	if is5h {
+		limit, at = sum.CalibratedCostUSD5h, sum.CalibratedAt5h
+	}
+	if at.IsZero() {
+		at = sum.CalibratedAt
+	}
+	if limit <= 0 || !at.IsZero() && now.Sub(at) > claudeCodeCalibrationMaxAge {
+		return 0
+	}
+	return limit
+}
+
 // claudeCodeResolveWindow finds a window's bounds and usage. A fresh
-// header window is used as it is, and a calibration is taken from it
-// when its utilization is high enough; *calibration is set to the implied
-// limit then. Otherwise the last known anchor is stepped forward in whole
-// periods to contain now; without one, 5h is the active ccusage block and
-// 7d the rolling seven days.
-func claudeCodeResolveWindow(snap *ccusage.Snapshot, spec claudeCodeWindowSpec, fresh claudecode.UnifiedWindow, now time.Time, calibration *float64) *claudeCodeResolvedWindow {
+// header window is used as it is. Otherwise the last known anchor is
+// stepped forward in whole periods to contain now; without one, 5h is the
+// active ccusage block and 7d the rolling seven days. A 5h anchor stepped
+// past its own window whose stepped window holds no usage is only a guess
+// the account has not confirmed, so the active block, if any, is used
+// instead.
+func claudeCodeResolveWindow(snap *ccusage.Snapshot, spec claudeCodeWindowSpec, fresh claudecode.UnifiedWindow, now time.Time) *claudeCodeResolvedWindow {
 	w := &claudeCodeResolvedWindow{spec: spec}
 	if fresh.Utilization != nil && fresh.Reset.After(now) {
 		w.usage = snap.Usage(fresh.Reset.Add(-spec.dur), fresh.Reset)
 		w.hasBounds, w.hasReset = true, true
 		util := *fresh.Utilization
 		w.source, w.util = claudeCodeSourceHeaders, &util
-		if util >= claudeCodeCalibrationMinUtilization && w.usage.CostUSD > 0 {
-			*calibration = w.usage.CostUSD / util
-		}
 		return w
 	}
 
@@ -232,11 +238,16 @@ func claudeCodeResolveWindow(snap *ccusage.Snapshot, spec claudeCodeWindowSpec, 
 	if !fresh.Reset.IsZero() && fresh.Reset.Add(-spec.dur).After(anchor) {
 		anchor = fresh.Reset.Add(-spec.dur)
 	}
-	switch {
-	case !anchor.IsZero():
+	if !anchor.IsZero() {
 		start := claudeCodeStepWindow(anchor, spec.dur, now)
-		w.usage = snap.Usage(start, start.Add(spec.dur))
-		w.hasBounds, w.hasReset = true, true
+		usage := snap.Usage(start, start.Add(spec.dur))
+		if spec != claudeCodeWindow5h || !start.After(anchor) || usage.Entries > 0 {
+			w.usage = usage
+			w.hasBounds, w.hasReset = true, true
+			return w
+		}
+	}
+	switch {
 	case spec == claudeCodeWindow5h && snap.Active != nil:
 		w.usage = snap.Window5h
 		w.hasBounds, w.hasReset = true, true
@@ -289,7 +300,9 @@ func (w *claudeCodeResolvedWindow) set(source string, util float64, byTokens boo
 
 // project extrapolates the active block's burn rate to the end of the
 // window, or of the block when that comes first:
-// utilization × projected/current. It never goes below the utilization.
+// utilization × projected/current. It never goes below the utilization,
+// and never above claudeCodeMaxProjectedUtilization unless the
+// utilization itself already is.
 func (w *claudeCodeResolvedWindow) project(snap *ccusage.Snapshot, now time.Time) {
 	if w.util == nil {
 		return
@@ -314,6 +327,7 @@ func (w *claudeCodeResolvedWindow) project(snap *ccusage.Snapshot, now time.Time
 			}
 		}
 	}
+	projected = math.Min(projected, math.Max(claudeCodeMaxProjectedUtilization, *w.util))
 	w.projected = &projected
 }
 
@@ -346,8 +360,114 @@ func (w *claudeCodeResolvedWindow) json() claudeCodeUsageWindow {
 	return out
 }
 
-// claudeCodeSameFloat reports whether two calibrations are the same value
-// up to rounding, so an unchanged one is not saved again.
-func claudeCodeSameFloat(a, b float64) bool {
-	return math.Abs(a-b) <= 1e-9*math.Max(math.Abs(a), math.Abs(b))
+// claudeCodeCalibrator runs calibrations off the request path, at most
+// one at a time and one per claudeCodeCalibrationInterval for each
+// account. The zero value is ready to use.
+type claudeCodeCalibrator struct {
+	mu      sync.Mutex
+	last    map[string]time.Time
+	running map[string]bool
+	wg      sync.WaitGroup
+}
+
+// claim reports whether accountID may calibrate at wall-clock now and, if
+// so, marks it running.
+func (c *claudeCodeCalibrator) claim(accountID string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running[accountID] {
+		return false
+	}
+	if last, ok := c.last[accountID]; ok && now.Sub(last) < claudeCodeCalibrationInterval {
+		return false
+	}
+	if c.last == nil {
+		c.last, c.running = map[string]time.Time{}, map[string]bool{}
+	}
+	c.last[accountID], c.running[accountID] = now, true
+	c.wg.Add(1)
+	return true
+}
+
+func (c *claudeCodeCalibrator) release(accountID string) {
+	c.mu.Lock()
+	delete(c.running, accountID)
+	c.mu.Unlock()
+	c.wg.Done()
+}
+
+// noteClaudeCodeRateLimits is called wherever an account's rate-limit
+// headers arrive. It calibrates the account's implied window limits from
+// the unified headers in the background, throttled per account, and never
+// blocks the caller.
+func (server *Server) noteClaudeCodeRateLimits(accountID string, rl claudecode.RateLimits) {
+	u := rl.Unified
+	if server == nil || server.ccUsage == nil || u == nil || u.ObservedAt.IsZero() {
+		return
+	}
+	if !server.ccCalibration.claim(accountID, time.Now()) {
+		return
+	}
+	unified := *u
+	go func() {
+		defer server.ccCalibration.release(accountID)
+		server.calibrateClaudeCode(accountID, &unified, server.now())
+	}()
+}
+
+// calibrateClaudeCode saves the implied limit of each unified window with
+// utilization of at least claudeCodeCalibrationMinUtilization, and the
+// 7-day reset. The implied limit is the cost the engine saw inside the
+// window up to the moment the headers were observed, divided by their
+// utilization: usage after that moment is not in the utilization, and
+// counting it would imply too high a limit. A snapshot cached from before
+// that moment misses some cost and errs low, the safe side.
+func (server *Server) calibrateClaudeCode(accountID string, u *claudecode.Unified, now time.Time) {
+	en := server.ccUsage
+	if en == nil || u == nil || u.ObservedAt.IsZero() {
+		return
+	}
+	snap := en.Snapshot(accountID, now, claudeCodeUsageAnchors(u))
+	if snap == nil {
+		return
+	}
+	type calibration struct {
+		ok          bool
+		limit, util float64
+	}
+	measure := func(w claudecode.UnifiedWindow, dur time.Duration) calibration {
+		if w.Utilization == nil || *w.Utilization < claudeCodeCalibrationMinUtilization || !w.Reset.After(u.ObservedAt) {
+			return calibration{}
+		}
+		cost := snap.Usage(w.Reset.Add(-dur), u.ObservedAt).CostUSD
+		if cost <= 0 {
+			return calibration{}
+		}
+		return calibration{ok: true, limit: cost / *w.Utilization, util: *w.Utilization}
+	}
+	c5, c7 := measure(u.FiveHour, claudeCodeWindow5h.dur), measure(u.SevenDay, claudeCodeWindow7d.dur)
+
+	sum := snap.Summary
+	worth := func(c calibration, limit, util float64) bool {
+		return c.ok && (c.util != util || math.Abs(c.limit-limit) > claudeCodeCalibrationMinChange*limit)
+	}
+	save5 := worth(c5, sum.CalibratedCostUSD5h, sum.CalibratedUtilization5h)
+	save7 := worth(c7, sum.CalibratedCostUSD7d, sum.CalibratedUtilization7d)
+	reset7d := u.SevenDay.Reset.After(sum.Reset7d)
+	if !save5 && !save7 && !reset7d {
+		return
+	}
+	en.UpdateSummary(accountID, func(s *ccusage.Summary) {
+		if save5 {
+			s.CalibratedCostUSD5h, s.CalibratedUtilization5h, s.CalibratedAt5h = c5.limit, c5.util, now
+			s.CalibratedAt = now
+		}
+		if save7 {
+			s.CalibratedCostUSD7d, s.CalibratedUtilization7d, s.CalibratedAt7d = c7.limit, c7.util, now
+			s.CalibratedAt = now
+		}
+		if u.SevenDay.Reset.After(s.Reset7d) {
+			s.Reset7d = u.SevenDay.Reset
+		}
+	})
 }

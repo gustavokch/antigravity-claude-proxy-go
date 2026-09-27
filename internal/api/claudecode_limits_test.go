@@ -134,15 +134,12 @@ func rfc3339(ts time.Time) string { return ts.UTC().Format(time.RFC3339) }
 
 func fptr(v float64) *float64 { return &v }
 
-func TestClaudeCodeLimits_HeadersCalibrateAndProject(t *testing.T) {
-	f := newCCLimitsFixture(t, true, ccOAuth("cc-h"), ccOAuth("cc-low"))
+func TestClaudeCodeLimits_HeadersAndProjection(t *testing.T) {
+	f := newCCLimitsFixture(t, true, ccOAuth("cc-h"))
 	reset5h := f.now.Add(3 * time.Hour)
 	reset7d := f.now.Add(48 * time.Hour)
-	for _, id := range []string{"cc-h", "cc-low"} {
-		util5h := 0.25
-		if id == "cc-low" {
-			util5h = 0.19
-		}
+	{
+		id, util5h := "cc-h", 0.25
 		f.pool.UpdateAccountRateLimits(id, claudecode.RateLimits{
 			LastUpdated: f.now,
 			Unified: &claudecode.Unified{
@@ -199,17 +196,9 @@ func TestClaudeCodeLimits_HeadersCalibrateAndProject(t *testing.T) {
 		t.Errorf("burnRate = %v", u["burnRate"])
 	}
 
-	// Calibration: 5h at 0.25 implies $5/0.25 = $20; 7d at 0.10 is below
-	// the calibration threshold. The 7d reset is remembered.
-	s := f.engine.Summary("cc-h")
-	if !near(s.CalibratedCostUSD5h, 20) || s.CalibratedCostUSD7d != 0 || !s.CalibratedAt.Equal(f.now) {
-		t.Errorf("summary calibration = %+v", s)
-	}
-	if !s.Reset7d.Equal(reset7d) {
-		t.Errorf("summary Reset7d = %v, want %v", s.Reset7d, reset7d)
-	}
-	if s := f.engine.Summary("cc-low"); s.CalibratedCostUSD5h != 0 || !s.CalibratedAt.IsZero() {
-		t.Errorf("calibrated below 0.20: %+v", s)
+	// Reads never write: no calibration comes from /account-limits.
+	if s := f.engine.Summary("cc-h"); s.CalibratedCostUSD5h != 0 || !s.CalibratedAt.IsZero() || !s.Reset7d.IsZero() {
+		t.Errorf("/account-limits saved a calibration: %+v", s)
 	}
 }
 
@@ -229,10 +218,13 @@ func TestClaudeCodeLimits_CalibratedFallback(t *testing.T) {
 		})
 		f.engine.UpdateSummary(id, func(s *ccusage.Summary) {
 			s.CalibratedCostUSD5h, s.CalibratedCostUSD7d = 20, 100
+			s.CalibratedAt5h, s.CalibratedAt7d = now.Add(-8*time.Hour), now.Add(-8*time.Hour)
 		})
 	}
+	// An older summary with only the shared calibration time still counts.
 	f.engine.UpdateSummary("cc-noanchor", func(s *ccusage.Summary) {
 		s.CalibratedCostUSD5h, s.CalibratedCostUSD7d = 20, 100
+		s.CalibratedAt = now.Add(-time.Hour)
 	})
 
 	// The 5h anchor now-12h steps to [now-2h, now+3h); the 7d reset of a
@@ -401,5 +393,171 @@ func TestClaudeCodeStepWindow(t *testing.T) {
 		if got.After(now) || !now.Before(got.Add(tc.dur)) {
 			t.Errorf("%s: window %v+%v does not contain now", tc.name, got, tc.dur)
 		}
+	}
+}
+
+// ccUnified is a unified snapshot observed at observed with the given
+// window utilizations and resets.
+func ccUnified(observed time.Time, util5h float64, reset5h time.Time, util7d float64, reset7d time.Time) *claudecode.Unified {
+	return &claudecode.Unified{
+		Status:     "allowed",
+		FiveHour:   claudecode.UnifiedWindow{Utilization: fptr(util5h), Reset: reset5h},
+		SevenDay:   claudecode.UnifiedWindow{Utilization: fptr(util7d), Reset: reset7d},
+		ObservedAt: observed,
+	}
+}
+
+func TestClaudeCodeLimits_CalibrateAtIngest(t *testing.T) {
+	f := newCCLimitsFixture(t, true, ccOAuth("cc-i"))
+	now := f.now
+	observed := now.Add(-20 * time.Minute)
+	reset5h, reset7d := now.Add(3*time.Hour), now.Add(48*time.Hour)
+	// $5 in the 5h window before the headers were observed, $100 after:
+	// the later spend is not in the utilization and must not count.
+	f.record("cc-i", 90*time.Minute, 100, 2)
+	f.record("cc-i", 30*time.Minute, 100, 3)
+	f.record("cc-i", 10*time.Minute, 100, 100)
+
+	// A completed response hands its headers over; no /account-limits call.
+	rl := claudecode.RateLimits{LastUpdated: observed, Unified: ccUnified(observed, 0.25, reset5h, 0.10, reset7d)}
+	f.server.recordClaudeCodeMetrics(ccAttempt{model: "claude-sonnet-5", accountID: "cc-i", startTime: time.Now(), pool: f.pool, rateLimits: rl}, claudecode.Usage{})
+	f.server.ccCalibration.wg.Wait()
+
+	s := f.engine.Summary("cc-i")
+	if !near(s.CalibratedCostUSD5h, 20) || s.CalibratedUtilization5h != 0.25 || !s.CalibratedAt5h.Equal(now) || !s.CalibratedAt.Equal(now) {
+		t.Errorf("5h calibration = %+v", s)
+	}
+	// 0.10 is below the calibration threshold.
+	if s.CalibratedCostUSD7d != 0 || !s.CalibratedAt7d.IsZero() {
+		t.Errorf("7d calibrated below 0.20: %+v", s)
+	}
+	if !s.Reset7d.Equal(reset7d) {
+		t.Errorf("Reset7d = %v, want %v", s.Reset7d, reset7d)
+	}
+
+	// Within the throttle interval further headers are not looked at.
+	rl.Unified = ccUnified(observed, 0.5, reset5h, 0.5, reset7d)
+	f.server.noteClaudeCodeRateLimits("cc-i", rl)
+	f.server.ccCalibration.wg.Wait()
+	if got := f.engine.Summary("cc-i"); got.CalibratedUtilization5h != 0.25 || got.CalibratedCostUSD7d != 0 {
+		t.Errorf("throttled calibration ran: %+v", got)
+	}
+}
+
+func TestClaudeCodeCalibrate_Rules(t *testing.T) {
+	f := newCCLimitsFixture(t, true, ccOAuth("cc-r"), ccOAuth("cc-zero"))
+	now := f.now
+	reset5h, reset7d := now.Add(3*time.Hour), now.Add(48*time.Hour)
+	f.record("cc-r", 30*time.Minute, 100, 5)
+	f.record("cc-zero", 30*time.Minute, 100, 5)
+
+	// No observation time: nothing to cut the cost at, so no calibration.
+	u := ccUnified(time.Time{}, 0.5, reset5h, 0.5, reset7d)
+	f.server.calibrateClaudeCode("cc-zero", u, now)
+	if s := f.engine.Summary("cc-zero"); s.CalibratedCostUSD5h != 0 || !s.Reset7d.IsZero() {
+		t.Errorf("calibrated without ObservedAt: %+v", s)
+	}
+
+	// Below 0.20 nothing is calibrated; the 7d reset is still kept.
+	f.server.calibrateClaudeCode("cc-r", ccUnified(now, 0.19, reset5h, 0.19, reset7d), now)
+	if s := f.engine.Summary("cc-r"); s.CalibratedCostUSD5h != 0 || s.CalibratedCostUSD7d != 0 || !s.Reset7d.Equal(reset7d) {
+		t.Errorf("below-threshold summary = %+v", s)
+	}
+
+	f.server.calibrateClaudeCode("cc-r", ccUnified(now, 0.25, reset5h, 0.5, reset7d), now)
+	s := f.engine.Summary("cc-r")
+	if !near(s.CalibratedCostUSD5h, 20) || !near(s.CalibratedCostUSD7d, 10) || !s.CalibratedAt7d.Equal(now) {
+		t.Fatalf("calibration = %+v", s)
+	}
+
+	// The same utilization with the limit moving under 1% is not saved.
+	f.record("cc-r", 20*time.Minute, 10, 0.02)
+	later := now.Add(time.Minute)
+	f.server.calibrateClaudeCode("cc-r", ccUnified(later, 0.25, reset5h, 0.5, reset7d), later)
+	if got := f.engine.Summary("cc-r"); !got.CalibratedAt5h.Equal(now) || !near(got.CalibratedCostUSD5h, 20) {
+		t.Errorf("small move saved: %+v", got)
+	}
+	// A new utilization is saved.
+	f.server.calibrateClaudeCode("cc-r", ccUnified(later, 0.26, reset5h, 0.5, reset7d), later)
+	if got := f.engine.Summary("cc-r"); !got.CalibratedAt5h.Equal(later) || !near(got.CalibratedCostUSD5h, 5.02/0.26) || !got.CalibratedAt7d.Equal(now) {
+		t.Errorf("new utilization not saved: %+v", got)
+	}
+}
+
+func TestClaudeCodeLimits_OldCalibrationAndStaleAnchor(t *testing.T) {
+	f := newCCLimitsFixture(t, true, ccOAuth("cc-old"), ccOAuth("cc-stale"))
+	now := f.now
+	f.engine.UpdateSummary("cc-old", func(s *ccusage.Summary) {
+		s.CalibratedCostUSD5h, s.CalibratedAt5h = 20, now.Add(-22*24*time.Hour)
+		s.CalibratedCostUSD7d, s.CalibratedAt7d = 100, now.Add(-20*24*time.Hour)
+	})
+	f.record("cc-old", 30*time.Minute, 10, 4)
+
+	// A 5h anchor two days old steps into an empty window; the active
+	// block started 90 minutes ago is the better guess.
+	f.engine.UpdateSummary("cc-stale", func(s *ccusage.Summary) {
+		s.CalibratedCostUSD5h, s.CalibratedAt5h = 20, now.Add(-time.Hour)
+	})
+	f.engine.Snapshot("cc-stale", now.Add(-48*time.Hour), []time.Time{now.Add(-48*time.Hour - 3*time.Hour)})
+	f.record("cc-stale", 90*time.Minute, 10, 1)
+	f.record("cc-stale", 80*time.Minute, 10, 1)
+
+	rows := f.rows(t)
+	pools := ccPools(t, rows["cc-old"])
+	// The 22-day-old 5h calibration is ignored; the 20-day-old 7d one holds.
+	if _, ok := pools["claude-5h"]; ok {
+		t.Errorf("expired 5h calibration used: %v", pools["claude-5h"])
+	}
+	if p, ok := pools["claude-weekly"].(map[string]any); !ok || p["source"] != "calibrated" || !near(p["remainingFraction"], 0.96) {
+		t.Errorf("weekly pool = %v", pools["claude-weekly"])
+	}
+
+	w := ccUsageWindow(t, rows["cc-stale"], "window5h")
+	blockStart := now.Add(-90 * time.Minute).Truncate(time.Hour)
+	if w["start"] != rfc3339(blockStart) || w["end"] != rfc3339(blockStart.Add(5*time.Hour)) || !near(w["costUSD"], 2) {
+		t.Errorf("stale anchor window = %v", w)
+	}
+}
+
+func TestClaudeCodeLimits_APIKeyClassicLimitTighter(t *testing.T) {
+	key := claudecode.AccountConfig{ID: "cc-kc", Email: "kc@example.com", Token: "sk", Type: "api_key", Priority: 1, Enabled: true, Source: "config",
+		UsageLimits: &claudecode.UsageLimits{CostUSD5h: 10}}
+	loose := key
+	loose.ID, loose.Email, loose.Token = "cc-kl", "kl@example.com", "sk2"
+	f := newCCLimitsFixture(t, true, key, loose)
+	now := f.now
+	f.record("cc-kc", 30*time.Minute, 10, 2) // pool 0.8
+	f.record("cc-kl", 30*time.Minute, 10, 8) // pool 0.2
+	classicReset := now.Add(time.Minute)
+	for _, id := range []string{"cc-kc", "cc-kl"} {
+		f.pool.UpdateAccountRateLimits(id, claudecode.RateLimits{RequestsLimit: 100, RequestsRemaining: 50, RequestsReset: classicReset, LastUpdated: now})
+	}
+	rows := f.rows(t)
+	l := rows["cc-kc"]["limits"].(map[string]any)[ccLimitsModel].(map[string]any)
+	if l["remainingFraction"] != 0.5 || l["resetTime"] != rfc3339(classicReset) {
+		t.Errorf("classic limit tighter: %v", l)
+	}
+	l = rows["cc-kl"]["limits"].(map[string]any)[ccLimitsModel].(map[string]any)
+	blockEnd := now.Add(-30 * time.Minute).Truncate(time.Hour).Add(5 * time.Hour)
+	if !near(l["remainingFraction"], 0.2) || l["resetTime"] != rfc3339(blockEnd) {
+		t.Errorf("pool tighter: %v", l)
+	}
+}
+
+func TestClaudeCodeLimits_ProjectionCapped(t *testing.T) {
+	f := newCCLimitsFixture(t, true, ccOAuth("cc-p"))
+	now := f.now
+	f.pool.UpdateAccountRateLimits("cc-p", claudecode.RateLimits{LastUpdated: now, Unified: ccUnified(now, 0.5, now.Add(4*time.Hour), 0.1, now.Add(48*time.Hour))})
+	// Two entries a minute apart burn $60 an hour for four more hours on a
+	// $1 window: 0.5 × 241 before the cap.
+	f.record("cc-p", 2*time.Minute, 10, 0.5)
+	f.record("cc-p", time.Minute, 10, 0.5)
+	row := f.rows(t)["cc-p"]
+	w := ccUsageWindow(t, row, "window5h")
+	if w["projectedUtilization"] != 10.0 || w["status"] != "exceeds" {
+		t.Errorf("projection = %v status %v, want capped at 10", w["projectedUtilization"], w["status"])
+	}
+	if p := ccPools(t, row)["claude-5h"].(map[string]any); p["remainingFraction"] != 0.5 {
+		t.Errorf("projection reached remainingFraction: %v", p)
 	}
 }
