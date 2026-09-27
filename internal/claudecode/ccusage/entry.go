@@ -17,6 +17,13 @@ const (
 	SourceLocal  = "local"
 )
 
+// Ledger entry origins: a response the proxy served, or a cache bump it
+// made on its own.
+const (
+	OriginProxy     = "proxy"
+	OriginCacheBump = "cachebump"
+)
+
 const syntheticModel = "<synthetic>"
 
 // Entry is one usage record: an assistant response or an advisor iteration
@@ -61,6 +68,9 @@ type Entry struct {
 	PathSessionID string
 	ProjectPath   string
 	Source        string
+	// Origin is the ledger line's source field (OriginProxy or
+	// OriginCacheBump); it is empty for local entries.
+	Origin string
 }
 
 // TotalTokens is the sum of all four token buckets.
