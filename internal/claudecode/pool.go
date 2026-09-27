@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -344,9 +345,30 @@ func (p *AccountPool) UpdateAccountRateLimits(accountID string, rl RateLimits) {
 
 	if ok && acc != nil && (rl.HasLimits() || rl.RetryAfter > 0) {
 		acc.mu.Lock()
-		acc.RateLimits = rl
+		acc.RateLimits = mergeRateLimits(acc.RateLimits, rl, time.Now())
 		acc.mu.Unlock()
 	}
+}
+
+// mergeRateLimits returns next, carrying over prev's unified snapshot when
+// next has no unified data and prev's still describes a live window. A
+// response with only classic headers must not wipe the subscription windows;
+// only fresh unified headers replace them. The *Unified is shared with prev
+// (and any snapshots taken from it), so it is carried as-is, never mutated.
+func mergeRateLimits(prev, next RateLimits, now time.Time) RateLimits {
+	if next.Unified == nil && unifiedLive(prev.Unified, now) {
+		next.Unified = prev.Unified
+	}
+	return next
+}
+
+// unifiedLive reports whether u has at least one reset (5h, 7d or overall)
+// still in the future.
+func unifiedLive(u *Unified, now time.Time) bool {
+	if u == nil {
+		return false
+	}
+	return u.FiveHour.Reset.After(now) || u.SevenDay.Reset.After(now) || u.Reset.After(now)
 }
 
 // GetAccount retrieves a single account by ID.
@@ -543,7 +565,7 @@ func (p *AccountPool) RecordSuccess(accountID string, tokens int64, cost float64
 		acc.TotalTokens += tokens
 		acc.TotalCost += cost
 		if rl.HasLimits() || rl.RetryAfter > 0 {
-			acc.RateLimits = rl
+			acc.RateLimits = mergeRateLimits(acc.RateLimits, rl, time.Now())
 		}
 		acc.mu.Unlock()
 	}
@@ -559,14 +581,22 @@ func (p *AccountPool) RecordRateLimit(accountID string, rl RateLimits, defaultCo
 		acc.mu.Lock()
 		defer acc.mu.Unlock()
 
+		now := time.Now()
 		acc.TotalErrors++
 		if rl.HasLimits() || rl.RetryAfter > 0 {
-			acc.RateLimits = rl
+			acc.RateLimits = mergeRateLimits(acc.RateLimits, rl, now)
 		}
 
-		now := time.Now()
 		cooldown := defaultCooldown
-		if rl.RetryAfter > 0 {
+		if u := rl.Unified; u != nil && strings.EqualFold(u.Status, "rejected") && u.BindingReset().After(now) {
+			// A rejected subscription window stays closed until its reset,
+			// often hours away; retrying every few seconds only burns
+			// requests. A longer retry-after still wins.
+			cooldown = u.BindingReset().Sub(now)
+			if ra := time.Duration(rl.RetryAfter) * time.Second; ra > cooldown {
+				cooldown = ra
+			}
+		} else if rl.RetryAfter > 0 {
 			cooldown = time.Duration(rl.RetryAfter) * time.Second
 		} else if rl.TokensReset.After(now) {
 			diff := rl.TokensReset.Sub(now)
