@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -264,6 +265,65 @@ func (server *Server) handleHealth(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	server.health(writer)
+}
+
+// Quota pool names for the Claude Code subscription windows.
+const (
+	claudeCodePool5h     = "claude-5h"
+	claudeCodePoolWeekly = "claude-weekly"
+)
+
+// claudeCodePoolsForModel names the subscription pools a Claude Code model
+// draws on. Both windows cap every model, so each model maps to both.
+func claudeCodePoolsForModel(string) []string {
+	return []string{claudeCodePool5h, claudeCodePoolWeekly}
+}
+
+// claudeCodeQuotaPools turns the unified subscription windows into quota
+// pools. A window that is missing, has no utilization or has already reset
+// at now is left out. lastChecked is the observation time in milliseconds,
+// or nil when no unified headers were seen.
+func claudeCodeQuotaPools(u *claudecode.Unified, now time.Time) (map[string]accounts.ModelQuota, any) {
+	pools := map[string]accounts.ModelQuota{}
+	if u == nil {
+		return pools, nil
+	}
+	for name, w := range map[string]claudecode.UnifiedWindow{
+		claudeCodePool5h:     u.FiveHour,
+		claudeCodePoolWeekly: u.SevenDay,
+	} {
+		if w.Utilization == nil || !w.Reset.After(now) {
+			continue
+		}
+		frac := math.Min(math.Max(1-*w.Utilization, 0), 1)
+		pools[name] = accounts.ModelQuota{
+			RemainingFraction: &frac,
+			ResetTime:         w.Reset.UTC().Format(time.RFC3339),
+		}
+	}
+	var lastChecked any
+	if !u.ObservedAt.IsZero() {
+		lastChecked = u.ObservedAt.UnixMilli()
+	}
+	return pools, lastChecked
+}
+
+// minClaudeCodePool returns the pool with the lowest remaining fraction
+// among names that are present in pools. On a tie the earlier name wins.
+func minClaudeCodePool(pools map[string]accounts.ModelQuota, names []string) (accounts.ModelQuota, bool) {
+	var best accounts.ModelQuota
+	found := false
+	for _, name := range names {
+		q, ok := pools[name]
+		if !ok || q.RemainingFraction == nil {
+			continue
+		}
+		if !found || *q.RemainingFraction < *best.RemainingFraction {
+			best = q
+			found = true
+		}
+	}
+	return best, found
 }
 
 func isClaudeModel(modelId string, allowlist []claudecode.ModelConfig) bool {
@@ -628,6 +688,28 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 
 		computedFrac, hasLimits := rl.MinRemainingFraction()
 		computedReset := rl.ResetTime(server.now())
+		// A subscription account refused with unified status "rejected"
+		// carries no classic reset, so its wait comes from the binding
+		// window instead.
+		if u := rl.Unified; u != nil && strings.EqualFold(u.Status, "rejected") {
+			if br := u.BindingReset(); br.After(server.now()) && br.After(computedReset) {
+				computedReset = br
+			}
+		}
+
+		// Subscription accounts expose their unified windows as quota
+		// pools; API-key accounts have no such windows and get none.
+		var ccQuota map[string]any
+		var ccPools map[string]accounts.ModelQuota
+		if ccAcc.Type == "oauth" || ccAcc.Type == "setup_token" {
+			var lastChecked any
+			ccPools, lastChecked = claudeCodeQuotaPools(rl.Unified, server.now())
+			ccQuota = map[string]any{
+				"models":      map[string]any{},
+				"pools":       ccPools,
+				"lastChecked": lastChecked,
+			}
+		}
 
 		for _, modelId := range sortedModels {
 			if !isClaudeModel(modelId, cfg.ClaudeCode.Allowlist) {
@@ -654,6 +736,9 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 				if !computedReset.IsZero() {
 					resetTime = computedReset.UTC().Format(time.RFC3339)
 				}
+			} else if q, ok := minClaudeCodePool(ccPools, claudeCodePoolsForModel(modelId)); ok {
+				frac = q.RemainingFraction
+				resetTime = q.ResetTime
 			} else if hasLimits {
 				f := computedFrac
 				frac = &f
@@ -688,7 +773,7 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			lastUsedMS = ccAcc.LastUsed.UnixMilli()
 		}
 
-		result = append(result, map[string]any{
+		row := map[string]any{
 			"id":                   ccAcc.ID,
 			"email":                ccAcc.Email,
 			"name":                 displayName,
@@ -711,7 +796,11 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			"totalCost":            ccAcc.TotalCost,
 			"quotaThreshold":       0.0,
 			"modelQuotaThresholds": map[string]any{},
-		})
+		}
+		if ccQuota != nil {
+			row["quota"] = ccQuota
+		}
+		result = append(result, row)
 	}
 
 	modelMapping := cfg.ModelMapping
