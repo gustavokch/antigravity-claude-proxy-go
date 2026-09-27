@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 type captureCloser struct {
@@ -266,5 +268,78 @@ func TestSetPricer_RoutesComputeFinalMetrics(t *testing.T) {
 	SetPricer(nil)
 	if got, want := UsageCost("x", want), DefaultPricer("x", want); got != want {
 		t.Errorf("after SetPricer(nil) UsageCost = %v, want default %v", got, want)
+	}
+}
+
+// Anthropic's message_delta usage is cumulative and can exceed
+// message_start's input and cache counts (server-side tools), so the merge
+// takes per-field maxima; an explicit zero in the delta never wipes a value.
+func TestUsageInterceptor_DeltaLargerThanStart(t *testing.T) {
+	sse := "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_big\",\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":20,\"output_tokens\":1}}}\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":3010,\"output_tokens\":50,\"cache_read_input_tokens\":200,\"cache_creation_input_tokens\":0}}\n"
+	_, got := drainInterceptor(t, sse)
+	if len(got) != 1 {
+		t.Fatalf("onComplete called %d times, want 1", len(got))
+	}
+	want := Usage{MessageID: "msg_big", Input: 3010, Output: 50, CacheRead: 200, CacheCreate: 20, CacheCreate5m: 20}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Errorf("usage = %+v\nwant   %+v", got[0], want)
+	}
+}
+
+// The 5m/1h split never exceeds CacheCreate: a split larger than the
+// reported total raises the total.
+func TestUsageInterceptor_SplitRaisesTotal(t *testing.T) {
+	sse := "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":50,\"cache_creation\":{\"ephemeral_5m_input_tokens\":50,\"ephemeral_1h_input_tokens\":0}}}}\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2,\"cache_creation\":{\"ephemeral_5m_input_tokens\":50,\"ephemeral_1h_input_tokens\":30}}}\n"
+	_, got := drainInterceptor(t, sse)
+	if len(got) != 1 {
+		t.Fatalf("onComplete called %d times, want 1", len(got))
+	}
+	want := Usage{Input: 1, Output: 2, CacheCreate: 80, CacheCreate5m: 50, CacheCreate1h: 30}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Errorf("usage = %+v\nwant   %+v", got[0], want)
+	}
+}
+
+// The four token counts must equal what the shared OpenRouter SSE parser
+// produced for the same stream, which the Claude Code path used before.
+func TestUsageInterceptor_MatchesOpenRouterParser(t *testing.T) {
+	streams := map[string][]string{
+		"classic": {
+			`data: {"type":"message_start","message":{"id":"msg_c","usage":{"input_tokens":900,"cache_read_input_tokens":400,"cache_creation_input_tokens":50,"output_tokens":1}}}`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":210}}`,
+			`data: {"type":"message_stop"}`,
+		},
+		"repeated values": {
+			`data: {"type":"message_start","message":{"usage":{"input_tokens":500,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3}}}`,
+			`data: {"type":"message_delta","usage":{"input_tokens":500,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":90}}`,
+		},
+		"zero in start": {
+			`data: {"type":"message_start","message":{"usage":{"input_tokens":0,"output_tokens":0}}}`,
+			`data: {"type":"message_delta","usage":{"input_tokens":70,"cache_read_input_tokens":30,"cache_creation_input_tokens":9,"output_tokens":5}}`,
+		},
+		"delta larger": {
+			`data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}}`,
+			`data: {"type":"message_delta","usage":{"input_tokens":3010,"output_tokens":50,"cache_read_input_tokens":200}}`,
+		},
+	}
+	for name, lines := range streams {
+		t.Run(name, func(t *testing.T) {
+			var in, out, cr, cw int
+			for _, l := range lines {
+				openrouter.ParseUsageFromSSELine(l, &in, &out, &cr, &cw)
+			}
+			_, got := drainInterceptor(t, strings.Join(lines, "\n\n")+"\n\n")
+			if len(got) != 1 {
+				t.Fatalf("onComplete called %d times, want 1", len(got))
+			}
+			u := got[0]
+			if int(u.Input) != in || int(u.Output) != out || int(u.CacheRead) != cr || int(u.CacheCreate) != cw {
+				t.Errorf("(in,out,cr,cw) = (%d,%d,%d,%d), openrouter parser = (%d,%d,%d,%d)",
+					u.Input, u.Output, u.CacheRead, u.CacheCreate, in, out, cr, cw)
+			}
+		})
 	}
 }

@@ -259,6 +259,7 @@ type ccAttempt struct {
 // response; its cost comes from claudecode.UsageCost via ComputeFinalMetrics.
 func (server *Server) recordClaudeCodeMetrics(a ccAttempt, u claudecode.Usage) claudecode.RequestMetrics {
 	latency := time.Since(a.startTime)
+	u.RequestID = a.requestID
 	in, out, cr, cw := int(u.Input), int(u.Output), int(u.CacheRead), int(u.CacheCreate)
 	metrics := claudecode.RequestMetrics{
 		Model:                 a.model,
@@ -276,6 +277,8 @@ func (server *Server) recordClaudeCodeMetrics(a ccAttempt, u claudecode.Usage) c
 	metrics.ComputeFinalMetrics(claudecode.DefaultSessionTracker)
 	if server.logger != nil {
 		claudecode.LogObservability(server.logger, metrics)
+	}
+	if server.logger != nil && server.logger.Enabled(context.Background(), slog.LevelDebug) {
 		server.logger.Debug("claudecode usage detail",
 			"account", a.accountID,
 			"message_id", u.MessageID,
@@ -315,7 +318,6 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 	a.requestID = resp.Header.Get("request-id")
 	if ccIsSSEResponse(resp.Header) {
 		resp.Body = claudecode.NewUsageInterceptor(resp.Body, func(u claudecode.Usage) {
-			u.RequestID = a.requestID
 			server.recordClaudeCodeMetrics(a, u)
 		})
 		return
@@ -330,9 +332,7 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return
 	}
-	u := claudecode.ParseUsageJSON(body)
-	u.RequestID = a.requestID
-	server.recordClaudeCodeMetrics(a, u)
+	server.recordClaudeCodeMetrics(a, claudecode.ParseUsageJSON(body))
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 }
 

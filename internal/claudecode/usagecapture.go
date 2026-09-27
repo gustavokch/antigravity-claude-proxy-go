@@ -137,6 +137,9 @@ func (w *wireIteration) toIteration() IterationUsage {
 	if w.CacheCreation != nil {
 		it.CacheCreate5m = int64(w.CacheCreation.Ephemeral5m)
 		it.CacheCreate1h = int64(w.CacheCreation.Ephemeral1h)
+		if sum := it.CacheCreate5m + it.CacheCreate1h; sum > it.CacheCreate {
+			it.CacheCreate = sum
+		}
 	} else {
 		it.CacheCreate5m = it.CacheCreate
 	}
@@ -149,38 +152,32 @@ type usageAccumulator struct {
 	splitSeen bool
 }
 
-func fillZero(dst *int64, v *float64) {
-	if v != nil && *dst == 0 {
+func maxInto(dst *int64, v *float64) {
+	if v != nil && int64(*v) > *dst {
 		*dst = int64(*v)
 	}
 }
 
-// apply merges one usage object. message_start is applied first and message
-// fields are only filled where still zero, so upstreams that report in both
-// events are not double-counted while translated upstreams that report zero
-// in message_start still get their message_delta figures. Output is the
-// exception when fromDelta is set: Anthropic's message_delta carries the final
-// cumulative output_tokens, which supersedes message_start's placeholder.
+// apply merges one usage object. Anthropic reports cumulative figures, and
+// message_delta can carry larger input and cache counts than message_start
+// (server-side tools add input as the turn runs), so every count takes the
+// per-field maximum across events and is never summed. That also covers
+// translated upstreams that report zero in message_start and the real
+// figures in message_delta, and an explicit zero never wipes a real value.
+// This matches the shared OpenRouter parser the Claude Code path used before.
 func (a *usageAccumulator) apply(w *wireUsage, fromDelta bool) {
 	if w == nil {
 		return
 	}
-	fillZero(&a.u.Input, w.InputTokens)
-	if fromDelta && w.OutputTokens != nil {
-		a.u.Output = int64(*w.OutputTokens)
-	} else {
-		fillZero(&a.u.Output, w.OutputTokens)
-	}
-	fillZero(&a.u.CacheRead, w.CacheReadTokens)
-	fillZero(&a.u.CacheCreate, w.CacheCreationTokens)
+	maxInto(&a.u.Input, w.InputTokens)
+	maxInto(&a.u.Output, w.OutputTokens)
+	maxInto(&a.u.CacheRead, w.CacheReadTokens)
+	maxInto(&a.u.CacheCreate, w.CacheCreationTokens)
 	if w.CacheCreation != nil {
 		a.splitSeen = true
-		if a.u.CacheCreate5m == 0 {
-			a.u.CacheCreate5m = int64(w.CacheCreation.Ephemeral5m)
-		}
-		if a.u.CacheCreate1h == 0 {
-			a.u.CacheCreate1h = int64(w.CacheCreation.Ephemeral1h)
-		}
+		v5, v1 := w.CacheCreation.Ephemeral5m, w.CacheCreation.Ephemeral1h
+		maxInto(&a.u.CacheCreate5m, &v5)
+		maxInto(&a.u.CacheCreate1h, &v1)
 	}
 	if a.u.Speed == "" {
 		a.u.Speed = w.Speed
@@ -216,11 +213,14 @@ func (a *usageAccumulator) applyEvent(ev *wireEvent) {
 
 // result returns the accumulated usage. A response that reports cache writes
 // without the cache_creation breakdown is attributed wholly to the 5m TTL,
-// the API default.
+// the API default. When the breakdown was reported, CacheCreate is raised to
+// the split's sum if that is larger, so the parts never exceed the total.
 func (a *usageAccumulator) result() Usage {
 	u := a.u
-	if !a.splitSeen && u.CacheCreate > 0 && u.CacheCreate5m == 0 && u.CacheCreate1h == 0 {
-		u.CacheCreate5m = u.CacheCreate
+	if !a.splitSeen {
+		u.CacheCreate5m, u.CacheCreate1h = u.CacheCreate, 0
+	} else if sum := u.CacheCreate5m + u.CacheCreate1h; sum > u.CacheCreate {
+		u.CacheCreate = sum
 	}
 	return u
 }
