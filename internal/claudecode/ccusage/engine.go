@@ -254,6 +254,13 @@ type Engine struct {
 
 	saveMu sync.Mutex
 
+	// baseCtx is cancelled by Close; reloads run under it. reloading is
+	// the done channel of the reload in flight, shared by every caller.
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
+	reloadMu   sync.Mutex
+	reloading  chan struct{}
+
 	lifeMu  sync.Mutex
 	started bool
 	closed  bool
@@ -346,6 +353,7 @@ func NewEngine(opts EngineOptions) (*Engine, error) {
 		summaries:    make(map[string]*Summary),
 		cache:        make(map[string]cachedSnapshot),
 	}
+	en.baseCtx, en.baseCancel = context.WithCancel(context.Background())
 	en.loadSummaries()
 	return en, nil
 }
@@ -418,6 +426,13 @@ func (en *Engine) Close() error {
 	if started {
 		en.cancel()
 		<-en.done
+	}
+	en.baseCancel()
+	en.reloadMu.Lock()
+	reloading := en.reloading
+	en.reloadMu.Unlock()
+	if reloading != nil {
+		<-reloading
 	}
 	en.saveSummaries()
 	return en.ledger.Close()
@@ -510,6 +525,39 @@ func (en *Engine) Refresh() {
 		return
 	}
 	en.refresh(context.Background())
+}
+
+// Reload starts a Refresh in the background unless one it started is
+// still running, and returns a channel that is closed when that pass ends.
+// Concurrent callers share one pass. Close cancels the pass and waits for
+// it.
+func (en *Engine) Reload() <-chan struct{} {
+	if en == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	en.reloadMu.Lock()
+	defer en.reloadMu.Unlock()
+	if en.reloading != nil {
+		return en.reloading
+	}
+	// A closed engine does not reload.
+	if en.baseCtx.Err() != nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	done := make(chan struct{})
+	en.reloading = done
+	go func() {
+		en.refresh(en.baseCtx)
+		en.reloadMu.Lock()
+		en.reloading = nil
+		en.reloadMu.Unlock()
+		close(done)
+	}()
+	return done
 }
 
 func (en *Engine) refresh(ctx context.Context) {
@@ -772,8 +820,12 @@ func (en *Engine) localAttribution() (string, bool) {
 // collect returns copies of the kept entries attributed to accountID, or of
 // every entry when all is set, with AccountID and Inferred resolved.
 func (en *Engine) collect(accountID string, all bool) []Entry {
+	return en.collectFrom(accountID, all, en.now().Add(-en.window))
+}
+
+// collectFrom is collect with the window starting at cutoff.
+func (en *Engine) collectFrom(accountID string, all bool, cutoff time.Time) []Entry {
 	localID, inferred := en.localAttribution()
-	cutoff := en.now().Add(-en.window)
 	en.mu.Lock()
 	defer en.mu.Unlock()
 	var out []Entry
@@ -805,6 +857,76 @@ func (en *Engine) Entries() []Entry {
 	out := en.collect("", true)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Timestamp.Before(out[j].Timestamp) })
 	return out
+}
+
+// ReportEntries returns the entries a report from since (YYYYMMDD in loc;
+// empty is unbounded) reads, in timestamp order: Entries, preceded by the
+// ledger's entries older than the in-memory window when since reaches
+// before it. Those older entries are read from disk outside the engine
+// lock. windowStart is the start of the in-memory window. Claude Code's own
+// transcripts are only read inside the window, so partialLocal reports
+// that since reaches before it while local transcripts are scanned: the
+// older part of the report then lacks their usage.
+func (en *Engine) ReportEntries(since string, loc *time.Location) (entries []Entry, windowStart time.Time, partialLocal bool) {
+	if en == nil {
+		return nil, time.Time{}, false
+	}
+	if loc == nil {
+		loc = en.loc
+	}
+	cutoff := en.now().Add(-en.window)
+	window := en.collectFrom("", true, cutoff)
+	history := since == ""
+	var sinceDay time.Time
+	if !history {
+		t, err := time.ParseInLocation("20060102", since, loc)
+		if err != nil {
+			history = true
+		} else {
+			sinceDay = t
+			history = t.Before(cutoff)
+		}
+	}
+	if history {
+		entries = en.historyEntries(sinceDay, cutoff)
+		partialLocal = en.scanLocal
+	}
+	entries = append(entries, window...)
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Timestamp.Before(entries[j].Timestamp) })
+	return entries, cutoff, partialLocal
+}
+
+// historyEntries reads the ledger's entries before cutoff, deduplicated,
+// from the day files that can hold them: dated no later than cutoff's UTC
+// day and, when since is set, no earlier than the UTC day before it.
+func (en *Engine) historyEntries(since, cutoff time.Time) []Entry {
+	matches, err := filepath.Glob(filepath.Join(en.root, "projects", "*", "*.jsonl"))
+	if err != nil {
+		return nil
+	}
+	last := cutoff.UTC().Truncate(24 * time.Hour)
+	var first time.Time
+	if !since.IsZero() {
+		first = time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+	}
+	dedup := NewDeduper()
+	for _, path := range matches {
+		date, ok := ledgerFileDate(filepath.Base(path))
+		if !ok || date.After(last) || !first.IsZero() && date.Before(first) {
+			continue
+		}
+		read, err := ReadLedgerFile(path)
+		if err != nil {
+			en.log.Warn("ccusage engine: read ledger history", slog.String("path", path), slog.String("error", err.Error()))
+			continue
+		}
+		for _, e := range read {
+			if e.Timestamp.Before(cutoff) {
+				dedup.Add(e)
+			}
+		}
+	}
+	return dedup.Entries()
 }
 
 // Summary returns a copy of an account's summary.

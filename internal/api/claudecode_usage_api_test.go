@@ -3,8 +3,13 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -512,5 +517,124 @@ func TestClaudeCodeUsageReload(t *testing.T) {
 	}
 	if body.Status != "ok" || !body.Enabled || body.Stats.Entries != 5 {
 		t.Errorf("reload = %s", rec.Body.String())
+	}
+}
+
+// writeLedgerDay writes entries to acct's ledger file for day, as the
+// ledger lays them out.
+func writeLedgerDay(t *testing.T, root, acct, day string, entries ...ccusage.Entry) {
+	t.Helper()
+	var data []byte
+	for _, e := range entries {
+		line, err := ccusage.MarshalLedgerLine(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, line...)
+	}
+	dir := filepath.Join(root, "projects", ccusage.LedgerAccountDir(acct))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, day+".jsonl"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaudeCodeUsageReport_LedgerHistory(t *testing.T) {
+	f := newCCLimitsFixture(t, true, ccOAuth("cc-a"))
+	cutoff := f.now.Add(-ccusage.DefaultEngineWindow) // 2026-08-06 12:00 UTC
+	entry := func(ts time.Time, n int) ccusage.Entry {
+		cost := float64(n)
+		return ccusage.Entry{Timestamp: ts, SessionID: "s", RequestID: fmt.Sprintf("req_hist%d", n), MessageID: fmt.Sprintf("msg_hist%d", n),
+			Model: "claude-sonnet-5", Input: int64(n), CostUSD: &cost, AccountID: "cc-a", Origin: ccusage.OriginProxy}
+	}
+	old := entry(f.now.AddDate(0, 0, -20), 32)
+	before := entry(cutoff.Add(-time.Minute), 64)
+	after := entry(cutoff.Add(time.Minute), 128)
+	writeLedgerDay(t, f.engine.Root(), "cc-a", "2026-07-25", old)
+	writeLedgerDay(t, f.engine.Root(), "cc-a", "2026-08-06", before, after)
+	// The in-window entry is also in memory; it must count once.
+	f.engine.Record(after)
+
+	tests := []struct {
+		query, list, key string
+		want             map[string]float64
+	}{
+		{"?report=daily", "daily", "date", map[string]float64{"2026-07-25/cc-a": 32, "2026-08-06/cc-a": 192}},
+		{"?report=monthly", "monthly", "month", map[string]float64{"2026-07/cc-a": 32, "2026-08/cc-a": 192}},
+		{"?report=daily&since=20260801", "daily", "date", map[string]float64{"2026-08-06/cc-a": 192}},
+		{"?report=daily&since=20260807", "daily", "date", map[string]float64{}},
+	}
+	for _, tt := range tests {
+		body := getReport(t, f.server, tt.query)
+		if got := reportRows(t, body, tt.list, tt.key); !sameCosts(got, tt.want) {
+			t.Errorf("%s: rows = %v, want %v", tt.query, got, tt.want)
+		}
+		if body["windowStart"] != "2026-08-06T12:00:00Z" || body["partialLocal"] != false {
+			t.Errorf("%s: windowStart %v partialLocal %v", tt.query, body["windowStart"], body["partialLocal"])
+		}
+	}
+	var blockCost float64
+	for _, b := range getReport(t, f.server, "?report=blocks")["blocks"].([]any) {
+		blockCost += b.(map[string]any)["costUSD"].(float64)
+	}
+	if !near(blockCost, 224) {
+		t.Errorf("blocks cost %v, want 224", blockCost)
+	}
+}
+
+func TestClaudeCodeUsageReport_PartialLocal(t *testing.T) {
+	f := newCCLimitsFixture(t, false, ccOAuth("cc-a"))
+	en, err := ccusage.NewEngine(ccusage.EngineOptions{
+		LedgerRoot: t.TempDir(), Now: f.server.now, Location: time.UTC,
+		ScanLocalLogs: true, LocalPaths: func() []string { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { en.Close() })
+	f.server.ccUsage = en
+	if body := getReport(t, f.server, ""); body["partialLocal"] != true {
+		t.Errorf("unbounded report partialLocal = %v", body["partialLocal"])
+	}
+	if body := getReport(t, f.server, "?since=20260810"); body["partialLocal"] != false {
+		t.Errorf("in-window report partialLocal = %v", body["partialLocal"])
+	}
+}
+
+func TestClaudeCodeUsageReload_Concurrent(t *testing.T) {
+	f := ccReportFixture(t)
+	var wg sync.WaitGroup
+	codes := make([]int, 8)
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			f.server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/claudecode/usage/reload", nil))
+			codes[i] = rec.Code
+		}()
+	}
+	wg.Wait()
+	for i, c := range codes {
+		if c != http.StatusOK {
+			t.Errorf("reload %d: status %d", i, c)
+		}
+	}
+}
+
+func TestClaudeCodeAccountsPost_RejectsUnattributedID(t *testing.T) {
+	f := newCCLimitsFixture(t, false)
+	rec := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/claudecode/accounts",
+		strings.NewReader(`{"id":"unattributed","token":"t","type":"oauth","enabled":true}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	for _, a := range config.Get().ClaudeCode.Accounts {
+		if a.ID == "unattributed" {
+			t.Error("reserved account ID was saved")
+		}
 	}
 }

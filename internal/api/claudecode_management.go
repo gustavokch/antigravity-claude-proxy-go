@@ -186,8 +186,14 @@ func (server *Server) handleClaudeCodeAccountsPost(writer http.ResponseWriter, r
 	for _, a := range cfg.ClaudeCode.Accounts {
 		accounts = append(accounts, ccAccountToMap(a))
 	}
-	// Add or update by ID.
+	// Add or update by ID. Usage reports key unattributed usage as
+	// "unattributed", so no account may take that ID. Auto-imported and
+	// OAuth accounts get prefixed IDs; only this path takes a free one.
 	id, _ := body["id"].(string)
+	if id == claudeCodeUnattributed {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": `account ID "unattributed" is reserved`})
+		return
+	}
 	found := false
 	for i, a := range accounts {
 		if aMap, ok := a.(map[string]any); ok {

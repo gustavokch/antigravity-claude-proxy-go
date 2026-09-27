@@ -175,9 +175,12 @@ func claudeCodeQueryBool(query map[string][]string, name string) (bool, error) {
 }
 
 // handleClaudeCodeUsageReport serves GET /api/claudecode/usage: a ccusage
-// report over the engine's entries, split by account. Unattributed usage
-// is under the account key "unattributed". Without a usage engine it
-// answers {"enabled": false}.
+// report split by account, over the engine's in-memory window plus, when
+// since reaches before it, the ledger's older days. Claude Code's own
+// transcripts count only inside the window; partialLocal flags a report
+// that reaches before it while they are scanned. Unattributed usage is
+// under the account key "unattributed". Without a usage engine it answers
+// {"enabled": false}.
 func (server *Server) handleClaudeCodeUsageReport(writer http.ResponseWriter, request *http.Request) {
 	en := server.ccUsage
 	dur, mode, pricer, loc := en.ReportSettings()
@@ -191,7 +194,7 @@ func (server *Server) handleClaudeCodeUsageReport(writer http.ResponseWriter, re
 		return
 	}
 
-	entries := en.Entries()
+	entries, windowStart, partialLocal := en.ReportEntries(q.since, q.loc)
 	kept := entries[:0]
 	for _, e := range entries {
 		if e.AccountID == "" {
@@ -210,6 +213,11 @@ func (server *Server) handleClaudeCodeUsageReport(writer http.ResponseWriter, re
 		"timezone": q.loc.String(),
 		"since":    q.since,
 		"until":    q.until,
+		// Reports reach back into the ledger's history; windowStart is
+		// where the in-memory window, the only part with local
+		// transcripts, begins.
+		"windowStart":  windowStart.UTC().Format(time.RFC3339),
+		"partialLocal": partialLocal,
 	}
 	opts := ccusage.ReportOptions{
 		Location:    q.loc,
@@ -318,19 +326,16 @@ func (server *Server) claudeCodeBlockRows(entries []ccusage.Entry, q claudeCodeU
 
 // handleClaudeCodeUsageReload serves POST /api/claudecode/usage/reload: it
 // rescans the ledger and local transcripts now and returns the engine's
-// counters. A rescan that outlasts claudeCodeReloadTimeout keeps running
-// in the background and the request answers 504.
+// counters. Concurrent reloads share one rescan. A rescan that outlasts
+// claudeCodeReloadTimeout keeps running in the background and the request
+// answers 504.
 func (server *Server) handleClaudeCodeUsageReload(writer http.ResponseWriter, request *http.Request) {
 	en := server.ccUsage
 	if en == nil {
 		writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "enabled": false})
 		return
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		en.Refresh()
-	}()
+	done := en.Reload()
 	timer := time.NewTimer(claudeCodeReloadTimeout)
 	defer timer.Stop()
 	select {
