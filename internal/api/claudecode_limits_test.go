@@ -561,3 +561,44 @@ func TestClaudeCodeLimits_ProjectionCapped(t *testing.T) {
 		t.Errorf("projection reached remainingFraction: %v", p)
 	}
 }
+
+func TestClaudeCodeLimits_CloseDrainsCalibrations(t *testing.T) {
+	f := newCCLimitsFixture(t, true, ccOAuth("cc-close"))
+	now := f.now
+	f.record("cc-close", 30*time.Minute, 100, 5)
+
+	started, unblock := make(chan struct{}), make(chan struct{})
+	claudeCodeCalibrationHook = func(string) {
+		close(started)
+		<-unblock
+	}
+	t.Cleanup(func() { claudeCodeCalibrationHook = nil })
+
+	rl := claudecode.RateLimits{LastUpdated: now, Unified: ccUnified(now, 0.25, now.Add(3*time.Hour), 0.1, now.Add(48*time.Hour))}
+	f.server.noteClaudeCodeRateLimits("cc-close", rl)
+	<-started
+
+	closed := make(chan error, 1)
+	go func() { closed <- f.server.Close() }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a calibration was running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(unblock)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return after the calibration finished")
+	}
+	// The drained calibration completed before the engine closed.
+	if s := f.engine.Summary("cc-close"); !near(s.CalibratedCostUSD5h, 20) {
+		t.Errorf("calibration lost at Close: %+v", s)
+	}
+	if f.server.ccCalibration.claim("cc-other", time.Now()) {
+		t.Error("claim accepted after Close")
+	}
+}

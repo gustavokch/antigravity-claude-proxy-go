@@ -171,10 +171,12 @@ func (server *Server) StartClaudeCodeUsage(ctx context.Context) {
 // ClaudeCodeUsage returns the usage engine, or nil when tracking is off.
 func (server *Server) ClaudeCodeUsage() *ccusage.Engine { return server.ccUsage }
 
-// Close releases what the server holds beyond in-flight requests: it stops
-// the usage engine and flushes and closes its ledger. Call it after the HTTP
-// server has shut down. It is safe to call more than once.
+// Close releases what the server holds beyond in-flight requests: it waits
+// for background calibrations and starts no more, then stops the usage
+// engine and flushes and closes its ledger. Call it after the HTTP server
+// has shut down. It is safe to call more than once.
 func (server *Server) Close() error {
+	server.ccCalibration.close()
 	return server.ccUsage.Close()
 }
 

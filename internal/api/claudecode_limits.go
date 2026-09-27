@@ -362,9 +362,10 @@ func (w *claudeCodeResolvedWindow) json() claudeCodeUsageWindow {
 
 // claudeCodeCalibrator runs calibrations off the request path, at most
 // one at a time and one per claudeCodeCalibrationInterval for each
-// account. The zero value is ready to use.
+// account. The zero value is ready to use. Once closed it starts no more.
 type claudeCodeCalibrator struct {
 	mu      sync.Mutex
+	closed  bool
 	last    map[string]time.Time
 	running map[string]bool
 	wg      sync.WaitGroup
@@ -375,7 +376,7 @@ type claudeCodeCalibrator struct {
 func (c *claudeCodeCalibrator) claim(accountID string, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.running[accountID] {
+	if c.closed || c.running[accountID] {
 		return false
 	}
 	if last, ok := c.last[accountID]; ok && now.Sub(last) < claudeCodeCalibrationInterval {
@@ -389,12 +390,24 @@ func (c *claudeCodeCalibrator) claim(accountID string, now time.Time) bool {
 	return true
 }
 
+// close refuses further claims and waits for running calibrations.
+func (c *claudeCodeCalibrator) close() {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	c.wg.Wait()
+}
+
 func (c *claudeCodeCalibrator) release(accountID string) {
 	c.mu.Lock()
 	delete(c.running, accountID)
 	c.mu.Unlock()
 	c.wg.Done()
 }
+
+// claudeCodeCalibrationHook, when set by a test, runs at the start of
+// every background calibration.
+var claudeCodeCalibrationHook func(accountID string)
 
 // noteClaudeCodeRateLimits is called wherever an account's rate-limit
 // headers arrive. It calibrates the account's implied window limits from
@@ -411,6 +424,9 @@ func (server *Server) noteClaudeCodeRateLimits(accountID string, rl claudecode.R
 	unified := *u
 	go func() {
 		defer server.ccCalibration.release(accountID)
+		if claudeCodeCalibrationHook != nil {
+			claudeCodeCalibrationHook(accountID)
+		}
 		server.calibrateClaudeCode(accountID, &unified, server.now())
 	}()
 }
