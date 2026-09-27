@@ -108,6 +108,9 @@ type Summary struct {
 	CalibratedAt        time.Time `json:"calibratedAt,omitzero"`
 	// Anchors5h are the known 5-hour window starts inside the engine window.
 	Anchors5h []time.Time `json:"anchors5h,omitempty"`
+	// Reset7d is the last known 7-day window reset from the unified
+	// rate-limit headers; zero means none seen.
+	Reset7d time.Time `json:"reset7d,omitzero"`
 }
 
 func (s Summary) clone() Summary {
@@ -158,6 +161,46 @@ type Snapshot struct {
 	// Inferred reports that some entries were attributed to the account only
 	// because it is the single auto-imported account.
 	Inferred bool
+
+	// running holds the entries up to At in timestamp order with running
+	// totals, so Usage answers any window without walking the entries.
+	running []usagePoint
+}
+
+// usagePoint is one entry's place in a Snapshot's running totals: the
+// tokens and cost of every entry up to and including it.
+type usagePoint struct {
+	at     time.Time
+	tokens int64
+	cost   float64
+}
+
+// Usage returns the usage of the entries at or after start and before end,
+// counting only entries up to At. It is cheap: two binary searches over
+// the snapshot's running totals.
+func (s *Snapshot) Usage(start, end time.Time) WindowUsage {
+	w := WindowUsage{Start: start, End: end}
+	if s == nil || !end.After(start) {
+		return w
+	}
+	r := s.running
+	i := sort.Search(len(r), func(k int) bool { return !r[k].at.Before(start) })
+	j := sort.Search(len(r), func(k int) bool { return !r[k].at.Before(end) })
+	if j <= i {
+		return w
+	}
+	w.Entries = j - i
+	w.Tokens = r[j-1].tokens
+	w.CostUSD = r[j-1].cost
+	if i > 0 {
+		w.Tokens -= r[i-1].tokens
+		w.CostUSD -= r[i-1].cost
+	}
+	// Running sums can leave a rounding residue on subtraction.
+	if w.CostUSD < 0 {
+		w.CostUSD = 0
+	}
+	return w
 }
 
 // EngineStats counts what an Engine holds.
@@ -854,13 +897,14 @@ func (en *Engine) build(accountID string, now time.Time, entries []Entry, anchor
 		if e.Inferred {
 			snap.Inferred = true
 		}
+		cost := EntryCost(*e, en.mode, en.pricer)
+		tok := e.TotalTokens()
+		snap.running = append(snap.running, usagePoint{at: e.Timestamp, tokens: tok, cost: cost})
 		in7d := !e.Timestamp.Before(snap.Window7d.Start)
 		inToday := !e.Timestamp.Before(snap.Today.Start)
 		if !in7d && !inToday {
 			continue
 		}
-		cost := EntryCost(*e, en.mode, en.pricer)
-		tok := e.TotalTokens()
 		if inToday {
 			snap.Today.add(tok, cost)
 		}
@@ -882,6 +926,11 @@ func (en *Engine) build(accountID string, now time.Time, entries []Entry, anchor
 		m.CacheRead += e.CacheRead
 		m.TotalTokens += tok
 		m.CostUSD += cost
+	}
+	sort.SliceStable(snap.running, func(i, j int) bool { return snap.running[i].at.Before(snap.running[j].at) })
+	for i := 1; i < len(snap.running); i++ {
+		snap.running[i].tokens += snap.running[i-1].tokens
+		snap.running[i].cost += snap.running[i-1].cost
 	}
 	for _, m := range models {
 		snap.Models = append(snap.Models, *m)

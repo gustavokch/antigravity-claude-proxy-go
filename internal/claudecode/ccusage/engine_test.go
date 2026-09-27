@@ -655,3 +655,61 @@ func TestEngine_UnattributedSummaryNotSaved(t *testing.T) {
 		t.Errorf("summary file = %s", data)
 	}
 }
+
+func TestSnapshot_Usage(t *testing.T) {
+	f := newEngineFixture(t)
+	now := f.clock.Now()
+	en := f.engine(t, func(o *EngineOptions) {
+		o.Pricer = PricerFunc(func(string) (ModelPrice, bool) { return ModelPrice{Input: 1e-6}, true })
+		o.CostMode = CostModeCalculate
+	})
+	for i, ago := range []time.Duration{6 * 24 * time.Hour, 3 * time.Hour, time.Hour, 10 * time.Minute} {
+		en.Record(Entry{Timestamp: now.Add(-ago), MessageID: fmt.Sprintf("msg_%d", i), RequestID: fmt.Sprintf("req_%d", i), Model: "claude-sonnet-5", Input: int64(1000 * (i + 1)), AccountID: "a"})
+	}
+	// An entry after the snapshot instant never counts.
+	en.Record(Entry{Timestamp: now.Add(time.Minute), MessageID: "msg_future", RequestID: "req_future", Model: "claude-sonnet-5", Input: 99, AccountID: "a"})
+	snap := en.Snapshot("a", now, nil)
+
+	tests := []struct {
+		name       string
+		start, end time.Time
+		entries    int
+		tokens     int64
+	}{
+		{"all", now.Add(-7 * 24 * time.Hour), now.Add(time.Hour), 4, 10000},
+		{"last two hours", now.Add(-2 * time.Hour), now.Add(time.Hour), 2, 7000},
+		{"start inclusive end exclusive", now.Add(-time.Hour), now.Add(-10 * time.Minute), 1, 3000},
+		{"empty", now.Add(-5 * 24 * time.Hour), now.Add(-4 * time.Hour), 0, 0},
+		{"inverted", now, now.Add(-time.Hour), 0, 0},
+	}
+	for _, tc := range tests {
+		w := snap.Usage(tc.start, tc.end)
+		if w.Entries != tc.entries || w.Tokens != tc.tokens || !approxEqual(w.CostUSD, float64(tc.tokens)*1e-6) {
+			t.Errorf("%s: usage = %+v, want %d entries %d tokens", tc.name, w, tc.entries, tc.tokens)
+		}
+		if !w.Start.Equal(tc.start) || !w.End.Equal(tc.end) {
+			t.Errorf("%s: bounds = %v..%v", tc.name, w.Start, w.End)
+		}
+	}
+	if w := snap.Usage(now.Add(-7*24*time.Hour), now.Add(time.Nanosecond)); w.Tokens != snap.Window7d.Tokens {
+		t.Errorf("usage over the 7d window = %d tokens, Window7d has %d", w.Tokens, snap.Window7d.Tokens)
+	}
+	var nilSnap *Snapshot
+	if w := nilSnap.Usage(now, now.Add(time.Hour)); w.Entries != 0 {
+		t.Errorf("nil snapshot usage = %+v", w)
+	}
+}
+
+func TestEngine_SummaryReset7dPersists(t *testing.T) {
+	f := newEngineFixture(t)
+	en := f.engine(t, nil)
+	reset := f.clock.Now().Add(48 * time.Hour).UTC()
+	en.UpdateSummary("a", func(s *Summary) { s.Reset7d = reset; s.CalibratedCostUSD7d = 40 })
+	if err := en.Close(); err != nil {
+		t.Fatal(err)
+	}
+	en2 := f.engine(t, nil)
+	if s := en2.Summary("a"); !s.Reset7d.Equal(reset) || s.CalibratedCostUSD7d != 40 {
+		t.Errorf("reloaded summary = %+v", s)
+	}
+}

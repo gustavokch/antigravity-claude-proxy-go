@@ -283,8 +283,8 @@ func claudeCodePoolsForModel(string) []string {
 // pools. A window that is missing, has no utilization or has already reset
 // at now is left out. lastChecked is the observation time in milliseconds,
 // or nil when no unified headers were seen.
-func claudeCodeQuotaPools(u *claudecode.Unified, now time.Time) (map[string]accounts.ModelQuota, any) {
-	pools := map[string]accounts.ModelQuota{}
+func claudeCodeQuotaPools(u *claudecode.Unified, now time.Time) (map[string]claudeCodePool, any) {
+	pools := map[string]claudeCodePool{}
 	if u == nil {
 		return pools, nil
 	}
@@ -296,9 +296,12 @@ func claudeCodeQuotaPools(u *claudecode.Unified, now time.Time) (map[string]acco
 			continue
 		}
 		frac := math.Min(math.Max(1-*w.Utilization, 0), 1)
-		pools[name] = accounts.ModelQuota{
-			RemainingFraction: &frac,
-			ResetTime:         w.Reset.UTC().Format(time.RFC3339),
+		pools[name] = claudeCodePool{
+			ModelQuota: accounts.ModelQuota{
+				RemainingFraction: &frac,
+				ResetTime:         w.Reset.UTC().Format(time.RFC3339),
+			},
+			Source: claudeCodeSourceHeaders,
 		}
 	}
 	var lastChecked any
@@ -310,7 +313,7 @@ func claudeCodeQuotaPools(u *claudecode.Unified, now time.Time) (map[string]acco
 
 // minClaudeCodePool returns the pool with the lowest remaining fraction
 // among names that are present in pools. On a tie the earlier name wins.
-func minClaudeCodePool(pools map[string]accounts.ModelQuota, names []string) (accounts.ModelQuota, bool) {
+func minClaudeCodePool(pools map[string]claudeCodePool, names []string) (accounts.ModelQuota, bool) {
 	var best accounts.ModelQuota
 	found := false
 	for _, name := range names {
@@ -319,7 +322,7 @@ func minClaudeCodePool(pools map[string]accounts.ModelQuota, names []string) (ac
 			continue
 		}
 		if !found || *q.RemainingFraction < *best.RemainingFraction {
-			best = q
+			best = q.ModelQuota
 			found = true
 		}
 	}
@@ -673,6 +676,12 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 	}
 
 	// 2. Claude Code accounts
+	ccLimits := make(map[string]*claudecode.UsageLimits, len(cfg.ClaudeCode.Accounts))
+	for _, a := range cfg.ClaudeCode.Accounts {
+		if a.UsageLimits != nil {
+			ccLimits[a.ID] = a.UsageLimits
+		}
+	}
 	for _, ccAcc := range ccSnapshots {
 		limits := make(map[string]any, len(sortedModels))
 		rl := ccAcc.RateLimits
@@ -697,13 +706,13 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			}
 		}
 
-		// Subscription accounts expose their unified windows as quota
-		// pools; API-key accounts have no such windows and get none.
+		// Subscription accounts expose their windows as quota pools, from
+		// the unified headers or the usage engine's fallbacks. API-key
+		// accounts have no such windows and get pools only from configured
+		// limits.
+		ccPools, lastChecked, ccUsage := server.claudeCodeLimitsAndUsage(ccAcc, ccLimits[ccAcc.ID], server.now())
 		var ccQuota map[string]any
-		var ccPools map[string]accounts.ModelQuota
-		if ccAcc.Type == "oauth" || ccAcc.Type == "setup_token" {
-			var lastChecked any
-			ccPools, lastChecked = claudeCodeQuotaPools(rl.Unified, server.now())
+		if ccAcc.Type == "oauth" || ccAcc.Type == "setup_token" || len(ccPools) > 0 {
 			ccQuota = map[string]any{
 				"models":      map[string]any{},
 				"pools":       ccPools,
@@ -799,6 +808,9 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 		}
 		if ccQuota != nil {
 			row["quota"] = ccQuota
+		}
+		if ccUsage != nil {
+			row["usage"] = ccUsage
 		}
 		result = append(result, row)
 	}
