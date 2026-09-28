@@ -84,6 +84,21 @@ var cacheBumpKeys = []string{
 	"cacheBumpRefresh", "cacheBumpSaved",
 }
 
+// cloudSessionsKeys are the i18n keys referenced by the Cloud Sessions tab in
+// views/settings.html and js/components/cloud-sessions.js. Every locale must
+// define them.
+var cloudSessionsKeys = []string{
+	"tabCloudSessions", "cloudSessionsTitle", "cloudSessionsDesc",
+	"cloudSessionsDisabled", "cloudSessionsEnable", "cloudSessionsRestartNote",
+	"cloudSessionsSaved", "cloudSessionsRefresh", "cloudSessionsListen",
+	"cloudSessionsCaFingerprint", "cloudSessionsCaExpires", "cloudSessionsDownloadCa",
+	"cloudSessionsEnvSnippet", "cloudSessionsCopy", "cloudSessionsCopied",
+	"cloudSessionsTerminated", "cloudSessionsTunnelled", "cloudSessionsHandshakeFailures",
+	"cloudSessionsUpstreamErrors", "cloudSessionsNoSessions", "cloudSessionsColId",
+	"cloudSessionsColModel", "cloudSessionsColStatus", "cloudSessionsColEnvironment",
+	"cloudSessionsColRequests", "cloudSessionsColLastSeen", "cloudSessionsColLastRoute",
+}
+
 var locales = []string{"en", "pt"}
 
 // quotaStatusKeys are the i18n keys used by the per-account status pill in
@@ -492,5 +507,36 @@ func TestTranslations_QuotaUsageKeysReferenced(t *testing.T) {
 		if !strings.Contains(src, "'"+key+"'") {
 			t.Errorf("translation key %q is not referenced by the accounts view", key)
 		}
+	}
+}
+
+func TestTranslations_CloudSessionsKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range cloudSessionsKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_CloudSessionsTemplateReferences(t *testing.T) {
+	b, err := Assets.ReadFile("public/views/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	src := string(b)
+	for _, key := range cloudSessionsKeys {
+		if key == "cloudSessionsSaved" {
+			continue // referenced from cloud-sessions.js, not the template
+		}
+		if !strings.Contains(src, fmt.Sprintf("t('%s')", key)) {
+			t.Errorf("settings.html does not reference translation key %q", key)
+		}
+	}
+	if !strings.Contains(src, "settingsTab === 'cloudsessions'") {
+		t.Error("settings.html must define the cloudsessions tab")
 	}
 }
