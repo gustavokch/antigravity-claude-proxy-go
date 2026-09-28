@@ -355,6 +355,7 @@ note "$SUMMARY holds only masked paths, key names, types and status codes: safe 
 pause "Show the summary?"
 printf '\n'; sed 's/^/  /' "$SUMMARY"; printf '\n'
 say "Paste the summary above back to Claude. Files: $PROBE_DIR (probe.jsonl is shape-only)."
+pause "Copied the summary? Press Enter to finish (the screen clears)."
 # ──────────────────────────────────────────────────────────────────────────
 
 finish

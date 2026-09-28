@@ -317,6 +317,7 @@ note "Only 8-char hashes and field names are in this file: safe to paste."
 printf '\n'; sed 's/^/  /' "$SUMMARY"
 printf '\n'
 say "Paste everything above back to Claude. Full files: $PROBE_DIR"
+pause "Copied the summary? Press Enter to finish (the screen clears)."
 # ──────────────────────────────────────────────────────────────────────────
 
 finish
