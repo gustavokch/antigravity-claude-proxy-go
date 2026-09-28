@@ -24,6 +24,7 @@ import (
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/logger"
+	"antigravity-go-proxy/internal/mitm"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
 	"antigravity-go-proxy/internal/webui"
@@ -235,6 +236,26 @@ func runServer(args []string) {
 		ccUsage = nil
 	}
 
+	// The observe-only Claude Code forward proxy. A failure to start it is
+	// logged and never stops the main proxy.
+	var mitmRuntime *mitm.Runtime
+	if cfg.Mitm.Enabled {
+		if err := cfg.Mitm.Validate(); err != nil {
+			slogger.Warn("mitm forward proxy disabled: invalid config", "error", err)
+		} else if rt, err := mitm.StartRuntime(mitm.RuntimeConfig{
+			Dir:         filepath.Join(config.GetConfigDir(), "mitm"),
+			Listen:      cfg.Mitm.Listen,
+			RegistryMax: cfg.Mitm.RegistryMax,
+			RegistryTTL: time.Duration(cfg.Mitm.RegistryTTLMinutes) * time.Minute,
+			Logger:      slogger,
+		}); err != nil {
+			slogger.Warn("mitm forward proxy disabled", "error", err)
+		} else {
+			mitmRuntime = rt
+			slogger.Info("mitm forward proxy listening", "address", rt.Addr, "caFingerprint", rt.CA.Fingerprint())
+		}
+	}
+
 	handler, err := api.New(api.Options{
 		APIKey:         *apiKey,
 		Backend:        dispatcher,
@@ -246,6 +267,7 @@ func runServer(args []string) {
 		OAuthHandler:   oauthMgr,
 		Tracker:        tracker,
 		CCUsage:        ccUsage,
+		Mitm:           mitmRuntime,
 	})
 	if err != nil {
 		slogger.Error("invalid proxy configuration", "error", err)
@@ -284,6 +306,11 @@ func runServer(args []string) {
 		defer cancel()
 		if err := httpServer.Shutdown(ctx); err != nil {
 			slogger.Error("graceful shutdown failed", "error", err)
+		}
+		if mitmRuntime != nil {
+			if err := mitmRuntime.Shutdown(ctx); err != nil {
+				slogger.Warn("mitm forward proxy shutdown", "error", err)
+			}
 		}
 		// After the drain, so usage recorded by the last requests reaches
 		// the ledger.

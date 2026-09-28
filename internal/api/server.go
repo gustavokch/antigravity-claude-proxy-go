@@ -45,6 +45,7 @@ import (
 	"antigravity-go-proxy/internal/headroom/stages/smart"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/logger"
+	"antigravity-go-proxy/internal/mitm"
 	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
@@ -98,6 +99,8 @@ type Options struct {
 	ClaudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	// CCUsage is the Claude Code usage engine; nil turns usage tracking off.
 	CCUsage *ccusage.Engine
+	// Mitm is the running observe-only forward proxy; nil when disabled.
+	Mitm *mitm.Runtime
 }
 
 type Server struct {
@@ -116,6 +119,7 @@ type Server struct {
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	tracker            *stats.Tracker
 	ccUsage            *ccusage.Engine
+	mitm               *mitm.Runtime
 	ccCalibration      claudeCodeCalibrator
 	kimiOAuthMgr       *auth.KimiOAuthManager
 	kimiIdentityOnce   sync.Once
@@ -180,6 +184,7 @@ func New(options Options) (*Server, error) {
 		webUI: options.WebUI, oauthHandler: options.OAuthHandler, tracker: options.Tracker,
 		claudeCodeOAuthMgr: options.ClaudeCodeOAuthMgr,
 		ccUsage:            options.CCUsage,
+		mitm:               options.Mitm,
 		projects:           make(map[string]string),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)

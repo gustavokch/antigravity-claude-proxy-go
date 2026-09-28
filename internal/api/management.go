@@ -176,6 +176,18 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	case path == "/api/cache-bump" && method == http.MethodGet:
 		server.handleCacheBumpGet(writer, request)
 		return true
+	case path == "/api/mitm/status" && method == http.MethodGet:
+		server.handleMitmStatus(writer, request)
+		return true
+	case path == "/api/mitm/ca.pem" && method == http.MethodGet:
+		server.handleMitmCA(writer, request)
+		return true
+	case path == "/api/sessions/cloud" && method == http.MethodGet:
+		server.handleCloudSessionsList(writer, request)
+		return true
+	case strings.HasPrefix(path, "/api/sessions/cloud/") && method == http.MethodGet:
+		server.handleCloudSessionGet(writer, request, strings.TrimPrefix(path, "/api/sessions/cloud/"))
+		return true
 	case path == "/api/cache-bump" && method == http.MethodDelete:
 		server.handleCacheBumpClear(writer, request)
 		return true
@@ -1258,6 +1270,22 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 	if err := json.NewDecoder(request.Body).Decode(&updates); err != nil || len(updates) == 0 {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "No valid configuration updates provided"})
 		return
+	}
+
+	if rawMitm, ok := updates["mitm"]; ok && rawMitm != nil {
+		merged := config.Get().Mitm
+		mitmBytes, err := json.Marshal(rawMitm)
+		if err == nil {
+			err = json.Unmarshal(mitmBytes, &merged)
+		}
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid mitm configuration format"})
+			return
+		}
+		if err := merged.Validate(); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+			return
+		}
 	}
 
 	if rawClassifier, ok := updates["classifier"]; ok && rawClassifier != nil {
