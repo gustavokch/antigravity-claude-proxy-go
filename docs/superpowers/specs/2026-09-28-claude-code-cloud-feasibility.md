@@ -241,14 +241,67 @@ Each step ends with `go build -o bin/proxy ./cmd/proxy` plus the check listed.
 
 WebUI checks for steps 1, 5 and 6 happen in the new sub-tabs.
 
-## 9. Open questions
+## 9. Open questions: resolution status (2026-09-28)
 
-1. **Cloud session API.** Recapture `claude --remote` / teleport traffic with the capture's allowed hosts widened beyond `api.anthropic.com`. Until then, no emulation.
-2. **Claude Code session identity.** Does 2.1.280 send a stable per-conversation `metadata.user_id.session_id`? The capture never dumps bodies (`.reference/claude-code-headers-20260923.meta.txt:18-20`), so a capture of body keys only is needed.
-3. **Forcing a session from the CLI.** Can the CLI send `x-session-id`, for example via `ANTHROPIC_CUSTOM_HEADERS`? Needs a docs lookup.
-4. **HTTP/1.1 vs HTTP/2 to Anthropic.** Real Claude Code uses HTTP/1.1 to `api.anthropic.com` (`.reference/claude-code-headers-20260923.txt:15`). The proxy's Claude Code client uses DefaultTransport, which will likely negotiate HTTP/2. This is an existing mismatch that has not been confirmed; a pcap of proxy→Anthropic would settle it. A tuned client must not change the protocol silently.
-5. **agy connection-reuse profile.** Idle close timing and TCP keepalive probes need a pcap before any Cloud Code knob is exposed.
-6. **agy `sessionId` semantics.** Per process or per conversation? Check with `strings` on the agy binary. The current per-account value (`internal/format/builder.go:77`) stays unchanged until there is evidence.
+Each question has an agreed probe. Results below come from probes run in the cloud container against the local `claude` CLI 2.1.284 (the 2026-09-23 capture used 2.1.280), with a clean environment (`env -i`) and a dummy API key. Probe scratch files are not committed. Header and body values were recorded as short sha256 prefixes only.
+
+Correction to the earlier wording of Q2 and Q3: `.reference/claude-code-headers-20260923.txt:114,174` already shows an `X-Claude-Code-Session-Id` header and `metadata.user_id.session_id`, so the capture did show a session id. `ccExtractSessionID` (`internal/api/claudecode_proxy.go:193-200`) reads neither of them by name; it falls back to `metadata.user_id`, which is the whole JSON string including `device_id`.
+
+| # | Status | Probe / evidence |
+|---|---|---|
+| 1 | Partly answered, capture gated | Static inventory plus docs lookup (below). Widened mitm capture (C) not run; needs the user's explicit go. |
+| 2 | **Answered** | Per conversation, not per process. |
+| 3 | **Answered** | The CLI forwards a custom `x-session-id` header. |
+| 4 | **Answered** (client side) | The CLI negotiates HTTP/1.1; a Go `DefaultTransport` client negotiates h2. |
+| 5 | Partly answered | Existing pcaps show fan-out, not idle behavior. Long capture (B) held back. |
+| 6 | Probe written, not run | User-side wizard; awaiting results. |
+
+### Q1. Cloud session API
+
+- **Probe A (static, done).** The native CLI binary (2.1.284) contains these route templates. The npm `cli.js` in the container is 2.1.42 and stale; do not use it.
+  - `/v1/code/sessions`, `/v1/code/sessions/{id}/events`, `/events/stream`, `/archive`, `/bridge`, `/teleport-events`, `/move-to-cloud`, `/remote`, `/worker/register`, `/worker/heartbeat`, `/worker/events`, `/client/presence`
+  - `/v1/environments`, `/v1/environments/bridge`, `/v1/environments/{id}/work/poll`, `/work/{id}/heartbeat`, `/work/{id}/ack`, `/work/{id}/stop`
+  - `/v1/session_ingress/session/{id}`, `/v1/code/runners/self`, `/v1/code/triggers`
+  - These are names found in strings. Request and response schemas were not recoverable, and the host each call uses was not determined.
+- **Probe B (docs, done).** A docs lookup by a subagent found a published Managed Agents API (`POST/GET /v1/sessions`, `/v1/agents`, `/v1/environments`, API-key auth, `anthropic-beta: managed-agents-2026-04-01`). It found no public documentation for any `/v1/code/*`, `/v1/environments/bridge` or `/v1/session_ingress/*` route. Not independently re-verified; "not found" is not proof of absence.
+- **Reading.** The Managed Agents API is a different product from the CLI's remote sessions (API key, server-hosted sandbox). Emulating the CLI's `/v1/code/*` surface still has no schema source, so the AGENTS.md stop condition stands. Note that `/v1/sessions` also appears in the binary; whether it is the same API is unknown.
+- **Next, if wanted.** Probe C: a widened mitm capture during `claude --remote`, recording method, path, header names and body key names only. It creates a real cloud session on the user's account and passes their token through the capture.
+- **Unblocks.** Feasibility of cloud-session emulation. Local sessions (§8 POC 1-4) are unaffected.
+
+### Q2. Claude Code session identity: answered
+
+- Two separate `claude -p` processes produced different session ids. A third run with `--continue` reused the previous conversation's id.
+- `X-Claude-Code-Session-Id` and `metadata.user_id.session_id` were equal in every request. `device_id` was constant across all runs. `account_uuid` was empty, as in the earlier capture.
+- Conclusion: the id is per conversation, at least across `--continue`. Not tested: `--resume <id>`, `/clear`, an interactive session, and OAuth auth mode (the probe used an API key).
+- Consequence: the existing sticky key can serve as a session identity for POC 1-4 without client cooperation. Reading `X-Claude-Code-Session-Id` (and hashing it for display) is cleaner than the `metadata.user_id` fallback, which leaks `device_id` (§7 risk 3).
+
+### Q3. Forcing a session from the CLI: answered
+
+- With `ANTHROPIC_CUSTOM_HEADERS='x-session-id: poc1'`, the header arrived on `POST /v1/messages?beta=true`. It was not sent on the startup `HEAD /api/hello`.
+- Consequence: the `POST /api/sessions` pre-pin flow in §5 works as drafted. A client-supplied `x-session-id` and the CLI's own `X-Claude-Code-Session-Id` both reach the proxy, and `ccExtractSessionID` currently prefers the former.
+- Note for anyone repeating this in a Claude Code Remote container: the container sets `CLAUDE_CODE_REMOTE` and related variables that change CLI behavior (an extra `/v1/code/agent-proxy/ca-cert` fetch and 90 s stalls). Use `env -i`.
+
+### Q4. HTTP/1.1 vs HTTP/2: answered on the client side
+
+- A local TLS server offered ALPN `[h2, http/1.1]`. Go `http.DefaultTransport` (what `NewClient(nil)` uses, `internal/claudecode/client.go:307`) selected `h2` and sent the HTTP/2 preface. The real CLI selected `http/1.1` on every connection, including retries.
+- The mismatch is confirmed. What `api.anthropic.com` itself selects was not tested and does not change what each client requests.
+- Decision needed from the owner: a tuned Claude Code client would need HTTP/1.1 only (`Transport.ForceAttemptHTTP2=false` plus an empty `TLSNextProto` map). That is a Transport setting, not a `tls.Config` edit, but it does change ALPN. Whether the AGENTS.md "no custom NextProtos" rule, which was written for agy and Cloud Code, applies to the Anthropic host is the owner's call.
+- Header casing follows: HTTP/1.1 preserves case as written, HTTP/2 lowercases it (see `.reference/claude-code-headers-20260923.txt:15`).
+
+### Q5. agy connection-reuse profile: partly answered
+
+- Existing pcaps parsed for TCP flows (SNI checked):
+  - `agy-current-capture.pcap`: 120 packets over 1.6 s, 5 TCP flows, all to `daily-cloudcode-pa`; 3 opened within the same 0.88 s window.
+  - `agy-capture.pcap` (older): 100 packets over 1.3 s, 6 flows (4 to daily, 2 to `www.googleapis.com`).
+  - `go-current-capture.pcap`: 1 flow to daily carrying nearly all traffic (100 packets, 78 KB); `proxy-capture.pcap`: 1 flow.
+- So one agy invocation opens several parallel connections, while the proxy uses one. The agy pattern is startup fan-out (`loadCodeAssist`, `fetchAvailableModels` and others, per `.reference/agy-headers-mitm-20260903.txt`), so it is not directly comparable to a single-generation proxy call.
+- Idle close timing and TCP keepalive probes cannot be derived: every capture window is under 32 s and ends at a packet limit. Probe B (long capture, agy interactive with a 3 minute idle, same run against the proxy) is held back.
+- Consequence: no evidence supports exposing any Cloud Code transport knob. The transport stays frozen.
+
+### Q6. agy `sessionId` semantics: probe written
+
+- Wizard: `scripts/probe-agy-session-id.sh` with addon `scripts/mitm_agy_session_probe.py` (both uncommitted). It scans the agy binary for session-shaped strings, then captures `sessionId` (and any conversation or trajectory field, since agy sends `writeTrajectoryAcls`) from two separate `agy --print` runs and one interactive two-message conversation. Only field names, lengths and 8-char hashes are recorded.
+- Tested offline (addon against a fake flow, summary script against fake data); not run against agy. The current per-account value (`internal/format/builder.go:77`) stays unchanged until results exist.
 
 ## Found in passing (not part of this scope)
 
