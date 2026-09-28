@@ -27,7 +27,7 @@ Out of scope: emulating cloud execution (it runs in Anthropic's container), rewr
   - `CONNECT host:443` to an allowlisted host: reply 200, hijack, terminate TLS (server-side `tls.Config`, ALPN `http/1.1` only).
   - `CONNECT` to any other host: blind byte tunnel; the proxy sees the SNI only.
 - **`upstream.go`**
-  - A dedicated `http.Transport` for `api.anthropic.com`: empty `tls.Config{}`, HTTP/1.1 only (`ForceAttemptHTTP2=false`, empty `TLSNextProto`), no total timeout, so streams are not cut (the existing 5 min total timeout is a known defect).
+  - Requests are relayed as raw HTTP/1.1 messages (`httpwire.go`) over a connection opened with an empty `tls.Config{}`; `net/http` is not used for the wire because it sorts and canonicalizes headers. HTTP/1.1 only, no total timeout, so streams are not cut (the existing 5 min total timeout is a known defect).
   - Header names are forwarded exactly as the client sent them, by parsing the raw request head; Go's canonicalized `http.Header` is not used for the wire. Bodies pass through unmodified in both directions.
 - **`observer.go`**
   - Receives a parsed summary only: method, masked route, status, and the extracted fields below. It never receives headers or bodies, so credentials cannot be logged by construction.
@@ -47,7 +47,7 @@ Matched routes (from the 2026-09-28 capture): `POST /v1/sessions`, `GET /v1/envi
 - CA missing or unreadable: mitm disables itself and logs the reason; the main proxy still starts.
 - Client TLS handshake failure (usually trust): log once per host with a `NODE_EXTRA_CA_CERTS` hint, then close.
 - Upstream dial or TLS error: 502 JSON to the client. No fallback host.
-- Upgrade / WebSocket: forward, then splice bytes both ways, recording the path only. Best-effort; the capture never observed one.
+- Upgrade / WebSocket: forward, then splice bytes both ways, recording the path only. Best-effort; the capture never observed one. `Expect: 100-continue` returns 417. `101` upgrades are spliced.
 - Observer panic or parse error: recovered, record dropped, forwarding unaffected.
 - Limits: 64 KB header cap, 2 min keep-alive idle timeout, no total stream timeout.
 
@@ -58,7 +58,7 @@ Config (default off, so existing configs need no migration; there is no config v
 "mitm": { "enabled": false, "listen": "127.0.0.1:8092", "registryMax": 1000, "registryTtlMinutes": 1440 }
 ```
 - `handleConfigSave` rejects a non-loopback `listen`.
-- The generic config merge cannot delete keys, so `mitm` gets the same save special case as `modelMapping`.
+- All `mitm` fields are scalars, so the generic config merge is correct; a partial block keeps the defaults.
 - `cmd/proxy/main.go` starts the listener only when enabled and shuts it down with the existing signal handler. A start failure never stops the main proxy.
 
 API (read-only, behind `checkWebUIPassword`):
@@ -68,7 +68,7 @@ API (read-only, behind `checkWebUIPassword`):
 - `GET /api/sessions/cloud/{id}`: one entry.
 - No SSE; the WebUI polls (pattern: `js/components/models.js`).
 
-WebUI: a "cloud sessions" sub-tab in settings with a status card (CA fingerprint, certificate download, copy-ready `HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=…` snippet) and a sessions table polling every 5 s.
+WebUI: a "cloud sessions" sub-tab in settings with a status card (CA fingerprint, certificate download, copy-ready `HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=…` snippet) and a sessions table polling every 5 s. The tab has an enable toggle (applies on restart).
 
 Prerequisite, not part of this work: the WebUI password comparison is not constant-time and also accepts `?password=` (`internal/api/management.go:29-40`, feasibility §7 risk 3).
 
