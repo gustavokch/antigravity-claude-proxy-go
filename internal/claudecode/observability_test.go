@@ -96,3 +96,16 @@ func TestFormatInt(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestMetrics_UsageSplit(t *testing.T) {
+	m := &RequestMetrics{CacheCreationTokens: 10, CacheCreation1hTokens: 15}
+	u := m.usage()
+	if u.CacheCreate != 15 || u.CacheCreate5m != 0 || u.CacheCreate1h != 15 {
+		t.Fatalf("usage() = create %d, 5m %d, 1h %d; want 15, 0, 15", u.CacheCreate, u.CacheCreate5m, u.CacheCreate1h)
+	}
+	m = &RequestMetrics{CacheCreationTokens: 10, CacheCreation1hTokens: 4}
+	u = m.usage()
+	if u.CacheCreate != 10 || u.CacheCreate5m != 6 || u.CacheCreate1h != 4 {
+		t.Fatalf("usage() = create %d, 5m %d, 1h %d; want 10, 6, 4", u.CacheCreate, u.CacheCreate5m, u.CacheCreate1h)
+	}
+}

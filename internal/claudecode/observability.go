@@ -139,18 +139,19 @@ func (m *RequestMetrics) ComputeFinalMetrics(sessionTracker *SessionTracker) {
 }
 
 // usage converts the token counts into the Usage the shared pricer takes.
+// As in usageAccumulator.result, a 1h part larger than the total raises the
+// total, so the parts never exceed it.
 func (m *RequestMetrics) usage() Usage {
+	cw := int64(m.CacheCreationTokens)
 	cw1h := int64(m.CacheCreation1hTokens)
-	cw5m := int64(m.CacheCreationTokens) - cw1h
-	if cw5m < 0 {
-		cw5m = 0
-	}
+	cw = max(cw, cw1h)
+	cw5m := cw - cw1h
 	return Usage{
 		Model:         m.Model,
 		Input:         int64(m.InputTokens),
 		Output:        int64(m.OutputTokens),
 		CacheRead:     int64(m.CacheReadTokens),
-		CacheCreate:   int64(m.CacheCreationTokens),
+		CacheCreate:   cw,
 		CacheCreate5m: cw5m,
 		CacheCreate1h: cw1h,
 		Speed:         m.Speed,
