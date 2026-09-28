@@ -249,7 +249,7 @@ Correction to the earlier wording of Q2 and Q3: `.reference/claude-code-headers-
 
 | # | Status | Probe / evidence |
 |---|---|---|
-| 1 | Partly answered, capture gated | Static inventory plus docs lookup (below). Widened mitm capture (C) not run; needs the user's explicit go. |
+| 1 | Partly answered, capture written | Static inventory plus docs lookup (below). Widened mitm capture (C) is a user-side wizard, written and tested offline, not yet run. |
 | 2 | **Answered** | Per conversation, not per process. |
 | 3 | **Answered** | The CLI forwards a custom `x-session-id` header. |
 | 4 | **Answered** (client side) | The CLI negotiates HTTP/1.1; a Go `DefaultTransport` client negotiates h2. |
@@ -265,7 +265,8 @@ Correction to the earlier wording of Q2 and Q3: `.reference/claude-code-headers-
   - These are names found in strings. Request and response schemas were not recoverable, and the host each call uses was not determined.
 - **Probe B (docs, done).** A docs lookup by a subagent found a published Managed Agents API (`POST/GET /v1/sessions`, `/v1/agents`, `/v1/environments`, API-key auth, `anthropic-beta: managed-agents-2026-04-01`). It found no public documentation for any `/v1/code/*`, `/v1/environments/bridge` or `/v1/session_ingress/*` route. Not independently re-verified; "not found" is not proof of absence.
 - **Reading.** The Managed Agents API is a different product from the CLI's remote sessions (API key, server-hosted sandbox). Emulating the CLI's `/v1/code/*` surface still has no schema source, so the AGENTS.md stop condition stands. Note that `/v1/sessions` also appears in the binary; whether it is the same API is unknown.
-- **Next, if wanted.** Probe C: a widened mitm capture during `claude --remote`, recording method, path, header names and body key names only. It creates a real cloud session on the user's account and passes their token through the capture.
+- **Flag correction.** In 2.1.284 the command is `claude --cloud [description|session_id|url]` (`--remote` survives only as an alias in error text). `claude -p "msg" --cloud <session-id>` messages an existing session. `--cloud` packages and uploads the working tree ("file sync": `/synced_file/uploads`), so any capture must start from a throwaway directory.
+- **Probe C (written, not run).** `scripts/probe-cloud-session-api.sh` with addon `scripts/mitm_cloud_session_probe.py`. It creates one throwaway cloud session from a dummy directory, messages it headlessly, re-attaches it, and records only masked paths, query and header names, JSON key/type skeletons, status codes and every CONNECT host. It intercepts Anthropic-owned hosts only and never writes tokens, prompts, file contents, repo names or raw ids. It creates a real session on the user's account, which the wizard tells them to archive afterwards. Addon tested offline with a leak test; the wizard itself was not run.
 - **Unblocks.** Feasibility of cloud-session emulation. Local sessions (§8 POC 1-4) are unaffected.
 
 ### Q2. Claude Code session identity: answered
