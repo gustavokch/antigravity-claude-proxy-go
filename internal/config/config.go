@@ -177,6 +177,7 @@ type Config struct {
 	CacheBump                   CacheBumpConfig           `json:"cacheBump,omitempty"`
 	GatewayOrder                GatewayOrderConfig        `json:"gatewayOrder"`
 	Classifier                  ClassifierConfig          `json:"classifier"`
+	Mitm                        MitmConfig                `json:"mitm"`
 }
 
 type ClassifierActionMode string
@@ -692,6 +693,7 @@ func DefaultConfig() Config {
 			Routing:    claudecode.DefaultRoutingConfig(),
 		},
 		Classifier: DefaultClassifierConfig(),
+		Mitm:       DefaultMitmConfig(),
 	}
 }
 
