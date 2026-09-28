@@ -105,6 +105,12 @@ type RequestMetrics struct {
 	CacheHitRate        float64       `json:"cache_hit_rate"`
 	CallCost            float64       `json:"call_cost"`
 	SessionCost         float64       `json:"session_cost"`
+
+	// CacheCreation1hTokens is the part of CacheCreationTokens written with
+	// the 1h TTL; the rest is 5m. Speed is the response's usage.speed. Both
+	// are passed to the pricer and may be zero or empty.
+	CacheCreation1hTokens int    `json:"cache_creation_1h_tokens,omitempty"`
+	Speed                 string `json:"speed,omitempty"`
 }
 
 // ComputeFinalMetrics calculates TPS, cache hit rate, and costs.
@@ -123,13 +129,33 @@ func (m *RequestMetrics) ComputeFinalMetrics(sessionTracker *SessionTracker) {
 		m.ThroughputTPS = 0.0
 	}
 
-	m.CallCost = CalculateCost(m.Model, m.InputTokens, m.OutputTokens, m.CacheCreationTokens, m.CacheReadTokens)
+	m.CallCost = UsageCost(m.Model, m.usage())
 
 	if sessionTracker == nil {
 		sessionTracker = DefaultSessionTracker
 	}
 	sStats := sessionTracker.Record(m.SessionID, m.InputTokens, m.OutputTokens, m.CacheReadTokens, m.CallCost)
 	m.SessionCost = sStats.TotalCost
+}
+
+// usage converts the token counts into the Usage the shared pricer takes.
+// As in usageAccumulator.result, a 1h part larger than the total raises the
+// total, so the parts never exceed it.
+func (m *RequestMetrics) usage() Usage {
+	cw := int64(m.CacheCreationTokens)
+	cw1h := int64(m.CacheCreation1hTokens)
+	cw = max(cw, cw1h)
+	cw5m := cw - cw1h
+	return Usage{
+		Model:         m.Model,
+		Input:         int64(m.InputTokens),
+		Output:        int64(m.OutputTokens),
+		CacheRead:     int64(m.CacheReadTokens),
+		CacheCreate:   cw,
+		CacheCreate5m: cw5m,
+		CacheCreate1h: cw1h,
+		Speed:         m.Speed,
+	}
 }
 
 // LogObservability emits structured and formatted logging for Claude Code requests.

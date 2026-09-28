@@ -7,21 +7,34 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
-	"antigravity-go-proxy/internal/openrouter"
 )
 
 var (
 	ccPoolMu   sync.Mutex
 	ccPoolInst *claudecode.AccountPool
 	ccPoolKey  string // tracks config identity to detect changes
+	// ccPoolStale forces the next getOrCreateCCPool to rebuild while keeping
+	// the old pool reachable, so its live state can be carried over.
+	ccPoolStale bool
 )
+
+// invalidateCCPoolLocked marks the pool for rebuild on next use after a
+// config change. ccPoolMu must be held. Unlike dropping ccPoolInst, the old
+// pool stays reachable so the rebuild can inherit its unified snapshots and
+// retire it.
+func invalidateCCPoolLocked() {
+	ccPoolStale = true
+	ccHTTPClient = nil
+}
 
 var ccHTTPClient *claudecode.Client
 
@@ -47,11 +60,34 @@ func (server *Server) getOrCreateCCPool(cfg claudecode.Config) (*claudecode.Acco
 	defer ccPoolMu.Unlock()
 
 	key := cfg.BaseURL
-	if ccPoolInst == nil || ccPoolKey != key || !ccAccountsEqual(ccPoolCfg.Accounts, cfg.Accounts) {
-		ccPoolInst = claudecode.NewAccountPool(cfg.Accounts)
+	if ccPoolInst == nil || ccPoolStale || ccPoolKey != key || !ccAccountsEqual(ccPoolCfg.Accounts, cfg.Accounts) {
+		oldPool := ccPoolInst
+		newPool := claudecode.NewAccountPool(cfg.Accounts)
+
+		// Surviving accounts keep their in-memory subscription windows,
+		// which are at least as fresh as the stored ones. The old pool is
+		// retired before the new one is published, so a save it still had
+		// queued cannot overwrite the new account set on disk.
+		if oldPool != nil {
+			newPool.InheritUnified(oldPool)
+			// May block getOrCreateCCPool callers on one atomic file write.
+			oldPool.Retire()
+		}
+
+		ccPoolInst = newPool
+		ccPoolStale = false
 		ccHTTPClient = claudecode.NewClient(claudecode.NormalizeBaseURL(cfg.BaseURL), nil)
 		ccPoolKey = key
 		ccPoolCfg = cfg
+
+		// Pick up the last known subscription limits so a restart (or a
+		// pool rebuilt after a config change) does not start blank. The
+		// explicit path also enables saving unified snapshot changes.
+		// Accounts that inherited a snapshot above are skipped.
+		ccPoolInst.SetStoragePath(claudecode.DefaultStoragePath())
+		if err := ccPoolInst.RestoreStoredUnified(); err != nil {
+			slog.Warn("claudecode: failed to restore unified limit snapshots", "error", err)
+		}
 
 		if server != nil && server.claudeCodeOAuthMgr != nil {
 			oauthMgr := server.claudeCodeOAuthMgr
@@ -215,31 +251,51 @@ type ccAttempt struct {
 	startTime   time.Time
 	pool        *claudecode.AccountPool
 	rateLimits  claudecode.RateLimits
+	requestID   string // upstream "request-id" response header
 }
 
 // recordClaudeCodeMetrics is the single place a completed Claude Code call
 // becomes metrics, logs, pool accounting and dashboard stats. Mirrors
-// recordOpenRouterMetrics.
-func (server *Server) recordClaudeCodeMetrics(a ccAttempt, in, out, cr, cw int) claudecode.RequestMetrics {
+// recordOpenRouterMetrics. u is the detailed usage captured from the upstream
+// response; its cost comes from claudecode.UsageCost via ComputeFinalMetrics.
+func (server *Server) recordClaudeCodeMetrics(a ccAttempt, u claudecode.Usage) claudecode.RequestMetrics {
 	latency := time.Since(a.startTime)
+	u.RequestID = a.requestID
+	in, out, cr, cw := int(u.Input), int(u.Output), int(u.CacheRead), int(u.CacheCreate)
 	metrics := claudecode.RequestMetrics{
-		Model:               a.model,
-		AccountID:           a.accountID,
-		AccountName:         a.accountName,
-		SessionID:           a.sessionID,
-		InputTokens:         in,
-		OutputTokens:        out,
-		CacheReadTokens:     cr,
-		CacheCreationTokens: cw,
-		Latency:             latency,
+		Model:                 a.model,
+		AccountID:             a.accountID,
+		AccountName:           a.accountName,
+		SessionID:             a.sessionID,
+		InputTokens:           in,
+		OutputTokens:          out,
+		CacheReadTokens:       cr,
+		CacheCreationTokens:   cw,
+		CacheCreation1hTokens: int(u.CacheCreate1h),
+		Speed:                 u.Speed,
+		Latency:               latency,
 	}
 	metrics.ComputeFinalMetrics(claudecode.DefaultSessionTracker)
 	if server.logger != nil {
 		claudecode.LogObservability(server.logger, metrics)
 	}
+	if server.logger != nil && server.logger.Enabled(context.Background(), slog.LevelDebug) {
+		server.logger.Debug("claudecode usage detail",
+			"account", a.accountID,
+			"message_id", u.MessageID,
+			"served_model", u.Model,
+			"request_id", u.RequestID,
+			"cache_creation_5m", u.CacheCreate5m,
+			"cache_creation_1h", u.CacheCreate1h,
+			"speed", u.Speed,
+			"iterations", len(u.Iterations),
+		)
+	}
 	if a.pool != nil {
 		a.pool.RecordSuccess(a.accountID, int64(in+out), metrics.CallCost, a.rateLimits)
 	}
+	server.recordClaudeCodeUsage(a.accountID, a.sessionID, a.model, ccusage.OriginProxy, u)
+	server.noteClaudeCodeRateLimits(a.accountID, a.rateLimits)
 	if server.tracker != nil {
 		server.tracker.TrackRequest(a.model, latency, in, out, cr)
 	}
@@ -258,12 +314,14 @@ func ccIsSSEResponse(h http.Header) bool {
 // and parsed — the same split the OpenRouter gateway makes between its stream
 // and unary paths.
 //
-// The usage parsers are shared with the OpenRouter gateway because they are
-// wire-format generic (they read Anthropic and OpenAI shapes alike).
+// The capture is Anthropic-specific (claudecode.UsageInterceptor and
+// ParseUsageJSON) so it also records the message ID, served model, upstream
+// request ID and the 5m/1h cache write split.
 func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
+	a.requestID = resp.Header.Get("request-id")
 	if ccIsSSEResponse(resp.Header) {
-		resp.Body = openrouter.NewSSEInterceptor(resp.Body, func(in, out, cr, cw int) {
-			server.recordClaudeCodeMetrics(a, in, out, cr, cw)
+		resp.Body = claudecode.NewUsageInterceptor(resp.Body, func(u claudecode.Usage) {
+			server.recordClaudeCodeMetrics(a, u)
 		})
 		return
 	}
@@ -277,8 +335,7 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		return
 	}
-	in, out, cr, cw := openrouter.ParseUsageFromJSON(body)
-	server.recordClaudeCodeMetrics(a, in, out, cr, cw)
+	server.recordClaudeCodeMetrics(a, claudecode.ParseUsageJSON(body))
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 }
 
@@ -397,6 +454,7 @@ func (server *Server) forwardToClaudeCode(
 						_ = resp.Body.Close()
 						pool.Release(acc.ID)
 						pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+						server.noteClaudeCodeRateLimits(acc.ID, rl)
 						if server.logger != nil {
 							server.logger.Warn("claudecode 429, failing over", "account", acc.ID, "body", strings.TrimSpace(string(last429Body)))
 						}
@@ -439,6 +497,9 @@ func (server *Server) forwardToClaudeCode(
 			}
 
 			opts := server.defaultCCROptions(sender)
+			if ccCfg.ForwardUnifiedHeadersEnabled() {
+				opts.ResponseHeaderFilter = ccCopyUnifiedHeaders
+			}
 			isStreaming, _ := reqMap["stream"].(bool)
 			if isStreaming {
 				_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
@@ -458,7 +519,7 @@ func (server *Server) forwardToClaudeCode(
 		acc, err := pool.SelectAccount(sessionKey, excluded)
 		if err != nil {
 			if last429Body != nil {
-				writeCCUpstream429(writer, last429Body, last429Header)
+				writeCCUpstream429(writer, last429Body, last429Header, ccCfg.ForwardUnifiedHeadersEnabled())
 				return
 			}
 			writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "No Claude Code accounts available: "+err.Error())
@@ -531,6 +592,7 @@ func (server *Server) forwardToClaudeCode(
 			_ = resp.Body.Close()
 			pool.Release(acc.ID)
 			pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+			server.noteClaudeCodeRateLimits(acc.ID, rl)
 			if server.logger != nil {
 				server.logger.Warn("claudecode 429, failing over", "account", acc.ID, "body", strings.TrimSpace(string(last429Body)))
 			}
@@ -559,7 +621,7 @@ func (server *Server) forwardToClaudeCode(
 		defer resp.Body.Close()
 		defer pool.Release(acc.ID)
 
-		ccCopyResponseHeaders(writer.Header(), resp.Header)
+		ccCopyResponseHeaders(writer.Header(), resp.Header, ccCfg.ForwardUnifiedHeadersEnabled())
 		writer.WriteHeader(resp.StatusCode)
 
 		ccCopyStream(writer, resp.Body)
@@ -568,7 +630,7 @@ func (server *Server) forwardToClaudeCode(
 	}
 
 	if last429Body != nil {
-		writeCCUpstream429(writer, last429Body, last429Header)
+		writeCCUpstream429(writer, last429Body, last429Header, ccCfg.ForwardUnifiedHeadersEnabled())
 		return
 	}
 	writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "All Claude Code accounts rate-limited or unavailable")
@@ -577,8 +639,9 @@ func (server *Server) forwardToClaudeCode(
 // writeCCUpstream429 mirrors an upstream rate-limit rejection to the client
 // instead of the generic 503, so callers (and humans) see the real cause.
 // Retry guidance (Retry-After, Anthropic-Ratelimit-*) is forwarded when the
-// upstream supplied it.
-func writeCCUpstream429(w http.ResponseWriter, body []byte, header http.Header) {
+// upstream supplied it, and the subscription (Anthropic-Ratelimit-Unified-*)
+// headers too when forwardUnified is set.
+func writeCCUpstream429(w http.ResponseWriter, body []byte, header http.Header, forwardUnified bool) {
 	if !json.Valid(body) {
 		body = []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"upstream rate limit exceeded"}}`)
 	}
@@ -599,14 +662,18 @@ func writeCCUpstream429(w http.ResponseWriter, body []byte, header http.Header) 
 				w.Header().Set(k, v)
 			}
 		}
+		if forwardUnified {
+			ccCopyUnifiedHeaders(w.Header(), header)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusTooManyRequests)
 	_, _ = w.Write(body)
 }
 
-// ccCopyResponseHeaders forwards relevant upstream headers to the downstream response.
-func ccCopyResponseHeaders(dst, src http.Header) {
+// ccCopyResponseHeaders forwards relevant upstream headers to the downstream
+// response. forwardUnified adds every Anthropic-Ratelimit-Unified-* header.
+func ccCopyResponseHeaders(dst, src http.Header, forwardUnified bool) {
 	for _, k := range []string{
 		"Content-Type",
 		"X-Request-Id",
@@ -624,5 +691,21 @@ func ccCopyResponseHeaders(dst, src http.Header) {
 		if v := src.Get(k); v != "" {
 			dst.Set(k, v)
 		}
+	}
+	if forwardUnified {
+		ccCopyUnifiedHeaders(dst, src)
+	}
+}
+
+// ccCopyUnifiedHeaders copies every header whose name starts with the
+// subscription rate-limit prefix (anthropic-ratelimit-unified-), matched
+// case-insensitively, so new unified windows reach clients without a code
+// change. All values of a header are copied.
+func ccCopyUnifiedHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		if len(vs) == 0 || !strings.HasPrefix(strings.ToLower(k), claudecode.HeaderUnifiedPrefix) {
+			continue
+		}
+		dst[http.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
 	}
 }

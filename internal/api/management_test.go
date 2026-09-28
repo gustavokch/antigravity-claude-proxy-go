@@ -1921,3 +1921,265 @@ func TestManagement_AccountLimits_ClaudeCodeUnknownQuotaIsNull(t *testing.T) {
 	}
 	t.Fatalf("cc-unknown@example.com not found")
 }
+
+func TestManagement_AccountLimits_ClaudeCodeUnifiedPools(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+
+	const model = "cc-test-model"
+	cfg := config.Get()
+	cfg.ClaudeCode.Enabled = true
+	cfg.ClaudeCode.Accounts = []claudecode.AccountConfig{
+		{ID: "cc-fresh", Email: "fresh@example.com", Token: "t1", Type: "oauth", Priority: 1, Enabled: true, Source: "config"},
+		{ID: "cc-expired", Email: "expired@example.com", Token: "t2", Type: "setup_token", Priority: 1, Enabled: true, Source: "config"},
+		{ID: "cc-key", Email: "key@example.com", Token: "t3", Type: "api_key", Priority: 1, Enabled: true, Source: "config"},
+		{ID: "cc-rejected", Email: "rejected@example.com", Token: "t4", Type: "oauth", Priority: 1, Enabled: true, Source: "config"},
+		{ID: "cc-cooldown", Email: "cooldown@example.com", Token: "t5", Type: "oauth", Priority: 1, Enabled: true, Source: "config"},
+		{ID: "cc-rejected-classic", Email: "rejected-classic@example.com", Token: "t6", Type: "oauth", Priority: 1, Enabled: true, Source: "config"},
+	}
+	cfg.ClaudeCode.Allowlist = []claudecode.ModelConfig{{ID: model}}
+	config.SetForTest(cfg)
+
+	now := server.now()
+	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+	if pool == nil {
+		t.Fatalf("expected claude code pool to be created")
+	}
+
+	// Window values copied from .reference/claude-code-headers-20260923.jsonl.
+	util := func(v float64) *float64 { return &v }
+	reset5h := time.Unix(1790165400, 0)
+	reset7d := time.Unix(1790154000, 0)
+	if !now.Before(reset7d) || !now.Before(reset5h) {
+		t.Fatalf("test clock %v must precede both window resets", now)
+	}
+	pool.UpdateAccountRateLimits("cc-fresh", claudecode.RateLimits{
+		LastUpdated: now,
+		Unified: &claudecode.Unified{
+			Status:              "allowed",
+			Reset:               reset5h,
+			RepresentativeClaim: "five_hour",
+			FiveHour:            claudecode.UnifiedWindow{Utilization: util(0.04), Reset: reset5h, Status: "allowed"},
+			SevenDay:            claudecode.UnifiedWindow{Utilization: util(0.22), Reset: reset7d, Status: "allowed"},
+			ObservedAt:          now,
+		},
+	})
+	pool.UpdateAccountRateLimits("cc-expired", claudecode.RateLimits{
+		LastUpdated: now,
+		Unified: &claudecode.Unified{
+			Status:     "allowed",
+			FiveHour:   claudecode.UnifiedWindow{Utilization: util(0.9), Reset: now.Add(-time.Minute)},
+			SevenDay:   claudecode.UnifiedWindow{Utilization: util(0.22), Reset: reset7d},
+			ObservedAt: now,
+		},
+	})
+	pool.UpdateAccountRateLimits("cc-key", claudecode.RateLimits{
+		RequestsLimit:     100,
+		RequestsRemaining: 50,
+		RequestsReset:     now.Add(time.Minute),
+		LastUpdated:       now,
+	})
+	pool.UpdateAccountRateLimits("cc-rejected", claudecode.RateLimits{
+		LastUpdated: now,
+		Unified: &claudecode.Unified{
+			Status:              "rejected",
+			Reset:               reset5h,
+			RepresentativeClaim: "seven_day",
+			FiveHour:            claudecode.UnifiedWindow{Utilization: util(0.5), Reset: reset5h},
+			SevenDay:            claudecode.UnifiedWindow{Utilization: util(1.0), Reset: reset7d, Status: "rejected"},
+			ObservedAt:          now,
+		},
+	})
+
+	pool.UpdateAccountRateLimits("cc-cooldown", claudecode.RateLimits{
+		LastUpdated: now,
+		Unified: &claudecode.Unified{
+			Status:     "allowed",
+			FiveHour:   claudecode.UnifiedWindow{Utilization: util(0.04), Reset: reset5h},
+			SevenDay:   claudecode.UnifiedWindow{Utilization: util(0.22), Reset: reset7d},
+			ObservedAt: now,
+		},
+	})
+	// The pool stamps cooldowns with its own wall clock, which is after
+	// the test clock, so the cooldown is still active at now.
+	pool.RecordFailure("cc-cooldown", true, time.Hour)
+	ccAcc, ok := pool.GetAccount("cc-cooldown")
+	if !ok {
+		t.Fatalf("cc-cooldown not in pool")
+	}
+	cooldownUntil := ccAcc.Snapshot().CooldownUntil
+	if !cooldownUntil.After(now) {
+		t.Fatalf("cooldown %v must be after test clock %v", cooldownUntil, now)
+	}
+	// An exhausted classic dimension resetting after the binding window
+	// keeps its later reset.
+	classicReset := reset7d.Add(time.Hour)
+	pool.UpdateAccountRateLimits("cc-rejected-classic", claudecode.RateLimits{
+		TokensLimit:     100,
+		TokensRemaining: 0,
+		TokensReset:     classicReset,
+		LastUpdated:     now,
+		Unified: &claudecode.Unified{
+			Status:              "rejected",
+			Reset:               reset5h,
+			RepresentativeClaim: "seven_day",
+			FiveHour:            claudecode.UnifiedWindow{Utilization: util(0.5), Reset: reset5h},
+			SevenDay:            claudecode.UnifiedWindow{Utilization: util(1.0), Reset: reset7d, Status: "rejected"},
+			ObservedAt:          now,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]map[string]any{}
+	for _, a := range res["accounts"].([]any) {
+		am := a.(map[string]any)
+		if am["provider"] == "claudecode" {
+			rows[am["id"].(string)] = am
+		}
+	}
+
+	rfc := func(ts time.Time) string { return ts.UTC().Format(time.RFC3339) }
+	type wantPool struct {
+		frac  float64
+		reset string
+	}
+	tests := []struct {
+		id         string
+		status     string
+		pools      map[string]wantPool // nil: no quota key expected
+		fraction   float64
+		remaining  string
+		limitReset string
+	}{
+		{
+			id:     "cc-fresh",
+			status: "ok",
+			pools: map[string]wantPool{
+				"claude-5h":     {1 - 0.04, "2026-09-23T12:10:00Z"},
+				"claude-weekly": {1 - 0.22, "2026-09-23T09:00:00Z"},
+			},
+			fraction:   1 - 0.22,
+			remaining:  fmt.Sprintf("%d%%", int((1-0.22)*100)),
+			limitReset: "2026-09-23T09:00:00Z",
+		},
+		{
+			id:     "cc-cooldown",
+			status: "cooldown",
+			pools: map[string]wantPool{
+				"claude-5h":     {1 - 0.04, rfc(reset5h)},
+				"claude-weekly": {1 - 0.22, rfc(reset7d)},
+			},
+			fraction:   0,
+			remaining:  "0%",
+			limitReset: rfc(cooldownUntil),
+		},
+		{
+			id:     "cc-rejected-classic",
+			status: "rate_limited",
+			pools: map[string]wantPool{
+				"claude-5h":     {0.5, rfc(reset5h)},
+				"claude-weekly": {0, rfc(reset7d)},
+			},
+			fraction:   0,
+			remaining:  "0%",
+			limitReset: rfc(classicReset),
+		},
+		{
+			id:     "cc-expired",
+			status: "ok",
+			pools: map[string]wantPool{
+				"claude-weekly": {1 - 0.22, rfc(reset7d)},
+			},
+			fraction:   1 - 0.22,
+			remaining:  fmt.Sprintf("%d%%", int((1-0.22)*100)),
+			limitReset: rfc(reset7d),
+		},
+		{
+			id:         "cc-key",
+			status:     "ok",
+			fraction:   0.5,
+			remaining:  "50%",
+			limitReset: rfc(now.Add(time.Minute)),
+		},
+		{
+			id:     "cc-rejected",
+			status: "rate_limited",
+			pools: map[string]wantPool{
+				"claude-5h":     {0.5, rfc(reset5h)},
+				"claude-weekly": {0, rfc(reset7d)},
+			},
+			fraction:   0,
+			remaining:  "0%",
+			limitReset: rfc(reset7d),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.id, func(t *testing.T) {
+			row, ok := rows[tc.id]
+			if !ok {
+				t.Fatalf("account %s not found", tc.id)
+			}
+			if row["status"] != tc.status {
+				t.Errorf("status = %v, want %s", row["status"], tc.status)
+			}
+
+			quota, hasQuota := row["quota"]
+			if tc.pools == nil {
+				if hasQuota {
+					t.Errorf("api_key account must have no quota, got %v", quota)
+				}
+			} else {
+				qm, ok := quota.(map[string]any)
+				if !ok {
+					t.Fatalf("expected quota object, got %v", quota)
+				}
+				if models, ok := qm["models"].(map[string]any); !ok || len(models) != 0 {
+					t.Errorf("quota.models = %v, want {}", qm["models"])
+				}
+				if qm["lastChecked"] != float64(now.UnixMilli()) {
+					t.Errorf("quota.lastChecked = %v, want %d", qm["lastChecked"], now.UnixMilli())
+				}
+				pools, _ := qm["pools"].(map[string]any)
+				if len(pools) != len(tc.pools) {
+					t.Errorf("quota.pools = %v, want %d pools", pools, len(tc.pools))
+				}
+				for name, want := range tc.pools {
+					p, ok := pools[name].(map[string]any)
+					if !ok {
+						t.Errorf("pool %s missing: %v", name, pools)
+						continue
+					}
+					if p["remainingFraction"] != want.frac {
+						t.Errorf("pool %s remainingFraction = %v, want %v", name, p["remainingFraction"], want.frac)
+					}
+					if p["resetTime"] != want.reset {
+						t.Errorf("pool %s resetTime = %v, want %s", name, p["resetTime"], want.reset)
+					}
+				}
+			}
+
+			l, ok := row["limits"].(map[string]any)[model].(map[string]any)
+			if !ok {
+				t.Fatalf("limits[%s] missing: %v", model, row["limits"])
+			}
+			if l["remainingFraction"] != tc.fraction {
+				t.Errorf("limits remainingFraction = %v, want %v", l["remainingFraction"], tc.fraction)
+			}
+			if l["remaining"] != tc.remaining {
+				t.Errorf("limits remaining = %v, want %s", l["remaining"], tc.remaining)
+			}
+			if l["resetTime"] != tc.limitReset {
+				t.Errorf("limits resetTime = %v, want %s", l["resetTime"], tc.limitReset)
+			}
+		})
+	}
+}

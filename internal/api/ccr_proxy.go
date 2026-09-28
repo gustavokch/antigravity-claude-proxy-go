@@ -22,6 +22,11 @@ type CCRProxyOptions struct {
 	OnUsage        func(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int)
 	Sender         CCRSender
 	MaxHydrations  int
+	// ResponseHeaderFilter, when set, is called once with the client's
+	// response headers and the first successful (200) upstream response's
+	// headers, before anything is written, so the caller can forward
+	// selected upstream headers. Non-200 responses are not affected.
+	ResponseHeaderFilter func(dst, src http.Header)
 }
 
 // ProxyAnthropicStreamWithCCR handles streaming Anthropic messages requests with CCR hydration loop.
@@ -40,6 +45,7 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 		totalCacheCreationTokens int
 		totalCCRRetrievals       int
 		baseBlockIndex           int
+		headersFiltered          bool
 		messageStartEmitted      bool
 	)
 
@@ -98,6 +104,13 @@ func ProxyAnthropicStreamWithCCR(ctx context.Context, writer http.ResponseWriter
 			})
 			writeSSEEvent("error", errPayload)
 			return nil
+		}
+
+		if !headersFiltered {
+			headersFiltered = true
+			if opts.ResponseHeaderFilter != nil && !messageStartEmitted {
+				opts.ResponseHeaderFilter(writer.Header(), resp.Header)
+			}
 		}
 
 		// Ensure SSE headers on client writer on first successful stream
@@ -351,6 +364,7 @@ func ProxyAnthropicJSONWithCCR(ctx context.Context, writer http.ResponseWriter, 
 		totalCacheReadTokens     int
 		totalCacheCreationTokens int
 		totalCCRRetrievals       int
+		headersFiltered          bool
 	)
 
 	for iter := 0; iter <= maxHydrations; iter++ {
@@ -381,6 +395,13 @@ func ProxyAnthropicJSONWithCCR(ctx context.Context, writer http.ResponseWriter, 
 			writer.WriteHeader(resp.StatusCode)
 			_, _ = writer.Write(bodyBytes)
 			return nil
+		}
+
+		if !headersFiltered {
+			headersFiltered = true
+			if opts.ResponseHeaderFilter != nil {
+				opts.ResponseHeaderFilter(writer.Header(), resp.Header)
+			}
 		}
 
 		var respMap map[string]any

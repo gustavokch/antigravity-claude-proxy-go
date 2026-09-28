@@ -4,6 +4,251 @@
  */
 window.Components = window.Components || {};
 
+/**
+ * Pure helpers for quota pools and Claude usage windows. They take plain
+ * values, touch no DOM or store, and tolerate missing or null fields, so the
+ * Node harness in tests/ can exercise them directly.
+ */
+window.QuotaView = (() => {
+    const FAMILY_RANK = { gemini: 0, claude: 1, '3p': 2 };
+    const FAMILY_LABEL = { gemini: 'Gemini', claude: 'Claude', '3p': '3P' };
+    const WINDOW_RANK = { '5h': 0, weekly: 1, '7d': 1 };
+
+    const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+
+    // "gemini-5h" -> { family: "gemini", window: "5h" }. An id without a
+    // dash is treated as a family with an unknown window.
+    function splitPoolId(id) {
+        const s = String(id || '');
+        const i = s.lastIndexOf('-');
+        if (i <= 0) return { family: s, window: '' };
+        return { family: s.slice(0, i), window: s.slice(i + 1) };
+    }
+
+    // Remaining fraction as a whole percent clamped to 0-100, or null when
+    // the value is unknown.
+    function poolPercent(pool) {
+        if (!pool || !isNum(pool.remainingFraction)) return null;
+        return Math.max(0, Math.min(100, Math.round(pool.remainingFraction * 100)));
+    }
+
+    // Pools as an ordered array: grouped by family (Gemini, Claude, 3P, then
+    // the rest alphabetically), with the 5h window before the weekly one.
+    function sortedPools(pools) {
+        if (!pools || typeof pools !== 'object') return [];
+        const rows = Object.entries(pools)
+            .filter(([, p]) => p && typeof p === 'object')
+            .map(([id, p]) => {
+                const { family, window } = splitPoolId(id);
+                return {
+                    id,
+                    family,
+                    window,
+                    remainingFraction: isNum(p.remainingFraction) ? p.remainingFraction : null,
+                    resetTime: p.resetTime || null,
+                    source: p.source || null,
+                    percent: poolPercent(p),
+                };
+            });
+        const famRank = (f) => (f in FAMILY_RANK ? FAMILY_RANK[f] : 10);
+        const winRank = (w) => (w in WINDOW_RANK ? WINDOW_RANK[w] : 5);
+        rows.sort((a, b) =>
+            famRank(a.family) - famRank(b.family) ||
+            a.family.localeCompare(b.family) ||
+            winRank(a.window) - winRank(b.window) ||
+            a.window.localeCompare(b.window));
+        return rows;
+    }
+
+    function poolFamilyLabel(family) {
+        return FAMILY_LABEL[family] || family;
+    }
+
+    // Bar colour for a remaining percent (null means unknown).
+    function remainingBarClass(percent) {
+        if (percent === null || percent === undefined) return 'bg-gray-600';
+        if (percent > 50) return 'bg-emerald-500';
+        if (percent > 20) return 'bg-yellow-500';
+        return 'bg-red-500';
+    }
+
+    // Bar and text colour for a used fraction, on the same bands as the
+    // pools read from the other side: above 80% used red, above 50% yellow.
+    function usedBarClass(fraction) {
+        if (!isNum(fraction)) return 'bg-gray-600';
+        if (fraction > 0.8) return 'bg-red-500';
+        if (fraction > 0.5) return 'bg-yellow-500';
+        return 'bg-emerald-500';
+    }
+
+    function usedTextClass(fraction) {
+        if (!isNum(fraction)) return 'text-gray-500';
+        if (fraction > 0.8) return 'text-red-400';
+        if (fraction > 0.5) return 'text-yellow-400';
+        return 'text-gray-300';
+    }
+
+    // Burn level from tokensPerMinuteForIndicator: above 1000 HIGH, above
+    // 500 MODERATE, otherwise NORMAL. Null when the rate is unknown.
+    function burnLevel(burnRate) {
+        const tpm = burnRate && burnRate.tokensPerMinuteForIndicator;
+        if (!isNum(tpm)) return null;
+        if (tpm > 1000) return 'HIGH';
+        if (tpm > 500) return 'MODERATE';
+        return 'NORMAL';
+    }
+
+    // Level for a projected utilization fraction: above 1.0 exceeds, above
+    // 0.8 warning. Falls back to the server's status when the projection is
+    // missing.
+    function projectedLevel(win) {
+        if (!win) return null;
+        const p = win.projectedUtilization;
+        if (isNum(p)) {
+            if (p > 1) return 'exceeds';
+            if (p > 0.8) return 'warning';
+            return 'ok';
+        }
+        return ['ok', 'warning', 'exceeds'].includes(win.status) ? win.status : null;
+    }
+
+    // Used fraction as a whole percent (not clamped, so 1.32 reads as 132%).
+    function usedPercent(fraction) {
+        return isNum(fraction) ? Math.round(fraction * 100) : null;
+    }
+
+    // Position for a bar fill or marker, clamped to 0-100.
+    function barPosition(fraction) {
+        return isNum(fraction) ? Math.max(0, Math.min(100, fraction * 100)) : 0;
+    }
+
+    function formatUSD(v) {
+        if (!isNum(v)) return '-';
+        return '$' + v.toFixed(2);
+    }
+
+    function formatTokens(v) {
+        if (!isNum(v)) return '-';
+        const abs = Math.abs(v);
+        if (abs >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+        if (abs >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+        if (abs >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+        return String(Math.round(v));
+    }
+
+    // Rows of a ccusage-shaped report ({daily:[…]}, {weekly:[…]}, …).
+    function reportRows(data, report) {
+        const rows = data && data[report];
+        return Array.isArray(rows) ? rows : [];
+    }
+
+    // The period label of a report row: its date, week or month.
+    function reportPeriod(row) {
+        if (!row) return '';
+        return row.date || row.week || row.month || '';
+    }
+
+    // Usage history covers the last 30 days, so a request does not make the
+    // server read the whole ledger retention.
+    const HISTORY_DAYS = 30;
+
+    // The since bound for a history request: the local date HISTORY_DAYS
+    // before now, as YYYYMMDD.
+    function historySince(now = new Date()) {
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - HISTORY_DAYS);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+    }
+
+    function usageURL(accountId, report, now = new Date()) {
+        let url = '/api/claudecode/usage?report=' + encodeURIComponent(report);
+        if (accountId) url += '&account=' + encodeURIComponent(accountId);
+        return url + '&since=' + historySince(now);
+    }
+
+    function escapeHTML(s) {
+        return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        })[c]);
+    }
+
+    const SOURCE_KEYS = {
+        headers: 'poolSourceHeaders', calibrated: 'poolSourceCalibrated',
+        config: 'poolSourceConfig', max: 'poolSourceMax',
+    };
+
+    // "Gemini · 5-hour" style label; t translates the window names.
+    function poolLabel(pool, t) {
+        const fam = poolFamilyLabel(pool.family);
+        let win = pool.window;
+        if (win === '5h') win = t('poolWindow5h');
+        else if (win === 'weekly' || win === '7d') win = t('poolWindowWeekly');
+        return win ? `${fam} · ${win}` : fam;
+    }
+
+    function poolSourceLabel(source, t) {
+        return SOURCE_KEYS[source] ? t(SOURCE_KEYS[source]) : (source || '');
+    }
+
+    // The shared pool-bar renderer used by the Google and Claude account rows
+    // and by the quota modal. pools is the raw quota.pools object; t is the
+    // translator and timeUntil formats a reset time. Returns escaped HTML, or
+    // '' when there are no pools. compact selects the table-cell layout.
+    function renderPoolBars(pools, { t = (k) => k, timeUntil = () => '', compact = false } = {}) {
+        const rows = sortedPools(pools);
+        if (rows.length === 0) return '';
+        const items = rows.map((p) => {
+            const pct = p.percent === null ? 'N/A' : t('poolRemaining', { pct: p.percent + '%' });
+            const label = poolLabel(p, t);
+            const aria = `role="progressbar" aria-valuemin="0" aria-valuemax="100"`
+                + (p.percent === null ? '' : ` aria-valuenow="${p.percent}"`)
+                + ` aria-label="${escapeHTML(label + ': ' + pct)}"`;
+            const reset = p.resetTime
+                ? (compact ? timeUntil(p.resetTime) : t('resetsIn', { time: timeUntil(p.resetTime) }))
+                : '';
+            const badge = p.source
+                ? `<span class="px-1 rounded border border-space-border text-gray-400 uppercase" data-pool-source="${escapeHTML(p.source)}">${escapeHTML(poolSourceLabel(p.source, t))}</span>`
+                : '';
+            const pctClass = p.percent === null ? 'text-gray-500' : 'text-gray-300';
+            if (compact) {
+                return `<div class="leading-tight" data-pool-id="${escapeHTML(p.id)}">`
+                    + `<div class="flex items-center justify-between gap-1 text-[10px] font-mono text-gray-500">`
+                    + `<span class="truncate">${escapeHTML(label)}</span>`
+                    + `<span class="${pctClass}" style="white-space:nowrap">${escapeHTML(pct)}</span></div>`
+                    + `<div class="w-full bg-gray-700 rounded-full overflow-hidden" style="height:4px" ${aria}>`
+                    + `<div class="h-full rounded-full ${remainingBarClass(p.percent)}" style="width:${p.percent ?? 0}%"></div></div>`
+                    + ((reset || badge)
+                        ? `<div class="flex items-center justify-between gap-1 text-[10px] font-mono text-gray-500" style="font-size:9px">`
+                          + `<span class="text-yellow-500/80">${escapeHTML(reset)}</span>${badge}</div>`
+                        : '')
+                    + `</div>`;
+            }
+            return `<div class="p-3 bg-space-800/50 border border-space-border/30 rounded-lg" data-pool-id="${escapeHTML(p.id)}">`
+                + `<div class="flex justify-between items-center mb-2">`
+                + `<span class="text-sm font-semibold text-gray-200">${escapeHTML(label)}</span>`
+                + `<div class="flex items-center gap-2 text-[10px] font-mono">${badge}`
+                + `<span class="text-xs font-mono ${pctClass}">${escapeHTML(pct)}</span></div></div>`
+                + `<div class="w-full bg-gray-700 rounded-full h-2.5 mb-2 overflow-hidden" ${aria}>`
+                + `<div class="h-full rounded-full transition-all duration-500 ${remainingBarClass(p.percent)}" style="width:${p.percent ?? 0}%"></div></div>`
+                + `<div class="flex justify-between items-center">`
+                + `<span class="text-[10px] text-gray-500 font-mono">${escapeHTML(p.id)}</span>`
+                + (reset ? `<span class="text-[10px] text-yellow-500/80 font-mono italic">${escapeHTML(reset)}</span>` : '')
+                + `</div></div>`;
+        });
+        return compact
+            ? `<div class="mt-1.5 space-y-1" style="min-width:11rem" data-pool-bars>${items.join('')}</div>`
+            : `<div class="grid grid-cols-1 gap-3" data-pool-bars>${items.join('')}</div>`;
+    }
+
+    return {
+        splitPoolId, poolPercent, sortedPools, poolFamilyLabel, remainingBarClass,
+        usedBarClass, usedTextClass,
+        burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
+        reportRows, reportPeriod, usageURL, historySince, escapeHTML, poolLabel, poolSourceLabel,
+        renderPoolBars,
+    };
+})();
+
 window.Components.accountManager = () => ({
     accountTab: 'google', // 'google' | 'claudecode'
     searchQuery: '',
@@ -15,6 +260,17 @@ window.Components.accountManager = () => ({
     selectedAccountEmail: '',
     selectedAccountName: '',
     selectedAccountLimits: {},
+    selectedAccountId: '',
+    selectedAccountProvider: '',
+    // Bumped every 30s so countdowns in the quota modal re-render.
+    nowTick: 0,
+    _tickTimer: null,
+
+    // Claude Code usage history per account id: { open, report, disabled,
+    // loading: {daily, weekly}, error: {daily, weekly}, data: {daily, weekly} }.
+    // loading, error and data are per report so switching reports mid-load
+    // neither blocks the other report nor shows its error.
+    ccHistory: {},
 
     // Claude Code Accounts & Gateway State
     ccAccounts: [],
@@ -44,6 +300,11 @@ window.Components.accountManager = () => ({
         }
         this.loadCCAccounts();
         this.loadCCConfig();
+        this._tickTimer = setInterval(() => { this.nowTick = Date.now(); }, 30000);
+    },
+
+    destroy() {
+        if (this._tickTimer) clearInterval(this._tickTimer);
     },
 
     get googleAccounts() {
@@ -252,7 +513,9 @@ window.Components.accountManager = () => ({
         }, this, 'reloading', { errorMessage: 'Failed to reload accounts' });
     },
 
-    openQuotaModal(account) {
+    // provider is passed by the table the row lives in ('google' or
+    // 'claudecode') rather than inferred from the row.
+    openQuotaModal(account, provider = 'google') {
         this.selectedAccountEmail = account.email || account.id;
         // Email-like "names" (backend sends email as name for google rows and
         // for CC rows without a display name) bypass Redact when rendered
@@ -263,7 +526,196 @@ window.Components.accountManager = () => ({
         this.selectedAccountLimits = Object.fromEntries(
             Object.entries(account.limits || {}).filter(([, v]) => v != null)
         );
+        this.selectedAccountId = account.id || account.email || '';
+        this.selectedAccountProvider = provider;
         document.getElementById('quota_modal').showModal();
+    },
+
+    // ==========================================
+    // Quota pools and Claude usage windows
+    // ==========================================
+
+    get qv() {
+        return window.QuotaView;
+    },
+
+    // The modal's account, looked up live so refreshed pools and usage show
+    // while it is open.
+    get selectedAccount() {
+        const id = this.selectedAccountId;
+        if (!id) return null;
+        const list = this.selectedAccountProvider === 'claudecode'
+            ? this.filteredCCAccounts.concat(this.claudeStoreAccounts)
+            : (Alpine.store('data').accounts || []);
+        return list.find(a => (a.id || a.email) === id || a.email === id) || null;
+    },
+
+    get selectedAccountUsage() {
+        return this.accountUsage(this.selectedAccount);
+    },
+
+    // Pools for the modal. Claude Code accounts with usage show their 5h and
+    // weekly pools in the window panel instead, so those cards are dropped.
+    get selectedAccountPools() {
+        const acc = this.selectedAccount;
+        const pools = acc && acc.quota && acc.quota.pools;
+        if (!pools || typeof pools !== 'object') return null;
+        if (this.selectedAccountProvider !== 'claudecode' || !this.selectedAccountUsage) return pools;
+        const rest = Object.fromEntries(Object.entries(pools)
+            .filter(([id]) => id !== 'claude-5h' && id !== 'claude-weekly'));
+        return Object.keys(rest).length ? rest : null;
+    },
+
+    accountPools(acc) {
+        return window.QuotaView.sortedPools(acc && acc.quota && acc.quota.pools);
+    },
+
+    // The usage block when it has at least one window, else null.
+    accountUsage(acc) {
+        const u = acc && acc.usage;
+        if (!u || typeof u !== 'object') return null;
+        return (u.window5h || u.window7d) ? u : null;
+    },
+
+    // Shared pool-bar HTML for a raw quota.pools object (see QuotaView.renderPoolBars).
+    renderPools(pools, compact = false) {
+        void this.nowTick; // re-render countdowns on the tick
+        const store = Alpine.store('global');
+        return window.QuotaView.renderPoolBars(pools, {
+            t: (k, p) => store.t(k, p),
+            timeUntil: (ts) => window.utils.formatTimeUntil(ts),
+            compact,
+        });
+    },
+
+    poolSourceLabel(source) {
+        const store = Alpine.store('global');
+        return window.QuotaView.poolSourceLabel(source, (k) => store.t(k));
+    },
+
+    burnLabel(level) {
+        const keys = { HIGH: 'ccBurnHigh', MODERATE: 'ccBurnModerate', NORMAL: 'ccBurnNormal' };
+        return keys[level] ? Alpine.store('global').t(keys[level]) : '';
+    },
+
+    usedLabel(fraction) {
+        const pct = window.QuotaView.usedPercent(fraction);
+        return pct === null ? 'N/A' : Alpine.store('global').t('ccUsed', { pct: pct + '%' });
+    },
+
+    // Colour classes for an ok/warning/exceeds level.
+    levelBg(level) {
+        return level === 'exceeds' ? 'bg-red-500' : (level === 'warning' ? 'bg-yellow-500' : 'bg-emerald-500');
+    },
+
+    levelText(level) {
+        return level === 'exceeds' ? 'text-red-400' : (level === 'warning' ? 'text-yellow-400' : 'text-gray-300');
+    },
+
+    usageWindows(usage) {
+        if (!usage) return [];
+        const out = [];
+        if (usage.window5h) out.push({ key: '5h', label: 'ccWindow5h', win: usage.window5h });
+        if (usage.window7d) out.push({ key: '7d', label: 'ccWindow7d', win: usage.window7d });
+        return out;
+    },
+
+    windowTimeLeft(win) {
+        void this.nowTick;
+        if (!win || !win.end) return '-';
+        return window.utils.formatTimeUntil(win.end);
+    },
+
+    historyState(accountId) {
+        return this.ccHistory[accountId] ||
+            { open: false, report: 'daily', disabled: false, loading: {}, error: {}, data: {} };
+    },
+
+    historyLoading(accountId) {
+        const st = this.historyState(accountId);
+        return !!st.loading[st.report];
+    },
+
+    historyError(accountId) {
+        const st = this.historyState(accountId);
+        return st.error[st.report] || '';
+    },
+
+    historyDisabled(accountId) {
+        return !!this.historyState(accountId).disabled;
+    },
+
+    historyRows(accountId) {
+        const st = this.historyState(accountId);
+        return window.QuotaView.reportRows(st.data[st.report], st.report);
+    },
+
+    historyTotals(accountId) {
+        const st = this.historyState(accountId);
+        const d = st.data[st.report];
+        return (d && d.totals) || null;
+    },
+
+    toggleHistory(accountId) {
+        const st = { ...this.historyState(accountId) };
+        st.open = !st.open;
+        this.ccHistory = { ...this.ccHistory, [accountId]: st };
+        if (st.open) this.loadHistory(accountId, st.report);
+    },
+
+    setHistoryReport(accountId, report) {
+        const st = { ...this.historyState(accountId), report };
+        this.ccHistory = { ...this.ccHistory, [accountId]: st };
+        this.loadHistory(accountId, report);
+    },
+
+    // Loads a report once per account and report kind. A server that answers
+    // {enabled:false} (usage tracking off) is not cached, so turning tracking
+    // on and reopening works. Placeholder accounts get generated rows so the
+    // table can be seen without live data.
+    async loadHistory(accountId, report, force = false) {
+        const cur = this.historyState(accountId);
+        if (!force && (cur.data[report] || cur.loading[report])) return;
+        const patch = (fn) => {
+            const st = this.historyState(accountId);
+            this.ccHistory = { ...this.ccHistory, [accountId]: { ...st, ...fn(st) } };
+        };
+        const done = (fields) => patch((st) => ({
+            loading: { ...st.loading, [report]: false },
+            ...fields(st),
+        }));
+        patch((st) => ({
+            loading: { ...st.loading, [report]: true },
+            error: { ...st.error, [report]: '' },
+        }));
+
+        const dataStore = Alpine.store('data');
+        if (dataStore.placeholderMode && String(accountId).startsWith('cc-placeholder-') &&
+            typeof dataStore.placeholderUsageReport === 'function') {
+            const report_ = dataStore.placeholderUsageReport(accountId, report);
+            done((st) => ({ disabled: false, data: { ...st.data, [report]: report_ } }));
+            return;
+        }
+
+        const store = Alpine.store('global');
+        try {
+            const { response, newPassword } = await window.utils.request(
+                window.QuotaView.usageURL(accountId, report), {}, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${response.status}`);
+            }
+            const data = (await response.json()) || {};
+            if (data.enabled === false) {
+                done(() => ({ disabled: true }));
+                return;
+            }
+            done((st) => ({ disabled: false, data: { ...st.data, [report]: data } }));
+        } catch (e) {
+            const msg = store.t('ccHistoryLoadFailed') + ': ' + (e.message || e);
+            done((st) => ({ error: { ...st.error, [report]: msg } }));
+        }
     },
 
     // Threshold settings

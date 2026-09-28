@@ -26,6 +26,86 @@ type AccountConfig struct {
 	Priority         int        `json:"priority"` // Lower number = higher priority
 	Enabled          bool       `json:"enabled"`
 	Source           string     `json:"source,omitempty"` // "oauth", "manual", "auto_import", "cli"
+	// Unified is the last subscription limit snapshot, carried only by the
+	// persistent account store so it survives a restart. AddOrUpdateAccount
+	// ignores it; the pool restores it through its store load path.
+	Unified *Unified `json:"unified,omitempty"`
+	// UsageLimits are optional API-equivalent limits for the account's
+	// windows, used when the subscription headers give none.
+	UsageLimits *UsageLimits `json:"usageLimits,omitempty"`
+}
+
+// UsageLimits are user-configured limits for an account's 5-hour and 7-day
+// windows. Zero means not set.
+type UsageLimits struct {
+	CostUSD5h float64 `json:"costUsd5h,omitempty"`
+	CostUSD7d float64 `json:"costUsd7d,omitempty"`
+	Tokens5h  int64   `json:"tokens5h,omitempty"`
+	Tokens7d  int64   `json:"tokens7d,omitempty"`
+}
+
+// Usage tracking defaults.
+const (
+	DefaultUsageSessionHours  = 5
+	DefaultUsageRetentionDays = 60
+	// UsageLedgerDirName is the ledger directory under the proxy config
+	// directory when UsageConfig.LedgerDir is empty.
+	UsageLedgerDirName = "claudecode-usage"
+)
+
+// UsageConfig configures Claude Code usage tracking: the usage ledger the
+// proxy writes and the merge with Claude Code's own transcripts.
+type UsageConfig struct {
+	// Enabled defaults to true; use UsageEnabled.
+	Enabled *bool `json:"enabled,omitempty"`
+	// LedgerDir defaults to <config dir>/claudecode-usage.
+	LedgerDir string `json:"ledgerDir,omitempty"`
+	// ScanLocalLogs defaults to true, which reads Claude Code's transcripts
+	// whenever a Claude config directory exists; use LocalLogsEnabled.
+	ScanLocalLogs *bool `json:"scanLocalLogs,omitempty"`
+	// LocalAccountID owns local usage that the proxy did not serve.
+	LocalAccountID string `json:"localAccountId,omitempty"`
+	// SessionHours is the billing block length, a whole number of hours;
+	// zero means DefaultUsageSessionHours. Use SessionDuration.
+	SessionHours float64 `json:"sessionHours,omitempty"`
+	// CostMode is "auto" (default), "calculate" or "display".
+	CostMode string `json:"costMode,omitempty"`
+	// Timezone is an IANA name for day boundaries; empty means local time.
+	Timezone string `json:"timezone,omitempty"`
+	// OnlinePricing refreshes model prices from LiteLLM at startup.
+	OnlinePricing bool `json:"onlinePricing,omitempty"`
+	// RetentionDays is how long ledger files are kept; zero means
+	// DefaultUsageRetentionDays.
+	RetentionDays int `json:"retentionDays,omitempty"`
+}
+
+// UsageEnabled reports whether usage tracking is on (the default).
+func (u UsageConfig) UsageEnabled() bool { return u.Enabled == nil || *u.Enabled }
+
+// LocalLogsEnabled reports whether Claude Code's transcripts are read. It
+// defaults to true; the engine then reads them only when a Claude config
+// directory exists.
+func (u UsageConfig) LocalLogsEnabled() bool { return u.ScanLocalLogs == nil || *u.ScanLocalLogs }
+
+// SessionDuration returns the billing block length. SessionHours must be a
+// positive whole number of hours; zero means the default.
+func (u UsageConfig) SessionDuration() (time.Duration, error) {
+	h := u.SessionHours
+	if h == 0 {
+		h = DefaultUsageSessionHours
+	}
+	if h < 1 || h > 24*7 || h != float64(int64(h)) {
+		return 0, fmt.Errorf("claudecode.usage.sessionHours must be a whole number of hours between 1 and 168, got %v", u.SessionHours)
+	}
+	return time.Duration(h) * time.Hour, nil
+}
+
+// RetentionDaysOrDefault returns RetentionDays, or the default when unset.
+func (u UsageConfig) RetentionDaysOrDefault() int {
+	if u.RetentionDays <= 0 {
+		return DefaultUsageRetentionDays
+	}
+	return u.RetentionDays
 }
 
 // ModelConfig defines a supported Claude model and its routing attributes.
@@ -181,6 +261,19 @@ type Config struct {
 	Allowlist  []ModelConfig   `json:"allowlist,omitempty"`
 	Routing    RoutingConfig   `json:"routing,omitempty"`
 	Identity   IdentityConfig  `json:"identity,omitempty"`
+	// ForwardUnifiedHeaders controls whether the upstream
+	// anthropic-ratelimit-unified-* headers reach the client. nil means
+	// true; use ForwardUnifiedHeadersEnabled for the effective value.
+	ForwardUnifiedHeaders *bool `json:"forwardUnifiedHeaders,omitempty"`
+	// Usage configures usage tracking (claudecode.usage).
+	Usage UsageConfig `json:"usage,omitzero"`
+}
+
+// ForwardUnifiedHeadersEnabled reports whether the subscription rate-limit
+// (anthropic-ratelimit-unified-*) headers are forwarded to clients. It
+// defaults to true when the setting is absent.
+func (c Config) ForwardUnifiedHeadersEnabled() bool {
+	return c.ForwardUnifiedHeaders == nil || *c.ForwardUnifiedHeaders
 }
 
 // RateLimits tracks Anthropic API rate limits extracted from response headers.
@@ -199,6 +292,33 @@ type RateLimits struct {
 	OutputTokensReset     time.Time `json:"outputTokensReset,omitempty"`
 	RetryAfter            int       `json:"retryAfter,omitempty"` // Seconds
 	LastUpdated           time.Time `json:"lastUpdated"`
+	// Unified is nil unless the response carried subscription
+	// (anthropic-ratelimit-unified-*) headers, so API-key accounts keep
+	// their existing JSON shape.
+	Unified *Unified `json:"unified,omitempty"`
+}
+
+// UnifiedWindow is one subscription window (5h or 7d) from the unified
+// rate-limit headers. Utilization is a 0-1 fraction; nil means the header
+// was absent or malformed.
+type UnifiedWindow struct {
+	Utilization *float64  `json:"utilization,omitempty"`
+	Reset       time.Time `json:"reset,omitzero"`
+	Status      string    `json:"status,omitempty"`
+}
+
+// Unified is the subscription limit state reported by the
+// anthropic-ratelimit-unified-* response headers.
+type Unified struct {
+	Status                string        `json:"status,omitempty"`
+	Reset                 time.Time     `json:"reset,omitzero"`
+	RepresentativeClaim   string        `json:"representativeClaim,omitempty"`
+	FallbackPercentage    *float64      `json:"fallbackPercentage,omitempty"`
+	OverageStatus         string        `json:"overageStatus,omitempty"`
+	OverageDisabledReason string        `json:"overageDisabledReason,omitempty"`
+	FiveHour              UnifiedWindow `json:"fiveHour,omitzero"`
+	SevenDay              UnifiedWindow `json:"sevenDay,omitzero"`
+	ObservedAt            time.Time     `json:"observedAt"`
 }
 
 // Account represents an active, runtime-managed Claude Code credential.
@@ -230,6 +350,10 @@ type Account struct {
 	TotalCost     float64   `json:"totalCost"`
 	LastUsed      time.Time `json:"lastUsed"`
 	CreatedAt     time.Time `json:"createdAt"`
+
+	// unifiedSavedAt is when a unified snapshot change last scheduled a
+	// store save; it throttles those saves. Guarded by mu.
+	unifiedSavedAt time.Time
 }
 
 // AccountSnapshot is an immutable view of an Account for UI/API consumption.

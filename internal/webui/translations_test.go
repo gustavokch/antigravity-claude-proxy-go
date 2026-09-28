@@ -401,3 +401,96 @@ func TestTranslations_StoreFallbackSafety(t *testing.T) {
 		t.Errorf("store.js unconditionally indexes this.translations[this.lang][key]; must provide safe fallback")
 	}
 }
+
+// ccForwardUnifiedKeys are the i18n keys referenced by the Claude Code
+// forward-unified-headers toggle in views/settings.html.
+var ccForwardUnifiedKeys = []string{"ccForwardUnifiedHeaders", "ccForwardUnifiedHeadersDesc"}
+
+func TestTranslations_ClaudeCodeForwardUnifiedKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range ccForwardUnifiedKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+	b, err := Assets.ReadFile("public/views/settings.html")
+	if err != nil {
+		t.Fatalf("read settings.html: %v", err)
+	}
+	for _, key := range ccForwardUnifiedKeys {
+		if !strings.Contains(string(b), fmt.Sprintf("t('%s')", key)) {
+			t.Errorf("settings.html does not reference %q", key)
+		}
+	}
+}
+
+// saveCCConfig sends an explicit field list, so the toggle must be named there
+// or it never persists.
+func TestClaudeCodeForwardUnified_RidesThroughTheSave(t *testing.T) {
+	b, err := Assets.ReadFile("public/js/components/models.js")
+	if err != nil {
+		t.Fatalf("read models.js: %v", err)
+	}
+	src := string(b)
+	idx := strings.Index(src, "async saveCCConfig()")
+	if idx < 0 {
+		t.Fatal("models.js has no saveCCConfig")
+	}
+	end := strings.Index(src[idx:], "\n    },")
+	if end < 0 {
+		t.Fatal("could not find the end of saveCCConfig")
+	}
+	if !strings.Contains(src[idx:idx+end], "forwardUnifiedHeaders") {
+		t.Error("saveCCConfig does not send forwardUnifiedHeaders")
+	}
+}
+
+// quotaUsageKeys are the i18n keys referenced by the quota pool bars, the
+// Claude usage-window panel and the usage history table in
+// views/accounts.html and js/components/account-manager.js. Every locale must
+// define them.
+var quotaUsageKeys = []string{
+	"quotaPools", "perModelQuota", "poolWindow5h", "poolWindowWeekly",
+	"poolSourceHeaders", "poolSourceCalibrated", "poolSourceConfig", "poolSourceMax",
+	"ccUsageWindows", "ccWindow5h", "ccWindow7d", "ccUtilNow", "ccProjected",
+	"poolRemaining", "resetsIn", "ccUsed", "ccHistoryDisabled",
+	"ccTimeLeft", "ccApiEquivalent", "ccBurnRate", "ccBurnHigh", "ccBurnModerate",
+	"ccBurnNormal", "ccTokensPerMinute", "ccPerHour", "ccTodayCost", "ccTokens",
+	"ccCostBasisNote", "ccUsageHistory", "ccHistoryDaily", "ccHistoryWeekly",
+	"ccHistoryShow", "ccHistoryHide", "ccHistoryEmpty", "ccHistoryLoadFailed",
+	"ccHistoryPeriod", "ccHistoryInput", "ccHistoryOutput", "ccHistoryCacheWrite",
+	"ccHistoryCacheRead", "ccHistoryTotalTokens", "ccHistoryCost", "ccHistoryTotal",
+}
+
+func TestTranslations_QuotaUsageKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range quotaUsageKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+// Every quota/usage key must be used by the accounts view or its component,
+// so the list above cannot drift into dead keys.
+func TestTranslations_QuotaUsageKeysReferenced(t *testing.T) {
+	var src string
+	for _, f := range []string{"public/views/accounts.html", "public/js/components/account-manager.js"} {
+		b, err := Assets.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		src += string(b)
+	}
+	for _, key := range quotaUsageKeys {
+		if !strings.Contains(src, "'"+key+"'") {
+			t.Errorf("translation key %q is not referenced by the accounts view", key)
+		}
+	}
+}

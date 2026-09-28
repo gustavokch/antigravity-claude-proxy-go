@@ -10,6 +10,7 @@ import (
 
 	"antigravity-go-proxy/internal/cachebump"
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/openrouter"
@@ -230,6 +231,7 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
 		pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+		server.noteClaudeCodeRateLimits(acc.ID, rl)
 		return cachebump.BumpResult{}, &cachebump.UpstreamError{Status: resp.StatusCode}
 	case resp.StatusCode >= 500:
 		pool.RecordFailure(acc.ID, true, 30*time.Second)
@@ -239,13 +241,19 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 		return cachebump.BumpResult{}, &cachebump.UpstreamError{Status: resp.StatusCode}
 	}
 	pool.UpdateAccountRateLimits(acc.ID, rl)
+	server.noteClaudeCodeRateLimits(acc.ID, rl)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return cachebump.BumpResult{}, err
 	}
-	_, _, cacheRead, cacheCreation := openrouter.ParseUsageFromJSON(body)
-	return cachebump.BumpResult{CacheReadTokens: cacheRead, CacheCreationTokens: cacheCreation}, nil
+	// The detailed parse keeps the message and request IDs, so the bump
+	// reaches the usage ledger like any served turn: it burns the same
+	// subscription window.
+	u := claudecode.ParseUsageJSON(body)
+	u.RequestID = resp.Header.Get("request-id")
+	server.recordClaudeCodeUsage(acc.ID, rec.SessionID, rec.Model, ccusage.OriginCacheBump, u)
+	return cachebump.BumpResult{CacheReadTokens: int(u.CacheRead), CacheCreationTokens: int(u.CacheCreate)}, nil
 }
 
 // sendKimiBump replays a bump against the currently configured Kimi gateway.

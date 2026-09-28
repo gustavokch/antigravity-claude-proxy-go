@@ -12,12 +12,28 @@ import (
 
 // handleClaudeCodeConfigGet returns the redacted ClaudeCode gateway config.
 func (server *Server) handleClaudeCodeConfigGet(writer http.ResponseWriter, _ *http.Request) {
-	pub := config.GetPublicConfig()
-	cc, _ := pub["claudecode"]
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",
-		"config": cc,
+		"config": ccPublicConfig(),
 	})
+}
+
+// ccPublicConfig returns the redacted claudecode config section with
+// forwardUnifiedHeaders always present as its effective value, so the UI
+// shows the default (on) for a config that never set it.
+func ccPublicConfig() any {
+	pub := config.GetPublicConfig()
+	cc, _ := pub["claudecode"]
+	ccMap, ok := cc.(map[string]any)
+	if !ok {
+		return cc
+	}
+	out := make(map[string]any, len(ccMap)+1)
+	for k, v := range ccMap {
+		out[k] = v
+	}
+	out["forwardUnifiedHeaders"] = config.Get().ClaudeCode.ForwardUnifiedHeadersEnabled()
+	return out
 }
 
 // ccAccountToMap converts an account to its full persisted form. Every config
@@ -25,7 +41,7 @@ func (server *Server) handleClaudeCodeConfigGet(writer http.ResponseWriter, _ *h
 // expiry, email, UUIDs and source; dropping any of these breaks token refresh
 // after a restart.
 func ccAccountToMap(a claudecode.AccountConfig) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"id":               a.ID,
 		"name":             a.Name,
 		"token":            a.Token,
@@ -39,6 +55,28 @@ func ccAccountToMap(a claudecode.AccountConfig) map[string]any {
 		"enabled":          a.Enabled,
 		"source":           a.Source,
 	}
+	if a.UsageLimits != nil {
+		out["usageLimits"] = a.UsageLimits
+	}
+	return out
+}
+
+// validateJSONSection checks that body[key], when present and not null,
+// decodes into target. A value of the wrong type would otherwise be stored
+// and then make the whole config fail to decode on the next load.
+func validateJSONSection(body map[string]any, key, label string, target any) error {
+	raw, ok := body[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("%s: invalid %s: %w", label, key, err)
+	}
+	if err := json.Unmarshal(encoded, target); err != nil {
+		return fmt.Errorf("%s: invalid %s: %w", label, key, err)
+	}
+	return nil
 }
 
 // validateIdentityOverrides checks every claudecode.IdentityConfig reachable in a
@@ -115,6 +153,20 @@ func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, req
 		return
 	}
 
+	// A non-boolean here would make the whole config fail to decode.
+	// null is accepted and restores the default (on).
+	if v, ok := body["forwardUnifiedHeaders"]; ok && v != nil {
+		if _, isBool := v.(bool); !isBool {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "claudecode: forwardUnifiedHeaders must be a boolean"})
+			return
+		}
+	}
+
+	if err := validateJSONSection(body, "usage", "claudecode", &claudecode.UsageConfig{}); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+
 	_, err := config.Save(map[string]any{"claudecode": body})
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": err.Error()})
@@ -123,15 +175,12 @@ func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, req
 
 	// Invalidate pool on config change.
 	ccPoolMu.Lock()
-	ccPoolInst = nil
-	ccHTTPClient = nil
+	invalidateCCPoolLocked()
 	ccPoolMu.Unlock()
 
-	pub := config.GetPublicConfig()
-	cc, _ := pub["claudecode"]
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",
-		"config": cc,
+		"config": ccPublicConfig(),
 	})
 }
 
@@ -157,14 +206,25 @@ func (server *Server) handleClaudeCodeAccountsPost(writer http.ResponseWriter, r
 		return
 	}
 
+	if err := validateJSONSection(body, "usageLimits", "claudecode account", &claudecode.UsageLimits{}); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+
 	cfg := config.Get()
 	// Merge account into config via Save — config.Save handles token preservation.
 	accounts := make([]any, 0, len(cfg.ClaudeCode.Accounts)+1)
 	for _, a := range cfg.ClaudeCode.Accounts {
 		accounts = append(accounts, ccAccountToMap(a))
 	}
-	// Add or update by ID.
+	// Add or update by ID. Usage reports key unattributed usage as
+	// "unattributed", so no account may take that ID. Auto-imported and
+	// OAuth accounts get prefixed IDs; only this path takes a free one.
 	id, _ := body["id"].(string)
+	if id == claudeCodeUnattributed {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": `account ID "unattributed" is reserved`})
+		return
+	}
 	found := false
 	for i, a := range accounts {
 		if aMap, ok := a.(map[string]any); ok {
@@ -197,8 +257,7 @@ func (server *Server) handleClaudeCodeAccountsPost(writer http.ResponseWriter, r
 
 	// Sync pool.
 	ccPoolMu.Lock()
-	ccPoolInst = nil
-	ccHTTPClient = nil
+	invalidateCCPoolLocked()
 	ccPoolMu.Unlock()
 
 	writeJSON(writer, http.StatusOK, map[string]any{"status": "ok"})
@@ -300,6 +359,7 @@ func (server *Server) handleClaudeCodeAutoImport(writer http.ResponseWriter, _ *
 				"token":   d.Token,
 				"type":    d.Type,
 				"enabled": d.Enabled,
+				"source":  d.Source,
 			})
 			imported++
 		}
@@ -319,8 +379,7 @@ func (server *Server) handleClaudeCodeAutoImport(writer http.ResponseWriter, _ *
 	}
 
 	ccPoolMu.Lock()
-	ccPoolInst = nil
-	ccHTTPClient = nil
+	invalidateCCPoolLocked()
 	ccPoolMu.Unlock()
 
 	writeJSON(writer, http.StatusOK, map[string]any{
@@ -381,6 +440,12 @@ func (server *Server) routeClaudeCodeManagement(writer http.ResponseWriter, requ
 		return true
 	case path == "/api/claudecode/auth/cancel" && method == http.MethodPost:
 		server.handleClaudeCodeAuthCancelPost(writer, request)
+		return true
+	case path == "/api/claudecode/usage" && method == http.MethodGet:
+		server.handleClaudeCodeUsageReport(writer, request)
+		return true
+	case path == "/api/claudecode/usage/reload" && method == http.MethodPost:
+		server.handleClaudeCodeUsageReload(writer, request)
 		return true
 	case (path == "/api/claudecode/models" || path == "/api/claudecode/models/fetch") && method == http.MethodPost:
 		server.handleClaudeCodeModelsFetch(writer, request)
@@ -481,6 +546,7 @@ func (server *Server) handleClaudeCodeAccountRateLimits(writer http.ResponseWrit
 	}
 
 	pool.UpdateAccountRateLimits(accountID, rl)
+	server.noteClaudeCodeRateLimits(accountID, rl)
 
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":      "ok",
@@ -541,6 +607,7 @@ func (server *Server) handleClaudeCodeAllRateLimits(writer http.ResponseWriter, 
 		}
 		if rl, err := client.FetchRateLimits(request.Context(), acc.Token); err == nil {
 			pool.UpdateAccountRateLimits(acc.ID, rl)
+			server.noteClaudeCodeRateLimits(acc.ID, rl)
 			results[acc.ID] = rl
 		}
 	}

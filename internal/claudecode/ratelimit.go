@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,6 +23,30 @@ const (
 	HeaderOutputTokensRemaining = "anthropic-ratelimit-output-tokens-remaining"
 	HeaderOutputTokensReset     = "anthropic-ratelimit-output-tokens-reset"
 	HeaderRetryAfter            = "retry-after"
+)
+
+// Unified (subscription) rate-limit header keys. Resets are Unix epoch
+// seconds and utilizations are 0-1 fractions, unlike the classic headers.
+const (
+	HeaderUnifiedPrefix                = "anthropic-ratelimit-unified-"
+	HeaderUnifiedStatus                = "anthropic-ratelimit-unified-status"
+	HeaderUnifiedReset                 = "anthropic-ratelimit-unified-reset"
+	HeaderUnifiedRepresentativeClaim   = "anthropic-ratelimit-unified-representative-claim"
+	HeaderUnifiedFallbackPercentage    = "anthropic-ratelimit-unified-fallback-percentage"
+	HeaderUnifiedOverageStatus         = "anthropic-ratelimit-unified-overage-status"
+	HeaderUnifiedOverageDisabledReason = "anthropic-ratelimit-unified-overage-disabled-reason"
+	HeaderUnified5hStatus              = "anthropic-ratelimit-unified-5h-status"
+	HeaderUnified5hReset               = "anthropic-ratelimit-unified-5h-reset"
+	HeaderUnified5hUtilization         = "anthropic-ratelimit-unified-5h-utilization"
+	HeaderUnified7dStatus              = "anthropic-ratelimit-unified-7d-status"
+	HeaderUnified7dReset               = "anthropic-ratelimit-unified-7d-reset"
+	HeaderUnified7dUtilization         = "anthropic-ratelimit-unified-7d-utilization"
+)
+
+// Representative-claim values that name a unified window.
+const (
+	UnifiedClaimFiveHour = "five_hour"
+	UnifiedClaimSevenDay = "seven_day"
 )
 
 // ExtractRateLimits parses standard Anthropic rate-limit headers from an HTTP response header.
@@ -92,11 +117,114 @@ func ExtractRateLimits(h http.Header) RateLimits {
 		rl.RetryAfter = parseRetryAfter(val)
 	}
 
+	rl.Unified = extractUnified(h)
+
 	if rl.HasLimits() || rl.RetryAfter > 0 {
 		rl.LastUpdated = time.Now()
 	}
+	if rl.Unified != nil {
+		rl.Unified.ObservedAt = rl.LastUpdated
+	}
 
 	return rl
+}
+
+// extractUnified parses the anthropic-ratelimit-unified-* headers. Names are
+// matched case-insensitively even when the header map was not canonicalised,
+// malformed values are skipped, and unknown unified headers are ignored.
+// It returns nil when no unified value could be parsed.
+func extractUnified(h http.Header) *Unified {
+	var u Unified
+	found := false
+	for key, vals := range h {
+		if len(vals) == 0 {
+			continue
+		}
+		name := strings.ToLower(key)
+		if !strings.HasPrefix(name, HeaderUnifiedPrefix) {
+			continue
+		}
+		val := strings.TrimSpace(vals[0])
+		if val == "" {
+			continue
+		}
+		switch name {
+		case HeaderUnifiedStatus:
+			u.Status, found = val, true
+		case HeaderUnifiedRepresentativeClaim:
+			u.RepresentativeClaim, found = val, true
+		case HeaderUnifiedOverageStatus:
+			u.OverageStatus, found = val, true
+		case HeaderUnifiedOverageDisabledReason:
+			u.OverageDisabledReason, found = val, true
+		case HeaderUnified5hStatus:
+			u.FiveHour.Status, found = val, true
+		case HeaderUnified7dStatus:
+			u.SevenDay.Status, found = val, true
+		case HeaderUnifiedReset:
+			if t, ok := parseEpochSeconds(val); ok {
+				u.Reset, found = t, true
+			}
+		case HeaderUnified5hReset:
+			if t, ok := parseEpochSeconds(val); ok {
+				u.FiveHour.Reset, found = t, true
+			}
+		case HeaderUnified7dReset:
+			if t, ok := parseEpochSeconds(val); ok {
+				u.SevenDay.Reset, found = t, true
+			}
+		case HeaderUnifiedFallbackPercentage:
+			if f, ok := parseFraction(val); ok {
+				u.FallbackPercentage, found = &f, true
+			}
+		case HeaderUnified5hUtilization:
+			if f, ok := parseFraction(val); ok {
+				u.FiveHour.Utilization, found = &f, true
+			}
+		case HeaderUnified7dUtilization:
+			if f, ok := parseFraction(val); ok {
+				u.SevenDay.Utilization, found = &f, true
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	return &u
+}
+
+// BindingReset returns the reset of the window the representative claim
+// names, falling back to the overall unified reset when the claim names no
+// known window or that window carried no reset.
+func (u *Unified) BindingReset() time.Time {
+	var reset time.Time
+	switch u.RepresentativeClaim {
+	case UnifiedClaimFiveHour:
+		reset = u.FiveHour.Reset
+	case UnifiedClaimSevenDay:
+		reset = u.SevenDay.Reset
+	}
+	if reset.IsZero() {
+		reset = u.Reset
+	}
+	return reset
+}
+
+// maxFreshUtilization returns the highest utilization among windows whose
+// reset is after ref. Windows that have already reset (or carry no reset)
+// describe a past period and are skipped.
+func (u *Unified) maxFreshUtilization(ref time.Time) (float64, bool) {
+	maxUtil, ok := 0.0, false
+	for _, w := range []UnifiedWindow{u.FiveHour, u.SevenDay} {
+		if w.Utilization == nil || !w.Reset.After(ref) {
+			continue
+		}
+		if !ok || *w.Utilization > maxUtil {
+			maxUtil = *w.Utilization
+		}
+		ok = true
+	}
+	return maxUtil, ok
 }
 
 // HasLimits reports whether any rate-limit dimension was parsed from headers.
@@ -104,12 +232,17 @@ func ExtractRateLimits(h http.Header) RateLimits {
 // and must not overwrite the last good reading.
 func (rl RateLimits) HasLimits() bool {
 	return rl.RequestsLimit > 0 || rl.TokensLimit > 0 ||
-		rl.InputTokensLimit > 0 || rl.OutputTokensLimit > 0
+		rl.InputTokensLimit > 0 || rl.OutputTokensLimit > 0 ||
+		rl.Unified != nil
 }
 
 // IsRateLimited returns true if any limit has 0 remaining and reset timestamp is in the future,
-// or if RetryAfter duration is currently active.
+// if RetryAfter duration is currently active, or if the unified status is
+// "rejected" and the binding window's reset is in the future.
 func (rl RateLimits) IsRateLimited(now time.Time) bool {
+	if u := rl.Unified; u != nil && strings.EqualFold(u.Status, "rejected") && u.BindingReset().After(now) {
+		return true
+	}
 	if rl.RetryAfter > 0 && !rl.LastUpdated.IsZero() && rl.LastUpdated.Add(time.Duration(rl.RetryAfter)*time.Second).After(now) {
 		return true
 	}
@@ -128,10 +261,27 @@ func (rl RateLimits) IsRateLimited(now time.Time) bool {
 	return false
 }
 
-// MinRemainingFraction computes the minimum remaining fraction (0.0 to 1.0) across all configured
-// rate limit dimensions (requests, unified tokens, input tokens, output tokens).
-// Returns (1.0, false) if no limits are configured.
+// MinRemainingFraction is MinRemainingFractionAt evaluated at time.Now().
 func (rl RateLimits) MinRemainingFraction() (float64, bool) {
+	return rl.MinRemainingFractionAt(time.Now())
+}
+
+// MinRemainingFractionAt computes the minimum remaining fraction (0.0 to 1.0) at now.
+// Unified subscription windows whose reset is after now (after ObservedAt when now
+// is zero) take precedence and yield 1 - max(5h, 7d utilization). Otherwise it is
+// the minimum across the classic dimensions (requests, tokens, input tokens,
+// output tokens). Returns (1.0, false) if neither applies.
+func (rl RateLimits) MinRemainingFractionAt(now time.Time) (float64, bool) {
+	if u := rl.Unified; u != nil {
+		ref := now
+		if ref.IsZero() {
+			ref = u.ObservedAt
+		}
+		if maxUtil, ok := u.maxFreshUtilization(ref); ok {
+			return math.Min(math.Max(1-maxUtil, 0), 1), true
+		}
+	}
+
 	hasLimit := false
 	minFrac := 1.0
 
@@ -252,6 +402,24 @@ func parseTimestamp(val string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// parseEpochSeconds parses a positive Unix timestamp in whole seconds.
+func parseEpochSeconds(val string) (time.Time, bool) {
+	sec, err := strconv.ParseInt(val, 10, 64)
+	if err != nil || sec <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(sec, 0).UTC(), true
+}
+
+// parseFraction parses a finite, non-negative decimal such as "0.04".
+func parseFraction(val string) (float64, bool) {
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
+		return 0, false
+	}
+	return f, true
 }
 
 // parseRetryAfter parses the Retry-After header as either seconds or an HTTP Date.

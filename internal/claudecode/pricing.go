@@ -71,41 +71,49 @@ var defaultPricingTable = map[string]ModelPricing{
 }
 
 // GetModelPricing looks up the pricing rates for a given model ID or alias.
+// A model the table does not recognise is priced as the default model.
 func GetModelPricing(modelID string) ModelPricing {
+	p, _ := LookupModelPricing(modelID)
+	return p
+}
+
+// LookupModelPricing is GetModelPricing that also reports whether the model
+// was recognised; ok is false when the default model's rates were used.
+func LookupModelPricing(modelID string) (p ModelPricing, ok bool) {
 	modelID = strings.TrimSpace(strings.ToLower(modelID))
 	if p, ok := defaultPricingTable[modelID]; ok {
-		return p
+		return p, true
 	}
 
 	// Match prefixes or aliases
 	switch {
 	case strings.Contains(modelID, "fable-5"):
-		return defaultPricingTable["claude-fable-5"]
+		return defaultPricingTable["claude-fable-5"], true
 	case strings.Contains(modelID, "opus-5"):
-		return defaultPricingTable["claude-opus-5"]
+		return defaultPricingTable["claude-opus-5"], true
 	case strings.Contains(modelID, "sonnet-5"):
-		return defaultPricingTable["claude-sonnet-5"]
+		return defaultPricingTable["claude-sonnet-5"], true
 	case strings.Contains(modelID, "haiku-4-5") || strings.Contains(modelID, "haiku-4.5"):
-		return defaultPricingTable["claude-haiku-4-5-20251001"]
+		return defaultPricingTable["claude-haiku-4-5-20251001"], true
 	case strings.Contains(modelID, "3-7-sonnet") || strings.Contains(modelID, "3.7-sonnet"):
-		return defaultPricingTable["claude-3-7-sonnet-20250219"]
+		return defaultPricingTable["claude-3-7-sonnet-20250219"], true
 	case strings.Contains(modelID, "3-5-sonnet") || strings.Contains(modelID, "3.5-sonnet"):
-		return defaultPricingTable["claude-3-5-sonnet-20241022"]
+		return defaultPricingTable["claude-3-5-sonnet-20241022"], true
 	case strings.Contains(modelID, "3-5-haiku") || strings.Contains(modelID, "3.5-haiku"):
-		return defaultPricingTable["claude-3-5-haiku-20241022"]
+		return defaultPricingTable["claude-3-5-haiku-20241022"], true
 	case strings.Contains(modelID, "3-opus") || strings.Contains(modelID, "3.0-opus"):
-		return defaultPricingTable["claude-3-opus-20240229"]
+		return defaultPricingTable["claude-3-opus-20240229"], true
 	case strings.Contains(modelID, "haiku"):
-		return defaultPricingTable["claude-haiku-4-5-20251001"]
+		return defaultPricingTable["claude-haiku-4-5-20251001"], true
 	case strings.Contains(modelID, "opus"):
-		return defaultPricingTable["claude-opus-5"]
+		return defaultPricingTable["claude-opus-5"], true
 	case strings.Contains(modelID, "fable"):
-		return defaultPricingTable["claude-fable-5"]
+		return defaultPricingTable["claude-fable-5"], true
 	case strings.Contains(modelID, "sonnet"):
-		return defaultPricingTable["claude-sonnet-5"]
+		return defaultPricingTable["claude-sonnet-5"], true
 	default:
 		// Default fallback to Sonnet 5 pricing
-		return defaultPricingTable["claude-sonnet-5"]
+		return defaultPricingTable["claude-sonnet-5"], false
 	}
 }
 

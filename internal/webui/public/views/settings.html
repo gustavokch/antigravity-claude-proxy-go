@@ -1623,6 +1623,20 @@
                         </div>
                     </div>
 
+                    <!-- Forward subscription rate-limit headers to clients -->
+                    <div class="pt-2 border-t border-space-border/40">
+                        <label class="flex items-start gap-2 cursor-pointer">
+                            <input type="checkbox" class="checkbox checkbox-xs mt-0.5"
+                                x-model="ccConfig.forwardUnifiedHeaders"
+                                @change="saveCCConfig()"
+                                aria-label="Forward Claude subscription rate-limit headers">
+                            <span>
+                                <span class="block text-xs text-gray-300" x-text="$store.global.t('ccForwardUnifiedHeaders') || 'Forward subscription limit headers'">Forward subscription limit headers</span>
+                                <span class="block text-[11px] text-gray-500 leading-relaxed" x-text="$store.global.t('ccForwardUnifiedHeadersDesc') || 'Pass the upstream anthropic-ratelimit-unified-* headers (5-hour and weekly windows) through to clients.'">Pass the upstream anthropic-ratelimit-unified-* headers (5-hour and weekly windows) through to clients.</span>
+                            </span>
+                        </label>
+                    </div>
+
                     <!-- Claude Code wire identity (headers and body normalization) -->
                     <div class="pt-2 border-t border-space-border/40">
                         <details class="group" :open="ccIdentityIsCustom || null">

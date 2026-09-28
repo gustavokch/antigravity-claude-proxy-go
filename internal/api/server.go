@@ -33,6 +33,7 @@ import (
 	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
@@ -95,6 +96,8 @@ type Options struct {
 	OAuthHandler       http.Handler
 	Tracker            *stats.Tracker
 	ClaudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
+	// CCUsage is the Claude Code usage engine; nil turns usage tracking off.
+	CCUsage *ccusage.Engine
 }
 
 type Server struct {
@@ -112,6 +115,8 @@ type Server struct {
 	oauthHandler       http.Handler
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	tracker            *stats.Tracker
+	ccUsage            *ccusage.Engine
+	ccCalibration      claudeCodeCalibrator
 	kimiOAuthMgr       *auth.KimiOAuthManager
 	kimiIdentityOnce   sync.Once
 	kimiIdentity       http.Header
@@ -174,6 +179,7 @@ func New(options Options) (*Server, error) {
 		accountManager: options.AccountManager, broadcaster: options.Broadcaster,
 		webUI: options.WebUI, oauthHandler: options.OAuthHandler, tracker: options.Tracker,
 		claudeCodeOAuthMgr: options.ClaudeCodeOAuthMgr,
+		ccUsage:            options.CCUsage,
 		projects:           make(map[string]string),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
@@ -487,13 +493,26 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	writeJSON(writer, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
+// usage reports the Cloud Code quota windows followed by the Claude Code
+// subscription windows. The two are independent: when the catalog fetch
+// fails but Claude windows exist, the Claude windows are served with an
+// empty models list, and only a failure with no Claude windows fails the
+// call.
 func (server *Server) usage(writer http.ResponseWriter, request *http.Request) {
 	catalog, err := server.fetchModelCatalog(request.Context())
-	if err != nil {
+	claudeWindows := server.claudeCodeUsageWindows(server.now())
+	if err != nil && len(claudeWindows) == 0 {
 		server.writeError(writer, err)
 		return
 	}
-	selectable := catalog.Selectable()
+	var selectable []modelcatalog.Model
+	if err != nil {
+		if server.logger != nil {
+			server.logger.Warn("usage: Cloud Code catalog fetch failed; serving Claude Code windows only", "error", err)
+		}
+	} else {
+		selectable = catalog.Selectable()
+	}
 	models := make([]any, 0, len(selectable))
 	for _, details := range selectable {
 		if details.QuotaRemainingFraction == nil {
@@ -513,7 +532,7 @@ func (server *Server) usage(writer http.ResponseWriter, request *http.Request) {
 		"provider":   "antigravity-proxy",
 		"source":     "cloudcode.fetchAvailableModels",
 		"fetched_at": server.now().UTC().Format(time.RFC3339Nano),
-		"windows":    groupQuotaWindows(selectable),
+		"windows":    append(groupQuotaWindows(selectable), claudeWindows...),
 		"models":     models,
 	})
 }

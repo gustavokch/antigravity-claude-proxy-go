@@ -1,7 +1,9 @@
 package claudecode
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -274,5 +276,304 @@ func TestRateLimits_ResetTime(t *testing.T) {
 	}
 	if got := rlActive.ResetTime(now); !got.Equal(outReset) {
 		t.Errorf("expected latest active reset %v, got %v", outReset, got)
+	}
+}
+
+// unifiedHeadersRun1 and unifiedHeadersRun2 are the response headers of the
+// first record carrying unified headers (line 3) in
+// .reference/claude-code-headers-20260923.jsonl and
+// .reference/claude-code-headers-20260923-run2.jsonl, in capture order. They
+// are duplicated here so the test does not depend on the capture files.
+var unifiedHeadersRun1 = [][2]string{
+	{"anthropic-ratelimit-unified-5h-status", "allowed"},
+	{"anthropic-ratelimit-unified-representative-claim", "five_hour"},
+	{"anthropic-ratelimit-unified-overage-status", "rejected"},
+	{"anthropic-ratelimit-unified-reset", "1790165400"},
+	{"anthropic-ratelimit-unified-5h-utilization", "0.04"},
+	{"anthropic-ratelimit-unified-7d-reset", "1790154000"},
+	{"anthropic-ratelimit-unified-5h-reset", "1790165400"},
+	{"anthropic-ratelimit-unified-7d-status", "allowed"},
+	{"anthropic-ratelimit-unified-fallback-percentage", "0.5"},
+	{"anthropic-ratelimit-unified-overage-disabled-reason", "org_level_disabled"},
+	{"anthropic-ratelimit-unified-7d-utilization", "0.22"},
+	{"anthropic-ratelimit-unified-status", "allowed"},
+}
+
+var unifiedHeadersRun2 = [][2]string{
+	{"anthropic-ratelimit-unified-5h-status", "allowed"},
+	{"anthropic-ratelimit-unified-representative-claim", "five_hour"},
+	{"anthropic-ratelimit-unified-overage-status", "rejected"},
+	{"anthropic-ratelimit-unified-reset", "1790202000"},
+	{"anthropic-ratelimit-unified-5h-utilization", "0.12"},
+	{"anthropic-ratelimit-unified-7d-reset", "1790758800"},
+	{"anthropic-ratelimit-unified-5h-reset", "1790202000"},
+	{"anthropic-ratelimit-unified-7d-status", "allowed"},
+	{"anthropic-ratelimit-unified-fallback-percentage", "0.5"},
+	{"anthropic-ratelimit-unified-overage-disabled-reason", "org_level_disabled"},
+	{"anthropic-ratelimit-unified-7d-utilization", "0.02"},
+	{"anthropic-ratelimit-unified-status", "allowed"},
+}
+
+func headerFromPairs(pairs [][2]string) http.Header {
+	h := make(http.Header)
+	for _, p := range pairs {
+		h.Add(p[0], p[1])
+	}
+	return h
+}
+
+func TestExtractRateLimits_UnifiedCaptures(t *testing.T) {
+	cases := []struct {
+		name               string
+		pairs              [][2]string
+		util5h, util7d     float64
+		reset5h, reset7d   time.Time
+		unifiedReset       time.Time
+		observed           time.Time // capture time, used as "now"
+		wantFracAtObserved float64
+	}{
+		{
+			name:               "run1",
+			pairs:              unifiedHeadersRun1,
+			util5h:             0.04,
+			util7d:             0.22,
+			reset5h:            time.Date(2026, 9, 23, 12, 10, 0, 0, time.UTC),
+			reset7d:            time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC),
+			unifiedReset:       time.Date(2026, 9, 23, 12, 10, 0, 0, time.UTC),
+			observed:           time.Date(2026, 9, 23, 8, 48, 42, 0, time.UTC),
+			wantFracAtObserved: 1 - 0.22,
+		},
+		{
+			name:               "run2",
+			pairs:              unifiedHeadersRun2,
+			util5h:             0.12,
+			util7d:             0.02,
+			reset5h:            time.Date(2026, 9, 23, 22, 20, 0, 0, time.UTC),
+			reset7d:            time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC),
+			unifiedReset:       time.Date(2026, 9, 23, 22, 20, 0, 0, time.UTC),
+			observed:           time.Date(2026, 9, 23, 18, 0, 0, 0, time.UTC),
+			wantFracAtObserved: 1 - 0.12,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rl := ExtractRateLimits(headerFromPairs(tc.pairs))
+			u := rl.Unified
+			if u == nil {
+				t.Fatalf("expected Unified to be parsed, got nil")
+			}
+			if !rl.HasLimits() {
+				t.Errorf("expected HasLimits=true with unified headers")
+			}
+			if rl.LastUpdated.IsZero() || u.ObservedAt.IsZero() {
+				t.Errorf("expected non-zero LastUpdated and ObservedAt, got %v / %v", rl.LastUpdated, u.ObservedAt)
+			}
+			if u.Status != "allowed" || u.RepresentativeClaim != "five_hour" {
+				t.Errorf("unexpected status/claim %q/%q", u.Status, u.RepresentativeClaim)
+			}
+			if u.OverageStatus != "rejected" || u.OverageDisabledReason != "org_level_disabled" {
+				t.Errorf("unexpected overage %q/%q", u.OverageStatus, u.OverageDisabledReason)
+			}
+			if u.FallbackPercentage == nil || *u.FallbackPercentage != 0.5 {
+				t.Errorf("expected FallbackPercentage 0.5, got %v", u.FallbackPercentage)
+			}
+			if !u.Reset.Equal(tc.unifiedReset) {
+				t.Errorf("expected Reset %v, got %v", tc.unifiedReset, u.Reset)
+			}
+			if u.FiveHour.Utilization == nil || *u.FiveHour.Utilization != tc.util5h {
+				t.Errorf("expected 5h utilization %v, got %v", tc.util5h, u.FiveHour.Utilization)
+			}
+			if !u.FiveHour.Reset.Equal(tc.reset5h) || u.FiveHour.Status != "allowed" {
+				t.Errorf("unexpected 5h window %+v", u.FiveHour)
+			}
+			if u.SevenDay.Utilization == nil || *u.SevenDay.Utilization != tc.util7d {
+				t.Errorf("expected 7d utilization %v, got %v", tc.util7d, u.SevenDay.Utilization)
+			}
+			if !u.SevenDay.Reset.Equal(tc.reset7d) || u.SevenDay.Status != "allowed" {
+				t.Errorf("unexpected 7d window %+v", u.SevenDay)
+			}
+			if frac, ok := rl.MinRemainingFractionAt(tc.observed); !ok || !approxEqual(frac, tc.wantFracAtObserved) {
+				t.Errorf("expected (%v, true), got (%v, %v)", tc.wantFracAtObserved, frac, ok)
+			}
+			if rl.IsRateLimited(tc.observed) {
+				t.Errorf("allowed status must not be rate limited")
+			}
+		})
+	}
+}
+
+func approxEqual(a, b float64) bool {
+	d := a - b
+	return d < 1e-9 && d > -1e-9
+}
+
+func TestExtractRateLimits_UnifiedCaseInsensitive(t *testing.T) {
+	// A header map built without canonicalisation must still be read.
+	h := http.Header{
+		"anthropic-ratelimit-unified-5h-utilization": {"0.30"},
+		"ANTHROPIC-RATELIMIT-UNIFIED-5H-RESET":       {"1790165400"},
+		"Anthropic-Ratelimit-Unified-Status":         {"allowed"},
+	}
+	rl := ExtractRateLimits(h)
+	if rl.Unified == nil {
+		t.Fatalf("expected Unified to be parsed")
+	}
+	if rl.Unified.FiveHour.Utilization == nil || *rl.Unified.FiveHour.Utilization != 0.30 {
+		t.Errorf("expected 5h utilization 0.30, got %v", rl.Unified.FiveHour.Utilization)
+	}
+	if !rl.Unified.FiveHour.Reset.Equal(time.Unix(1790165400, 0)) {
+		t.Errorf("unexpected 5h reset %v", rl.Unified.FiveHour.Reset)
+	}
+	if rl.Unified.Status != "allowed" {
+		t.Errorf("expected status allowed, got %q", rl.Unified.Status)
+	}
+}
+
+func TestExtractRateLimits_UnifiedMalformedIgnored(t *testing.T) {
+	h := make(http.Header)
+	h.Set("anthropic-ratelimit-unified-5h-utilization", "lots")
+	h.Set("anthropic-ratelimit-unified-5h-reset", "2026-09-23T12:10:00Z")
+	h.Set("anthropic-ratelimit-unified-7d-utilization", "NaN")
+	h.Set("anthropic-ratelimit-unified-7d-reset", "-5")
+	h.Set("anthropic-ratelimit-unified-reset", "soon")
+	h.Set("anthropic-ratelimit-unified-fallback-percentage", "half")
+	h.Set("anthropic-ratelimit-unified-some-future-header", "whatever")
+
+	rl := ExtractRateLimits(h)
+	if rl.Unified != nil {
+		t.Errorf("expected no unified data from malformed values, got %+v", *rl.Unified)
+	}
+	if rl.HasLimits() || !rl.LastUpdated.IsZero() {
+		t.Errorf("malformed unified headers must carry no signal, got %+v", rl)
+	}
+
+	// A valid value alongside malformed ones is kept; the malformed ones are dropped.
+	h.Set("anthropic-ratelimit-unified-7d-utilization", "0.5")
+	rl = ExtractRateLimits(h)
+	if rl.Unified == nil {
+		t.Fatalf("expected Unified to be parsed")
+	}
+	u := rl.Unified
+	if u.SevenDay.Utilization == nil || *u.SevenDay.Utilization != 0.5 {
+		t.Errorf("expected 7d utilization 0.5, got %v", u.SevenDay.Utilization)
+	}
+	if u.FiveHour.Utilization != nil || !u.FiveHour.Reset.IsZero() || !u.SevenDay.Reset.IsZero() ||
+		!u.Reset.IsZero() || u.FallbackPercentage != nil {
+		t.Errorf("malformed values must be ignored, got %+v", *u)
+	}
+}
+
+func TestRateLimits_UnifiedMinRemainingFractionFreshness(t *testing.T) {
+	rl := ExtractRateLimits(headerFromPairs(unifiedHeadersRun1))
+	cases := []struct {
+		name   string
+		now    time.Time
+		want   float64
+		wantOK bool
+	}{
+		{"both windows fresh", time.Date(2026, 9, 23, 8, 50, 0, 0, time.UTC), 1 - 0.22, true},
+		{"7d window reset", time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC), 1 - 0.04, true},
+		{"both windows reset", time.Date(2026, 9, 23, 12, 10, 0, 0, time.UTC), 1.0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			frac, ok := rl.MinRemainingFractionAt(tc.now)
+			if ok != tc.wantOK || !approxEqual(frac, tc.want) {
+				t.Errorf("expected (%v, %v), got (%v, %v)", tc.want, tc.wantOK, frac, ok)
+			}
+		})
+	}
+
+	// A zero now falls back to ObservedAt.
+	observed := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	rl.Unified.ObservedAt = observed
+	if frac, ok := rl.MinRemainingFractionAt(time.Time{}); !ok || !approxEqual(frac, 1-0.04) {
+		t.Errorf("expected (0.96, true) relative to ObservedAt, got (%v, %v)", frac, ok)
+	}
+}
+
+func TestRateLimits_UnifiedPreferredOverClassic(t *testing.T) {
+	now := time.Date(2026, 9, 23, 8, 50, 0, 0, time.UTC)
+	util := 0.10
+	rl := RateLimits{
+		RequestsLimit:     100,
+		RequestsRemaining: 5, // 0.05 classic
+		Unified: &Unified{
+			FiveHour:   UnifiedWindow{Utilization: &util, Reset: now.Add(time.Hour)},
+			ObservedAt: now,
+		},
+	}
+	if frac, ok := rl.MinRemainingFractionAt(now); !ok || !approxEqual(frac, 0.9) {
+		t.Errorf("expected unified (0.9, true), got (%v, %v)", frac, ok)
+	}
+	// Once the unified window has reset, the classic dimensions apply again.
+	if frac, ok := rl.MinRemainingFractionAt(now.Add(2 * time.Hour)); !ok || !approxEqual(frac, 0.05) {
+		t.Errorf("expected classic (0.05, true), got (%v, %v)", frac, ok)
+	}
+	// Utilization above 1 clamps to zero remaining.
+	over := 1.3
+	rl.Unified.FiveHour.Utilization = &over
+	if frac, ok := rl.MinRemainingFractionAt(now); !ok || frac != 0 {
+		t.Errorf("expected (0, true), got (%v, %v)", frac, ok)
+	}
+}
+
+func TestRateLimits_UnifiedRejectedIsRateLimited(t *testing.T) {
+	now := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	reset5h := now.Add(2 * time.Hour)
+	reset7d := now.Add(72 * time.Hour)
+	resetUnified := now.Add(30 * time.Minute)
+	cases := []struct {
+		name  string
+		claim string
+		reset time.Time // binding reset
+	}{
+		{"five_hour binds 5h reset", "five_hour", reset5h},
+		{"seven_day binds 7d reset", "seven_day", reset7d},
+		{"unknown claim binds unified reset", "opus_weekly", resetUnified},
+		{"missing claim binds unified reset", "", resetUnified},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rl := RateLimits{Unified: &Unified{
+				Status:              "rejected",
+				Reset:               resetUnified,
+				RepresentativeClaim: tc.claim,
+				FiveHour:            UnifiedWindow{Reset: reset5h, Status: "rejected"},
+				SevenDay:            UnifiedWindow{Reset: reset7d},
+				ObservedAt:          now,
+			}}
+			if got := rl.Unified.BindingReset(); !got.Equal(tc.reset) {
+				t.Errorf("expected BindingReset %v, got %v", tc.reset, got)
+			}
+			if !rl.IsRateLimited(tc.reset.Add(-time.Second)) {
+				t.Errorf("expected rate limited before the binding reset")
+			}
+			if rl.IsRateLimited(tc.reset) {
+				t.Errorf("expected not rate limited at the binding reset")
+			}
+		})
+	}
+
+	// A binding window without a reset falls back to the unified reset.
+	rl := RateLimits{Unified: &Unified{Status: "rejected", Reset: resetUnified, RepresentativeClaim: "seven_day"}}
+	if got := rl.Unified.BindingReset(); !got.Equal(resetUnified) {
+		t.Errorf("expected fallback to unified reset %v, got %v", resetUnified, got)
+	}
+
+	// Allowed status is never rate limited by unified data.
+	allowed := RateLimits{Unified: &Unified{Status: "allowed", Reset: resetUnified}}
+	if allowed.IsRateLimited(now) {
+		t.Errorf("allowed status must not be rate limited")
+	}
+}
+
+func TestRateLimits_UnifiedJSONOmittedWhenAbsent(t *testing.T) {
+	b, err := json.Marshal(RateLimits{RequestsLimit: 1})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "unified") {
+		t.Errorf("classic-only RateLimits must not serialise a unified key: %s", b)
 	}
 }

@@ -1102,6 +1102,7 @@ window.Components.models = () => ({
         baseUrl: 'https://api.anthropic.com',
         mode: 'pool',
         autoImport: false,
+        forwardUnifiedHeaders: true,
         accounts: [],
         allowlist: [],
         routing: {},
@@ -1382,6 +1383,7 @@ window.Components.models = () => ({
                     baseUrl: this.ccConfig.baseUrl,
                     mode: this.ccConfig.mode,
                     autoImport: this.ccConfig.autoImport,
+                    forwardUnifiedHeaders: this.ccConfig.forwardUnifiedHeaders !== false,
                     allowlist: this.ccConfig.allowlist,
                     routing: this.ccConfig.routing,
                     identity: ccIdentityFrom(identity, (value) => value.trim())

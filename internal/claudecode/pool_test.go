@@ -359,3 +359,205 @@ func TestAccount_Snapshot_StatusRateLimited(t *testing.T) {
 		t.Errorf("expected status 'rate_limited' for exhausted input tokens, got %q", snap.Status)
 	}
 }
+
+func newUnifiedTestPool() *AccountPool {
+	return NewAccountPool([]AccountConfig{
+		{ID: "acc-u", Name: "Unified", Token: "token-u", Priority: 1, Enabled: true},
+	})
+}
+
+// A rejected subscription 429 cools the account down until the binding
+// window's reset instead of the short default, and a longer retry-after wins.
+func TestAccountPool_RecordRateLimit_UnifiedRejected(t *testing.T) {
+	const def = 10 * time.Second
+	tests := []struct {
+		name       string
+		unified    *Unified
+		retryAfter int
+		want       time.Duration
+	}{
+		{
+			name: "rejected five_hour cools down until 5h reset",
+			unified: &Unified{
+				Status:              "rejected",
+				RepresentativeClaim: UnifiedClaimFiveHour,
+				FiveHour:            UnifiedWindow{Reset: time.Now().Add(3 * time.Hour)},
+				SevenDay:            UnifiedWindow{Reset: time.Now().Add(72 * time.Hour)},
+			},
+			want: 3 * time.Hour,
+		},
+		{
+			name: "rejected seven_day cools down until 7d reset",
+			unified: &Unified{
+				Status:              "Rejected",
+				RepresentativeClaim: UnifiedClaimSevenDay,
+				FiveHour:            UnifiedWindow{Reset: time.Now().Add(1 * time.Hour)},
+				SevenDay:            UnifiedWindow{Reset: time.Now().Add(30 * time.Hour)},
+			},
+			want: 30 * time.Hour,
+		},
+		{
+			name: "rejected unknown claim falls back to overall reset",
+			unified: &Unified{
+				Status: "rejected",
+				Reset:  time.Now().Add(2 * time.Hour),
+			},
+			want: 2 * time.Hour,
+		},
+		{
+			name: "shorter retry-after loses to the unified reset",
+			unified: &Unified{
+				Status:              "rejected",
+				RepresentativeClaim: UnifiedClaimFiveHour,
+				FiveHour:            UnifiedWindow{Reset: time.Now().Add(3 * time.Hour)},
+			},
+			retryAfter: 60,
+			want:       3 * time.Hour,
+		},
+		{
+			name: "longer retry-after wins",
+			unified: &Unified{
+				Status:              "rejected",
+				RepresentativeClaim: UnifiedClaimFiveHour,
+				FiveHour:            UnifiedWindow{Reset: time.Now().Add(1 * time.Hour)},
+			},
+			retryAfter: 4 * 3600,
+			want:       4 * time.Hour,
+		},
+		{
+			name: "allowed status keeps the default",
+			unified: &Unified{
+				Status:              "allowed",
+				RepresentativeClaim: UnifiedClaimFiveHour,
+				FiveHour:            UnifiedWindow{Reset: time.Now().Add(3 * time.Hour)},
+			},
+			want: def,
+		},
+		{
+			name: "allowed status with retry-after uses retry-after",
+			unified: &Unified{
+				Status:   "allowed_warning",
+				FiveHour: UnifiedWindow{Reset: time.Now().Add(3 * time.Hour)},
+			},
+			retryAfter: 30,
+			want:       30 * time.Second,
+		},
+		{
+			name: "rejected with past reset keeps the default",
+			unified: &Unified{
+				Status:              "rejected",
+				RepresentativeClaim: UnifiedClaimFiveHour,
+				FiveHour:            UnifiedWindow{Reset: time.Now().Add(-time.Minute)},
+			},
+			want: def,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newUnifiedTestPool()
+			start := time.Now()
+			pool.RecordRateLimit("acc-u", RateLimits{
+				RetryAfter:  tc.retryAfter,
+				Unified:     tc.unified,
+				LastUpdated: start,
+			}, def)
+
+			acc, _ := pool.GetAccount("acc-u")
+			got := acc.CooldownUntil.Sub(start)
+			if diff := got - tc.want; diff < -time.Second || diff > time.Second {
+				t.Errorf("cooldown = %v, want about %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A classic-only 429 without unified data behaves as before.
+func TestAccountPool_RecordRateLimit_ClassicUnchanged(t *testing.T) {
+	pool := newUnifiedTestPool()
+	start := time.Now()
+	pool.RecordRateLimit("acc-u", RateLimits{
+		TokensReset: start.Add(45 * time.Second),
+		LastUpdated: start,
+	}, 10*time.Second)
+
+	acc, _ := pool.GetAccount("acc-u")
+	if got := acc.CooldownUntil.Sub(start); got < 44*time.Second || got > 46*time.Second {
+		t.Errorf("cooldown = %v, want about 45s", got)
+	}
+}
+
+// An unexpired unified snapshot survives later classic-only responses on all
+// three store paths and is replaced only by fresh unified data; an expired
+// one is not carried over.
+func TestAccountPool_UnifiedSnapshotCarryOver(t *testing.T) {
+	util := 0.4
+	live := &Unified{
+		Status:   "allowed",
+		FiveHour: UnifiedWindow{Utilization: &util, Reset: time.Now().Add(2 * time.Hour)},
+	}
+	classic := func() RateLimits {
+		return RateLimits{RequestsLimit: 100, RequestsRemaining: 50, LastUpdated: time.Now()}
+	}
+
+	stores := []struct {
+		name  string
+		store func(p *AccountPool, rl RateLimits)
+	}{
+		{"UpdateAccountRateLimits", func(p *AccountPool, rl RateLimits) { p.UpdateAccountRateLimits("acc-u", rl) }},
+		{"RecordSuccess", func(p *AccountPool, rl RateLimits) { p.RecordSuccess("acc-u", 1, 0, rl) }},
+		{"RecordRateLimit", func(p *AccountPool, rl RateLimits) { p.RecordRateLimit("acc-u", rl, time.Second) }},
+	}
+
+	for _, s := range stores {
+		t.Run(s.name+"/live carried over", func(t *testing.T) {
+			pool := newUnifiedTestPool()
+			pool.UpdateAccountRateLimits("acc-u", RateLimits{Unified: live, LastUpdated: time.Now()})
+			s.store(pool, classic())
+
+			acc, _ := pool.GetAccount("acc-u")
+			if acc.RateLimits.Unified != live {
+				t.Fatalf("unified snapshot not carried over: %+v", acc.RateLimits.Unified)
+			}
+			if acc.RateLimits.RequestsRemaining != 50 {
+				t.Errorf("classic fields not stored: %+v", acc.RateLimits)
+			}
+		})
+
+		t.Run(s.name+"/replaced by fresh unified", func(t *testing.T) {
+			pool := newUnifiedTestPool()
+			pool.UpdateAccountRateLimits("acc-u", RateLimits{Unified: live, LastUpdated: time.Now()})
+			fresh := &Unified{Status: "allowed", SevenDay: UnifiedWindow{Reset: time.Now().Add(time.Hour)}}
+			rl := classic()
+			rl.Unified = fresh
+			s.store(pool, rl)
+
+			acc, _ := pool.GetAccount("acc-u")
+			if acc.RateLimits.Unified != fresh {
+				t.Fatalf("fresh unified data must replace the old snapshot")
+			}
+		})
+
+		t.Run(s.name+"/expired not carried over", func(t *testing.T) {
+			pool := newUnifiedTestPool()
+			expired := &Unified{
+				Status:   "allowed",
+				Reset:    time.Now().Add(-time.Minute),
+				FiveHour: UnifiedWindow{Reset: time.Now().Add(-time.Minute)},
+				SevenDay: UnifiedWindow{Reset: time.Now().Add(-time.Second)},
+			}
+			pool.UpdateAccountRateLimits("acc-u", RateLimits{Unified: expired, LastUpdated: time.Now()})
+			s.store(pool, classic())
+
+			acc, _ := pool.GetAccount("acc-u")
+			if acc.RateLimits.Unified != nil {
+				t.Fatalf("expired unified snapshot must not be carried over: %+v", acc.RateLimits.Unified)
+			}
+		})
+	}
+
+	// The shared snapshot is never mutated by the carry-over.
+	if live.Status != "allowed" || *live.FiveHour.Utilization != 0.4 {
+		t.Errorf("live snapshot mutated: %+v", live)
+	}
+}
