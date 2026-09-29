@@ -39,6 +39,9 @@ const (
 	// A CA with less than this much life left is regenerated on load.
 	caRenewWindow = 7 * 24 * time.Hour
 	leafLifetime  = 24 * time.Hour
+	// maxCachedLeaves bounds the leaf cache, which is keyed by client-chosen
+	// host names.
+	maxCachedLeaves = 256
 )
 
 // HostPermitted reports whether host equals, or is a subdomain of, a
@@ -205,6 +208,27 @@ func (ca *CA) LeafFor(host string) (*tls.Certificate, error) {
 		return nil, err
 	}
 	leaf := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: parsed}
+	if len(ca.leaves) >= maxCachedLeaves {
+		ca.pruneLeavesLocked()
+	}
 	ca.leaves[host] = leaf
 	return leaf, nil
+}
+
+// pruneLeavesLocked makes room for one more cached leaf: expired leaves go
+// first, then arbitrary ones, so a client cycling through host names cannot
+// grow the cache without bound.
+func (ca *CA) pruneLeavesLocked() {
+	now := ca.now()
+	for host, leaf := range ca.leaves {
+		if leaf.Leaf == nil || !now.Add(time.Hour).Before(leaf.Leaf.NotAfter) {
+			delete(ca.leaves, host)
+		}
+	}
+	for host := range ca.leaves {
+		if len(ca.leaves) < maxCachedLeaves {
+			break
+		}
+		delete(ca.leaves, host)
+	}
 }

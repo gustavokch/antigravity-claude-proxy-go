@@ -53,7 +53,7 @@ type Server struct {
 	wg       sync.WaitGroup
 
 	terminated, tunnelled, handshakeFailures, upstreamErrors, requests, observed atomic.Int64
-	warnedHosts                                                                  sync.Map
+	warnedHosts                                                                  map[string]struct{} // guarded by mu
 }
 
 // New validates options and returns a Server.
@@ -74,7 +74,7 @@ func New(opts Options) (*Server, error) {
 		dialer := &net.Dialer{Timeout: 10 * time.Second}
 		opts.Dial = dialer.DialContext
 	}
-	return &Server{opts: opts, logger: opts.Logger, conns: map[net.Conn]struct{}{}}, nil
+	return &Server{opts: opts, logger: opts.Logger, conns: map[net.Conn]struct{}{}, warnedHosts: map[string]struct{}{}}, nil
 }
 
 // Stats returns a snapshot of the counters.
@@ -268,13 +268,29 @@ func (s *Server) terminate(conn net.Conn, br *bufio.Reader, host string) {
 	cancel()
 	if err != nil {
 		s.handshakeFailures.Add(1)
-		if _, seen := s.warnedHosts.LoadOrStore(host, true); !seen {
+		if s.firstFailureFor(host) {
 			s.logger.Warn("mitm: client TLS handshake failed; the CLI probably does not trust the proxy CA (set NODE_EXTRA_CA_CERTS)", "host", host, "error", err)
 		}
 		return
 	}
 	s.terminated.Add(1)
 	s.relay(tlsConn, host)
+}
+
+// maxWarnedHosts bounds the set of hosts already warned about, which is keyed
+// by client-chosen host names.
+const maxWarnedHosts = 64
+
+// firstFailureFor reports whether the handshake-failure warning should be
+// logged for host: once per host, and for at most maxWarnedHosts hosts.
+func (s *Server) firstFailureFor(host string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, seen := s.warnedHosts[host]; seen || len(s.warnedHosts) >= maxWarnedHosts {
+		return false
+	}
+	s.warnedHosts[host] = struct{}{}
+	return true
 }
 
 type upstream struct {

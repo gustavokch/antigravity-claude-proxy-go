@@ -523,3 +523,25 @@ func TestStreamIsObservedWhileOpenAndOnceWhenAborted(t *testing.T) {
 		t.Fatalf("sessions = %+v, want one session observed once", list)
 	}
 }
+
+func TestHandshakeWarningsAreOncePerHostAndBounded(t *testing.T) {
+	srv, err := New(Options{CA: newTestCA(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.firstFailureFor("api.anthropic.com") {
+		t.Fatal("the first failure for a host must warn")
+	}
+	if srv.firstFailureFor("api.anthropic.com") {
+		t.Fatal("a second failure for the same host must not warn")
+	}
+	warned := 1
+	for i := 0; i < maxWarnedHosts+20; i++ {
+		if srv.firstFailureFor(fmt.Sprintf("h%d.claude.ai", i)) {
+			warned++
+		}
+	}
+	if warned != maxWarnedHosts {
+		t.Fatalf("warned for %d hosts, want the cap of %d", warned, maxWarnedHosts)
+	}
+}

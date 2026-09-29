@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -117,5 +118,42 @@ func TestHostPermitted(t *testing.T) {
 		if got := HostPermitted(host); got != want {
 			t.Errorf("HostPermitted(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+func TestLeafCacheIsBounded(t *testing.T) {
+	ca := newTestCA(t)
+	for i := 0; i < maxCachedLeaves+50; i++ {
+		if _, err := ca.LeafFor(fmt.Sprintf("host%d.anthropic.com", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	if len(ca.leaves) > maxCachedLeaves {
+		t.Fatalf("leaf cache holds %d entries, cap is %d", len(ca.leaves), maxCachedLeaves)
+	}
+	if _, ok := ca.leaves[fmt.Sprintf("host%d.anthropic.com", maxCachedLeaves+49)]; !ok {
+		t.Fatal("the newest leaf must stay cached")
+	}
+}
+
+func TestLeafCachePrunesExpiredLeavesFirst(t *testing.T) {
+	ca := newTestCA(t)
+	now := time.Now()
+	ca.now = func() time.Time { return now }
+	for i := 0; i < maxCachedLeaves; i++ {
+		if _, err := ca.LeafFor(fmt.Sprintf("old%d.claude.ai", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now = now.Add(leafLifetime + time.Hour)
+	if _, err := ca.LeafFor("fresh.claude.ai"); err != nil {
+		t.Fatal(err)
+	}
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	if len(ca.leaves) != 1 {
+		t.Fatalf("leaf cache holds %d entries, want only the fresh one", len(ca.leaves))
 	}
 }
