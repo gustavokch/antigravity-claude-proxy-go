@@ -51,6 +51,9 @@ func HashID(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])[:12]
 }
+func isSuccessfulObservationStatus(status int) bool {
+	return status == 0 || (status >= 200 && status < 300) || status == 101
+}
 
 // Observe merges one observation. Observations without a session id are
 // ignored: the registry only tracks sessions.
@@ -65,6 +68,9 @@ func (r *Registry) Observe(o Observation) {
 	r.expireLocked(now)
 	s, ok := r.byID[id]
 	if !ok {
+		if !isSuccessfulObservationStatus(o.Status) {
+			return
+		}
 		s = &Session{ID: id, CreatedAt: now, LastSeenAt: now}
 		r.byID[id] = s
 		r.evictLocked()

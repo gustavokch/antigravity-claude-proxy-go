@@ -627,3 +627,21 @@ func TestServeAfterShutdownClosesTheListener(t *testing.T) {
 		t.Fatalf("the listener is still open after Serve refused it: %v", err)
 	}
 }
+
+func TestObserverDoesNotRegisterSessionOn404(t *testing.T) {
+	up, roots := startFakeUpstream(t, func(head string, _ []byte, conn net.Conn) {
+		body := `{"error":"not_found"}`
+		fmt.Fprintf(conn, "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+	})
+	h := startProxy(t, map[string]string{"api.anthropic.com:443": up.addr}, roots)
+	conn, br := h.connectTLS(t, "api.anthropic.com")
+	io.WriteString(conn, "GET /v1/sessions/session_phantom404 HTTP/1.1\r\nHost: api.anthropic.com\r\n\r\n")
+	head, _ := readResponse(t, br, "GET")
+	if head.Status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", head.Status)
+	}
+
+	if sessions := h.registry.List(); len(sessions) != 0 {
+		t.Fatalf("registry should have 0 sessions, got %d: %+v", len(sessions), sessions)
+	}
+}

@@ -168,3 +168,57 @@ func TestRegistryTTLAndCap(t *testing.T) {
 		t.Fatal("TTL not enforced")
 	}
 }
+
+func TestRegistry_DoesNotCreatePhantomSessionOnNon2xx(t *testing.T) {
+	reg := NewRegistry(10, time.Hour, nil)
+
+	// An observation for an unknown session ID with 404 Not Found
+	reg.Observe(Observation{
+		Route:  "sessions.get",
+		RawID:  "session_nonexistent_404",
+		Status: 404,
+	})
+	if len(reg.List()) != 0 {
+		t.Fatalf("404 must not create a session, got: %v", reg.List())
+	}
+
+	// 403 Forbidden
+	reg.Observe(Observation{
+		Route:  "sessions.get",
+		RawID:  "session_forbidden_403",
+		Status: 403,
+	})
+	if len(reg.List()) != 0 {
+		t.Fatalf("403 must not create a session, got: %v", reg.List())
+	}
+
+	// 500 Internal Server Error
+	reg.Observe(Observation{
+		Route:  "sessions.get",
+		RawID:  "session_error_500",
+		Status: 500,
+	})
+	if len(reg.List()) != 0 {
+		t.Fatalf("500 must not create a session, got: %v", reg.List())
+	}
+
+	// 200 OK creates the session
+	reg.Observe(Observation{
+		Route:  "sessions.create",
+		RawID:  "session_valid_200",
+		Status: 200,
+	})
+	if len(reg.List()) != 1 {
+		t.Fatalf("200 must create a session, got: %v", reg.List())
+	}
+
+	// Once the session is known, a subsequent non-2xx updates activity without creating a duplicate
+	reg.Observe(Observation{
+		Route:  "code.session.events.post",
+		RawID:  "session_valid_200",
+		Status: 500,
+	})
+	if len(reg.List()) != 1 {
+		t.Fatalf("subsequent error must not duplicate session, got: %v", reg.List())
+	}
+}
