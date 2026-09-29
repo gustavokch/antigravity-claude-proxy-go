@@ -34,6 +34,18 @@ const (
 	maxInflatedBody = 4 << 20
 )
 
+// routeVerb lowercases a standard HTTP method for use in a route name. Any
+// other token comes from the client's request line and is free text, so it
+// maps to "other" instead of reaching the registry and the API.
+func routeVerb(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodHead, http.MethodOptions:
+		return strings.ToLower(method)
+	}
+	return "other"
+}
+
 // classifyRoute maps a request to a masked route name and the raw session id
 // found in the path. It returns an empty route for anything it does not track.
 func classifyRoute(method, target string) (route, rawID string) {
@@ -41,7 +53,7 @@ func classifyRoute(method, target string) (route, rawID string) {
 	if i := strings.IndexAny(path, "?#"); i >= 0 {
 		path = path[:i]
 	}
-	lower := strings.ToLower(method)
+	verb := routeVerb(method)
 	segs := strings.Split(strings.Trim(path, "/"), "/")
 	switch {
 	case method == http.MethodPost && path == "/v1/sessions":
@@ -52,9 +64,9 @@ func classifyRoute(method, target string) (route, rawID string) {
 		rest := segs[4:]
 		switch {
 		case len(rest) == 0:
-			return "code.session." + lower, segs[3]
+			return "code.session." + verb, segs[3]
 		case len(rest) == 1 && rest[0] == "events":
-			return "code.session.events." + lower, segs[3]
+			return "code.session.events." + verb, segs[3]
 		case len(rest) == 2 && rest[0] == "events" && rest[1] == "stream":
 			return "code.session.events.stream", segs[3]
 		default:
@@ -62,7 +74,7 @@ func classifyRoute(method, target string) (route, rawID string) {
 		}
 	case len(segs) >= 3 && segs[0] == "v1" && segs[1] == "sessions" && idSegment.MatchString(segs[2]):
 		if len(segs) == 3 {
-			return "sessions." + lower, segs[2]
+			return "sessions." + verb, segs[2]
 		}
 		return "sessions.other", segs[2]
 	}

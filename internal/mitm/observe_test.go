@@ -35,6 +35,21 @@ func TestClassifyRoute(t *testing.T) {
 	}
 }
 
+func TestClassifyRouteDoesNotEchoUnknownMethods(t *testing.T) {
+	const id = "session_01ABCDEFGHJK"
+	cases := []struct{ method, target, route string }{
+		{"<svg/onload=alert(1)>", "/v1/code/sessions/" + id, "code.session.other"},
+		{"BREW", "/v1/code/sessions/" + id + "/events", "code.session.events.other"},
+		{"Get", "/v1/sessions/" + id, "sessions.other"},
+	}
+	for _, c := range cases {
+		route, gotID := classifyRoute(c.method, c.target)
+		if route != c.route || gotID != id {
+			t.Errorf("%q %s = (%q,%q), want (%q,%q)", c.method, c.target, route, gotID, c.route, id)
+		}
+	}
+}
+
 func TestSummarizeCreateResponse(t *testing.T) {
 	body := `{"id":"session_01ABCDEFGHJK","session_status":"running","status_bucket":"working","environment_kind":"anthropic_cloud",
 	  "connection_status":"connected","configured_model":"claude-opus-5-5","created_at":"2026-09-28T20:00:00Z",
