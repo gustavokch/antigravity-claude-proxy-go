@@ -25,6 +25,56 @@ func startTestMitm(t *testing.T, srv *Server) *mitm.Runtime {
 	return rt
 }
 
+func newTestServerWithRegistry(t *testing.T, max int) (*Server, *mitm.Registry) {
+	t.Helper()
+	srv, _, _ := newTestServerWithManager(t)
+	rt, err := mitm.StartRuntime(mitm.RuntimeConfig{
+		Dir:         filepath.Join(t.TempDir(), "mitm"),
+		Listen:      "127.0.0.1:0",
+		RegistryMax: max,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Shutdown(t.Context()) })
+	srv.mitm = rt
+	return srv, rt.Registry
+}
+
+func TestCloudSessionsList_LimitAndTotal(t *testing.T) {
+	srv, reg := newTestServerWithRegistry(t, 100)
+
+	// Populate 10 fake sessions
+	for i := range 10 {
+		reg.Observe(mitm.Observation{
+			Route:  "sessions.create",
+			RawID:  fmt.Sprintf("session_test_%02d", i),
+			Status: 200,
+			Fields: map[string]string{"model": "claude-opus-5-5"},
+		})
+	}
+
+	// 1. Default limit test (should return total=10, all 10 since 10 < default 50)
+	_, listDefault := getJSON(t, srv, "/api/sessions/cloud")
+	if total, ok := listDefault["total"].(float64); !ok || int(total) != 10 {
+		t.Fatalf("want total=10, got %v", listDefault["total"])
+	}
+	sessions, _ := listDefault["sessions"].([]any)
+	if len(sessions) != 10 {
+		t.Fatalf("want 10 sessions, got %d", len(sessions))
+	}
+
+	// 2. Explicit ?limit=3
+	_, listLimit3 := getJSON(t, srv, "/api/sessions/cloud?limit=3")
+	if total, ok := listLimit3["total"].(float64); !ok || int(total) != 10 {
+		t.Fatalf("want total=10, got %v", listLimit3["total"])
+	}
+	sessions3, _ := listLimit3["sessions"].([]any)
+	if len(sessions3) != 3 {
+		t.Fatalf("want 3 sessions with ?limit=3, got %d", len(sessions3))
+	}
+}
+
 func getJSON(t *testing.T, srv *Server, path string) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	rec := httptest.NewRecorder()

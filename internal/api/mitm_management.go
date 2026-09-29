@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,10 +40,32 @@ func (server *Server) handleMitmCA(writer http.ResponseWriter, request *http.Req
 func (server *Server) handleCloudSessionsList(writer http.ResponseWriter, request *http.Request) {
 	rt := server.mitm
 	if rt == nil {
-		writeJSON(writer, http.StatusOK, map[string]any{"enabled": false, "sessions": []any{}})
+		writeJSON(writer, http.StatusOK, map[string]any{"enabled": false, "total": 0, "sessions": []any{}})
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"enabled": true, "sessions": rt.Registry.List()})
+
+	all := rt.Registry.List()
+	total := len(all)
+	limit := 50
+	if raw := strings.TrimSpace(request.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			if n > 1000 {
+				n = 1000
+			}
+			limit = n
+		}
+	}
+
+	sessions := all
+	if limit < len(sessions) {
+		sessions = sessions[:limit]
+	}
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"enabled":  true,
+		"total":    total,
+		"sessions": sessions,
+	})
 }
 
 // handleCloudSessionGet returns one observed session by its display id.
