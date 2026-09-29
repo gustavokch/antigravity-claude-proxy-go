@@ -796,7 +796,7 @@ window.translations.en = {
     cloudSessionsDesc: "Read-only view of Claude Code cloud sessions seen by the local observe-only forward proxy. Nothing is rewritten.",
     cloudSessionsDisabled: "The forward proxy is not running.",
     cloudSessionsEnable: "Enable forward proxy",
-    cloudSessionsRestartNote: "Changes apply on the next restart. The listener binds 127.0.0.1 only.",
+    cloudSessionsRestartNote: "Changes apply on the next restart. The listener binds loopback addresses only.",
     cloudSessionsSaved: "Forward proxy setting saved (applies on restart)",
     cloudSessionsRefresh: "Refresh",
     cloudSessionsListen: "Listening on",

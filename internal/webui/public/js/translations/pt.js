@@ -739,7 +739,7 @@ window.translations.pt = {
     cloudSessionsDesc: "Visão somente leitura das sessões na nuvem do Claude Code vistas pelo proxy de encaminhamento local. Nada é reescrito.",
     cloudSessionsDisabled: "O proxy de encaminhamento não está em execução.",
     cloudSessionsEnable: "Ativar proxy de encaminhamento",
-    cloudSessionsRestartNote: "As alterações valem na próxima reinicialização. O listener usa somente 127.0.0.1.",
+    cloudSessionsRestartNote: "As alterações valem na próxima reinicialização. O listener usa somente endereços de loopback.",
     cloudSessionsSaved: "Configuração do proxy de encaminhamento salva (vale após reiniciar)",
     cloudSessionsRefresh: "Atualizar",
     cloudSessionsListen: "Escutando em",

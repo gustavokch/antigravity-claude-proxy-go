@@ -4890,22 +4890,24 @@
                             <h4 class="text-sm font-bold text-white uppercase tracking-wider" x-text="$store.global.t('cloudSessionsTitle')">Claude Code Cloud Sessions</h4>
                             <p class="text-xs text-gray-400" x-text="$store.global.t('cloudSessionsDesc')">Read-only view of cloud sessions seen by the local observe-only forward proxy.</p>
                         </div>
-                        <button class="btn btn-xs btn-ghost text-gray-400" @click="refresh()" :disabled="loading"
+                        <button class="btn btn-xs btn-ghost text-gray-400" @click="activate()" :disabled="loading"
                             x-text="$store.global.t('cloudSessionsRefresh')">Refresh</button>
                     </div>
 
                     <div x-show="error" class="text-xs text-red-400" x-text="error"></div>
 
                     <!-- Disabled state -->
-                    <div x-show="!status.enabled" class="space-y-3 w-full">
-                        <p class="text-xs text-gray-400" x-text="$store.global.t('cloudSessionsDisabled')">The forward proxy is not running.</p>
+                    <p x-show="!status.enabled" class="text-xs text-gray-400" x-text="$store.global.t('cloudSessionsDisabled')">The forward proxy is not running.</p>
+
+                    <!-- Enable toggle, shown in both states so a running proxy can be switched off for the next start -->
+                    <div class="space-y-1 w-full">
                         <label class="flex items-center gap-3 cursor-pointer">
                             <input type="checkbox" class="toggle toggle-sm toggle-info"
                                 :checked="configuredEnabled" :disabled="saving"
-                                @change="setEnabled($event.target.checked)">
+                                @change="setEnabled($event.target)">
                             <span class="text-xs text-gray-300" x-text="$store.global.t('cloudSessionsEnable')">Enable forward proxy</span>
                         </label>
-                        <p class="text-[11px] text-gray-500" x-text="$store.global.t('cloudSessionsRestartNote')">Changes apply on the next restart. The listener binds 127.0.0.1 only.</p>
+                        <p class="text-[11px] text-gray-500" x-text="$store.global.t('cloudSessionsRestartNote')">Changes apply on the next restart. The listener binds loopback addresses only.</p>
                     </div>
 
                     <!-- Running state -->
