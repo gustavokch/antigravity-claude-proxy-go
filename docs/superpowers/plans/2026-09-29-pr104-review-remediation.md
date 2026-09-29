@@ -27,7 +27,7 @@
 **Files:** Modify `internal/api/management.go` (the `mitm` hunk of `handleConfigSave`). Test `internal/api/mitm_management_test.go`.
 **Consumes:** `config.DefaultMitmConfig()`, `MitmConfig.Validate()`. **Produces:** `POST /api/config {"mitm":{...}}` validated independently of `config.Get()`.
 
-- [ ] **Step 1: Write the failing test.** Add `fmt` and `os` to the imports, then:
+- [x] **Step 1: Write the failing test.** Add `fmt` and `os` to the imports, then:
 
 ```go
 func postMitmConfig(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
@@ -93,10 +93,10 @@ func TestConfigSaveValidatesMitmBounds(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/api -run 'TestConfigSaveMitm' -count=1` fails on the toggle test with `400 mitm listen "" must be host:port`; the bounds test already passes.
-- [ ] **Step 3: Implement.** In `handleConfigSave`, replace `merged := config.Get().Mitm` with `merged := config.DefaultMitmConfig()` and add a comment: the patch is validated over the defaults (the base `Load` uses) because `Save` refreshes the in-memory config from a file that may have no mitm block.
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/api -run 'Mitm' -count=1`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Confirm the failure.** `go test ./internal/api -run 'TestConfigSaveMitm' -count=1` fails on the toggle test with `400 mitm listen "" must be host:port`; the bounds test already passes.
+- [x] **Step 3: Implement.** In `handleConfigSave`, replace `merged := config.Get().Mitm` with `merged := config.DefaultMitmConfig()` and add a comment: the patch is validated over the defaults (the base `Load` uses) because `Save` refreshes the in-memory config from a file that may have no mitm block.
+- [x] **Step 4: Confirm the pass.** `go test ./internal/api -run 'Mitm' -count=1`.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/api/management.go internal/api/mitm_management_test.go
@@ -108,7 +108,7 @@ git commit -m "fix(api): validate the mitm config patch over defaults, not in-me
 **Files:** Modify `internal/mitm/server.go` (`Serve`). Test `internal/mitm/server_test.go`.
 **Produces:** `Serve` keeps running through `EMFILE`-style errors, backing off 5 ms to 1 s like `net/http`.
 
-- [ ] **Step 1: Write the failing test.**
+- [x] **Step 1: Write the failing test.**
 
 ```go
 type tempAcceptError struct{}
@@ -166,8 +166,8 @@ func TestServeRetriesTemporaryAcceptError(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestServeRetriesTemporaryAcceptError -count=1` fails (`Serve` returned the temporary error, nothing answers).
-- [ ] **Step 3: Implement.** In `Serve`, keep a `delay time.Duration`; on an `Accept` error that is not `closing`, if `retryableAccept(err)` set `delay = min(max(2*delay, 5*time.Millisecond), time.Second)`, log a warning with the error and delay, `time.Sleep(delay)` and `continue`; otherwise `return err`. Reset `delay = 0` after a successful accept. Add:
+- [x] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestServeRetriesTemporaryAcceptError -count=1` fails (`Serve` returned the temporary error, nothing answers).
+- [x] **Step 3: Implement.** In `Serve`, keep a `delay time.Duration`; on an `Accept` error that is not `closing`, if `retryableAccept(err)` set `delay = min(max(2*delay, 5*time.Millisecond), time.Second)`, log a warning with the error and delay, `time.Sleep(delay)` and `continue`; otherwise `return err`. Reset `delay = 0` after a successful accept. Add:
 
 ```go
 // retryableAccept reports whether an Accept error is transient: a timeout, or a
@@ -182,8 +182,8 @@ func retryableAccept(err error) bool {
 }
 ```
 
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/mitm -run 'TestServe' -count=1`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 4: Confirm the pass.** `go test ./internal/mitm -run 'TestServe' -count=1`.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/mitm/server.go internal/mitm/server_test.go
@@ -195,7 +195,7 @@ git commit -m "fix(mitm): keep accepting after a temporary accept error"
 **Files:** Modify `internal/mitm/observe.go` (`classifyRoute`). Test `internal/mitm/observe_test.go`.
 **Produces:** route names drawn from a closed vocabulary; any non-standard method maps to `other`.
 
-- [ ] **Step 1: Write the failing test.**
+- [x] **Step 1: Write the failing test.**
 
 ```go
 func TestClassifyRouteDoesNotEchoUnknownMethods(t *testing.T) {
@@ -214,8 +214,8 @@ func TestClassifyRouteDoesNotEchoUnknownMethods(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestClassifyRouteDoesNotEchoUnknownMethods -count=1` fails (`code.session.<svg/onload=alert(1)>`).
-- [ ] **Step 3: Implement.** Replace `lower := strings.ToLower(method)` with `verb := routeVerb(method)` and use `verb` in the three route names that used `lower`:
+- [x] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestClassifyRouteDoesNotEchoUnknownMethods -count=1` fails (`code.session.<svg/onload=alert(1)>`).
+- [x] **Step 3: Implement.** Replace `lower := strings.ToLower(method)` with `verb := routeVerb(method)` and use `verb` in the three route names that used `lower`:
 
 ```go
 // routeVerb lowercases a standard HTTP method for use in a route name. Any
@@ -231,8 +231,8 @@ func routeVerb(method string) string {
 }
 ```
 
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/mitm -run 'TestClassifyRoute' -count=1`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 4: Confirm the pass.** `go test ./internal/mitm -run 'TestClassifyRoute' -count=1`.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/mitm/observe.go internal/mitm/observe_test.go
@@ -244,7 +244,7 @@ git commit -m "fix(mitm): keep client-supplied method text out of route names"
 **Files:** Modify `internal/mitm/server.go` (`exchange`). Test `internal/mitm/server_test.go`.
 **Produces:** exactly one observation per routed exchange. For routes whose body is not parsed it is recorded as soon as the response head is forwarded. For body-parsing routes it is recorded after the body, or with route and status only if the copy fails.
 
-- [ ] **Step 1: Write the failing test.**
+- [x] **Step 1: Write the failing test.**
 
 ```go
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -292,10 +292,10 @@ func TestStreamIsObservedWhileOpenAndOnceWhenAborted(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestStreamIsObservedWhileOpenAndOnceWhenAborted -count=1` times out waiting for the open stream to be registered.
-- [ ] **Step 3: Implement.** In `exchange`, build `obs := Observation{Route: route, RawID: rawID, Status: resp.Status}` once, right after the sink is chosen. If `route != "" && captured == nil`, call `s.observe(obs)` before `copyBody`. If `copyBody` fails, log as before, and when `route != "" && captured != nil` call `s.observe(obs)` (route and status survive, body fields do not) before returning false. After a successful copy, when `route != "" && captured != nil`, fill `obs.RawID`/`obs.Fields` from `summarizeBody` exactly as today (only when `captured.Bytes() != nil`) and call `s.observe(obs)`.
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1` (the existing `TestObserverRegistersCloudSession` must still pass).
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestStreamIsObservedWhileOpenAndOnceWhenAborted -count=1` times out waiting for the open stream to be registered.
+- [x] **Step 3: Implement.** In `exchange`, build `obs := Observation{Route: route, RawID: rawID, Status: resp.Status}` once, right after the sink is chosen. If `route != "" && captured == nil`, call `s.observe(obs)` before `copyBody`. If `copyBody` fails, log as before, and when `route != "" && captured != nil` call `s.observe(obs)` (route and status survive, body fields do not) before returning false. After a successful copy, when `route != "" && captured != nil`, fill `obs.RawID`/`obs.Fields` from `summarizeBody` exactly as today (only when `captured.Bytes() != nil`) and call `s.observe(obs)`.
+- [x] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1` (the existing `TestObserverRegistersCloudSession` must still pass).
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/mitm/server.go internal/mitm/server_test.go
@@ -307,7 +307,7 @@ git commit -m "fix(mitm): register streamed and aborted exchanges without waitin
 **Files:** Modify `internal/mitm/ca.go` (`LeafFor`), `internal/mitm/server.go` (`warnedHosts`, `terminate`). Test `internal/mitm/ca_test.go`, `internal/mitm/server_test.go`.
 **Produces:** `const maxCachedLeaves = 256`, `const maxWarnedHosts = 64`, `(*CA).pruneLeavesLocked()`, `(*Server).firstFailureFor(host) bool`.
 
-- [ ] **Step 1: Write the failing tests.** In `ca_test.go` (add `fmt` to the imports):
+- [x] **Step 1: Write the failing tests.** In `ca_test.go` (add `fmt` to the imports):
 
 ```go
 func TestLeafCacheIsBounded(t *testing.T) {
@@ -374,8 +374,8 @@ func TestHandshakeWarningsAreOncePerHostAndBounded(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/mitm -run 'TestLeafCache|TestHandshakeWarnings' -count=1` fails to compile (`maxCachedLeaves`, `firstFailureFor` undefined).
-- [ ] **Step 3: Implement.** `ca.go`: add `maxCachedLeaves = 256` to the const block; before `ca.leaves[host] = leaf`, `if len(ca.leaves) >= maxCachedLeaves { ca.pruneLeavesLocked() }`, with
+- [x] **Step 2: Confirm the failure.** `go test ./internal/mitm -run 'TestLeafCache|TestHandshakeWarnings' -count=1` fails to compile (`maxCachedLeaves`, `firstFailureFor` undefined).
+- [x] **Step 3: Implement.** `ca.go`: add `maxCachedLeaves = 256` to the const block; before `ca.leaves[host] = leaf`, `if len(ca.leaves) >= maxCachedLeaves { ca.pruneLeavesLocked() }`, with
 
 ```go
 // pruneLeavesLocked makes room for one more cached leaf: expired leaves go
@@ -416,8 +416,8 @@ func (s *Server) firstFailureFor(host string) bool {
 
 and use `if s.firstFailureFor(host) { s.logger.Warn(...) }` in `terminate`.
 
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1 -race`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1 -race`.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/mitm/ca.go internal/mitm/ca_test.go internal/mitm/server.go internal/mitm/server_test.go
@@ -429,7 +429,7 @@ git commit -m "fix(mitm): bound the leaf certificate cache and the warned-host s
 **Files:** Modify `internal/mitm/server.go` (`terminate`). Test `internal/mitm/server_test.go`.
 **Produces:** RFC 8446 section 6.1 compliance. Node 22 tolerates the missing alert (checked), so this is protocol hygiene.
 
-- [ ] **Step 1: Write the failing test.** TLS 1.2 keeps the record content type in the clear, so an alert is visible on the wire:
+- [x] **Step 1: Write the failing test.** TLS 1.2 keeps the record content type in the clear, so an alert is visible on the wire:
 
 ```go
 // recordingConn records every byte the TLS client reads from the raw conn.
@@ -486,10 +486,10 @@ func TestTerminatedConnectionEndsWithCloseNotify(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestTerminatedConnectionEndsWithCloseNotify -count=1` reports `last TLS record type = 23`.
-- [ ] **Step 3: Implement.** In `terminate`, after the handshake succeeds: `defer tlsConn.Close()` with a comment that it sends `close_notify` instead of dropping the TCP connection.
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestTerminatedConnectionEndsWithCloseNotify -count=1` reports `last TLS record type = 23`.
+- [x] **Step 3: Implement.** In `terminate`, after the handshake succeeds: `defer tlsConn.Close()` with a comment that it sends `close_notify` instead of dropping the TCP connection.
+- [x] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1`.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/mitm/server.go internal/mitm/server_test.go
@@ -500,7 +500,7 @@ git commit -m "fix(mitm): close terminated TLS connections with close_notify"
 
 **Files:** Modify `internal/mitm/server.go` (`Serve`). Test `internal/mitm/server_test.go` (add `errors` and `net/http` to the imports).
 
-- [ ] **Step 1: Write the failing test.**
+- [x] **Step 1: Write the failing test.**
 
 ```go
 func TestServeAfterShutdownClosesTheListener(t *testing.T) {
@@ -528,10 +528,10 @@ func TestServeAfterShutdownClosesTheListener(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestServeAfterShutdownClosesTheListener -count=1` reports the listener is still open (a deadline error, not `net.ErrClosed`).
-- [ ] **Step 3: Implement.** In `Serve`, when `s.closing` is already set, unlock, `l.Close()` and return `http.ErrServerClosed`.
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestServeAfterShutdownClosesTheListener -count=1` reports the listener is still open (a deadline error, not `net.ErrClosed`).
+- [x] **Step 3: Implement.** In `Serve`, when `s.closing` is already set, unlock, `l.Close()` and return `http.ErrServerClosed`.
+- [x] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1`.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/mitm/server.go internal/mitm/server_test.go
@@ -542,7 +542,7 @@ git commit -m "fix(mitm): close the listener when Serve is refused after Shutdow
 
 **Files:** Modify `internal/mitm/ca.go` (`loadCA`). Test `internal/mitm/ca_test.go` (add `bytes` to the imports).
 
-- [ ] **Step 1: Write the failing test.**
+- [x] **Step 1: Write the failing test.**
 
 ```go
 func TestLoadedCAServesOnlyItsCertificate(t *testing.T) {
@@ -579,10 +579,10 @@ func TestLoadedCAServesOnlyItsCertificate(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestLoadedCAServesOnlyItsCertificate -count=1` fails with key material served.
-- [ ] **Step 3: Implement.** In `loadCA`, after the certificate parses, set `certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})` with a comment that the export is re-encoded from the parsed certificate so an extra PEM block can never be served.
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Confirm the failure.** `go test ./internal/mitm -run TestLoadedCAServesOnlyItsCertificate -count=1` fails with key material served.
+- [x] **Step 3: Implement.** In `loadCA`, after the certificate parses, set `certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})` with a comment that the export is re-encoded from the parsed certificate so an extra PEM block can never be served.
+- [x] **Step 4: Confirm the pass.** `go test ./internal/mitm -count=1`.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/mitm/ca.go internal/mitm/ca_test.go
@@ -594,26 +594,28 @@ git commit -m "fix(mitm): re-encode the CA certificate instead of serving ca.pem
 **Files:** Modify `internal/webui/public/js/components/cloud-sessions.js`, `internal/webui/public/views/settings.html`, `internal/webui/public/js/translations/en.js`, `internal/webui/public/js/translations/pt.js`. Create `internal/webui/tests/cloud-sessions.harness.mjs`, `internal/webui/tests/cloud-sessions.test.mjs`, `internal/webui/cloud_sessions_test.go`.
 **Produces:** no fetch before the tab opens; polling only while Settings > Cloud is the active tab and the page is visible; `refresh({withConfig})` single-flight; `/api/config` read only when the tab opens or on Refresh; polling stops on a 401; the enable toggle reverts when the POST fails and is shown in both states; the CA download revokes its object URL after the browser starts it; the env snippet includes `NO_PROXY=127.0.0.1,localhost`.
 
-- [ ] **Step 1: Write the failing tests.** `cloud-sessions.harness.mjs` loads the component in a `vm` sandbox with a fake Alpine store (`activeTab`, `settingsTab`), manual `setInterval`/`setTimeout`, a mutable `document.hidden`, recording `URL.revokeObjectURL`, `$watch` callbacks kept by expression, and a `window.utils.request` queue like `kimi-poll-race.harness.mjs`. `cloud-sessions.test.mjs` covers, in order:
+- [x] **Step 1: Write the failing tests.** `cloud-sessions.harness.mjs` loads the component in a `vm` sandbox with a fake Alpine store (`activeTab`, `settingsTab`), manual `setInterval`/`setTimeout`, a mutable `document.hidden`, recording `URL.revokeObjectURL`, `$watch` callbacks kept by expression, and a `window.utils.request` queue like `kimi-poll-race.harness.mjs`. `cloud-sessions.test.mjs` covers, in order:
   1. `init()` on another tab makes no request and starts no timer.
-  2. Opening the tab (settingsTab watcher) requests `/api/config`, `/api/mitm/status`, `/api/sessions/cloud` once and starts one timer.
-  3. A timer tick requests only status and sessions.
-  4. A tick while `document.hidden` requests nothing.
-  5. Leaving Settings (activeTab watcher) clears the timer.
-  6. A tick while a refresh is in flight adds no requests.
-  7. A 401 on any request stops polling and leaves `error = 'HTTP 401'`.
-  8. `setEnabled(input)`: a failed POST sets `input.checked = false` (reverting the click), keeps `configuredEnabled` and toasts the error; a successful POST keeps the box and updates `configuredEnabled`.
-  9. `downloadCA()` appends and clicks the link, does not revoke synchronously, and revokes the same URL once the timer fires.
-  10. `envSnippet()` contains `NO_PROXY=127.0.0.1,localhost` and the listen address.
+  2. `init()` while Settings > Cloud is already the active tab (hash navigation) activates at once.
+  3. Opening the tab (settingsTab watcher) requests `/api/config`, `/api/mitm/status` and `/api/sessions/cloud` once and starts one timer.
+  4. A timer tick requests only status and sessions.
+  5. A tick while `document.hidden` requests nothing, and the next visible tick does.
+  6. Leaving Settings (activeTab watcher) or switching to another Settings tab clears the timer.
+  7. A tick while a refresh is in flight adds no requests, and a failed refresh does not leave the component stuck in flight.
+  8. A 401 on any request stops polling and leaves `error = 'HTTP 401'`; `activate()` (the Refresh button) resumes polling.
+  9. `setEnabled(input)` with a failed POST sets `input.checked = false` (reverting the click), keeps `configuredEnabled` and toasts the error.
+  10. `setEnabled(input)` with a successful POST keeps the box, updates `configuredEnabled` and toasts success.
+  11. `downloadCA()` appends, clicks and removes the link, does not revoke synchronously, and revokes the same URL once the timer fires.
+  12. `envSnippet()` contains `NO_PROXY=127.0.0.1,localhost` and the listen address.
 
   `cloud_sessions_test.go` runs the file with `node` (skipped when `node` is missing), like `kimi_poll_race_test.go`.
-- [ ] **Step 2: Confirm the failure.** `go test ./internal/webui -run CloudSessions -count=1` fails (eager fetch at `init`, no revert, immediate revoke, no `NO_PROXY`).
-- [ ] **Step 3: Implement.**
+- [x] **Step 2: Confirm the failure.** `go test ./internal/webui -run CloudSessions -count=1` fails (eager fetch at `init`, no revert, immediate revoke, no `NO_PROXY`).
+- [x] **Step 3: Implement.**
   - Component: add `_inflight: false`; `onCloudTab()` (`activeTab === 'settings' && settingsTab === 'cloudsessions'`); `activate()` (`startPolling()` then `refresh({ withConfig: true })`); `init()` registers `$watch` on `$store.global.settingsTab` and `$store.global.activeTab` that call `activate()` when `onCloudTab()` else `stopPolling()`, and activates immediately only if already on the tab; `startPolling()` ticks call `refresh()` unless `document.hidden`; `refresh({ withConfig = false } = {})` returns early when `_inflight`, fetches status and sessions (plus `/api/config` when asked) and always clears `_inflight`; `getJSON` calls `stopPolling()` on a 401 before throwing; `setEnabled(input)` reads `input.checked` and restores `input.checked = !value` in the catch; `downloadCA()` appends the anchor, clicks, removes it and revokes in `setTimeout(..., 1000)`; `envSnippet()` adds `NO_PROXY=127.0.0.1,localhost`.
   - View: the Refresh button calls `activate()`; move the enable label and restart note out of the `!status.enabled` block so both states show them; `@change="setEnabled($event.target)"`.
   - Translations (`cloudSessionsRestartNote`, en and pt): say the listener binds loopback addresses only.
-- [ ] **Step 4: Confirm the pass.** `go test ./internal/webui -count=1` (includes the translation parity test).
-- [ ] **Step 5: Commit.**
+- [x] **Step 4: Confirm the pass.** `go test ./internal/webui -count=1` (includes the translation parity test).
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/webui
@@ -624,9 +626,9 @@ git commit -m "fix(webui): poll the Cloud tab only while visible and keep the en
 
 **Files:** Modify `docs/claude-code-forward-proxy.md`.
 
-- [ ] **Step 1:** Qualify "inference still uses `ANTHROPIC_BASE_URL` as before" with the `NO_PROXY` requirement; add `NO_PROXY=127.0.0.1,localhost` to the step 3 command; add a troubleshooting bullet for `405 status code (no body)` (a plain `http://` gateway URL sent through the proxy as absolute-URI requests, cleared by `NO_PROXY` or by unsetting the proxy variables for that process); document the CA lifetime (365 days, regenerated with a new key within 7 days of expiry, so downloaded copies go stale and show up as "TLS trust failures") and that any unreadable CA file is regenerated.
-- [ ] **Step 2:** Check the doc against the code: `grep -n 'caLifetime\|caRenewWindow' internal/mitm/ca.go` matches the stated numbers.
-- [ ] **Step 3: Commit.**
+- [x] **Step 1:** Qualify "inference still uses `ANTHROPIC_BASE_URL` as before" with the `NO_PROXY` requirement; add `NO_PROXY=127.0.0.1,localhost` to the step 3 command; add a troubleshooting bullet for `405 status code (no body)` (a plain `http://` gateway URL sent through the proxy as absolute-URI requests, cleared by `NO_PROXY` or by unsetting the proxy variables for that process); document the CA lifetime (365 days, regenerated with a new key within 7 days of expiry, so downloaded copies go stale and show up as "TLS trust failures") and that any unreadable CA file is regenerated.
+- [x] **Step 2:** Check the doc against the code: `grep -n 'caLifetime\|caRenewWindow' internal/mitm/ca.go` matches the stated numbers.
+- [x] **Step 3: Commit.**
 
 ```sh
 git add docs/claude-code-forward-proxy.md
@@ -637,11 +639,11 @@ git commit -m "docs: document NO_PROXY for the forward proxy and the CA lifetime
 
 **Files:** Modify `docs/superpowers/specs/2026-09-28-claude-code-cloud-feasibility.md`, `docs/superpowers/specs/2026-09-28-claude-code-forward-proxy-design.md`, `docs/superpowers/plans/2026-09-28-claude-code-cloud-open-questions-handoff.md`, `docs/superpowers/plans/2026-09-28-claude-code-forward-proxy.md`, `.reference/mitm-upstream-fingerprint-20260928.txt`.
 
-- [ ] **Step 1:** Feasibility report: mark §6/§7 (option (a) rejected, "No change upstream", "Mitigation: don't build (a)") as superseded by the design doc and correct the fingerprint row to say the proxy's upstream ClientHello differs from the CLI's (evidence file); fix "(both uncommitted)" and "Tested offline" for the two probe scripts.
-- [ ] **Step 2:** Design spec: status line (implemented in PR #104), dependency line (`github.com/andybalholm/brotli`), file list (`observe.go`, `registry.go`, `server.go`, `httpwire.go`, `runtime.go`, `ca.go`).
-- [ ] **Step 3:** Handoff: mark superseded (its target file was never created; feasibility §9 records the answers). Plan Step 5 result: scope "`code.session.events.post` never crosses the client machine" to the interactive create flow, since Probe C captured that POST.
-- [ ] **Step 4:** Evidence file: drop "GREASE". Verify first with a throwaway Go program that records the Go client's `ClientHelloInfo` (cipher suites, curves, versions, signature schemes) and checks for GREASE values (`0x?a?a`).
-- [ ] **Step 5: Commit.**
+- [x] **Step 1:** Feasibility report: mark §6/§7 (option (a) rejected, "No change upstream", "Mitigation: don't build (a)") as superseded by the design doc and correct the fingerprint row to say the proxy's upstream ClientHello differs from the CLI's (evidence file); fix "(both uncommitted)" and "Tested offline" for the two probe scripts.
+- [x] **Step 2:** Design spec: status line (implemented in PR #104), dependency line (`github.com/andybalholm/brotli`), file list (`observe.go`, `registry.go`, `server.go`, `httpwire.go`, `runtime.go`, `ca.go`).
+- [x] **Step 3:** Handoff: mark superseded (its target file was never created; feasibility §9 records the answers). Plan Step 5 result: scope "`code.session.events.post` never crosses the client machine" to the interactive create flow, since Probe C captured that POST.
+- [x] **Step 4:** Evidence file: drop "GREASE" and add a dated correction. Verified first with a throwaway Go program that parses the raw ClientHello the Go client sends to a local listener: 13 cipher suites, 11 extensions, no GREASE value in any list.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add docs .reference/mitm-upstream-fingerprint-20260928.txt
@@ -652,7 +654,7 @@ git commit -m "docs: bring the Claude Code cloud research and design docs in lin
 
 **Files:** Modify `scripts/mitm_cloud_session_probe.py`, `scripts/probe-cloud-session-api.sh`, `scripts/probe-agy-session-id.sh`. Create `scripts/test_mitm_cloud_session_probe.py`.
 
-- [ ] **Step 1: Write the failing test** (`unittest`, importing `shape` and `mask_path`):
+- [x] **Step 1: Write the failing test** (`unittest`, importing `shape` and `mask_path`):
 
 ```python
 class ShapeRedactionTests(unittest.TestCase):
@@ -660,22 +662,26 @@ class ShapeRedactionTests(unittest.TestCase):
         for key in ("source", "reason", "code"):
             self.assertEqual(shape({key: "acme/private-repo"})[key], "string")
 
-    def test_repo_slugs_and_dotted_names_are_not_kept_under_enum_keys(self):
-        self.assertEqual(shape({"type": "octo-org/secret.git"})["type"], "string")
+    def test_repo_slugs_and_host_ports_are_not_kept_under_enum_keys(self):
+        for value in ("octo-org/secret.git", "acme/private-repo", "host:8080"):
+            self.assertEqual(shape({"type": value})["type"], "string", value)
 
     def test_enum_values_are_still_kept(self):
         self.assertEqual(shape({"type": "user", "model": "claude-opus-5-5"}),
                          {"model": "string:claude-opus-5-5", "type": "string:user"})
+
+    def test_ids_are_not_kept_even_under_enum_keys(self):
+        self.assertEqual(shape({"type": "session_01ABCDEFGHJK"})["type"], "string")
 
     def test_ids_in_paths_are_masked(self):
         path, _ = mask_path("/v1/code/sessions/session_01ABCDEFGHJK/events")
         self.assertEqual(path, "/v1/code/sessions/session_{id}/events")
 ```
 
-- [ ] **Step 2: Confirm the failure.** `python3 -m unittest scripts.test_mitm_cloud_session_probe -v` (or the `discover` form) fails on the first two tests.
-- [ ] **Step 3: Implement.** Remove `source`, `reason` and `code` from `ENUM_KEYS`; make `_TOKEN` reject `/` and `:` (`^[A-Za-z0-9_.-]{1,40}$`). `probe-cloud-session-api.sh`: commit with `-c commit.gpgsign=false -c core.hooksPath=/dev/null` and drop the reference to a stage 4 fallback that does not exist. `probe-agy-session-id.sh`: say the summary holds field names, 8-character hashes and up to 40 characters of surrounding binary strings, and to review it before pasting. Check both shell scripts with `bash -n`.
-- [ ] **Step 4: Confirm the pass.** `python3 -m unittest discover -s scripts -p 'test_*.py' -v`.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Confirm the failure.** `python3 -m unittest scripts.test_mitm_cloud_session_probe -v` (or the `discover` form) fails on the first two tests.
+- [x] **Step 3: Implement.** Remove `source`, `reason` and `code` from `ENUM_KEYS`; make `_TOKEN` reject `/` and `:` (`^[A-Za-z0-9_.-]{1,40}$`). `probe-cloud-session-api.sh`: commit with `-c commit.gpgsign=false -c core.hooksPath=/dev/null` and drop the reference to a stage 4 fallback that does not exist. `probe-agy-session-id.sh`: say the summary holds field names, 8-character hashes and up to 40 characters of surrounding binary strings, and to review it before pasting. Check both shell scripts with `bash -n`.
+- [x] **Step 4: Confirm the pass.** `python3 -m unittest discover -s scripts -p 'test_*.py' -v`.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add scripts
@@ -686,11 +692,11 @@ git commit -m "fix(scripts): tighten the cloud session probe redaction and corre
 
 **Files:** Modify `internal/mitm/server_test.go`, `internal/api/mitm_management_test.go`, `internal/config/mitm_test.go`.
 
-- [ ] **Step 1: `TestSSEStreamsIncrementally`.** Replace the final `io.ReadAll` (which waits for the 2 s deadline and passes by matching "timeout") with a read of exactly the remaining chunks up to the `0\r\n\r\n` terminator, so the test no longer depends on a deadline.
-- [ ] **Step 2: API tests.** Type-check `sessions[0]` instead of panicking; check the by-id and status payloads for the raw session id; add a 404 for an unknown id while the proxy runs; make the password test restore `config` in `t.Cleanup`, cover `/api/sessions/cloud/{id}`, and add a positive `x-webui-password` case.
-- [ ] **Step 3: Config tests.** Assert which rule fired (error substrings), add the boundary values (1 and 100000, 1 and 10080), negatives and an empty `Listen`.
-- [ ] **Step 4: Confirm.** `go test ./internal/mitm ./internal/api ./internal/config -count=1` passes, and `go test ./internal/mitm -run TestSSEStreamsIncrementally -v` no longer takes about 2 s.
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: `TestSSEStreamsIncrementally`.** Replace the final `io.ReadAll` (which waits for the 2 s deadline and passes by matching "timeout") with a read of exactly the remaining chunks up to the `0\r\n\r\n` terminator, so the test no longer depends on a deadline.
+- [x] **Step 2: API tests.** Type-check `sessions[0]` instead of panicking; check the by-id and status payloads for the raw session id; add a 404 for an unknown id while the proxy runs; make the password test restore `config` in `t.Cleanup`, cover `/api/sessions/cloud/{id}`, and add a positive `x-webui-password` case.
+- [x] **Step 3: Config tests.** Assert which rule fired (error substrings), add the boundary values (1 and 100000, 1 and 10080), negatives and an empty `Listen`.
+- [x] **Step 4: Confirm.** `go test ./internal/mitm ./internal/api ./internal/config -count=1` passes, and `go test ./internal/mitm -run TestSSEStreamsIncrementally -v` no longer takes about 2 s.
+- [x] **Step 5: Commit.**
 
 ```sh
 git add internal/mitm/server_test.go internal/api/mitm_management_test.go internal/config/mitm_test.go
@@ -705,3 +711,19 @@ git commit -m "test: tighten the mitm SSE, management and config assertions"
 - `go test -race ./internal/mitm ./internal/config ./internal/api ./internal/webui -count=1`.
 - `python3 -m unittest discover -s scripts -p 'test_*.py'`.
 - `git diff --stat origin/feat/claude-code-cloud..HEAD` shows nothing under `internal/cloudcode`, and the outbound `tls.Config` in `dialUpstream` is still the empty default.
+
+## Results
+
+All thirteen tasks are done, each as its own commit on top of the PR head. Every Go and Python test was written first and seen to fail for the stated reason before the fix (Task 1: `400 mitm listen "" must be host:port`; Task 2: no response after the temporary accept error; Task 3: `code.session.<svg/onload=alert(1)>`; Task 4: timed out waiting for the open stream; Tasks 5 and 8: undefined symbols and key material served; Task 6: last TLS record type 23; Task 7: listener still open; Task 9: `init fetched before the tab was opened`; Task 12: two of five tests failed).
+
+Final gate:
+- `gofmt`, `go build ./...`, `go vet ./...` and `go mod tidy -diff` are clean.
+- `go test ./... -count=1`: 28 packages pass, 2127 tests pass, 1 skipped. The only failures are four `internal/auth` tests (`TestGetAuthorizationURL` and `TestOAuthManager_HTTPHandler` with two subtests), which fail identically on `origin/main` because the `agy` binary is not installed in this sandbox (`agy executable not found; set AGY_BINARY_PATH`).
+- `go test -race ./internal/mitm ./internal/config ./internal/api ./internal/webui -count=1` passes.
+- `python3 -m unittest discover -s scripts -p 'test_*.py'`: 86 tests, the same two import errors as on `origin/main` (`test_check_laya`, `test_finetune_laya` need `pytest`, which is not installed here). The mitm-related modules pass.
+- `internal/cloudcode` is untouched and the upstream handshake in `dialUpstream` is still an empty `tls.Config{}`.
+
+Checked beyond the unit tests:
+- Settings > Cloud in Chromium against a running proxy whose `config.json` had no `mitm` block: no Cloud request at page load, one status/sessions/config fetch on opening the tab, the enable toggle POST succeeds after an unrelated config save, one poll tick per 5 s while visible and none after leaving Settings, the toggle is present and reverts on a rejected save in the running state, and the env snippet carries `NO_PROXY`.
+- A Node 22 TLS client against the proxy still reads complete close-delimited and `Connection: close` responses after the `close_notify` change.
+- One pre-existing WebUI page error (`Unexpected identifier 's'`, raised inside Alpine) shows up identically with the `main` and PR-head views, so it is not part of this PR.
