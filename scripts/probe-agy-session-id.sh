@@ -313,7 +313,7 @@ for l in hits[:40]:
 PY
 say "Read it: same hash in every run means per-account (or per-machine)."
 say "Different between run1 and run2 but constant inside run3 means per-process or per-conversation."
-note "Only 8-char hashes and field names are in this file: safe to paste."
+note "This file holds field names, 8-char hashes and, from the binary scan, up to 40 characters of the strings around each hit. Skim it before pasting."
 printf '\n'; sed 's/^/  /' "$SUMMARY"
 printf '\n'
 say "Paste everything above back to Claude. Full files: $PROBE_DIR"

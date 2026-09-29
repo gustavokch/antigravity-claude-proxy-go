@@ -230,7 +230,7 @@ step "brand-new throwaway folder holding one dummy file. Nothing of yours is upl
 step "Your login token flows through a local intercepting proxy, but ONLY for hosts on"
 step "anthropic.com, claude.ai and claude.com. Other hosts are tunnelled untouched."
 step "The addon writes route shapes only: masked paths, key names, types, status codes."
-step "It never writes tokens, prompts, file contents, repo names or raw ids."
+step "It is built never to write tokens, prompts, file contents, repo names or raw ids."
 say ""
 say "Afterwards you archive the session at claude.ai/code (the wizard reminds you)."
 confirm "Go ahead and create one throwaway cloud session?" || { say "Stopped. Nothing was created."; exit 0; }
@@ -256,10 +256,10 @@ mkdir -p "$WORKSPACE"
   git init -q
   printf 'cloud session probe, safe to delete\n' > README.txt
   git add README.txt
-  git -c user.name=probe -c user.email=probe@example.invalid commit -q -m "probe"
+  git -c user.name=probe -c user.email=probe@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m "probe"
 )
 say "created $WORKSPACE (1 file, local git repo, no remote)"
-note "If --cloud refuses a repo with no remote, the error will say so; see the fallback in stage 4."
+note "If --cloud refuses a repo with no remote, the error will say so; paste it back instead of working around it."
 pause "Continue?"
 
 # ── 3. Start the intercepting proxy ───────────────────────────────────────
@@ -351,7 +351,7 @@ PY
 say "Now archive the probe session: open https://claude.ai/code, find it (title mentions"
 say "CLOUD_PROBE_OK), and archive or delete it."
 open_url "https://claude.ai/code"
-note "$SUMMARY holds only masked paths, key names, types and status codes: safe to paste."
+note "$SUMMARY is meant to hold only masked paths, key names, types and status codes. Skim it before pasting."
 pause "Show the summary?"
 printf '\n'; sed 's/^/  /' "$SUMMARY"; printf '\n'
 say "Paste the summary above back to Claude. Files: $PROBE_DIR (probe.jsonl is shape-only)."

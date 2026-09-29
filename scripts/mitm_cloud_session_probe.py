@@ -20,7 +20,7 @@ Recorded per HTTP exchange (JSONL, appended to $PROBE_OUT):
 Also recorded: every proxy CONNECT (host:port) so hosts outside the intercept
 set are discovered without decrypting them, and WebSocket upgrades (path only).
 
-Never written: Authorization/cookie values, prompts, file contents, repo names,
+Not written, by design: Authorization/cookie values, prompts, file contents, repo names,
 branch names, raw ids, response text.
 """
 
@@ -40,12 +40,14 @@ _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4
 _PREFIXED = re.compile(r"^([a-z]{2,12})_[0-9A-Za-z]{10,}$")
 _HEX = re.compile(r"^[0-9a-fA-F]{16,}$")
 _DIGITS = re.compile(r"^\d{6,}$")
-_TOKEN = re.compile(r"^[A-Za-z0-9_.:/-]{1,40}$")
+# No "/" or ":": a repo slug (owner/name) or host:port must not pass as a token.
+_TOKEN = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 
-# String values are kept only under these keys (enum-like fields).
+# String values are kept only under these keys (enum-like fields). Keys that can
+# hold a repo slug or free text ("source", "reason", "code") are deliberately absent.
 ENUM_KEYS = {
-    "type", "kind", "status", "state", "role", "event_type", "subtype", "source",
-    "permission_mode", "model", "outcome", "mode", "reason", "code", "error_type",
+    "type", "kind", "status", "state", "role", "event_type", "subtype",
+    "permission_mode", "model", "outcome", "mode", "error_type",
 }
 # Header values kept verbatim (no identity or credential content).
 HEADER_VALUE_ALLOW = {
