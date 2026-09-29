@@ -1048,7 +1048,7 @@ func Save(updates map[string]any) (Config, error) {
 		return currentConfig, fmt.Errorf("rename config: %w", err)
 	}
 
-	var updatedConfig Config
+	updatedConfig := DefaultConfig()
 	if err := json.Unmarshal(encoded, &updatedConfig); err == nil {
 		currentConfig = updatedConfig
 	}
