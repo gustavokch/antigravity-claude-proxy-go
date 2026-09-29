@@ -1,6 +1,7 @@
 package mitm
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -155,5 +156,38 @@ func TestLeafCachePrunesExpiredLeavesFirst(t *testing.T) {
 	defer ca.mu.Unlock()
 	if len(ca.leaves) != 1 {
 		t.Fatalf("leaf cache holds %d entries, want only the fresh one", len(ca.leaves))
+	}
+}
+
+func TestLoadedCAServesOnlyItsCertificate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "mitm")
+	first, err := LoadOrCreateCA(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, err := os.ReadFile(filepath.Join(dir, caCertFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(dir, caKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := append(append([]byte(nil), certPEM...), keyPEM...) // certificate, then private key
+	if err := os.WriteFile(filepath.Join(dir, caCertFile), bundle, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := LoadOrCreateCA(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ca.Fingerprint() != first.Fingerprint() {
+		t.Fatal("the CA was regenerated instead of loaded")
+	}
+	if bytes.Contains(ca.CertPEM(), []byte("PRIVATE KEY")) {
+		t.Fatal("CertPEM served key material from a bundled ca.pem")
+	}
+	if !bytes.Equal(ca.CertPEM(), certPEM) {
+		t.Fatalf("CertPEM = %q, want the single certificate block", ca.CertPEM())
 	}
 }

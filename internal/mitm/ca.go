@@ -104,6 +104,9 @@ func loadCA(dir string, now func() time.Time) (*CA, error) {
 	if now().Add(caRenewWindow).After(cert.NotAfter) {
 		return nil, errors.New("mitm: CA is close to expiry")
 	}
+	// Export the certificate re-encoded from the parsed value, never the raw
+	// file: an extra PEM block in ca.pem (a cert+key bundle) must not be served.
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 	return &CA{cert: cert, key: key, certPEM: certPEM, now: now, leaves: map[string]*tls.Certificate{}}, nil
 }
 
