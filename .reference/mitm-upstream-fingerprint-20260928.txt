@@ -1,0 +1,47 @@
+MITM forward proxy — upstream ClientHello fingerprint record (Step 6)
+=====================================================================
+
+Captured: 2026-09-28 21:49 and 21:53 America/Sao_Paulo (darwin/arm64)
+Proxy: ./bin/proxy (feat/claude-code-cloud, observe-only forward proxy)
+  mitm listen 127.0.0.1:8092, WebUI 127.0.0.1:18091, scratch config dir
+CLI: /Users/gus/.local/bin/claude 2.1.280 (Claude Code), CLAUDE_CONFIG_DIR=/Users/gus/.claude-container
+Session: claude --cloud "Reply with exactly CLOUD_PROBE_OK. Do not modify any files."
+
+Capture commands (both: sudo tcpdump -i pktap,all -P 'host api.anthropic.com and tcp port 443'):
+
+  /tmp/mitm-upstream-proxy.pcap  — while the CLI ran with
+      HTTPS_PROXY=http://127.0.0.1:8092 NODE_EXTRA_CA_CERTS=/tmp/mitm-ca.pem
+      (records the PROXY's upstream connection to api.anthropic.com:443)
+  /tmp/mitm-upstream-cli.pcap    — while the same CLI ran with no proxy env
+      (records the CLI's own connection to api.anthropic.com:443)
+
+JA4 extraction command (both):
+
+  tshark -r <cap>.pcap -Y 'tls.handshake.type==1' -T fields -e tls.handshake.ja4 -e tls.handshake.extensions_alpn_str
+
+Result — proxy upstream (32 ClientHellos, all identical):
+
+  t13d131100_f57a46bbacb6_f50d94e863eb   (no ALPN)
+
+Result — direct CLI (ClientHellos grouped by process; the claude CLI's
+process name is its version string "2.1.280"):
+
+  7  api.anthropic.com         t13d1713h1_5b57614c22b0_6a3d802a7139   http/1.1
+  1  api.anthropic.com         t13d1714h1_5b57614c22b0_b6469b2faef8   http/1.1
+  1  mcp-proxy.anthropic.com  t13d1713h1_5b57614c22b0_6a3d802a7139   http/1.1
+  1  mcp-proxy.anthropic.com  t13d1714h1_5b57614c22b0_b6469b2faef8   http/1.1
+
+  Other processes on the machine (empty process name in this capture) also
+  reached api.anthropic.com during the window — t13d181000_5d04281c6031_78e6aca7449b
+  (x7), t13d181100_5d04281c6031_d5fe2c511efa (x1) and one
+  t13d131100_f57a46bbacb6_f50d94e863eb (the user's own Go proxy instance);
+  these are not the claude CLI.
+
+Conclusion (on record, not gated):
+
+  The proxy's ClientHello is the standard Go one — TLS 1.3, GREASE,
+  no ALPN (NextProtos unset upstream) — and it does NOT match the CLI's
+  Bun-based ClientHello (t13d1713h1_5b57614c22b0_6a3d802a7139, ALPN
+  http/1.1). This difference is expected and documented; the AGENTS.md JA4
+  gate concerns agy and Cloud Code only, and this work never touches
+  internal/cloudcode.
