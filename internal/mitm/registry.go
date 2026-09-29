@@ -3,6 +3,7 @@ package mitm
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -52,7 +53,7 @@ func HashID(raw string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 func isSuccessfulObservationStatus(status int) bool {
-	return status == 0 || (status >= 200 && status < 300) || status == 101
+	return status == 0 || (status >= 200 && status < 300) || status == http.StatusSwitchingProtocols
 }
 
 // Observe merges one observation. Observations without a session id are
