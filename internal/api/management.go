@@ -1273,7 +1273,10 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 	}
 
 	if rawMitm, ok := updates["mitm"]; ok && rawMitm != nil {
-		merged := config.Get().Mitm
+		// Validate the patch over the defaults, the base Load uses. The in-memory
+		// config is not safe: Save refreshes it from a file that may have no mitm
+		// block, which zeroes Listen and the registry limits.
+		merged := config.DefaultMitmConfig()
 		mitmBytes, err := json.Marshal(rawMitm)
 		if err == nil {
 			err = json.Unmarshal(mitmBytes, &merged)

@@ -3,8 +3,10 @@ package api
 import (
 	"antigravity-go-proxy/internal/config"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,5 +127,67 @@ func TestConfigSaveRejectsNonLoopbackMitmListen(t *testing.T) {
 	}
 	if !config.Get().Mitm.Enabled || config.Get().Mitm.Listen != "127.0.0.1:8092" {
 		t.Fatalf("saved = %+v", config.Get().Mitm)
+	}
+}
+
+func postMitmConfig(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(body)))
+	return rec
+}
+
+// config.Save refreshes the in-memory config from the merged file, so on an
+// install whose config.json predates the mitm block config.Get().Mitm loses its
+// defaults after any unrelated Save. The Cloud toggle must not depend on it.
+func TestConfigSaveMitmToggleAfterUnrelatedSave(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	path, err := config.ConfigFilePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"logLevel":"info"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Save(map[string]any{"debug": true}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, enabled := range []bool{true, false} {
+		rec := postMitmConfig(t, srv, fmt.Sprintf(`{"mitm":{"enabled":%t}}`, enabled))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("enabled=%t: %d %s", enabled, rec.Code, rec.Body.String())
+		}
+		if got := config.Get().Mitm.Enabled; got != enabled {
+			t.Fatalf("after enabled=%t, config.Get().Mitm.Enabled = %t", enabled, got)
+		}
+	}
+}
+
+func TestConfigSaveValidatesMitmBounds(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	for _, c := range []struct{ name, body, want string }{
+		{"non-loopback listen", `{"mitm":{"listen":"0.0.0.0:8092"}}`, "loopback"},
+		{"registryMax below range", `{"mitm":{"registryMax":0}}`, "registryMax"},
+		{"registryMax above range", `{"mitm":{"registryMax":100001}}`, "registryMax"},
+		{"ttl below range", `{"mitm":{"registryTtlMinutes":0}}`, "registryTtlMinutes"},
+		{"ttl above range", `{"mitm":{"registryTtlMinutes":10081}}`, "registryTtlMinutes"},
+		{"not an object", `{"mitm":"yes"}`, "Invalid mitm configuration format"},
+	} {
+		rec := postMitmConfig(t, srv, c.body)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), c.want) {
+			t.Errorf("%s: code=%d body=%s, want 400 mentioning %q", c.name, rec.Code, rec.Body.String(), c.want)
+		}
+	}
+	for _, body := range []string{
+		`{"mitm":{"registryMax":1,"registryTtlMinutes":1}}`,
+		`{"mitm":{"registryMax":100000,"registryTtlMinutes":10080}}`,
+	} {
+		if rec := postMitmConfig(t, srv, body); rec.Code != http.StatusOK {
+			t.Errorf("%s rejected: %d %s", body, rec.Code, rec.Body.String())
+		}
 	}
 }
