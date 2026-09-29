@@ -412,14 +412,23 @@ func (s *Server) exchange(client net.Conn, cbr *bufio.Reader, up *upstream, req 
 		captured = &capBuffer{limit: maxObservedBody}
 		sink = captured
 	}
+	obs := Observation{Route: route, RawID: rawID, Status: resp.Status}
+	if route != "" && captured == nil {
+		// Nothing to read from the body, so the exchange counts as soon as its
+		// head is on the wire: a long-lived stream shows up while it is open,
+		// and one the client aborts is still recorded.
+		s.observe(obs)
+	}
 	if err := copyBody(client, up.br, resp.Framing, resp.ContentLength, sink); err != nil {
 		s.logger.Debug("mitm: response copy ended", "error", err)
+		if route != "" && captured != nil {
+			s.observe(obs) // the body fields are lost, the route and status are not
+		}
 		return false
 	}
-	if route != "" {
-		obs := Observation{Route: route, RawID: rawID, Status: resp.Status}
-		if captured != nil && captured.Bytes() != nil {
-			id, fields := summarizeBody(captured.Bytes(), resp.Header.Get("Content-Encoding"))
+	if route != "" && captured != nil {
+		if body := captured.Bytes(); body != nil {
+			id, fields := summarizeBody(body, resp.Header.Get("Content-Encoding"))
 			if obs.RawID == "" {
 				obs.RawID = id
 			}

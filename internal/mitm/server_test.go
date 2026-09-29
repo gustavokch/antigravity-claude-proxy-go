@@ -479,3 +479,47 @@ func TestServeRetriesTemporaryAcceptError(t *testing.T) {
 	default:
 	}
 }
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestStreamIsObservedWhileOpenAndOnceWhenAborted(t *testing.T) {
+	release := make(chan struct{})
+	up, roots := startFakeUpstream(t, func(_ string, _ []byte, conn net.Conn) {
+		io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		io.WriteString(conn, "a\r\nevent: a\n\n\r\n")
+		<-release
+		io.WriteString(conn, "a\r\nevent: b\n\n\r\n0\r\n\r\n")
+	})
+	h := startProxy(t, map[string]string{"api.anthropic.com:443": up.addr}, roots)
+	conn, br := h.connectTLS(t, "api.anthropic.com")
+	io.WriteString(conn, "GET /v1/code/sessions/session_01ABCDEFGHJK/events/stream HTTP/1.1\r\nHost: a\r\n\r\n")
+	if _, err := readHead(br); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := br.ReadString('\n'); err != nil { // first chunk header: the stream is live
+		t.Fatal(err)
+	}
+
+	waitFor(t, "the open stream to be registered", func() bool { return len(h.registry.List()) == 1 })
+
+	conn.Close() // the client aborts mid-stream
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := h.srv.Shutdown(ctx); err != nil { // waits for the relay to finish
+		t.Fatalf("shutdown: %v", err)
+	}
+	list := h.registry.List()
+	if len(list) != 1 || list[0].Requests != 1 || list[0].LastRoute != "code.session.events.stream" {
+		t.Fatalf("sessions = %+v, want one session observed once", list)
+	}
+}
