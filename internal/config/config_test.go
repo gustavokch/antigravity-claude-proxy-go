@@ -1067,3 +1067,48 @@ func TestGetPublicConfig_KimiOAuthRedaction(t *testing.T) {
 		t.Fatalf("OAuth after public echo = %+v, want token and refresh preserved", cfg.Kimi.OAuth)
 	}
 }
+
+func TestSave_PreservesDefaultsForUnrelatedSections(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	// Create an existing config.json that only defines port, simulating an older
+	// install or minimal config before sections like mitm and routing were added.
+	configPath := filepath.Join(tmpDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"port": 8091}`), 0644); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	// Verify pre-save defaults are intact
+	initial := Get()
+	if initial.Mitm.Listen != "127.0.0.1:8092" || initial.OpenRouter.Routing.FailureThreshold != 10 {
+		t.Fatalf("initial config missing defaults: Mitm.Listen=%q, FailureThreshold=%d",
+			initial.Mitm.Listen, initial.OpenRouter.Routing.FailureThreshold)
+	}
+
+	// Save an unrelated setting (e.g. debug toggle)
+	updated, err := Save(map[string]any{"debug": true})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// The returned Config and config.Get() must NOT have zeroed unmentioned sections
+	if updated.Mitm.Listen != "127.0.0.1:8092" {
+		t.Errorf("Save zeroed updated.Mitm.Listen: got %q, want %q", updated.Mitm.Listen, "127.0.0.1:8092")
+	}
+	if updated.Mitm.RegistryMax != 1000 {
+		t.Errorf("Save zeroed updated.Mitm.RegistryMax: got %d, want 1000", updated.Mitm.RegistryMax)
+	}
+	if updated.OpenRouter.Routing.FailureThreshold != 10 {
+		t.Errorf("Save zeroed updated.OpenRouter.Routing.FailureThreshold: got %d, want 10", updated.OpenRouter.Routing.FailureThreshold)
+	}
+	inMemory := Get()
+	if inMemory.Mitm.Listen != "127.0.0.1:8092" {
+		t.Errorf("Save zeroed Get().Mitm.Listen: got %q, want %q", inMemory.Mitm.Listen, "127.0.0.1:8092")
+	}
+}

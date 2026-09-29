@@ -61,6 +61,14 @@
                     </svg>
                     <span x-text="$store.global.t('tabClassifier')">Security Monitor</span>
                 </button>
+                <button @click="$store.global.settingsTab = 'cloudsessions'"
+                    class="transition-colors font-medium text-sm flex items-center gap-2 whitespace-nowrap"
+                    :class="$store.global.settingsTab === 'cloudsessions' ? 'text-white' : 'text-gray-500 hover:text-gray-300'">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+                    </svg>
+                    <span x-text="$store.global.t('tabCloudSessions')">Cloud Sessions</span>
+                </button>
             </div>
         </div>
 
@@ -4870,6 +4878,109 @@
                         <span x-show="!saving" x-text="$store.global.t('save') || 'Save Changes'">Save Changes</span>
                         <span x-show="saving" class="loading loading-spinner loading-xs"></span>
                     </button>
+                </div>
+            </div>
+
+            <!-- Tab: Cloud Sessions (observe-only forward proxy) -->
+            <div x-show="$store.global.settingsTab === 'cloudsessions'" x-data="window.Components.cloudSessions()"
+                class="space-y-6 animate-fade-in pb-10">
+                <div class="card bg-space-900/30 border border-neon-cyan/40 p-6 space-y-5">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 w-full">
+                        <div class="space-y-1">
+                            <h4 class="text-sm font-bold text-white uppercase tracking-wider" x-text="$store.global.t('cloudSessionsTitle')">Claude Code Cloud Sessions</h4>
+                            <p class="text-xs text-gray-400" x-text="$store.global.t('cloudSessionsDesc')">Read-only view of cloud sessions seen by the local observe-only forward proxy.</p>
+                        </div>
+                        <button class="btn btn-xs btn-ghost text-gray-400" @click="activate()" :disabled="loading"
+                            x-text="$store.global.t('cloudSessionsRefresh')">Refresh</button>
+                    </div>
+
+                    <div x-show="error" class="text-xs text-red-400" x-text="error"></div>
+
+                    <!-- Disabled state -->
+                    <p x-show="!status.enabled" class="text-xs text-gray-400" x-text="$store.global.t('cloudSessionsDisabled')">The forward proxy is not running.</p>
+
+                    <!-- Enable toggle, shown in both states so a running proxy can be switched off for the next start -->
+                    <div class="space-y-1 w-full">
+                        <label class="flex items-center gap-3 cursor-pointer">
+                            <input type="checkbox" class="toggle toggle-sm toggle-info"
+                                :checked="configuredEnabled" :disabled="saving"
+                                @change="setEnabled($event.target)">
+                            <span class="text-xs text-gray-300" x-text="$store.global.t('cloudSessionsEnable')">Enable forward proxy</span>
+                        </label>
+                        <p class="text-[11px] text-gray-500" x-text="$store.global.t('cloudSessionsRestartNote')">Changes apply on the next restart. The listener binds loopback addresses only.</p>
+                    </div>
+
+                    <!-- Running state -->
+                    <div x-show="status.enabled" class="space-y-4 w-full">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs w-full">
+                            <div>
+                                <span class="text-gray-500" x-text="$store.global.t('cloudSessionsListen')">Listening on</span>
+                                <div class="font-mono text-gray-200" x-text="status.listen"></div>
+                            </div>
+                            <div>
+                                <span class="text-gray-500" x-text="$store.global.t('cloudSessionsCaFingerprint')">CA fingerprint (SHA-256)</span>
+                                <div class="font-mono text-gray-200 break-all" x-text="status.caFingerprint"></div>
+                            </div>
+                            <div>
+                                <span class="text-gray-500" x-text="$store.global.t('cloudSessionsCaExpires')">CA expires</span>
+                                <div class="font-mono text-gray-200" x-text="formatTime(status.caNotAfter)"></div>
+                            </div>
+                            <div class="flex items-end">
+                                <button class="btn btn-xs btn-outline" @click="downloadCA()" x-text="$store.global.t('cloudSessionsDownloadCa')">Download CA certificate</button>
+                            </div>
+                        </div>
+
+                        <div class="space-y-1 w-full">
+                            <span class="text-xs text-gray-500" x-text="$store.global.t('cloudSessionsEnvSnippet')">Run Claude Code with</span>
+                            <div class="flex items-center gap-2">
+                                <code class="flex-1 text-[11px] font-mono bg-space-800 rounded px-2 py-1.5 text-gray-200 break-all" x-text="envSnippet()"></code>
+                                <button class="btn btn-xs btn-ghost" @click="copySnippet()"
+                                    x-text="copied ? $store.global.t('cloudSessionsCopied') : $store.global.t('cloudSessionsCopy')">Copy</button>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs w-full">
+                            <div><span class="text-gray-500" x-text="$store.global.t('cloudSessionsTerminated')">Intercepted</span>
+                                <div class="font-mono text-gray-200" x-text="status.stats?.terminated ?? 0"></div></div>
+                            <div><span class="text-gray-500" x-text="$store.global.t('cloudSessionsTunnelled')">Tunnelled</span>
+                                <div class="font-mono text-gray-200" x-text="status.stats?.tunnelled ?? 0"></div></div>
+                            <div><span class="text-gray-500" x-text="$store.global.t('cloudSessionsHandshakeFailures')">TLS trust failures</span>
+                                <div class="font-mono text-gray-200" x-text="status.stats?.handshakeFailures ?? 0"></div></div>
+                            <div><span class="text-gray-500" x-text="$store.global.t('cloudSessionsUpstreamErrors')">Upstream errors</span>
+                                <div class="font-mono text-gray-200" x-text="status.stats?.upstreamErrors ?? 0"></div></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div x-show="status.enabled" class="card bg-space-900/30 border border-space-border/50 p-4 overflow-x-auto">
+                    <table class="table table-xs w-full">
+                        <thead>
+                            <tr class="text-gray-500">
+                                <th x-text="$store.global.t('cloudSessionsColId')">Session</th>
+                                <th x-text="$store.global.t('cloudSessionsColModel')">Model</th>
+                                <th x-text="$store.global.t('cloudSessionsColStatus')">Status</th>
+                                <th x-text="$store.global.t('cloudSessionsColEnvironment')">Environment</th>
+                                <th x-text="$store.global.t('cloudSessionsColRequests')">Requests</th>
+                                <th x-text="$store.global.t('cloudSessionsColLastSeen')">Last seen</th>
+                                <th x-text="$store.global.t('cloudSessionsColLastRoute')">Last route</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="session in sessions" :key="session.id">
+                                <tr class="text-gray-300">
+                                    <td class="font-mono" x-text="session.id"></td>
+                                    <td class="font-mono" x-text="session.model || '-'"></td>
+                                    <td x-text="session.sessionStatus || session.statusBucket || '-'"></td>
+                                    <td x-text="session.environmentKind || '-'"></td>
+                                    <td x-text="session.requests"></td>
+                                    <td x-text="formatTime(session.lastSeenAt)"></td>
+                                    <td class="font-mono" x-text="session.lastRoute || '-'"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <p x-show="sessions.length === 0" class="text-xs text-gray-500 py-4 text-center"
+                        x-text="$store.global.t('cloudSessionsNoSessions')">No cloud sessions seen yet.</p>
                 </div>
             </div>
 

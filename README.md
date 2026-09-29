@@ -662,6 +662,13 @@ export CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=true
 claude --bare -p --model sonnet 'Reply with OK'
 ```
 
+### Claude Code cloud sessions (optional forward proxy)
+
+`claude --cloud` sessions bypass `ANTHROPIC_BASE_URL`. An optional, loopback-only,
+observe-only forward proxy lists them in the WebUI (Settings → Cloud). It is off
+by default; see [docs/claude-code-forward-proxy.md](docs/claude-code-forward-proxy.md)
+for setup and the security trade-offs.
+
 ### Hermes Agent Integration
 
 Add custom provider to `~/.hermes/config.yaml`:

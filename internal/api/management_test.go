@@ -2183,3 +2183,108 @@ func TestManagement_AccountLimits_ClaudeCodeUnifiedPools(t *testing.T) {
 		})
 	}
 }
+
+func TestManagementAPI_OriginChecks(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+
+	testCases := []struct {
+		name         string
+		method       string
+		path         string
+		origin       string
+		host         string
+		wantCode     int
+		wantCORSWild bool
+	}{
+		{
+			name:     "no origin header allowed",
+			method:   http.MethodGet,
+			path:     "/api/accounts",
+			origin:   "",
+			host:     "127.0.0.1:8091",
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "matching host origin allowed",
+			method:   http.MethodGet,
+			path:     "/api/accounts",
+			origin:   "http://127.0.0.1:8091",
+			host:     "127.0.0.1:8091",
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "loopback localhost origin allowed",
+			method:   http.MethodGet,
+			path:     "/api/accounts",
+			origin:   "http://localhost:8091",
+			host:     "127.0.0.1:8091",
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "external untrusted origin rejected with 403",
+			method:   http.MethodGet,
+			path:     "/api/accounts",
+			origin:   "https://evil.com",
+			host:     "127.0.0.1:8091",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "null origin rejected with 403",
+			method:   http.MethodGet,
+			path:     "/api/accounts",
+			origin:   "null",
+			host:     "127.0.0.1:8091",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "untrusted origin options preflight rejected with 403",
+			method:   http.MethodOptions,
+			path:     "/api/accounts",
+			origin:   "https://evil.com",
+			host:     "127.0.0.1:8091",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "trusted origin options preflight allowed with 204",
+			method:   http.MethodOptions,
+			path:     "/api/accounts",
+			origin:   "http://127.0.0.1:8091",
+			host:     "127.0.0.1:8091",
+			wantCode: http.StatusNoContent,
+		},
+		{
+			name:         "v1 inference endpoint retains wildcard cors",
+			method:       http.MethodOptions,
+			path:         "/v1/messages",
+			origin:       "https://external-client.com",
+			host:         "127.0.0.1:8091",
+			wantCode:     http.StatusNoContent,
+			wantCORSWild: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Host = tc.host
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Errorf("%s: got status %d, want %d", tc.name, rec.Code, tc.wantCode)
+			}
+			if tc.wantCORSWild {
+				if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+					t.Errorf("%s: got allow-origin %q, want *", tc.name, got)
+				}
+			} else if tc.wantCode == http.StatusForbidden {
+				if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+					t.Errorf("%s: forbidden request should not have Access-Control-Allow-Origin, got %q", tc.name, got)
+				}
+			}
+		})
+	}
+}

@@ -45,6 +45,7 @@ import (
 	"antigravity-go-proxy/internal/headroom/stages/smart"
 	"antigravity-go-proxy/internal/kimi"
 	"antigravity-go-proxy/internal/logger"
+	"antigravity-go-proxy/internal/mitm"
 	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
@@ -98,6 +99,8 @@ type Options struct {
 	ClaudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	// CCUsage is the Claude Code usage engine; nil turns usage tracking off.
 	CCUsage *ccusage.Engine
+	// Mitm is the running observe-only forward proxy; nil when disabled.
+	Mitm *mitm.Runtime
 }
 
 type Server struct {
@@ -116,6 +119,7 @@ type Server struct {
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
 	tracker            *stats.Tracker
 	ccUsage            *ccusage.Engine
+	mitm               *mitm.Runtime
 	ccCalibration      claudeCodeCalibrator
 	kimiOAuthMgr       *auth.KimiOAuthManager
 	kimiIdentityOnce   sync.Once
@@ -180,6 +184,7 @@ func New(options Options) (*Server, error) {
 		webUI: options.WebUI, oauthHandler: options.OAuthHandler, tracker: options.Tracker,
 		claudeCodeOAuthMgr: options.ClaudeCodeOAuthMgr,
 		ccUsage:            options.CCUsage,
+		mitm:               options.Mitm,
 		projects:           make(map[string]string),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
@@ -362,12 +367,38 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	} else if strings.HasPrefix(path, "/anthropic/") {
 		path = strings.TrimPrefix(path, "/anthropic")
 	}
-	setCORS(writer)
-	if request.Method == http.MethodOptions {
-		writer.WriteHeader(http.StatusNoContent)
-		return
-	}
+	isManagement := (strings.HasPrefix(path, "/api/") && path != "/api/event_logging/batch") || path == "/account-limits"
 
+	if isManagement {
+		origin := request.Header.Get("Origin")
+		if origin != "" {
+			if !isAllowedManagementOrigin(origin, request.Host) {
+				if request.Method == http.MethodOptions {
+					writer.WriteHeader(http.StatusForbidden)
+					return
+				}
+				writeJSON(writer, http.StatusForbidden, map[string]any{
+					"status": "error",
+					"error":  "cross-origin access forbidden",
+				})
+				return
+			}
+			writer.Header().Set("Access-Control-Allow-Origin", origin)
+			writer.Header().Set("Access-Control-Allow-Headers", "authorization, content-type, x-api-key, anthropic-version, anthropic-beta")
+			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			writer.Header().Set("Vary", "Origin")
+		}
+		if request.Method == http.MethodOptions {
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+	} else {
+		setCORS(writer)
+		if request.Method == http.MethodOptions {
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 	// First try management handlers (/health, /account-limits, /api/*)
 	if server.handleManagement(writer, request, path) {
 		return
@@ -3710,6 +3741,39 @@ func setCORS(writer http.ResponseWriter) {
 	writer.Header().Set("Access-Control-Allow-Origin", "*")
 	writer.Header().Set("Access-Control-Allow-Headers", "authorization, content-type, x-api-key, anthropic-version, anthropic-beta")
 	writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+}
+
+func isLoopbackHost(hostname string) bool {
+	h := strings.ToLower(strings.TrimSpace(hostname))
+	return h == "127.0.0.1" || h == "localhost" || h == "::1" || h == "[::1]"
+}
+
+func isAllowedManagementOrigin(originHeader, reqHost string) bool {
+	if originHeader == "" {
+		return true
+	}
+	u, err := url.Parse(originHeader)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	originHost := u.Host
+	if strings.EqualFold(originHost, reqHost) {
+		return true
+	}
+	// Check loopback equivalence: both must be loopback and ports must match
+	originHostname := u.Hostname()
+	reqHostname, reqPort, err := net.SplitHostPort(reqHost)
+	if err != nil {
+		reqHostname = reqHost
+		reqPort = ""
+	}
+	if isLoopbackHost(originHostname) && isLoopbackHost(reqHostname) {
+		originPort := u.Port()
+		if originPort == reqPort {
+			return true
+		}
+	}
+	return false
 }
 
 func stringFrom(value any) string {
