@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -23,19 +24,41 @@ func TestMitmConfigValidate(t *testing.T) {
 	if err := ok.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]func(*MitmConfig){
-		"non-loopback": func(c *MitmConfig) { c.Listen = "0.0.0.0:8092" },
-		"no port":      func(c *MitmConfig) { c.Listen = "127.0.0.1" },
-		"zero max":     func(c *MitmConfig) { c.RegistryMax = 0 },
-		"huge max":     func(c *MitmConfig) { c.RegistryMax = 100001 },
-		"zero ttl":     func(c *MitmConfig) { c.RegistryTTLMinutes = 0 },
-		"huge ttl":     func(c *MitmConfig) { c.RegistryTTLMinutes = 10081 },
+	cases := []struct {
+		name   string
+		mutate func(*MitmConfig)
+		want   string // substring of the error
+	}{
+		{"non-loopback", func(c *MitmConfig) { c.Listen = "0.0.0.0:8092" }, "loopback"},
+		{"no port", func(c *MitmConfig) { c.Listen = "127.0.0.1" }, "host:port"},
+		{"empty listen", func(c *MitmConfig) { c.Listen = "" }, "host:port"},
+		{"zero max", func(c *MitmConfig) { c.RegistryMax = 0 }, "registryMax"},
+		{"negative max", func(c *MitmConfig) { c.RegistryMax = -1 }, "registryMax"},
+		{"huge max", func(c *MitmConfig) { c.RegistryMax = 100001 }, "registryMax"},
+		{"zero ttl", func(c *MitmConfig) { c.RegistryTTLMinutes = 0 }, "registryTtlMinutes"},
+		{"negative ttl", func(c *MitmConfig) { c.RegistryTTLMinutes = -5 }, "registryTtlMinutes"},
+		{"huge ttl", func(c *MitmConfig) { c.RegistryTTLMinutes = 10081 }, "registryTtlMinutes"},
 	}
-	for name, mutate := range cases {
+	for _, c := range cases {
+		cfg := DefaultMitmConfig()
+		c.mutate(&cfg)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one mentioning %q", c.name, err, c.want)
+		}
+	}
+}
+
+func TestMitmConfigValidateAcceptsTheBounds(t *testing.T) {
+	for name, mutate := range map[string]func(*MitmConfig){
+		"minimum limits": func(c *MitmConfig) { c.RegistryMax, c.RegistryTTLMinutes = 1, 1 },
+		"maximum limits": func(c *MitmConfig) { c.RegistryMax, c.RegistryTTLMinutes = 100000, 10080 },
+		"ipv6 loopback":  func(c *MitmConfig) { c.Listen = "[::1]:8092" },
+		"localhost":      func(c *MitmConfig) { c.Listen = "localhost:8092" },
+	} {
 		cfg := DefaultMitmConfig()
 		mutate(&cfg)
-		if err := cfg.Validate(); err == nil {
-			t.Errorf("%s: expected error", name)
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("%s rejected: %v", name, err)
 		}
 	}
 }

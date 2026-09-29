@@ -57,7 +57,7 @@ func TestMitmManagementWhenRunning(t *testing.T) {
 	rt.Registry.Observe(mitm.Observation{Route: "sessions.create", RawID: "session_01ABCDEFGHJK",
 		Fields: map[string]string{"model": "claude-opus-5-5"}})
 
-	_, status := getJSON(t, srv, "/api/mitm/status")
+	statusRec, status := getJSON(t, srv, "/api/mitm/status")
 	if status["enabled"] != true || status["caFingerprint"] != rt.CA.Fingerprint() {
 		t.Fatalf("status = %v", status)
 	}
@@ -65,49 +65,71 @@ func TestMitmManagementWhenRunning(t *testing.T) {
 		t.Fatal("status must carry stats")
 	}
 
-	rec, _ := getJSON(t, srv, "/api/mitm/ca.pem")
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), "-----BEGIN CERTIFICATE-----") {
-		t.Fatalf("ca.pem = %d %q", rec.Code, rec.Body.String())
+	caRec, _ := getJSON(t, srv, "/api/mitm/ca.pem")
+	if caRec.Code != http.StatusOK || !strings.HasPrefix(caRec.Body.String(), "-----BEGIN CERTIFICATE-----") {
+		t.Fatalf("ca.pem = %d %q", caRec.Code, caRec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "PRIVATE KEY") {
+	if strings.Contains(caRec.Body.String(), "PRIVATE KEY") {
 		t.Fatal("CA key must never be served")
 	}
+	if got := caRec.Header().Get("Content-Type"); got != "application/x-pem-file" {
+		t.Fatalf("ca.pem content type = %q", got)
+	}
 
-	_, list := getJSON(t, srv, "/api/sessions/cloud")
+	listRec, list := getJSON(t, srv, "/api/sessions/cloud")
 	sessions, _ := list["sessions"].([]any)
 	if len(sessions) != 1 {
 		t.Fatalf("sessions = %v", list)
 	}
+	first, ok := sessions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("session entry is %T, want an object", sessions[0])
+	}
 	id := mitm.HashID("session_01ABCDEFGHJK")
-	if got := sessions[0].(map[string]any)["id"]; got != id {
-		t.Fatalf("id = %v, want %s", got, id)
+	if first["id"] != id {
+		t.Fatalf("id = %v, want %s", first["id"], id)
 	}
-	if strings.Contains(rec.Body.String()+toJSON(t, list), "01ABCDEFGHJK") {
-		t.Fatal("raw session id leaked")
+	oneRec, one := getJSON(t, srv, "/api/sessions/cloud/"+id)
+	if oneRec.Code != http.StatusOK || one["model"] != "claude-opus-5-5" {
+		t.Fatalf("get one = %d %v", oneRec.Code, one)
 	}
-	if rec, one := getJSON(t, srv, "/api/sessions/cloud/"+id); rec.Code != http.StatusOK || one["model"] != "claude-opus-5-5" {
-		t.Fatalf("get one = %d %v", rec.Code, one)
+	if rec, _ := getJSON(t, srv, "/api/sessions/cloud/000000000000"); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown id code = %d, want 404", rec.Code)
 	}
-}
-
-func toJSON(t *testing.T, v any) string {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
+	// The raw session id must not appear in any payload the API serves.
+	for name, body := range map[string]string{
+		"status": statusRec.Body.String(), "ca.pem": caRec.Body.String(),
+		"list": listRec.Body.String(), "get one": oneRec.Body.String(),
+	} {
+		if strings.Contains(body, "01ABCDEFGHJK") {
+			t.Fatalf("raw session id leaked in the %s payload: %s", name, body)
+		}
 	}
-	return string(b)
 }
 
 func TestMitmRoutesRequireWebUIPassword(t *testing.T) {
 	srv, _, _ := newTestServerWithManager(t)
-	cfg := config.Get()
+	rt := startTestMitm(t, srv)
+	rt.Registry.Observe(mitm.Observation{Route: "sessions.create", RawID: "session_01ABCDEFGHJK"})
+	original := config.Get()
+	t.Cleanup(func() { config.SetForTest(original) })
+	cfg := original
 	cfg.WebUIPassword = "s3cret"
 	config.SetForTest(cfg)
-	for _, path := range []string{"/api/mitm/status", "/api/mitm/ca.pem", "/api/sessions/cloud"} {
-		rec, _ := getJSON(t, srv, path)
-		if rec.Code != http.StatusUnauthorized {
+
+	for _, path := range []string{
+		"/api/mitm/status", "/api/mitm/ca.pem", "/api/sessions/cloud",
+		"/api/sessions/cloud/" + mitm.HashID("session_01ABCDEFGHJK"),
+	} {
+		if rec, _ := getJSON(t, srv, path); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s without password = %d, want 401", path, rec.Code)
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("x-webui-password", "s3cret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s with the password = %d, want 200", path, rec.Code)
 		}
 	}
 }

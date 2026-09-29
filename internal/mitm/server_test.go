@@ -249,12 +249,14 @@ func TestSSEStreamsIncrementally(t *testing.T) {
 		t.Fatalf("payload = %q err=%v", payload, err)
 	}
 	close(release)
-	rest, err := io.ReadAll(br)
-	if err != nil && !strings.Contains(err.Error(), "timeout") {
-		t.Fatal(err)
+	// The connection stays open (keep-alive), so read the remaining chunks up to
+	// the terminating chunk instead of waiting for EOF or a deadline.
+	var wire, rest bytes.Buffer
+	if err := copyBody(&wire, br, framingChunked, 0, &rest); err != nil {
+		t.Fatalf("rest of the stream: %v", err)
 	}
-	if !strings.Contains(string(rest), "event: b") || !strings.HasSuffix(string(rest), "0\r\n\r\n") {
-		t.Fatalf("rest = %q", rest)
+	if rest.String() != "event: b\n\n" || !strings.HasSuffix(wire.String(), "0\r\n\r\n") {
+		t.Fatalf("payload = %q, wire = %q", rest.String(), wire.String())
 	}
 }
 
