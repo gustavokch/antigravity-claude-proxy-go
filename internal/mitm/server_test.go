@@ -425,3 +425,57 @@ func TestShutdownClosesLiveConnections(t *testing.T) {
 		t.Fatal("connection should be closed after shutdown")
 	}
 }
+
+type tempAcceptError struct{}
+
+func (tempAcceptError) Error() string   { return "accept: too many open files" }
+func (tempAcceptError) Timeout() bool   { return false }
+func (tempAcceptError) Temporary() bool { return true }
+
+// failOnceListener returns one temporary error from Accept, then behaves normally.
+type failOnceListener struct {
+	net.Listener
+	failed atomic.Bool
+}
+
+func (l *failOnceListener) Accept() (net.Conn, error) {
+	if l.failed.CompareAndSwap(false, true) {
+		return nil, tempAcceptError{}
+	}
+	return l.Listener.Accept()
+}
+
+func TestServeRetriesTemporaryAcceptError(t *testing.T) {
+	srv, err := New(Options{CA: newTestCA(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(&failOnceListener{Listener: base}) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	})
+
+	raw, err := net.Dial("tcp", base.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	io.WriteString(raw, "GET http://example.org/ HTTP/1.1\r\nHost: example.org\r\n\r\n")
+	raw.SetReadDeadline(time.Now().Add(2 * time.Second))
+	line, _ := bufio.NewReader(raw).ReadString('\n')
+	if !strings.Contains(line, "405") {
+		t.Fatalf("status line = %q: the accept loop did not survive the temporary error", line)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Serve returned: %v", err)
+	default:
+	}
+}

@@ -95,6 +95,7 @@ func (s *Server) Serve(l net.Listener) error {
 	}
 	s.listener = l
 	s.mu.Unlock()
+	var delay time.Duration
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -104,12 +105,15 @@ func (s *Server) Serve(l net.Listener) error {
 			if closing {
 				return http.ErrServerClosed
 			}
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
+			if retryableAccept(err) {
+				delay = min(max(2*delay, 5*time.Millisecond), time.Second)
+				s.logger.Warn("mitm: accept failed; retrying", "error", err, "delay", delay)
+				time.Sleep(delay)
 				continue
 			}
 			return err
 		}
+		delay = 0
 		if !s.track(conn) {
 			conn.Close()
 			continue
@@ -121,6 +125,17 @@ func (s *Server) Serve(l net.Listener) error {
 			s.handleConn(conn)
 		}()
 	}
+}
+
+// retryableAccept reports whether an Accept error is transient: a timeout, or
+// a temporary condition such as running out of file descriptors.
+func retryableAccept(err error) bool {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	var temp interface{ Temporary() bool }
+	return errors.As(err, &temp) && temp.Temporary()
 }
 
 // Shutdown stops accepting, closes every live connection and waits for the
