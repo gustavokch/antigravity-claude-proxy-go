@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/andybalholm/brotli"
 )
 
 // Observation is everything the registry learns from one exchange. It carries
@@ -76,20 +78,38 @@ func parsesBody(route string) bool {
 	return false
 }
 
-// summarizeBody extracts the session id and enum-like status fields from a
-// JSON response body. Unknown shapes yield nothing rather than an error.
-func summarizeBody(body []byte, contentEncoding string) (rawID string, fields map[string]string) {
-	if strings.EqualFold(strings.TrimSpace(contentEncoding), "gzip") {
+// decodeBody inflates a gzip or brotli response body. It returns nil for
+// missing, unknown or truncated encodings, so nothing is parsed then.
+func decodeBody(body []byte, contentEncoding string) []byte {
+	switch strings.ToLower(strings.TrimSpace(contentEncoding)) {
+	case "", "identity":
+		return body
+	case "gzip":
 		zr, err := gzip.NewReader(bytes.NewReader(body))
 		if err != nil {
-			return "", nil
+			return nil
 		}
 		inflated, err := io.ReadAll(io.LimitReader(zr, maxInflatedBody+1))
 		if err != nil || len(inflated) > maxInflatedBody {
-			return "", nil
+			return nil
 		}
-		body = inflated
-	} else if strings.TrimSpace(contentEncoding) != "" && !strings.EqualFold(contentEncoding, "identity") {
+		return inflated
+	case "br":
+		br := brotli.NewReader(bytes.NewReader(body))
+		inflated, err := io.ReadAll(io.LimitReader(br, maxInflatedBody+1))
+		if err != nil || len(inflated) > maxInflatedBody {
+			return nil
+		}
+		return inflated
+	}
+	return nil
+}
+
+// summarizeBody extracts the session id and enum-like status fields from a
+// JSON response body. Unknown shapes yield nothing rather than an error.
+func summarizeBody(body []byte, contentEncoding string) (rawID string, fields map[string]string) {
+	body = decodeBody(body, contentEncoding)
+	if body == nil {
 		return "", nil
 	}
 	var doc map[string]any

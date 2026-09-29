@@ -35,6 +35,7 @@ Copied from the spec; every task's requirements include these.
 3. **`Expect: 100-continue` is refused with 417**, and **Upgrade/101 is spliced** both ways, recording the route only. Both were left open in the spec.
 4. **WebUI has an enable toggle** on the Cloud tab (writes `mitm.enabled`, applies on restart), and polls every 5 s.
 5. **`internal/mitm` owns the loopback check** (`ValidateListen`); `internal/config` imports it.
+6. **Brotli decoding in the observer** (`github.com/andybalholm/brotli`, already in the module cache). Found during the Step 5 acceptance run: the CLI sends `Accept-Encoding: br` and Anthropic answers `Content-Encoding: br`, so `summarizeBody` saw 534 compressed bytes and extracted nothing. The wire is still forwarded byte-exact; only the observer decode handles gzip and br. This breaks the plan's "standard library only for `internal/mitm`" line, which is amended here.
 
 ## File Structure
 
@@ -3633,6 +3634,8 @@ curl -s -H "x-webui-password: $PW" http://127.0.0.1:8091/api/sessions/cloud
 ```
 
 Expected: one entry with a 12-character `id`, `environmentKind` `anthropic_cloud`, a `model`, `requests` at least 2, and `lastRoute` such as `code.session.events.post`. `grep -i -E 'authorization|bearer|session_' <proxy log>` must find nothing. Archive the session at claude.ai/code afterwards. The Cloud tab shows the same row.
+
+**Result (2026-09-28, claude 2.1.280):** entry `145502b68670` — 12-char id, `environmentKind` `anthropic_cloud`, `model` `claude-opus-5-5`, `requests` 4, `lastRoute` `code.session.other`; log grep clean. Two expectations did not hold: (1) `code.session.events.post` never crosses the client machine — the cloud-session events flow is server-side (feasibility report: "the interactive re-attach produced no records"), so the observable routes are `sessions.create`, `code.session.get` and `code.session.other`; (2) the CLI's inference in a cloud session goes to `POST /v1/messages?beta=true` like normal CLI traffic. The `405 status code (no body)` errors during the run were the CLI's own `ANTHROPIC_BASE_URL=http://localhost:8080` config (absolute-URI requests to a non-CONNECT proxy), not a proxy defect; unsetting that env var cleared them.
 
 - [ ] **Step 6: Record the upstream fingerprint (documented, not gated)**
 

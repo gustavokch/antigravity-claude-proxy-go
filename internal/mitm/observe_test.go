@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/andybalholm/brotli"
 )
 
 func TestClassifyRoute(t *testing.T) {
@@ -85,6 +87,13 @@ func TestSummarizeGzipAndUnknownEncoding(t *testing.T) {
 	}
 	if id, fields := summarizeBody([]byte("garbage"), "br"); id != "" || len(fields) != 0 {
 		t.Fatal("unknown encoding must yield nothing")
+	}
+	var brBuf bytes.Buffer
+	bw := brotli.NewWriter(&brBuf)
+	bw.Write([]byte(`{"id":"session_01ABCDEFGHJK","status_bucket":"ok"}`))
+	bw.Close()
+	if id, fields := summarizeBody(brBuf.Bytes(), "br"); id != "session_01ABCDEFGHJK" || fields["statusBucket"] != "ok" {
+		t.Fatalf("br body not decoded: %q %v", id, fields)
 	}
 	if id, _ := summarizeBody([]byte("not json"), ""); id != "" {
 		t.Fatal("non-JSON must yield nothing")

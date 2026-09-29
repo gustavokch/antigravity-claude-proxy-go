@@ -38,7 +38,7 @@ Out of scope: emulating cloud execution (it runs in Anthropic's container), rewr
 1. Per CLI process: `HTTPS_PROXY=http://127.0.0.1:8092` and `NODE_EXTRA_CA_CERTS=<ca.pem>` (adds a root; do not use `SSL_CERT_FILE`, which replaces the pool). Inference continues to use `ANTHROPIC_BASE_URL` (`:8091`).
 2. `CONNECT` → 200 → hijack → TLS with a minted leaf → HTTP/1.1 keep-alive loop.
 3. Per request: read the raw head, stream the body upstream, stream the response back with a flush per chunk (SSE-safe).
-4. After the response headers, the observer gets a summary. For matched routes with JSON responses ≤ 1 MB the body is tee'd to extract `id`, `session_status`, `status_bucket`, `environment_kind`, `configured_model`, `connection_status`. `title`, message text and any prompt-derived field are never read or stored. SSE and other bodies are not parsed.
+4. After the response headers, the observer gets a summary. For matched routes with JSON responses ≤ 1 MB the body is tee'd to extract `id`, `session_status`, `status_bucket`, `environment_kind`, `configured_model`, `connection_status`. `title`, message text and any prompt-derived field are never read or stored. SSE and other bodies are not parsed. Tee'd bodies are inflated first when `Content-Encoding` is `gzip` or `br` (the CLI accepts brotli; unknown encodings yield nothing).
 
 Matched routes (from the 2026-09-28 capture): `POST /v1/sessions`, `GET /v1/environment_providers`, `/v1/code/sessions/{id}` and its `/events`. Everything else on the host is forwarded and counted, not parsed. Interception cannot be narrower than the host, because paths are visible only after TLS termination.
 
