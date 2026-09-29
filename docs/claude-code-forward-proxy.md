@@ -3,7 +3,8 @@
 `claude --cloud` sessions talk to `api.anthropic.com` directly and ignore
 `ANTHROPIC_BASE_URL`, so the normal gateway never sees them. This optional
 forward proxy lets the WebUI list those sessions. It only observes: nothing is
-rewritten, and inference still uses `ANTHROPIC_BASE_URL` as before.
+rewritten, and inference still uses `ANTHROPIC_BASE_URL` as before, provided
+that URL bypasses the proxy (set `NO_PROXY` as shown below).
 
 ## Enable
 
@@ -21,10 +22,17 @@ rewritten, and inference still uses `ANTHROPIC_BASE_URL` as before.
    `<configdir>/mitm/`. The private key (`ca-key.pem`, mode 0600) never leaves
    that directory.
 
+   The CA is valid for 365 days. When it is within 7 days of expiry, or
+   `ca.pem` or `ca-key.pem` is missing or unreadable, the next start creates a
+   new CA with a new key. Any copy you saved for `NODE_EXTRA_CA_CERTS` then
+   stops working and shows up as `TLS trust failures`; download it again and
+   compare its fingerprint with the one in Settings → Cloud.
+
 3. Start Claude Code with the proxy and the CA, per process:
 
    ```sh
    HTTPS_PROXY=http://127.0.0.1:8092 \
+   NO_PROXY=127.0.0.1,localhost \
    NODE_EXTRA_CA_CERTS=/path/to/antigravity-proxy-mitm-ca.pem \
    claude --cloud "your task"
    ```
@@ -32,6 +40,12 @@ rewritten, and inference still uses `ANTHROPIC_BASE_URL` as before.
    Use `NODE_EXTRA_CA_CERTS`, which adds a root. Do not use `SSL_CERT_FILE`,
    which replaces the whole root pool. Do not install the CA in the system
    trust store.
+
+   `NO_PROXY` keeps your gateway off the proxy. With a plain `http://`
+   `ANTHROPIC_BASE_URL` (the setup in the README), the CLI also sends the
+   gateway requests to `HTTPS_PROXY`, and the proxy only speaks CONNECT, so
+   they fail with `405` (see Troubleshooting). Add your gateway's host to
+   `NO_PROXY` if it is not loopback.
 
 ## What it does and does not do
 
@@ -64,6 +78,10 @@ All routes need the WebUI password when one is set.
 
 - `TLS trust failures` rising in the WebUI: the process does not trust the CA.
   Check `NODE_EXTRA_CA_CERTS` points at the certificate you downloaded.
+- `405 status code (no body)` from the CLI: requests to a plain-`http://`
+  `ANTHROPIC_BASE_URL` are going through the proxy, which answers `405` to
+  anything but CONNECT. Add the gateway's host to `NO_PROXY` (see step 3), or
+  unset the proxy variables for that process.
 - `Expect: 100-continue` requests get a 417; the CLI does not send them.
 - If the proxy is down while `HTTPS_PROXY` is set, the CLI's Anthropic calls
   fail visibly, the same as when the gateway is down.
