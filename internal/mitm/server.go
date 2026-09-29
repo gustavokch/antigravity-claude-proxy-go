@@ -273,6 +273,9 @@ func (s *Server) terminate(conn net.Conn, br *bufio.Reader, host string) {
 		}
 		return
 	}
+	// Close sends close_notify (RFC 8446 section 6.1) instead of dropping the
+	// TCP connection under the client.
+	defer tlsConn.Close()
 	s.terminated.Add(1)
 	s.relay(tlsConn, host)
 }

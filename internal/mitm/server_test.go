@@ -545,3 +545,57 @@ func TestHandshakeWarningsAreOncePerHostAndBounded(t *testing.T) {
 		t.Fatalf("warned for %d hosts, want the cap of %d", warned, maxWarnedHosts)
 	}
 }
+
+// recordingConn records every byte the TLS client reads from the raw conn.
+type recordingConn struct {
+	net.Conn
+	r   *bufio.Reader
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (c *recordingConn) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.mu.Lock()
+	c.buf = append(c.buf, p[:n]...)
+	c.mu.Unlock()
+	return n, err
+}
+
+// lastRecordType returns the content type of the last complete TLS record.
+func lastRecordType(stream []byte) byte {
+	var last byte
+	for len(stream) >= 5 {
+		n := int(stream[3])<<8 | int(stream[4])
+		if len(stream) < 5+n {
+			break
+		}
+		last = stream[0]
+		stream = stream[5+n:]
+	}
+	return last
+}
+
+func TestTerminatedConnectionEndsWithCloseNotify(t *testing.T) {
+	up, roots := startFakeUpstream(t, okJSON(`{"ok":true}`))
+	h := startProxy(t, map[string]string{"api.anthropic.com:443": up.addr}, roots)
+	raw, br := h.connect(t, "api.anthropic.com:443")
+	rec := &recordingConn{Conn: raw, r: br}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(h.ca.CertPEM())
+	// TLS 1.2 keeps the record content type in the clear, so an alert is visible.
+	tc := tls.Client(rec, &tls.Config{RootCAs: pool, ServerName: "api.anthropic.com", MaxVersion: tls.VersionTLS12})
+	if err := tc.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	tc.SetDeadline(time.Now().Add(5 * time.Second))
+	io.WriteString(tc, "GET /a HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n")
+	if _, err := io.ReadAll(tc); err != nil {
+		t.Fatalf("read to EOF: %v", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if got := lastRecordType(rec.buf); got != 21 {
+		t.Fatalf("last TLS record type = %d, want 21 (close_notify alert)", got)
+	}
+}
