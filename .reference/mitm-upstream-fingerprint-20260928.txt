@@ -2,7 +2,8 @@ MITM forward proxy — upstream ClientHello fingerprint record (Step 6)
 =====================================================================
 
 Captured: 2026-09-28 21:49 and 21:53 America/Sao_Paulo (darwin/arm64)
-Proxy: ./bin/proxy (feat/claude-code-cloud, observe-only forward proxy)
+Proxy commit: 5e446bc (feat/claude-code-cloud: fix(mitm): decode brotli response bodies in the observer)
+Proxy build: ./bin/proxy (observe-only forward proxy)
   mitm listen 127.0.0.1:8092, WebUI 127.0.0.1:18091, scratch config dir
 CLI: /Users/gus/.local/bin/claude 2.1.280 (Claude Code), CLAUDE_CONFIG_DIR=/Users/gus/.claude-container
 Session: claude --cloud "Reply with exactly CLOUD_PROBE_OK. Do not modify any files."
@@ -12,8 +13,15 @@ Capture commands (both: sudo tcpdump -i pktap,all -P 'host api.anthropic.com and
   /tmp/mitm-upstream-proxy.pcap  — while the CLI ran with
       HTTPS_PROXY=http://127.0.0.1:8092 NODE_EXTRA_CA_CERTS=/tmp/mitm-ca.pem
       (records the PROXY's upstream connection to api.anthropic.com:443)
+      Capture SHA-256: 740be8369787e14ced7f61084d18452412254af26e2473b7e8e049f5719f8bf8
   /tmp/mitm-upstream-cli.pcap    — while the same CLI ran with no proxy env
       (records the CLI's own connection to api.anthropic.com:443)
+      Capture SHA-256: f34b86b97194ebcee5cf73e3dd65cb518e30892836aa72e8977cd7171d4ebca5
+
+Note on capture retention:
+  Raw pcaps are held locally in /tmp and not committed to git due to size (~4 MB)
+  and because this forward proxy connects to api.anthropic.com (the AGENTS.md JA4
+  gate strictly governs the official agy Cloud Code proxy to googleapis.com).
 
 JA4 extraction command (both):
 
