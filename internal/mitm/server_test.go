@@ -6,10 +6,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -597,5 +599,29 @@ func TestTerminatedConnectionEndsWithCloseNotify(t *testing.T) {
 	defer rec.mu.Unlock()
 	if got := lastRecordType(rec.buf); got != 21 {
 		t.Fatalf("last TLS record type = %d, want 21 (close_notify alert)", got)
+	}
+}
+
+func TestServeAfterShutdownClosesTheListener(t *testing.T) {
+	srv, err := New(Options{CA: newTestCA(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("Serve = %v, want http.ErrServerClosed", err)
+	}
+	l.(*net.TCPListener).SetDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := l.Accept(); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("the listener is still open after Serve refused it: %v", err)
 	}
 }

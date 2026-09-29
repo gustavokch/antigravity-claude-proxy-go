@@ -91,6 +91,7 @@ func (s *Server) Serve(l net.Listener) error {
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
+		l.Close() // Shutdown never saw this listener, so nothing else will close it
 		return http.ErrServerClosed
 	}
 	s.listener = l
