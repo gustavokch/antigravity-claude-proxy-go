@@ -39,9 +39,17 @@ process name is its version string "2.1.280"):
 
 Conclusion (on record, not gated):
 
-  The proxy's ClientHello is the standard Go one — TLS 1.3, GREASE,
-  no ALPN (NextProtos unset upstream) — and it does NOT match the CLI's
+  The proxy's ClientHello is the standard Go one — TLS 1.3, no ALPN
+  (NextProtos unset upstream) — and it does NOT match the CLI's
   Bun-based ClientHello (t13d1713h1_5b57614c22b0_6a3d802a7139, ALPN
   http/1.1). This difference is expected and documented; the AGENTS.md JA4
   gate concerns agy and Cloud Code only, and this work never touches
   internal/cloudcode.
+
+Correction (2026-09-29): an earlier draft of the conclusion said the Go
+ClientHello carries GREASE. It does not. A raw ClientHello from this repo's
+Go toolchain (go1.27rc2, empty tls.Config{}) has 13 cipher suites and 11
+extensions and no GREASE value in any list, which is what
+t13d131100_f57a46bbacb6_f50d94e863eb encodes. The CLI's Bun-based hello is
+the one that differs (t13d1713h1_...: 17 cipher suites, 13 extensions, ALPN
+http/1.1).

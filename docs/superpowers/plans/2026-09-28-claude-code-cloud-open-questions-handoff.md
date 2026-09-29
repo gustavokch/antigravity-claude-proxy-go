@@ -1,5 +1,7 @@
 # Handoff: Brainstorm How to Resolve the Claude Code Cloud Open Questions
 
+> **Superseded (2026-09-28).** The questions were resolved by running probes instead of through this brainstorm: see §9 of `docs/superpowers/specs/2026-09-28-claude-code-cloud-feasibility.md` (Q1-Q5 answered, Q6 probe written). The decision file named at the end, `2026-09-28-claude-code-cloud-open-questions.md`, was never created. This hand-off is kept as the record of how the questions were framed.
+
 ## Goal
 
 Work with the user to pick a **resolution method** for each of the six open questions in §9 of the feasibility report:

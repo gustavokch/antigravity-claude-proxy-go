@@ -1,6 +1,6 @@
 # Claude Code Forward Proxy (Observe-Only) — Design
 
-Status: design, approved section by section in conversation on 2026-09-28. Not implemented.
+Status: implemented in PR #104 (`internal/mitm`). Approved section by section in conversation on 2026-09-28; where the code differs from the text below, see "As built" at the end.
 Related: `2026-09-28-claude-code-cloud-feasibility.md` (§6 option (a), §7 risk 2, §9 Q1).
 
 ## 1. Goal and scope
@@ -10,7 +10,7 @@ Give the WebUI visibility into Claude Code **cloud sessions** (`claude --cloud`)
 Decisions taken:
 - **Observe-only.** No request or response is rewritten. The create-time model alias and any keepalive rewriting were considered and dropped.
 - **Loopback only.** The listener binds `127.0.0.1`; no LAN or container access.
-- **Approach A:** a native stdlib package, `internal/mitm`. No new dependency, no `goproxy`, no `mitmproxy` sidecar.
+- **Approach A:** a native package, `internal/mitm`, on the standard library. No `goproxy`, no `mitmproxy` sidecar. The one added dependency, `github.com/andybalholm/brotli`, only inflates `br` response bodies for the observer.
 - **Accepted trade-off:** upstream calls carry a Go TLS fingerprint, not the CLI's (a native Bun binary). HTTP/1.1, header casing and header order are matched; the TLS handshake cannot be.
 
 Out of scope: emulating cloud execution (it runs in Anthropic's container), rewriting, cancel/pin/kill, unifying with the local session registry (`/api/sessions`, feasibility §5), inference traffic (it keeps using `ANTHROPIC_BASE_URL`).
@@ -23,13 +23,13 @@ Out of scope: emulating cloud execution (it runs in Anthropic's container), rewr
   - Leaf certs are minted per host, valid 24 h, cached in memory. Minting for a host outside the constraint fails.
   - Only the certificate is ever exported. The CA is never installed in a system trust store; clients trust it per process (`NODE_EXTRA_CA_CERTS`).
 - **`server.go`**
-  - Second listener, default `127.0.0.1:8092`, started only when `mitm.enabled`.
+  - Second listener, default `127.0.0.1:8092`, started only when `mitm.enabled` (`runtime.go` validates the address and starts it for `cmd/proxy/main.go`).
   - `CONNECT host:443` to an allowlisted host: reply 200, hijack, terminate TLS (server-side `tls.Config`, ALPN `http/1.1` only).
   - `CONNECT` to any other host: blind byte tunnel; the proxy sees the SNI only.
-- **`upstream.go`**
+- **Upstream relay (`server.go`, `httpwire.go`)**
   - Requests are relayed as raw HTTP/1.1 messages (`httpwire.go`) over a connection opened with an empty `tls.Config{}`; `net/http` is not used for the wire because it sorts and canonicalizes headers. HTTP/1.1 only, no total timeout, so streams are not cut (the existing 5 min total timeout is a known defect).
   - Header names are forwarded exactly as the client sent them, by parsing the raw request head; Go's canonicalized `http.Header` is not used for the wire. Bodies pass through unmodified in both directions.
-- **`observer.go`**
+- **Observation (`observe.go`, `registry.go`)**
   - Receives a parsed summary only: method, masked route, status, and the extracted fields below. It never receives headers or bodies, so credentials cannot be logged by construction.
   - Capped registry (default 1000 entries, TTL 24 h), keyed by a 12-character hash of the session id.
 
@@ -101,3 +101,12 @@ Each step ends with `go build -o bin/proxy ./cmd/proxy` and `go test ./...`:
 7. WebUI sub-tab.
 
 Done when: all tests pass and the binary builds; with `mitm.enabled: false` the main proxy behaves exactly as before and the Cloud Code transport tests are untouched; a real cloud session appears in the API; logs contain no `Authorization` value.
+
+## 9. As built
+
+Differences between the approved design and PR #104:
+- The relay, framing and observation code live in `server.go`, `httpwire.go`, `observe.go` and `registry.go`; there is no `upstream.go` or `observer.go`.
+- The upstream connection is `tls.Client` with an empty `tls.Config{}` and no ALPN (`NextProtos` unset), so its ClientHello is `t13d131100_f57a46bbacb6_f50d94e863eb`, not the CLI's `t13d1713h1_...`. This is recorded in `.reference/mitm-upstream-fingerprint-20260928.txt`.
+- A routed exchange is observed once: as soon as the response head is forwarded when the body is not parsed (so an open SSE stream is registered), or after the body when it is parsed (or with the route and status alone if the copy fails).
+- Route names are drawn from a closed vocabulary; a non-standard request method is reported as `other`.
+- The Cloud tab fetches nothing until it is opened and polls only while it is the visible tab.

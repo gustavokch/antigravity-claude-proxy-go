@@ -176,9 +176,11 @@ Migration notes:
 
 ### MiTM options compared
 
+> **Superseded (2026-09-28).** Option (a) was later built as an observe-only forward proxy: see `2026-09-28-claude-code-forward-proxy-design.md` and `docs/claude-code-forward-proxy.md`. This comparison and risk 2 in §7 are kept as the record of why (b) was recommended for inference; they no longer describe what the repository does for cloud-session visibility.
+
 | | (b) In-process shim (recommended) | (a) Forward proxy + installed CA |
 |---|---|---|
-| TLS / fingerprint | No change. The Cloud Code transport is untouched | No change upstream. The Node-side TLS toward the proxy becomes Go-terminated, which is new surface |
+| TLS / fingerprint | No change. The Cloud Code transport is untouched | The Cloud Code transport is untouched, but the proxy's own connection to `api.anthropic.com` uses Go's stock TLS stack, so its ClientHello differs from the CLI's (`.reference/mitm-upstream-fingerprint-20260928.txt`). The Node-side TLS toward the proxy is Go-terminated, which is new surface |
 | Cert trust | None needed | Linux: `NODE_EXTRA_CA_CERTS` + `HTTPS_PROXY` (`scripts/capture-claude-code-headers.sh:440-476`). macOS: a combined `SSL_CERT_FILE` bundle; `SSL_CERT_FILE` replaces the root pool (`.reference/agy-headers-mitm-20260903.txt`) |
 | Auth token handling | The existing pool holds the tokens (`internal/claudecode/storage.go:32-33`) | Sees every Anthropic token in cleartext, including the OAuth exchange (`internal/auth/claudecode_oauth.go:35`) |
 | Streaming integrity | Existing flush-per-chunk copy (`internal/api/claudecode_proxy.go:344-362`) | Needs new CONNECT/Hijack code; none exists in the repo |
@@ -192,6 +194,7 @@ Migration notes:
 2. **High: token leak if option (a) is built.**
    - A forward-proxy CA terminates all `api.anthropic.com` TLS, including the OAuth token exchange.
    - Mitigation: don't build (a). It adds nothing, because the base URL already routes traffic to the proxy.
+   - Superseded: (a) was built for cloud-session visibility only, as an observe-only, loopback-only proxy with a name-constrained CA that never stores headers, tokens or bodies. The exposure that remains is documented in `docs/claude-code-forward-proxy.md`.
 3. **High: PII in session IDs.**
    - The raw key is `metadata.user_id` JSON, which contains `device_id` (`internal/ccidentity/apply.go:135-165`).
    - The password check is a plain string comparison and also accepts `?password=` (`internal/api/management.go:29-40`).
@@ -273,7 +276,7 @@ Correction to the earlier wording of Q2 and Q3: `.reference/claude-code-headers-
   - `POST /v1/code/sessions/{session_id}/events`: request `{events:[{payload:{type:"user", message, parent_tool_use_id, session_id, uuid}}]}`; response `{results:[{event_id, sequence_num, duplicate}], attestation_feedback}`.
   - Not captured: the interactive re-attach produced no records, so `/events/stream`, presence and any WebSocket remain unobserved. The session runs in Anthropic's cloud container, so the worker, `session_ingress` and `environments/bridge` routes never crossed this machine.
   - Also seen: the CLI's own title/branch generation (`POST /v1/messages` with a `json_schema` output format) followed `ANTHROPIC_BASE_URL` to the local proxy (`localhost`), while every session-control call went straight to `api.anthropic.com`.
-- **Reading.** The schemas above are recovered from real traffic, not invented, so the stop condition no longer blocks understanding the create and message calls. Emulation is still not feasible via option (b): session control ignores `ANTHROPIC_BASE_URL`, so the proxy never sees it. Only a forward proxy with an installed CA (option (a), rejected in §6/§7 for token exposure) would. And even then the proxy would have to stand in for Anthropic's cloud execution environment, which has no local equivalent. Inference for those sessions still runs inside Anthropic's container.
+- **Reading.** The schemas above are recovered from real traffic, not invented, so the stop condition no longer blocks understanding the create and message calls. Emulation is still not feasible via option (b): session control ignores `ANTHROPIC_BASE_URL`, so the proxy never sees it. Only a forward proxy with an installed CA (option (a), rejected in §6/§7 for token exposure and later built as an observe-only proxy) would. And even then the proxy would have to stand in for Anthropic's cloud execution environment, which has no local equivalent. Inference for those sessions still runs inside Anthropic's container.
 - **Unblocks.** Feasibility of cloud-session emulation. Local sessions (§8 POC 1-4) are unaffected.
 
 ### Q2. Claude Code session identity: answered
@@ -308,8 +311,8 @@ Correction to the earlier wording of Q2 and Q3: `.reference/claude-code-headers-
 
 ### Q6. agy `sessionId` semantics: probe written
 
-- Wizard: `scripts/probe-agy-session-id.sh` with addon `scripts/mitm_agy_session_probe.py` (both uncommitted). It scans the agy binary for session-shaped strings, then captures `sessionId` (and any conversation or trajectory field, since agy sends `writeTrajectoryAcls`) from two separate `agy --print` runs and one interactive two-message conversation. Only field names, lengths and 8-char hashes are recorded.
-- Tested offline (addon against a fake flow, summary script against fake data); not run against agy. The current per-account value (`internal/format/builder.go:77`) stays unchanged until results exist.
+- Wizard: `scripts/probe-agy-session-id.sh` with addon `scripts/mitm_agy_session_probe.py` (both committed with the forward proxy). It scans the agy binary for session-shaped strings, then captures `sessionId` (and any conversation or trajectory field, since agy sends `writeTrajectoryAcls`) from two separate `agy --print` runs and one interactive two-message conversation. Only field names, lengths and 8-char hashes are recorded.
+- Checked offline by hand (addon against a fake flow, summary script against fake data); no automated test is committed for either script, and the wizard has not been run against agy. The current per-account value (`internal/format/builder.go:77`) stays unchanged until results exist.
 
 ## Found in passing (not part of this scope)
 
