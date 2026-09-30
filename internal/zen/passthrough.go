@@ -44,7 +44,27 @@ func ForwardMessagesWithHook(w http.ResponseWriter, r *http.Request, baseURL, ap
 // ForwardMessagesWithModify behaves like ForwardMessages and accepts a custom
 // ModifyResponse function.
 func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	target, err := url.Parse(NormalizeBaseURL(baseURL) + "/v1/messages")
+	forwardZenPath(w, r, baseURL, apiKey, body, "/v1/messages", modify, true)
+}
+
+// ForwardSystemOne transparently forwards a Jev systemone request to the Zen
+// gateway: same rewrite rules as the messages wire — Bearer + x-api-key, the
+// OpenCode harness identity, and a body re-emitted from `body` so the caller
+// can mutate it before forwarding — against a different upstream path. The
+// Anthropic version/beta headers are deliberately not sent: systemone is not
+// an Anthropic wire and carries no message semantics.
+//
+// On proxy error, it writes a 502 with an `api_error` body so the client
+// receives a structured response matching the rest of the proxy.
+func ForwardSystemOne(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
+	forwardZenPath(w, r, baseURL, apiKey, body, "/v1/systemone", modify, false)
+}
+
+// forwardZenPath is the shared ReverseProxy template behind
+// ForwardMessagesWithModify and ForwardSystemOne. anthropicProtocol gates the
+// Anthropic version/beta header block, which only the messages wire speaks.
+func forwardZenPath(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, path string, modify func(*http.Response) error, anthropicProtocol bool) {
+	target, err := url.Parse(NormalizeBaseURL(baseURL) + path)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request_error", "Invalid Zen target URL: "+err.Error())
 		return
@@ -74,15 +94,25 @@ func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, 
 				req.Header.Set("x-api-key", apiKey)
 			}
 
-			// Forward Anthropic protocol headers; default the version when
-			// the client did not send one.
-			if av := r.Header.Get("anthropic-version"); av != "" {
-				req.Header.Set("anthropic-version", av)
-			} else {
-				req.Header.Set("anthropic-version", defaultAnthropicVersion)
-			}
-			if ab := r.Header.Get("anthropic-beta"); ab != "" {
-				req.Header.Set("anthropic-beta", ab)
+			// The outbound request starts as a clone of the inbound one, so the
+			// client's anthropic-* headers arrive here regardless of what the
+			// Director sets. Strip them first, then re-set the ones this wire
+			// actually speaks; the messages branch below restores exactly what
+			// the old unconditional code produced.
+			req.Header.Del("anthropic-version")
+			req.Header.Del("anthropic-beta")
+
+			if anthropicProtocol {
+				// Forward Anthropic protocol headers; default the version when
+				// the client did not send one.
+				if av := r.Header.Get("anthropic-version"); av != "" {
+					req.Header.Set("anthropic-version", av)
+				} else {
+					req.Header.Set("anthropic-version", defaultAnthropicVersion)
+				}
+				if ab := r.Header.Get("anthropic-beta"); ab != "" {
+					req.Header.Set("anthropic-beta", ab)
+				}
 			}
 
 			// Claim the genuine OpenCode harness identity; the incoming

@@ -2707,8 +2707,8 @@
                             </h3>
                             <button class="btn btn-xs btn-circle btn-ghost text-gray-400 hover:text-white" @click="document.getElementById('zen_discover_modal').close()">✕</button>
                         </div>
-                        <p class="text-xs text-gray-400 mt-2" x-text="$store.global.t('zenDiscoverDesc') || 'Fetch the model catalog from the Zen API. Only the Anthropic-wire subset can be forwarded.'">
-                            Fetch the model catalog from the Zen API. Only the Anthropic-wire subset can be forwarded.
+                        <p class="text-xs text-gray-400 mt-2" x-text="$store.global.t('zenDiscoverDesc') || 'Fetch the model catalog from the Zen API. Anthropic-wire models are forwarded as-is; Chat-Completions-wire and Responses-wire models are translated; other wire formats are marked unusable.'">
+                            Fetch the model catalog from the Zen API. Anthropic-wire models are forwarded as-is; Chat-Completions-wire and Responses-wire models are translated; other wire formats are marked unusable.
                         </p>
                         <div class="mt-3 flex-1 overflow-y-auto">
                             <table class="table table-xs w-full">
@@ -2726,7 +2726,7 @@
                                             <td class="font-mono" x-text="m.id"></td>
                                             <td>
                                                 <span x-text="m.displayName"></span>
-                                                <span x-show="!m.usable" class="badge badge-xs badge-ghost ml-2" x-text="$store.global.t('zenDiscoverUnusable') || 'Other wire format'">Other wire format</span>
+                                                <span x-show="!m.usable" class="badge badge-xs badge-ghost ml-2" x-text="$store.global.t('zenDiscoverUnusable') || 'Unsupported wire — not forwardable'">Unsupported wire — not forwardable</span>
                                             </td>
                                         </tr>
                                     </template>

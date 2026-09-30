@@ -455,6 +455,8 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 			server.chatCompletions(writer, request)
 		case path == "/v1/messages/count_tokens" && request.Method == http.MethodPost:
 			writeAPIError(writer, http.StatusNotImplemented, "not_implemented", "Token counting is not implemented. Use /v1/messages with max_tokens or configure your client to skip token counting.")
+		case path == "/v1/systemone" && request.Method == http.MethodPost:
+			server.systemone(writer, request)
 		default:
 			writeAPIError(writer, http.StatusNotFound, "not_found_error", fmt.Sprintf("Endpoint %s %s not found", request.Method, request.URL.Path))
 		}
@@ -1700,9 +1702,10 @@ func zenAPIKey(cfg config.ZenConfig) string {
 
 // forwardToZen forwards an /v1/messages request to the OpenCode Zen gateway.
 // Anthropic-wire models are forwarded transparently (Authorization rewritten,
-// Anthropic version/beta headers preserved); Chat-Completions-wire models are
-// translated to /v1/chat/completions and the response translated back. When
-// CCR is enabled, it hydrates headroom_retrieve calls.
+// Anthropic version/beta headers preserved); Chat-Completions-wire and
+// Responses-wire models are translated to /v1/chat/completions and
+// /v1/responses respectively, and the response translated back. When CCR is
+// enabled, it hydrates headroom_retrieve calls.
 func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Request, zenCfg config.ZenConfig, body []byte, anthropicRequest map[string]any, model string, zenEntry config.ZenModelConfig) {
 	key := zenAPIKey(zenCfg)
 	if key == "" {
@@ -1742,17 +1745,24 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	body = applyMaxTokensPolicy(body, anthropicRequest, zenEntry.MaxOutputTokens, 0)
 
 	if server.logger != nil {
-		server.logger.Info("zen forward", "model", model, "chatWire", wire == zen.WireChat)
+		server.logger.Info("zen forward", "model", model, "chatWire", wire == zen.WireChat, "responsesWire", wire == zen.WireResponses)
 	}
 
 	startTime := server.nowTime()
 	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
 
-	if wire == zen.WireChat {
-		// Cache-bump replay posts to /v1/messages, which a Chat-wire model
-		// cannot serve, so no bump is recorded on this path.
+	if wire == zen.WireChat || wire == zen.WireResponses {
+		// Cache-bump replay posts to /v1/messages, which a translated-wire
+		// model cannot serve, so no bump is recorded on this path. The
+		// free-tier gate is not observed here either: the hooks below see the
+		// already-translated Anthropic body, while the translator's own error
+		// mapping warns from Zen's bytes.
+		forward, send := zen.ForwardChat, zen.SendChat
+		if wire == zen.WireResponses {
+			forward, send = zen.ForwardResponses, zen.SendResponses
+		}
 		if !server.isCCREnabled() {
-			zen.ForwardChat(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
+			forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
 				if resp.StatusCode < 400 {
 					server.zenInstrumentResponse(resp, model, sessionKey, startTime)
 				}
@@ -1766,7 +1776,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 			return
 		}
 		opts := server.defaultCCROptions(func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
-			return zen.SendChat(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
+			return send(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
 		})
 		opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
 		if isStreaming, _ := reqMap["stream"].(bool); isStreaming {
@@ -2054,11 +2064,12 @@ func resetZenKeylessWarning() { zenKeylessWarned.Store(false) }
 // prefix (case-insensitive) is stripped from both sides before compare, so
 // `opencode/claude-sonnet-4-6` matches allowlist id `claude-sonnet-4-6`.
 //
-// Only entries the route can actually serve claim it: the entry ID must be in
-// the Anthropic-wire subset and a key must resolve. Anything else falls
-// through to Claude Code / OpenRouter / CloudCode. A keyless config with
-// enabled entries emits a one-shot slog.Warn (re-armed on config change)
-// instead of failing the request.
+// Only entries the route can actually serve claim it: the entry ID must be
+// forwardable (zen.IsForwardable: Anthropic, Chat Completions or Responses
+// wire) and a key must resolve. Anything else falls through to Claude Code /
+// OpenRouter / CloudCode. A keyless config with enabled entries emits a
+// one-shot slog.Warn (re-armed on config change) instead of failing the
+// request.
 func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConfig, bool) {
 	if strings.TrimSpace(model) == "" {
 		return config.ZenModelConfig{}, false

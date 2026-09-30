@@ -59,7 +59,7 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
 │                                                                             │
 │ 2. Gateway precedence walk (configurable via gatewayOrder, default below):  │
 │    a. Kimi Code Gateway (allowlist ID/alias, [1m]-insensitive)?             │
-│    b. OpenCode Zen Gateway (Anthropic-wire allowlist, key must resolve)?    │
+│    b. OpenCode Zen Gateway (forwardable-wire allowlist, key must resolve)?  │
 │    c. Claude Code Gateway (pool accounts, allowlist ID/alias)?              │
 │    d. OpenRouter Allowlist / Alias (literal match)?                         │
 │    e. Custom Endpoints Map (Anthropic-format path)?                         │
@@ -515,16 +515,18 @@ The OpenRouter Gateway allows querying OpenRouter's Anthropic-compatible message
 ## OpenCode Zen Gateway
 
 The Zen Gateway forwards allowlisted models to the OpenCode Zen
-Anthropic-compatible endpoint (`https://opencode.ai/zen/v1/messages`) with
+endpoints (`https://opencode.ai/zen/...`) with
 `Authorization: Bearer <key>`, same pattern as the Kimi gateway.
 Anthropic-compatible clients (Claude Code, Hermes) reach Zen
 models through the existing `POST /v1/messages` path.
 
-Two wire families are supported, both on the existing `POST /v1/messages`
+Three wire families are supported on the existing `POST /v1/messages`
 path. Anthropic-wire ids are forwarded transparently (no payload
 translation); Chat-Completions-wire ids are translated
-Anthropic→Chat Completions and back by `internal/zen/chatwire.go`, so the
-caller still sees an Anthropic-shaped answer.
+Anthropic→Chat Completions and back by `internal/zen/chatwire.go`, and
+Responses-wire ids are translated Anthropic→Responses and back by
+`internal/zen/responseswire.go`, so the caller still sees an
+Anthropic-shaped answer.
 
 Anthropic-wire subset — Claude models and Qwen Anthropic variants:
 
@@ -544,12 +546,41 @@ Kimi, Big Pickle, and the `*-free` models:
 `mimo-v2.6-flash-free`, `mimo-v2.5-free`, `ling-3.0-flash-fin-free`,
 `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`.
 
-The remaining Zen wire formats are out of scope: `/zen/v1/responses`
-(`gpt-*`, `grok-*`, `muse-*`), `/zen/v1/models/<gemini-id>` (Gemini-native),
-and `/zen/v1/systemone` (Jev). Both subsets are static lists in code
-(`internal/zen`) because the Zen catalog carries no wire-format field; when
-OpenCode adds a model with an `@ai-sdk/anthropic` or
-OpenAI-compatible docs row, open an issue so the lists can grow. A stale
+Responses-wire subset (`zen.ResponsesWireIDs`) — GPT, Grok, and Muse models
+served by OpenCode's `/zen/v1/responses` endpoint:
+
+`gpt-6-astra`, `gpt-6-sol`, `gpt-6.1-sol`, `gpt-6-luna`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`,
+`gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3-codex`,
+`gpt-5.3-codex-spark`, `gpt-5.2`, `gpt-5.2-codex`, `gpt-5.1`,
+`gpt-5.1-codex`, `gpt-5.1-codex-max`, `gpt-5.1-codex-mini`, `gpt-5`,
+`gpt-5-codex`, `gpt-5-nano`, `grok-4.7`, `grok-4.6`, `grok-4.5`,
+`grok-build-0.1`, `muse-spark-1.3`, `muse-spark-1.2`,
+`muse-spark-1.3-contributor-free`.
+
+`stop_sequences`, `thinking`, `top_k`, `temperature`, and `top_p` are dropped
+rather than approximated: the first three have no Responses equivalent, OpenAI
+documents the sampling pair as unsupported for reasoning models, and the genuine
+OpenCode client sends neither on this wire. `max_tokens` becomes
+`max_output_tokens`.
+
+Every translated Responses request carries `"store": false`: the Responses API
+retains responses by default, the proxy replays the whole conversation each
+turn so nothing reads the stored copy, and the genuine OpenCode client sends
+the same flag for these models. A `store` field in the incoming Anthropic body
+is ignored.
+
+`/zen/v1/systemone` (Jev) is served as a transparent passthrough on a
+dedicated route, `POST /v1/systemone` — the request body
+(`{model, state, questions}`) is forwarded unchanged, because it has no
+faithful Anthropic Messages mapping. A `jev-*` id therefore stays
+non-forwardable for `POST /v1/messages`; use the systemone route for it.
+
+Still out of scope: `/zen/v1/models/<gemini-id>` (Gemini-native), which
+is not implemented. The forwardable subsets are static
+lists in code (`internal/zen`) because the Zen catalog carries no
+wire-format field; when OpenCode adds a model with an `@ai-sdk/anthropic`
+or OpenAI-compatible docs row, open an issue so the lists can grow. A stale
 list fails closed — the id is not claimed by the Zen route and falls through
 to the next gateway.
 
@@ -738,6 +769,7 @@ All `/v1/*` routes accept authentication via `x-api-key` or `Authorization: Bear
 | `/v1/usage` | `GET` | Quota usage per model and grouped quota reset windows |
 | `/v1/messages` | `POST` | Anthropic-compliant messages API (supports streaming SSE) |
 | `/v1/messages/count_tokens` | `POST` | Token counting endpoint (`501 Not Implemented`) |
+| `/v1/systemone` | `POST` | Zen Jev systemone passthrough: body forwarded unchanged (needs `zen.enabled` and a Zen key) |
 | `/api/accounts` | `GET` | List account pool with tiers, quotas, and health scores |
 | `/api/accounts/{email}` | `DELETE`/`PATCH` | Remove account or update quota thresholds |
 | `/api/accounts/{email}/refresh` | `POST` | Clear token caches and re-verify upstream access |
