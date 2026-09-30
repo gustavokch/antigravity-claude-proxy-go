@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -180,5 +184,44 @@ func TestApplyZenHarnessConfig_PartialSectionDefaultsEnabled(t *testing.T) {
 	applyZenHarnessConfig(config.ZenConfig{Harness: &config.ZenHarnessConfig{Enabled: &off}})
 	if zen.GetHarnessConfig().Enabled {
 		t.Error("explicit enabled=false must disable the harness")
+	}
+}
+
+// The cache-bump replay posts the raw recorded Anthropic body — no
+// stream:true, no gate tools — so free-tier Zen rejects it with 403
+// FreeTierError. The gate must be observed: warning logged, bump result
+// carrying the failure, instead of a silent bump error.
+func TestSendZenBump_ObservesFreeTierGate(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"FreeTierError",`+
+			`"message":"OpenCode's free tier can only be used from within OpenCode"}}`)
+	}))
+	defer upstream.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Zen = config.ZenConfig{Enabled: true, APIKey: "sk-zen-test", BaseURL: upstream.URL}
+	config.SetForTest(cfg)
+	t.Cleanup(func() { config.SetForTest(config.DefaultConfig()) })
+
+	server := &Server{}
+	rec := cachebump.Record{
+		Model: "mimo-v2.6-flash-free",
+		Body:  []byte(`{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"q"}]}`),
+	}
+	_, err := server.sendZenBump(context.Background(), rec)
+	var upErr *cachebump.UpstreamError
+	if !errors.As(err, &upErr) || upErr.Status != http.StatusForbidden {
+		t.Fatalf("bump err = %v, want 403 upstream error", err)
+	}
+	if !strings.Contains(logBuf.String(), "zen free-tier gate rejected request") ||
+		!strings.Contains(logBuf.String(), "model=mimo-v2.6-flash-free") {
+		t.Fatalf("gate warning missing:\n%s", logBuf.String())
 	}
 }
