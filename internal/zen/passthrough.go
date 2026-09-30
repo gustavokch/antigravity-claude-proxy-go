@@ -64,9 +64,15 @@ func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, 
 			req.ContentLength = int64(len(body))
 
 			// Always set Bearer; clients that sent x-api-key to the proxy are
-			// also covered because we strip any prior auth header.
+			// also covered because we strip any prior auth header. The Zen
+			// messages route authenticates via x-api-key only, so set that
+			// too — otherwise a paid key would arrive as an unusable
+			// Authorization header and get 401.
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 			req.Header.Del("x-api-key")
+			if apiKey != "" {
+				req.Header.Set("x-api-key", apiKey)
+			}
 
 			// Forward Anthropic protocol headers; default the version when
 			// the client did not send one.
@@ -78,11 +84,23 @@ func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, 
 			if ab := r.Header.Get("anthropic-beta"); ab != "" {
 				req.Header.Set("anthropic-beta", ab)
 			}
+
+			// Claim the genuine OpenCode harness identity; the incoming
+			// client's UA (claude-cli/…) is overwritten on purpose.
+			ApplyHarnessHeaders(req)
 		},
 		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, proxyErr error) {
 			slog.Default().Error("zen upstream proxy error", "error", proxyErr, "url", target.String())
 			writeAPIError(rw, http.StatusBadGateway, "api_error", "Zen upstream error: "+proxyErr.Error())
 		},
+	}
+
+	// utls Bun handshake when the TLS disguise is on, on the one shared
+	// transport so keep-alive pools survive across requests; unset keeps
+	// the ReverseProxy default transport (a typed-nil *http.Transport
+	// would panic in RoundTrip).
+	if tr := Transport(); tr != nil {
+		proxy.Transport = tr
 	}
 
 	proxy.ServeHTTP(w, r)

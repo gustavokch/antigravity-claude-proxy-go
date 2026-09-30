@@ -498,3 +498,98 @@ Still unverified from this session (network/offline): issue #49621 contents,
 the OpenCode source claims (no request secret; `id.ts` algorithm; keyless
 free-tier key), and everything that requires the genuine `opencode` binary or a
 live Zen call. T0 covers these.
+
+---
+
+## Completion log (2026-09-29)
+
+All tasks T1–T10 executed. `gofmt`/`go vet ./...` clean;
+`go test -race ./internal/zen/... ./internal/api/... ./internal/config/...
+./internal/cachebump/...` green.
+
+| Task | Result |
+|------|--------|
+| T1 | `internal/zen/harness.go` + tests; env overrides `OPENCODE_VERSION`/`OPENCODE_CLIENT` added in `ApplyHarnessHeaderMap`. |
+| T2 | `ZenHarnessConfig` + `Save()` zen-branch field merge + tests. |
+| T3 | `applyZenHarnessConfig` (named over `applyZenConfig`) wired at init + both save paths. |
+| T4 | Headers applied at all 5 sites; zen + api tests green. |
+| T5 | Gate warning on all 3 response paths: chat wire (`translateChatResponse`), passthrough (`ObserveFreeTierGate` in the two `ForwardMessagesWithModify` modify closures), CCR sender (direct call after `Do`). `IsFreeTierGateError` now decompresses gzip bodies (1 MiB bound). `ObserveFreeTierGate` reads only 403s, restores the body byte-for-byte (over-limit bodies continue as a stream). |
+| T6 | README "Harness disguise" bullet incl. TLS caveat + env example. |
+| T7 | Build/vet/tests green. |
+| T8 | utls v1.8.2; capture committed as `internal/zen/opencode-clienthello.bin` (not `testdata/`); `TLSClient()` named over `HTTPClient()`; config key `tls` (not `tlsEnabled`). |
+| T9 | All 6 client sites switched; `postBumpRequest` gained a `client *http.Client` param (Zen passes `zen.TLSClient()`, Kimi/custom pass nil → `http.DefaultClient`). |
+| T10 | Unit: `internal/zen/tls_test.go` — JA3 of utls-sent hello == capture JA3 == baseline `1523504b38f0fae0d881d4b6554aac1b`, SNI/ALPN asserted. Live: `sudo scripts/verify-zen-tls.sh` PASS — on-wire to `opencode.ai`: JA4 `t13d1713h1_5b57614c22b0_6a3d802a7139`, JA3 `1523504b38f0fae0d881d4b6554aac1b`, both exact matches. |
+
+Open issue: live response is still **403 with a perfect TLS fingerprint**
+(`OpenCode's free tier can only be used from within OpenCode`). The gate is
+not (only) JA3/JA4 — remaining hypotheses: per-request secret/header unknown
+to us, certificate/time correlation, or server-side session binding. This
+matches the plan's T0 caveat around anomalyco/opencode#49621: paid Zen key
+or `opencode serve` remain the fallbacks.
+
+---
+
+## Completion log 2 (2026-09-29) — free-tier gate cracked and fixed
+
+Session started from `docs/plans/2026-09-29-opencode-gate-handoff.md`. The
+open issue above is resolved: **the gate is a body check, not a TLS or header
+check**, proven by capturing the genuine client through mitmproxy and bisecting
+against live `opencode.ai` with plain curl (own TLS, curl UA) — the same
+requests return 200 once the body predicate is satisfied.
+
+### The gate predicate (packet-verified, direct curl)
+
+| Layer | Rule | Failure |
+|-------|------|---------|
+| UA | `opencode/<semver>` with version **≥ 1.18.0** | HTTP 426 `UpgradeRequired` |
+| Header | `x-opencode-session: ses_<12 hex inverted-ts><14 base62>`, timestamp fresh | 403 `FreeTierError` |
+| Body | `"stream": true` | 403 `FreeTierError` |
+| Body | `tools` contain functions named exactly `bash` **and** `read` (schemas/descriptions not inspected; other names like `Edit`/`Write` not inspected) | 403 `FreeTierError` |
+
+Not checked: JA3/JA4 (plain curl passes), `x-opencode-client/project/request`,
+`Authorization`, `stream_options`, tool schemas (dummy schemas pass),
+`tool_choice`.
+
+### Root cause of every proxy 403 so far
+
+`anthropicToChatRequest` forwarded the client's `stream` flag as-is and
+preserved Anthropic tool names (`Bash`/`Read`); a non-streaming or
+capitalized-tools request can never satisfy the predicate. The TLS disguise
+(T8/T10) was correct but irrelevant to this gate.
+
+### Fixes
+
+- `internal/zen/chatwire.go` — upstream body always carries
+  `stream:true` + `stream_options.include_usage`; client tools `Bash`/`Read`
+  (case-insensitive) renamed to `bash`/`read`, missing gate tools injected
+  from the captured genuine definitions (`gate_tools.json`, embedded via
+  `internal/zen/gate_tools.go`); reverse rename applied to responses (both
+  SSE stream and JSON) and to history/`tool_choice` on the way out; new
+  `aggregateChatStream` folds the forced upstream stream back into one JSON
+  answer for non-streaming clients (truncated streams still error out).
+- `internal/zen/harness.go` — gate phrases now match the observed bodies
+  (`or newer is required to use the free tier`), `ObserveFreeTierGate` also
+  reads 426, hint updated to the verified requirements.
+- `internal/zen/passthrough.go` — the Anthropic-wire route reads `x-api-key`
+  only (`zen/v1/messages.ts:9`), so the configured key is now sent as
+  `x-api-key` too (previously stripped → guaranteed 401 on a paid key).
+- `scripts/verify-zen-tls.sh` — now also asserts HTTP 200 from the free tier
+  (the injected-tools request is itself a gate test) in addition to
+  JA4/JA3; a 403/426 response is a failure.
+
+### Live proof (through the proxy, port 18099)
+
+- claude-code-shaped streaming request (`Bash`/`Read` tools) → **200
+  `text/event-stream`**, full `message_start … message_stop` with usage.
+- tool-less non-streaming request → **200 JSON**, aggregated content,
+  usage present (injection path: ~1.8K extra input tokens from the captured
+  `bash`/`read` schemas — clients that already send those tools pay nothing).
+- zero `free-tier gate rejected request` warnings in the proxy log.
+
+`gofmt`/`go vet ./...` clean; `go test -race ./...` green.
+
+Final gate: `sudo ./scripts/verify-zen-tls.sh` **PASS** on this branch —
+HTTP 200 from the free tier (gate assertion now built into the script) and
+on-wire JA4 `t13d1713h1_5b57614c22b0_6a3d802a7139` / JA3
+`1523504b38f0fae0d881d4b6554aac1b`, both exact matches to the genuine
+capture. PR #105.

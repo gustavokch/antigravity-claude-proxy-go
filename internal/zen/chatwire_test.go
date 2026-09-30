@@ -62,8 +62,21 @@ func TestSendChatStreamingToolCall(t *testing.T) {
 	if msgs[3].(map[string]any)["tool_call_id"] != "tu1" || got["model"] != "glm-5.3" || got["tool_choice"] != "required" {
 		t.Fatalf("request = %v", got)
 	}
-	if n := len(got["tools"].([]any)); n != 1 {
-		t.Fatalf("server tool not dropped: %d tools", n)
+	if got["stream"] != true {
+		t.Fatalf("upstream stream = %v, want true (free-tier gate rejects non-streaming bodies)", got["stream"])
+	}
+	// The client defines "read" but not "bash"; the gate requires both, so
+	// the captured OpenCode bash definition is injected.
+	names := []string{}
+	for _, tool := range got["tools"].([]any) {
+		fn := tool.(map[string]any)["function"].(map[string]any)
+		names = append(names, fn["name"].(string))
+	}
+	if strings.Join(names, ",") != "read,bash" {
+		t.Fatalf("tools = %v, want [read bash]", names)
+	}
+	if params := gateToolDef("bash")["parameters"]; params == nil {
+		t.Fatalf("injected bash definition missing parameters")
 	}
 
 	// Response translation.
@@ -131,7 +144,7 @@ func TestChatResponseToolCallStopReason(t *testing.T) {
 				"id": "x", "function": map[string]any{"name": "Write", "arguments": `{"path":"/tmp/a","content":"trunc`},
 			}}},
 			"finish_reason": finish,
-		}}}, "m")
+		}}}, "m", nil, nil)
 	}
 	if got := resp("length")["stop_reason"]; got != "max_tokens" {
 		t.Errorf("length + tool_calls: stop_reason = %v, want max_tokens", got)
@@ -172,7 +185,7 @@ func TestStreamTerminationRequiresMarker(t *testing.T) {
 	}
 	for _, c := range cases {
 		var out bytes.Buffer
-		if err := streamChatToAnthropic(strings.NewReader(c.in), &out, "m"); err != nil {
+		if err := streamChatToAnthropic(strings.NewReader(c.in), &out, "m", nil, nil); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 		s := out.String()
@@ -228,10 +241,280 @@ func TestStreamLogsDroppedInterleavedArgs(t *testing.T) {
 		"data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\n\n" +
 		"data: [DONE]\n\n"
 	var out bytes.Buffer
-	if err := streamChatToAnthropic(strings.NewReader(in), &out, "m"); err != nil {
+	if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "dropping interleaved tool_call arguments") {
 		t.Fatalf("no drop logged:\n%s", buf.String())
+	}
+}
+
+func TestChatErrorLogsFreeTierGate(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	gate := `{"error":{"code":403,"message":"FreeTierError: OpenCode's free tier can only be used from within OpenCode"}}`
+	out := chatErrorToAnthropic(http.StatusForbidden, []byte(gate), "mimo-v2.6-flash-free")
+	if !strings.Contains(string(out), "permission_error") || !strings.Contains(string(out), "Zen: ") {
+		t.Fatalf("envelope = %s", out)
+	}
+	if !strings.Contains(buf.String(), "zen free-tier gate rejected request") {
+		t.Fatalf("no gate warning logged:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "model=mimo-v2.6-flash-free") {
+		t.Fatalf("warning missing model attr:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	_ = chatErrorToAnthropic(http.StatusTooManyRequests, []byte(`{"error":{"message":"rate limited"}}`), "glm-5.3")
+	if buf.Len() != 0 {
+		t.Fatalf("unexpected log for non-gate error:\n%s", buf.String())
+	}
+}
+
+// The free-tier gate rejects non-streaming upstream bodies (403
+// FreeTierError), so the upstream request always carries stream:true and a
+// client that asked for JSON gets the stream aggregated back into one
+// Anthropic response.
+func TestSendChatForcesStreamAndAggregatesJSON(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range []string{
+			`{"id":"c9","choices":[{"delta":{"content":"hi "}}]}`,
+			`{"id":"c9","choices":[{"delta":{"content":"there"}}]}`,
+			`{"id":"c9","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_b","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}}]}`,
+			`{"id":"c9","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			`{"id":"c9","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":3}}`,
+		} {
+			_, _ = io.WriteString(w, "data: "+c+"\n\n")
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	// No stream flag, no tools: both are supplied for the gate.
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k",
+		[]byte(`{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"q"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["stream"] != true {
+		t.Fatalf("upstream stream = %v, want true", got["stream"])
+	}
+	var names []string
+	for _, tool := range got["tools"].([]any) {
+		fn := tool.(map[string]any)["function"].(map[string]any)
+		names = append(names, fn["name"].(string))
+	}
+	if strings.Join(names, ",") != "bash,read" {
+		t.Fatalf("tools = %v, want [bash read]", names)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content type = %q, want application/json", ct)
+	}
+	var msg map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		t.Fatal(err)
+	}
+	// The client declared no tools, so bash/read were injected for the gate:
+	// the upstream bash call must not come back as a tool_use block.
+	content := msg["content"].([]any)
+	if msg["stop_reason"] != "end_turn" || len(content) != 1 {
+		t.Fatalf("message = %v, want end_turn with the injected bash call dropped", msg)
+	}
+	if content[0].(map[string]any)["text"] != "hi there" {
+		t.Fatalf("text block = %v", content[0])
+	}
+	if usage := msg["usage"].(map[string]any); toInt(usage["input_tokens"]) != 9 || toInt(usage["output_tokens"]) != 3 {
+		t.Fatalf("usage = %v", usage)
+	}
+}
+
+// Anthropic-spelled client tools ("Bash"/"Read") travel upstream under the
+// gate's lowercase names and come back under the client's names, in request
+// bodies (history, tool_choice) and in responses (SSE tool_use blocks).
+func TestSendChatRenamesBashRead(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\",\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	body := `{"model":"mimo-v2.6-flash-free","stream":true,
+	"tools":[{"name":"Bash","input_schema":{"type":"object"}},{"name":"Read","input_schema":{"type":"object"}}],
+	"tool_choice":{"type":"tool","name":"Bash"},
+	"messages":[{"role":"user","content":"q"},
+	{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{}}]},
+	{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"ok"}]}]}`
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k", []byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tool := range got["tools"].([]any) {
+		fn := tool.(map[string]any)["function"].(map[string]any)
+		names = append(names, fn["name"].(string))
+	}
+	if strings.Join(names, ",") != "bash,read" {
+		t.Fatalf("upstream tools = %v, want [bash read] (no duplicates from injection)", names)
+	}
+	if tc := got["tool_choice"].(map[string]any); tc["function"].(map[string]any)["name"] != "bash" {
+		t.Fatalf("tool_choice = %v", got["tool_choice"])
+	}
+	asst := got["messages"].([]any)[1].(map[string]any)
+	if call := asst["tool_calls"].([]any)[0].(map[string]any); call["function"].(map[string]any)["name"] != "bash" {
+		t.Fatalf("history tool_calls = %v", call)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	s := string(out)
+	if !strings.Contains(s, `"name":"Bash"`) {
+		t.Errorf("response tool_use not renamed back to Bash:\n%s", s)
+	}
+	if strings.Contains(s, `"name":"bash"`) {
+		t.Errorf("response leaked upstream name bash:\n%s", s)
+	}
+}
+
+// A truncated upstream stream (no [DONE], no finish_reason) is a dropped
+// connection; the non-streaming client must get an error, not a partial
+// answer passed off as complete.
+func TestSendChatNonStreamTruncatedStreamFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+	}))
+	defer srv.Close()
+
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k",
+		[]byte(`{"model":"mimo-v2.6-flash-free","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(b), "stream ended before completion") {
+		t.Fatalf("got %d %s, want 502 truncated-stream error", resp.StatusCode, b)
+	}
+}
+
+// The gate-injected "bash"/"read" definitions the client never declared must
+// not come back as tool_use blocks: Claude Code errors on an unknown tool
+// name, and the reverse-rename map only covers real renames.
+func TestSendChatDropsInjectedToolCallNonStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"c1","choices":[{"message":{"content":"ok","tool_calls":[
+			{"id":"call_a","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}},
+			{"id":"call_b","function":{"name":"read","arguments":"{\"p\":1}"}}]},
+			"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`)
+	}))
+	defer srv.Close()
+
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k",
+		[]byte(`{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"q"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range msg["content"].([]any) {
+		if block.(map[string]any)["type"] == "tool_use" {
+			t.Fatalf("gate-injected tool surfaced as tool_use: %v", block)
+		}
+	}
+	// No tool_use block survived, so stop_reason must not claim one.
+	if msg["stop_reason"] != "end_turn" {
+		t.Fatalf("stop_reason = %v, want end_turn with every call dropped", msg["stop_reason"])
+	}
+}
+
+// Same drop on the streaming path: no tool_use content block opens for a
+// gate-injected tool, and later argument fragments for it are ignored.
+func TestSendChatDropsInjectedToolCallStreaming(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\"}}]}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ls}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k",
+		[]byte(`{"model":"mimo-v2.6-flash-free","stream":true,"messages":[{"role":"user","content":"q"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	s := string(out)
+	if strings.Contains(s, `"type":"tool_use"`) {
+		t.Errorf("gate-injected tool surfaced in stream:\n%s", s)
+	}
+	if strings.Contains(s, "input_json_delta") {
+		t.Errorf("arguments for a dropped call were forwarded:\n%s", s)
+	}
+	if !strings.Contains(s, `"stop_reason":"end_turn"`) {
+		t.Errorf("stream stop_reason not end_turn:\n%s", s)
+	}
+	if !strings.Contains(s, "event: message_stop") {
+		t.Errorf("stream not finished:\n%s", s)
+	}
+}
+
+// A client that declares both "Bash" and "bash" must not collapse them onto
+// one upstream name: duplicate upstream tools and a wrong reverse lookup
+// would misroute the response. The collision case skips the rename instead.
+func TestToolRenames_CaseCollision(t *testing.T) {
+	req := map[string]any{
+		"model":    "glm-5.3",
+		"messages": []any{},
+		"tools": []any{
+			map[string]any{"name": "Bash", "input_schema": map[string]any{"type": "object"}},
+			map[string]any{"name": "bash", "input_schema": map[string]any{"type": "object"}},
+		},
+	}
+	out, rev, injected := anthropicToChatRequest(req)
+
+	var names []string
+	for _, tool := range out["tools"].([]any) {
+		fn := tool.(map[string]any)["function"].(map[string]any)
+		names = append(names, fn["name"].(string))
+	}
+	seen := map[string]int{}
+	for _, n := range names {
+		seen[n]++
+	}
+	if len(names) != len(seen) {
+		t.Fatalf("upstream tools = %v, want no duplicate names", names)
+	}
+	if seen["bash"] != 1 || seen["Bash"] != 1 {
+		t.Fatalf("upstream tools = %v, want one bash and one Bash", names)
+	}
+	if !injected["read"] || len(injected) != 1 {
+		t.Fatalf("injected = %v, want [read] only (bash present case-insensitively)", injected)
+	}
+	// Round trip: each upstream name the client declared resolves back to
+	// its own spelling; the injected "read" is dropped instead.
+	for _, upstream := range names {
+		if injected[upstream] {
+			continue
+		}
+		msg := ChatResponseToAnthropic(map[string]any{"choices": []any{map[string]any{
+			"message": map[string]any{"tool_calls": []any{map[string]any{
+				"id": "x", "function": map[string]any{"name": upstream, "arguments": "{}"},
+			}}},
+			"finish_reason": "tool_calls",
+		}}}, "m", rev, injected)
+		block := msg["content"].([]any)[0].(map[string]any)
+		if block["name"] != upstream {
+			t.Errorf("round trip %q -> %v", upstream, block["name"])
+		}
 	}
 }

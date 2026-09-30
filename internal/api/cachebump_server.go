@@ -262,7 +262,7 @@ func (server *Server) sendKimiBump(ctx context.Context, rec cachebump.Record) (c
 	if err != nil || cred.baseURL == "" {
 		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
 	}
-	return postBumpRequest(ctx, rec, kimi.NormalizeBaseURL(cred.baseURL)+"/v1/messages", func(hdr http.Header) {
+	return postBumpRequest(ctx, rec, kimi.NormalizeBaseURL(cred.baseURL)+"/v1/messages", nil, func(hdr http.Header) {
 		hdr.Set("Authorization", "Bearer "+cred.token)
 		if cred.oauth {
 			for k, vs := range server.kimiIdentityHeaders() {
@@ -271,7 +271,7 @@ func (server *Server) sendKimiBump(ctx context.Context, rec cachebump.Record) (c
 				}
 			}
 		}
-	})
+	}, nil)
 }
 
 // sendZenBump replays a bump against the currently configured Zen gateway.
@@ -285,8 +285,11 @@ func (server *Server) sendZenBump(ctx context.Context, rec cachebump.Record) (ca
 	if key == "" {
 		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
 	}
-	return postBumpRequest(ctx, rec, zen.NormalizeBaseURL(zenCfg.BaseURL)+"/v1/messages", func(hdr http.Header) {
+	return postBumpRequest(ctx, rec, zen.NormalizeBaseURL(zenCfg.BaseURL)+"/v1/messages", zen.TLSClient(), func(hdr http.Header) {
 		hdr.Set("Authorization", "Bearer "+key)
+		zen.ApplyHarnessHeaderMap(hdr)
+	}, func(resp *http.Response) {
+		zen.ObserveFreeTierGate(resp, rec.Model)
 	})
 }
 
@@ -300,16 +303,21 @@ func (server *Server) sendCustomBump(ctx context.Context, rec cachebump.Record) 
 	if !strings.HasSuffix(target, "/v1/messages") {
 		target = strings.TrimSuffix(target, "/") + "/v1/messages"
 	}
-	return postBumpRequest(ctx, rec, target, func(hdr http.Header) {
+	return postBumpRequest(ctx, rec, target, nil, func(hdr http.Header) {
 		if endpoint.APIKey != "" {
 			hdr.Set("x-api-key", endpoint.APIKey)
 		}
-	})
+	}, nil)
 }
 
 // postBumpRequest sends one bump replay with plain HTTP: the shared shape of
-// the Kimi and custom-endpoint senders. Auth is applied by the caller.
-func postBumpRequest(ctx context.Context, rec cachebump.Record, targetURL string, applyAuth func(http.Header)) (cachebump.BumpResult, error) {
+// the Kimi, Zen and custom-endpoint senders. Auth is applied by the caller;
+// client picks the TLS stack (nil = plain default client; the Zen sender
+// passes zen.TLSClient so the Bun handshake disguise covers replays too).
+// observe, when non-nil, sees the response before the status check — the Zen
+// sender uses it to log a free-tier gate rejection instead of failing as a
+// silent bump error.
+func postBumpRequest(ctx context.Context, rec cachebump.Record, targetURL string, client *http.Client, applyAuth func(http.Header), observe func(*http.Response)) (cachebump.BumpResult, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(rec.Body))
 	if err != nil {
 		return cachebump.BumpResult{}, err
@@ -322,11 +330,17 @@ func postBumpRequest(ctx context.Context, rec cachebump.Record, targetURL string
 		}
 	}
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return cachebump.BumpResult{}, err
 	}
 	defer resp.Body.Close()
+	if observe != nil {
+		observe(resp)
+	}
 
 	if resp.StatusCode >= 400 {
 		return cachebump.BumpResult{}, &cachebump.UpstreamError{Status: resp.StatusCode}

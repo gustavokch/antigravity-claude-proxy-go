@@ -208,15 +208,16 @@ func New(options Options) (*Server, error) {
 
 	// Router state (sticky assignments, EWMA stats) survives restarts.
 	openrouter.DefaultRouter.EnablePersistence(filepath.Join(config.GetConfigDir(), "openrouter-router.json"))
-	applyRouterConfig(cfg.OpenRouter)
+	applyRouterConfig(cfg)
 
 	return srv, nil
 }
 
-// applyRouterConfig pushes the persisted routing knobs into the live router.
-// Called at startup and on config save — never per request (SetConfig takes
-// the router write-lock).
-func applyRouterConfig(openRouterCfg config.OpenRouterConfig) {
+// applyRouterConfig pushes the persisted routing knobs into the live router
+// and the Zen harness disguise into the zen package. Called at startup and on
+// config save — never per request (SetConfig takes the router write-lock).
+func applyRouterConfig(cfg config.Config) {
+	openRouterCfg := cfg.OpenRouter
 	openrouter.DefaultRouter.SetConfig(openrouter.RoutingConfig{
 		FailureThreshold: openRouterCfg.Routing.FailureThreshold,
 		RankWeights:      openRouterCfg.Routing.RankWeightsToOpenRouter(),
@@ -226,6 +227,35 @@ func applyRouterConfig(openRouterCfg config.OpenRouterConfig) {
 	} else {
 		openrouter.DefaultRateLimiter.SetMinRequestInterval(0)
 	}
+	applyZenHarnessConfig(cfg.Zen)
+}
+
+// applyZenHarnessConfig converts the persisted Zen harness section into the
+// zen package's live disguise configuration. The section is a field-wise
+// overlay: a hand-written section that omits "enabled" keeps the disguise
+// on (nil defaults to true), only an explicit false disables it.
+func applyZenHarnessConfig(zenCfg config.ZenConfig) {
+	h := zenCfg.Harness
+	if h == nil {
+		// Missing section means defaults: the disguise is on by default,
+		// the utls Bun ClientHello stays opt-in.
+		zen.SetHarnessConfig(zen.HarnessConfig{
+			Enabled: true,
+			Version: zen.DefaultVersion,
+			Client:  zen.DefaultHarnessClient,
+			Project: zen.DefaultProject,
+		})
+		zen.SetTLSConfig(zen.ZenTLSConfig{Enabled: false})
+		return
+	}
+	enabled := h.Enabled == nil || *h.Enabled
+	zen.SetHarnessConfig(zen.HarnessConfig{
+		Enabled: enabled,
+		Version: h.Version,
+		Client:  h.Client,
+		Project: h.Project,
+	})
+	zen.SetTLSConfig(zen.ZenTLSConfig{Enabled: h.TLS})
 }
 
 func (server *Server) applyHeadroomConfig(cfg config.HeadroomConfig) {
@@ -1736,7 +1766,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 			return
 		}
 		opts := server.defaultCCROptions(func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
-			return zen.SendChat(ctx, http.DefaultClient, zenCfg.BaseURL, key, reqBytes)
+			return zen.SendChat(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
 		})
 		opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
 		if isStreaming, _ := reqMap["stream"].(bool); isStreaming {
@@ -1749,6 +1779,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 
 	if !server.isCCREnabled() {
 		modify := func(resp *http.Response) error {
+			zen.ObserveFreeTierGate(resp, model)
 			if resp.StatusCode < 400 {
 				server.maybeRecordCacheBump(cachebump.RouteZen, request, body, sessionKey, model, "", "", minMaxTokensFloor)
 				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
@@ -1762,6 +1793,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	var reqMap map[string]any
 	if err := json.Unmarshal(body, &reqMap); err != nil {
 		modify := func(resp *http.Response) error {
+			zen.ObserveFreeTierGate(resp, model)
 			if resp.StatusCode < 400 {
 				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
 			}
@@ -1787,7 +1819,9 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 		if b := request.Header.Get("anthropic-beta"); b != "" {
 			httpReq.Header.Set("anthropic-beta", b)
 		}
-		resp, err := http.DefaultClient.Do(httpReq)
+		zen.ApplyHarnessHeaders(httpReq)
+		resp, err := zen.TLSClient().Do(httpReq)
+		zen.ObserveFreeTierGate(resp, model)
 		if err == nil && resp.StatusCode < 400 {
 			server.maybeRecordCacheBump(cachebump.RouteZen, request, reqBytes, sessionKey, model, "", "", minMaxTokensFloor)
 		}

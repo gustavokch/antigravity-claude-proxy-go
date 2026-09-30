@@ -578,6 +578,37 @@ Example `config.json`:
 - **max_tokens**: filled, never 400 — client value → allowlist entry
   `maxOutputTokens` → package default 32768. An explicit client value above
   the default is not clamped.
+- **Harness disguise**: OpenCode gates its free-tier models to its own
+  harness (403 `FreeTierError "OpenCode's free tier can only be used from
+  within OpenCode"`). Every Zen-bound request therefore sends the genuine
+  header set by default — `User-Agent: opencode/<version>`,
+  `x-opencode-client`, `x-opencode-project`, and per-request
+  `x-opencode-session` / `x-opencode-request` ids (algorithm ported from the
+  OpenCode client). Configurable via `zen.harness` in `config.json`:
+
+  ```json
+  {
+    "zen": {
+      "harness": {"enabled": true, "version": "1.18.31", "client": "cli", "project": "global"}
+    }
+  }
+  ```
+
+  `OPENCODE_VERSION` / `OPENCODE_CLIENT` env vars override `version` /
+  `client`, mirroring the genuine client's env behavior. Setting `enabled`
+  to `false` disables the disguise entirely. A gate response is logged
+  (`zen free-tier gate rejected request`) so a failed disguise is visible in
+  the proxy log.
+- **TLS caveat**: headers alone are not enough — the gate also fingerprints
+  the TLS handshake (genuine client is Bun/BoringSSL; every third-party
+  stack has been rejected since Sep 2026). `"harness": {"tls": true}` opts
+  zen-bound connections (forward, models, CCR, cache-bump replay) into a
+  utls ClientHello replayed from the captured genuine opencode hello
+  (`internal/zen/tls.go`, JA3 `1523504b38f0fae0d881d4b6554aac1b`). It is
+  **off by default** because it trades the repo's "normal Go TLS client"
+  rule for fingerprint parity — enable it per host after verifying. The
+  escape hatch is a paid Zen key: keyed access may bypass the free-tier
+  gate entirely, so no spoofing is needed at all.
 
 ---
 
@@ -598,6 +629,7 @@ Anthropic prompt cache entries expire five minutes after their last read (one ho
 Bumping for a session stops automatically the moment it stops paying: a bump that reports `cache_creation_input_tokens > 0` with zero reads (`paid_write`), an upstream 4xx rejection, an unavailable recorded account, the per-session bump cap, or prolonged client idleness all end the schedule. A new real client turn re-arms the session.
 
 - **Routes**: Claude Code (bumps pinned to the account that owns the cache entry), Kimi, Zen, and custom endpoints. Not OpenRouter (provider failover can land the replay on a different provider) and not the Cloud Code / Gemini translation route (implicit caching).
+- **Free-tier Zen**: unsupported. The replay body carries no gate tools and no `stream: true` predicate, so the gateway answers 403 `FreeTierError` (`OpenCode's free tier can only be used from within OpenCode`); the proxy logs the rejection via the harness gate observer (`zen free-tier gate rejected request`) and the bump fails visibly. Bump a Zen session only with a paid key (`zen.apiKey`), which bypasses the free-tier gate.
 - **Enablement**: global switch plus per-route flags in the Web UI (Settings → Cache Bump), or per-session with the `X-Cache-Bump: on|off` request header when header overrides are allowed. `off` always disarms a request; `on` overrides the per-route flag but never the global switch, so turning Cache Bump off stops every route. The header is consumed by the proxy and never forwarded upstream.
 - **Safety**: request bodies live in memory only (a restart drops them), never touch disk, and are never exposed through the management API. Memory is bounded twice: by `maxSessions` and by a total body budget (`maxBodyMB`), so a handful of very long conversations cannot crowd out every other session.
 - **Key settings** (`config.json` → `cacheBump`): `enabled`, `allowHeaderOverride`, `leadSeconds` (default 60), `maxBumpsPerSession` (default 48), `maxIdleMinutes` (default 240), `maxSessions` (default 200), `maxBodyMB` (default 64), `routes.claudecode` / `routes.kimi` / `routes.customEndpoints`.

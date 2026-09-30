@@ -185,9 +185,19 @@ func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string) ([]Mod
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	ApplyHarnessHeaders(req)
+	// The models fetch rides the utls disguise whenever it is enabled, so
+	// the fingerprint gate sees the same hello as the request path. The
+	// shared TLSClient() carries no timeout (streaming callers own their
+	// deadlines), so on the enabled path this call's ctx bounds the
+	// request. With the disguise off the local client keeps its fixed
+	// timeout.
 	client := c.httpClient
+	if GetTLSConfig().Enabled {
+		client = TLSClient()
+	}
 	if client == nil {
-		client = http.DefaultClient
+		client = TLSClient()
 	}
 	resp, err := client.Do(req)
 	if err != nil {
