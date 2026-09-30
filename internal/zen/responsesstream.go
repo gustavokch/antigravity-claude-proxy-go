@@ -47,11 +47,17 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 		done   bool
 		failed string
 	)
+	// mark registers an index that only ever produced deltas. It must not
+	// clobber a real envelope: output_item.added carries a function call's
+	// name and call_id, and a later argument delta would otherwise erase the
+	// item the reconstruction below needs.
 	mark := func(idx int) {
-		if _, seen := items[idx]; !seen {
-			order = append(order, idx)
+		if item, seen := items[idx]; !seen || len(item) == 0 {
+			if !seen {
+				order = append(order, idx)
+			}
+			items[idx] = map[string]any{}
 		}
-		items[idx] = map[string]any{}
 	}
 	builder := func(m map[int]*strings.Builder, idx int) *strings.Builder {
 		b := m[idx]
@@ -191,8 +197,23 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 			// message; both must survive the fold or the decline disappears
 			// and the turn reads as a clean end_turn.
 			parts := make([]any, 0, 2)
+			refused := false
 			if src := refusals[idx]; src != nil && src.Len() > 0 {
 				parts = append(parts, map[string]any{"type": "refusal", "refusal": src.String()})
+				refused = true
+			}
+			if !refused {
+				// No refusal was streamed, but one may still sit in the item
+				// envelope: output_item.done carries the complete part when
+				// the refusal arrived without a delta to stream.
+				for _, p := range anySlice(item["content"]) {
+					if part, ok := p.(map[string]any); ok && part["type"] == "refusal" {
+						if text, _ := part["refusal"].(string); text != "" {
+							parts = append(parts, map[string]any{"type": "refusal", "refusal": text})
+						}
+						break
+					}
+				}
 			}
 			text := ""
 			if src := texts[idx]; src != nil {
@@ -391,14 +412,15 @@ func (s *responsesStream) delta(delta map[string]any) error {
 func (s *responsesStream) handle(event map[string]any) error {
 	typ, _ := event["type"].(string)
 	idx := toInt(event["output_index"])
-	if s.started || typ == "response.created" {
-		var id any
-		if resp, ok := event["response"].(map[string]any); ok {
-			id = resp["id"]
-		}
-		if err := s.start(id); err != nil {
-			return err
-		}
+	// start is idempotent, so it is called for every event: a Responses stream
+	// need not open with response.created, and message_start has to precede the
+	// first content block for the client to attribute it to a message.
+	var id any
+	if resp, ok := event["response"].(map[string]any); ok {
+		id = resp["id"]
+	}
+	if err := s.start(id); err != nil {
+		return err
 	}
 	switch typ {
 	case "response.output_text.delta", "response.refusal.delta":
