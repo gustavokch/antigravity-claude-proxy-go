@@ -449,6 +449,7 @@ The proxy provides native support for official Anthropic Claude Code accounts, i
 - **Claude Code Model Aliasing & Discovery**:
   - Exposes official Anthropic Claude models (`claude-3-7-sonnet-20250219`, `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`, etc.) through the catalog and allows custom model aliasing.
   - Includes multi-hop loop protection to prevent recursive model mapping chains.
+  - Matches a requested id against `claudecode.allowlist` (the built-in defaults when it is empty) in order: exact id, alias, dot/hyphen spelling (`claude-sonnet-5.5` ≡ `claude-sonnet-5-5`), then longest prefix, so dated stamps, `[1m]` and `-latest` resolve to their family. A prefix hit that continues the version number (`claude-sonnet-5-5` against `claude-sonnet-5`) is a different model and is declined rather than rewritten: the request moves down the gateway order, and adding the newer id to the allowlist claims it. A tail of one to three digits counts as a version, four or more as a build stamp.
 
 ### Bash-Classifier Fallback on Quota Exhaustion
 
