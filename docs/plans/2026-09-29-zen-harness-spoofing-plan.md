@@ -588,5 +588,8 @@ capitalized-tools request can never satisfy the predicate. The TLS disguise
 
 `gofmt`/`go vet ./...` clean; `go test -race ./...` green.
 
-Still to do: `sudo ./scripts/verify-zen-tls.sh` (needs root for tcpdump) to
-re-confirm JA4 on this branch, then open the PR.
+Final gate: `sudo ./scripts/verify-zen-tls.sh` **PASS** on this branch —
+HTTP 200 from the free tier (gate assertion now built into the script) and
+on-wire JA4 `t13d1713h1_5b57614c22b0_6a3d802a7139` / JA3
+`1523504b38f0fae0d881d4b6554aac1b`, both exact matches to the genuine
+capture. PR #105.
