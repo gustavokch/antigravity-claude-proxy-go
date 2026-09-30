@@ -498,3 +498,31 @@ Still unverified from this session (network/offline): issue #49621 contents,
 the OpenCode source claims (no request secret; `id.ts` algorithm; keyless
 free-tier key), and everything that requires the genuine `opencode` binary or a
 live Zen call. T0 covers these.
+
+---
+
+## Completion log (2026-09-29)
+
+All tasks T1–T10 executed. `gofmt`/`go vet ./...` clean;
+`go test -race ./internal/zen/... ./internal/api/... ./internal/config/...
+./internal/cachebump/...` green.
+
+| Task | Result |
+|------|--------|
+| T1 | `internal/zen/harness.go` + tests; env overrides `OPENCODE_VERSION`/`OPENCODE_CLIENT` added in `ApplyHarnessHeaderMap`. |
+| T2 | `ZenHarnessConfig` + `Save()` zen-branch field merge + tests. |
+| T3 | `applyZenHarnessConfig` (named over `applyZenConfig`) wired at init + both save paths. |
+| T4 | Headers applied at all 5 sites; zen + api tests green. |
+| T5 | Gate warning on all 3 response paths: chat wire (`translateChatResponse`), passthrough (`ObserveFreeTierGate` in the two `ForwardMessagesWithModify` modify closures), CCR sender (direct call after `Do`). `IsFreeTierGateError` now decompresses gzip bodies (1 MiB bound). `ObserveFreeTierGate` reads only 403s, restores the body byte-for-byte (over-limit bodies continue as a stream). |
+| T6 | README "Harness disguise" bullet incl. TLS caveat + env example. |
+| T7 | Build/vet/tests green. |
+| T8 | utls v1.8.2; capture committed as `internal/zen/opencode-clienthello.bin` (not `testdata/`); `TLSClient()` named over `HTTPClient()`; config key `tls` (not `tlsEnabled`). |
+| T9 | All 6 client sites switched; `postBumpRequest` gained a `client *http.Client` param (Zen passes `zen.TLSClient()`, Kimi/custom pass nil → `http.DefaultClient`). |
+| T10 | Unit: `internal/zen/tls_test.go` — JA3 of utls-sent hello == capture JA3 == baseline `1523504b38f0fae0d881d4b6554aac1b`, SNI/ALPN asserted. Live: `sudo scripts/verify-zen-tls.sh` PASS — on-wire to `opencode.ai`: JA4 `t13d1713h1_5b57614c22b0_6a3d802a7139`, JA3 `1523504b38f0fae0d881d4b6554aac1b`, both exact matches. |
+
+Open issue: live response is still **403 with a perfect TLS fingerprint**
+(`OpenCode's free tier can only be used from within OpenCode`). The gate is
+not (only) JA3/JA4 — remaining hypotheses: per-request secret/header unknown
+to us, certificate/time correlation, or server-side session binding. This
+matches the plan's T0 caveat around anomalyco/opencode#49621: paid Zen key
+or `opencode serve` remain the fallbacks.

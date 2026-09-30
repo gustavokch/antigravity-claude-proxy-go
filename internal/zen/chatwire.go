@@ -41,6 +41,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	if stream {
 		httpReq.Header.Set("Accept", "text/event-stream")
 	}
+	ApplyHarnessHeaders(httpReq)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -54,7 +55,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 // the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.
 func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	resp, err := SendChat(r.Context(), http.DefaultClient, baseURL, apiKey, body)
+	resp, err := SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
 	if err != nil {
 		slog.Default().Error("zen chat upstream error", "error", err)
 		writeAPIError(w, http.StatusBadGateway, "api_error", "Zen upstream error: "+err.Error())
@@ -357,7 +358,7 @@ func translateChatResponse(resp *http.Response, model string) *http.Response {
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return rebody(resp, "application/json", chatErrorToAnthropic(resp.StatusCode, raw))
+		return rebody(resp, "application/json", chatErrorToAnthropic(resp.StatusCode, raw, model))
 	}
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
 		pr, pw := io.Pipe()
@@ -409,7 +410,7 @@ func anthropicError(kind, msg string) []byte {
 	return b
 }
 
-func chatErrorToAnthropic(status int, raw []byte) []byte {
+func chatErrorToAnthropic(status int, raw []byte, model string) []byte {
 	msg := strings.TrimSpace(string(raw))
 	var env map[string]any
 	if json.Unmarshal(raw, &env) == nil {
@@ -424,6 +425,7 @@ func chatErrorToAnthropic(status int, raw []byte) []byte {
 	if msg == "" {
 		msg = http.StatusText(status)
 	}
+	WarnFreeTierGate(model, status, raw)
 	kind := "api_error"
 	switch {
 	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:

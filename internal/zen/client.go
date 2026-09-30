@@ -185,9 +185,10 @@ func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string) ([]Mod
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	ApplyHarnessHeaders(req)
 	client := c.httpClient
 	if client == nil {
-		client = http.DefaultClient
+		client = TLSClient()
 	}
 	resp, err := client.Do(req)
 	if err != nil {

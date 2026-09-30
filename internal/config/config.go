@@ -124,12 +124,27 @@ type ZenModelConfig struct {
 	Enabled         bool   `json:"enabled"`
 }
 
+// ZenHarnessConfig is the OpenCode client disguise applied to every
+// zen-bound request: the User-Agent identity plus the four x-opencode-*
+// routing headers the genuine OpenCode client sends.
+type ZenHarnessConfig struct {
+	Enabled bool   `json:"enabled"`
+	Version string `json:"version,omitempty"`
+	Client  string `json:"client,omitempty"`
+	Project string `json:"project,omitempty"`
+	// TLS opts in to the utls Bun ClientHello disguise for zen-bound
+	// connections (see internal/zen/tls.go). Off by default: the operator
+	// enables it after verifying the fingerprint.
+	TLS bool `json:"tls,omitempty"`
+}
+
 // ZenConfig holds the OpenCode Zen gateway configuration.
 type ZenConfig struct {
-	Enabled   bool             `json:"enabled"`
-	BaseURL   string           `json:"baseUrl"`
-	APIKey    string           `json:"apiKey,omitempty"`
-	Allowlist []ZenModelConfig `json:"allowlist,omitempty"`
+	Enabled   bool              `json:"enabled"`
+	BaseURL   string            `json:"baseUrl"`
+	APIKey    string            `json:"apiKey,omitempty"`
+	Allowlist []ZenModelConfig  `json:"allowlist,omitempty"`
+	Harness   *ZenHarnessConfig `json:"harness,omitempty"`
 }
 
 type AccountSelectionConfig struct {
@@ -647,6 +662,14 @@ func DefaultConfig() Config {
 		Zen: ZenConfig{
 			BaseURL:   zen.DefaultBaseURL,
 			Allowlist: []ZenModelConfig{},
+			// Disguise-by-default, consistent with the proxy's purpose: every
+			// zen-bound request claims to be the genuine OpenCode client.
+			Harness: &ZenHarnessConfig{
+				Enabled: true,
+				Version: zen.DefaultVersion,
+				Client:  zen.DefaultHarnessClient,
+				Project: zen.DefaultProject,
+			},
 		},
 		GatewayOrder: GatewayOrderConfig{
 			Order: DefaultGatewayOrder(),
@@ -940,13 +963,32 @@ func Save(updates map[string]any) (Config, error) {
 		}
 		if k == "zen" {
 			if vMap, ok := v.(map[string]any); ok {
+				existingZen, _ := currentMap["zen"].(map[string]any)
 				zenCopy := make(map[string]any)
 				for kk, vv := range vMap {
 					zenCopy[kk] = vv
 				}
+				// The harness section merges field-by-field so a partial
+				// update (empty string = keep persisted) cannot wipe the
+				// disguise; an absent section is preserved whole.
+				if hMap, ok := vMap["harness"].(map[string]any); ok {
+					existingHarness, _ := existingZen["harness"].(map[string]any)
+					hCopy := make(map[string]any)
+					for ek, ev := range existingHarness {
+						hCopy[ek] = ev
+					}
+					for hk, hv := range hMap {
+						if str, isStr := hv.(string); isStr && strings.TrimSpace(str) == "" {
+							continue
+						}
+						hCopy[hk] = hv
+					}
+					zenCopy["harness"] = hCopy
+				} else if ex, ok := existingZen["harness"]; ok {
+					zenCopy["harness"] = ex
+				}
 				hasApiKey, _ := zenCopy["hasApiKey"].(bool)
 				apiKey, _ := zenCopy["apiKey"].(string)
-				existingZen, _ := currentMap["zen"].(map[string]any)
 				if hasApiKey && apiKey == "" && existingZen != nil {
 					if existingKey, ok := existingZen["apiKey"].(string); ok && existingKey != "" {
 						zenCopy["apiKey"] = existingKey

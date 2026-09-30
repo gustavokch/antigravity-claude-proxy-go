@@ -1,0 +1,263 @@
+package zen
+
+import (
+	"bytes"
+	"compress/gzip"
+	"crypto/rand"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+// OpenCode gates Zen free-tier models to its own harness: the genuine client
+// sends a fixed set of x-opencode-* routing headers plus a versioned
+// User-Agent. Third-party clients send none of them, which is one of the two
+// layers the Zen free-tier check inspects (the other is the TLS handshake —
+// see tls.go).
+//
+// Header names, defaults and the ID algorithm are ported from the MIT
+// reimplementation in kode-ai/providers/opencode/headers.go.
+const (
+	// HeaderProject declares the OpenCode project id (git root hash or "global").
+	HeaderProject = "x-opencode-project"
+	// HeaderSession declares the OpenCode session id.
+	HeaderSession = "x-opencode-session"
+	// HeaderRequest declares the OpenCode per-request message id.
+	HeaderRequest = "x-opencode-request"
+	// HeaderClient declares the calling OpenCode surface (cli, desktop).
+	HeaderClient = "x-opencode-client"
+	// HeaderUA carries the "opencode/<version>" identity.
+	HeaderUA = "User-Agent"
+
+	// DefaultVersion is the OpenCode release the disguise impersonates.
+	DefaultVersion = "1.18.31"
+	// DefaultHarnessClient is the disguise surface when no override exists.
+	DefaultHarnessClient = "cli"
+	// DefaultProject is the project id used outside a git repository.
+	DefaultProject = "global"
+
+	idLength    = 26
+	idRandom    = idLength - 12
+	base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
+
+// HarnessConfig is the live disguise configuration for zen-bound requests.
+type HarnessConfig struct {
+	Enabled bool
+	Version string
+	Client  string
+	Project string
+}
+
+var (
+	harnessMu sync.RWMutex
+	// Disguise-by-default: a caller that never wires config still sends the
+	// genuine header set, consistent with the proxy's purpose.
+	harnessCfg = HarnessConfig{
+		Enabled: true,
+		Version: DefaultVersion,
+		Client:  DefaultHarnessClient,
+		Project: DefaultProject,
+	}
+)
+
+// SetHarnessConfig replaces the live harness configuration. Safe for
+// concurrent use with request handling; called from the config hook only.
+func SetHarnessConfig(cfg HarnessConfig) {
+	harnessMu.Lock()
+	harnessCfg = cfg
+	harnessMu.Unlock()
+}
+
+// GetHarnessConfig returns a copy of the live harness configuration.
+func GetHarnessConfig() HarnessConfig {
+	harnessMu.RLock()
+	defer harnessMu.RUnlock()
+	return harnessCfg
+}
+
+// ApplyHarnessHeaderMap stamps the OpenCode harness headers onto an outgoing
+// header map. It is a no-op when the harness is disabled. Empty or
+// whitespace-only config values fall back to the package defaults;
+// OPENCODE_VERSION and OPENCODE_CLIENT override version and client, mirroring
+// the genuine client's env behavior. Session/request ids are regenerated on
+// every call.
+func ApplyHarnessHeaderMap(hdr http.Header) {
+	if hdr == nil {
+		return
+	}
+	cfg := GetHarnessConfig()
+	if !cfg.Enabled {
+		return
+	}
+	version := strings.TrimSpace(cfg.Version)
+	if v := strings.TrimSpace(os.Getenv("OPENCODE_VERSION")); v != "" {
+		version = v
+	} else if version == "" {
+		version = DefaultVersion
+	}
+	client := strings.TrimSpace(cfg.Client)
+	if v := strings.TrimSpace(os.Getenv("OPENCODE_CLIENT")); v != "" {
+		client = v
+	} else if client == "" {
+		client = DefaultHarnessClient
+	}
+	project := strings.TrimSpace(cfg.Project)
+	if project == "" {
+		project = DefaultProject
+	}
+
+	hdr.Set(HeaderUA, "opencode/"+version)
+	hdr.Set(HeaderClient, client)
+	hdr.Set(HeaderProject, project)
+	if sid, err := NewSessionID(); err == nil {
+		hdr.Set(HeaderSession, sid)
+	}
+	if rid, err := NewRequestID(); err == nil {
+		hdr.Set(HeaderRequest, rid)
+	}
+}
+
+// ApplyHarnessHeaders stamps the OpenCode harness headers onto a request.
+// A nil request is ignored.
+func ApplyHarnessHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	ApplyHarnessHeaderMap(req.Header)
+}
+
+// NewSessionID returns an OpenCode-shaped session id ("ses_" + 26 base62 chars).
+// The timestamp portion is inverted so session ids sort descending by age.
+func NewSessionID() (string, error) {
+	id, err := createID(true, time.Now())
+	if err != nil {
+		return "", err
+	}
+	return "ses_" + id, nil
+}
+
+// NewRequestID returns an OpenCode-shaped request id ("msg_" + 26 base62 chars).
+func NewRequestID() (string, error) {
+	id, err := createID(false, time.Now())
+	if err != nil {
+		return "", err
+	}
+	return "msg_" + id, nil
+}
+
+// createID renders 12 hex chars of the millisecond timestamp (optionally
+// bit-flipped so ids sort descending) followed by 14 random base62 chars.
+func createID(descending bool, t time.Time) (string, error) {
+	if t.IsZero() {
+		t = time.Now()
+	}
+	ts := uint64(t.UnixMilli())*0x1000 + uint64(1)
+	if descending {
+		ts = ^ts
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], ts)
+	random, err := randomBase62(idRandom)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x%s", buf[2:], random), nil
+}
+
+func randomBase62(length int) (string, error) {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate random id bytes: %w", err)
+	}
+	var sb strings.Builder
+	sb.Grow(length)
+	for _, v := range b {
+		sb.WriteByte(base62Chars[int(v)%len(base62Chars)])
+	}
+	return sb.String(), nil
+}
+
+// IsFreeTierGateError reports whether an upstream error body is Zen's
+// free-tier gate: the 403 FreeTierError returned to non-OpenCode clients.
+// A gzip-compressed body (magic bytes 1f 8b) is decompressed first, so the
+// check works regardless of Content-Encoding.
+func IsFreeTierGateError(body []byte) bool {
+	if decoded, ok := gunzipBody(body); ok {
+		body = decoded
+	}
+	lower := strings.ToLower(string(body))
+	for _, phrase := range []string{
+		"free tier can only be used from within opencode",
+		"freetiererror",
+		"1.17.0 or newer is required",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// gunzipBody decompresses a gzip payload, bounded to 1 MiB. It reports
+// false for non-gzip input or any decompression error (the caller then
+// inspects the raw bytes).
+func gunzipBody(body []byte) ([]byte, bool) {
+	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+		return nil, false
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, false
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(io.LimitReader(zr, 1<<20))
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// WarnFreeTierGate logs the single distinct warning for a Zen free-tier gate
+// response. Non-gate bodies log nothing.
+func WarnFreeTierGate(model string, status int, body []byte) {
+	if !IsFreeTierGateError(body) {
+		return
+	}
+	slog.Warn("zen free-tier gate rejected request",
+		"model", model,
+		"status", status,
+		"hint", "harness headers or TLS fingerprint do not look like OpenCode")
+}
+
+// ObserveFreeTierGate reads a 403 response body (up to 1 MiB), logs the gate
+// warning when it is Zen's free-tier gate, and restores the body untouched so
+// the downstream reader sees identical bytes. Non-403 responses are never
+// read; bodies over the limit are handed back as a continuing stream.
+func ObserveFreeTierGate(resp *http.Response, model string) {
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		return
+	}
+	const limit = 1 << 20
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil && len(raw) == 0 {
+		return
+	}
+	original := resp.Body
+	if len(raw) >= limit {
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(raw), original), original}
+		return
+	}
+	_ = original.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(raw))
+	WarnFreeTierGate(model, resp.StatusCode, raw)
+}

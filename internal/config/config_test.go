@@ -1112,3 +1112,138 @@ func TestSave_PreservesDefaultsForUnrelatedSections(t *testing.T) {
 		t.Errorf("Save zeroed Get().Mitm.Listen: got %q, want %q", inMemory.Mitm.Listen, "127.0.0.1:8092")
 	}
 }
+
+func TestZenHarnessDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Zen.Harness == nil {
+		t.Fatal("DefaultConfig must ship a zen.harness section (disguise-by-default)")
+	}
+	if !cfg.Zen.Harness.Enabled {
+		t.Error("zen.harness.enabled must default to true")
+	}
+	if cfg.Zen.Harness.Version != "1.18.31" {
+		t.Errorf("zen.harness.version = %q, want %q", cfg.Zen.Harness.Version, "1.18.31")
+	}
+	if cfg.Zen.Harness.Client != "cli" {
+		t.Errorf("zen.harness.client = %q, want %q", cfg.Zen.Harness.Client, "cli")
+	}
+	if cfg.Zen.Harness.Project != "global" {
+		t.Errorf("zen.harness.project = %q, want %q", cfg.Zen.Harness.Project, "global")
+	}
+}
+
+func TestSave_ZenHarnessMerge(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	// Partial harness section: one field set, the rest preserved.
+	updated, err := Save(map[string]any{"zen": map[string]any{
+		"baseUrl": "https://zen.example",
+		"harness": map[string]any{"version": "2.0.0"},
+	}})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	h := updated.Zen.Harness
+	if h == nil {
+		t.Fatal("harness section dropped by save")
+	}
+	if h.Version != "2.0.0" {
+		t.Errorf("version = %q, want %q", h.Version, "2.0.0")
+	}
+	if !h.Enabled || h.Client != "cli" || h.Project != "global" {
+		t.Errorf("unmentioned harness fields must survive, got %+v", h)
+	}
+
+	// Empty string = keep persisted value; an explicit false must survive.
+	if _, err := Save(map[string]any{"zen": map[string]any{
+		"harness": map[string]any{"version": "", "project": "  ", "enabled": false},
+	}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got := Get().Zen.Harness
+	if got.Version != "2.0.0" {
+		t.Errorf("empty version must keep persisted value, got %q", got.Version)
+	}
+	if got.Project != "global" {
+		t.Errorf("whitespace project must keep persisted value, got %q", got.Project)
+	}
+	if got.Enabled {
+		t.Error("explicit enabled=false must survive the merge")
+	}
+
+	// Absent harness section: the persisted section is preserved whole.
+	if _, err := Save(map[string]any{"zen": map[string]any{"baseUrl": "https://other.example"}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	kept := Get().Zen.Harness
+	if kept == nil || kept.Version != "2.0.0" || kept.Enabled || kept.Client != "cli" {
+		t.Errorf("absent harness section must be preserved, got %+v", kept)
+	}
+	if Get().Zen.BaseURL != "https://other.example" {
+		t.Errorf("baseUrl = %q, want %q", Get().Zen.BaseURL, "https://other.example")
+	}
+}
+
+func TestPublicConfig_ZenHarnessPassthrough(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	pub := GetPublicConfig()
+	zenMap, ok := pub["zen"].(map[string]any)
+	if !ok {
+		t.Fatalf("public config has no zen section: %T", pub["zen"])
+	}
+	h, ok := zenMap["harness"].(map[string]any)
+	if !ok {
+		t.Fatalf("public config zen section has no harness: %#v", zenMap)
+	}
+	if h["version"] != "1.18.31" || h["client"] != "cli" || h["project"] != "global" {
+		t.Errorf("harness not passed through: %#v", h)
+	}
+	if _, ok := h["enabled"]; !ok {
+		t.Errorf("harness.enabled missing from public config: %#v", h)
+	}
+}
+
+func TestSave_ZenHarnessTLS(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if Get().Zen.Harness.TLS {
+		t.Fatal("TLS must default to false (opt-in)")
+	}
+
+	if _, err := Save(map[string]any{"zen": map[string]any{
+		"harness": map[string]any{"tls": true},
+	}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !Get().Zen.Harness.TLS {
+		t.Error("tls=true not persisted")
+	}
+
+	// Absent tls key keeps the persisted value; explicit false clears it.
+	if _, err := Save(map[string]any{"zen": map[string]any{
+		"harness": map[string]any{"version": "2.0.0"},
+	}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !Get().Zen.Harness.TLS {
+		t.Error("absent tls key must keep persisted value")
+	}
+	if _, err := Save(map[string]any{"zen": map[string]any{
+		"harness": map[string]any{"tls": false},
+	}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if Get().Zen.Harness.TLS {
+		t.Error("explicit tls=false must survive the merge")
+	}
+}

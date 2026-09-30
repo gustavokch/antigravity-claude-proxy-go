@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go/longrunning v1.2.0
 	github.com/andybalholm/brotli v1.2.0
 	github.com/arkadiyt/protodump v0.0.0-20260627174621-3bb63dd07101
+	github.com/refraction-networking/utls v1.8.2
 	golang.org/x/sys v0.46.0
 	google.golang.org/genproto v0.0.0-20260713224248-f5fc221cf8c4
 	google.golang.org/genproto/googleapis/api v0.0.0-20260706201446-f0a921348800
@@ -15,6 +16,8 @@ require (
 )
 
 require (
+	github.com/klauspost/compress v1.17.4 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )

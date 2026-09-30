@@ -235,3 +235,28 @@ func TestStreamLogsDroppedInterleavedArgs(t *testing.T) {
 		t.Fatalf("no drop logged:\n%s", buf.String())
 	}
 }
+
+func TestChatErrorLogsFreeTierGate(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	gate := `{"error":{"code":403,"message":"FreeTierError: OpenCode's free tier can only be used from within OpenCode"}}`
+	out := chatErrorToAnthropic(http.StatusForbidden, []byte(gate), "mimo-v2.6-flash-free")
+	if !strings.Contains(string(out), "permission_error") || !strings.Contains(string(out), "Zen: ") {
+		t.Fatalf("envelope = %s", out)
+	}
+	if !strings.Contains(buf.String(), "zen free-tier gate rejected request") {
+		t.Fatalf("no gate warning logged:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "model=mimo-v2.6-flash-free") {
+		t.Fatalf("warning missing model attr:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	_ = chatErrorToAnthropic(http.StatusTooManyRequests, []byte(`{"error":{"message":"rate limited"}}`), "glm-5.3")
+	if buf.Len() != 0 {
+		t.Fatalf("unexpected log for non-gate error:\n%s", buf.String())
+	}
+}

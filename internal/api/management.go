@@ -1487,6 +1487,9 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 	resetZenKeylessWarning()
 	server.applyHeadroomConfig(updated.Headroom)
 	server.applyClassifierConfig(updated.Classifier)
+	// Same hook as startup: pushes the OpenRouter routing knobs and the Zen
+	// harness disguise into their live package state.
+	applyRouterConfig(updated)
 
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":  "ok",
@@ -1942,7 +1945,7 @@ func (server *Server) handleOpenRouterConfigSave(writer http.ResponseWriter, req
 			}
 		}
 	}
-	applyRouterConfig(saved.OpenRouter)
+	applyRouterConfig(saved)
 	pub := config.GetPublicConfig()
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status": "ok",

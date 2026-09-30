@@ -578,6 +578,37 @@ Example `config.json`:
 - **max_tokens**: filled, never 400 — client value → allowlist entry
   `maxOutputTokens` → package default 32768. An explicit client value above
   the default is not clamped.
+- **Harness disguise**: OpenCode gates its free-tier models to its own
+  harness (403 `FreeTierError "OpenCode's free tier can only be used from
+  within OpenCode"`). Every Zen-bound request therefore sends the genuine
+  header set by default — `User-Agent: opencode/<version>`,
+  `x-opencode-client`, `x-opencode-project`, and per-request
+  `x-opencode-session` / `x-opencode-request` ids (algorithm ported from the
+  OpenCode client). Configurable via `zen.harness` in `config.json`:
+
+  ```json
+  {
+    "zen": {
+      "harness": {"enabled": true, "version": "1.18.31", "client": "cli", "project": "global"}
+    }
+  }
+  ```
+
+  `OPENCODE_VERSION` / `OPENCODE_CLIENT` env vars override `version` /
+  `client`, mirroring the genuine client's env behavior. Setting `enabled`
+  to `false` disables the disguise entirely. A gate response is logged
+  (`zen free-tier gate rejected request`) so a failed disguise is visible in
+  the proxy log.
+- **TLS caveat**: headers alone are not enough — the gate also fingerprints
+  the TLS handshake (genuine client is Bun/BoringSSL; every third-party
+  stack has been rejected since Sep 2026). `"harness": {"tls": true}` opts
+  zen-bound connections (forward, models, CCR, cache-bump replay) into a
+  utls ClientHello replayed from the captured genuine opencode hello
+  (`internal/zen/tls.go`, JA3 `1523504b38f0fae0d881d4b6554aac1b`). It is
+  **off by default** because it trades the repo's "normal Go TLS client"
+  rule for fingerprint parity — enable it per host after verifying. The
+  escape hatch is a paid Zen key: keyed access may bypass the free-tier
+  gate entirely, so no spoofing is needed at all.
 
 ---
 

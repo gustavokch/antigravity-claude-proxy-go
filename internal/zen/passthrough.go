@@ -78,11 +78,22 @@ func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, 
 			if ab := r.Header.Get("anthropic-beta"); ab != "" {
 				req.Header.Set("anthropic-beta", ab)
 			}
+
+			// Claim the genuine OpenCode harness identity; the incoming
+			// client's UA (claude-cli/…) is overwritten on purpose.
+			ApplyHarnessHeaders(req)
 		},
 		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, proxyErr error) {
 			slog.Default().Error("zen upstream proxy error", "error", proxyErr, "url", target.String())
 			writeAPIError(rw, http.StatusBadGateway, "api_error", "Zen upstream error: "+proxyErr.Error())
 		},
+	}
+
+	// utls Bun handshake when the TLS disguise is on; unset keeps the
+	// ReverseProxy default transport (a typed-nil *http.Transport would
+	// panic in RoundTrip).
+	if tr := GetTLSConfig().Transport(); tr != nil {
+		proxy.Transport = tr
 	}
 
 	proxy.ServeHTTP(w, r)
