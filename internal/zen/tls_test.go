@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 // spyTransport records whether the client carrying it served a request.
@@ -59,6 +61,43 @@ func TestBunSpecFromCapture(t *testing.T) {
 	}
 	if len(spec.Extensions) != 13 {
 		t.Errorf("extensions = %d, want 13", len(spec.Extensions))
+	}
+	if alpn := specALPN(spec); len(alpn) != 1 || alpn[0] != "http/1.1" {
+		t.Errorf("captured ALPN = %v, want [http/1.1]", alpn)
+	}
+	if err := validateSpecALPN(spec); err != nil {
+		t.Errorf("captured hello rejected: %v", err)
+	}
+}
+
+// TestValidateSpecALPN: the replayed hello must offer exactly http/1.1 —
+// JA4 counts ALPN protocols instead of naming them, so an h2 capture would
+// pass the fingerprint gate while the custom-dial path cannot serve HTTP/2.
+func TestValidateSpecALPN(t *testing.T) {
+	cases := []struct {
+		name    string
+		alpn    []string
+		wantErr bool
+	}{
+		{"http11 only", []string{"http/1.1"}, false},
+		{"h2 offered", []string{"h2", "http/1.1"}, true},
+		{"h2 only", []string{"h2"}, true},
+		{"absent", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &utls.ClientHelloSpec{}
+			if tc.alpn != nil {
+				spec.Extensions = []utls.TLSExtension{&utls.ALPNExtension{AlpnProtocols: tc.alpn}}
+			}
+			err := validateSpecALPN(spec)
+			if tc.wantErr && err == nil {
+				t.Errorf("ALPN %v: want error, got nil", tc.alpn)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("ALPN %v: %v", tc.alpn, err)
+			}
+		})
 	}
 }
 

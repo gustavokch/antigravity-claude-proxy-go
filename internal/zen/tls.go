@@ -43,11 +43,39 @@ func bunHelloSpec() (*utls.ClientHelloSpec, error) {
 	specOnce.Do(func() {
 		fp := &utls.Fingerprinter{}
 		bunSpec, specErr = fp.RawClientHello(opencodeClientHello)
+		if specErr == nil && bunSpec != nil {
+			if alpnErr := validateSpecALPN(bunSpec); alpnErr != nil {
+				bunSpec, specErr = nil, alpnErr
+			}
+		}
 		if specErr != nil {
 			slog.Error("zen tls: captured opencode ClientHello cannot be fingerprinted; TLS disguise unavailable", "error", specErr)
 		}
 	})
 	return bunSpec, specErr
+}
+
+// specALPN returns the ALPN protocols the replayed hello will offer.
+func specALPN(spec *utls.ClientHelloSpec) []string {
+	for _, ext := range spec.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			return alpn.AlpnProtocols
+		}
+	}
+	return nil
+}
+
+// validateSpecALPN rejects a captured ClientHello whose ALPN list is not
+// exactly ["http/1.1"]. JA4 encodes the ALPN count, not the protocols, so a
+// regenerated capture advertising h2 would pass the fingerprint gate while
+// net/http's custom-dial path has no HTTP/2 handler — every request would
+// hang. A mismatch leaves the disguise unavailable instead of broken.
+func validateSpecALPN(spec *utls.ClientHelloSpec) error {
+	alpn := specALPN(spec)
+	if len(alpn) != 1 || alpn[0] != "http/1.1" {
+		return fmt.Errorf("captured ClientHello offers ALPN %v, want [http/1.1]", alpn)
+	}
+	return nil
 }
 
 // SetTLSConfig replaces the live TLS disguise configuration. Safe for
