@@ -2064,11 +2064,12 @@ func resetZenKeylessWarning() { zenKeylessWarned.Store(false) }
 // prefix (case-insensitive) is stripped from both sides before compare, so
 // `opencode/claude-sonnet-4-6` matches allowlist id `claude-sonnet-4-6`.
 //
-// Only entries the route can actually serve claim it: the entry ID must be in
-// the Anthropic-wire subset and a key must resolve. Anything else falls
-// through to Claude Code / OpenRouter / CloudCode. A keyless config with
-// enabled entries emits a one-shot slog.Warn (re-armed on config change)
-// instead of failing the request.
+// Only entries the route can actually serve claim it: the entry ID must be
+// forwardable (zen.IsForwardable: Anthropic, Chat Completions or Responses
+// wire) and a key must resolve. Anything else falls through to Claude Code /
+// OpenRouter / CloudCode. A keyless config with enabled entries emits a
+// one-shot slog.Warn (re-armed on config change) instead of failing the
+// request.
 func matchZenModelEntry(cfg config.ZenConfig, model string) (config.ZenModelConfig, bool) {
 	if strings.TrimSpace(model) == "" {
 		return config.ZenModelConfig{}, false

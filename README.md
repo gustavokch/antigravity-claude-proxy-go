@@ -577,7 +577,7 @@ faithful Anthropic Messages mapping. A `jev-*` id therefore stays
 non-forwardable for `POST /v1/messages`; use the systemone route for it.
 
 Still out of scope: `/zen/v1/models/<gemini-id>` (Gemini-native), which
-has no Anthropic Messages mapping. The forwardable subsets are static
+is not implemented. The forwardable subsets are static
 lists in code (`internal/zen`) because the Zen catalog carries no
 wire-format field; when OpenCode adds a model with an `@ai-sdk/anthropic`
 or OpenAI-compatible docs row, open an issue so the lists can grow. A stale
@@ -769,6 +769,7 @@ All `/v1/*` routes accept authentication via `x-api-key` or `Authorization: Bear
 | `/v1/usage` | `GET` | Quota usage per model and grouped quota reset windows |
 | `/v1/messages` | `POST` | Anthropic-compliant messages API (supports streaming SSE) |
 | `/v1/messages/count_tokens` | `POST` | Token counting endpoint (`501 Not Implemented`) |
+| `/v1/systemone` | `POST` | Zen Jev systemone passthrough: body forwarded unchanged (needs `zen.enabled` and a Zen key) |
 | `/api/accounts` | `GET` | List account pool with tiers, quotas, and health scores |
 | `/api/accounts/{email}` | `DELETE`/`PATCH` | Remove account or update quota thresholds |
 | `/api/accounts/{email}/refresh` | `POST` | Clear token caches and re-verify upstream access |

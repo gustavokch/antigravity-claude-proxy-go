@@ -587,7 +587,7 @@ window.translations.pt = {
     zenDiscoverTitle: "Descobrir Modelos Zen",
     zenDiscoverDesc: "Buscar o catálogo de modelos da API Zen. Modelos Anthropic são encaminhados diretamente; modelos Chat Completions e Responses são traduzidos; outros formatos estão marcados como inutilizáveis.",
     zenDiscoverImport: "Importar",
-    zenDiscoverUnusable: "Não é uma API de /v1/messages — não encaminhável",
+    zenDiscoverUnusable: "API não suportada — não encaminhável",
     zenNotAnthropicWire: "Não é um modelo Zen encaminhável (API Anthropic, Chat Completions ou Responses) — esta entrada não pode ser encaminhada.",
     zenWireUnverified: "Formato de API não verificado — confirme via Descobrir Modelos.",
     zenLimits: "Limites",
