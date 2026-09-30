@@ -237,8 +237,9 @@ func TestRouter_PrefixDoesNotCrossVersionBoundary(t *testing.T) {
 		"claude-sonnet-5.5",
 		"claude-sonnet-5-5-20260101",
 		"claude-sonnet-50",
-		"sonnet-5-5", // alias prefix "sonnet-5"
-		"opus-4-6",   // alias prefix "opus" must not serve opus-5 for opus-4-6
+		"claude-sonnet-5-123", // three digits is still a version component
+		"sonnet-5-5",          // alias prefix "sonnet-5"
+		"opus-4-6",            // alias prefix "opus" must not serve opus-5 for opus-4-6
 	} {
 		if got, ok := r.ResolveModel(req); ok {
 			t.Errorf("ResolveModel(%q) = %q, true; want no match", req, got)
@@ -248,6 +249,7 @@ func TestRouter_PrefixDoesNotCrossVersionBoundary(t *testing.T) {
 	// Suffixes that do not start a new version component still resolve.
 	for req, want := range map[string]string{
 		"claude-sonnet-5-20260101":  "claude-sonnet-5", // dated build stamp
+		"claude-sonnet-5-2026":      "claude-sonnet-5", // four digits is a stamp, not a version
 		"claude-sonnet-5[1m]":       "claude-sonnet-5", // context-window marker
 		"sonnet-3-5-custom-build":   "claude-3-5-sonnet-20241022",
 		"claude-haiku-4-5-20251101": "claude-haiku-4-5-20251001",
