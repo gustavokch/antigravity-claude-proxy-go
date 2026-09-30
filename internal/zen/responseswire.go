@@ -27,6 +27,9 @@ import (
 // stop_sequences, thinking, and top_k. max_tokens becomes max_output_tokens; sampling
 // parameters pass through unchanged.
 //
+// The body always carries "store": false so the upstream does not retain the
+// conversation; see the comment at the assignment for why that is safe.
+//
 // The second result maps upstream tool names back to the client's names for
 // response translation; nil when no rename occurred. The third result names
 // the gate tool definitions that were injected because the client never
@@ -71,6 +74,12 @@ func anthropicToResponsesRequest(req map[string]any) (map[string]any, map[string
 	// stop_sequences and thinking have no Responses equivalent and are
 	// deliberately dropped rather than approximated.
 	out["stream"] = true
+	// store is explicit because the Responses API retains every response
+	// server-side by default. The replay is stateless (whole conversation each
+	// turn, no previous_response_id, no item ids), so the stored copy is never
+	// read, and the genuine OpenCode harness sends store:false for every model
+	// on this wire. out is an allowlist, so no client field can switch it on.
+	out["store"] = false
 
 	// toolsToChat and ensureGateTools already produce the exact tool set the
 	// gate demands; the mapping is a shape change only (Responses tools are

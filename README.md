@@ -560,6 +560,12 @@ served by OpenCode's `/zen/v1/responses` endpoint:
 `stop_sequences`, `thinking`, and `top_k` have no Responses equivalent and are dropped
 rather than approximated; `max_tokens` becomes `max_output_tokens`.
 
+Every translated Responses request carries `"store": false`: the Responses API
+retains responses by default, the proxy replays the whole conversation each
+turn so nothing reads the stored copy, and the genuine OpenCode client sends
+the same flag for these models. A `store` field in the incoming Anthropic body
+is ignored.
+
 `/zen/v1/systemone` (Jev) is served as a transparent passthrough on a
 dedicated route, `POST /v1/systemone` — the request body
 (`{model, state, questions}`) is forwarded unchanged, because it has no

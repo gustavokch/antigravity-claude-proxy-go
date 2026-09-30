@@ -239,6 +239,75 @@ func TestAnthropicToResponsesRequest_DropsUnsupportedFields(t *testing.T) {
 	}
 }
 
+// The Responses API retains every response server-side unless told otherwise,
+// and the genuine OpenCode harness sends store:false for every model on this
+// wire. store must be an explicit false, and because the body is built from an
+// allowlist a client-supplied value must never reach the wire.
+func TestAnthropicToResponsesRequest_DisablesStorage(t *testing.T) {
+	cases := []struct {
+		name string
+		req  map[string]any
+	}{
+		{
+			name: "field absent",
+			req: map[string]any{
+				"model":    "gpt-5",
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			},
+		},
+		{
+			name: "client asks for store true",
+			req: map[string]any{
+				"model":    "gpt-5",
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+				"store":    true,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _, _ := anthropicToResponsesRequest(tc.req)
+			v, present := out["store"]
+			if !present {
+				t.Fatalf("store missing from the upstream body (OpenAI stores by default): %s", mustJSON(t, out))
+			}
+			if v != false {
+				t.Errorf("store = %v (%T), want the boolean false", v, v)
+			}
+		})
+	}
+}
+
+// store:false is only safe because the replay is stateless: every turn resends
+// the whole conversation, no replayed item references a stored id, and the
+// body never chains on previous_response_id. An item carrying an id would make
+// the upstream look it up and fail with "Item with id ... not found" once
+// storage is off - an error that reads like a ban, not a bug.
+func TestAnthropicToResponsesRequest_ReplayIsStateless(t *testing.T) {
+	out, _, _ := anthropicToResponsesRequest(map[string]any{
+		"model": "gpt-5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "text", "text": "checking"},
+				map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": map[string]any{"command": "ls"}},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "a.txt"},
+			}},
+		},
+	})
+	if _, ok := out["previous_response_id"]; ok {
+		t.Error("previous_response_id must never be sent: the stored response it names does not exist with store:false")
+	}
+	for _, raw := range responsesInputItems(t, out) {
+		item, _ := raw.(map[string]any)
+		if _, ok := item["id"]; ok {
+			t.Errorf("replayed input item carries an id the upstream never stored: %s", mustJSON(t, item))
+		}
+	}
+}
+
 func mustJSON(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
