@@ -656,7 +656,11 @@ func (s *responsesStream) handle(event map[string]any) error {
 				case "content_filter":
 					s.stop = "refusal"
 				case "max_output_tokens":
-					s.stop = "max_tokens"
+					// A refusal outranks the output cap, as in
+					// responsesStopReason: the client must see the decline.
+					if s.stop != "refusal" {
+						s.stop = "max_tokens"
+					}
 				}
 			}
 		}

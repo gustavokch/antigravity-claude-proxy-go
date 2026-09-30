@@ -1619,3 +1619,91 @@ func TestStreamResponsesToAnthropic_DoesNotRepeatDeliveredText(t *testing.T) {
 		t.Errorf("client text = %q, want %q", text.String(), "hello world")
 	}
 }
+
+// anthropicEvents decodes the data: frames of an Anthropic SSE stream in order.
+func anthropicEvents(t *testing.T, raw string) []map[string]any {
+	t.Helper()
+	var events []map[string]any
+	for _, line := range strings.Split(raw, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		events = append(events, ev)
+	}
+	return events
+}
+
+// streamStopReason returns the stop_reason the streaming emitter reports.
+func streamStopReason(t *testing.T, upstream string) string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(upstream), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	for _, ev := range anthropicEvents(t, out.String()) {
+		if ev["type"] == "message_delta" {
+			delta, _ := ev["delta"].(map[string]any)
+			reason, _ := delta["stop_reason"].(string)
+			return reason
+		}
+	}
+	t.Fatalf("no message_delta in stream:\n%s", out.String())
+	return ""
+}
+
+// aggregateStopReason returns the stop_reason a non-streaming client gets for
+// the same upstream events.
+func aggregateStopReason(t *testing.T, upstream string) string {
+	t.Helper()
+	agg, err := aggregateResponsesStream(strings.NewReader(upstream))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	reason, _ := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)["stop_reason"].(string)
+	return reason
+}
+
+// Both directions translate the same upstream events, so they must agree on
+// why the turn stopped; a refusal outranks every other reason.
+func TestResponsesStopReasonAgreesAcrossDirections(t *testing.T) {
+	const (
+		created   = `data: {"type":"response.created","response":{"id":"resp_p"}}`
+		message   = `data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`
+		text      = `data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`
+		refusal   = `data: {"type":"response.refusal.delta","output_index":0,"delta":"no"}`
+		call      = `data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"bash","arguments":""}}`
+		callArgs  = `data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{}"}`
+		completed = `data: {"type":"response.completed","response":{"id":"resp_p"}}`
+		truncated = `data: {"type":"response.incomplete","response":{"id":"resp_p","incomplete_details":{"reason":"max_output_tokens"}}}`
+		filtered  = `data: {"type":"response.incomplete","response":{"id":"resp_p","incomplete_details":{"reason":"content_filter"}}}`
+	)
+	for _, tc := range []struct {
+		name   string
+		events []string
+		want   string
+	}{
+		{"plain text", []string{created, message, text, completed}, "end_turn"},
+		{"output cap", []string{created, message, text, truncated}, "max_tokens"},
+		{"content filter", []string{created, message, text, filtered}, "refusal"},
+		{"refusal part", []string{created, message, refusal, completed}, "refusal"},
+		{"refusal then output cap", []string{created, message, refusal, truncated}, "refusal"},
+		{"tool call", []string{created, call, callArgs, completed}, "tool_use"},
+		{"tool call cut by output cap", []string{created, call, callArgs, truncated}, "max_tokens"},
+		{"refusal beside a tool call", []string{created, message, refusal, call, callArgs, completed}, "refusal"},
+		{"content filter beside a tool call", []string{created, call, callArgs, filtered}, "refusal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := strings.Join(tc.events, "\n\n") + "\n\n"
+			if got := streamStopReason(t, upstream); got != tc.want {
+				t.Errorf("stream stop_reason = %q, want %q", got, tc.want)
+			}
+			if got := aggregateStopReason(t, upstream); got != tc.want {
+				t.Errorf("aggregate stop_reason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
