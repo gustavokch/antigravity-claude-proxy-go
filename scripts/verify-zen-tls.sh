@@ -59,11 +59,7 @@ rm -f "$PCAP_FILE"
 
 echo "=== 1. Building proxy (output outside repo) ==="
 PROXY_BIN="$OUT_DIR/zen-verify-proxy"
-if [ -x bin/proxy ]; then
-  cp bin/proxy "$PROXY_BIN"
-else
-  go build -o "$PROXY_BIN" ./cmd/proxy
-fi
+go build -o "$PROXY_BIN" ./cmd/proxy
 
 echo "=== 2. Preparing throwaway config (harness.tls=true) ==="
 CFG_DIR="$(mktemp -d "$OUT_DIR/cfg.XXXXXX")"
@@ -177,7 +173,7 @@ echo "JA3:  $JA3_MD5"
 echo "want: $EXPECTED_JA3"
 
 [ "$SNI" = "opencode.ai" ] || fail "SNI = $SNI, want opencode.ai"
-[ "$ALPN" = "http/1.1" ] || echo "note: ALPN = $ALPN, expected http/1.1" >&2
+[ "$ALPN" = "http/1.1" ] || fail "ALPN = $ALPN, want http/1.1"
 [ "$JA4" = "$EXPECTED_JA4" ] || fail "JA4 mismatch: got $JA4, want $EXPECTED_JA4"
 [ "$JA3_MD5" = "$EXPECTED_JA3" ] || fail "JA3 mismatch: got $JA3_MD5, want $EXPECTED_JA3"
 
