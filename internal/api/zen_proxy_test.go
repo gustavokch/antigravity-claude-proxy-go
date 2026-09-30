@@ -829,7 +829,7 @@ func TestServer_ForwardToZen_ResponsesWireCCRHydrates(t *testing.T) {
 				``,
 				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":` + string(argStr) + `}`,
 				``,
-				`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_r","name":"headroom_retrieve","arguments":` + string(args) + `}}`,
+				`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_r","name":"headroom_retrieve","arguments":` + string(argStr) + `}}`,
 				``,
 				`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":5,"output_tokens":2}}}`,
 				``,
