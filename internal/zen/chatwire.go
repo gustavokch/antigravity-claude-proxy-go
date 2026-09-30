@@ -27,7 +27,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	if err := json.Unmarshal(anthropicBody, &req); err != nil {
 		return nil, fmt.Errorf("parse anthropic request: %w", err)
 	}
-	chatReq, toolNames := anthropicToChatRequest(req)
+	chatReq, toolNames, injected := anthropicToChatRequest(req)
 	payload, err := json.Marshal(chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal chat request: %w", err)
@@ -50,7 +50,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 		return nil, err
 	}
 	model, _ := chatReq["model"].(string)
-	return translateChatResponse(resp, model, clientStream, toolNames), nil
+	return translateChatResponse(resp, model, clientStream, toolNames, injected), nil
 }
 
 // ForwardChat is the non-CCR entry point: SendChat, then copy the translated
@@ -110,8 +110,11 @@ func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string,
 //     renamed; missing ones get the captured OpenCode definitions injected.
 //
 // The second result maps upstream tool names back to the client's names for
-// response translation; nil when no rename occurred.
-func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]string) {
+// response translation; nil when no rename occurred. The third result names
+// the gate tool definitions that were injected because the client never
+// declared them — a tool_call for one has no client-side tool to resolve to
+// and must be dropped from the response.
+func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]string, map[string]bool) {
 	renames := buildToolRenames(req["tools"])
 	model, _ := req["model"].(string)
 	out := map[string]any{"model": StripOpencodePrefix(model)}
@@ -149,7 +152,8 @@ func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]stri
 	}
 	out["stream"] = true
 	out["stream_options"] = map[string]any{"include_usage": true}
-	out["tools"] = ensureGateTools(toolsToChat(req["tools"], renames))
+	gateTools, injected := ensureGateTools(toolsToChat(req["tools"], renames))
+	out["tools"] = gateTools
 	if tc := toolChoiceToChat(req["tool_choice"], renames); tc != nil {
 		out["tool_choice"] = tc
 	}
@@ -161,7 +165,7 @@ func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]stri
 			rev[upstream] = client
 		}
 	}
-	return out, rev
+	return out, rev, injected
 }
 
 func systemText(v any) string {
@@ -415,8 +419,10 @@ func renameTool(renames map[string]string, name string) string {
 
 // ensureGateTools appends the captured OpenCode definition for any of the two
 // gate-required function names missing from tools (case-insensitive), so the
-// upstream body always carries "bash" and "read".
-func ensureGateTools(tools []any) []any {
+// upstream body always carries "bash" and "read". The second result names
+// the definitions it added — those tools exist only for the gate, so the
+// client cannot resolve a tool_call against them.
+func ensureGateTools(tools []any) ([]any, map[string]bool) {
 	seen := make(map[string]bool, len(tools))
 	for _, t := range tools {
 		fn, ok := t.(map[string]any)["function"].(map[string]any)
@@ -426,20 +432,22 @@ func ensureGateTools(tools []any) []any {
 		name, _ := fn["name"].(string)
 		seen[strings.ToLower(name)] = true
 	}
+	injected := make(map[string]bool)
 	for _, name := range []string{"bash", "read"} {
 		if seen[name] {
 			continue
 		}
 		if def := gateToolDef(name); def != nil {
 			tools = append(tools, map[string]any{"type": "function", "function": def})
+			injected[name] = true
 		}
 	}
-	return tools
+	return tools, injected
 }
 
 // --- Response translation ---
 
-func translateChatResponse(resp *http.Response, model string, clientStream bool, toolNames map[string]string) *http.Response {
+func translateChatResponse(resp *http.Response, model string, clientStream bool, toolNames map[string]string, injected map[string]bool) *http.Response {
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
@@ -451,7 +459,7 @@ func translateChatResponse(resp *http.Response, model string, clientStream bool,
 			upstream := resp.Body
 			go func() {
 				defer upstream.Close()
-				pw.CloseWithError(streamChatToAnthropic(upstream, pw, model, toolNames))
+				pw.CloseWithError(streamChatToAnthropic(upstream, pw, model, toolNames, injected))
 			}()
 			resp.Body = pr
 			resp.ContentLength = -1
@@ -469,7 +477,7 @@ func translateChatResponse(resp *http.Response, model string, clientStream bool,
 		if err != nil {
 			return failResponse(resp, "Zen stream error: "+err.Error())
 		}
-		out, _ := json.Marshal(ChatResponseToAnthropic(chat, model, toolNames))
+		out, _ := json.Marshal(ChatResponseToAnthropic(chat, model, toolNames, injected))
 		return rebody(resp, "application/json", out)
 	}
 	raw, err := io.ReadAll(resp.Body)
@@ -481,7 +489,7 @@ func translateChatResponse(resp *http.Response, model string, clientStream bool,
 	if err := json.Unmarshal(raw, &chat); err != nil {
 		return failResponse(resp, "Zen returned non-JSON chat response")
 	}
-	out, _ := json.Marshal(ChatResponseToAnthropic(chat, model, toolNames))
+	out, _ := json.Marshal(ChatResponseToAnthropic(chat, model, toolNames, injected))
 	return rebody(resp, "application/json", out)
 }
 
@@ -600,10 +608,14 @@ func messageID(chatID any) string {
 
 // ChatResponseToAnthropic converts a non-streaming Chat Completions response
 // into an Anthropic Messages response. toolNames maps upstream tool names
-// back to the client's names (nil when no rename occurred).
-func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[string]string) map[string]any {
+// back to the client's names (nil when no rename occurred); injected names
+// the gate tools ensureGateTools added, whose tool_calls are dropped — the
+// client never declared them, so a tool_use block for one would carry an
+// unresolvable name.
+func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[string]string, injected map[string]bool) map[string]any {
 	content := make([]any, 0, 2)
 	stop := "end_turn"
+	emittedCalls := 0
 	if choices, _ := chat["choices"].([]any); len(choices) > 0 {
 		choice, _ := choices[0].(map[string]any)
 		msg, _ := choice["message"].(map[string]any)
@@ -619,19 +631,28 @@ func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[st
 			fn, _ := call["function"].(map[string]any)
 			args, _ := fn["arguments"].(string)
 			name, _ := fn["name"].(string)
+			if injected[name] {
+				continue
+			}
 			content = append(content, map[string]any{
 				"type":  "tool_use",
 				"id":    call["id"],
 				"name":  renameTool(toolNames, name),
 				"input": parseArgs(args),
 			})
+			emittedCalls++
 		}
 		fr, _ := choice["finish_reason"].(string)
 		stop = mapFinishReason(fr)
 		// Some backends report "stop" on tool-call turns; promote only a
 		// normal end. "length" means the arguments were truncated.
-		if len(calls) > 0 && stop == "end_turn" {
+		if emittedCalls > 0 && stop == "end_turn" {
 			stop = "tool_use"
+		}
+		// Every call was dropped as gate-injected: claiming tool_use with
+		// no tool_use block would make the client wait for one.
+		if emittedCalls == 0 && stop == "tool_use" {
+			stop = "end_turn"
 		}
 	}
 	usage, _ := chat["usage"].(map[string]any)
@@ -810,9 +831,10 @@ func aggregateChatStream(r io.Reader) (map[string]any, error) {
 // streamChatToAnthropic reads OpenAI chat.completion.chunk SSE from r and
 // writes the equivalent Anthropic Messages SSE event sequence to w. toolNames
 // maps upstream tool names back to the client's names (nil when no rename
-// occurred).
-func streamChatToAnthropic(r io.Reader, w io.Writer, model string, toolNames map[string]string) error {
-	s := &chatStream{w: w, model: model, current: -1, toolBlocks: map[int]int{}, toolNames: toolNames}
+// occurred); injected names the gate tools the client never declared, whose
+// calls are dropped before any content block opens.
+func streamChatToAnthropic(r io.Reader, w io.Writer, model string, toolNames map[string]string, injected map[string]bool) error {
+	s := &chatStream{w: w, model: model, current: -1, toolBlocks: map[int]int{}, toolNames: toolNames, injected: injected, dropped: map[int]bool{}}
 	done := false
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -855,6 +877,8 @@ type chatStream struct {
 	w          io.Writer
 	model      string
 	toolNames  map[string]string // upstream → client tool names, may be nil
+	injected   map[string]bool   // gate-only tool names, may be nil
+	dropped    map[int]bool      // call indexes skipped as gate-injected
 	started    bool
 	failed     bool
 	nextIndex  int
@@ -968,6 +992,9 @@ func (s *chatStream) handle(chunk map[string]any) error {
 			callIdx = toInt(call["index"])
 		}
 		fn, _ := call["function"].(map[string]any)
+		if s.dropped[callIdx] {
+			continue
+		}
 		blockIdx, known := s.toolBlocks[callIdx]
 		if !known {
 			id, _ := call["id"].(string)
@@ -975,6 +1002,14 @@ func (s *chatStream) handle(chunk map[string]any) error {
 				id = "call_" + strconv.Itoa(callIdx)
 			}
 			name, _ := fn["name"].(string)
+			if s.injected[name] {
+				// Gate-injected tool the client never declared: opening a
+				// tool_use block would hand it an unresolvable name.
+				s.dropped[callIdx] = true
+				slog.Debug("zen chat stream: dropping call to gate-injected tool",
+					"callIndex", callIdx, "tool", name)
+				continue
+			}
 			if err := s.openBlock("tool", map[string]any{"type": "tool_use", "id": id, "name": renameTool(s.toolNames, name), "input": map[string]any{}}); err != nil {
 				return err
 			}
@@ -1013,6 +1048,11 @@ func (s *chatStream) finish() error {
 	}
 	if len(s.toolBlocks) > 0 && stop == "end_turn" {
 		stop = "tool_use"
+	}
+	// Every tool call was dropped as gate-injected: claiming tool_use with
+	// no tool_use block would make the client wait for one.
+	if len(s.toolBlocks) == 0 && stop == "tool_use" {
+		stop = "end_turn"
 	}
 	if err := s.emit("message_delta", map[string]any{
 		"type":  "message_delta",

@@ -144,7 +144,7 @@ func TestChatResponseToolCallStopReason(t *testing.T) {
 				"id": "x", "function": map[string]any{"name": "Write", "arguments": `{"path":"/tmp/a","content":"trunc`},
 			}}},
 			"finish_reason": finish,
-		}}}, "m", nil)
+		}}}, "m", nil, nil)
 	}
 	if got := resp("length")["stop_reason"]; got != "max_tokens" {
 		t.Errorf("length + tool_calls: stop_reason = %v, want max_tokens", got)
@@ -185,7 +185,7 @@ func TestStreamTerminationRequiresMarker(t *testing.T) {
 	}
 	for _, c := range cases {
 		var out bytes.Buffer
-		if err := streamChatToAnthropic(strings.NewReader(c.in), &out, "m", nil); err != nil {
+		if err := streamChatToAnthropic(strings.NewReader(c.in), &out, "m", nil, nil); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 		s := out.String()
@@ -241,7 +241,7 @@ func TestStreamLogsDroppedInterleavedArgs(t *testing.T) {
 		"data: {\"id\":\"c\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\n\n" +
 		"data: [DONE]\n\n"
 	var out bytes.Buffer
-	if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil); err != nil {
+	if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "dropping interleaved tool_call arguments") {
@@ -320,16 +320,14 @@ func TestSendChatForcesStreamAndAggregatesJSON(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
 		t.Fatal(err)
 	}
+	// The client declared no tools, so bash/read were injected for the gate:
+	// the upstream bash call must not come back as a tool_use block.
 	content := msg["content"].([]any)
-	if msg["stop_reason"] != "tool_use" || len(content) != 2 {
-		t.Fatalf("message = %v", msg)
+	if msg["stop_reason"] != "end_turn" || len(content) != 1 {
+		t.Fatalf("message = %v, want end_turn with the injected bash call dropped", msg)
 	}
 	if content[0].(map[string]any)["text"] != "hi there" {
 		t.Fatalf("text block = %v", content[0])
-	}
-	toolUse := content[1].(map[string]any)
-	if toolUse["name"] != "bash" || toolUse["input"].(map[string]any)["command"] != "ls" {
-		t.Fatalf("tool_use = %v", toolUse)
 	}
 	if usage := msg["usage"].(map[string]any); toInt(usage["input_tokens"]) != 9 || toInt(usage["output_tokens"]) != 3 {
 		t.Fatalf("usage = %v", usage)
@@ -402,5 +400,70 @@ func TestSendChatNonStreamTruncatedStreamFails(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(b), "stream ended before completion") {
 		t.Fatalf("got %d %s, want 502 truncated-stream error", resp.StatusCode, b)
+	}
+}
+
+// The gate-injected "bash"/"read" definitions the client never declared must
+// not come back as tool_use blocks: Claude Code errors on an unknown tool
+// name, and the reverse-rename map only covers real renames.
+func TestSendChatDropsInjectedToolCallNonStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"c1","choices":[{"message":{"content":"ok","tool_calls":[
+			{"id":"call_a","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}},
+			{"id":"call_b","function":{"name":"read","arguments":"{\"p\":1}"}}]},
+			"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`)
+	}))
+	defer srv.Close()
+
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k",
+		[]byte(`{"model":"mimo-v2.6-flash-free","messages":[{"role":"user","content":"q"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range msg["content"].([]any) {
+		if block.(map[string]any)["type"] == "tool_use" {
+			t.Fatalf("gate-injected tool surfaced as tool_use: %v", block)
+		}
+	}
+	// No tool_use block survived, so stop_reason must not claim one.
+	if msg["stop_reason"] != "end_turn" {
+		t.Fatalf("stop_reason = %v, want end_turn with every call dropped", msg["stop_reason"])
+	}
+}
+
+// Same drop on the streaming path: no tool_use content block opens for a
+// gate-injected tool, and later argument fragments for it are ignored.
+func TestSendChatDropsInjectedToolCallStreaming(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\"}}]}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ls}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k",
+		[]byte(`{"model":"mimo-v2.6-flash-free","stream":true,"messages":[{"role":"user","content":"q"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	s := string(out)
+	if strings.Contains(s, `"type":"tool_use"`) {
+		t.Errorf("gate-injected tool surfaced in stream:\n%s", s)
+	}
+	if strings.Contains(s, "input_json_delta") {
+		t.Errorf("arguments for a dropped call were forwarded:\n%s", s)
+	}
+	if !strings.Contains(s, `"stop_reason":"end_turn"`) {
+		t.Errorf("stream stop_reason not end_turn:\n%s", s)
+	}
+	if !strings.Contains(s, "event: message_stop") {
+		t.Errorf("stream not finished:\n%s", s)
 	}
 }
