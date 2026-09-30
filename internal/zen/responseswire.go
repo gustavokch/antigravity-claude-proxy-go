@@ -1,7 +1,10 @@
 package zen
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -438,4 +441,84 @@ func translateResponsesResponse(resp *http.Response, model string, clientStream 
 	}
 	out, _ := json.Marshal(ResponsesResponseToAnthropic(rn, model, toolNames, injected))
 	return rebody(resp, "application/json", out)
+}
+
+// SendResponses serves an Anthropic Messages request against a Zen
+// Responses-wire model: the Anthropic body is translated to an OpenAI
+// /v1/responses body, posted to Zen, and the upstream response is returned
+// rewritten into the Anthropic shape (JSON body, SSE event stream, or
+// Anthropic error envelope). The returned response is therefore
+// indistinguishable from a /v1/messages answer, so callers reuse their
+// Anthropic handling (CCR hydration, usage interception) unchanged.
+func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte) (*http.Response, error) {
+	var req map[string]any
+	if err := json.Unmarshal(anthropicBody, &req); err != nil {
+		return nil, fmt.Errorf("parse anthropic request: %w", err)
+	}
+	responsesReq, toolNames, injected := anthropicToResponsesRequest(req)
+	payload, err := json.Marshal(responsesReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal responses request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, NormalizeBaseURL(baseURL)+"/v1/responses", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	clientStream, _ := req["stream"].(bool)
+	if clientStream {
+		httpReq.Header.Set("Accept", "text/event-stream")
+	} else {
+		httpReq.Header.Set("Accept", "*/*")
+	}
+	ApplyHarnessHeaders(httpReq)
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	model, _ := responsesReq["model"].(string)
+	return translateResponsesResponse(resp, model, clientStream, toolNames, injected), nil
+}
+
+// ForwardResponses is the non-CCR entry point: SendResponses, then copy the
+// translated response to w (flushing per write so SSE stays incremental).
+// modify runs on the translated response before any byte is written, mirroring
+// ForwardMessagesWithModify.
+func ForwardResponses(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
+	resp, err := SendResponses(r.Context(), TLSClient(), baseURL, apiKey, body)
+	if err != nil {
+		slog.Default().Error("zen responses upstream error", "error", err)
+		writeAPIError(w, http.StatusBadGateway, "api_error", "Zen upstream error: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if modify != nil {
+		if err := modify(resp); err != nil {
+			writeAPIError(w, http.StatusBadGateway, "api_error", "Zen response handling error: "+err.Error())
+			return
+		}
+	}
+	for _, h := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
+		if v := resp.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
 }

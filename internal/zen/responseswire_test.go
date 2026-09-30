@@ -3,6 +3,7 @@ package zen
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -1065,5 +1066,222 @@ func TestAggregateResponsesStream_FunctionCallWithoutItemDone(t *testing.T) {
 	}
 	if input, _ := tool["input"].(map[string]any); input["command"] != "ls" {
 		t.Errorf("tool input = %s, want the argument deltas joined", mustJSON(t, tool["input"]))
+	}
+}
+
+// A non-streaming client produces a Responses request with "stream": true and
+// a bare gate tool set, and gets the upstream stream folded back into one
+// Anthropic JSON message.
+func TestSendResponses_NonStreamClientGetsJSON(t *testing.T) {
+	var gotPath, gotAuth, gotAccept, gotUA string
+	var gotBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth, gotAccept = r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Accept")
+		gotUA = r.Header.Get("User-Agent")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+			``,
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"pong"}`,
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":4,"output_tokens":2}}}`,
+			``,
+		}, "\n"))
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"ping"}],"max_tokens":64,"stream":false}`)
+	resp, err := SendResponses(context.Background(), upstream.Client(), upstream.URL, "sk-zen-test", body)
+	if err != nil {
+		t.Fatalf("SendResponses: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotPath != "/v1/responses" {
+		t.Errorf("upstream path = %q, want /v1/responses", gotPath)
+	}
+	if gotAuth != "Bearer sk-zen-test" {
+		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)
+	}
+	if gotAccept != "*/*" {
+		t.Errorf("Accept = %q, want */* for a non-streaming client", gotAccept)
+	}
+	if gotBody["stream"] != true {
+		t.Errorf("upstream stream = %v, want true (gate)", gotBody["stream"])
+	}
+	if gotBody["max_output_tokens"] != float64(64) {
+		t.Errorf("upstream max_output_tokens = %v, want 64", gotBody["max_output_tokens"])
+	}
+	tools, _ := gotBody["tools"].([]any)
+	names := map[string]bool{}
+	for _, tl := range tools {
+		tool, _ := tl.(map[string]any)
+		if name, _ := tool["name"].(string); name != "" {
+			names[name] = true
+		}
+	}
+	if !names["bash"] || !names["read"] {
+		t.Errorf("upstream tools = %s, want bash and read (gate)", mustJSON(t, tools))
+	}
+	if gotUA == "" {
+		t.Error("harness identity missing: the OpenCode User-Agent must be sent")
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json (folded stream for a non-stream client)", ct)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	var msg map[string]any
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("body not JSON: %v; body = %s", err, raw)
+	}
+	if msg["type"] != "message" {
+		t.Errorf("response = %s, want an Anthropic message", raw)
+	}
+	content, _ := msg["content"].([]any)
+	if part, _ := content[0].(map[string]any); part["text"] != "pong" {
+		t.Errorf("content = %s, want pong", raw)
+	}
+	usage, _ := msg["usage"].(map[string]any)
+	if usage["input_tokens"] != 4.0 || usage["output_tokens"] != 2.0 {
+		t.Errorf("usage = %s, want input 4 output 2", mustJSON(t, usage))
+	}
+}
+
+// A streaming client keeps the upstream stream as Anthropic SSE.
+func TestSendResponses_StreamClientGetsAnthropicSSE(t *testing.T) {
+	var gotAccept string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_2"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+			``,
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"streamy"}`,
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_2","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			``,
+		}, "\n"))
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"ping"}],"max_tokens":64,"stream":true}`)
+	resp, err := SendResponses(context.Background(), upstream.Client(), upstream.URL, "sk-zen-test", body)
+	if err != nil {
+		t.Fatalf("SendResponses: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotAccept != "text/event-stream" {
+		t.Errorf("Accept = %q, want text/event-stream for a streaming client", gotAccept)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{"event: message_start", `"type":"text_delta"`, "event: message_stop"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("SSE missing %s:\n%s", want, raw)
+		}
+	}
+	if !strings.HasPrefix(string(raw), "event: message_start") {
+		t.Errorf("message_start must be the first event:\n%s", raw)
+	}
+}
+
+// ForwardResponses copies the translated response to w, running modify first.
+func TestForwardResponses_CopiesTranslatedBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_3","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"ping"}],"max_tokens":32}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	modified := false
+	ForwardResponses(rec, req, upstream.URL, "sk-zen-test", body, func(resp *http.Response) error {
+		modified = true
+		if resp.StatusCode != 200 {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+		return nil
+	})
+
+	if !modified {
+		t.Error("modify hook was not called")
+	}
+	if rec.Code != 200 {
+		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"text":"ok"`) {
+		t.Errorf("body = %s, want the translated message", rec.Body.String())
+	}
+}
+
+// An upstream connection failure is a 502 with an api_error envelope, matching
+// the rest of the proxy.
+func TestForwardResponses_UpstreamFailureReturns502(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := upstream.URL
+	upstream.Close()
+
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"ping"}],"max_tokens":32}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	ForwardResponses(rec, req, deadURL, "sk-zen-test", body, nil)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"api_error"`) {
+		t.Errorf("body = %s, want an api_error envelope", rec.Body.String())
+	}
+}
+
+// A gate rejection reaches the client as an Anthropic error envelope with the
+// upstream status preserved, and modify still sees it so the caller can
+// observe the gate.
+func TestForwardResponses_GateRejectionIsAnAnthropicError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"type":"FreeTierError","message":"a newer version is required to use the free tier"}}`)
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"ping"}],"max_tokens":32}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	observed := 0
+	ForwardResponses(rec, req, upstream.URL, "sk-zen-test", body, func(resp *http.Response) error {
+		observed++
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("modify saw status %d, want 403", resp.StatusCode)
+		}
+		// A gate observer reads the body and restores it, as
+		// ObserveFreeTierGate does; the client copy must still see the
+		// envelope.
+		raw, _ := io.ReadAll(resp.Body)
+		if len(raw) == 0 {
+			t.Error("modify saw an empty body: the gate reason is unobservable")
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(raw))
+		return nil
+	})
+
+	if observed != 1 {
+		t.Fatalf("modify called %d times, want 1", observed)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("client status = %d, want 403 preserved; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"type":"error"`) {
+		t.Errorf("body = %s, want an Anthropic error envelope", rec.Body.String())
 	}
 }
