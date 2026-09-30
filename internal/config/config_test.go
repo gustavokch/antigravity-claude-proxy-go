@@ -1276,3 +1276,60 @@ func TestZenHarnessEnabledAbsentIsNil(t *testing.T) {
 		t.Errorf("marshal = %s (%v), want enabled:true present", b, err)
 	}
 }
+
+func TestBackendFormatJevDecodes(t *testing.T) {
+	raw := `{"name":"zen-jev","url":"https://opencode.ai/zen/v1/systemone","format":"jev"}`
+	var backend TargetBackend
+	if err := json.Unmarshal([]byte(raw), &backend); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if backend.Format != BackendFormatJev {
+		t.Errorf("Format = %q, want jev", backend.Format)
+	}
+}
+
+// The default model must match the id Zen's catalog publishes
+// (internal/zen/testdata/catalog-2026-09-30.json carries it). An unset model
+// on a jev backend has to name a Jev model, not laya-serve's "english"
+// checkpoint, which Zen would reject.
+func TestLayaSettingsDefaultModelFollowsFormat(t *testing.T) {
+	cases := []struct {
+		name    string
+		backend TargetBackend
+		want    string
+	}{
+		{name: "laya pins the english checkpoint", backend: TargetBackend{Format: BackendFormatLaya}, want: "english"},
+		{name: "jev defaults to the free Zen model", backend: TargetBackend{Format: BackendFormatJev}, want: "jev-1.13-free"},
+		{name: "an explicit jev model wins", backend: TargetBackend{Format: BackendFormatJev, Model: "jev-1.13"}, want: "jev-1.13"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := testCase.backend.LayaSettings().Model; got != testCase.want {
+				t.Errorf("Model = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestValidateLayaAlsoChecksJevBackends(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{name: "jev accepts the default escalate label", raw: `{"format":"jev","layaEscalateLabels":["D"]}`},
+		{name: "jev rejects an escalate-label typo", raw: `{"format":"jev","layaEscalateLabels":["d"]}`, wantErr: true},
+		{name: "jev rejects an out-of-range clamp", raw: `{"format":"jev","layaMaxSeverity":101}`, wantErr: true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var backend TargetBackend
+			if err := json.Unmarshal([]byte(testCase.raw), &backend); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if err := backend.ValidateLaya(); (err != nil) != testCase.wantErr {
+				t.Errorf("ValidateLaya() = %v, wantErr %v", err, testCase.wantErr)
+			}
+		})
+	}
+}
