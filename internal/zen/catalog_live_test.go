@@ -16,8 +16,8 @@ import (
 //
 //	go test -tags zen_live ./internal/zen/ -run TestAnthropicWireIDsLiveCatalog -v
 //
-// When it fails, refresh testdata/catalog-2026-09-30.json from the source URL
-// recorded in that file and reconcile AnthropicWireIDs with the diff.
+// When it fails, refresh the file named by catalogSnapshotPath from the source
+// URL recorded in it and reconcile AnthropicWireIDs with the diff.
 func TestAnthropicWireIDsLiveCatalog(t *testing.T) {
 	// Generous on purpose: this is an on-demand check, and a slow IPv6 dial
 	// alone can cost several seconds.

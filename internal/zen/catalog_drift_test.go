@@ -18,9 +18,13 @@ type catalogSnapshot struct {
 	IDs     []string `json:"ids"`
 }
 
+// catalogSnapshotPath is the one place the snapshot file is named. Refreshing
+// the catalog by renaming the file means changing this line and nothing else.
+const catalogSnapshotPath = "testdata/catalog-2026-09-30.json"
+
 func loadCatalogSnapshot(t *testing.T) catalogSnapshot {
 	t.Helper()
-	raw, err := os.ReadFile("testdata/catalog-2026-09-30.json")
+	raw, err := os.ReadFile(catalogSnapshotPath)
 	if err != nil {
 		t.Fatalf("read catalog snapshot: %v", err)
 	}
