@@ -6,7 +6,8 @@ Make `internal/zen/client.go` `AnthropicWireIDs` contain every current
 **Claude Code–only** model id that the live OpenCode Zen catalog serves, so a
 Zen allowlist entry for such a model claims `POST /v1/messages` instead of
 falling through to a backend that mishandles Anthropic tool definitions
-(confirmed root cause of the oh-my-pi tool-definition failures).
+(suspected cause of the oh-my-pi tool-definition failures; not established
+by the evidence in this PR — see Task 5).
 
 **Set definition (operator policy):** *anthropic models should only be
 accessible through the Claude Code gateway, except for `claude-sonnet-4-6` and
@@ -278,21 +279,36 @@ base = pathlib.Path(os.environ.get("ANTIGRAVITY_CONFIG_DIR")
                     or os.environ.get("CONFIG_DIR")
                     or pathlib.Path.home() / ".config" / "antigravity-proxy")
 cfg = json.loads((base / "config.json").read_text())
-order = cfg["gatewayOrder"]["order"]
-cc = [e["id"] for e in cfg.get("claudecode", {}).get("allowlist", [])]
-zen = [e["id"] for e in cfg.get("zen", {}).get("allowlist", [])]
+
+# matchClaudeCodeModel falls back to the built-in catalogue when the
+# configured allowlist is empty (internal/api/claudecode_proxy.go:167-170).
+def effective_ids(section):
+    entries = (cfg.get(section) or {}).get("allowlist") or []
+    return [e["id"] for e in entries]
+
+cc = effective_ids("claudecode")
+DEFAULT_CC = {"claude-fable-5", "claude-fable-5-1", "claude-opus-5",
+              "claude-sonnet-5", "claude-haiku-4-5-20251001",
+              "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022",
+              "claude-3-5-haiku-20241022", "claude-3-opus-20240229",
+              "claude-3-haiku-20240307", "claude-3-sonnet-20240229"}
+if not cc:
+    cc = DEFAULT_CC
+zen = effective_ids("zen")
 zen_claude = [m for m in zen if m.startswith("claude-")]
-print("order:", order)
-print("claudecode allowlist:", cc)
-print("zen claude ids:", zen_claude)
+
+order = cfg["gatewayOrder"]["order"]
 assert cfg["claudecode"]["enabled"], "claudecode gateway disabled"
 assert order.index("claudecode") < order.index("zen"), "claudecode must precede zen"
-assert "claude-sonnet-5-5" in cc, "sonnet-5-5 must be claimed by the Claude Code gateway"
-assert "claude-sonnet-4-6" not in cc and "claude-opus-4-6" not in cc, \
-    "policy exceptions must not be claimed by the Claude Code gateway"
+
+# NOT an allowlist member: the policy exceptions must not be claimed by cc.
+assert "claude-sonnet-4-6" not in cc, "claude-sonnet-4-6 must not be claimed by claudecode"
+assert "claude-opus-4-6" not in cc, "claude-opus-4-6 must not be claimed by claudecode"
+
+# NOT in the zen allowlist: so it is not routed via the Anthropic wire.
+assert "claude-sonnet-5-5" not in cc, "claude-sonnet-5-5 is not claimed by claudecode"
 assert not zen_claude, "zen must not carry claude allowlist entries"
-print("OK: anthropic ids claim at claudecode; sonnet-4-6/opus-4-6 fall "
-      "through kimi->claudecode->zen->openrouter to cloudcode (antigravity)")
+print("OK")
 PY
 ```
 
@@ -301,11 +317,18 @@ PY
 Chain this proves: `claude-sonnet-4-6` / `claude-opus-4-6` decline kimi,
 decline claudecode (not allowlisted), decline zen (not allowlisted — and
 this plan keeps them out of the Claude Code–only set), decline openrouter,
-and land on `cloudcode`, the antigravity/Cloud Code terminal path. The
-Claude Code–only ids claim at `claudecode` first (`gatewayOrder` position 2),
-so `AnthropicWireIDs` membership matters when claudecode is disabled, drops
-an id, or an operator allowlists it in zen as a fallback — the case the
-fall-through bug broke.
+and land on `cloudcode`, the antigravity/Cloud Code terminal path.
+
+> Under the shipped config no gateway claims `claude-sonnet-5-5` —
+> `gatewayOrder.byModel` is `{}`, `openrouter.allowlist` carries no
+> `claude-*` ids, and `customEndpoints` is empty — so it falls through to
+> `cloudcode` today and the Zen wire list is not on this path. The added
+> entry is a **capability gate**: it makes the id forwardable over the
+> Anthropic wire the moment an operator allowlists it in `zen` (or in
+> `claudecode`, whose empty allowlist resolves to `DefaultAllowlist()`),
+> which is the case that previously fell through to a gateway that could
+> not speak the wire. This PR does not establish that the oh-my-pi
+> tool-definition failures were routed through Zen.
 
 If any assertion fails, stop: the config no longer expresses the policy —
 report the mismatch instead of changing code.
@@ -338,11 +361,17 @@ git commit -m "fix(zen): add claude-sonnet-5-5 to AnthropicWireIDs"
    collision" behavior. If the policy should become a hard gate, request that
    as a follow-up plan.
 3. **Expanding `claudecode.allowlist` to the full current Claude Code
-   catalogue** (only `claude-sonnet-5-5`, `claude-opus-5-5`,
-   `claude-fable-5-1` are allowlisted today) — operator/WebUI action
-   (Settings → Claude Code → Discover Models), config not code. When
-   importing, exclude `claude-sonnet-4-6` and `claude-opus-4-6` so they keep
-   routing to antigravity/Cloud Code.
+   catalogue** — operator/WebUI action (Settings → Claude Code → Discover
+   Models), config not code. `claudecode.allowlist` is unset today, so the
+   effective list is `claudecode.DefaultAllowlist()`
+   (`internal/claudecode/router.go:11-122`): `claude-fable-5`,
+   `claude-fable-5-1`, `claude-opus-5`, `claude-sonnet-5`,
+   `claude-haiku-4-5-20251001`, and the `claude-3-*` family. It carries
+   **no** `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-opus-4-*`, or
+   `claude-sonnet-4-*`. Setting an explicit allowlist replaces the defaults
+   wholesale, so the operator must re-add every id they still want — and
+   exclude `claude-sonnet-4-6` and `claude-opus-4-6` so those keep routing
+   to antigravity/Cloud Code.
 4. **Stale comment on `matchZenModelEntry`** (`internal/api/server.go:2057-2059`):
    says "the Anthropic-wire subset" but the gate is `zen.IsForwardable`, which
    also admits Chat-Completions ids — pre-existing, unrelated to this add.
