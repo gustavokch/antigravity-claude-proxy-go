@@ -1472,3 +1472,81 @@ func TestAnthropicToResponsesRequest_ToolsAreNonStrict(t *testing.T) {
 		}
 	}
 }
+
+// The aggregator recovers text, reasoning and refusals that only the
+// completed item carries; the stream must too, or a streaming client gets an
+// empty turn (or, for a refusal, a clean end_turn).
+func TestStreamResponsesToAnthropic_EmitsContentCarriedOnlyByDoneItem(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		item      string
+		wantDelta string
+		wantStop  string
+	}{
+		{"text", `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello there"}]}`, `"text":"hello there"`, "end_turn"},
+		{"refusal", `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"refusal","refusal":"no can do"}]}`, `"text":"no can do"`, "refusal"},
+		{"reasoning", `{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"weighing it"}]}`, `"thinking":"weighing it"`, "end_turn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sse := strings.Join([]string{
+				`data: {"type":"response.created","response":{"id":"resp_d"}}`,
+				``,
+				`data: {"type":"response.output_item.done","output_index":0,"item":` + tc.item + `}`,
+				``,
+				`data: {"type":"response.completed","response":{"id":"resp_d","usage":{"input_tokens":3,"output_tokens":1}}}`,
+				``,
+			}, "\n")
+			var out bytes.Buffer
+			if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+				t.Fatalf("streamResponsesToAnthropic: %v", err)
+			}
+			got := out.String()
+			if !strings.Contains(got, tc.wantDelta) {
+				t.Errorf("done-only content missing %s:\n%s", tc.wantDelta, got)
+			}
+			if !strings.Contains(got, `"stop_reason":"`+tc.wantStop+`"`) {
+				t.Errorf("stop_reason want %s:\n%s", tc.wantStop, got)
+			}
+		})
+	}
+}
+
+// Content already streamed as deltas must not be repeated when the completed
+// item restates it, and a completed item that extends the deltas contributes
+// only the missing suffix: the client concatenates text_delta frames.
+func TestStreamResponsesToAnthropic_DoesNotRepeatDeliveredText(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_e"}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"hel"}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"lo"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_e","usage":{"input_tokens":3,"output_tokens":1}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	var text strings.Builder
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"text_delta"`) {
+			continue
+		}
+		var ev struct {
+			Delta struct {
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		text.WriteString(ev.Delta.Text)
+	}
+	if text.String() != "hello world" {
+		t.Errorf("client text = %q, want %q", text.String(), "hello world")
+	}
+}

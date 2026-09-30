@@ -293,7 +293,7 @@ func responsesFailureText(event map[string]any) string {
 func streamResponsesToAnthropic(r io.Reader, w io.Writer, model string, toolNames map[string]string, injected map[string]bool) error {
 	s := &responsesStream{
 		w: w, model: model, current: -1,
-		itemBlocks: map[int]int{}, argSent: map[int]string{}, toolNames: toolNames, injected: injected, dropped: map[int]bool{},
+		itemBlocks: map[int]int{}, sent: map[sentKey]*strings.Builder{}, toolNames: toolNames, injected: injected, dropped: map[int]bool{},
 	}
 	done := false
 	scanner := bufio.NewScanner(r)
@@ -339,11 +339,11 @@ func streamResponsesToAnthropic(r io.Reader, w io.Writer, model string, toolName
 type responsesStream struct {
 	w          io.Writer
 	model      string
-	toolNames  map[string]string // upstream → client tool names, may be nil
-	injected   map[string]bool   // gate-only tool names, may be nil
-	dropped    map[int]bool      // output indexes skipped as gate-injected
-	itemBlocks map[int]int       // output_index → Anthropic block index
-	argSent    map[int]string    // output_index → argument prefix already streamed
+	toolNames  map[string]string            // upstream → client tool names, may be nil
+	injected   map[string]bool              // gate-only tool names, may be nil
+	dropped    map[int]bool                 // output indexes skipped as gate-injected
+	itemBlocks map[int]int                  // output_index → Anthropic block index
+	sent       map[sentKey]*strings.Builder // delivered output per (kind, output_index)
 	started    bool
 	failed     bool
 	settled    bool
@@ -353,6 +353,20 @@ type responsesStream struct {
 	kind       string // "thinking" | "text" | "tool"
 	stop       string
 	usage      map[string]any
+}
+
+// Kinds of output the stream has delivered to the client, tracked per output
+// item so output_item.done can emit only what the deltas did not.
+const (
+	sentArgs     = "args"
+	sentText     = "text"
+	sentRefusal  = "refusal"
+	sentThinking = "thinking"
+)
+
+type sentKey struct {
+	kind string
+	idx  int
 }
 
 func (s *responsesStream) emit(event string, payload map[string]any) error {
@@ -406,6 +420,124 @@ func (s *responsesStream) delta(delta map[string]any) error {
 	return s.emit("content_block_delta", map[string]any{"type": "content_block_delta", "index": s.current, "delta": delta})
 }
 
+// writeText streams text into the open text block, opening one first when a
+// different kind of block is open. idx is the output item the text belongs to.
+func (s *responsesStream) writeText(idx int, text string) error {
+	if s.kind != "text" {
+		if err := s.openBlock("text", map[string]any{"type": "text", "text": ""}); err != nil {
+			return err
+		}
+		s.itemBlocks[idx] = s.current
+	}
+	return s.delta(map[string]any{"type": "text_delta", "text": text})
+}
+
+// writeThinking is writeText for a reasoning summary.
+func (s *responsesStream) writeThinking(idx int, text string) error {
+	if s.kind != "thinking" {
+		if err := s.openBlock("thinking", map[string]any{"type": "thinking", "thinking": "", "signature": ""}); err != nil {
+			return err
+		}
+		s.itemBlocks[idx] = s.current
+	}
+	return s.delta(map[string]any{"type": "thinking_delta", "thinking": text})
+}
+
+// record notes text as delivered to the client for one (kind, idx) stream.
+func (s *responsesStream) record(kind string, idx int, text string) {
+	key := sentKey{kind, idx}
+	b := s.sent[key]
+	if b == nil {
+		b = &strings.Builder{}
+		s.sent[key] = b
+	}
+	b.WriteString(text)
+}
+
+// missing returns the part of full the client has not yet received for one
+// (kind, idx) stream. ok is false when nothing is owed: full is empty, is
+// already delivered, or does not extend what was streamed (appending it
+// would corrupt the client's concatenation, so it is dropped).
+func (s *responsesStream) missing(kind string, idx int, full string) (rest string, ok bool) {
+	sent := ""
+	if b := s.sent[sentKey{kind, idx}]; b != nil {
+		sent = b.String()
+	}
+	if len(full) <= len(sent) || !strings.HasPrefix(full, sent) {
+		return "", false
+	}
+	return full[len(sent):], true
+}
+
+// completeCall emits the argument suffix a completed function_call carries
+// beyond its argument deltas.
+func (s *responsesStream) completeCall(idx int, item map[string]any) error {
+	if s.dropped[idx] {
+		return nil
+	}
+	args, _ := item["arguments"].(string)
+	rest, ok := s.missing(sentArgs, idx, args)
+	if !ok {
+		return nil
+	}
+	block, known := s.itemBlocks[idx]
+	if !known || block != s.current || s.kind != "tool" {
+		// Same rule as an interleaved fragment: a completed call whose
+		// block is no longer open cannot be reopened in Anthropic SSE.
+		slog.Debug("zen responses stream: dropping trailing function_call arguments", "outputIndex", idx, "openBlock", s.current)
+		return nil
+	}
+	s.record(sentArgs, idx, rest)
+	return s.delta(map[string]any{"type": "input_json_delta", "partial_json": rest})
+}
+
+// completeMessage emits the refusal and text a completed message item carries
+// beyond its deltas. The refusal goes first, the order the aggregator and
+// ResponsesResponseToAnthropic give it, and marks the turn stop_reason refusal.
+func (s *responsesStream) completeMessage(idx int, item map[string]any) error {
+	var text, refusal strings.Builder
+	for _, raw := range anySlice(item["content"]) {
+		part, _ := raw.(map[string]any)
+		switch part["type"] {
+		case "output_text":
+			t, _ := part["text"].(string)
+			text.WriteString(t)
+		case "refusal":
+			r, _ := part["refusal"].(string)
+			refusal.WriteString(r)
+		}
+	}
+	if rest, ok := s.missing(sentRefusal, idx, refusal.String()); ok {
+		s.stop = "refusal"
+		s.record(sentRefusal, idx, rest)
+		if err := s.writeText(idx, rest); err != nil {
+			return err
+		}
+	}
+	if rest, ok := s.missing(sentText, idx, text.String()); ok {
+		s.record(sentText, idx, rest)
+		return s.writeText(idx, rest)
+	}
+	return nil
+}
+
+// completeReasoning emits the summary text a completed reasoning item carries
+// beyond its summary deltas.
+func (s *responsesStream) completeReasoning(idx int, item map[string]any) error {
+	var summary strings.Builder
+	for _, raw := range anySlice(item["summary"]) {
+		part, _ := raw.(map[string]any)
+		t, _ := part["text"].(string)
+		summary.WriteString(t)
+	}
+	rest, ok := s.missing(sentThinking, idx, summary.String())
+	if !ok {
+		return nil
+	}
+	s.record(sentThinking, idx, rest)
+	return s.writeThinking(idx, rest)
+}
+
 // handle consumes one Responses SSE event. Text, reasoning, and refusal deltas
 // open their block on the first delta (an empty block would be noise); a
 // function_call opens a tool_use block on response.output_item.added, which
@@ -428,32 +560,24 @@ func (s *responsesStream) handle(event map[string]any) error {
 		// A refusal rides the same text block: Anthropic has no refusal block,
 		// so the explanation is streamed as text and the turn is marked
 		// stop_reason refusal. Only the stop reason distinguishes it.
+		kind := sentText
 		if typ == "response.refusal.delta" {
 			s.stop = "refusal"
+			kind = sentRefusal
 		}
 		delta, _ := event["delta"].(string)
 		if delta == "" {
 			return nil
 		}
-		if s.kind != "text" {
-			if err := s.openBlock("text", map[string]any{"type": "text", "text": ""}); err != nil {
-				return err
-			}
-			s.itemBlocks[idx] = s.current
-		}
-		return s.delta(map[string]any{"type": "text_delta", "text": delta})
+		s.record(kind, idx, delta)
+		return s.writeText(idx, delta)
 	case "response.reasoning_summary_text.delta":
 		delta, _ := event["delta"].(string)
 		if delta == "" {
 			return nil
 		}
-		if s.kind != "thinking" {
-			if err := s.openBlock("thinking", map[string]any{"type": "thinking", "thinking": "", "signature": ""}); err != nil {
-				return err
-			}
-			s.itemBlocks[idx] = s.current
-		}
-		return s.delta(map[string]any{"type": "thinking_delta", "thinking": delta})
+		s.record(sentThinking, idx, delta)
+		return s.writeThinking(idx, delta)
 	case "response.output_item.added":
 		item, _ := event["item"].(map[string]any)
 		if item == nil || item["type"] != "function_call" {
@@ -498,33 +622,29 @@ func (s *responsesStream) handle(event map[string]any) error {
 			slog.Debug("zen responses stream: dropping interleaved function_call arguments", "outputIndex", idx, "openBlock", s.current)
 			return nil
 		}
-		s.argSent[idx] += delta
+		s.record(sentArgs, idx, delta)
 		return s.delta(map[string]any{"type": "input_json_delta", "partial_json": delta})
 	case "response.output_item.done":
-		// The completed item carries the call's whole argument string.
-		// Deltas are the normal path, but an upstream that streams a call
-		// with no argument deltas at all would otherwise hand the client a
-		// tool_use block with an empty input it cannot run. Emit whatever
-		// the deltas did not already cover, so the fragments and the
-		// completed value cannot concatenate into malformed JSON.
+		// The completed item restates everything the deltas carried. Deltas
+		// are the normal path, but an upstream that delivers an item only
+		// here (a call with no argument deltas, text or a refusal with no
+		// text deltas) would otherwise hand the client an empty block or a
+		// clean end_turn. Emit whatever the deltas did not already cover, so
+		// the fragments and the completed value cannot concatenate into
+		// malformed JSON or repeated text.
 		item, _ := event["item"].(map[string]any)
-		if item == nil || item["type"] != "function_call" || s.dropped[idx] {
+		if item == nil {
 			return nil
 		}
-		args, _ := item["arguments"].(string)
-		sent := s.argSent[idx]
-		if len(args) <= len(sent) || !strings.HasPrefix(args, sent) {
-			return nil
+		switch item["type"] {
+		case "function_call":
+			return s.completeCall(idx, item)
+		case "message":
+			return s.completeMessage(idx, item)
+		case "reasoning":
+			return s.completeReasoning(idx, item)
 		}
-		block, known := s.itemBlocks[idx]
-		if !known || block != s.current || s.kind != "tool" {
-			// Same rule as an interleaved fragment: a completed call whose
-			// block is no longer open cannot be reopened in Anthropic SSE.
-			slog.Debug("zen responses stream: dropping trailing function_call arguments", "outputIndex", idx, "openBlock", s.current)
-			return nil
-		}
-		s.argSent[idx] = args
-		return s.delta(map[string]any{"type": "input_json_delta", "partial_json": args[len(sent):]})
+		return nil
 	case "response.completed", "response.incomplete":
 		s.settled = true
 		if resp, ok := event["response"].(map[string]any); ok {
