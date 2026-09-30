@@ -34,23 +34,36 @@ func loadCatalogSnapshot(t *testing.T) catalogSnapshot {
 	return snap
 }
 
+// wireDrift diffs AnthropicWireIDs against a catalog id list: the claude-* ids
+// IsAnthropicWire rejects, and the AnthropicWireIDs entries absent from the
+// catalog, both sorted. It is the single implementation behind the snapshot
+// tests here and the zen_live test, so the two cannot disagree about what
+// drift means.
+func wireDrift(catalog []string) (unclaimed, stale []string) {
+	live := make(map[string]bool, len(catalog))
+	for _, id := range catalog {
+		live[id] = true
+		if strings.HasPrefix(id, "claude-") && !IsAnthropicWire(id) {
+			unclaimed = append(unclaimed, id)
+		}
+	}
+	for _, id := range AnthropicWireIDs {
+		if !live[id] {
+			stale = append(stale, id)
+		}
+	}
+	sort.Strings(unclaimed)
+	sort.Strings(stale)
+	return unclaimed, stale
+}
+
 // TestAnthropicWireIDsCoverLiveClaudeModels is the regression guard for the
 // bug class: a live claude-* id that AnthropicWireIDs does not claim is
 // reported by the proxy as forwardable-looking but resolves to WireNone, so
 // the request falls through to a gateway that cannot speak the Anthropic wire.
 func TestAnthropicWireIDsCoverLiveClaudeModels(t *testing.T) {
 	snap := loadCatalogSnapshot(t)
-
-	var unclaimed []string
-	for _, id := range snap.IDs {
-		if !strings.HasPrefix(id, "claude-") {
-			continue
-		}
-		if !IsAnthropicWire(id) {
-			unclaimed = append(unclaimed, id)
-		}
-	}
-	sort.Strings(unclaimed)
+	unclaimed, _ := wireDrift(snap.IDs)
 	if len(unclaimed) > 0 {
 		t.Errorf("live claude-* ids not in AnthropicWireIDs: %v\n"+
 			"they will fall through to a gateway that cannot speak the Anthropic wire; "+
@@ -62,18 +75,7 @@ func TestAnthropicWireIDsCoverLiveClaudeModels(t *testing.T) {
 // direction: an id Zen no longer serves should not keep claiming the wire.
 func TestAnthropicWireIDsHaveNoStaleEntries(t *testing.T) {
 	snap := loadCatalogSnapshot(t)
-	live := make(map[string]bool, len(snap.IDs))
-	for _, id := range snap.IDs {
-		live[id] = true
-	}
-
-	var stale []string
-	for _, id := range AnthropicWireIDs {
-		if !live[id] {
-			stale = append(stale, id)
-		}
-	}
-	sort.Strings(stale)
+	_, stale := wireDrift(snap.IDs)
 	if len(stale) > 0 {
 		t.Errorf("AnthropicWireIDs entries not in the catalog snapshot: %v\n"+
 			"either the id was retired upstream or the snapshot is stale", stale)

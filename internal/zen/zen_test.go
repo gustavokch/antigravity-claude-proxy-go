@@ -24,7 +24,9 @@ func TestIsAnthropicWire(t *testing.T) {
 	// TestAnthropicWireIDsCoverLiveClaudeModels / ...HaveNoStaleEntries, which
 	// diff the list against a catalog snapshot. What is pinned here is the
 	// normalization: case, the opencode/ prefix, and mixed-case spellings all
-	// fold to the same wire.
+	// fold to the same wire. claude-sonnet-5-5 is the one membership pin kept
+	// by name: its omission was the original bug, and a snapshot edit must not
+	// be able to hide it.
 	for _, id := range []string{
 		"claude-sonnet-5-5",
 		"opencode/claude-sonnet-4-6",

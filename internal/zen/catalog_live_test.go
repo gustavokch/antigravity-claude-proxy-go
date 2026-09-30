@@ -3,11 +3,9 @@
 package zen
 
 import (
-	"encoding/json"
-	"net/http"
-	"sort"
-	"strings"
+	"context"
 	"testing"
+	"time"
 )
 
 // TestAnthropicWireIDsLiveCatalog is the same drift check as
@@ -21,38 +19,21 @@ import (
 // When it fails, refresh testdata/catalog-2026-09-30.json from the source URL
 // recorded in that file and reconcile AnthropicWireIDs with the diff.
 func TestAnthropicWireIDsLiveCatalog(t *testing.T) {
-	resp, err := http.Get("https://opencode.ai/zen/v1/models")
+	// Generous on purpose: this is an on-demand check, and a slow IPv6 dial
+	// alone can cost several seconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// FetchModels is the production catalog path (harness headers, TLS client
+	// routing, the real ModelItem parse), bounded by the ctx above.
+	items, err := NewClient(30*time.Second, 0).FetchModels(ctx, "", DefaultBaseURL)
 	if err != nil {
 		t.Fatalf("fetch live catalog: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("live catalog status = %d, want 200", resp.StatusCode)
+	ids := make([]string, len(items))
+	for i, m := range items {
+		ids[i] = m.ID
 	}
-	var body struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode live catalog: %v", err)
-	}
-
-	var unclaimed, stale []string
-	live := make(map[string]bool, len(body.Data))
-	for _, m := range body.Data {
-		live[m.ID] = true
-		if strings.HasPrefix(m.ID, "claude-") && !IsAnthropicWire(m.ID) {
-			unclaimed = append(unclaimed, m.ID)
-		}
-	}
-	for _, id := range AnthropicWireIDs {
-		if !live[id] {
-			stale = append(stale, id)
-		}
-	}
-	sort.Strings(unclaimed)
-	sort.Strings(stale)
+	unclaimed, stale := wireDrift(ids)
 
 	if len(unclaimed) > 0 {
 		t.Errorf("live claude-* ids not in AnthropicWireIDs: %v", unclaimed)
