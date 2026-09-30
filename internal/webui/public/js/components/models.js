@@ -1049,7 +1049,7 @@ window.Components.models = () => ({
         if (!id) return;
         const store = Alpine.store('global');
         this.zenError = '';
-        // The server owns the Anthropic-wire subset, so validate the typed id
+        // The server owns the forwardable-wire subset, so validate the typed id
         // against the `models` bucket of /api/zen/models/fetch before creating
         // an entry that could never succeed. The endpoint answers
         // unauthenticated and is cached 5 min server-side, so this is cheap.
@@ -1074,7 +1074,7 @@ window.Components.models = () => ({
         }
         if (verified === false) {
             this.zenError = (store.t && store.t('zenNotAnthropicWire')) ||
-                ('Model "' + id + '" is not a forwardable Zen model (Anthropic or Chat Completions wire).');
+                ('Model "' + id + '" is not a forwardable Zen model (Anthropic, Chat Completions, or Responses wire).');
             return;
         }
         this.zenConfig.allowlist.push({
