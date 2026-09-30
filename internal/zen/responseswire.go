@@ -23,9 +23,11 @@ import (
 // named exactly "bash" and "read" (client tools named "Bash"/"Read" are
 // renamed; missing ones get the captured OpenCode definitions injected).
 //
-// Fields with no Responses equivalent are dropped rather than guessed:
-// stop_sequences, thinking, and top_k. max_tokens becomes max_output_tokens; sampling
-// parameters pass through unchanged.
+// Fields with no usable Responses counterpart are dropped rather than guessed:
+// stop_sequences and top_k (no field), thinking (no equivalent), and
+// temperature and top_p (OpenAI documents both as unsupported for reasoning
+// models unless effort is none, and the reference OpenCode client sends
+// neither for any Responses-wire id). max_tokens becomes max_output_tokens.
 //
 // The body always carries "store": false so the upstream does not retain the
 // conversation; see the comment at the assignment for why that is safe.
@@ -66,13 +68,8 @@ func anthropicToResponsesRequest(req map[string]any) (map[string]any, map[string
 	if v, ok := req["max_tokens"]; ok {
 		out["max_output_tokens"] = v
 	}
-	for _, key := range []string{"temperature", "top_p"} {
-		if v, ok := req[key]; ok {
-			out[key] = v
-		}
-	}
-	// stop_sequences and thinking have no Responses equivalent and are
-	// deliberately dropped rather than approximated.
+	// temperature, top_p, stop_sequences and thinking are deliberately
+	// dropped; see the function comment.
 	out["stream"] = true
 	// store is explicit because the Responses API retains every response
 	// server-side by default. The replay is stateless (whole conversation each

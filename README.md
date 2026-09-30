@@ -558,8 +558,11 @@ served by OpenCode's `/zen/v1/responses` endpoint:
 `grok-build-0.1`, `muse-spark-1.3`, `muse-spark-1.2`,
 `muse-spark-1.3-contributor-free`.
 
-`stop_sequences`, `thinking`, and `top_k` have no Responses equivalent and are dropped
-rather than approximated; `max_tokens` becomes `max_output_tokens`.
+`stop_sequences`, `thinking`, `top_k`, `temperature`, and `top_p` are dropped
+rather than approximated: the first three have no Responses equivalent, OpenAI
+documents the sampling pair as unsupported for reasoning models, and the genuine
+OpenCode client sends neither on this wire. `max_tokens` becomes
+`max_output_tokens`.
 
 Every translated Responses request carries `"store": false`: the Responses API
 retains responses by default, the proxy replays the whole conversation each

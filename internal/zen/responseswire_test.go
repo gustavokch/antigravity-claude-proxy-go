@@ -210,8 +210,6 @@ func TestAnthropicToResponsesRequest_DropsUnsupportedFields(t *testing.T) {
 			map[string]any{"role": "user", "content": "hi"},
 		},
 		"stop_sequences": []any{"END"},
-		"temperature":    0.3,
-		"top_p":          0.9,
 		"thinking":       map[string]any{"type": "enabled"},
 		"stream":         true,
 		"tools": []any{
@@ -223,9 +221,6 @@ func TestAnthropicToResponsesRequest_DropsUnsupportedFields(t *testing.T) {
 
 	if _, ok := out["stop_sequences"]; ok {
 		t.Error("stop_sequences must be dropped: the Responses API has no equivalent field")
-	}
-	if out["temperature"] != 0.3 || out["top_p"] != 0.9 {
-		t.Errorf("sampling params = %v/%v, want 0.3/0.9", out["temperature"], out["top_p"])
 	}
 	if _, ok := out["thinking"]; ok {
 		t.Error("thinking must be dropped: the Responses API has no thinking field")
@@ -1705,5 +1700,22 @@ func TestResponsesStopReasonAgreesAcrossDirections(t *testing.T) {
 				t.Errorf("aggregate stop_reason = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// OpenAI documents temperature and top_p as unsupported for reasoning models
+// unless effort is none, and the reference OpenCode client sends neither for
+// any Responses-wire id, so the body must not carry them.
+func TestAnthropicToResponsesRequest_DropsSamplingParams(t *testing.T) {
+	out, _, _ := anthropicToResponsesRequest(map[string]any{
+		"model":       "gpt-6-astra",
+		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+		"temperature": 1.0,
+		"top_p":       0.9,
+	})
+	for _, key := range []string{"temperature", "top_p"} {
+		if v, ok := out[key]; ok {
+			t.Errorf("%s = %v reached the Responses body; it must be dropped", key, v)
+		}
 	}
 }
