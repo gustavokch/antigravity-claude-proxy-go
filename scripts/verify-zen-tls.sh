@@ -9,14 +9,16 @@ set -euo pipefail
 # (internal/zen/opencode-clienthello.bin):
 #   JA4 t13d1713h1_5b57614c22b0_6a3d802a7139
 #   JA3 1523504b38f0fae0d881d4b6554aac1b   (md5 of ja3_full)
+# It also asserts the Zen free-tier gate PASSES (HTTP 200): the request body
+# carries stream:true plus the bash/read tools the gate demands (the proxy
+# injects them when the client sent none — see internal/zen/gate_tools.go).
 #
 # Run with sudo (tcpdump needs BPF/root):
 #   sudo ./scripts/verify-zen-tls.sh
 #
-# A 403 free-tier gate response is EXPECTED-OK here: the TLS fingerprint is
-# what this script verifies; the request secret is a separate problem.
-# Exit: 0 = fingerprints match, 1 = mismatch or zen hop missing,
-# 2 = skip (no capture tooling/privileges — NOT a pass).
+# Exit: 0 = fingerprints match AND free-tier gate passed (200),
+#       1 = fingerprint mismatch, gate response (403/426), or zen hop missing,
+#       2 = skip (no capture tooling/privileges — NOT a pass).
 
 OUT_DIR="${ANTIGRAVITY_ZEN_VERIFY_DIR:-/tmp/zen-tls-verify}"
 PCAP_FILE="$OUT_DIR/opencode.pcap"
@@ -119,7 +121,13 @@ HTTP_STATUS=$(curl -sS -m 90 -o "$OUT_DIR/response.json" -w '%{http_code}' \
   -H 'anthropic-version: 2023-06-01' \
   "http://127.0.0.1:$PROXY_PORT/v1/messages" \
   -d "{\"model\":\"$MODEL\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}") || true
-echo "HTTP status: $HTTP_STATUS (403 gate is OK for this gate — TLS is what we assert)"
+echo "HTTP status: $HTTP_STATUS (200 = free-tier gate pass)"
+if [ "$HTTP_STATUS" != "200" ]; then
+  head -c 400 "$OUT_DIR/response.json" >&2 || true
+  echo >&2
+  fail "HTTP $HTTP_STATUS from /v1/messages — free-tier gate not passing"
+fi
+echo "free-tier gate: PASS (HTTP 200 through the proxy)"
 if grep -q 'zen forward' "$PROXY_LOG"; then
   echo "proxy log confirms zen hop:"
   grep 'zen forward' "$PROXY_LOG" | tail -n 2 | sed 's/^/  /'

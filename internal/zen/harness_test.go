@@ -253,8 +253,13 @@ func TestIsFreeTierGateError(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "version gate variant",
-			body: `{"type":"error","error":{"type":"FreeTierError","message":"OpenCode 1.17.0 or newer is required to use the free tier"}}`,
+			name: "version gate variant (observed 403 body)",
+			body: `{"type":"error","error":{"type":"FreeTierError","message":"Error from provider (Console): OpenCode 1.18.0 or newer is required to use the free tier"}}`,
+			want: true,
+		},
+		{
+			name: "observed 426 upgrade required body",
+			body: `{"type":"error","error":{"type":"UpgradeRequired","message":"Error from provider (Console): OpenCode 1.18.0 or newer is required to use the free tier"}}`,
 			want: true,
 		},
 		{
@@ -340,6 +345,33 @@ func TestObserveFreeTierGate_LogsAndPreservesBody(t *testing.T) {
 	got2, _ := io.ReadAll(resp2.Body)
 	if string(got2) != plain || logBuf.Len() != 0 {
 		t.Errorf("plain 403: body=%s log=%q", got2, logBuf.String())
+	}
+}
+
+// UA below 1.18.0 gets 426 UpgradeRequired; it is a gate response too and
+// must be observed and logged like the 403.
+func TestObserveFreeTierGate_UpgradeRequired(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	upgrade := `{"type":"error","error":{"type":"UpgradeRequired","message":"Error from provider (Console): OpenCode 1.18.0 or newer is required to use the free tier"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusUpgradeRequired,
+		Body:       io.NopCloser(strings.NewReader(upgrade)),
+	}
+	ObserveFreeTierGate(resp, "mimo-v2.6-flash-free")
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(got) != upgrade {
+		t.Errorf("body changed:\n got %s\nwant %s", got, upgrade)
+	}
+	if !strings.Contains(logBuf.String(), "zen free-tier gate rejected request") {
+		t.Errorf("gate warning missing for 426:\n%s", logBuf.String())
 	}
 }
 

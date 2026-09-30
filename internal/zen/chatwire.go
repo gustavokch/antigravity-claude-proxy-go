@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	if err := json.Unmarshal(anthropicBody, &req); err != nil {
 		return nil, fmt.Errorf("parse anthropic request: %w", err)
 	}
-	chatReq := anthropicToChatRequest(req)
+	chatReq, toolNames := anthropicToChatRequest(req)
 	payload, err := json.Marshal(chatReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal chat request: %w", err)
@@ -37,9 +38,11 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	stream, _ := req["stream"].(bool)
-	if stream {
+	clientStream, _ := req["stream"].(bool)
+	if clientStream {
 		httpReq.Header.Set("Accept", "text/event-stream")
+	} else {
+		httpReq.Header.Set("Accept", "*/*")
 	}
 	ApplyHarnessHeaders(httpReq)
 	resp, err := client.Do(httpReq)
@@ -47,7 +50,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 		return nil, err
 	}
 	model, _ := chatReq["model"].(string)
-	return translateChatResponse(resp, model), nil
+	return translateChatResponse(resp, model, clientStream, toolNames), nil
 }
 
 // ForwardChat is the non-CCR entry point: SendChat, then copy the translated
@@ -96,7 +99,20 @@ func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string,
 
 // anthropicToChatRequest converts an Anthropic Messages request body into an
 // OpenAI Chat Completions request body.
-func anthropicToChatRequest(req map[string]any) map[string]any {
+//
+// Two transformations serve the Zen free-tier gate (packet-verified):
+//
+//   - The upstream body always carries "stream": true. A non-streaming body
+//     is rejected with 403 FreeTierError; clients that asked for JSON get the
+//     stream aggregated back in translateChatResponse.
+//   - The tools array always contains functions named exactly "bash" and
+//     "read". Client tools named "Bash"/"Read" (Anthropic spelling) are
+//     renamed; missing ones get the captured OpenCode definitions injected.
+//
+// The second result maps upstream tool names back to the client's names for
+// response translation; nil when no rename occurred.
+func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]string) {
+	renames := buildToolRenames(req["tools"])
 	model, _ := req["model"].(string)
 	out := map[string]any{"model": StripOpencodePrefix(model)}
 
@@ -113,7 +129,7 @@ func anthropicToChatRequest(req map[string]any) map[string]any {
 		role, _ := msg["role"].(string)
 		switch role {
 		case "assistant":
-			messages = append(messages, assistantToChat(msg["content"]))
+			messages = append(messages, assistantToChat(msg["content"], renames))
 		default:
 			messages = append(messages, userToChat(msg["content"])...)
 		}
@@ -131,17 +147,21 @@ func anthropicToChatRequest(req map[string]any) map[string]any {
 	if stops, ok := req["stop_sequences"].([]any); ok && len(stops) > 0 {
 		out["stop"] = stops
 	}
-	if stream, _ := req["stream"].(bool); stream {
-		out["stream"] = true
-		out["stream_options"] = map[string]any{"include_usage": true}
+	out["stream"] = true
+	out["stream_options"] = map[string]any{"include_usage": true}
+	out["tools"] = ensureGateTools(toolsToChat(req["tools"], renames))
+	if tc := toolChoiceToChat(req["tool_choice"], renames); tc != nil {
+		out["tool_choice"] = tc
 	}
-	if tools := toolsToChat(req["tools"]); len(tools) > 0 {
-		out["tools"] = tools
-		if tc := toolChoiceToChat(req["tool_choice"]); tc != nil {
-			out["tool_choice"] = tc
+	// Reverse map: only renames that actually changed the name, so an
+	// upstream tool the client never defined passes through untouched.
+	rev := make(map[string]string, len(renames))
+	for client, upstream := range renames {
+		if client != upstream {
+			rev[upstream] = client
 		}
 	}
-	return out
+	return out, rev
 }
 
 func systemText(v any) string {
@@ -264,7 +284,7 @@ func toolResultText(content any) string {
 	return ""
 }
 
-func assistantToChat(content any) map[string]any {
+func assistantToChat(content any, renames map[string]string) map[string]any {
 	msg := map[string]any{"role": "assistant"}
 	if s, ok := content.(string); ok {
 		msg["content"] = s
@@ -288,6 +308,8 @@ func assistantToChat(content any) map[string]any {
 		case "tool_use":
 			id, _ := block["id"].(string)
 			name, _ := block["name"].(string)
+			// History must reference tools by the renamed upstream names.
+			name = renameTool(renames, name)
 			args, err := json.Marshal(block["input"])
 			if err != nil || string(args) == "null" {
 				args = []byte("{}")
@@ -311,7 +333,7 @@ func assistantToChat(content any) map[string]any {
 	return msg
 }
 
-func toolsToChat(v any) []any {
+func toolsToChat(v any, renames map[string]string) []any {
 	tools, _ := v.([]any)
 	out := make([]any, 0, len(tools))
 	for _, t := range tools {
@@ -325,7 +347,8 @@ func toolsToChat(v any) []any {
 		if !ok {
 			continue
 		}
-		fn := map[string]any{"name": tool["name"], "parameters": schema}
+		name, _ := tool["name"].(string)
+		fn := map[string]any{"name": renameTool(renames, name), "parameters": schema}
 		if d, ok := tool["description"].(string); ok && d != "" {
 			fn["description"] = d
 		}
@@ -334,7 +357,7 @@ func toolsToChat(v any) []any {
 	return out
 }
 
-func toolChoiceToChat(v any) any {
+func toolChoiceToChat(v any, renames map[string]string) any {
 	tc, ok := v.(map[string]any)
 	if !ok {
 		return nil
@@ -347,32 +370,107 @@ func toolChoiceToChat(v any) any {
 	case "none":
 		return "none"
 	case "tool":
-		return map[string]any{"type": "function", "function": map[string]any{"name": tc["name"]}}
+		name, _ := tc["name"].(string)
+		return map[string]any{"type": "function", "function": map[string]any{"name": renameTool(renames, name)}}
 	}
 	return nil
 }
 
+// buildToolRenames maps client tool names onto the gate-required upstream
+// spellings: Anthropic's "Bash"/"Read" become the lowercase "bash"/"read"
+// the Zen free-tier gate demands (case-insensitive, so "BASH" matches too).
+// Every other tool keeps its client name — the gate only inspects these two.
+func buildToolRenames(v any) map[string]string {
+	tools, _ := v.([]any)
+	renames := make(map[string]string)
+	for _, t := range tools {
+		tool, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := tool["input_schema"]; !ok {
+			continue
+		}
+		name, _ := tool["name"].(string)
+		upstream := name
+		switch strings.ToLower(name) {
+		case "bash":
+			upstream = "bash"
+		case "read":
+			upstream = "read"
+		}
+		if upstream != name {
+			renames[name] = upstream
+		}
+	}
+	return renames
+}
+
+func renameTool(renames map[string]string, name string) string {
+	if upstream, ok := renames[name]; ok {
+		return upstream
+	}
+	return name
+}
+
+// ensureGateTools appends the captured OpenCode definition for any of the two
+// gate-required function names missing from tools (case-insensitive), so the
+// upstream body always carries "bash" and "read".
+func ensureGateTools(tools []any) []any {
+	seen := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		fn, ok := t.(map[string]any)["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		seen[strings.ToLower(name)] = true
+	}
+	for _, name := range []string{"bash", "read"} {
+		if seen[name] {
+			continue
+		}
+		if def := gateToolDef(name); def != nil {
+			tools = append(tools, map[string]any{"type": "function", "function": def})
+		}
+	}
+	return tools
+}
+
 // --- Response translation ---
 
-func translateChatResponse(resp *http.Response, model string) *http.Response {
+func translateChatResponse(resp *http.Response, model string, clientStream bool, toolNames map[string]string) *http.Response {
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		return rebody(resp, "application/json", chatErrorToAnthropic(resp.StatusCode, raw, model))
 	}
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
-		pr, pw := io.Pipe()
+		if clientStream {
+			pr, pw := io.Pipe()
+			upstream := resp.Body
+			go func() {
+				defer upstream.Close()
+				pw.CloseWithError(streamChatToAnthropic(upstream, pw, model, toolNames))
+			}()
+			resp.Body = pr
+			resp.ContentLength = -1
+			resp.Header.Del("Content-Length")
+			resp.Header.Del("Content-Encoding")
+			resp.Header.Set("Content-Type", "text/event-stream")
+			return resp
+		}
+		// The upstream body was forced to stream (the free-tier gate rejects
+		// non-streaming bodies); fold the chunks back into one JSON answer so
+		// a non-streaming client still sees a single response.
 		upstream := resp.Body
-		go func() {
-			defer upstream.Close()
-			pw.CloseWithError(streamChatToAnthropic(upstream, pw, model))
-		}()
-		resp.Body = pr
-		resp.ContentLength = -1
-		resp.Header.Del("Content-Length")
-		resp.Header.Del("Content-Encoding")
-		resp.Header.Set("Content-Type", "text/event-stream")
-		return resp
+		chat, err := aggregateChatStream(upstream)
+		_ = upstream.Close()
+		if err != nil {
+			return failResponse(resp, "Zen stream error: "+err.Error())
+		}
+		out, _ := json.Marshal(ChatResponseToAnthropic(chat, model, toolNames))
+		return rebody(resp, "application/json", out)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
@@ -383,7 +481,7 @@ func translateChatResponse(resp *http.Response, model string) *http.Response {
 	if err := json.Unmarshal(raw, &chat); err != nil {
 		return failResponse(resp, "Zen returned non-JSON chat response")
 	}
-	out, _ := json.Marshal(ChatResponseToAnthropic(chat, model))
+	out, _ := json.Marshal(ChatResponseToAnthropic(chat, model, toolNames))
 	return rebody(resp, "application/json", out)
 }
 
@@ -501,8 +599,9 @@ func messageID(chatID any) string {
 }
 
 // ChatResponseToAnthropic converts a non-streaming Chat Completions response
-// into an Anthropic Messages response.
-func ChatResponseToAnthropic(chat map[string]any, model string) map[string]any {
+// into an Anthropic Messages response. toolNames maps upstream tool names
+// back to the client's names (nil when no rename occurred).
+func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[string]string) map[string]any {
 	content := make([]any, 0, 2)
 	stop := "end_turn"
 	if choices, _ := chat["choices"].([]any); len(choices) > 0 {
@@ -519,10 +618,11 @@ func ChatResponseToAnthropic(chat map[string]any, model string) map[string]any {
 			call, _ := c.(map[string]any)
 			fn, _ := call["function"].(map[string]any)
 			args, _ := fn["arguments"].(string)
+			name, _ := fn["name"].(string)
 			content = append(content, map[string]any{
 				"type":  "tool_use",
 				"id":    call["id"],
-				"name":  fn["name"],
+				"name":  renameTool(toolNames, name),
 				"input": parseArgs(args),
 			})
 		}
@@ -568,10 +668,151 @@ func parseArgs(args string) any {
 	return v
 }
 
+// aggregatedCall accumulates one tool call across streaming deltas.
+type aggregatedCall struct {
+	id, name string
+	args     strings.Builder
+}
+
+// aggregateChatStream folds an OpenAI chat.completion.chunk SSE stream into
+// the single chat completion JSON a non-streaming upstream would have
+// returned, so a non-streaming client gets one Anthropic response even though
+// the free-tier gate only accepts streaming upstream bodies. A stream is
+// complete only if it carried [DONE] or a finish_reason; a bare clean EOF is
+// a dropped connection and reports an error, mirroring
+// streamChatToAnthropic.
+func aggregateChatStream(r io.Reader) (map[string]any, error) {
+	var (
+		id        any
+		usage     map[string]any
+		content   strings.Builder
+		reasoning strings.Builder
+		toolCalls = map[int]*aggregatedCall{}
+		finish    string
+		done      bool
+	)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			done = true
+			break
+		}
+		var chunk map[string]any
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			continue
+		}
+		if e, ok := chunk["error"].(map[string]any); ok {
+			msg, _ := e["message"].(string)
+			if msg == "" {
+				msg = "upstream stream error"
+			}
+			return nil, fmt.Errorf("%s", msg)
+		}
+		if id == nil {
+			id = chunk["id"]
+		}
+		if u, ok := chunk["usage"].(map[string]any); ok && len(u) > 0 {
+			usage = u
+		}
+		choices, _ := chunk["choices"].([]any)
+		if len(choices) == 0 {
+			continue
+		}
+		choice, _ := choices[0].(map[string]any)
+		d, _ := choice["delta"].(map[string]any)
+		if t, _ := d["content"].(string); t != "" {
+			content.WriteString(t)
+		}
+		if r := reasoningOf(d); r != "" {
+			reasoning.WriteString(r)
+		}
+		calls, _ := d["tool_calls"].([]any)
+		for i, c := range calls {
+			call, _ := c.(map[string]any)
+			idx := i
+			if _, present := call["index"]; present {
+				idx = toInt(call["index"])
+			}
+			agg := toolCalls[idx]
+			if agg == nil {
+				agg = &aggregatedCall{}
+				toolCalls[idx] = agg
+			}
+			fn, _ := call["function"].(map[string]any)
+			if s, _ := call["id"].(string); s != "" && agg.id == "" {
+				agg.id = s
+			}
+			if s, _ := fn["name"].(string); s != "" && agg.name == "" {
+				agg.name = s
+			}
+			if s, _ := fn["arguments"].(string); s != "" {
+				agg.args.WriteString(s)
+			}
+		}
+		if fr, _ := choice["finish_reason"].(string); fr != "" {
+			finish = fr
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if !done && finish == "" {
+		return nil, fmt.Errorf("stream ended before completion")
+	}
+
+	message := map[string]any{"role": "assistant", "content": content.String()}
+	if reasoning.Len() > 0 {
+		message["reasoning_content"] = reasoning.String()
+	}
+	if len(toolCalls) > 0 {
+		idxs := make([]int, 0, len(toolCalls))
+		for idx := range toolCalls {
+			idxs = append(idxs, idx)
+		}
+		sort.Ints(idxs)
+		calls := make([]any, 0, len(idxs))
+		for _, idx := range idxs {
+			agg := toolCalls[idx]
+			id := agg.id
+			if id == "" {
+				id = "call_" + strconv.Itoa(idx)
+			}
+			calls = append(calls, map[string]any{
+				"id":   id,
+				"type": "function",
+				"function": map[string]any{
+					"name":      agg.name,
+					"arguments": agg.args.String(),
+				},
+			})
+		}
+		message["tool_calls"] = calls
+	}
+	chat := map[string]any{
+		"id": id,
+		"choices": []any{map[string]any{
+			"message":       message,
+			"finish_reason": finish,
+		}},
+	}
+	if usage != nil {
+		chat["usage"] = usage
+	}
+	return chat, nil
+}
+
 // streamChatToAnthropic reads OpenAI chat.completion.chunk SSE from r and
-// writes the equivalent Anthropic Messages SSE event sequence to w.
-func streamChatToAnthropic(r io.Reader, w io.Writer, model string) error {
-	s := &chatStream{w: w, model: model, current: -1, toolBlocks: map[int]int{}}
+// writes the equivalent Anthropic Messages SSE event sequence to w. toolNames
+// maps upstream tool names back to the client's names (nil when no rename
+// occurred).
+func streamChatToAnthropic(r io.Reader, w io.Writer, model string, toolNames map[string]string) error {
+	s := &chatStream{w: w, model: model, current: -1, toolBlocks: map[int]int{}, toolNames: toolNames}
 	done := false
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
@@ -613,6 +854,7 @@ func streamChatToAnthropic(r io.Reader, w io.Writer, model string) error {
 type chatStream struct {
 	w          io.Writer
 	model      string
+	toolNames  map[string]string // upstream → client tool names, may be nil
 	started    bool
 	failed     bool
 	nextIndex  int
@@ -732,7 +974,8 @@ func (s *chatStream) handle(chunk map[string]any) error {
 			if id == "" {
 				id = "call_" + strconv.Itoa(callIdx)
 			}
-			if err := s.openBlock("tool", map[string]any{"type": "tool_use", "id": id, "name": fn["name"], "input": map[string]any{}}); err != nil {
+			name, _ := fn["name"].(string)
+			if err := s.openBlock("tool", map[string]any{"type": "tool_use", "id": id, "name": renameTool(s.toolNames, name), "input": map[string]any{}}); err != nil {
 				return err
 			}
 			s.toolBlocks[callIdx] = s.current

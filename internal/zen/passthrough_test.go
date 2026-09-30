@@ -45,8 +45,10 @@ func TestForwardMessages_DirectorBehavior(t *testing.T) {
 	if gotAuth != "Bearer sk-test" {
 		t.Errorf("Authorization = %q, want Bearer sk-test", gotAuth)
 	}
-	if gotAPIKey != "" {
-		t.Errorf("x-api-key not stripped: %q", gotAPIKey)
+	// The client's stale x-api-key is replaced by the configured key: the
+	// Zen messages route authenticates via x-api-key only.
+	if gotAPIKey != "sk-test" {
+		t.Errorf("x-api-key = %q, want configured key sk-test", gotAPIKey)
 	}
 	if gotAnthropicV != "2023-06-01" {
 		t.Errorf("anthropic-version not forwarded: %q", gotAnthropicV)

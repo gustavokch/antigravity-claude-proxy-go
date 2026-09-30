@@ -196,7 +196,7 @@ func IsFreeTierGateError(body []byte) bool {
 	for _, phrase := range []string{
 		"free tier can only be used from within opencode",
 		"freetiererror",
-		"1.17.0 or newer is required",
+		"or newer is required to use the free tier",
 	} {
 		if strings.Contains(lower, phrase) {
 			return true
@@ -233,15 +233,16 @@ func WarnFreeTierGate(model string, status int, body []byte) {
 	slog.Warn("zen free-tier gate rejected request",
 		"model", model,
 		"status", status,
-		"hint", "harness headers or TLS fingerprint do not look like OpenCode")
+		"hint", "gate wants an opencode >=1.18.0 UA, a fresh x-opencode-session, and a stream:true body carrying bash+read tools")
 }
 
-// ObserveFreeTierGate reads a 403 response body (up to 1 MiB), logs the gate
-// warning when it is Zen's free-tier gate, and restores the body untouched so
-// the downstream reader sees identical bytes. Non-403 responses are never
-// read; bodies over the limit are handed back as a continuing stream.
+// ObserveFreeTierGate reads a 403 (FreeTierError) or 426 (UpgradeRequired)
+// response body (up to 1 MiB), logs the gate warning when it is Zen's
+// free-tier gate, and restores the body untouched so the downstream reader
+// sees identical bytes. Other responses are never read; bodies over the limit
+// are handed back as a continuing stream.
 func ObserveFreeTierGate(resp *http.Response, model string) {
-	if resp == nil || resp.StatusCode != http.StatusForbidden {
+	if resp == nil || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusUpgradeRequired) {
 		return
 	}
 	const limit = 1 << 20
