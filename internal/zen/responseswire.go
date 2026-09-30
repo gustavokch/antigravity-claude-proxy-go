@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -271,7 +272,7 @@ func assistantToResponses(content any, renames map[string]string) []any {
 func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames map[string]string, injected map[string]bool) map[string]any {
 	content := make([]any, 0, 2)
 	toolCalls, refusals := 0, 0
-	for _, raw := range anySlice(resp["output"]) {
+	for i, raw := range anySlice(resp["output"]) {
 		item, ok := raw.(map[string]any)
 		if !ok {
 			continue
@@ -320,7 +321,9 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 			}
 			callID, _ := item["call_id"].(string)
 			if callID == "" {
-				callID = "call_" + name
+				// Numbered by output position, as the stream path numbers by
+				// output_index: two calls to one tool must not share an id.
+				callID = "call_" + strconv.Itoa(i)
 			}
 			args, _ := item["arguments"].(string)
 			content = append(content, map[string]any{

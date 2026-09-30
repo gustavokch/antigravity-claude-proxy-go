@@ -1719,3 +1719,27 @@ func TestAnthropicToResponsesRequest_DropsSamplingParams(t *testing.T) {
 		}
 	}
 }
+
+// An upstream function_call with no call_id still needs a unique tool_use id:
+// two parallel calls to the same tool would otherwise share one, and the client
+// could not match either result to its call. The stream path already numbers by
+// output index; the JSON path must not fall back to the tool name.
+func TestResponsesResponseToAnthropic_FallbackCallIDsAreUnique(t *testing.T) {
+	out := ResponsesResponseToAnthropic(map[string]any{"output": []any{
+		map[string]any{"type": "function_call", "name": "read", "arguments": `{"filePath":"/a"}`},
+		map[string]any{"type": "function_call", "name": "read", "arguments": `{"filePath":"/b"}`},
+	}}, "gpt-5", nil, nil)
+
+	seen := map[string]bool{}
+	for _, raw := range anySlice(out["content"]) {
+		block, _ := raw.(map[string]any)
+		id, _ := block["id"].(string)
+		if id == "" || seen[id] {
+			t.Errorf("tool_use id %q is empty or repeated: %s", id, mustJSON(t, out["content"]))
+		}
+		seen[id] = true
+	}
+	if len(seen) != 2 {
+		t.Errorf("tool_use blocks = %d, want 2: %s", len(seen), mustJSON(t, out["content"]))
+	}
+}
