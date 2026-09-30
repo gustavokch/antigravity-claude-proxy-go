@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"antigravity-go-proxy/internal/format"
 )
 
 // SendChat serves an Anthropic Messages request against a Zen
@@ -178,16 +180,24 @@ func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]stri
 	return out, rev, injected
 }
 
+// systemText flattens an Anthropic system field into one string for the
+// translated wires. Claude Code's attribution line
+// (x-anthropic-billing-header: …cch=<differs per request>…) is dropped: sent
+// upstream it would make the head of every prompt unique, so the provider's
+// prefix cache could never hit, and it would hand the provider a client
+// identity marker.
 func systemText(v any) string {
 	switch s := v.(type) {
 	case string:
-		return s
+		return format.StripBillingHeader(s)
 	case []any:
 		parts := make([]string, 0, len(s))
 		for _, b := range s {
 			if block, ok := b.(map[string]any); ok {
 				if t, _ := block["text"].(string); t != "" {
-					parts = append(parts, t)
+					if t = format.StripBillingHeader(t); t != "" {
+						parts = append(parts, t)
+					}
 				}
 			}
 		}

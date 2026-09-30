@@ -83,7 +83,7 @@ func (builder *Builder) buildCloudCodeRequest(request, googleRequest map[string]
 	if instruction := asMap(googleRequest["systemInstruction"]); instruction != nil {
 		for _, rawPart := range asSlice(instruction["parts"]) {
 			part := asMap(rawPart)
-			if text := stripBillingHeader(stringValue(part["text"])); text != "" {
+			if text := StripBillingHeader(stringValue(part["text"])); text != "" {
 				systemParts = append(systemParts, map[string]any{"text": text})
 			}
 		}
@@ -113,10 +113,11 @@ func (builder *Builder) buildCloudCodeRequest(request, googleRequest map[string]
 // account, header name removed = 200 on every account, same minute.
 const billingHeaderToken = "x-anthropic-billing-header"
 
-// stripBillingHeader removes the lines that carry billingHeaderToken from a
+// StripBillingHeader removes the lines that carry billingHeaderToken from a
 // client system part and returns the remaining text. A part that holds nothing
-// else returns "" and the caller drops it.
-func stripBillingHeader(text string) string {
+// else returns "" and the caller drops it. The Zen translated wires reuse it:
+// the line is a per-request client-identity marker no provider should see.
+func StripBillingHeader(text string) string {
 	if text == "" || !strings.Contains(strings.ToLower(text), billingHeaderToken) {
 		return text
 	}
