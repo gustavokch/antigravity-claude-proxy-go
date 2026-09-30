@@ -231,7 +231,9 @@ func applyRouterConfig(cfg config.Config) {
 }
 
 // applyZenHarnessConfig converts the persisted Zen harness section into the
-// zen package's live disguise configuration.
+// zen package's live disguise configuration. The section is a field-wise
+// overlay: a hand-written section that omits "enabled" keeps the disguise
+// on (nil defaults to true), only an explicit false disables it.
 func applyZenHarnessConfig(zenCfg config.ZenConfig) {
 	h := zenCfg.Harness
 	if h == nil {
@@ -246,8 +248,9 @@ func applyZenHarnessConfig(zenCfg config.ZenConfig) {
 		zen.SetTLSConfig(zen.ZenTLSConfig{Enabled: false})
 		return
 	}
+	enabled := h.Enabled == nil || *h.Enabled
 	zen.SetHarnessConfig(zen.HarnessConfig{
-		Enabled: h.Enabled,
+		Enabled: enabled,
 		Version: h.Version,
 		Client:  h.Client,
 		Project: h.Project,

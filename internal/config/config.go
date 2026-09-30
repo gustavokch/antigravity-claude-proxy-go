@@ -128,7 +128,9 @@ type ZenModelConfig struct {
 // zen-bound request: the User-Agent identity plus the four x-opencode-*
 // routing headers the genuine OpenCode client sends.
 type ZenHarnessConfig struct {
-	Enabled bool   `json:"enabled"`
+	// Enabled is a pointer so a hand-written section can omit the key:
+	// absent (nil) means "default on", an explicit false stays false.
+	Enabled *bool  `json:"enabled"`
 	Version string `json:"version,omitempty"`
 	Client  string `json:"client,omitempty"`
 	Project string `json:"project,omitempty"`
@@ -137,6 +139,10 @@ type ZenHarnessConfig struct {
 	// enables it after verifying the fingerprint.
 	TLS bool `json:"tls,omitempty"`
 }
+
+// boolPtr returns a pointer to v, for pointer-typed config fields that must
+// distinguish absent from false.
+func boolPtr(v bool) *bool { return &v }
 
 // ZenConfig holds the OpenCode Zen gateway configuration.
 type ZenConfig struct {
@@ -665,7 +671,7 @@ func DefaultConfig() Config {
 			// Disguise-by-default, consistent with the proxy's purpose: every
 			// zen-bound request claims to be the genuine OpenCode client.
 			Harness: &ZenHarnessConfig{
-				Enabled: true,
+				Enabled: boolPtr(true),
 				Version: zen.DefaultVersion,
 				Client:  zen.DefaultHarnessClient,
 				Project: zen.DefaultProject,

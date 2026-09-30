@@ -1118,7 +1118,7 @@ func TestZenHarnessDefaults(t *testing.T) {
 	if cfg.Zen.Harness == nil {
 		t.Fatal("DefaultConfig must ship a zen.harness section (disguise-by-default)")
 	}
-	if !cfg.Zen.Harness.Enabled {
+	if cfg.Zen.Harness.Enabled == nil || !*cfg.Zen.Harness.Enabled {
 		t.Error("zen.harness.enabled must default to true")
 	}
 	if cfg.Zen.Harness.Version != "1.18.31" {
@@ -1154,7 +1154,7 @@ func TestSave_ZenHarnessMerge(t *testing.T) {
 	if h.Version != "2.0.0" {
 		t.Errorf("version = %q, want %q", h.Version, "2.0.0")
 	}
-	if !h.Enabled || h.Client != "cli" || h.Project != "global" {
+	if h.Enabled == nil || !*h.Enabled || h.Client != "cli" || h.Project != "global" {
 		t.Errorf("unmentioned harness fields must survive, got %+v", h)
 	}
 
@@ -1171,7 +1171,7 @@ func TestSave_ZenHarnessMerge(t *testing.T) {
 	if got.Project != "global" {
 		t.Errorf("whitespace project must keep persisted value, got %q", got.Project)
 	}
-	if got.Enabled {
+	if got.Enabled != nil && *got.Enabled {
 		t.Error("explicit enabled=false must survive the merge")
 	}
 
@@ -1180,7 +1180,7 @@ func TestSave_ZenHarnessMerge(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 	kept := Get().Zen.Harness
-	if kept == nil || kept.Version != "2.0.0" || kept.Enabled || kept.Client != "cli" {
+	if kept == nil || kept.Version != "2.0.0" || (kept.Enabled != nil && *kept.Enabled) || kept.Client != "cli" {
 		t.Errorf("absent harness section must be preserved, got %+v", kept)
 	}
 	if Get().Zen.BaseURL != "https://other.example" {
@@ -1245,5 +1245,34 @@ func TestSave_ZenHarnessTLS(t *testing.T) {
 	}
 	if Get().Zen.Harness.TLS {
 		t.Error("explicit tls=false must survive the merge")
+	}
+}
+
+// The harness section is a field-wise overlay: a hand-written section that
+// omits "enabled" must decode to a nil pointer (absent ≠ false) so the
+// consumer can default it to true, while an explicit false survives.
+func TestZenHarnessEnabledAbsentIsNil(t *testing.T) {
+	var partial ZenHarnessConfig
+	if err := json.Unmarshal([]byte(`{"tls":true}`), &partial); err != nil {
+		t.Fatal(err)
+	}
+	if partial.Enabled != nil {
+		t.Errorf("absent enabled decoded to %v, want nil", *partial.Enabled)
+	}
+	if !partial.TLS {
+		t.Error("tls=true lost in decode")
+	}
+
+	var explicit ZenHarnessConfig
+	if err := json.Unmarshal([]byte(`{"enabled":false}`), &explicit); err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Enabled == nil || *explicit.Enabled {
+		t.Errorf("explicit enabled=false decoded to %v, want a pointer to false", explicit.Enabled)
+	}
+
+	enabled := true
+	if b, err := json.Marshal(ZenHarnessConfig{Enabled: &enabled}); err != nil || !strings.Contains(string(b), `"enabled":true`) {
+		t.Errorf("marshal = %s (%v), want enabled:true present", b, err)
 	}
 }

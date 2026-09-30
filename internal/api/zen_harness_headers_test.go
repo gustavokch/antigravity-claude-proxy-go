@@ -145,8 +145,9 @@ func TestSendZenBump_SendsHarnessHeaders(t *testing.T) {
 func TestApplyZenHarnessConfig_TLSWiring(t *testing.T) {
 	t.Cleanup(func() { zen.SetTLSConfig(zen.ZenTLSConfig{}) })
 
+	enabled := true
 	applyZenHarnessConfig(config.ZenConfig{Harness: &config.ZenHarnessConfig{
-		Enabled: true, TLS: true,
+		Enabled: &enabled, TLS: true,
 	}})
 	if !zen.GetTLSConfig().Enabled {
 		t.Error("harness.tls=true must enable the utls transport")
@@ -155,5 +156,29 @@ func TestApplyZenHarnessConfig_TLSWiring(t *testing.T) {
 	applyZenHarnessConfig(config.ZenConfig{})
 	if zen.GetTLSConfig().Enabled {
 		t.Error("missing harness section must fall back to TLS off")
+	}
+}
+
+// A hand-written partial section ({"tls":true} with no "enabled" key) must
+// not silently disable the header disguise: an absent key defaults to true,
+// an explicit enabled=false still turns it off.
+func TestApplyZenHarnessConfig_PartialSectionDefaultsEnabled(t *testing.T) {
+	t.Cleanup(func() {
+		zen.SetHarnessConfig(zen.HarnessConfig{})
+		zen.SetTLSConfig(zen.ZenTLSConfig{})
+	})
+
+	applyZenHarnessConfig(config.ZenConfig{Harness: &config.ZenHarnessConfig{TLS: true}})
+	if !zen.GetHarnessConfig().Enabled {
+		t.Error("absent harness.enabled must default to true")
+	}
+	if !zen.GetTLSConfig().Enabled {
+		t.Error("harness.tls=true must enable the utls transport")
+	}
+
+	off := false
+	applyZenHarnessConfig(config.ZenConfig{Harness: &config.ZenHarnessConfig{Enabled: &off}})
+	if zen.GetHarnessConfig().Enabled {
+		t.Error("explicit enabled=false must disable the harness")
 	}
 }
