@@ -197,10 +197,14 @@ func userToResponses(content any) []any {
 }
 
 // assistantToResponses maps one Anthropic assistant turn to Responses input
-// items: thinking becomes a reasoning item, text becomes an assistant message,
-// and tool_use becomes a function_call whose arguments are the JSON-encoded
-// tool input. Items are ordered reasoning → message → function_call, which is
-// the order the Responses API replays a prior assistant turn in.
+// items: text becomes an assistant message and tool_use becomes a
+// function_call whose arguments are the JSON-encoded tool input. Items are
+// ordered message → function_call.
+//
+// thinking blocks are dropped rather than replayed: a Responses reasoning
+// input item must carry the id (or encrypted_content) the upstream issued,
+// and the thinking blocks this translator hands out have neither
+// (signature is ""), so a reconstructed item would be rejected.
 func assistantToResponses(content any, renames map[string]string) []any {
 	if s, ok := content.(string); ok {
 		return []any{map[string]any{
@@ -209,7 +213,7 @@ func assistantToResponses(content any, renames map[string]string) []any {
 		}}
 	}
 	blocks := anySlice(content)
-	var reasoning, parts, calls []any
+	var parts, calls []any
 	for _, b := range blocks {
 		block, ok := b.(map[string]any)
 		if !ok {
@@ -217,12 +221,7 @@ func assistantToResponses(content any, renames map[string]string) []any {
 		}
 		switch block["type"] {
 		case "thinking":
-			if text, _ := block["thinking"].(string); text != "" {
-				reasoning = append(reasoning, map[string]any{
-					"type":    "reasoning",
-					"summary": []any{map[string]any{"type": "summary_text", "text": text}},
-				})
-			}
+			// Dropped deliberately; see the function comment.
 		case "text":
 			if text, _ := block["text"].(string); text != "" {
 				parts = append(parts, map[string]any{"type": "output_text", "text": text})
@@ -242,8 +241,7 @@ func assistantToResponses(content any, renames map[string]string) []any {
 			})
 		}
 	}
-	out := make([]any, 0, len(reasoning)+len(parts)+len(calls))
-	out = append(out, reasoning...)
+	out := make([]any, 0, 1+len(calls))
 	if len(parts) > 0 {
 		out = append(out, map[string]any{"role": "assistant", "content": parts})
 	}

@@ -1421,3 +1421,30 @@ func TestSendResponses_ToolUseNullInputEncodesEmptyObject(t *testing.T) {
 		t.Errorf("tool_use input = %#v, want an empty object", block["input"])
 	}
 }
+
+// A replayed thinking block must not become a reasoning input item: the
+// Responses schema requires reasoning items to carry the id the upstream
+// issued, and this translator never has one to give back.
+func TestAnthropicToResponsesRequest_DropsReplayedThinking(t *testing.T) {
+	out, _, _ := anthropicToResponsesRequest(map[string]any{
+		"model": "gpt-5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "thinking", "thinking": "pondering", "signature": ""},
+				map[string]any{"type": "text", "text": "hello"},
+			}},
+			map[string]any{"role": "user", "content": "again"},
+		},
+	})
+	items := responsesInputItems(t, out)
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if item["type"] == "reasoning" {
+			t.Fatalf("reasoning item replayed without an id: %s", mustJSON(t, item))
+		}
+	}
+	if len(items) != 3 {
+		t.Fatalf("input has %d items, want 3 (user, assistant text, user): %s", len(items), mustJSON(t, items))
+	}
+}
