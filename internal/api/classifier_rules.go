@@ -180,9 +180,12 @@ func (server *Server) applyClassifierRule(
 		// reason as the stub branch above. A backend call that failed returns
 		// earlier and leaves the source alone, so a fall-through to built-in
 		// handling is still labeled by whichever path answers.
-		if req.backend != nil && req.backend.Format == config.BackendFormatLaya {
+		switch req.backend.Format {
+		case config.BackendFormatLaya:
 			req.setCaptureSource(corpus.SourceLaya)
-		} else {
+		case config.BackendFormatJev:
+			req.setCaptureSource(corpus.SourceJev)
+		default:
 			req.setCaptureSource(corpus.SourceRule)
 		}
 		if err := writeClassifierResponse(writer, message, req.streamRequested); err != nil {

@@ -13,7 +13,9 @@ import (
 
 // Source names the code path that produced a row. A fine-tune consumes
 // SourceUpstream rows only: training on SourceLaya rows would teach the local
-// model its own answers and entrench its errors. SourceGateway marks a request
+// model its own answers and entrench its errors. SourceJev marks a verdict a
+// hosted Jev model gave through Zen: a third party's answer, never a teacher
+// label. SourceGateway marks a request
 // that an alternate-backend gateway (Kimi, Zen, Claude Code, OpenRouter or a
 // custom endpoint) answered, whose grader is whatever model that gateway
 // routed to rather than the upstream teacher.
@@ -24,6 +26,7 @@ const (
 	SourceStub     Source = "stub"
 	SourceRule     Source = "rule"
 	SourceLaya     Source = "laya"
+	SourceJev      Source = "jev"
 	SourceGateway  Source = "gateway"
 )
 

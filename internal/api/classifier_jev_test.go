@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/classifier"
+	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/config"
 )
 
@@ -268,6 +269,92 @@ func TestParseLayaResponseNamesTheBackendInErrors(t *testing.T) {
 			_, err := parseLayaResponse([]byte(unknownLabel), jevCall(testCase.backend))
 			if err == nil || !strings.HasPrefix(err.Error(), testCase.want) {
 				t.Errorf("err = %v, want it to start with %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+// TestJevRerouteThroughMessages drives the whole /v1/messages path. A Jev
+// answer is the client's verdict and is recorded as a jev row; a Jev failure
+// falls through to built-in handling (always_stub here, the teacher in a real
+// deployment), is audited as an error, and is recorded by the path that
+// answered, never as jev. Neither may touch an account.
+func TestJevRerouteThroughMessages(t *testing.T) {
+	cases := []struct {
+		name           string
+		status         int
+		body           string
+		wantVerdict    string
+		wantAuditState classifier.EventStatus
+		wantSource     corpus.Source
+	}{
+		{name: "jev answers", status: http.StatusOK, body: jevBenignAnswer, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusRerouted, wantSource: corpus.SourceJev},
+		{name: "jev rate-limits", status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusError, wantSource: corpus.SourceStub},
+		{name: "jev escalates a refusal", status: http.StatusOK, body: jevRiskyAnswer, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusEscalated, wantSource: corpus.SourceStub},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			withHarnessDefaults(t)
+			t.Setenv("OPENCODE_API_KEY", "")
+			var hits atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(testCase.status)
+				_, _ = w.Write([]byte(testCase.body))
+			}))
+			defer upstream.Close()
+
+			orig := config.Get()
+			t.Cleanup(func() { config.SetForTest(orig) })
+			server, accountBackend := newAccountBackedTestServer(t)
+			server.classifierAudit = classifier.NewRecorder(10)
+			dir := t.TempDir()
+
+			cfg := config.Get()
+			cfg.Zen.APIKey = "sk-zen-test"
+			cfg.Classifier.Enabled = true
+			cfg.Classifier.Action = config.ActionAlwaysStub
+			cfg.Classifier.Capture = config.ClassifierCaptureConfig{Enabled: true, Dir: dir}
+			cfg.Classifier.Rules = []config.Rule{{
+				ID:      "jev",
+				Name:    "Jev",
+				Enabled: true,
+				Conditions: config.RuleConditions{
+					SystemPromptPatterns: []config.MatchPattern{
+						{Type: config.PatternSubstring, Pattern: "You are a security monitor"},
+					},
+				},
+				Action:        config.RuleActionReroute,
+				TargetBackend: "zen-jev",
+			}}
+			cfg.Classifier.Backends = map[string]config.TargetBackend{
+				"zen-jev": {Name: "zen-jev", URL: upstream.URL + "/v1/systemone", Format: config.BackendFormatJev},
+			}
+			config.SetForTest(cfg)
+			server.applyClassifierConfig(cfg.Classifier)
+
+			rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+			}
+			if got := verdictTextFrom(t, rec.Body.Bytes()); got != testCase.wantVerdict {
+				t.Errorf("client received %q, want %q", got, testCase.wantVerdict)
+			}
+			if hits.Load() != 1 {
+				t.Errorf("Zen was called %d times, want exactly 1", hits.Load())
+			}
+			if accountBackend.hit {
+				t.Error("an account-backed upstream was called; a classifier reroute must not consume account capacity")
+			}
+			history := server.classifierAudit.History()
+			if len(history) != 1 || history[0].Status != testCase.wantAuditState {
+				t.Fatalf("audit = %+v, want one %s event", history, testCase.wantAuditState)
+			}
+			rows := readCaptureRows(t, server, dir)
+			if len(rows) != 1 || rows[0].Source != testCase.wantSource {
+				t.Fatalf("capture rows = %+v, want one %s row", rows, testCase.wantSource)
 			}
 		})
 	}
