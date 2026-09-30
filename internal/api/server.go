@@ -1702,9 +1702,10 @@ func zenAPIKey(cfg config.ZenConfig) string {
 
 // forwardToZen forwards an /v1/messages request to the OpenCode Zen gateway.
 // Anthropic-wire models are forwarded transparently (Authorization rewritten,
-// Anthropic version/beta headers preserved); Chat-Completions-wire models are
-// translated to /v1/chat/completions and the response translated back. When
-// CCR is enabled, it hydrates headroom_retrieve calls.
+// Anthropic version/beta headers preserved); Chat-Completions-wire and
+// Responses-wire models are translated to /v1/chat/completions and
+// /v1/responses respectively, and the response translated back. When CCR is
+// enabled, it hydrates headroom_retrieve calls.
 func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Request, zenCfg config.ZenConfig, body []byte, anthropicRequest map[string]any, model string, zenEntry config.ZenModelConfig) {
 	key := zenAPIKey(zenCfg)
 	if key == "" {
@@ -1744,7 +1745,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	body = applyMaxTokensPolicy(body, anthropicRequest, zenEntry.MaxOutputTokens, 0)
 
 	if server.logger != nil {
-		server.logger.Info("zen forward", "model", model, "chatWire", wire == zen.WireChat)
+		server.logger.Info("zen forward", "model", model, "chatWire", wire == zen.WireChat, "responsesWire", wire == zen.WireResponses)
 	}
 
 	startTime := server.nowTime()
@@ -1769,6 +1770,38 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 		}
 		opts := server.defaultCCROptions(func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
 			return zen.SendChat(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
+		})
+		opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
+		if isStreaming, _ := reqMap["stream"].(bool); isStreaming {
+			_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
+		} else {
+			_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
+		}
+		return
+	}
+
+	if wire == zen.WireResponses {
+		// Cache-bump replay posts to /v1/messages, which a Responses-wire
+		// model cannot serve, so no bump is recorded on this path — same as
+		// the chat wire. The free-tier gate is not observed here either: the
+		// modify hook sees the already-translated Anthropic body, while
+		// translateResponsesResponse observes Zen's own bytes.
+		if !server.isCCREnabled() {
+			zen.ForwardResponses(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
+				if resp.StatusCode < 400 {
+					server.zenInstrumentResponse(resp, model, sessionKey, startTime)
+				}
+				return nil
+			})
+			return
+		}
+		var reqMap map[string]any
+		if err := json.Unmarshal(body, &reqMap); err != nil {
+			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to parse Zen request: "+err.Error())
+			return
+		}
+		opts := server.defaultCCROptions(func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
+			return zen.SendResponses(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
 		})
 		opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
 		if isStreaming, _ := reqMap["stream"].(bool); isStreaming {

@@ -284,17 +284,23 @@ func TestMatchZenModelEntry_KeylessWarnsOnceAndRearms(t *testing.T) {
 	}
 }
 
-func TestMatchZenModelEntry_SkipsNonAnthropicWire(t *testing.T) {
+// gpt-* speaks the Responses wire and is translated, so a Responses-wire
+// allowlist entry claims the Zen route; a Gemini-native entry still does not.
+func TestMatchZenModelEntry_ClaimsResponsesWire(t *testing.T) {
 	cfg := config.ZenConfig{
 		Enabled: true,
 		APIKey:  "sk-test",
 		Allowlist: []config.ZenModelConfig{
 			{ID: "gpt-5", Enabled: true},
+			{ID: "gemini-3.1-pro", Enabled: true},
 			{ID: "claude-sonnet-4-6", Enabled: true},
 		},
 	}
-	if _, ok := matchZenModelEntry(cfg, "gpt-5"); ok {
-		t.Fatal("gpt-5 is not Anthropic-wire; it must not claim the Zen route")
+	if _, ok := matchZenModelEntry(cfg, "gpt-5"); !ok {
+		t.Fatal("gpt-5 is Responses-wire; it must claim the Zen route")
+	}
+	if _, ok := matchZenModelEntry(cfg, "gemini-3.1-pro"); ok {
+		t.Fatal("gemini-3.1-pro is Gemini-native; it must not claim the Zen route")
 	}
 	if _, ok := matchZenModelEntry(cfg, "claude-sonnet-4-6"); !ok {
 		t.Fatal("claude-sonnet-4-6 must still match")
@@ -329,12 +335,12 @@ func TestServer_Messages_NonWireZenEntryFallsThrough(t *testing.T) {
 		"apiKey":  "sk-zen-test",
 		"baseUrl": zenStub.URL,
 		"allowlist": []map[string]any{
-			{"id": "gpt-5", "enabled": true},
+			{"id": "gemini-3.1-pro", "enabled": true},
 		},
 	})
 	if _, err := config.Save(map[string]any{
 		"customEndpoints": map[string]any{
-			"gpt-5": map[string]any{
+			"gemini-3.1-pro": map[string]any{
 				"url":    customTarget.URL,
 				"apiKey": "custom-secret",
 			},
@@ -344,13 +350,13 @@ func TestServer_Messages_NonWireZenEntryFallsThrough(t *testing.T) {
 	}
 
 	rec := postZenMessages(t, newZenTestServer(t),
-		`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
+		`{"model":"gemini-3.1-pro","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
 
 	if zenHit {
-		t.Error("non-wire Zen entry must not claim the route (Zen upstream was hit)")
+		t.Error("non-forwardable Zen entry must not claim the route (Zen upstream was hit)")
 	}
 	if !customHit {
-		t.Fatalf("non-wire Zen entry must fall through to the custom endpoint; status = %d body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("non-forwardable Zen entry must fall through to the custom endpoint; status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	if rec.Code != 200 {
 		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -406,7 +412,7 @@ func TestServer_ForwardToZen_DefenceInDepthGuards(t *testing.T) {
 
 	rec2 := httptest.NewRecorder()
 	server.forwardToZen(rec2, req, config.ZenConfig{Enabled: true, APIKey: "sk-zen-test"}, body, reqMap,
-		"gpt-5.5", config.ZenModelConfig{ID: "gpt-5.5", Enabled: true})
+		"gemini-3.1-pro", config.ZenModelConfig{ID: "gemini-3.1-pro", Enabled: true})
 	if rec2.Code != 500 {
 		t.Errorf("non-wire direct forward = %d, want 500; body = %s", rec2.Code, rec2.Body.String())
 	}
@@ -517,7 +523,7 @@ func TestServer_ForwardToZen_ExplicitMaxTokensNotClampedToDefault(t *testing.T) 
 	}
 }
 
-func TestServer_Models_SkipsNonAnthropicWireZenEntries(t *testing.T) {
+func TestServer_Models_SkipsNonForwardableZenEntries(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
@@ -528,7 +534,7 @@ func TestServer_Models_SkipsNonAnthropicWireZenEntries(t *testing.T) {
 		"apiKey":  "sk-zen-test",
 		"baseUrl": "http://127.0.0.1:1",
 		"allowlist": []map[string]any{
-			{"id": "gpt-5", "enabled": true},
+			{"id": "gemini-3.1-pro", "enabled": true},
 			{"id": "claude-sonnet-4-6", "enabled": true},
 		},
 	})
@@ -557,8 +563,8 @@ func TestServer_Models_SkipsNonAnthropicWireZenEntries(t *testing.T) {
 	if !seen["claude-sonnet-4-6"] {
 		t.Errorf("claude-sonnet-4-6 missing from /v1/models: %v", seen)
 	}
-	if seen["gpt-5"] {
-		t.Errorf("gpt-5 is not Anthropic-wire and must not be advertised in /v1/models")
+	if seen["gemini-3.1-pro"] {
+		t.Errorf("gemini-3.1-pro is Gemini-native and must not be advertised in /v1/models")
 	}
 }
 
@@ -636,8 +642,8 @@ func TestMatchZenModelEntry(t *testing.T) {
 	if _, ok := matchZenModelEntry(cfg, "gpt-5.5"); ok {
 		t.Error("disabled entry should not match")
 	}
-	if _, ok := matchZenModelEntry(cfg, "gpt-5"); ok {
-		t.Error("enabled but non-Anthropic-wire entry should not match")
+	if _, ok := matchZenModelEntry(cfg, "gpt-5"); !ok {
+		t.Error("enabled Responses-wire entry should match")
 	}
 	if _, ok := matchZenModelEntry(cfg, ""); ok {
 		t.Error("empty model should not match")
@@ -774,5 +780,134 @@ func TestServer_ForwardToZen_ChatWireCCRHydrates(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("client stream missing %s\n%s", want, out)
 		}
+	}
+}
+
+// Responses-wire allowlist entries must be claimed by the Zen route,
+// canonicalized, translated and posted to /v1/responses, and the client must
+// receive Anthropic SSE. Regression pin for the whole Responses dispatch:
+// matchZenModelEntry → zenTargetModel → forwardToZen wire branch →
+// SendResponses → streamResponsesToAnthropic.
+func TestServer_ForwardToZen_ResponsesWireRouting(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	var gotPath, gotAuth string
+	var gotReq map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotReq)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_r1"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+			``,
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"yo"}`,
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_r1","usage":{"input_tokens":5,"output_tokens":2}}}`,
+			``,
+		}, "\n"))
+	}))
+	defer upstream.Close()
+
+	saveZenTestConfig(t, map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-zen-test",
+		"baseUrl": upstream.URL,
+		"allowlist": []map[string]any{
+			{"id": "gpt-5.5", "alias": "fast", "enabled": true},
+		},
+	})
+
+	rec := postZenMessages(t, newZenTestServer(t),
+		`{"model":"fast","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"stream":true}`)
+
+	if rec.Code != 200 {
+		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("upstream path = %q, want /v1/responses", gotPath)
+	}
+	if gotAuth != "Bearer sk-zen-test" {
+		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)
+	}
+	if gotReq["model"] != "gpt-5.5" {
+		t.Errorf("upstream model = %v, want gpt-5.5 (alias resolved to canonical)", gotReq["model"])
+	}
+	if gotReq["stream"] != true {
+		t.Errorf("upstream stream = %v, want true", gotReq["stream"])
+	}
+	if gotReq["max_output_tokens"] != float64(100) {
+		t.Errorf("upstream max_output_tokens = %v, want 100", gotReq["max_output_tokens"])
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: message_start") || !strings.Contains(body, `"text":"yo"`) {
+		t.Errorf("client body is not Anthropic SSE: %s", body)
+	}
+	if !strings.Contains(body, "event: message_stop") {
+		t.Errorf("client body missing message_stop: %s", body)
+	}
+}
+
+// The id list is a static snapshot of the Zen catalog, so a gpt-* id that is
+// not on it must stay WireNone: claiming it would post an untranslated body to
+// /v1/messages on a model that only speaks /v1/responses. It falls through to
+// the next gateway instead.
+func TestServer_ForwardToZen_UnlistedGPTIDFallsThrough(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	zenHit := false
+	zenStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zenHit = true
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer zenStub.Close()
+
+	var customHit bool
+	customTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		customHit = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_custom","content":[{"type":"text","text":"custom_ok"}]}`))
+	}))
+	defer customTarget.Close()
+
+	saveZenTestConfig(t, map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-zen-test",
+		"baseUrl": zenStub.URL,
+		"allowlist": []map[string]any{
+			{"id": "gpt-9-ultra", "enabled": true},
+		},
+	})
+	if _, err := config.Save(map[string]any{
+		"customEndpoints": map[string]any{
+			"gpt-9-ultra": map[string]any{
+				"url":    customTarget.URL,
+				"apiKey": "custom-secret",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("config.Save customEndpoints: %v", err)
+	}
+
+	rec := postZenMessages(t, newZenTestServer(t),
+		`{"model":"gpt-9-ultra","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`)
+
+	if zenHit {
+		t.Error("an id missing from ResponsesWireIDs must not claim the Zen route (Zen upstream was hit)")
+	}
+	if !customHit {
+		t.Fatalf("unlisted id must fall through to the next gateway; status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "custom_ok") {
+		t.Errorf("fall-through answer = %s, want custom_ok", rec.Body.String())
 	}
 }

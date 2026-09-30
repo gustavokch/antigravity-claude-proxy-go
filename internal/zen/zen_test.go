@@ -58,10 +58,10 @@ func TestWireFor(t *testing.T) {
 		{"opencode/Claude-Sonnet-4-6", "claude-sonnet-4-6", WireAnthropic},
 		{"OPENCODE/GLM-5.3", "glm-5.3", WireChat},
 		{"big-pickle", "big-pickle", WireChat},
-		{"gpt-5", "", WireNone},          // Responses wire
-		{"gemini-3.1-pro", "", WireNone}, // Gemini-native
-		{"jev-1.13", "", WireNone},       // systemone
-		{"muse-spark-1.3", "", WireNone}, // Responses wire
+		{"gpt-5", "gpt-5", WireResponses}, // Responses wire
+		{"gemini-3.1-pro", "", WireNone},  // Gemini-native
+		{"jev-1.13", "", WireNone},        // systemone
+		{"muse-spark-1.3", "muse-spark-1.3", WireResponses},
 	}
 	for _, c := range cases {
 		got, w := WireFor(c.in)
