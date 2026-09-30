@@ -677,13 +677,11 @@ func (s *responsesStream) finish() error {
 		return err
 	}
 	stop := s.stop
+	// tool_use is claimed only while a tool_use block survived: a turn whose
+	// calls were all dropped as gate-injected would otherwise make the client
+	// wait for a block that never came.
 	if s.toolItems > 0 && stop == "" {
 		stop = "tool_use"
-	}
-	// Every tool call was dropped as gate-injected: claiming tool_use with no
-	// tool_use block would make the client wait for one.
-	if s.toolItems == 0 && stop == "tool_use" {
-		stop = "end_turn"
 	}
 	if stop == "" {
 		stop = "end_turn"
