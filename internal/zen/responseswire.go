@@ -260,7 +260,7 @@ func assistantToResponses(content any, renames map[string]string) []any {
 // ensureGateTools added, whose calls are dropped.
 func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames map[string]string, injected map[string]bool) map[string]any {
 	content := make([]any, 0, 2)
-	toolCalls := 0
+	toolCalls, refusals := 0, 0
 	for _, raw := range anySlice(resp["output"]) {
 		item, ok := raw.(map[string]any)
 		if !ok {
@@ -282,11 +282,24 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 		case "message":
 			for _, raw := range anySlice(item["content"]) {
 				part, ok := raw.(map[string]any)
-				if !ok || part["type"] != "output_text" {
+				if !ok {
 					continue
 				}
-				if text, _ := part["text"].(string); text != "" {
-					content = append(content, map[string]any{"type": "text", "text": text})
+				switch part["type"] {
+				case "output_text":
+					if text, _ := part["text"].(string); text != "" {
+						content = append(content, map[string]any{"type": "text", "text": text})
+					}
+				case "refusal":
+					// A decline rides as a refusal part. Anthropic has no
+					// refusal block, so the model's explanation becomes the
+					// text and responsesStopReason marks the turn refusal —
+					// dropping the part would hand back an empty turn that
+					// reads as a successful answer.
+					if text, _ := part["refusal"].(string); text != "" {
+						content = append(content, map[string]any{"type": "text", "text": text})
+					}
+					refusals++
 				}
 			}
 		case "function_call":
@@ -316,19 +329,31 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 		"role":          "assistant",
 		"model":         model,
 		"content":       content,
-		"stop_reason":   responsesStopReason(resp, toolCalls),
 		"stop_sequence": nil,
+		"stop_reason":   responsesStopReason(resp, toolCalls, refusals),
 		"usage":         responsesUsage(usage),
 	}
 }
 
 // responsesStopReason derives the Anthropic stop_reason. The Responses wire
-// carries no finish_reason: a function call in the output means the model
-// asked for tools, incomplete_details.reason == "max_output_tokens" means the
-// output cap stopped it, and anything else is a normal end of turn.
-func responsesStopReason(resp map[string]any, toolCalls int) string {
+// carries no finish_reason, so the output itself decides: a refusal part or
+// incomplete_details.reason "content_filter" means the model declined,
+// incomplete_details.reason "max_output_tokens" means the output cap stopped
+// it, a surviving function call in the output means the model asked for tools,
+// and anything else is a normal end of turn.
+//
+// A refusal outranks the rest: Anthropic tells clients to discard the output of
+// a declined turn, so reporting max_tokens or tool_use over a filter would hide
+// the decline behind a stop the client would resume from.
+func responsesStopReason(resp map[string]any, toolCalls, refusals int) string {
+	if refusals > 0 {
+		return "refusal"
+	}
 	if details, ok := resp["incomplete_details"].(map[string]any); ok {
-		if reason, _ := details["reason"].(string); reason == "max_output_tokens" {
+		switch reason, _ := details["reason"].(string); reason {
+		case "content_filter":
+			return "refusal"
+		case "max_output_tokens":
 			return "max_tokens"
 		}
 	}
@@ -360,8 +385,9 @@ func responsesUsage(u map[string]any) map[string]any {
 }
 
 // translateResponsesResponse rewrites a Responses upstream response into the
-// Anthropic shape: an error status into an Anthropic error envelope, and any
-// other JSON body into a message translated by ResponsesResponseToAnthropic.
+// Anthropic shape: an error status into an Anthropic error envelope, an
+// upstream event stream into Anthropic SSE (for a streaming client) or one
+// aggregated message (for a non-streaming one), and any other body into JSON.
 func translateResponsesResponse(resp *http.Response, model string, clientStream bool, toolNames map[string]string, injected map[string]bool) *http.Response {
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
@@ -369,13 +395,37 @@ func translateResponsesResponse(resp *http.Response, model string, clientStream 
 		return rebody(resp, "application/json", chatErrorToAnthropic(resp.StatusCode, raw, model))
 	}
 	// The gate only accepts streaming upstream bodies (anthropicToResponsesRequest
-	// always sets "stream": true), so folding an event-stream back into the
-	// Anthropic shape — into Anthropic SSE for a streaming client, or into one
-	// aggregated message for a non-streaming one — is the streaming translator's
-	// job. It is not here yet, and reporting the stream as an untranslatable body
-	// beats handing the client an event stream shaped like neither wire.
+	// always sets "stream": true), so an event stream arrives here for every
+	// successful call and is folded back into whichever Anthropic shape the
+	// client asked for.
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
-		return failResponse(resp, "Zen returned a streaming responses body")
+		if clientStream {
+			pr, pw := io.Pipe()
+			upstream := resp.Body
+			go func() {
+				defer upstream.Close()
+				// A translator error becomes a read error on the client side;
+				// by then the emitter has already written the Anthropic error
+				// event, so the client sees the reason either way.
+				pw.CloseWithError(streamResponsesToAnthropic(upstream, pw, model, toolNames, injected))
+			}()
+			resp.Body = pr
+			resp.ContentLength = -1
+			resp.Header.Del("Content-Length")
+			resp.Header.Del("Content-Encoding")
+			resp.Header.Set("Content-Type", "text/event-stream")
+			return resp
+		}
+		upstream := resp.Body
+		aggregated, err := aggregateResponsesStream(upstream)
+		// Closed before the rewrite: failResponse installs a fresh resp.Body,
+		// so an upstream left open here would orphan the connection.
+		_ = upstream.Close()
+		if err != nil {
+			return failResponse(resp, "Zen stream error: "+err.Error())
+		}
+		out, _ := json.Marshal(ResponsesResponseToAnthropic(aggregated, model, toolNames, injected))
+		return rebody(resp, "application/json", out)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()

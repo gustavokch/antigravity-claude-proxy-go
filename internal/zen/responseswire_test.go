@@ -1,11 +1,16 @@
 package zen
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func responsesInputItems(t *testing.T, body map[string]any) []any {
@@ -403,4 +408,551 @@ func TestTranslateResponsesResponse_JSONBodyForNonStreamClient(t *testing.T) {
 	if part, _ := content[0].(map[string]any); part["text"] != "pong" {
 		t.Errorf("content = %s, want pong", raw)
 	}
+}
+
+// trackedBody records that the upstream body was closed, so a test can prove a
+// rewritten response did not orphan the connection.
+type trackedBody struct {
+	io.Reader
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newTrackedBody(s string) *trackedBody {
+	return &trackedBody{Reader: strings.NewReader(s), closed: make(chan struct{})}
+}
+
+func (b *trackedBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+// waitClosed asserts the body was closed, without hanging the suite when it
+// was not.
+func (b *trackedBody) waitClosed(t *testing.T) {
+	t.Helper()
+	select {
+	case <-b.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream body was not closed: the connection is leaked")
+	}
+}
+
+// sseUpstream wraps an event stream as an upstream 200 response.
+func sseUpstream(body *trackedBody) *http.Response {
+	return &http.Response{
+		StatusCode:    200,
+		Status:        "200 OK",
+		Header:        http.Header{"Content-Type": []string{"text/event-stream"}, "Content-Encoding": []string{"gzip"}, "Content-Length": []string{"42"}},
+		ContentLength: 42,
+		Body:          body,
+	}
+}
+
+// A non-streaming client gets the upstream stream folded back into the single
+// JSON body a non-streaming call would have returned: text, reasoning, and
+// tool-call arguments all reconstructed from the deltas.
+func TestAggregateResponsesStream_ReconstructsOutput(t *testing.T) {
+	sse := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_7"}}`,
+		``,
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"pondering"}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":1,"delta":"hel"}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":1,"delta":"lo"}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"id":"fc_1","type":"function_call","call_id":"call_9","name":"bash","arguments":""}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"command\":"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"\"ls\"}"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"id":"fc_1","type":"function_call","call_id":"call_9","name":"bash","arguments":"{\"command\":\"ls\"}"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_7","usage":{"input_tokens":10,"output_tokens":4}}}`,
+		``,
+	}, "\n")
+
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	if agg["id"] != "resp_7" {
+		t.Errorf("id = %v, want resp_7", agg["id"])
+	}
+	output := anySlice(agg["output"])
+	if len(output) != 3 {
+		t.Fatalf("output = %s, want reasoning + message + function_call", mustJSON(t, output))
+	}
+	reason, _ := output[0].(map[string]any)
+	if summary := anySlice(reason["summary"]); len(summary) != 1 {
+		t.Fatalf("reasoning summary = %s, want one part", mustJSON(t, reason["summary"]))
+	} else if part, _ := summary[0].(map[string]any); part["text"] != "pondering" {
+		t.Errorf("reasoning text = %v, want pondering", part["text"])
+	}
+	message, _ := output[1].(map[string]any)
+	parts := anySlice(message["content"])
+	if len(parts) != 1 {
+		t.Fatalf("message content = %s, want one output_text part", mustJSON(t, message["content"]))
+	}
+	if part, _ := parts[0].(map[string]any); part["text"] != "hello" {
+		t.Errorf("message text = %v, want the deltas joined (hello)", part["text"])
+	}
+	call, _ := output[2].(map[string]any)
+	if call["arguments"] != `{"command":"ls"}` {
+		t.Errorf("function_call arguments = %v, want the deltas joined", call["arguments"])
+	}
+	usage, _ := agg["usage"].(map[string]any)
+	if usage["input_tokens"] != 10.0 || usage["output_tokens"] != 4.0 {
+		t.Errorf("usage = %s, want input 10 output 4", mustJSON(t, usage))
+	}
+}
+
+// A stream that ends without response.completed is a dropped connection, not a
+// complete answer: finishing it would pass a partial reply off as complete.
+func TestAggregateResponsesStream_TruncatedStreamErrors(t *testing.T) {
+	sse := "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"partial\"}\n\n"
+	if _, err := aggregateResponsesStream(strings.NewReader(sse)); err == nil {
+		t.Fatal("truncated stream must not aggregate silently")
+	}
+}
+
+// A streaming client receives the Anthropic SSE event sequence: text as
+// text_delta, a tool call as a tool_use block with input_json_delta, and a
+// final message_delta carrying the derived stop_reason and Anthropic usage.
+func TestStreamResponsesToAnthropic_EmitsAnthropicEvents(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_7"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_9","name":"bash","arguments":""}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"command\":\"ls\"}"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_7","usage":{"input_tokens":10,"output_tokens":4}}}`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", map[string]string{"bash": "Bash"}, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"event: message_start",
+		"event: content_block_start",
+		`"type":"text_delta"`,
+		`"type":"tool_use"`,
+		`"name":"Bash"`,
+		`"type":"input_json_delta"`,
+		"event: content_block_stop",
+		`"stop_reason":"tool_use"`,
+		"event: message_stop",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("event stream missing %s:\n%s", want, got)
+		}
+	}
+}
+
+// A tool call to a gate-injected tool must not open a tool_use block: the
+// client never declared it, so it could not resolve the call.
+func TestStreamResponsesToAnthropic_DropsInjectedToolCalls(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_8"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_2","name":"read","arguments":""}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{}"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_8","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, map[string]bool{"read": true}); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, `"type":"tool_use"`) {
+		t.Errorf("injected tool call must not open a tool_use block:\n%s", got)
+	}
+	if !strings.Contains(got, `"stop_reason":"end_turn"`) {
+		t.Errorf("stop_reason = end_turn required when no tool call survives:\n%s", got)
+	}
+}
+
+// A stream that fails mid-flight reports an Anthropic error event instead of
+// a clean stop, so the client does not treat a partial answer as complete.
+func TestStreamResponsesToAnthropic_FailedStreamEmitsError(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_9"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"partial"}`,
+		``,
+		`data: {"type":"response.failed","response":{"error":{"message":"upstream exploded"}}}`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "event: error") || !strings.Contains(got, "upstream exploded") {
+		t.Errorf("failed stream must emit an error event carrying the reason:\n%s", got)
+	}
+	if strings.Contains(got, "event: message_stop") {
+		t.Errorf("a failed stream must not emit message_stop:\n%s", got)
+	}
+}
+
+// The gate-injected drop is not a property of the streaming emitter alone: in
+// the aggregate direction the same call must not become a tool_use block. With
+// the injected check removed this fails on both the content and the stop reason.
+func TestAggregateResponsesStream_DropsInjectedToolCalls(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_8"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_2","name":"read","arguments":""}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{}"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_2","name":"read","arguments":"{}"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_8","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		``,
+	}, "\n")
+
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, map[string]bool{"read": true})
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want only the text block (injected tool call dropped)", mustJSON(t, content))
+	}
+	if part, _ := content[0].(map[string]any); part["type"] != "text" || part["text"] != "done" {
+		t.Errorf("content[0] = %s, want the text block", mustJSON(t, content[0]))
+	}
+	if msg["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason = %v, want end_turn (no surviving tool call)", msg["stop_reason"])
+	}
+}
+
+// A refusal part is not silently dropped, and incomplete_details
+// content_filter is not reported as a clean end_turn: Anthropic's real
+// stop_reason for a declined generation is "refusal".
+func TestResponsesResponseToAnthropic_Refusal(t *testing.T) {
+	refused := ResponsesResponseToAnthropic(map[string]any{
+		"output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{
+			map[string]any{"type": "refusal", "refusal": "I can't help with that."},
+		}}},
+	}, "gpt-5", nil, nil)
+	if refused["stop_reason"] != "refusal" {
+		t.Errorf("stop_reason = %v, want refusal for a refusal part", refused["stop_reason"])
+	}
+	content, _ := refused["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want the refusal text surfaced", mustJSON(t, content))
+	}
+	if part, _ := content[0].(map[string]any); part["type"] != "text" {
+		t.Errorf("content[0] = %s, want a text block carrying the refusal", mustJSON(t, content[0]))
+	}
+
+	filtered := ResponsesResponseToAnthropic(map[string]any{
+		"output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{
+			map[string]any{"type": "output_text", "text": "partial"},
+		}}},
+		"incomplete_details": map[string]any{"reason": "content_filter"},
+	}, "gpt-5", nil, nil)
+	if filtered["stop_reason"] != "refusal" {
+		t.Errorf("stop_reason = %v, want refusal for incomplete_details.content_filter", filtered["stop_reason"])
+	}
+}
+
+// A refusal in the aggregate direction survives the fold: the deltas become a
+// refusal part the non-streaming path maps, and content_filter still reaches
+// the client as stop_reason refusal.
+func TestAggregateResponsesStream_RefusalReachesClient(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.refusal.delta","output_index":0,"delta":"I can't "}`,
+		``,
+		`data: {"type":"response.refusal.delta","output_index":0,"delta":"help with that."}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_r","incomplete_details":{"reason":"content_filter"},"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)
+	if msg["stop_reason"] != "refusal" {
+		t.Errorf("stop_reason = %v, want refusal (content_filter through the aggregate path)", msg["stop_reason"])
+	}
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want the refusal text folded in", mustJSON(t, content))
+	}
+	part, _ := content[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if part["type"] != "text" || !strings.Contains(text, "I can't help with that.") {
+		t.Errorf("content[0] = %s, want the joined refusal deltas", mustJSON(t, content[0]))
+	}
+}
+
+// A streamed refusal reports stop_reason refusal, never end_turn, and its text
+// reaches the client as text_delta. The two signals are exercised separately:
+// a refusal delta on its own, and incomplete_details content_filter on a
+// stream that carried ordinary text.
+func TestStreamResponsesToAnthropic_RefusalStopReason(t *testing.T) {
+	t.Run("refusal delta", func(t *testing.T) {
+		sse := strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+			``,
+			`data: {"type":"response.refusal.delta","output_index":0,"delta":"I can't help with that."}`,
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}`,
+			``,
+		}, "\n")
+
+		var out bytes.Buffer
+		if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+			t.Fatalf("streamResponsesToAnthropic: %v", err)
+		}
+		got := out.String()
+		if !strings.Contains(got, `"stop_reason":"refusal"`) {
+			t.Errorf("a refusal delta must not report end_turn:\n%s", got)
+		}
+		if !strings.Contains(got, `"type":"text_delta"`) || !strings.Contains(got, "I can't help with that.") {
+			t.Errorf("refusal text must reach the client as text_delta:\n%s", got)
+		}
+	})
+
+	t.Run("content_filter without a refusal delta", func(t *testing.T) {
+		sse := strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+			``,
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"half an ans"}`,
+			``,
+			`data: {"type":"response.incomplete","response":{"id":"resp_r","incomplete_details":{"reason":"content_filter"},"usage":{"input_tokens":5,"output_tokens":2}}}`,
+			``,
+		}, "\n")
+
+		var out bytes.Buffer
+		if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+			t.Fatalf("streamResponsesToAnthropic: %v", err)
+		}
+		got := out.String()
+		if !strings.Contains(got, `"stop_reason":"refusal"`) {
+			t.Errorf("incomplete_details.content_filter must report refusal, not end_turn:\n%s", got)
+		}
+		if strings.Contains(got, `"stop_reason":"end_turn"`) {
+			t.Errorf("a filtered turn must not report end_turn:\n%s", got)
+		}
+	})
+}
+
+// A streaming client gets the upstream event stream piped through as Anthropic
+// SSE: the transport headers must not still claim a buffered JSON body.
+func TestTranslateResponsesResponse_StreamsAnthropicEventsForStreamClient(t *testing.T) {
+	up := newTrackedBody(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_7"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"pong"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_7","usage":{"input_tokens":3,"output_tokens":1}}}`,
+		``,
+	}, "\n"))
+	resp := sseUpstream(up)
+
+	out := translateResponsesResponse(resp, "gpt-5", true, nil, nil)
+
+	if ct := out.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	if out.ContentLength != -1 {
+		t.Errorf("ContentLength = %d, want -1 for a streamed body", out.ContentLength)
+	}
+	if out.Header.Get("Content-Length") != "" || out.Header.Get("Content-Encoding") != "" {
+		t.Errorf("streamed body must drop Content-Length/Content-Encoding, got %v", out.Header)
+	}
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatalf("read piped body: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{"event: message_start", `"type":"text_delta"`, `"stop_reason":"end_turn"`, "event: message_stop"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("piped stream missing %s:\n%s", want, got)
+		}
+	}
+	_ = out.Body.Close()
+	up.waitClosed(t)
+}
+
+// A non-streaming client gets the same event stream folded into one JSON
+// message instead of an untranslatable event stream.
+func TestTranslateResponsesResponse_AggregatesStreamForNonStreamClient(t *testing.T) {
+	up := newTrackedBody(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_7"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"po"}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"ng"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_7","usage":{"input_tokens":3,"output_tokens":1}}}`,
+		``,
+	}, "\n"))
+	resp := sseUpstream(up)
+
+	out := translateResponsesResponse(resp, "gpt-5", false, nil, nil)
+
+	if ct := out.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	raw, _ := io.ReadAll(out.Body)
+	var msg map[string]any
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("body not JSON: %v; body = %s", err, raw)
+	}
+	if msg["type"] != "message" || msg["stop_reason"] != "end_turn" {
+		t.Errorf("response = %s, want an aggregated Anthropic message", raw)
+	}
+	content, _ := msg["content"].([]any)
+	if part, _ := content[0].(map[string]any); part["text"] != "pong" {
+		t.Errorf("content = %s, want the deltas joined", raw)
+	}
+	up.waitClosed(t)
+}
+
+// A stream that cannot be folded is an error response, and the upstream body
+// is closed on the way out: failResponse replaces resp.Body, so a body closed
+// after the rewrite would leak the connection.
+func TestTranslateResponsesResponse_StreamFailureStillClosesBody(t *testing.T) {
+	truncated := newTrackedBody(`data: {"type":"response.output_text.delta","output_index":0,"delta":"partial"}` + "\n\n")
+	out := translateResponsesResponse(sseUpstream(truncated), "gpt-5", false, nil, nil)
+	if out.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 for a truncated stream", out.StatusCode)
+	}
+	truncated.waitClosed(t)
+
+	failed := newTrackedBody(`data: {"type":"response.created","response":{"id":"resp_9"}}` + "\n\n" +
+		`data: {"type":"response.failed","response":{"error":{"message":"upstream exploded"}}}` + "\n\n")
+	out = translateResponsesResponse(sseUpstream(failed), "gpt-5", false, nil, nil)
+	if out.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 for a failed stream", out.StatusCode)
+	}
+	raw, _ := io.ReadAll(out.Body)
+	if !strings.Contains(string(raw), "upstream exploded") {
+		t.Errorf("body = %s, want the upstream reason", raw)
+	}
+	failed.waitClosed(t)
+}
+
+// The streaming branch must hand events to the client as the upstream produces
+// them, not buffer the body and emit it at the end. The upstream here stalls
+// mid-stream: a buffered body delivers nothing until the stall is released, so
+// receiving message_start while the upstream is still open is what
+// distinguishes streaming from buffering.
+func TestTranslateResponsesResponse_StreamBranchDeliversIncrementally(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for _, ev := range []string{
+			`data: {"type":"response.created","response":{"id":"resp_s"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`,
+			``,
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"hello "}`,
+			``,
+		} {
+			io.WriteString(w, ev+"\n")
+			flusher.Flush()
+		}
+		<-release
+		io.WriteString(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":"world"}`+"\n\n")
+		io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_s","usage":{"input_tokens":4,"output_tokens":2}}}`+"\n\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	out := translateResponsesResponse(resp, "gpt-5", true, nil, nil)
+
+	br := bufio.NewReader(out.Body)
+	first := make(chan string, 1)
+	go func() {
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				first <- "read error: " + err.Error()
+				return
+			}
+			if strings.HasPrefix(line, "event:") {
+				first <- strings.TrimSpace(line)
+				return
+			}
+		}
+	}()
+
+	var firstEvent string
+	select {
+	case firstEvent = <-first:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("no event reached the client while the upstream was still open: the body was buffered")
+	}
+	close(release)
+	if firstEvent != "event: message_start" {
+		t.Fatalf("first event = %q, want message_start", firstEvent)
+	}
+
+	rest, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := string(rest); !strings.Contains(got, `"type":"text_delta"`) || !strings.Contains(got, "hello ") {
+		t.Errorf("remaining events missing the first text delta:\n%s", got)
+	}
+	_ = out.Body.Close()
 }
