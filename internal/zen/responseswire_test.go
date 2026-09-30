@@ -2,6 +2,9 @@ package zen
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -154,6 +157,42 @@ func TestAnthropicToResponsesRequest_ConversationShape(t *testing.T) {
 	if injected["bash"] {
 		t.Error("bash was declared (as Bash), so it must not be reported as injected")
 	}
+	if out["tool_choice"] != "auto" {
+		t.Errorf("tool_choice = %v, want auto", out["tool_choice"])
+	}
+}
+
+// tool_choice rides to the Responses wire: "any" becomes "required" (the
+// Responses spelling) and a forced tool must name the renamed upstream
+// function, not the client's spelling, or the upstream call names a function
+// that is not in the tools array.
+func TestAnthropicToResponsesRequest_ToolChoice(t *testing.T) {
+	tools := []any{
+		map[string]any{"name": "Bash", "description": "run", "input_schema": map[string]any{"type": "object"}},
+	}
+	for _, tc := range []struct {
+		name   string
+		choice map[string]any
+		want   any
+	}{
+		{"auto", map[string]any{"type": "auto"}, "auto"},
+		{"none", map[string]any{"type": "none"}, "none"},
+		{"any becomes required", map[string]any{"type": "any"}, "required"},
+		{"forced tool names the upstream function",
+			map[string]any{"type": "tool", "name": "Bash"},
+			map[string]any{"type": "function", "name": "bash"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _, _ := anthropicToResponsesRequest(map[string]any{
+				"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+				"tools":       tools,
+				"tool_choice": tc.choice,
+			})
+			if got, want := mustJSON(t, out["tool_choice"]), mustJSON(t, tc.want); got != want {
+				t.Errorf("tool_choice = %s, want %s", got, want)
+			}
+		})
+	}
 }
 
 // Server tools (no input_schema) have no Responses equivalent and are dropped,
@@ -201,4 +240,167 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(b)
+}
+
+// The JSON body of POST /v1/responses becomes an Anthropic message: output
+// items flatten into content blocks, usage moves to the Anthropic convention,
+// and stop_reason is derived (there is no finish_reason on this wire).
+func TestResponsesResponseToAnthropic_OutputItems(t *testing.T) {
+	resp := map[string]any{
+		"id": "resp_123",
+		"output": []any{
+			map[string]any{"type": "reasoning", "summary": []any{
+				map[string]any{"type": "summary_text", "text": "thinking hard"},
+			}},
+			map[string]any{"type": "message", "role": "assistant", "content": []any{
+				map[string]any{"type": "output_text", "text": "listing"},
+			}},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "bash", "arguments": `{"command":"ls"}`},
+		},
+		"usage": map[string]any{
+			"input_tokens":         100,
+			"output_tokens":        20,
+			"input_tokens_details": map[string]any{"cached_tokens": 40},
+		},
+	}
+
+	out := ResponsesResponseToAnthropic(resp, "gpt-5.5", map[string]string{"bash": "Bash"}, map[string]bool{"read": true})
+
+	if out["id"] != "msg_resp_123" {
+		t.Errorf("id = %v, want msg_resp_123", out["id"])
+	}
+	if out["type"] != "message" || out["role"] != "assistant" {
+		t.Errorf("type/role = %v/%v, want message/assistant", out["type"], out["role"])
+	}
+	if out["model"] != "gpt-5.5" {
+		t.Errorf("model = %v, want gpt-5.5", out["model"])
+	}
+	if out["stop_reason"] != "tool_use" {
+		t.Errorf("stop_reason = %v, want tool_use (a function_call is in the output)", out["stop_reason"])
+	}
+	content, _ := out["content"].([]any)
+	if len(content) != 3 {
+		t.Fatalf("content = %s, want thinking + text + tool_use", mustJSON(t, content))
+	}
+	think, _ := content[0].(map[string]any)
+	if think["type"] != "thinking" || think["thinking"] != "thinking hard" {
+		t.Errorf("content[0] = %s, want a thinking block", mustJSON(t, content[0]))
+	}
+	text, _ := content[1].(map[string]any)
+	if text["type"] != "text" || text["text"] != "listing" {
+		t.Errorf("content[1] = %s, want a text block", mustJSON(t, content[1]))
+	}
+	tool, _ := content[2].(map[string]any)
+	if tool["type"] != "tool_use" || tool["id"] != "call_1" || tool["name"] != "Bash" {
+		t.Errorf("content[2] = %s, want tool_use renamed back to Bash", mustJSON(t, content[2]))
+	}
+	if input, _ := tool["input"].(map[string]any); input["command"] != "ls" {
+		t.Errorf("tool input = %s, want the decoded arguments", mustJSON(t, tool["input"]))
+	}
+	usage, _ := out["usage"].(map[string]any)
+	if usage["input_tokens"] != 60 || usage["cache_read_input_tokens"] != 40 || usage["output_tokens"] != 20 {
+		t.Errorf("usage = %s, want input 60 (100-40 cached), cache_read 40, output 20", mustJSON(t, usage))
+	}
+}
+
+// incomplete_details.reason == "max_output_tokens" is the only signal that the
+// output cap stopped the model; with no function call in the output that maps
+// to stop_reason "max_tokens".
+func TestResponsesResponseToAnthropic_StopReasons(t *testing.T) {
+	textOnly := ResponsesResponseToAnthropic(map[string]any{
+		"output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{
+			map[string]any{"type": "output_text", "text": "hi"},
+		}}},
+	}, "gpt-5", nil, nil)
+	if textOnly["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason = %v, want end_turn", textOnly["stop_reason"])
+	}
+
+	truncated := ResponsesResponseToAnthropic(map[string]any{
+		"output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{
+			map[string]any{"type": "output_text", "text": "cut"},
+		}}},
+		"incomplete_details": map[string]any{"reason": "max_output_tokens"},
+	}, "gpt-5", nil, nil)
+	if truncated["stop_reason"] != "max_tokens" {
+		t.Errorf("stop_reason = %v, want max_tokens", truncated["stop_reason"])
+	}
+}
+
+// A function call to a gate-injected tool the client never declared has no
+// client-side tool to resolve, so it must not reach the client and must not
+// claim stop_reason "tool_use".
+func TestResponsesResponseToAnthropic_DropsInjectedToolCalls(t *testing.T) {
+	resp := map[string]any{
+		"output": []any{
+			map[string]any{"type": "message", "role": "assistant", "content": []any{
+				map[string]any{"type": "output_text", "text": "done"},
+			}},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "read", "arguments": `{}`},
+		},
+	}
+	out := ResponsesResponseToAnthropic(resp, "gpt-5", nil, map[string]bool{"read": true})
+	content, _ := out["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want only the text block (injected tool call dropped)", mustJSON(t, content))
+	}
+	if out["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason = %v, want end_turn (no surviving tool call)", out["stop_reason"])
+	}
+}
+
+// An upstream error status becomes the Anthropic error envelope with the
+// status-mapped kind, so the client reports it as an error rather than
+// parsing it as a message.
+func TestTranslateResponsesResponse_ErrorStatusBecomesAnthropicError(t *testing.T) {
+	upstream := &http.Response{
+		StatusCode: 429,
+		Status:     "429 Too Many Requests",
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"slow down"}}`)),
+	}
+	out := translateResponsesResponse(upstream, "gpt-5", false, nil, nil)
+	raw, _ := io.ReadAll(out.Body)
+	var env map[string]any
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("error body not JSON: %v; body = %s", err, raw)
+	}
+	if out.StatusCode != 429 {
+		t.Errorf("status = %d, want 429 preserved", out.StatusCode)
+	}
+	errObj, _ := env["error"].(map[string]any)
+	if errObj["type"] != "rate_limit_error" {
+		t.Errorf("error type = %v, want rate_limit_error", errObj["type"])
+	}
+	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "slow down") {
+		t.Errorf("error message = %q, want the upstream message", msg)
+	}
+}
+
+// A non-streaming client that receives a non-streaming JSON body gets the
+// translated message back as JSON.
+func TestTranslateResponsesResponse_JSONBodyForNonStreamClient(t *testing.T) {
+	body := `{"id":"resp_9","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"pong"}]}],"usage":{"input_tokens":3,"output_tokens":1}}`
+	upstream := &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	out := translateResponsesResponse(upstream, "gpt-5", false, nil, nil)
+	if ct := out.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	raw, _ := io.ReadAll(out.Body)
+	var msg map[string]any
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("body not JSON: %v; body = %s", err, raw)
+	}
+	if msg["type"] != "message" || msg["stop_reason"] != "end_turn" {
+		t.Errorf("response = %s, want an Anthropic message", raw)
+	}
+	content, _ := msg["content"].([]any)
+	if part, _ := content[0].(map[string]any); part["text"] != "pong" {
+		t.Errorf("content = %s, want pong", raw)
+	}
 }

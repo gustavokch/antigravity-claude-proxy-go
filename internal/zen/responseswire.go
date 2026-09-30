@@ -1,6 +1,12 @@
 package zen
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"strings"
+)
 
 // --- Request translation ---
 
@@ -239,4 +245,147 @@ func assistantToResponses(content any, renames map[string]string) []any {
 		out = append(out, map[string]any{"role": "assistant", "content": parts})
 	}
 	return append(out, calls...)
+}
+
+// --- Response translation ---
+
+// ResponsesResponseToAnthropic converts a Responses JSON body into an
+// Anthropic Messages response. reasoning items become thinking blocks, message
+// items become text blocks, and function_call items become tool_use blocks with
+// their arguments decoded — a call to a gate-injected tool the client never
+// declared is dropped, because the client has no way to resolve it.
+//
+// toolNames maps upstream tool names back to the client's names (the reverse
+// map anthropicToResponsesRequest returns); injected names the gate tools
+// ensureGateTools added, whose calls are dropped.
+func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames map[string]string, injected map[string]bool) map[string]any {
+	content := make([]any, 0, 2)
+	toolCalls := 0
+	for _, raw := range anySlice(resp["output"]) {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch item["type"] {
+		case "reasoning":
+			var b strings.Builder
+			for _, s := range anySlice(item["summary"]) {
+				if summary, ok := s.(map[string]any); ok {
+					if text, _ := summary["text"].(string); text != "" {
+						b.WriteString(text)
+					}
+				}
+			}
+			if b.Len() > 0 {
+				content = append(content, map[string]any{"type": "thinking", "thinking": b.String(), "signature": ""})
+			}
+		case "message":
+			for _, raw := range anySlice(item["content"]) {
+				part, ok := raw.(map[string]any)
+				if !ok || part["type"] != "output_text" {
+					continue
+				}
+				if text, _ := part["text"].(string); text != "" {
+					content = append(content, map[string]any{"type": "text", "text": text})
+				}
+			}
+		case "function_call":
+			name, _ := item["name"].(string)
+			if injected[name] {
+				slog.Debug("zen responses: dropping call to gate-injected tool", "tool", name)
+				continue
+			}
+			callID, _ := item["call_id"].(string)
+			if callID == "" {
+				callID = "call_" + name
+			}
+			args, _ := item["arguments"].(string)
+			content = append(content, map[string]any{
+				"type":  "tool_use",
+				"id":    callID,
+				"name":  renameTool(toolNames, name),
+				"input": parseArgs(args),
+			})
+			toolCalls++
+		}
+	}
+	usage, _ := resp["usage"].(map[string]any)
+	return map[string]any{
+		"id":            messageID(resp["id"]),
+		"type":          "message",
+		"role":          "assistant",
+		"model":         model,
+		"content":       content,
+		"stop_reason":   responsesStopReason(resp, toolCalls),
+		"stop_sequence": nil,
+		"usage":         responsesUsage(usage),
+	}
+}
+
+// responsesStopReason derives the Anthropic stop_reason. The Responses wire
+// carries no finish_reason: a function call in the output means the model
+// asked for tools, incomplete_details.reason == "max_output_tokens" means the
+// output cap stopped it, and anything else is a normal end of turn.
+func responsesStopReason(resp map[string]any, toolCalls int) string {
+	if details, ok := resp["incomplete_details"].(map[string]any); ok {
+		if reason, _ := details["reason"].(string); reason == "max_output_tokens" {
+			return "max_tokens"
+		}
+	}
+	if toolCalls > 0 {
+		return "tool_use"
+	}
+	return "end_turn"
+}
+
+// responsesUsage converts Responses usage into the Anthropic accounting
+// convention: input_tokens is reported uncached, with the cached prefix
+// counted as cache reads.
+func responsesUsage(u map[string]any) map[string]any {
+	input := toInt(u["input_tokens"])
+	output := toInt(u["output_tokens"])
+	cached := 0
+	if details, ok := u["input_tokens_details"].(map[string]any); ok {
+		cached = toInt(details["cached_tokens"])
+	}
+	if cached > input {
+		cached = input
+	}
+	return map[string]any{
+		"input_tokens":                input - cached,
+		"output_tokens":               output,
+		"cache_read_input_tokens":     cached,
+		"cache_creation_input_tokens": 0,
+	}
+}
+
+// translateResponsesResponse rewrites a Responses upstream response into the
+// Anthropic shape: an error status into an Anthropic error envelope, and any
+// other JSON body into a message translated by ResponsesResponseToAnthropic.
+func translateResponsesResponse(resp *http.Response, model string, clientStream bool, toolNames map[string]string, injected map[string]bool) *http.Response {
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return rebody(resp, "application/json", chatErrorToAnthropic(resp.StatusCode, raw, model))
+	}
+	// The gate only accepts streaming upstream bodies (anthropicToResponsesRequest
+	// always sets "stream": true), so folding an event-stream back into the
+	// Anthropic shape — into Anthropic SSE for a streaming client, or into one
+	// aggregated message for a non-streaming one — is the streaming translator's
+	// job. It is not here yet, and reporting the stream as an untranslatable body
+	// beats handing the client an event stream shaped like neither wire.
+	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		return failResponse(resp, "Zen returned a streaming responses body")
+	}
+	raw, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return failResponse(resp, "Zen response read error: "+err.Error())
+	}
+	var rn map[string]any
+	if json.Unmarshal(raw, &rn) != nil {
+		return failResponse(resp, "Zen returned a non-JSON responses body")
+	}
+	out, _ := json.Marshal(ResponsesResponseToAnthropic(rn, model, toolNames, injected))
+	return rebody(resp, "application/json", out)
 }
