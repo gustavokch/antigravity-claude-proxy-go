@@ -11,9 +11,9 @@ by the evidence in this PR — see Task 5).
 
 **Set definition (operator policy):** *anthropic models should only be
 accessible through the Claude Code gateway, except for `claude-sonnet-4-6` and
-`claude-opus-4-6` that route to antigravity/Cloud Code.* The Claude
-Code–only set is therefore all live-catalog `claude-*` ids; the two exceptions
-are not part of the set.
+`claude-opus-4-6` that route to antigravity/Cloud Code.* That is a routing
+policy. The wire list is a capability gate, so it contains every live
+`claude-*` id, the two exceptions included; routing keeps them off Zen.
 
 **Net change (verified against the live catalog 2026-09-30):** add
 `claude-sonnet-5-5`. It is the only live `claude-*` id missing from the list.
@@ -30,12 +30,12 @@ are not part of the set.
   class being fixed.
 - Routing itself is decided by `gatewayOrder` + each gateway's allowlist
   (`dispatchAlternateBackend`, `internal/api/dispatch.go:49`), **not** by the
-  wire list. The live config orders `kimi → claudecode → zen → openrouter →
-  cloudcode → custom`, so the Claude Code gateway claims Claude Code–only ids
-  first, and `claude-sonnet-4-6` / `claude-opus-4-6` (absent from the
-  claudecode allowlist, never in the zen allowlist) fall through to
-  `cloudcode` = antigravity/Cloud Code. Task 5 verifies this with config
-  evidence.
+  wire list. The walk stops at `cloudcode`. Claude Code–only ids are
+  claimed by the claudecode gateway when it precedes `zen`;
+  `claude-sonnet-4-6` / `claude-opus-4-6` (absent from the claudecode
+  allowlist, never in the zen allowlist) fall through to `cloudcode` =
+  antigravity/Cloud Code. Task 5 probes the real router for the actual
+  order and matches.
 - Discovery (`internal/api/discovery.go:45,329`) and the WebUI zen-allowlist
   validation filter on `zen.IsForwardable`, so the new id also becomes
   addable/advertised there.
@@ -73,9 +73,9 @@ Acceptance criteria:
   `claude-opus-4-5`, `claude-sonnet-5-5`, `claude-sonnet-5`,
   `claude-sonnet-4-6`, `claude-sonnet-4-5`, `claude-sonnet-4`,
   `claude-haiku-4-5`).
-- B. `IsAnthropicWire("claude-sonnet-5-5") == true`, pinned by
-  `TestIsAnthropicWire`; `claude-opus-5-5` also pinned (it was in the code
-  list but unpinned).
+- B. `IsAnthropicWire("claude-sonnet-5-5") == true`, pinned by name in
+  `TestIsAnthropicWire` and by the snapshot drift tests (which cover
+  `claude-opus-5-5` and every other live `claude-*` id).
 - C. No id is added that is absent from the live Zen catalog.
 - D. The routing policy statement holds in the operator config and is
   verified with evidence (Task 5).
@@ -88,11 +88,13 @@ Acceptance criteria:
 - `gofmt`-clean before commit (repo hook refuses dirty Go files;
   bypass exists but must not be needed).
 - Only ids present in the live Zen catalog may enter either wire list.
-- `claude-sonnet-4-6` and `claude-opus-4-6` are never re-added if a future
-  diff flags them; they are not Claude Code–only (see Non-goals 2).
-- No new fixtures, no network inside `go test` — live-catalog checks are
-  shell evidence steps, not unit tests.
-- No new abstractions: this is a static-list edit plus its pins.
+- `claude-sonnet-4-6` and `claude-opus-4-6` stay in `AnthropicWireIDs`: they
+  speak the Anthropic wire. The policy that keeps them off Zen is routing
+  (see Non-goals 2), not list membership.
+- No network inside default `go test ./...`. The live-catalog check is
+  build-tagged (`zen_live`) and run on demand; the snapshot under
+  `internal/zen/testdata/` is the offline reference.
+- No new abstractions beyond the one `wireDrift` test helper.
 
 ---
 
@@ -132,68 +134,46 @@ The `claude-` filter is applied to both sides: the list also holds three
 qwen side of the wire lists is a separate check (Non-goal 1).
 
 - If `missing` contains ids beyond `claude-sonnet-5-5`, the catalog drifted:
-  add every missing `claude-*` id except `claude-sonnet-4-6` /
-  `claude-opus-4-6` (policy exceptions), and record the drift in the commit
-  message. If an exception ever appears as missing, do **not** re-add it.
+  add every missing `claude-*` id — including `claude-sonnet-4-6` /
+  `claude-opus-4-6` if they ever appear — because the list is a capability
+  gate and `TestAnthropicWireIDsCoverLiveClaudeModels` requires it. Keeping
+  those two off Zen is routing (allowlists), not list membership. Refresh the
+  snapshot and record the drift in the commit message.
 - If `listed but not live` is non-empty, stop and report — a dead list entry
   is a separate defect, not part of this change.
 - Baseline gate: `go build ./... && go vet ./... && go test ./...` must be
   green before any edit.
 
-## Task 1 — Red: pin the new ids in `TestIsAnthropicWire`
+## Task 1 — Red: drift tests against a catalog snapshot
 
-**File:** `internal/zen/zen_test.go` (test at line 22).
+**Files:** `internal/zen/testdata/catalog-2026-09-30.json` (snapshot of the
+live catalog ids), `internal/zen/catalog_drift_test.go`,
+`internal/zen/zen_test.go`.
 
-Replace the `allowed` slice:
+A hand-copied `allowed` slice in `TestIsAnthropicWire` can only assert the
+copy equals itself, so it cannot see a missing id. The shipped tests diff
+`AnthropicWireIDs` against the snapshot instead:
 
-```go
-	allowed := []string{
-		"claude-fable-5-1", "claude-fable-5", "claude-opus-5",
-		"claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
-		"claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4",
-		"claude-haiku-4-5",
-		"qwen3.8-flash", "qwen3.6-plus", "qwen3.5-plus",
-		"opencode/claude-sonnet-4-6",
-		"OPencode/Claude-Sonnet-4-6",
-		"Claude-Opus-4-5",
-	}
-```
+- `TestAnthropicWireIDsCoverLiveClaudeModels` — every snapshot `claude-*`
+  id must satisfy `IsAnthropicWire` (this includes `claude-sonnet-4-6` /
+  `claude-opus-4-6`).
+- `TestAnthropicWireIDsHaveNoStaleEntries` — every `AnthropicWireIDs` entry
+  must be in the snapshot.
+- Both call the shared `wireDrift` helper, which the `zen_live`-tagged
+  `TestAnthropicWireIDsLiveCatalog` also uses against today's catalog via
+  `Client.FetchModels`.
+- `TestIsAnthropicWire` keeps only the case/`opencode/`-prefix normalization
+  pins, near-miss denials, and `claude-sonnet-5-5` pinned by name.
 
-with:
-
-```go
-	allowed := []string{
-		"claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5",
-		"claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
-		"claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6",
-		"claude-sonnet-4-5", "claude-sonnet-4",
-		"claude-haiku-4-5",
-		"qwen3.8-flash", "qwen3.6-plus", "qwen3.5-plus",
-		"opencode/claude-sonnet-4-6",
-		"OPencode/Claude-Sonnet-4-6",
-		"Claude-Opus-4-5",
-	}
-```
-
-(`claude-opus-5-5` was already in the code list but unpinned — contract
-completeness. Case/prefix normalization stays pinned by the existing
-`opencode/`/mixed-case entries; no new variants needed.)
-
-Run:
+Run with the id removed from `client.go`:
 
 ```bash
-go test ./internal/zen/ -run TestIsAnthropicWire -v
+go test ./internal/zen/ -run 'TestAnthropicWireIDs|TestIsAnthropicWire' -v
 ```
 
-**Expected RED** — the failure message contains:
-
-```
-IsAnthropicWire("claude-sonnet-5-5") = false, want true
-```
-
-(`claude-opus-5-5` passes already; only `claude-sonnet-5-5` fails. The
-`denied` slice is unchanged — it must still reject `qwen3.7-max`,
-`claude-sonnet-4-6-free`, etc.)
+**Expected RED** — `live claude-* ids not in AnthropicWireIDs:
+[claude-sonnet-5-5]` and `IsAnthropicWire("claude-sonnet-5-5") = false,
+want true`.
 
 ## Task 2 — Green: insert the id into `AnthropicWireIDs`
 
@@ -265,80 +245,87 @@ go build ./...
 go test ./...
 ```
 
-**Expected:** `gofmt -l` prints nothing; vet/build/test all green. Any
-failing test outside `internal/zen` means a fixture assumed the old list
-contents — inspect before touching code, report if the blast radius exceeds
-`internal/zen` (expected: none; no other test pins list membership).
+**Expected:** `gofmt -l` prints nothing; vet/build/test all green, including
+`TestAnthropicWireIDsCoverLiveClaudeModels` and
+`TestAnthropicWireIDsHaveNoStaleEntries`. A failing test outside
+`internal/zen` means a fixture assumed the old list contents — inspect before
+touching code. On-demand, network-gated:
+`go test -tags zen_live ./internal/zen/ -run TestAnthropicWireIDsLiveCatalog -v`.
 
-## Task 5 — Verify the routing policy with config evidence (Spec D)
+## Task 5 — Verify the routing policy against the real router (Spec D)
+
+Routing is decided by `matchClaudeCodeModel`, not by id equality against an
+allowlist: `Router.ResolveModel` tries exact id, alias, dot/hyphen
+normalization, then longest prefix, and an empty configured allowlist falls
+back to `DefaultAllowlist()`. Re-implementing that in a script drifts from
+the code, so probe the real function with the real loaded config (prints no
+secrets):
 
 ```bash
-python3 - <<'PY'
-import json, os, pathlib
-base = pathlib.Path(os.environ.get("ANTIGRAVITY_CONFIG_DIR")
-                    or os.environ.get("CONFIG_DIR")
-                    or pathlib.Path.home() / ".config" / "antigravity-proxy")
-cfg = json.loads((base / "config.json").read_text())
+cat > internal/api/zz_probe_test.go <<'GO'
+package api
 
-# matchClaudeCodeModel falls back to the built-in catalogue when the
-# configured allowlist is empty (internal/api/claudecode_proxy.go:167-170).
-def effective_ids(section):
-    entries = (cfg.get(section) or {}).get("allowlist") or []
-    return [e["id"] for e in entries]
+import (
+	"encoding/json"
+	"os"
+	"strings"
+	"testing"
 
-cc = effective_ids("claudecode")
-DEFAULT_CC = {"claude-fable-5", "claude-fable-5-1", "claude-opus-5",
-              "claude-sonnet-5", "claude-haiku-4-5-20251001",
-              "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022",
-              "claude-3-5-haiku-20241022", "claude-3-opus-20240229",
-              "claude-3-haiku-20240307", "claude-3-sonnet-20240229"}
-if not cc:
-    cc = DEFAULT_CC
-zen = effective_ids("zen")
-zen_claude = [m for m in zen if m.startswith("claude-")]
+	"antigravity-go-proxy/internal/config"
+)
 
-order = cfg["gatewayOrder"]["order"]
-assert cfg["claudecode"]["enabled"], "claudecode gateway disabled"
-assert order.index("claudecode") < order.index("zen"), "claudecode must precede zen"
-
-# NOT an allowlist member: the policy exceptions must not be claimed by cc.
-assert "claude-sonnet-4-6" not in cc, "claude-sonnet-4-6 must not be claimed by claudecode"
-assert "claude-opus-4-6" not in cc, "claude-opus-4-6 must not be claimed by claudecode"
-
-# NOT in the zen allowlist: so it is not routed via the Anthropic wire.
-assert "claude-sonnet-5-5" not in cc, "claude-sonnet-5-5 is not claimed by claudecode"
-assert not zen_claude, "zen must not carry claude allowlist entries"
-print("OK")
-PY
+func TestZZProbe(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile("../zen/testdata/catalog-2026-09-30.json")
+	var snap struct{ IDs []string `json:"ids"` }
+	_ = json.Unmarshal(raw, &snap)
+	t.Logf("claudecode.enabled=%v order=%v", cfg.ClaudeCode.Enabled, cfg.GatewayOrder.Effective(""))
+	for _, id := range snap.IDs {
+		if strings.HasPrefix(id, "claude-") {
+			t.Logf("%-20s -> %q", id, matchClaudeCodeModel(cfg.ClaudeCode, id))
+		}
+	}
+}
+GO
+go test ./internal/api/ -run TestZZProbe -v | grep -v '^=== '
+rm -f internal/api/zz_probe_test.go
 ```
 
-**Expected:** every assertion passes; final `OK:` line printed.
+**Expected shape** (the ids claimed depend on the operator's live
+`claudecode.allowlist`, which changes; re-run rather than trust a table):
 
-Chain this proves: `claude-sonnet-4-6` / `claude-opus-4-6` decline kimi,
-decline claudecode (not allowlisted), decline zen (not allowlisted — and
-this plan keeps them out of the Claude Code–only set), decline openrouter,
-and land on `cloudcode`, the antigravity/Cloud Code terminal path.
+- `claude-sonnet-4-6` and `claude-opus-4-6` resolve to `""` — they decline
+  claudecode, are not in the zen allowlist, and reach `cloudcode`, the
+  antigravity/Cloud Code terminal path (`dispatchAlternateBackend` returns
+  at `cloudcode`, `internal/api/dispatch.go:51`, so gateways ordered after
+  it are never consulted).
+- `claude-sonnet-5-5` resolves to a non-empty id whenever claudecode is
+  enabled and either allowlists it (exact match) or has an ancestor id in
+  the allowlist (prefix match; with the defaults, `claude-sonnet-5`).
+  Claudecode precedes `zen` in the order, so the Zen wire entry is **not**
+  on the path for this id unless claudecode is disabled, declines it, or
+  the order is changed.
 
-> Under the shipped config no gateway claims `claude-sonnet-5-5` —
-> `gatewayOrder.byModel` is `{}`, `openrouter.allowlist` carries no
-> `claude-*` ids, and `customEndpoints` is empty — so it falls through to
-> `cloudcode` today and the Zen wire list is not on this path. The added
-> entry is a **capability gate**: it makes the id forwardable over the
-> Anthropic wire the moment an operator allowlists it in `zen` (or in
-> `claudecode`, whose empty allowlist resolves to `DefaultAllowlist()`),
-> which is the case that previously fell through to a gateway that could
-> not speak the wire. This PR does not establish that the oh-my-pi
-> tool-definition failures were routed through Zen.
+> The added entry is a **capability gate**: it makes the id forwardable over
+> the Anthropic wire the moment it becomes reachable through `zen` — the
+> case that previously fell through to a gateway that could not speak the
+> wire. This PR does not establish that the oh-my-pi tool-definition
+> failures were routed through Zen.
 
-If any assertion fails, stop: the config no longer expresses the policy —
-report the mismatch instead of changing code.
+If the probe shows `claude-sonnet-4-6` / `claude-opus-4-6` claimed by
+claudecode, stop: the config no longer expresses the policy — report the
+mismatch instead of changing code.
 
 ## Task 6 — Commit
 
-```bash
-gofmt -l internal/zen && git add internal/zen/client.go internal/zen/zen_test.go README.md
-git commit -m "fix(zen): add claude-sonnet-5-5 to AnthropicWireIDs"
-```
+Shipped as separate commits on the PR branch: the list fix and README
+(`fix(zen): add claude-sonnet-5-5 to AnthropicWireIDs`), this plan, the
+catalog snapshot, the drift tests (`catalog_drift_test.go`,
+`catalog_live_test.go`, `zen_test.go`), and the plan corrections. Run
+`gofmt -l internal/zen` before each.
 
 ---
 
@@ -346,8 +333,8 @@ git commit -m "fix(zen): add claude-sonnet-5-5 to AnthropicWireIDs"
 
 1. **`ChatWireIDs` stale omissions** (`qwen3.8-max`,
    `longcat-2.5-preview-free`, `deepseek-v4-flash-free`) — chat-wire models,
-   not Claude Code ids; none is in the current zen allowlist. Separate
-   change.
+   not Claude Code ids; none is in the current zen allowlist. Tracked in
+   #107.
 2. **Removing `claude-sonnet-4-6` / `claude-opus-4-6` from
    `AnthropicWireIDs`** — not done. The list is a *capability* gate (both ids
    genuinely speak Anthropic wire in the Zen catalog); routing is decided by
@@ -362,16 +349,22 @@ git commit -m "fix(zen): add claude-sonnet-5-5 to AnthropicWireIDs"
    as a follow-up plan.
 3. **Expanding `claudecode.allowlist` to the full current Claude Code
    catalogue** — operator/WebUI action (Settings → Claude Code → Discover
-   Models), config not code. `claudecode.allowlist` is unset today, so the
-   effective list is `claudecode.DefaultAllowlist()`
-   (`internal/claudecode/router.go:11-122`): `claude-fable-5`,
-   `claude-fable-5-1`, `claude-opus-5`, `claude-sonnet-5`,
-   `claude-haiku-4-5-20251001`, and the `claude-3-*` family. It carries
-   **no** `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-opus-4-*`, or
-   `claude-sonnet-4-*`. Setting an explicit allowlist replaces the defaults
-   wholesale, so the operator must re-add every id they still want — and
-   exclude `claude-sonnet-4-6` and `claude-opus-4-6` so those keep routing
-   to antigravity/Cloud Code.
+   Models), config not code. The effective list is the configured
+   allowlist, or `claudecode.DefaultAllowlist()`
+   (`internal/claudecode/router.go:11-122`) when it is empty. The defaults
+   carry `claude-fable-5`, `claude-fable-5-1`, `claude-opus-5`,
+   `claude-sonnet-5`, `claude-haiku-4-5-20251001`, and the `claude-3-*`
+   family — no `claude-opus-4-*` / `claude-sonnet-4-*`. Matching is **not**
+   id equality: `Router.ResolveModel` also matches aliases and, last,
+   longest **prefix** (`router.go:226-231`), so with the defaults
+   `claude-sonnet-5-5` resolves to `claude-sonnet-5` and `claude-opus-5-5`
+   to `claude-opus-5`, and `tryClaudeCodeGateway` rewrites `body.model` to
+   the resolved id (`internal/api/dispatch.go:113`). Whether that collapse
+   is intended is a separate, pre-existing question (out of scope here).
+   Setting an explicit allowlist replaces the defaults wholesale, so the
+   operator must re-add every id they still want — and exclude
+   `claude-sonnet-4-6` and `claude-opus-4-6` so those keep routing to
+   antigravity/Cloud Code.
 4. **Stale comment on `matchZenModelEntry`** (`internal/api/server.go:2057-2059`):
    says "the Anthropic-wire subset" but the gate is `zen.IsForwardable`, which
    also admits Chat-Completions ids — pre-existing, unrelated to this add.
