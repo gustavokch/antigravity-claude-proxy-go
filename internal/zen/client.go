@@ -88,9 +88,11 @@ var ChatWireIDs = []string{
 
 // ResponsesWireIDs is the static allowlist of Zen catalog ids that speak the
 // OpenAI /v1/responses wire format (docs endpoint table, cross-checked against
-// the live catalog 2026-09-30). Requests to these ids are translated
-// Anthropic↔Responses by internal/zen/responseswire.go. Everything not in any
-// list (gemini-* → Gemini-native; jev-* → /v1/systemone) is not forwardable.
+// the live catalog 2026-09-30 by catalog_responses_drift_test.go, which also
+// records the one gpt-/grok-/muse- catalog id left unclaimed on purpose).
+// Requests to these ids are translated Anthropic↔Responses by
+// internal/zen/responseswire.go. Everything not in any list (gemini-* →
+// Gemini-native; jev-* → /v1/systemone) is not forwardable.
 var ResponsesWireIDs = []string{
 	"gpt-6-astra",
 	"gpt-6-sol",
