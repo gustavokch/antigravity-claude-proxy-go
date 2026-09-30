@@ -641,7 +641,7 @@ window.translations.en = {
     kimiOAuthSuccess: "Kimi Code login complete",
     kimiOAuthPrecedence: "Kimi Code login is used for requests; Base URL and API key apply only when logged out.",
     zenGateway: "OpenCode Zen Gateway",
-    zenDesc: "Forward allowlisted models transparently to opencode.ai/zen using Bearer auth. Phase 1 supports the Anthropic-wire subset only (Claude models, Qwen Anthropic variants).",
+    zenDesc: "Forward allowlisted models transparently to opencode.ai/zen using Bearer auth. Supports the Anthropic-wire, Chat-Completions-wire, and Responses-wire subsets.",
     zenBaseUrl: "Base URL",
     zenApiKey: "API Key",
     zenApiKeyEnv: "Key source: config. Set OPENCODE_API_KEY as fallback, or leave zen.apiKey empty to use the env key.",

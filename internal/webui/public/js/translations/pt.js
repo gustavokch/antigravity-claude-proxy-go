@@ -570,7 +570,7 @@ window.translations.pt = {
     kimiOAuthSuccess: "Login Kimi Code concluído",
     kimiOAuthPrecedence: "O login Kimi Code é usado nas requisições; Base URL e chave de API só se aplicam sem login.",
     zenGateway: "Gateway OpenCode Zen",
-    zenDesc: "Encaminhe modelos da allowlist de forma transparente para opencode.ai/zen usando autenticação Bearer. A Fase 1 suporta apenas o subconjunto Anthropic (modelos Claude, variantes Qwen Anthropic).",
+    zenDesc: "Encaminhe modelos da allowlist de forma transparente para opencode.ai/zen usando autenticação Bearer. Suporta os subconjuntos Anthropic, Chat Completions e Responses.",
     zenBaseUrl: "URL Base",
     zenApiKey: "Chave de API",
     zenApiKeyEnv: "Origem da chave: config. Defina OPENCODE_API_KEY como alternativa, ou deixe zen.apiKey vazio para usar a chave do ambiente.",
