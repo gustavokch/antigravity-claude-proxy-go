@@ -455,6 +455,8 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 			server.chatCompletions(writer, request)
 		case path == "/v1/messages/count_tokens" && request.Method == http.MethodPost:
 			writeAPIError(writer, http.StatusNotImplemented, "not_implemented", "Token counting is not implemented. Use /v1/messages with max_tokens or configure your client to skip token counting.")
+		case path == "/v1/systemone" && request.Method == http.MethodPost:
+			server.systemone(writer, request)
 		default:
 			writeAPIError(writer, http.StatusNotFound, "not_found_error", fmt.Sprintf("Endpoint %s %s not found", request.Method, request.URL.Path))
 		}
