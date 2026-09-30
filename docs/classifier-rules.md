@@ -78,7 +78,7 @@ Configured under the `classifier` block in `~/.config/antigravity-proxy/config.j
 
 ## Supported Actions
 
-- `reroute`: Forwards the request to the named `targetBackend`. Translates request and response formats between Anthropic and OpenAI if the backend specifies `"format": "openai"`. Synthesizes SSE event streams if the client requested `stream: true`.
+- `reroute`: Forwards the request to the named `targetBackend`. Translates request and response formats between Anthropic and OpenAI if the backend specifies `"format": "openai"`. Synthesizes SSE event streams if the client requested `stream: true`. A backend with `"format": "laya"` or `"format": "jev"` answers a Stage 1 request with a typed decision instead; see [Laya Backend](#laya-backend) and [Jev Backend](#jev-backend).
 - `stub`: Immediately responds with a synthetic 200 OK containing `verdictTemplate`.
 - `passthrough`: Passes the request through unmodified to the original upstream model and explicitly bypasses the built-in `classifier.Detect` handling.
 
@@ -116,7 +116,7 @@ Set `classifier.capture.enabled` to `true` to write one JSONL row per classifier
 
 Capture does not depend on `classifier.enabled`. It is installed on the capture setting alone, so the proxy can capture classifier requests without intercepting any of them.
 
-Labels only exist when classifier requests actually reach upstream. The simplest collection setup is capture on, `classifier.enabled` off and `ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK` unset: nothing intercepts, and every classifier request goes upstream. If interception must stay on during a collection window, set rules to `passthrough` and leave the built-in stub inactive. Either way this consumes upstream quota, which is the cost of collecting. A row the proxy did not send upstream names the path that answered it: `source: "stub"` for a stub or for the fail-fast 400 the proxy returns when a variant has no canned verdict, `source: "rule"` for a reroute to an `anthropic` or `openai` backend, `source: "laya"` for a Laya backend, and `source: "gateway"` for a request that a Kimi, Zen, Claude Code, OpenRouter or custom-endpoint gateway answered. A gateway row records the model the gateway routed to, not the name the client sent, because that model graded the request. Claude Code gateway rows are labeled `gateway` as well. Only `source: "upstream"` rows hold a teacher label, so route classifier models to the account-backed upstream during a collection window.
+Labels only exist when classifier requests actually reach upstream. The simplest collection setup is capture on, `classifier.enabled` off and `ANTIGRAVITY_PROXY_CLASSIFIER_FALLBACK` unset: nothing intercepts, and every classifier request goes upstream. If interception must stay on during a collection window, set rules to `passthrough` and leave the built-in stub inactive. Either way this consumes upstream quota, which is the cost of collecting. A row the proxy did not send upstream names the path that answered it: `source: "stub"` for a stub or for the fail-fast 400 the proxy returns when a variant has no canned verdict, `source: "rule"` for a reroute to an `anthropic` or `openai` backend, `source: "laya"` for a Laya backend, `source: "jev"` for a Jev backend, and `source: "gateway"` for a request that a Kimi, Zen, Claude Code, OpenRouter or custom-endpoint gateway answered. A gateway row records the model the gateway routed to, not the name the client sent, because that model graded the request. Claude Code gateway rows are labeled `gateway` as well. Only `source: "upstream"` rows hold a teacher label, so route classifier models to the account-backed upstream during a collection window.
 
 Capture keeps at most `maxFiles` day files, 365 by default, and deletes the oldest beyond that. It prunes on the first row of each new UTC day and on the first row after a restart or any config save, and it logs a warning that names each file it deletes. A `maxFiles` of -1 keeps every day file (unlimited), which is the setting for collection windows longer than a year; 0 is the unset value and resolves to the default of 365. A day file also stops accepting rows at `maxFileBytes`, 64 MiB by default and at most 4 GiB. Later rows that day are dropped, with a warning logged at most once per hour.
 
@@ -130,7 +130,7 @@ python3 scripts/corpus_to_laya.py ~/.config/antigravity-proxy/corpus/*.jsonl -o 
 
 That path is the default directory; substitute your own if either environment variable or `classifier.capture.dir` is set. Each exported row is `{state, questions, answers}`, and nothing in this repository checks that shape against what Laya's training loader expects, so confirm it against Laya's own fine-tuning notebook before a real training run. The script hard-codes the default question: the name `risk`, the default instructions, and the A-D criteria, all three kept identical to the Go defaults in `internal/config/config.go` by `scripts/test_laya_criteria_sync.py`, which fails the build on any drift. The criteria are risk bands that cite the severity ranges the exporter buckets by — A = 0-9, B = 10-24, C = 25-49, D = 50-100, the range where the teacher refused the action — because the teacher emits a numeric severity, not an action type, so band wording is the honest axis for both the prompt and the labels. A backend that overrides `layaQuestionName`, `layaInstructions` or `layaCriteria` will not match a checkpoint trained on this export.
 
-The script keeps a row only if its source was selected (default: `source: "upstream"` alone), its kind was selected (default: `stage1-severity` alone), its `severity` is 0 or more, and its action is non-empty. The default source filter excludes the rows the local model produced itself (`source: "laya"`), so it never trains on its own answers; to keep other sources, pass `--source` once per source, for example `--source upstream --source gateway` — the values are `upstream`, `stub`, `rule`, `laya` and `gateway`, and keeping `laya` undoes the self-training protection. The kind filter keeps Stage 1 rows alone by default: Stage 1 grades harm only, while Stage 2 also applies user intent that the exported state does not carry, so the two stages can give one action two different labels. To keep other kinds, pass `--kind` once per kind, for example `--kind stage1-severity --kind stage2-severity`; the values are `stage1-severity`, `stage2-severity` and `block-prefilter`. The severity filter excludes rows that carry no verdict: an upstream error is still recorded as `source: "upstream"`, with `severity: -1`. A row whose `severity` is -1 but whose `verdict_raw` ends in an unclosed `<severity>NN` tag — the teacher stopped at its token limit after the digits, which gateway models do — has the severity recovered from `verdict_raw`, and the script prints how many labels it recovered; a tag quoted inside `<thinking>` is rationale, not verdict, and is never recovered.
+The script keeps a row only if its source was selected (default: `source: "upstream"` alone), its kind was selected (default: `stage1-severity` alone), its `severity` is 0 or more, and its action is non-empty. The default source filter excludes the rows the local model produced itself (`source: "laya"`), so it never trains on its own answers; to keep other sources, pass `--source` once per source, for example `--source upstream --source gateway` — the values are `upstream`, `stub`, `rule`, `laya`, `jev` and `gateway`, and keeping `laya` undoes the self-training protection. A `jev` row is a hosted model's answer, not a teacher label, so the default filter leaves it out too. The kind filter keeps Stage 1 rows alone by default: Stage 1 grades harm only, while Stage 2 also applies user intent that the exported state does not carry, so the two stages can give one action two different labels. To keep other kinds, pass `--kind` once per kind, for example `--kind stage1-severity --kind stage2-severity`; the values are `stage1-severity`, `stage2-severity` and `block-prefilter`. The severity filter excludes rows that carry no verdict: an upstream error is still recorded as `source: "upstream"`, with `severity: -1`. A row whose `severity` is -1 but whose `verdict_raw` ends in an unclosed `<severity>NN` tag — the teacher stopped at its token limit after the digits, which gateway models do — has the severity recovered from `verdict_raw`, and the script prints how many labels it recovered; a tag quoted inside `<thinking>` is rationale, not verdict, and is never recovered.
 
 The script prints a warning to stderr when the kept rows were graded by more than one `model`, because each model is a different teacher and the rows are then not one dataset. When no row survives, the warning names the cause: the kind filter, if it removed rows from the selected sources, and otherwise the need for classifier requests to reach upstream.
 
@@ -215,3 +215,69 @@ tail -1 ~/.config/antigravity-proxy/corpus/classifier-$(date -u +%F).jsonl
 ```
 
 A row with `source: "laya"` proves the request was rerouted, the label was mapped to a severity, and the verdict was recorded. laya-serve needs a downloaded checkpoint (and, for faster answers, a GPU); if the operator machine cannot run it, hand `check_laya.py` and this section to whoever runs the sidecar.
+
+
+## Jev Backend
+
+A Jev backend answers low-risk Stage 1 requests with Jev, TypeSafe's hosted System One model, through OpenCode Zen's `POST /zen/v1/systemone`. It is the Laya adapter pointed at a hosted model: the same question, severity map, escalation and clamp. The credential, the model and the field the confidence floor reads differ. The backend calls Zen directly; it does not go through the proxy's own `POST /v1/systemone` route.
+
+> **Keep a Jev rule disabled until you have replayed it.** An answer that is not escalated stands in for the teacher's, and a low Stage 1 grade ends the check. Jev's own documentation says it reads instructions literally, loses accuracy on large or irrelevant state, and can be steered by adversarial text in the state, and the action it grades is written by the agent being monitored. [Replaying the corpus](#replaying-a-corpus-before-enabling-jev) is how you find out how many refusals it lets through.
+
+```json
+"rules": [
+  {
+    "id": "stage1-jev",
+    "name": "Stage 1 to Zen Jev",
+    "enabled": false,
+    "conditions": {
+      "footerPatterns": [{ "type": "substring", "pattern": "Grade HARM ONLY" }]
+    },
+    "action": "reroute",
+    "targetBackend": "zen-jev"
+  }
+],
+"backends": {
+  "zen-jev": {
+    "name": "Zen Jev",
+    "url": "https://opencode.ai/zen/v1/systemone",
+    "format": "jev",
+    "model": "jev-1.13-free",
+    "timeoutMs": 5000
+  }
+}
+```
+
+- **Key.** A blank `apiKey` uses `zen.apiKey`, then `OPENCODE_API_KEY`; a key on the backend overrides both. With no key the reroute fails without sending anything. The backend does not read `zen.enabled`: it is configured explicitly, like any other backend.
+- **Model.** A blank `model` means `jev-1.13-free`, which Zen offers for a limited time. When the free period ends, set `model` to `jev-1.13` (Zen lists it at $0.042 per million input tokens with free output; a short action used 400 input tokens). Until then, a call the gateway refuses fails the reroute, the audit event is `error`, and the request goes to the teacher.
+- **Timeout.** An unset `timeoutMs` is 5 seconds. The WebUI's Add backend writes 20000, so set 5000 yourself: this call sits in front of the permission prompt. On 2026-09-30 Zen answered in 0.39 to 0.69 seconds, and in 3.4 seconds on the first call of a cold process.
+- **Identity.** Requests carry the OpenCode harness headers and use the same HTTP client as every other Zen-bound request, so the `zen.harness` settings (version, client, TLS disguise) apply. On 2026-09-30 the free-tier gate did not reject this endpoint: a plain request with no harness headers got a 200.
+- **Confidence floor.** `layaMinConfidence` compares Jev's `confidence` field: 1 is certain and 0 is a uniform spread over the options. TypeSafe treats values below 0.5 as unsure. A Laya backend compares `answer_confidence` instead.
+- **Shared settings.** `layaQuestionName`, `layaInstructions`, `layaCriteria`, `layaSeverityMap`, `layaMaxSeverity`, `layaStateChars`, `layaEscalateLabels` and `layaMinConfidence` mean the same on a Jev backend, and `layaMaxSeverity` still defaults to 49, so a Jev verdict cannot block. Jev is not fine-tuned on customer data, so the fine-tune pipeline above does not apply to it; tune the instructions and criteria instead, and replay again after any change.
+- **Scope.** Only Stage 1 requests are sent to Jev. Stage 2 escalates before any call, and a block-prefilter request fails the reroute, exactly as for Laya. Both fall through to the built-in handling, as does every escalated or failed Jev answer. That handling reaches the teacher only under `classifier.action` `fallback_on_exhaustion`, `reroute_only` or `passthrough`; under `always_stub` it answers with the canned allow, so an escalation then stops nothing. Use one of the other three while a Jev rule is enabled.
+- **Capture.** Rows Jev answered have `source: "jev"`. While Jev answers, the corpus gains fewer teacher labels, so keep a passthrough collection window if you still train on it.
+- **Data.** Each graded action is sent to Zen and on to TypeSafe. Zen states that Jev inputs are not used for training and are retained under TypeSafe's privacy policy.
+- **Limits.** Zen's Jev rate limit was 40 requests per second and 100K tokens per second, and TypeSafe says it adjusts dynamically. A `429` fails the reroute and falls through.
+
+### Replaying a corpus before enabling Jev
+
+`scripts/replay_jev.py` sends teacher-labelled Stage 1 actions to Zen exactly as the backend would (default question, criteria and `layaStateChars`) and applies the proxy's escalation policy. It reads the output of `corpus_to_laya.py` and sends every action in it to the `--url` host:
+
+```bash
+python3 scripts/corpus_to_laya.py ~/.config/antigravity-proxy/corpus/classifier-*.jsonl -o /tmp/train.jsonl
+python3 scripts/replay_jev.py /tmp/train.jsonl
+python3 scripts/replay_jev.py /tmp/train.jsonl --floor 0.8 --fail-on-missed
+```
+
+The report prints the teacher-by-Jev confusion matrix and, for each confidence floor, how many requests go to the teacher and how many teacher refusals (`D`) Jev would let through. A refusal Jev calls `D` is escalated, so the number that matters is the refusals it labels `A` to `C` at the floor you will configure. The script replays the default question only; it does not read a backend's `layaInstructions` or `layaCriteria`. With `--fail-on-missed` it exits 2 if any refusal stands at `--floor`, or any call failed.
+
+Zero missed refusals is weak evidence while refusals are rare: a few dozen only rule out a Jev as poor as the stock Laya checkpoint, which let all 5 of 217 through. Enable the rule only at a floor where the replay shows none missed, and rerun it as the corpus grows.
+
+### Checking a live Jev backend
+
+With capture enabled and the rule enabled on a scratch config, send one graded action through the proxy and confirm the newest corpus row:
+
+```bash
+tail -1 ~/.config/antigravity-proxy/corpus/classifier-$(date -u +%F).jsonl
+```
+
+A row with `source: "jev"` proves the request was rerouted, the label was mapped to a severity, and the verdict was recorded. A row with another source names the path that answered instead; the audit stream (`GET /api/classifier/audit/stream?history=true`) shows why the reroute fell through.
