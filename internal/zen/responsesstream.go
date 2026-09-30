@@ -293,7 +293,7 @@ func responsesFailureText(event map[string]any) string {
 func streamResponsesToAnthropic(r io.Reader, w io.Writer, model string, toolNames map[string]string, injected map[string]bool) error {
 	s := &responsesStream{
 		w: w, model: model, current: -1,
-		itemBlocks: map[int]int{}, toolNames: toolNames, injected: injected, dropped: map[int]bool{},
+		itemBlocks: map[int]int{}, argSent: map[int]string{}, toolNames: toolNames, injected: injected, dropped: map[int]bool{},
 	}
 	done := false
 	scanner := bufio.NewScanner(r)
@@ -343,6 +343,7 @@ type responsesStream struct {
 	injected   map[string]bool   // gate-only tool names, may be nil
 	dropped    map[int]bool      // output indexes skipped as gate-injected
 	itemBlocks map[int]int       // output_index → Anthropic block index
+	argSent    map[int]string    // output_index → argument prefix already streamed
 	started    bool
 	failed     bool
 	settled    bool
@@ -497,7 +498,33 @@ func (s *responsesStream) handle(event map[string]any) error {
 			slog.Debug("zen responses stream: dropping interleaved function_call arguments", "outputIndex", idx, "openBlock", s.current)
 			return nil
 		}
+		s.argSent[idx] += delta
 		return s.delta(map[string]any{"type": "input_json_delta", "partial_json": delta})
+	case "response.output_item.done":
+		// The completed item carries the call's whole argument string.
+		// Deltas are the normal path, but an upstream that streams a call
+		// with no argument deltas at all would otherwise hand the client a
+		// tool_use block with an empty input it cannot run. Emit whatever
+		// the deltas did not already cover, so the fragments and the
+		// completed value cannot concatenate into malformed JSON.
+		item, _ := event["item"].(map[string]any)
+		if item == nil || item["type"] != "function_call" || s.dropped[idx] {
+			return nil
+		}
+		args, _ := item["arguments"].(string)
+		sent := s.argSent[idx]
+		if len(args) <= len(sent) || !strings.HasPrefix(args, sent) {
+			return nil
+		}
+		block, known := s.itemBlocks[idx]
+		if !known || block != s.current || s.kind != "tool" {
+			// Same rule as an interleaved fragment: a completed call whose
+			// block is no longer open cannot be reopened in Anthropic SSE.
+			slog.Debug("zen responses stream: dropping trailing function_call arguments", "outputIndex", idx, "openBlock", s.current)
+			return nil
+		}
+		s.argSent[idx] = args
+		return s.delta(map[string]any{"type": "input_json_delta", "partial_json": args[len(sent):]})
 	case "response.completed", "response.incomplete":
 		s.settled = true
 		if resp, ok := event["response"].(map[string]any); ok {

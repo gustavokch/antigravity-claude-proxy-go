@@ -24,7 +24,7 @@ import (
 // renamed; missing ones get the captured OpenCode definitions injected).
 //
 // Fields with no Responses equivalent are dropped rather than guessed:
-// stop_sequences and thinking. max_tokens becomes max_output_tokens; sampling
+// stop_sequences, thinking, and top_k. max_tokens becomes max_output_tokens; sampling
 // parameters pass through unchanged.
 //
 // The second result maps upstream tool names back to the client's names for
@@ -231,7 +231,7 @@ func assistantToResponses(content any, renames map[string]string) []any {
 			id, _ := block["id"].(string)
 			name, _ := block["name"].(string)
 			encoded, err := json.Marshal(block["input"])
-			if err != nil {
+			if err != nil || string(encoded) == "null" {
 				encoded = []byte("{}")
 			}
 			calls = append(calls, map[string]any{

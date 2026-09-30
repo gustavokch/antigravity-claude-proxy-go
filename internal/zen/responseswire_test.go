@@ -556,6 +556,7 @@ func TestStreamResponsesToAnthropic_EmitsAnthropicEvents(t *testing.T) {
 		`"type":"tool_use"`,
 		`"name":"Bash"`,
 		`"type":"input_json_delta"`,
+		`"partial_json":"{\"command\":\"ls\"}"`,
 		"event: content_block_stop",
 		`"stop_reason":"tool_use"`,
 		"event: message_stop",
@@ -594,6 +595,63 @@ func TestStreamResponsesToAnthropic_DropsInjectedToolCalls(t *testing.T) {
 	}
 	if !strings.Contains(got, `"stop_reason":"end_turn"`) {
 		t.Errorf("stop_reason = end_turn required when no tool call survives:\n%s", got)
+	}
+}
+
+// A function call whose arguments arrive only with response.output_item.done
+// — no argument deltas at all — must still reach the client. The completed
+// item carries the whole argument string; without it the tool_use block would
+// hand the client an empty input it cannot run.
+func TestStreamResponsesToAnthropic_EmitsArgumentsFromCompletedItem(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_9"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_3","name":"Bash","arguments":""}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_3","name":"Bash","arguments":"{\"command\":\"ls\"}"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_9","usage":{"input_tokens":3,"output_tokens":1}}}`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{`"type":"input_json_delta"`, `"partial_json":"{\"command\":\"ls\"}"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("completed item arguments must reach the client, missing %s:\n%s", want, got)
+		}
+	}
+}
+
+// A call that streamed its arguments as deltas must not have them repeated
+// when response.output_item.done restates the completed value: the client
+// concatenates partial_json, so a second copy would corrupt the input.
+func TestStreamResponsesToAnthropic_DoesNotRepeatDeliveredArguments(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_10"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_4","name":"Bash","arguments":""}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"ls\"}"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_4","name":"Bash","arguments":"{\"command\":\"ls\"}"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_10","usage":{"input_tokens":3,"output_tokens":1}}}`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	got := out.String()
+	if n := strings.Count(got, `input_json_delta`); n != 2 {
+		t.Errorf("input_json_delta frames = %d, want 2 (the two streamed fragments only):\n%s", n, got)
 	}
 }
 
@@ -1283,5 +1341,83 @@ func TestForwardResponses_GateRejectionIsAnAnthropicError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"type":"error"`) {
 		t.Errorf("body = %s, want an Anthropic error envelope", rec.Body.String())
+	}
+}
+
+// A tool_use whose input is null must never reach the wire as the string
+// "null": json.Marshal(nil) succeeds, so the function_call would carry
+// arguments:"null", which is not a JSON object and which the hardened chat
+// wire already rewrites to "{}". The Messages API does not let a client send
+// "input": null, but a replayed assistant turn can carry one, and the object
+// the client gets back must stay inside Anthropic's schema either way.
+func TestSendResponses_ToolUseNullInputEncodesEmptyObject(t *testing.T) {
+	var gotArgs string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("upstream body not JSON: %v", err)
+		}
+		if items, ok := got["input"].([]any); ok {
+			for _, raw := range items {
+				item, _ := raw.(map[string]any)
+				if item["type"] != "function_call" {
+					continue
+				}
+				gotArgs, _ = item["arguments"].(string)
+			}
+		}
+		// Echo the call back the way a model replaying the turn would, so the
+		// client-side assertion reads a real upstream answer rather than a
+		// fixture chosen to pass.
+		b, _ := json.Marshal(map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": 0,
+			"item": map[string]any{
+				"type": "function_call", "call_id": "call_1",
+				"name": "bash", "arguments": gotArgs,
+			},
+		})
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			"data: " + string(b),
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			``,
+		}, "\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"gpt-5","max_tokens":64,"messages":[` +
+		`{"role":"user","content":"run it"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":null}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}],` +
+		`"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}`)
+	resp, err := SendResponses(context.Background(), upstream.Client(), upstream.URL, "sk-zen-test", body)
+	if err != nil {
+		t.Fatalf("SendResponses: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotArgs != "{}" {
+		t.Errorf("upstream function_call arguments = %q, want {} (a null input must encode as an empty object)", gotArgs)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(raw), `"input":null`) {
+		t.Errorf("client body carries \"input\":null, which is outside Anthropic's object schema: %s", raw)
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("client body not JSON: %v; body = %s", err, raw)
+	}
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want one tool_use block", mustJSON(t, content))
+	}
+	block, _ := content[0].(map[string]any)
+	if block["type"] != "tool_use" || block["name"] != "Bash" {
+		t.Fatalf("content[0] = %s, want a tool_use for the client's Bash", mustJSON(t, block))
+	}
+	input, ok := block["input"].(map[string]any)
+	if !ok || len(input) != 0 {
+		t.Errorf("tool_use input = %#v, want an empty object", block["input"])
 	}
 }

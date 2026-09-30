@@ -514,7 +514,7 @@ The OpenRouter Gateway allows querying OpenRouter's Anthropic-compatible message
 ## OpenCode Zen Gateway
 
 The Zen Gateway forwards allowlisted models to the OpenCode Zen
-Anthropic-compatible endpoint (`https://opencode.ai/zen/v1/messages`) with
+endpoints (`https://opencode.ai/zen/...`) with
 `Authorization: Bearer <key>`, same pattern as the Kimi gateway.
 Anthropic-compatible clients (Claude Code, Hermes) reach Zen
 models through the existing `POST /v1/messages` path.
@@ -557,7 +557,7 @@ served by OpenCode's `/zen/v1/responses` endpoint:
 `grok-build-0.1`, `muse-spark-1.3`, `muse-spark-1.2`,
 `muse-spark-1.3-contributor-free`.
 
-`stop_sequences` and `thinking` have no Responses equivalent and are dropped
+`stop_sequences`, `thinking`, and `top_k` have no Responses equivalent and are dropped
 rather than approximated; `max_tokens` becomes `max_output_tokens`.
 
 `/zen/v1/systemone` (Jev) is served as a transparent passthrough on a
