@@ -164,3 +164,45 @@ func TestServer_Systemone_UnreachableUpstreamReturns502(t *testing.T) {
 		t.Errorf("502 body = %s, want an api_error envelope", rec.Body.String())
 	}
 }
+
+// The route spends the operator's Zen key, so it must sit behind the same proxy
+// key as every other /v1 route. An unauthenticated or wrongly keyed call is
+// refused before the body is read, and the gateway is never contacted.
+func TestServer_Systemone_RequiresProxyKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+
+	var upstreamHit atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit.Store(true)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	saveZenTestConfig(t, map[string]any{"enabled": true, "apiKey": "sk-zen-test", "baseUrl": upstream.URL})
+	server := newZenTestServer(t)
+
+	for name, header := range map[string]map[string]string{
+		"no key":          {},
+		"wrong x-api-key": {"x-api-key": "not-the-proxy-key"},
+		"wrong bearer":    {"Authorization": "Bearer not-the-proxy-key"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/systemone",
+			strings.NewReader(`{"model":"jev-1.13","state":"s","questions":{}}`))
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want 401; body = %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	if upstreamHit.Load() {
+		t.Error("gateway was contacted for an unauthenticated systemone call, want it refused locally")
+	}
+}
