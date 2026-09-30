@@ -20,29 +20,31 @@ func TestNormalizeBaseURL(t *testing.T) {
 }
 
 func TestIsAnthropicWire(t *testing.T) {
-	allowed := []string{
-		"claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5",
-		"claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
-		"claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6",
-		"claude-sonnet-4-5", "claude-sonnet-4",
-		"claude-haiku-4-5",
-		"qwen3.8-flash", "qwen3.6-plus", "qwen3.5-plus",
+	// Membership of AnthropicWireIDs is covered by
+	// TestAnthropicWireIDsCoverLiveClaudeModels / ...HaveNoStaleEntries, which
+	// diff the list against a catalog snapshot. What is pinned here is the
+	// normalization: case, the opencode/ prefix, and mixed-case spellings all
+	// fold to the same wire.
+	for _, id := range []string{
+		"claude-sonnet-5-5",
 		"opencode/claude-sonnet-4-6",
 		"OPencode/Claude-Sonnet-4-6",
 		"Claude-Opus-4-5",
-	}
-	for _, id := range allowed {
+	} {
 		if !IsAnthropicWire(id) {
 			t.Errorf("IsAnthropicWire(%q) = false, want true", id)
 		}
 	}
-	denied := []string{
+
+	// Near-miss guards: superset/subset names and non-Claude prefixes must not
+	// claim the Anthropic wire. These are not catalog assertions.
+	for _, id := range []string{
 		"", "gpt-5.5", "opencode/gpt-5.5", "gemini-2.5-pro", "grok-4",
+		"claude-opus-4-5-1", "claude-sonnet-4-6-free",
 		"deepseek-v4", "glm-4.6", "minimax-m2", "kimi-k2-thinking",
-		"muse-spark", "jev-test", "big-pickle", "claude-sonnet-4-6-free",
+		"muse-spark", "jev-test", "big-pickle",
 		"qwen3.7-max", "qwen3.7-plus",
-	}
-	for _, id := range denied {
+	} {
 		if IsAnthropicWire(id) {
 			t.Errorf("IsAnthropicWire(%q) = true, want false", id)
 		}
