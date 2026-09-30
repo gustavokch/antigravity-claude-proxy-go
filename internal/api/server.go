@@ -1751,11 +1751,18 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	startTime := server.nowTime()
 	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
 
-	if wire == zen.WireChat {
-		// Cache-bump replay posts to /v1/messages, which a Chat-wire model
-		// cannot serve, so no bump is recorded on this path.
+	if wire == zen.WireChat || wire == zen.WireResponses {
+		// Cache-bump replay posts to /v1/messages, which a translated-wire
+		// model cannot serve, so no bump is recorded on this path. The
+		// free-tier gate is not observed here either: the hooks below see the
+		// already-translated Anthropic body, while the translator's own error
+		// mapping warns from Zen's bytes.
+		forward, send := zen.ForwardChat, zen.SendChat
+		if wire == zen.WireResponses {
+			forward, send = zen.ForwardResponses, zen.SendResponses
+		}
 		if !server.isCCREnabled() {
-			zen.ForwardChat(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
+			forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
 				if resp.StatusCode < 400 {
 					server.zenInstrumentResponse(resp, model, sessionKey, startTime)
 				}
@@ -1769,39 +1776,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 			return
 		}
 		opts := server.defaultCCROptions(func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
-			return zen.SendChat(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
-		})
-		opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
-		if isStreaming, _ := reqMap["stream"].(bool); isStreaming {
-			_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
-		} else {
-			_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
-		}
-		return
-	}
-
-	if wire == zen.WireResponses {
-		// Cache-bump replay posts to /v1/messages, which a Responses-wire
-		// model cannot serve, so no bump is recorded on this path — same as
-		// the chat wire. The free-tier gate is not observed here either: the
-		// modify hook sees the already-translated Anthropic body, while
-		// translateResponsesResponse observes Zen's own bytes.
-		if !server.isCCREnabled() {
-			zen.ForwardResponses(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
-				if resp.StatusCode < 400 {
-					server.zenInstrumentResponse(resp, model, sessionKey, startTime)
-				}
-				return nil
-			})
-			return
-		}
-		var reqMap map[string]any
-		if err := json.Unmarshal(body, &reqMap); err != nil {
-			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to parse Zen request: "+err.Error())
-			return
-		}
-		opts := server.defaultCCROptions(func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
-			return zen.SendResponses(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
+			return send(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
 		})
 		opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
 		if isStreaming, _ := reqMap["stream"].(bool); isStreaming {

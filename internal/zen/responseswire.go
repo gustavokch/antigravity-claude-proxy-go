@@ -487,39 +487,7 @@ func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey str
 // modify runs on the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.
 func ForwardResponses(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	resp, err := SendResponses(r.Context(), TLSClient(), baseURL, apiKey, body)
-	if err != nil {
-		slog.Default().Error("zen responses upstream error", "error", err)
-		writeAPIError(w, http.StatusBadGateway, "api_error", "Zen upstream error: "+err.Error())
-		return
-	}
-	defer resp.Body.Close()
-	if modify != nil {
-		if err := modify(resp); err != nil {
-			writeAPIError(w, http.StatusBadGateway, "api_error", "Zen response handling error: "+err.Error())
-			return
-		}
-	}
-	for _, h := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
-		if v := resp.Header.Get(h); v != "" {
-			w.Header().Set(h, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	flusher, _ := w.(http.Flusher)
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		if readErr != nil {
-			return
-		}
-	}
+	forwardTranslated(w, "responses", modify, func() (*http.Response, error) {
+		return SendResponses(r.Context(), TLSClient(), baseURL, apiKey, body)
+	})
 }

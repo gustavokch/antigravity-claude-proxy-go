@@ -58,9 +58,19 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 // the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.
 func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	resp, err := SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
+	forwardTranslated(w, "chat", modify, func() (*http.Response, error) {
+		return SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
+	})
+}
+
+// forwardTranslated is the delivery half shared by the translated wires
+// (ForwardChat, ForwardResponses): send the upstream request, run modify on
+// the already-translated response, and copy it to w, flushing per write so
+// SSE stays incremental. wire names the wire in the upstream-error log line.
+func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Response) error, send func() (*http.Response, error)) {
+	resp, err := send()
 	if err != nil {
-		slog.Default().Error("zen chat upstream error", "error", err)
+		slog.Default().Error("zen "+wire+" upstream error", "error", err)
 		writeAPIError(w, http.StatusBadGateway, "api_error", "Zen upstream error: "+err.Error())
 		return
 	}
