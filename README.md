@@ -519,7 +519,7 @@ Anthropic-compatible endpoint (`https://opencode.ai/zen/v1/messages`) with
 Anthropic-compatible clients (Claude Code, Hermes) reach Zen
 models through the existing `POST /v1/messages` path.
 
-Two wire families are supported, both on the existing `POST /v1/messages`
+Two wire families are supported on the existing `POST /v1/messages`
 path. Anthropic-wire ids are forwarded transparently (no payload
 translation); Chat-Completions-wire ids are translated
 Anthropic→Chat Completions and back by `internal/zen/chatwire.go`, so the
@@ -543,12 +543,17 @@ Kimi, Big Pickle, and the `*-free` models:
 `mimo-v2.6-flash-free`, `mimo-v2.5-free`, `ling-3.0-flash-fin-free`,
 `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`.
 
-The remaining Zen wire formats are out of scope: `/zen/v1/responses`
-(`gpt-*`, `grok-*`, `muse-*`), `/zen/v1/models/<gemini-id>` (Gemini-native),
-and `/zen/v1/systemone` (Jev). Both subsets are static lists in code
-(`internal/zen`) because the Zen catalog carries no wire-format field; when
-OpenCode adds a model with an `@ai-sdk/anthropic` or
-OpenAI-compatible docs row, open an issue so the lists can grow. A stale
+`/zen/v1/systemone` (Jev) is served as a transparent passthrough on a
+dedicated route, `POST /v1/systemone` — the request body
+(`{model, state, questions}`) is forwarded unchanged, because it has no
+faithful Anthropic Messages mapping. A `jev-*` id therefore stays
+non-forwardable for `POST /v1/messages`; use the systemone route for it.
+
+Still out of scope: `/zen/v1/responses` (`gpt-*`, `grok-*`, `muse-*`) and
+`/zen/v1/models/<gemini-id>` (Gemini-native). The forwardable subsets are
+static lists in code (`internal/zen`) because the Zen catalog carries no
+wire-format field; when OpenCode adds a model with an `@ai-sdk/anthropic`
+or OpenAI-compatible docs row, open an issue so the lists can grow. A stale
 list fails closed — the id is not claimed by the Zen route and falls through
 to the next gateway.
 

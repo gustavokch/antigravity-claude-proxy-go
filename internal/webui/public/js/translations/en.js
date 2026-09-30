@@ -658,7 +658,7 @@ window.translations.en = {
     zenDiscoverTitle: "Discover Zen Models",
     zenDiscoverDesc: "Fetch the model catalog from the Zen API. Anthropic-wire models are forwarded as-is and Chat-Completions-wire models are translated; other wire formats are marked unusable.",
     zenDiscoverImport: "Import",
-    zenDiscoverUnusable: "Responses/Gemini wire — not forwardable",
+    zenDiscoverUnusable: "Not a /v1/messages wire — not forwardable",
     zenNotAnthropicWire: "Not a forwardable Zen model (Anthropic or Chat Completions wire) — this entry cannot be forwarded.",
     zenWireUnverified: "Wire format unverified — confirm via Discover Models.",
     zenLimits: "Limits",
