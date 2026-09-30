@@ -20,7 +20,7 @@ policy. The wire list is a capability gate, so it contains every live
 
 ## Architecture
 
-- `AnthropicWireIDs` / `ChatWireIDs` (`internal/zen/client.go:36-85`) are
+- `AnthropicWireIDs` / `ChatWireIDs` (`internal/zen/client.go:36-86`) are
   static wire-capability lists. `init()` folds them into `wireSet`;
   `IsForwardable(id)` / `WireFor(id)` read that set.
 - The wire gate lives in `matchZenModelEntry` (`internal/api/server.go:2062`):
@@ -61,7 +61,7 @@ Sources, in precedence order:
    against the docs endpoint table **with the live catalog as authoritative**
    (precedent: `qwen3.7-max`/`qwen3.7-plus` are excluded because they are
    absent from the *live* catalog, not because the docs table omits them).
-4. `README.md` Zen section (lines ~530-534) — documents the same list and
+4. `README.md` Zen section (the "Anthropic-wire subset" list) — documents the same list and
    must be updated with it.
 
 Acceptance criteria:
@@ -177,7 +177,7 @@ want true`.
 
 ## Task 2 — Green: insert the id into `AnthropicWireIDs`
 
-**File:** `internal/zen/client.go` (list at lines 36-53).
+**File:** `internal/zen/client.go` (list at lines 36-54).
 
 Replace:
 
@@ -210,7 +210,7 @@ WireAnthropic` case is untouched by this change).
 
 ## Task 3 — Docs: README list
 
-**File:** `README.md` lines 530-534.
+**File:** `README.md` (the "Anthropic-wire subset" list in the Zen section).
 
 Replace:
 
@@ -354,7 +354,7 @@ catalog snapshot, the drift tests (`catalog_drift_test.go`,
    catalogue** — operator/WebUI action (Settings → Claude Code → Discover
    Models), config not code. The effective list is the configured
    allowlist, or `claudecode.DefaultAllowlist()`
-   (`internal/claudecode/router.go:11-122`) when it is empty. The defaults
+   (`internal/claudecode/router.go:10-123`) when it is empty. The defaults
    carry `claude-fable-5`, `claude-fable-5-1`, `claude-opus-5`,
    `claude-sonnet-5`, `claude-haiku-4-5-20251001`, and the `claude-3-*`
    family — no `claude-opus-4-*` / `claude-sonnet-4-*`, and no
