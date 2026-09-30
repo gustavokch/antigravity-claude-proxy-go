@@ -70,12 +70,63 @@ func TestTLSClientOffByDefault(t *testing.T) {
 	if TLSClient() != http.DefaultClient {
 		t.Error("disabled TLSClient should be http.DefaultClient")
 	}
-	if GetTLSConfig().Transport() != nil {
+	if Transport() != nil {
 		t.Error("disabled Transport should be nil")
 	}
 	SetTLSConfig(ZenTLSConfig{Enabled: true})
 	if TLSClient() == http.DefaultClient {
 		t.Error("enabled TLSClient should not be http.DefaultClient")
+	}
+}
+
+// TestSharedTransportCached: one default-shaped utls transport per
+// configuration — consecutive calls return the same pointer, SetTLSConfig
+// invalidates it, and the clone keeps the default transport's proxy and
+// timeouts without ever mutating the shared default.
+func TestSharedTransportCached(t *testing.T) {
+	SetTLSConfig(ZenTLSConfig{})
+	t.Cleanup(func() { SetTLSConfig(ZenTLSConfig{}) })
+
+	if Transport() != nil {
+		t.Fatal("disabled Transport should be nil")
+	}
+
+	SetTLSConfig(ZenTLSConfig{Enabled: true})
+	first := Transport()
+	if first == nil {
+		t.Fatal("enabled Transport is nil")
+	}
+	if again := Transport(); again != first {
+		t.Error("consecutive Transport() calls should return the same pointer")
+	}
+	if TLSClient().Transport != first {
+		t.Error("TLSClient should carry the shared transport")
+	}
+	if first.Proxy == nil {
+		t.Error("shared transport should keep ProxyFromEnvironment")
+	}
+	if first.IdleConnTimeout == 0 {
+		t.Error("shared transport should keep the default IdleConnTimeout")
+	}
+	if first.DialTLSContext == nil {
+		t.Error("shared transport should dial through the captured hello")
+	}
+	if def, ok := http.DefaultTransport.(*http.Transport); ok && def.DialTLSContext != nil {
+		t.Error("http.DefaultTransport must never be mutated")
+	}
+
+	SetTLSConfig(ZenTLSConfig{Enabled: true})
+	second := Transport()
+	if second == nil {
+		t.Fatal("Transport nil after SetTLSConfig")
+	}
+	if second == first {
+		t.Error("SetTLSConfig should invalidate the cached transport")
+	}
+
+	SetTLSConfig(ZenTLSConfig{})
+	if Transport() != nil {
+		t.Error("disabled Transport should be nil after SetTLSConfig")
 	}
 }
 

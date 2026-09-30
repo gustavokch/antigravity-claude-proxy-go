@@ -95,10 +95,11 @@ func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, 
 		},
 	}
 
-	// utls Bun handshake when the TLS disguise is on; unset keeps the
-	// ReverseProxy default transport (a typed-nil *http.Transport would
-	// panic in RoundTrip).
-	if tr := GetTLSConfig().Transport(); tr != nil {
+	// utls Bun handshake when the TLS disguise is on, on the one shared
+	// transport so keep-alive pools survive across requests; unset keeps
+	// the ReverseProxy default transport (a typed-nil *http.Transport
+	// would panic in RoundTrip).
+	if tr := Transport(); tr != nil {
 		proxy.Transport = tr
 	}
 

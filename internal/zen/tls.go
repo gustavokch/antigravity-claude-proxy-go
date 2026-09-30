@@ -28,9 +28,10 @@ type ZenTLSConfig struct {
 }
 
 var (
-	tlsMu     sync.RWMutex
-	tlsCfg    ZenTLSConfig
-	tlsClient *http.Client
+	tlsMu        sync.RWMutex
+	tlsCfg       ZenTLSConfig
+	tlsClient    *http.Client
+	tlsTransport *http.Transport
 
 	specOnce sync.Once
 	bunSpec  *utls.ClientHelloSpec
@@ -55,6 +56,7 @@ func SetTLSConfig(cfg ZenTLSConfig) {
 	tlsMu.Lock()
 	tlsCfg = cfg
 	tlsClient = nil
+	tlsTransport = nil
 	tlsMu.Unlock()
 }
 
@@ -67,7 +69,8 @@ func GetTLSConfig() ZenTLSConfig {
 
 // TLSClient returns the shared client for zen-bound requests:
 // http.DefaultClient while the TLS disguise is off, a utls-backed client
-// once it is enabled. The returned client is stable per configuration.
+// once it is enabled. The returned client is stable per configuration and
+// carries no timeout — streaming callers own their deadlines.
 func TLSClient() *http.Client {
 	tlsMu.Lock()
 	defer tlsMu.Unlock()
@@ -75,7 +78,7 @@ func TLSClient() *http.Client {
 		return http.DefaultClient
 	}
 	if tlsClient == nil {
-		if transport := tlsCfg.Transport(); transport != nil {
+		if transport := transportLocked(); transport != nil {
 			tlsClient = &http.Client{Transport: transport}
 		}
 	}
@@ -85,23 +88,41 @@ func TLSClient() *http.Client {
 	return tlsClient
 }
 
-// Transport returns the utls-backed transport for zen-bound requests, or nil
-// when the disguise is off or the captured hello cannot be fingerprinted —
-// callers pass the result straight to http.Client/ReverseProxy, which fall
-// back to the default transport on nil.
-func (c ZenTLSConfig) Transport() *http.Transport {
-	if !c.Enabled {
+// Transport returns the shared utls-backed transport for zen-bound requests,
+// or nil when the disguise is off or the captured hello cannot be
+// fingerprinted — callers pass the result straight to http.Client/ReverseProxy,
+// which fall back to the default transport on nil. One transport is cached
+// per configuration so keep-alive pools survive across requests; it is a
+// clone of http.DefaultTransport (proxy from the environment, 30s dial
+// timeout, 10s TLS handshake timeout, 90s idle timeout) with DialTLSContext
+// pointed at the captured hello. The shared default transport itself is
+// never mutated.
+func Transport() *http.Transport {
+	tlsMu.Lock()
+	defer tlsMu.Unlock()
+	return transportLocked()
+}
+
+// transportLocked builds the cached transport; callers hold tlsMu.
+func transportLocked() *http.Transport {
+	if !tlsCfg.Enabled {
 		return nil
 	}
 	spec, err := bunHelloSpec()
 	if err != nil || spec == nil {
 		return nil
 	}
-	return &http.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if tlsTransport == nil {
+		tr := &http.Transport{Proxy: http.ProxyFromEnvironment}
+		if base, ok := http.DefaultTransport.(*http.Transport); ok {
+			tr = base.Clone()
+		}
+		tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialOpencodeTLS(ctx, network, addr, spec)
-		},
+		}
+		tlsTransport = tr
 	}
+	return tlsTransport
 }
 
 // spoofedConn exposes the utls handshake result to net/http as a
