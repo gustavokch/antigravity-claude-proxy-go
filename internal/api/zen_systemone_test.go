@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +35,11 @@ func TestServer_Systemone_ZenDisabledReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+	}
+	// The status alone cannot tell this route's 404 from the serveHTTP default
+	// branch's, which also answers 404. Only the handler names the reason.
+	if !strings.Contains(rec.Body.String(), "Zen gateway is disabled") {
+		t.Errorf("404 body = %s, want it to say the Zen gateway is disabled (a bare not_found would mean the route is missing)", rec.Body.String())
 	}
 }
 
@@ -99,12 +103,11 @@ func TestServer_Systemone_ForwardsBodyToZenGateway(t *testing.T) {
 	if string(gotBody) != body {
 		t.Errorf("forwarded body = %q, want %q (byte-identical passthrough)", gotBody, body)
 	}
-	var answers map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &answers); err != nil {
-		t.Fatalf("response not JSON: %v; body = %s", err, rec.Body.String())
-	}
-	if answers["answers"] == nil {
-		t.Errorf("response = %s, want the upstream answers passthrough", rec.Body.String())
+	// Byte-identical response passthrough is this route's whole reason for
+	// existing: any translation added here would break the systemone contract
+	// the client already speaks, so the body must arrive exactly as written.
+	if want := `{"answers":{"is_urgent":{"answer":"yes"}},"usage":{"input_tokens":12,"output_tokens":4}}`; rec.Body.String() != want {
+		t.Errorf("response = %s, want the upstream body unchanged: %s", rec.Body.String(), want)
 	}
 }
 
