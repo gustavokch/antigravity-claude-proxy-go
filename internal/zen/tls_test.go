@@ -9,10 +9,39 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// spyTransport records whether the client carrying it served a request.
+type spyTransport struct {
+	mu   sync.Mutex
+	used bool
+	base http.RoundTripper
+}
+
+func (s *spyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	s.used = true
+	s.mu.Unlock()
+	return s.base.RoundTrip(r)
+}
+
+func (s *spyTransport) markUnused() {
+	s.mu.Lock()
+	s.used = false
+	s.mu.Unlock()
+}
+
+func (s *spyTransport) wasUsed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.used
+}
 
 // TestBunSpecFromCapture: the embedded ClientHello must fingerprint cleanly
 // into a utls spec with the shape of the genuine capture (17 ciphers,
@@ -47,6 +76,55 @@ func TestTLSClientOffByDefault(t *testing.T) {
 	SetTLSConfig(ZenTLSConfig{Enabled: true})
 	if TLSClient() == http.DefaultClient {
 		t.Error("enabled TLSClient should not be http.DefaultClient")
+	}
+}
+
+// TestFetchModelsRoutesThroughTLSClient: with the disguise enabled the
+// models fetch must ride TLSClient()'s transport, not the client's own
+// timeout-bounded one; with the disguise off it must keep using the local
+// client (the 15s timeout) and never touch the utls path.
+func TestFetchModelsRoutesThroughTLSClient(t *testing.T) {
+	var hit atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"m1"}]}`)
+	}))
+	defer upstream.Close()
+
+	spy := &spyTransport{base: http.DefaultTransport}
+	c := NewClient(time.Second, time.Minute)
+	c.httpClient = &http.Client{Timeout: time.Second, Transport: spy}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	SetTLSConfig(ZenTLSConfig{})
+	t.Cleanup(func() { SetTLSConfig(ZenTLSConfig{}) })
+	if _, err := c.FetchModels(ctx, "", upstream.URL); err != nil {
+		t.Fatalf("disabled FetchModels: %v", err)
+	}
+	if !spy.wasUsed() {
+		t.Fatal("disabled FetchModels should use the client's own transport")
+	}
+
+	spy.markUnused()
+	hit.Store(false)
+	SetTLSConfig(ZenTLSConfig{Enabled: true})
+	got, err := c.FetchModels(ctx, "", upstream.URL)
+	if err != nil {
+		t.Fatalf("enabled FetchModels: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "m1" {
+		t.Fatalf("models = %+v, want one m1", got)
+	}
+	if !hit.Load() {
+		t.Fatal("enabled FetchModels issued no request upstream")
+	}
+	if spy.wasUsed() {
+		t.Fatal("enabled FetchModels used the plain client transport; want TLSClient()")
+	}
+	if TLSClient() == c.httpClient {
+		t.Fatal("TLSClient() should differ from the local client")
 	}
 }
 
