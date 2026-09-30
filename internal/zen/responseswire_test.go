@@ -1448,3 +1448,27 @@ func TestAnthropicToResponsesRequest_DropsReplayedThinking(t *testing.T) {
 		t.Fatalf("input has %d items, want 3 (user, assistant text, user): %s", len(items), mustJSON(t, items))
 	}
 }
+
+// Responses function tools default to strict mode when `strict` is omitted,
+// which normalises the schema (optional params become required). The Chat
+// wire this mirrors was non-strict, so every tool — declared or injected
+// for the gate — must say so explicitly.
+func TestAnthropicToResponsesRequest_ToolsAreNonStrict(t *testing.T) {
+	out, _, _ := anthropicToResponsesRequest(map[string]any{
+		"model":    "gpt-5",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools": []any{
+			map[string]any{"name": "Edit", "input_schema": map[string]any{"type": "object"}},
+		},
+	})
+	tools, _ := out["tools"].([]any)
+	if len(tools) != 3 {
+		t.Fatalf("tools = %s, want Edit plus the injected bash and read", mustJSON(t, tools))
+	}
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		if strict, ok := tool["strict"].(bool); !ok || strict {
+			t.Errorf("tool %v strict = %v, want an explicit false", tool["name"], tool["strict"])
+		}
+	}
+}

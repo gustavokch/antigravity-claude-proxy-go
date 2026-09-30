@@ -103,11 +103,14 @@ func anySlice(v any) []any {
 
 // chatToolToResponses reshapes one Chat-Completions tool
 // ({"type":"function","function":{...}}) into the flat Responses shape
-// ({"type":"function","name":...,"parameters":...}).
+// ({"type":"function","name":...,"parameters":...,"strict":false}).
 func chatToolToResponses(t any) any {
 	tool, _ := t.(map[string]any)
 	fn, _ := tool["function"].(map[string]any)
-	out := map[string]any{"type": "function", "name": fn["name"]}
+	// strict is explicit because a Responses function tool with `strict`
+	// omitted attempts strict mode, which rewrites optional parameters as
+	// required; Chat-Completions tools (the source shape) are non-strict.
+	out := map[string]any{"type": "function", "name": fn["name"], "strict": false}
 	if d, ok := fn["description"].(string); ok && d != "" {
 		out["description"] = d
 	}
