@@ -223,14 +223,39 @@ func (r *Router) ResolveModel(requested string) (string, bool) {
 		return canonical, true
 	}
 
-	// 4. Prefix matching against known canonical IDs or aliases (longest prefix first)
+	// 4. Prefix matching against known canonical IDs or aliases (longest prefix
+	// first). A hit that continues the version number is a different model,
+	// not a variant of the matched one, so it does not match.
 	for _, pm := range r.prefixes {
-		if strings.HasPrefix(req, pm.prefix) {
+		if rest, ok := strings.CutPrefix(req, pm.prefix); ok && !continuesVersion(rest) {
 			return pm.canonicalID, true
 		}
 	}
 
 	return "", false
+}
+
+// continuesVersion reports whether rest, the tail of a request after a matched
+// prefix, carries on the version number instead of suffixing the model: a
+// digit that extends the last one ("claude-sonnet-50"), or a "-"/"." followed
+// by a short digit run ("-5", ".5"). Four or more digits are a build stamp
+// ("-20260101"), not a version, so dated ids still resolve to their family.
+// Any other suffix ("[1m]", "-latest", "-custom-build") is left alone.
+func continuesVersion(rest string) bool {
+	if rest == "" {
+		return false
+	}
+	if rest[0] >= '0' && rest[0] <= '9' {
+		return true
+	}
+	if rest[0] != '-' && rest[0] != '.' {
+		return false
+	}
+	digits := 0
+	for digits+1 < len(rest) && rest[digits+1] >= '0' && rest[digits+1] <= '9' {
+		digits++
+	}
+	return digits >= 1 && digits <= 3
 }
 
 // GetAllowedModels returns a slice of currently enabled models.

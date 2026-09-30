@@ -320,6 +320,17 @@ func TestMatchClaudeCodeModel_AllowlistAndAlias(t *testing.T) {
 	if got := matchClaudeCodeModel(emptyCfg, "sonnet-5"); got != "claude-sonnet-5" {
 		t.Errorf("expected empty cfg to match alias on default allowlist, got %q", got)
 	}
+	// A distinct newer model must not be rewritten to the default-allowlist
+	// family it prefix-matches ("claude-sonnet-5-5" is not "claude-sonnet-5"):
+	// the gateway declines so dispatch falls through to the next backend.
+	if got := matchClaudeCodeModel(emptyCfg, "claude-sonnet-5-5"); got != "" {
+		t.Errorf("default allowlist must not claim claude-sonnet-5-5, got %q", got)
+	}
+	withNew := claudecode.Config{Allowlist: append(claudecode.DefaultAllowlist(),
+		claudecode.ModelConfig{ID: "claude-sonnet-5-5", Enabled: true})}
+	if got := matchClaudeCodeModel(withNew, "claude-sonnet-5-5"); got != "claude-sonnet-5-5" {
+		t.Errorf("allowlisted claude-sonnet-5-5 = %q, want exact match", got)
+	}
 }
 
 func TestClaudeCodeConfigInDefaultConfig(t *testing.T) {

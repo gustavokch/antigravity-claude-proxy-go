@@ -223,3 +223,59 @@ func TestRouter_UpdateAllowlist_CommaSeparatedAlias(t *testing.T) {
 		t.Errorf("prefix ResolveModel(fable-5-20260101) = %q, %v; want claude-fable-5, true", got, ok)
 	}
 }
+
+// A prefix hit must not cross into a different model. "claude-sonnet-5-5" and
+// "claude-opus-5-5" are distinct upstream models, and resolving them to
+// "claude-sonnet-5" / "claude-opus-5" would rewrite body.model and silently
+// serve a different model than the client asked for.
+func TestRouter_PrefixDoesNotCrossVersionBoundary(t *testing.T) {
+	r := NewRouter(nil) // default allowlist: claude-sonnet-5, claude-opus-5, ...
+
+	for _, req := range []string{
+		"claude-sonnet-5-5",
+		"claude-opus-5-5",
+		"claude-sonnet-5.5",
+		"claude-sonnet-5-5-20260101",
+		"claude-sonnet-50",
+		"claude-sonnet-5-123", // three digits is still a version component
+		"sonnet-5-5",          // alias prefix "sonnet-5"
+		"opus-4-6",            // alias prefix "opus" must not serve opus-5 for opus-4-6
+	} {
+		if got, ok := r.ResolveModel(req); ok {
+			t.Errorf("ResolveModel(%q) = %q, true; want no match", req, got)
+		}
+	}
+
+	// Suffixes that do not start a new version component still resolve.
+	for req, want := range map[string]string{
+		"claude-sonnet-5-20260101":  "claude-sonnet-5", // dated build stamp
+		"claude-sonnet-5-2026":      "claude-sonnet-5", // four digits is a stamp, not a version
+		"claude-sonnet-5[1m]":       "claude-sonnet-5", // context-window marker
+		"sonnet-3-5-custom-build":   "claude-3-5-sonnet-20241022",
+		"claude-haiku-4-5-20251101": "claude-haiku-4-5-20251001",
+		"claude-opus-5-latest":      "claude-opus-5",
+	} {
+		if got, ok := r.ResolveModel(req); !ok || got != want {
+			t.Errorf("ResolveModel(%q) = %q, %v; want %q, true", req, got, ok, want)
+		}
+	}
+}
+
+// With both generations allowlisted, the longer id wins by exact match and by
+// longest prefix, and the shorter id is never a fallback for it.
+func TestRouter_PrefixPrefersLongerAllowlistedID(t *testing.T) {
+	r := NewRouter([]ModelConfig{
+		{ID: "claude-sonnet-5", Enabled: true},
+		{ID: "claude-sonnet-5-5", Enabled: true},
+	})
+	for req, want := range map[string]string{
+		"claude-sonnet-5":            "claude-sonnet-5",
+		"claude-sonnet-5-5":          "claude-sonnet-5-5",
+		"claude-sonnet-5-5-20260101": "claude-sonnet-5-5",
+		"claude-sonnet-5-20260101":   "claude-sonnet-5",
+	} {
+		if got, ok := r.ResolveModel(req); !ok || got != want {
+			t.Errorf("ResolveModel(%q) = %q, %v; want %q, true", req, got, ok, want)
+		}
+	}
+}
