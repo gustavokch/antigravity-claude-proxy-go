@@ -3,6 +3,8 @@ package zen
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -387,3 +389,100 @@ func (b *trackingBody) Read(p []byte) (int, error) {
 }
 
 func (b *trackingBody) Close() error { return nil }
+
+// errAfterBytes yields its data once, then keeps returning err — the sticky
+// read error a broken upstream connection produces.
+type errAfterBytes struct {
+	data []byte
+	err  error
+	pos  int
+}
+
+func (r *errAfterBytes) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func (r *errAfterBytes) Close() error { return nil }
+
+// A partial read must not be swallowed: the read error is logged, and the
+// restored body still yields the bytes that did arrive plus the same error —
+// never truncated bytes passed off as a complete body.
+func TestObserveFreeTierGate_ReadErrorPreservesBody(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(prev)
+
+	gate := `{"error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}}`
+	boom := errors.New("upstream reset")
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Body:       &errAfterBytes{data: []byte(gate), err: boom},
+	}
+	ObserveFreeTierGate(resp, "mimo-v2.6-flash-free")
+
+	if !strings.Contains(logBuf.String(), "body read failed") ||
+		!strings.Contains(logBuf.String(), "upstream reset") {
+		t.Errorf("read error not logged:\n%s", logBuf.String())
+	}
+	got, err := io.ReadAll(resp.Body)
+	if string(got) != gate {
+		t.Errorf("partial bytes lost: got %q, want %q", got, gate)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("read error swallowed: %v, want %v", err, boom)
+	}
+}
+
+// A body at or over the sniff limit still gets the gate warning: a real
+// rejection must never hide behind the size cutoff. The reader is handed
+// back as a continuing stream so no byte is lost.
+func TestObserveFreeTierGate_LargeBodyStillLogs(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	gate := `{"error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}}`
+	// gzip body over 1 MiB: a compressible prefix carrying the gate phrase
+	// followed by incompressible padding, so the sniffed prefix decompresses
+	// cleanly while the compressed body exceeds the limit.
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write([]byte(gate))
+	_, _ = zw.Write(make([]byte, 4<<20))
+	rnd := make([]byte, 2<<20)
+	if _, err := rand.Read(rnd); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = zw.Write(rnd)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() < 1<<20 {
+		t.Fatalf("compressed body = %d bytes, want >= 1 MiB", buf.Len())
+	}
+
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Body:       io.NopCloser(bytes.NewReader(buf.Bytes())),
+	}
+	ObserveFreeTierGate(resp, "mimo-v2.6-flash-free")
+
+	if !strings.Contains(logBuf.String(), "zen free-tier gate rejected request") ||
+		!strings.Contains(logBuf.String(), "model=mimo-v2.6-flash-free") {
+		t.Errorf("gate warning missing for large body:\n%s", logBuf.String())
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if len(got) != buf.Len() {
+		t.Errorf("body truncated: got %d bytes, want %d", len(got), buf.Len())
+	}
+}

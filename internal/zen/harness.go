@@ -238,9 +238,11 @@ func WarnFreeTierGate(model string, status int, body []byte) {
 
 // ObserveFreeTierGate reads a 403 (FreeTierError) or 426 (UpgradeRequired)
 // response body (up to 1 MiB), logs the gate warning when it is Zen's
-// free-tier gate, and restores the body untouched so the downstream reader
-// sees identical bytes. Other responses are never read; bodies over the limit
-// are handed back as a continuing stream.
+// free-tier gate, and restores the body so the downstream reader sees
+// identical bytes: the full body, or — past the limit or after a read
+// error — the consumed prefix chained back onto the original reader. A read
+// error is logged rather than dropped, and the truncated bytes are never
+// substituted for the body. Other responses are never read.
 func ObserveFreeTierGate(resp *http.Response, model string) {
 	if resp == nil || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusUpgradeRequired) {
 		return
@@ -251,14 +253,28 @@ func ObserveFreeTierGate(resp *http.Response, model string) {
 		return
 	}
 	original := resp.Body
+	if err != nil {
+		slog.Error("zen gate observe: upstream body read failed",
+			"error", err, "model", model, "status", resp.StatusCode)
+		chainBody(resp, raw, original)
+		return
+	}
 	if len(raw) >= limit {
-		resp.Body = struct {
-			io.Reader
-			io.Closer
-		}{io.MultiReader(bytes.NewReader(raw), original), original}
+		WarnFreeTierGate(model, resp.StatusCode, raw)
+		chainBody(resp, raw, original)
 		return
 	}
 	_ = original.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(raw))
 	WarnFreeTierGate(model, resp.StatusCode, raw)
+}
+
+// chainBody hands back the bytes already read in front of the original
+// reader, so no byte is lost and the reader's own error still surfaces
+// downstream.
+func chainBody(resp *http.Response, raw []byte, original io.ReadCloser) {
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(raw), original), original}
 }
