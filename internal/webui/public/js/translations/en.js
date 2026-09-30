@@ -859,6 +859,8 @@ window.translations.en = {
     classifierBackendModel: "Model",
     classifierBackendApiKey: "API key",
     classifierBackendFormatLaya: "Laya (local typed decisions)",
+    classifierBackendFormatJev: "Jev (Zen hosted typed decisions)",
+    classifierJevHint: "Answers come from Zen's hosted Jev model at POST https://opencode.ai/zen/v1/systemone; set that as the URL. Leave the API key blank to use the Zen key (zen.apiKey or OPENCODE_API_KEY). Leave the model blank for jev-1.13-free, or enter jev-1.13 once the free period ends. Minimum Confidence compares Jev's own confidence field. Stage 2 and block-prefilter requests are never sent to Jev. Keep the rule disabled until a replay against teacher labels shows no refusal is allowed (docs/classifier-rules.md, Jev Backend).",
     classifierLayaHint: "Answers are computed by a local laya-serve instance at POST /v1/systemone. Start it yourself; the proxy does not manage the process. The stock checkpoint graded every teacher refusal in a 217-row replay as allowable, so keep a Laya rule disabled until a fine-tuned checkpoint is measured.",
     classifierLayaMaxSeverity: "Maximum Severity",
     classifierLayaMaxSeverityWarning: "Severity 50 and above blocks the action. The default of 49 means a Laya verdict can never block. Raising it past 49 makes a model that scores near chance zero-shot able to block your own commands.",

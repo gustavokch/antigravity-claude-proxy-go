@@ -460,3 +460,49 @@ func TestConfigSaveRejectsLayaMinConfidenceOutOfRange(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigSaveAcceptsJevBackend(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"backends":{"zen-jev":{"name":"Zen Jev","url":"https://opencode.ai/zen/v1/systemone","format":"jev","model":"jev-1.13-free"}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	saved, exists := config.Get().Classifier.Backends["zen-jev"]
+	if !exists {
+		t.Fatalf("backend %q missing from saved config: %+v", "zen-jev", config.Get().Classifier.Backends)
+	}
+	if saved.Format != config.BackendFormatJev {
+		t.Errorf("saved Format = %q, want jev", saved.Format)
+	}
+}
+
+// A jev backend reads the Laya* overrides, so a save must reject the same
+// typos it rejects on a laya backend.
+func TestConfigSaveValidatesJevOverrides(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"backends":{"zen-jev":{"name":"Zen Jev","url":"https://opencode.ai/zen/v1/systemone","format":"jev","layaEscalateLabels":["E"]}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "layaEscalateLabels") {
+		t.Errorf("error should name layaEscalateLabels, got %s", recorder.Body.String())
+	}
+}
+
+func TestConfigSaveFormatErrorListsJev(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	blob := `{"backends":{"b":{"name":"b","url":"https://example.invalid/x","format":"banana"}}}`
+
+	recorder := postConfigRules(t, srv, blob)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "jev") {
+		t.Errorf("format error should list jev among the valid formats, got %s", recorder.Body.String())
+	}
+}

@@ -4640,12 +4640,13 @@
                                     <option value="openai">openai</option>
                                     <option value="anthropic">anthropic</option>
                                     <option value="laya" x-text="$store.global.t('classifierBackendFormatLaya')"></option>
+                                    <option value="jev" x-text="$store.global.t('classifierBackendFormatJev')"></option>
                                 </select>
                             </label>
                             <label class="text-xs text-gray-400">
                                 <span x-text="$store.global.t('classifierBackendModel')">Model</span>
                                 <input type="text" class="input input-xs w-full bg-space-800" x-model="config.backends[key].model"
-                                    :placeholder="config.backends[key].format === 'laya' ? 'english' : ''">
+                                    :placeholder="({ laya: 'english', jev: 'jev-1.13-free' })[config.backends[key].format] || ''">
                             </label>
                             <div class="flex items-center gap-2">
                                 <label class="text-xs text-gray-400 flex-1">
@@ -4657,11 +4658,12 @@
                                 <button class="btn btn-xs btn-error" @click="removeBackend(key)">✕</button>
                             </div>
                             <!-- Laya overrides: a second full-width row, so the row above keeps its layout.
+                                 Jev reads the same overrides, so both formats share it.
                                  layaCriteria and layaSeverityMap stay config.json-only: they must share one
                                  key set, which two free-text maps in a form invite getting wrong. -->
-                            <template x-if="config.backends[key].format === 'laya'">
+                            <template x-if="['laya', 'jev'].includes(config.backends[key].format)">
                                 <div class="md:col-span-6 space-y-2 pt-2 border-t border-space-border/40">
-                                    <p class="text-xs text-gray-400" x-text="$store.global.t('classifierLayaHint')"></p>
+                                    <p class="text-xs text-gray-400" x-text="$store.global.t(config.backends[key].format === 'jev' ? 'classifierJevHint' : 'classifierLayaHint')"></p>
                                     <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-start">
                                         <div class="space-y-1">
                                             <label class="text-xs text-gray-400 block">

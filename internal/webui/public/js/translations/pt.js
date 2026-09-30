@@ -802,6 +802,8 @@ window.translations.pt = {
     classifierBackendModel: "Modelo",
     classifierBackendApiKey: "Chave de API",
     classifierBackendFormatLaya: "Laya (decisões tipadas locais)",
+    classifierBackendFormatJev: "Jev (decisões tipadas hospedadas na Zen)",
+    classifierJevHint: "As respostas vêm do modelo Jev hospedado na Zen em POST https://opencode.ai/zen/v1/systemone; use essa URL. Deixe a chave de API em branco para usar a chave da Zen (zen.apiKey ou OPENCODE_API_KEY). Deixe o modelo em branco para jev-1.13-free, ou informe jev-1.13 quando o período gratuito terminar. A Confiança Mínima compara o campo confidence do próprio Jev. Requisições do Stage 2 e do block-prefilter nunca são enviadas ao Jev. Mantenha a regra desativada até que uma reprodução contra os rótulos do professor mostre que nenhuma recusa é permitida (docs/classifier-rules.md, Jev Backend).",
     classifierLayaHint: "As respostas são calculadas por uma instância local do laya-serve em POST /v1/systemone. Inicie-a você mesmo; o proxy não gerencia esse processo. O checkpoint padrão classificou como permitida toda recusa do professor numa reprodução de 217 linhas, então mantenha uma regra Laya desativada até que um checkpoint ajustado seja medido.",
     classifierLayaMaxSeverity: "Severidade Máxima",
     classifierLayaMaxSeverityWarning: "Severidade 50 ou acima bloqueia a ação. O padrão 49 significa que um veredito do Laya nunca bloqueia. Elevar acima de 49 permite que um modelo com desempenho próximo do acaso bloqueie seus próprios comandos.",
