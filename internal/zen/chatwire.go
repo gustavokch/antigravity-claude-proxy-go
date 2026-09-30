@@ -384,9 +384,26 @@ func toolChoiceToChat(v any, renames map[string]string) any {
 // spellings: Anthropic's "Bash"/"Read" become the lowercase "bash"/"read"
 // the Zen free-tier gate demands (case-insensitive, so "BASH" matches too).
 // Every other tool keeps its client name — the gate only inspects these two.
+// A rename is skipped when its target already exists — another declared
+// tool carries that exact name, or an earlier tool took it — so case
+// variants never collapse into duplicate upstream tools or a wrong reverse
+// lookup; the tool simply keeps its client name.
 func buildToolRenames(v any) map[string]string {
 	tools, _ := v.([]any)
+	declared := make(map[string]bool)
+	for _, t := range tools {
+		tool, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := tool["input_schema"]; !ok {
+			continue
+		}
+		name, _ := tool["name"].(string)
+		declared[name] = true
+	}
 	renames := make(map[string]string)
+	taken := make(map[string]bool, len(declared))
 	for _, t := range tools {
 		tool, ok := t.(map[string]any)
 		if !ok {
@@ -403,9 +420,12 @@ func buildToolRenames(v any) map[string]string {
 		case "read":
 			upstream = "read"
 		}
-		if upstream != name {
+		if upstream != name && !declared[upstream] && !taken[upstream] {
 			renames[name] = upstream
+			taken[upstream] = true
+			continue
 		}
+		taken[name] = true
 	}
 	return renames
 }

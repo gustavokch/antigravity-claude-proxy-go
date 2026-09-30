@@ -467,3 +467,54 @@ func TestSendChatDropsInjectedToolCallStreaming(t *testing.T) {
 		t.Errorf("stream not finished:\n%s", s)
 	}
 }
+
+// A client that declares both "Bash" and "bash" must not collapse them onto
+// one upstream name: duplicate upstream tools and a wrong reverse lookup
+// would misroute the response. The collision case skips the rename instead.
+func TestToolRenames_CaseCollision(t *testing.T) {
+	req := map[string]any{
+		"model":    "glm-5.3",
+		"messages": []any{},
+		"tools": []any{
+			map[string]any{"name": "Bash", "input_schema": map[string]any{"type": "object"}},
+			map[string]any{"name": "bash", "input_schema": map[string]any{"type": "object"}},
+		},
+	}
+	out, rev, injected := anthropicToChatRequest(req)
+
+	var names []string
+	for _, tool := range out["tools"].([]any) {
+		fn := tool.(map[string]any)["function"].(map[string]any)
+		names = append(names, fn["name"].(string))
+	}
+	seen := map[string]int{}
+	for _, n := range names {
+		seen[n]++
+	}
+	if len(names) != len(seen) {
+		t.Fatalf("upstream tools = %v, want no duplicate names", names)
+	}
+	if seen["bash"] != 1 || seen["Bash"] != 1 {
+		t.Fatalf("upstream tools = %v, want one bash and one Bash", names)
+	}
+	if !injected["read"] || len(injected) != 1 {
+		t.Fatalf("injected = %v, want [read] only (bash present case-insensitively)", injected)
+	}
+	// Round trip: each upstream name the client declared resolves back to
+	// its own spelling; the injected "read" is dropped instead.
+	for _, upstream := range names {
+		if injected[upstream] {
+			continue
+		}
+		msg := ChatResponseToAnthropic(map[string]any{"choices": []any{map[string]any{
+			"message": map[string]any{"tool_calls": []any{map[string]any{
+				"id": "x", "function": map[string]any{"name": upstream, "arguments": "{}"},
+			}}},
+			"finish_reason": "tool_calls",
+		}}}, "m", rev, injected)
+		block := msg["content"].([]any)[0].(map[string]any)
+		if block["name"] != upstream {
+			t.Errorf("round trip %q -> %v", upstream, block["name"])
+		}
+	}
+}
