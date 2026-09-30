@@ -256,10 +256,11 @@ touching code. On-demand, network-gated:
 
 Routing is decided by `matchClaudeCodeModel`, not by id equality against an
 allowlist: `Router.ResolveModel` tries exact id, alias, dot/hyphen
-normalization, then longest prefix, and an empty configured allowlist falls
-back to `DefaultAllowlist()`. Re-implementing that in a script drifts from
-the code, so probe the real function with the real loaded config (prints no
-secrets):
+normalization, then longest prefix (a prefix hit that continues the version
+number, e.g. `claude-sonnet-5-5` against `claude-sonnet-5`, is rejected), and
+an empty configured allowlist falls back to `DefaultAllowlist()`.
+Re-implementing that in a script drifts from the code, so probe the real
+function with the real loaded config (prints no secrets):
 
 ```bash
 cat > internal/api/zz_probe_test.go <<'GO'
@@ -302,12 +303,14 @@ rm -f internal/api/zz_probe_test.go
   antigravity/Cloud Code terminal path (`dispatchAlternateBackend` returns
   at `cloudcode`, `internal/api/dispatch.go:51`, so gateways ordered after
   it are never consulted).
-- `claude-sonnet-5-5` resolves to a non-empty id whenever claudecode is
-  enabled and either allowlists it (exact match) or has an ancestor id in
-  the allowlist (prefix match; with the defaults, `claude-sonnet-5`).
-  Claudecode precedes `zen` in the order, so the Zen wire entry is **not**
-  on the path for this id unless claudecode is disabled, declines it, or
-  the order is changed.
+- `claude-sonnet-5-5` resolves to itself only when claudecode is enabled and
+  allowlists that exact id (or an alias of it). With the default allowlist
+  it resolves to `""`: claudecode declines and the request proceeds down the
+  order — `zen` if the operator allowlists the id there (this is where the
+  new `AnthropicWireIDs` entry decides whether `zen` can claim it), then
+  `cloudcode`. It never resolves to `claude-sonnet-5`. Claudecode precedes
+  `zen` in the order, so the Zen wire entry is **not** on the path while
+  claudecode allowlists the id.
 
 > The added entry is a **capability gate**: it makes the id forwardable over
 > the Anthropic wire the moment it becomes reachable through `zen` — the
@@ -354,17 +357,20 @@ catalog snapshot, the drift tests (`catalog_drift_test.go`,
    (`internal/claudecode/router.go:11-122`) when it is empty. The defaults
    carry `claude-fable-5`, `claude-fable-5-1`, `claude-opus-5`,
    `claude-sonnet-5`, `claude-haiku-4-5-20251001`, and the `claude-3-*`
-   family — no `claude-opus-4-*` / `claude-sonnet-4-*`. Matching is **not**
-   id equality: `Router.ResolveModel` also matches aliases and, last,
-   longest **prefix** (`router.go:226-231`), so with the defaults
-   `claude-sonnet-5-5` resolves to `claude-sonnet-5` and `claude-opus-5-5`
-   to `claude-opus-5`, and `tryClaudeCodeGateway` rewrites `body.model` to
-   the resolved id (`internal/api/dispatch.go:113`). Whether that collapse
-   is intended is a separate, pre-existing question (out of scope here).
-   Setting an explicit allowlist replaces the defaults wholesale, so the
-   operator must re-add every id they still want — and exclude
-   `claude-sonnet-4-6` and `claude-opus-4-6` so those keep routing to
-   antigravity/Cloud Code.
+   family — no `claude-opus-4-*` / `claude-sonnet-4-*`, and no
+   `claude-sonnet-5-5` / `claude-opus-5-5`, so under the defaults claudecode
+   **declines** those two. Matching is not id equality: `Router.ResolveModel`
+   also matches aliases and, last, longest prefix. That prefix step used to
+   rewrite `claude-sonnet-5-5` to `claude-sonnet-5` (and `claude-opus-5-5`,
+   `claude-sonnet-5.5`, `opus-4-6`, …) because nothing stopped a prefix hit
+   from continuing the version number; `tryClaudeCodeGateway` then sent the
+   rewritten `body.model` upstream, silently serving a different model. It is
+   fixed in this PR (`continuesVersion`, `router.go`): a prefix hit whose
+   tail is a digit, or `-`/`.` plus one to three digits, does not match;
+   build stamps (`-20260101`), `[1m]`, and other suffixes still do. Setting an
+   explicit allowlist replaces the defaults wholesale, so the operator must
+   re-add every id they still want — and exclude `claude-sonnet-4-6` and
+   `claude-opus-4-6` so those keep routing to antigravity/Cloud Code.
 4. **Stale comment on `matchZenModelEntry`** (`internal/api/server.go:2057-2059`):
    says "the Anthropic-wire subset" but the gate is `zen.IsForwardable`, which
    also admits Chat-Completions ids — pre-existing, unrelated to this add.
