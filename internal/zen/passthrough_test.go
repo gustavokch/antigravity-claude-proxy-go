@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +123,48 @@ func TestForwardMessagesWithHook(t *testing.T) {
 				t.Errorf("client code = %d, want %d", w.Code, tt.status)
 			}
 		})
+	}
+}
+
+func TestForwardSystemOne_TargetsSystemoneWireWithoutAnthropicHeaders(t *testing.T) {
+	var gotPath, gotAuth, gotKey, gotVersion, gotBeta string
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		gotKey, gotVersion, gotBeta = r.Header.Get("x-api-key"), r.Header.Get("anthropic-version"), r.Header.Get("anthropic-beta")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{"is_urgent":{"answer":"yes"}},"usage":{"input_tokens":12,"output_tokens":4}}`))
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"jev-1.13","state":"Payments failing","questions":{"is_urgent":{"type":"noul","instructions":"Urgent?"}}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/systemone", bytes.NewReader(body))
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("anthropic-beta", "some-beta")
+
+	ForwardSystemOne(rec, req, upstream.URL, "sk-zen-test", body, nil)
+
+	if gotPath != "/v1/systemone" {
+		t.Errorf("upstream path = %q, want /v1/systemone", gotPath)
+	}
+	if gotAuth != "Bearer sk-zen-test" {
+		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)
+	}
+	if gotKey != "sk-zen-test" {
+		t.Errorf("x-api-key = %q, want sk-zen-test", gotKey)
+	}
+	if gotVersion != "" || gotBeta != "" {
+		t.Errorf("systemone is not an Anthropic wire: anthropic-version=%q anthropic-beta=%q, want both empty", gotVersion, gotBeta)
+	}
+	if string(gotBody) != string(body) {
+		t.Errorf("forwarded body = %q, want %q (byte-identical)", gotBody, body)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"is_urgent"`) {
+		t.Errorf("response body = %s, want the upstream answers passthrough", rec.Body.String())
 	}
 }
