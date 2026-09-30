@@ -1743,3 +1743,90 @@ func TestResponsesResponseToAnthropic_FallbackCallIDsAreUnique(t *testing.T) {
 		t.Errorf("tool_use blocks = %d, want 2: %s", len(seen), mustJSON(t, out["content"]))
 	}
 }
+
+// A user turn carries tool results, text and images: results lead as
+// function_call_output items (an error result is prefixed, as on the Chat
+// wire), and the remaining parts become one user message whose images are
+// input_image items holding a data URL or the original URL.
+func TestAnthropicToResponsesRequest_UserTurnBlocks(t *testing.T) {
+	out, _, _ := anthropicToResponsesRequest(map[string]any{
+		"model": "gpt-5",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": "boom"},
+			map[string]any{"type": "text", "text": "look"},
+			map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+			map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": "https://example.test/a.png"}},
+		}}},
+	})
+
+	items := responsesInputItems(t, out)
+	if len(items) != 2 {
+		t.Fatalf("input has %d items, want function_call_output then user message: %s", len(items), mustJSON(t, items))
+	}
+	result, _ := items[0].(map[string]any)
+	if result["type"] != "function_call_output" || result["call_id"] != "toolu_1" || result["output"] != "Error: boom" {
+		t.Errorf("tool result item = %s, want function_call_output toolu_1 with an Error: prefix", mustJSON(t, result))
+	}
+	user, _ := items[1].(map[string]any)
+	want := `[{"text":"look","type":"input_text"},` +
+		`{"image_url":"data:image/png;base64,QUJD","type":"input_image"},` +
+		`{"image_url":"https://example.test/a.png","type":"input_image"}]`
+	if got := mustJSON(t, user["content"]); got != want {
+		t.Errorf("user content = %s, want %s", got, want)
+	}
+}
+
+// Parallel tool calls arrive as consecutive function_call items. Each must
+// become its own tool_use block carrying exactly its own arguments, in order.
+func TestStreamResponsesToAnthropic_ParallelToolCalls(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_pc"}}`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_a","name":"bash","arguments":""}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":"}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"ls\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_a","name":"bash","arguments":"{\"command\":\"ls\"}"}}`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"fc_2","type":"function_call","call_id":"call_b","name":"read","arguments":""}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"filePath\":\"/a\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"fc_2","type":"function_call","call_id":"call_b","name":"read","arguments":"{\"filePath\":\"/a\"}"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_pc"}}`,
+	}, "\n\n") + "\n\n"
+
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(upstream), &out, "gpt-5", map[string]string{"bash": "Bash"}, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+
+	type block struct{ id, name, args string }
+	blocks := map[int]*block{}
+	var order []int
+	for _, ev := range anthropicEvents(t, out.String()) {
+		idx := toInt(ev["index"])
+		switch ev["type"] {
+		case "content_block_start":
+			cb, _ := ev["content_block"].(map[string]any)
+			b := &block{}
+			b.id, _ = cb["id"].(string)
+			b.name, _ = cb["name"].(string)
+			blocks[idx] = b
+			order = append(order, idx)
+		case "content_block_delta":
+			delta, _ := ev["delta"].(map[string]any)
+			part, _ := delta["partial_json"].(string)
+			blocks[idx].args += part
+		}
+	}
+	if len(order) != 2 {
+		t.Fatalf("tool_use blocks = %d, want 2:\n%s", len(order), out.String())
+	}
+	for i, want := range []block{
+		{"call_a", "Bash", `{"command":"ls"}`},
+		{"call_b", "read", `{"filePath":"/a"}`},
+	} {
+		if got := *blocks[order[i]]; got != want {
+			t.Errorf("block %d = %+v, want %+v", i, got, want)
+		}
+	}
+	if !strings.Contains(out.String(), `"stop_reason":"tool_use"`) {
+		t.Errorf("stop_reason tool_use missing:\n%s", out.String())
+	}
+}
