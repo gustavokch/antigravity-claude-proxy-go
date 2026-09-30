@@ -1,8 +1,18 @@
-// Package zen implements the OpenCode Zen gateway: a thin transparent
-// forwarder to https://opencode.ai/zen, which exposes an
-// Anthropic-compatible /v1/messages endpoint for the Claude and Qwen
-// Anthropic-wire models. The proxy rewrites the Authorization header and
-// preserves the Anthropic version/beta headers the client sent.
+// Package zen implements the OpenCode Zen gateway in front of
+// https://opencode.ai/zen. Zen serves each catalog id over one of three wires,
+// and the catalog carries no wire field, so the ids are static lists (see
+// AnthropicWireIDs, ChatWireIDs, ResponsesWireIDs):
+//
+//   - Anthropic wire: /v1/messages, forwarded transparently. The proxy
+//     rewrites the Authorization header and preserves the Anthropic
+//     version/beta headers the client sent.
+//   - Chat Completions wire (chatwire.go) and Responses wire
+//     (responseswire.go, responsesstream.go): the Anthropic request is
+//     translated to /v1/chat/completions or /v1/responses and the answer
+//     translated back, so the caller still sees an Anthropic-shaped reply.
+//
+// ForwardSystemOne additionally passes a Jev systemone body through unchanged,
+// because that contract has no Anthropic Messages mapping.
 package zen
 
 import "strings"
