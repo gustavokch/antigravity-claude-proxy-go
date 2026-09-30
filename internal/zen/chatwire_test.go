@@ -518,3 +518,49 @@ func TestToolRenames_CaseCollision(t *testing.T) {
 		}
 	}
 }
+
+// Claude Code opens its system prompt with an attribution line whose cch value
+// differs on every request. A translated wire must not send it: it makes the
+// head of each prompt unique, so the provider's prefix cache never hits, and it
+// hands the provider a client-identity marker.
+func TestSystemText_DropsClaudeCodeBillingHeader(t *testing.T) {
+	const header = "x-anthropic-billing-header: cc_version=2.1.280.5c2; cc_entrypoint=cli; cch=3d0b8; cc_prompt_id=abc;"
+	text := func(s string) any { return map[string]any{"type": "text", "text": s} }
+	for _, tc := range []struct {
+		name   string
+		system any
+		want   string
+	}{
+		{"header in its own block", []any{text(header), text("You are Claude Code.")}, "You are Claude Code."},
+		{"header-only system", []any{text(header)}, ""},
+		{"header line inside a string", header + "\nYou are Claude Code.", "You are Claude Code."},
+		{"token match ignores case", "X-Anthropic-Billing-Header: cch=1\nbody", "body"},
+		{"system without a header is untouched", []any{text("a"), text("b")}, "a\n\nb"},
+	} {
+		if got := systemText(tc.system); got != tc.want {
+			t.Errorf("%s: systemText = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestTranslatedWires_OmitClaudeCodeBillingHeader(t *testing.T) {
+	req := map[string]any{
+		"model": "glm-5.3",
+		"system": []any{
+			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.280.5c2; cch=3d0b8;"},
+			map[string]any{"type": "text", "text": "You are Claude Code."},
+		},
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}
+	chat, _, _ := anthropicToChatRequest(req)
+	responses, _, _ := anthropicToResponsesRequest(req)
+	for name, body := range map[string]map[string]any{"chat": chat, "responses": responses} {
+		raw, _ := json.Marshal(body)
+		if strings.Contains(strings.ToLower(string(raw)), "billing-header") {
+			t.Errorf("%s wire body carries the billing header: %s", name, raw)
+		}
+		if !strings.Contains(string(raw), "You are Claude Code.") {
+			t.Errorf("%s wire body lost the real system prompt: %s", name, raw)
+		}
+	}
+}

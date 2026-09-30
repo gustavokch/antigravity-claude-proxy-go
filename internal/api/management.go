@@ -2350,6 +2350,7 @@ func (server *Server) handleZenModelsFetch(writer http.ResponseWriter, request *
 	other := make([]zen.ModelItem, 0)
 	anthropicCount := 0
 	chatCount := 0
+	responsesCount := 0
 	for _, m := range models {
 		_, wire := zen.WireFor(m.ID)
 		switch wire {
@@ -2358,6 +2359,9 @@ func (server *Server) handleZenModelsFetch(writer http.ResponseWriter, request *
 			usable = append(usable, m)
 		case zen.WireChat:
 			chatCount++
+			usable = append(usable, m)
+		case zen.WireResponses:
+			responsesCount++
 			usable = append(usable, m)
 		default:
 			other = append(other, m)
@@ -2370,6 +2374,7 @@ func (server *Server) handleZenModelsFetch(writer http.ResponseWriter, request *
 		"total":     len(models),
 		"anthropic": anthropicCount,
 		"chat":      chatCount,
+		"responses": responsesCount,
 	})
 }
 

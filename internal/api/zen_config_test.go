@@ -154,7 +154,9 @@ func TestServer_HandleZenModelsFetch_SplitsBuckets(t *testing.T) {
 			"object": "list",
 			"data": []map[string]any{
 				{"id": "claude-sonnet-4-6", "object": "model"},
+				{"id": "glm-5.3", "object": "model"},
 				{"id": "gpt-5.5", "object": "model"},
+				{"id": "gemini-3.1-pro", "object": "model"},
 			},
 		})
 	}))
@@ -184,6 +186,8 @@ func TestServer_HandleZenModelsFetch_SplitsBuckets(t *testing.T) {
 		Status    string `json:"status"`
 		Total     int    `json:"total"`
 		Anthropic int    `json:"anthropic"`
+		Chat      int    `json:"chat"`
+		Responses int    `json:"responses"`
 		Models    []struct {
 			ID string `json:"id"`
 		} `json:"models"`
@@ -194,13 +198,17 @@ func TestServer_HandleZenModelsFetch_SplitsBuckets(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Total != 2 || body.Anthropic != 1 {
-		t.Errorf("total=%d anthropic=%d, want 2/1", body.Total, body.Anthropic)
+	if body.Total != 4 || body.Anthropic != 1 || body.Chat != 1 || body.Responses != 1 {
+		t.Errorf("total=%d anthropic=%d chat=%d responses=%d, want 4/1/1/1", body.Total, body.Anthropic, body.Chat, body.Responses)
 	}
-	if len(body.Models) != 1 || body.Models[0].ID != "claude-sonnet-4-6" {
-		t.Errorf("anthropic bucket wrong: %+v", body.Models)
+	usable := map[string]bool{}
+	for _, m := range body.Models {
+		usable[m.ID] = true
 	}
-	if len(body.Other) != 1 || body.Other[0].ID != "gpt-5.5" {
+	if len(body.Models) != 3 || !usable["claude-sonnet-4-6"] || !usable["glm-5.3"] || !usable["gpt-5.5"] {
+		t.Errorf("forwardable bucket = %+v, want claude-sonnet-4-6, glm-5.3 and gpt-5.5", body.Models)
+	}
+	if len(body.Other) != 1 || body.Other[0].ID != "gemini-3.1-pro" {
 		t.Errorf("other bucket wrong: %+v", body.Other)
 	}
 }

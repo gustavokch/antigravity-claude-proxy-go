@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"antigravity-go-proxy/internal/format"
 )
 
 // SendChat serves an Anthropic Messages request against a Zen
@@ -58,9 +60,19 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 // the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.
 func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	resp, err := SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
+	forwardTranslated(w, "chat", modify, func() (*http.Response, error) {
+		return SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
+	})
+}
+
+// forwardTranslated is the delivery half shared by the translated wires
+// (ForwardChat, ForwardResponses): send the upstream request, run modify on
+// the already-translated response, and copy it to w, flushing per write so
+// SSE stays incremental. wire names the wire in the upstream-error log line.
+func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Response) error, send func() (*http.Response, error)) {
+	resp, err := send()
 	if err != nil {
-		slog.Default().Error("zen chat upstream error", "error", err)
+		slog.Default().Error("zen "+wire+" upstream error", "error", err)
 		writeAPIError(w, http.StatusBadGateway, "api_error", "Zen upstream error: "+err.Error())
 		return
 	}
@@ -168,16 +180,24 @@ func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]stri
 	return out, rev, injected
 }
 
+// systemText flattens an Anthropic system field into one string for the
+// translated wires. Claude Code's attribution line
+// (x-anthropic-billing-header: …cch=<differs per request>…) is dropped: sent
+// upstream it would make the head of every prompt unique, so the provider's
+// prefix cache could never hit, and it would hand the provider a client
+// identity marker.
 func systemText(v any) string {
 	switch s := v.(type) {
 	case string:
-		return s
+		return format.StripBillingHeader(s)
 	case []any:
 		parts := make([]string, 0, len(s))
 		for _, b := range s {
 			if block, ok := b.(map[string]any); ok {
 				if t, _ := block["text"].(string); t != "" {
-					parts = append(parts, t)
+					if t = format.StripBillingHeader(t); t != "" {
+						parts = append(parts, t)
+					}
 				}
 			}
 		}

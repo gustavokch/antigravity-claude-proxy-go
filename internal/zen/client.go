@@ -20,13 +20,14 @@ type ModelItem struct {
 type Wire int
 
 const (
-	// WireNone: not forwardable (Responses, Gemini-native, systemone, or
-	// unknown ids).
+	// WireNone: not forwardable (Gemini-native, systemone, or unknown ids).
 	WireNone Wire = iota
 	// WireAnthropic: POST /zen/v1/messages, transparent forward.
 	WireAnthropic
 	// WireChat: POST /zen/v1/chat/completions, translated from/to Anthropic.
 	WireChat
+	// WireResponses: POST /zen/v1/responses, translated from/to Anthropic.
+	WireResponses
 )
 
 // AnthropicWireIDs is the static allowlist of Zen catalog ids that speak the
@@ -56,9 +57,9 @@ var AnthropicWireIDs = []string{
 // ChatWireIDs is the static allowlist of Zen catalog ids that speak the
 // OpenAI /v1/chat/completions wire format (docs endpoint table, cross-checked
 // against the live catalog 2026-09-24). Requests to these ids are translated
-// Anthropic→Chat Completions and the response back. Everything not in either
-// list (gpt-*, grok-*, muse-* → /v1/responses; gemini-* → Gemini-native;
-// jev-* → /v1/systemone) is not forwardable.
+// Anthropic→Chat Completions and the response back. Everything not in any of
+// the three lists (gemini-* → Gemini-native; jev-* → /v1/systemone) is not
+// forwardable.
 var ChatWireIDs = []string{
 	"deepseek-v4.1-flash",
 	"deepseek-v4-pro",
@@ -85,6 +86,47 @@ var ChatWireIDs = []string{
 	"nemotron-3.5-lightning-free",
 }
 
+// ResponsesWireIDs is the static allowlist of Zen catalog ids that speak the
+// OpenAI /v1/responses wire format (docs endpoint table, cross-checked against
+// the live catalog 2026-09-30 by catalog_responses_drift_test.go, which also
+// records the one gpt-/grok-/muse- catalog id left unclaimed on purpose).
+// Requests to these ids are translated Anthropic↔Responses by
+// internal/zen/responseswire.go. Everything not in any list (gemini-* →
+// Gemini-native; jev-* → /v1/systemone) is not forwardable.
+var ResponsesWireIDs = []string{
+	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6.1-sol",
+	"gpt-6-luna",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-5.5",
+	"gpt-5.5-pro",
+	"gpt-5.4",
+	"gpt-5.4-pro",
+	"gpt-5.4-mini",
+	"gpt-5.4-nano",
+	"gpt-5.3-codex",
+	"gpt-5.3-codex-spark",
+	"gpt-5.2",
+	"gpt-5.2-codex",
+	"gpt-5.1",
+	"gpt-5.1-codex",
+	"gpt-5.1-codex-max",
+	"gpt-5.1-codex-mini",
+	"gpt-5",
+	"gpt-5-codex",
+	"gpt-5-nano",
+	"grok-4.7",
+	"grok-4.6",
+	"grok-4.5",
+	"grok-build-0.1",
+	"muse-spark-1.3",
+	"muse-spark-1.2",
+	"muse-spark-1.3-contributor-free",
+}
+
 type wireEntry struct {
 	canonical string
 	wire      Wire
@@ -93,12 +135,15 @@ type wireEntry struct {
 var wireSet map[string]wireEntry
 
 func init() {
-	wireSet = make(map[string]wireEntry, len(AnthropicWireIDs)+len(ChatWireIDs))
+	wireSet = make(map[string]wireEntry, len(AnthropicWireIDs)+len(ChatWireIDs)+len(ResponsesWireIDs))
 	for _, id := range AnthropicWireIDs {
 		wireSet[strings.ToLower(id)] = wireEntry{id, WireAnthropic}
 	}
 	for _, id := range ChatWireIDs {
 		wireSet[strings.ToLower(id)] = wireEntry{id, WireChat}
+	}
+	for _, id := range ResponsesWireIDs {
+		wireSet[strings.ToLower(id)] = wireEntry{id, WireResponses}
 	}
 }
 
@@ -134,7 +179,7 @@ func IsAnthropicWire(id string) bool {
 }
 
 // IsForwardable reports whether the proxy can serve id through any
-// supported Zen wire (Anthropic or Chat Completions).
+// supported Zen wire (Anthropic, Chat Completions, or Responses).
 func IsForwardable(id string) bool {
 	_, w := WireFor(id)
 	return w != WireNone
