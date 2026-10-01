@@ -282,15 +282,18 @@ func TestParseLayaResponseNamesTheBackendInErrors(t *testing.T) {
 func TestJevRerouteThroughMessages(t *testing.T) {
 	cases := []struct {
 		name           string
+		footer         string
 		status         int
 		body           string
+		wantHits       int32
 		wantVerdict    string
 		wantAuditState classifier.EventStatus
 		wantSource     corpus.Source
 	}{
-		{name: "jev answers", status: http.StatusOK, body: jevBenignAnswer, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusRerouted, wantSource: corpus.SourceJev},
-		{name: "jev rate-limits", status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusError, wantSource: corpus.SourceStub},
-		{name: "jev escalates a refusal", status: http.StatusOK, body: jevRiskyAnswer, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusEscalated, wantSource: corpus.SourceStub},
+		{name: "jev answers", footer: classifierStage1Footer, wantHits: 1, status: http.StatusOK, body: jevBenignAnswer, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusRerouted, wantSource: corpus.SourceJev},
+		{name: "jev rate-limits", footer: classifierStage1Footer, wantHits: 1, status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusError, wantSource: corpus.SourceStub},
+		{name: "jev escalates a refusal", footer: classifierStage1Footer, wantHits: 1, status: http.StatusOK, body: jevRiskyAnswer, wantVerdict: "<severity>0</severity>", wantAuditState: classifier.EventStatusEscalated, wantSource: corpus.SourceStub},
+		{name: "stage 2 escalates before the call", footer: layaStage2Footer, status: http.StatusOK, body: jevBenignAnswer, wantHits: 0, wantVerdict: "<thinking>" + config.DefaultConfig().Classifier.DefaultThinking + "</thinking><severity>0</severity>", wantAuditState: classifier.EventStatusEscalated, wantSource: corpus.SourceStub},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -334,7 +337,7 @@ func TestJevRerouteThroughMessages(t *testing.T) {
 			config.SetForTest(cfg)
 			server.applyClassifierConfig(cfg.Classifier)
 
-			rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, classifierStage1Footer))
+			rec := postClassifierMessages(t, server, classifierShapedBody(t, classifierTestModel, testCase.footer))
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
@@ -342,8 +345,8 @@ func TestJevRerouteThroughMessages(t *testing.T) {
 			if got := verdictTextFrom(t, rec.Body.Bytes()); got != testCase.wantVerdict {
 				t.Errorf("client received %q, want %q", got, testCase.wantVerdict)
 			}
-			if hits.Load() != 1 {
-				t.Errorf("Zen was called %d times, want exactly 1", hits.Load())
+			if hits.Load() != testCase.wantHits {
+				t.Errorf("Zen was called %d times, want %d", hits.Load(), testCase.wantHits)
 			}
 			if accountBackend.hit {
 				t.Error("an account-backed upstream was called; a classifier reroute must not consume account capacity")

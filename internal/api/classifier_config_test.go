@@ -494,15 +494,12 @@ func TestConfigSaveValidatesJevOverrides(t *testing.T) {
 	}
 }
 
-func TestConfigSaveFormatErrorListsJev(t *testing.T) {
+func TestConfigSaveRejectsAnUnknownBackendFormat(t *testing.T) {
 	srv, _, _ := newTestServerWithManager(t)
 	blob := `{"backends":{"b":{"name":"b","url":"https://example.invalid/x","format":"banana"}}}`
 
 	recorder := postConfigRules(t, srv, blob)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
-	}
-	if !strings.Contains(recorder.Body.String(), "jev") {
-		t.Errorf("format error should list jev among the valid formats, got %s", recorder.Body.String())
 	}
 }

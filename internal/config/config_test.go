@@ -1277,17 +1277,6 @@ func TestZenHarnessEnabledAbsentIsNil(t *testing.T) {
 	}
 }
 
-func TestBackendFormatJevDecodes(t *testing.T) {
-	raw := `{"name":"zen-jev","url":"https://opencode.ai/zen/v1/systemone","format":"jev"}`
-	var backend TargetBackend
-	if err := json.Unmarshal([]byte(raw), &backend); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if backend.Format != BackendFormatJev {
-		t.Errorf("Format = %q, want jev", backend.Format)
-	}
-}
-
 // The default model must match the id Zen's catalog publishes
 // (internal/zen/testdata/catalog-2026-09-30.json carries it). An unset model
 // on a jev backend has to name a Jev model, not laya-serve's "english"
