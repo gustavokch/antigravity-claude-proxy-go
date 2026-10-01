@@ -105,7 +105,9 @@ window.Components.classifierConfig = () => ({
             format: 'openai',
             model: '',
             maxTokens: 0,
-            timeoutMs: 20000
+            // 0 is "unset": the server applies the format's own default (5s
+            // for laya and jev, 20s otherwise). The form has no timeout field.
+            timeoutMs: 0
         };
     },
     removeBackend(key) {
