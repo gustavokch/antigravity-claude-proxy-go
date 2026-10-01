@@ -15,6 +15,7 @@ BENIGN_BODY = b'{"model":"jev-1.13-free","answers":{"risk":{"type":"choice","cho
 class _Handler(BaseHTTPRequestHandler):
     response_body = BENIGN_BODY
     status = 200
+    declared_length = None  # when set, sent as Content-Length to fake a body cut short
     last = {}
     count = 0
 
@@ -24,6 +25,8 @@ class _Handler(BaseHTTPRequestHandler):
         type(self).last = {"body": self.rfile.read(length), "headers": dict(self.headers)}
         self.send_response(self.status)
         self.send_header("Content-Type", "application/json")
+        if self.declared_length is not None:
+            self.send_header("Content-Length", str(self.declared_length))
         self.end_headers()
         self.wfile.write(self.response_body)
 
@@ -35,6 +38,7 @@ class _Handler(BaseHTTPRequestHandler):
 def jev_server():
     _Handler.response_body = BENIGN_BODY
     _Handler.status = 200
+    _Handler.declared_length = None
     _Handler.count = 0
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -158,3 +162,9 @@ def test_main_fail_on_missed_refuses_a_corpus_with_no_refusals(jev_server, tmp_p
     _write_rows(rows, [{"state": {"action": "ls"}, "questions": {}, "answers": {"risk": "A"}}])
     assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0"]) == 0
     assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0", "--fail-on-missed"]) == 2
+
+def test_ask_reports_a_body_cut_short_as_a_replay_error(jev_server):
+    # A server that promises more bytes than it sends, then hangs up, must fail one call, not the run.
+    _Handler.declared_length = len(BENIGN_BODY) + 100
+    with pytest.raises(ReplayError):
+        replay_jev.ask(jev_server, "sk-test", replay_jev.build_payload("ls"), timeout=5)

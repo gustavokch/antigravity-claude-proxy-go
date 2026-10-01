@@ -28,6 +28,7 @@ Exit codes: 0 = report printed, 2 = unusable input or key, or (with
 --fail-on-missed) a refusal stands or a call failed.
 """
 import argparse
+import http.client
 import json
 import os
 import statistics
@@ -111,7 +112,7 @@ def ask(url, key, payload, timeout):
             body = response.read()
     except urllib.error.HTTPError as error:
         raise ReplayError(f"HTTP {error.code}")
-    except (urllib.error.URLError, TimeoutError, OSError) as error:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as error:
         raise ReplayError(f"transport: {error}")
     latency_ms = (time.monotonic() - started) * 1000
     try:
