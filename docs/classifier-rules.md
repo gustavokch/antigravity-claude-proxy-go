@@ -260,7 +260,7 @@ A Jev backend answers low-risk Stage 1 requests with Jev, TypeSafe's hosted Syst
 
 ### Replaying a corpus before enabling Jev
 
-`scripts/replay_jev.py` sends teacher-labelled Stage 1 actions to Zen exactly as the backend would (default question, criteria and `layaStateChars`) and applies the proxy's escalation policy. It reads the output of `corpus_to_laya.py` and sends every action in it to the `--url` host:
+`scripts/replay_jev.py` sends teacher-labelled Stage 1 actions to Zen exactly as the backend would (default question and criteria) and applies the proxy's escalation policy. An action longer than `--state-chars` (default: the `layaStateChars` default) is not sent: the proxy would hand it to the teacher whole, so it counts as going to the teacher. It reads the output of `corpus_to_laya.py` and sends every other action in it to the `--url` host:
 
 ```bash
 python3 scripts/corpus_to_laya.py ~/.config/antigravity-proxy/corpus/classifier-*.jsonl -o /tmp/train.jsonl

@@ -5,9 +5,11 @@ proxy's jev backend would do with them.
 A jev backend answers a Stage 1 security-monitor call itself whenever its
 label is not escalated, so the question that decides whether it is safe to
 enable is: how many actions the teacher refused would Jev let through? This
-script sends each action exactly as the proxy would (same question, criteria,
-left-truncated action), applies the proxy's escalation policy, and prints the
-confusion matrix, the missed refusals, and a confidence-floor sweep.
+script sends each action exactly as the proxy would (same question and
+criteria), applies the proxy's escalation policy, and prints the confusion
+matrix, the missed refusals, and a confidence-floor sweep. An action longer
+than --state-chars is not sent: the proxy hands it to the teacher whole, so the
+report counts it as going to the teacher at every floor.
 
 Input is the output of scripts/corpus_to_laya.py (one {state, questions,
 answers} object per line). Each action is sent to the --url host, so run it
@@ -72,16 +74,19 @@ def resolve_key(environ=None, config_path=DEFAULT_CONFIG):
     return key or environ.get("OPENCODE_API_KEY", "")
 
 
-def truncate_action(action, state_chars):
-    """Keep the tail, as buildLayaPayload does: the graded action is last."""
-    return action[-state_chars:] if len(action) > state_chars else action
+def is_oversize(action, state_chars):
+    """Whether the proxy hands the action to the teacher instead of sending it.
 
+    Mirrors buildLayaPayload on a jev backend. The state holds the action alone,
+    so cutting a long one would remove the start of the command itself.
+    """
+    return len(action) > state_chars
 
-def build_payload(action, model=MODEL, state_chars=STATE_CHARS):
+def build_payload(action, model=MODEL):
     """The request the proxy's buildLayaPayload sends for the default question."""
     return {
         "model": model,
-        "state": {"action": truncate_action(action, state_chars)},
+        "state": {"action": action},
         "questions": {
             QUESTION: {
                 "type": "choice",
@@ -131,8 +136,12 @@ def stands(answer, floor, escalate=ESCALATE):
     return answer.label not in escalate and not (floor > 0 and answer.confidence < floor)
 
 
-def summarize(results, floors=FLOORS):
-    """results: dicts with teacher, label, confidence, action. Returns the report data."""
+def summarize(results, floors=FLOORS, oversize=0):
+    """results: dicts with teacher, label, confidence, action, one per row sent.
+
+    oversize counts the rows the proxy would hand to the teacher unsent.
+    Returns the report data.
+    """
     matrix = {teacher: {label: 0 for label in LABELS} for teacher in LABELS}
     for result in results:
         matrix[result["teacher"]][result["label"]] += 1
@@ -143,11 +152,13 @@ def summarize(results, floors=FLOORS):
         missed = [r for r in standing if r["teacher"] == REFUSAL]
         sweep.append({
             "floor": floor,
-            "escalated": len(results) - len(standing),
+            "escalated": len(results) - len(standing) + oversize,
             "missed": missed,
         })
     return {
-        "n": len(results),
+        "n": len(results) + oversize,
+        "sent": len(results),
+        "oversize": oversize,
         "agree": agree,
         "matrix": matrix,
         "refusals": sum(1 for r in results if r["teacher"] == REFUSAL),
@@ -157,9 +168,12 @@ def summarize(results, floors=FLOORS):
 
 def format_report(summary, errors, latencies):
     n = summary["n"]
-    lines = [f"replayed {n} actions ({len(errors)} failed)"]
-    if n:
-        lines.append(f"exact label agreement: {summary['agree']}/{n} ({100 * summary['agree'] / n:.1f}%)")
+    sent = summary["sent"]
+    lines = [f"replayed {sent} actions ({len(errors)} failed)"]
+    if summary["oversize"]:
+        lines.append(f"{summary['oversize']} more were over --state-chars and went to the teacher unsent")
+    if sent:
+        lines.append(f"exact label agreement: {summary['agree']}/{sent} ({100 * summary['agree'] / sent:.1f}%)")
     lines.append("")
     lines.append("teacher \\ jev  " + "  ".join(f"{label:>4}" for label in LABELS))
     for teacher in LABELS:
@@ -186,7 +200,7 @@ def main(argv=None):
     parser.add_argument("input", type=Path, help="corpus_to_laya.py output (JSONL of {state, questions, answers})")
     parser.add_argument("--url", default=ZEN_URL, help="systemone URL (default: %(default)s)")
     parser.add_argument("--model", default=MODEL, help="model to request (default: %(default)s)")
-    parser.add_argument("--state-chars", type=int, default=STATE_CHARS, help="layaStateChars of the backend (default: %(default)s)")
+    parser.add_argument("--state-chars", type=int, default=STATE_CHARS, help="layaStateChars of the backend; a longer action goes to the teacher unsent (default: %(default)s)")
     parser.add_argument("--floor", type=float, default=0.0, help="layaMinConfidence to judge --fail-on-missed at (default: %(default)s)")
     parser.add_argument("--limit", type=int, default=0, help="replay only the first N rows (0 = all)")
     parser.add_argument("--delay", type=float, default=0.1, help="seconds between calls (default: %(default)s)")
@@ -202,15 +216,21 @@ def main(argv=None):
     rows = [row for row in rows if row.get("answers", {}).get(QUESTION) in LABELS and row.get("state", {}).get("action")]
     if args.limit > 0:
         rows = rows[: args.limit]
+    oversize = [row for row in rows if is_oversize(row["state"]["action"], args.state_chars)]
+    rows = [row for row in rows if not is_oversize(row["state"]["action"], args.state_chars)]
     if not rows:
-        print("FAIL: no labelled rows in the input", file=sys.stderr)
+        print("FAIL: no labelled rows of at most --state-chars characters in the input", file=sys.stderr)
         return 2
-    print(f"sending {len(rows)} actions from {args.input} to {args.url} ({unparseable} unparseable lines skipped)", file=sys.stderr)
+    print(
+        f"sending {len(rows)} actions from {args.input} to {args.url} "
+        f"({len(oversize)} over --state-chars kept back, {unparseable} unparseable lines skipped)",
+        file=sys.stderr,
+    )
 
     results, errors, latencies = [], [], []
     for index, row in enumerate(rows):
         try:
-            answer = ask(args.url, key, build_payload(row["state"]["action"], args.model, args.state_chars), args.timeout)
+            answer = ask(args.url, key, build_payload(row["state"]["action"], args.model), args.timeout)
         except ReplayError as error:
             errors.append((index, str(error)))
             continue
@@ -223,7 +243,7 @@ def main(argv=None):
         })
         time.sleep(args.delay)
 
-    summary = summarize(results)
+    summary = summarize(results, oversize=len(oversize))
     print(format_report(summary, errors, latencies))
     at_floor = summarize(results, floors=(args.floor,))["sweep"][0]["missed"]
     for result in at_floor[:10]:
