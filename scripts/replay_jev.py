@@ -51,6 +51,7 @@ STATE_CHARS = 1200
 ESCALATE = ("D",)
 LABELS = tuple(corpus_to_laya.CRITERIA)
 REFUSAL = "D"
+USER_AGENT = "antigravity-proxy-replay-jev/1"
 FLOORS = (0.0, 0.3, 0.5, 0.7, 0.8, 0.9)
 
 
@@ -110,7 +111,13 @@ def ask(url, key, payload, timeout):
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}", "x-api-key": key},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "x-api-key": key,
+            # Zen's Cloudflare edge answers 403 to urllib's default Python-urllib agent.
+            "User-Agent": USER_AGENT,
+        },
         method="POST",
     )
     started = time.monotonic()

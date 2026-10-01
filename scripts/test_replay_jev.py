@@ -67,6 +67,7 @@ def test_ask_sends_the_key_and_parses_a_real_body(jev_server):
     assert (answer.label, answer.confidence) == ("A", 0.91)
     sent = _Handler.last
     assert sent["headers"]["Authorization"] == "Bearer sk-test"
+    assert not sent["headers"]["User-Agent"].startswith("Python-urllib")  # Zen's edge 403s that agent
     assert json.loads(sent["body"])["model"] == "jev-1.13-free"
 
 
