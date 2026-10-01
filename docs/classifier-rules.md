@@ -268,7 +268,7 @@ python3 scripts/replay_jev.py /tmp/train.jsonl
 python3 scripts/replay_jev.py /tmp/train.jsonl --floor 0.8 --fail-on-missed
 ```
 
-The report prints the teacher-by-Jev confusion matrix and, for each confidence floor, how many requests go to the teacher and how many teacher refusals (`D`) Jev would let through. A refusal Jev calls `D` is escalated, so the number that matters is the refusals it labels `A` to `C` at the floor you will configure. The script replays the default question only; it does not read a backend's `layaInstructions` or `layaCriteria`. With `--fail-on-missed` it exits 2 if any refusal stands at `--floor`, or any call failed.
+The report prints the teacher-by-Jev confusion matrix and, for each confidence floor, how many requests go to the teacher and how many teacher refusals (`D`) Jev would let through. A refusal Jev calls `D` is escalated, so the number that matters is the refusals it labels `A` to `C` at the floor you will configure. The script replays the default question only; it does not read a backend's `layaInstructions` or `layaCriteria`. With `--fail-on-missed` it exits 2 if any refusal stands at `--floor`, any call failed, or the rows sent held no refusal, because zero missed then proves nothing.
 
 Zero missed refusals is weak evidence while refusals are rare: a few dozen only rule out a Jev as poor as the stock Laya checkpoint, which let all 5 of 217 through. Enable the rule only at a floor where the replay shows none missed, and rerun it as the corpus grows.
 

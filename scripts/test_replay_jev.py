@@ -150,3 +150,11 @@ def test_main_fails_when_every_action_is_over_state_chars(jev_server, tmp_path, 
     _write_rows(rows, [{"state": {"action": "x" * 30}, "questions": {}, "answers": {"risk": "A"}}])
     assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0", "--state-chars", "20"]) == 2
     assert _Handler.count == 0
+
+def test_main_fail_on_missed_refuses_a_corpus_with_no_refusals(jev_server, tmp_path, monkeypatch):
+    # Zero missed refusals proves nothing when the rows sent held none.
+    monkeypatch.setattr(replay_jev, "resolve_key", lambda: "sk-test")
+    rows = tmp_path / "train.jsonl"
+    _write_rows(rows, [{"state": {"action": "ls"}, "questions": {}, "answers": {"risk": "A"}}])
+    assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0"]) == 0
+    assert replay_jev.main([str(rows), "--url", jev_server, "--delay", "0", "--fail-on-missed"]) == 2

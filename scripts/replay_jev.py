@@ -248,8 +248,12 @@ def main(argv=None):
     at_floor = summarize(results, floors=(args.floor,))["sweep"][0]["missed"]
     for result in at_floor[:10]:
         print(f"MISSED at floor {args.floor}: teacher {REFUSAL}, jev {result['label']} ({result['confidence']:.2f}): {result['action'][:120]!r}")
-    if args.fail_on_missed and (at_floor or errors):
-        return 2
+    if args.fail_on_missed:
+        if summary["refusals"] == 0:
+            print("FAIL: no teacher refusal among the rows sent, so zero missed proves nothing", file=sys.stderr)
+            return 2
+        if at_floor or errors:
+            return 2
     return 0
 
 
