@@ -4729,7 +4729,7 @@
                                                     class="input input-xs w-full bg-space-800"
                                                     x-model.number="config.backends[key].layaMinConfidence">
                                             </label>
-                                            <p class="text-xs text-gray-500 leading-relaxed" x-text="$store.global.t('classifierLayaMinConfidenceHint')"></p>
+                                            <p class="text-xs text-gray-500 leading-relaxed" x-text="$store.global.t(config.backends[key].format === 'jev' ? 'classifierJevMinConfidenceHint' : 'classifierLayaMinConfidenceHint')"></p>
                                         </div>
                                     </div>
                                 </div>

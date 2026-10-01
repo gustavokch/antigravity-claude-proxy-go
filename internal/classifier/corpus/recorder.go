@@ -15,10 +15,10 @@ import (
 // SourceUpstream rows only: training on SourceLaya rows would teach the local
 // model its own answers and entrench its errors. SourceJev marks a verdict a
 // hosted Jev model gave through Zen: a third party's answer, never a teacher
-// label. SourceGateway marks a request
-// that an alternate-backend gateway (Kimi, Zen, Claude Code, OpenRouter or a
-// custom endpoint) answered, whose grader is whatever model that gateway
-// routed to rather than the upstream teacher.
+// label. SourceGateway marks a request that an alternate-backend gateway
+// (Kimi, Zen, Claude Code, OpenRouter or a custom endpoint) answered, whose
+// grader is whatever model that gateway routed to rather than the upstream
+// teacher.
 type Source string
 
 const (

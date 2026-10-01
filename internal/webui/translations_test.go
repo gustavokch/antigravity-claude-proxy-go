@@ -134,6 +134,7 @@ var classifierKeys = []string{
 	"classifierRuleMaxTokensMax", "classifierRuleVerdict", "classifierAudit",
 	"classifierAuditEmpty",
 	"classifierBackendFormatLaya", "classifierBackendFormatJev", "classifierJevHint",
+	"classifierJevMinConfidenceHint",
 	"classifierLayaHint", "classifierLayaMaxSeverity",
 	"classifierLayaMaxSeverityWarning", "classifierLayaStateChars",
 	"classifierLayaQuestionName", "classifierLayaInstructions",

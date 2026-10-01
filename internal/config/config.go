@@ -320,8 +320,9 @@ type TargetBackend struct {
 	// whose labels mean whatever the operator wrote. An explicit empty list
 	// turns label escalation off, and omitzero keeps that [] through a save.
 	LayaEscalateLabels []string `json:"layaEscalateLabels,omitzero"`
-	// LayaMinConfidence escalates an answer whose calibrated
-	// answer_confidence is below it. 0 turns the floor off.
+	// LayaMinConfidence escalates an answer whose confidence is below it: the
+	// calibrated answer_confidence on a laya backend, Jev's own confidence on
+	// a jev backend. 0 turns the floor off.
 	LayaMinConfidence float64 `json:"layaMinConfidence,omitempty"`
 }
 
@@ -428,9 +429,9 @@ var layaQuestionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}$`)
 
 // ValidateLaya reports the first Laya override that cannot be served safely,
 // or nil for a format that does not read them. Laya and Jev backends share
-// the overrides, so both are checked. The config save handler and the rule matcher
-// both call it, so a hand-edited config.json gets the same checks as a WebUI
-// save: an escalate-label typo must not silently turn escalation off.
+// the overrides, so both are checked. The config save handler and the rule
+// matcher both call it, so a hand-edited config.json gets the same checks as
+// a WebUI save: an escalate-label typo must not silently turn escalation off.
 func (backend TargetBackend) ValidateLaya() error {
 	if backend.Format != BackendFormatLaya && backend.Format != BackendFormatJev {
 		return nil

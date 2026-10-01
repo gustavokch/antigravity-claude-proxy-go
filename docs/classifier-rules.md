@@ -216,7 +216,6 @@ tail -1 ~/.config/antigravity-proxy/corpus/classifier-$(date -u +%F).jsonl
 
 A row with `source: "laya"` proves the request was rerouted, the label was mapped to a severity, and the verdict was recorded. laya-serve needs a downloaded checkpoint (and, for faster answers, a GPU); if the operator machine cannot run it, hand `check_laya.py` and this section to whoever runs the sidecar.
 
-
 ## Jev Backend
 
 A Jev backend answers low-risk Stage 1 requests with Jev, TypeSafe's hosted System One model, through OpenCode Zen's `POST /zen/v1/systemone`. It is the Laya adapter pointed at a hosted model: the same question, severity map, escalation and clamp. The credential, the model and the field the confidence floor reads differ. The backend calls Zen directly; it does not go through the proxy's own `POST /v1/systemone` route.
