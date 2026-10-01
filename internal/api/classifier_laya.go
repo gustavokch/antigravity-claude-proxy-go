@@ -50,9 +50,19 @@ func buildLayaPayload(call classifierCall) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Truncate from the left: the graded action sits at the tail, so the head
-	// is what can be lost without losing the thing being judged.
 	if runes := []rune(action); len(runes) > settings.StateChars {
+		// Jev's allow stands in for the teacher's grade, and the state holds
+		// the action alone, so a left cut would remove the start of the
+		// command itself: one padded past the limit reaches Jev as padding.
+		// The teacher gets an over-long action whole instead.
+		if call.backend.Format == config.BackendFormatJev {
+			return nil, fmt.Errorf("%w: action is %d characters, over the %d a jev backend grades",
+				errClassifierEscalated, len(runes), settings.StateChars)
+		}
+		// Laya cuts from the left and keeps the tail. A command padded past the
+		// limit hides its head from the model that way, so this stays for Laya
+		// only because a Laya verdict is clamped below the block boundary and
+		// the stock checkpoint is documented as unfit to enable.
 		action = string(runes[len(runes)-settings.StateChars:])
 	}
 
