@@ -2,6 +2,7 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -168,3 +169,15 @@ def test_ask_reports_a_body_cut_short_as_a_replay_error(jev_server):
     _Handler.declared_length = len(BENIGN_BODY) + 100
     with pytest.raises(ReplayError):
         replay_jev.ask(jev_server, "sk-test", replay_jev.build_payload("ls"), timeout=5)
+
+def test_default_config_path_follows_the_proxy_config_dir(tmp_path):
+    # Mirrors config.GetConfigDir: ANTIGRAVITY_CONFIG_DIR, then CONFIG_DIR, then the home default.
+    both = {"ANTIGRAVITY_CONFIG_DIR": str(tmp_path / "a"), "CONFIG_DIR": str(tmp_path / "b")}
+    assert replay_jev.default_config_path(both) == tmp_path / "a" / "config.json"
+    assert replay_jev.default_config_path({"CONFIG_DIR": str(tmp_path / "b")}) == tmp_path / "b" / "config.json"
+    assert replay_jev.default_config_path({}) == Path.home() / ".config" / "antigravity-proxy" / "config.json"
+
+def test_resolve_key_reads_the_config_the_proxy_reads(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"zen": {"apiKey": "sk-custom-dir"}}))
+    environ = {"ANTIGRAVITY_CONFIG_DIR": str(tmp_path), "OPENCODE_API_KEY": "sk-env"}
+    assert replay_jev.resolve_key(environ) == "sk-custom-dir"

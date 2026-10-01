@@ -21,8 +21,9 @@ Usage:
     python3 scripts/replay_jev.py /tmp/train.jsonl
     python3 scripts/replay_jev.py /tmp/train.jsonl --floor 0.8 --fail-on-missed
 
-The key comes from OPENCODE_API_KEY, else zen.apiKey in
-~/.config/antigravity-proxy/config.json. It is never printed.
+The key comes from zen.apiKey in the proxy's config.json (in
+$ANTIGRAVITY_CONFIG_DIR or $CONFIG_DIR when either is set, else
+~/.config/antigravity-proxy), else from OPENCODE_API_KEY. It is never printed.
 
 Exit codes: 0 = report printed, 2 = unusable input or key, or (with
 --fail-on-missed) a refusal stands or a call failed.
@@ -51,7 +52,6 @@ ESCALATE = ("D",)
 LABELS = tuple(corpus_to_laya.CRITERIA)
 REFUSAL = "D"
 FLOORS = (0.0, 0.3, 0.5, 0.7, 0.8, 0.9)
-DEFAULT_CONFIG = Path.home() / ".config" / "antigravity-proxy" / "config.json"
 
 
 class ReplayError(Exception):
@@ -65,15 +65,22 @@ class Answer:
     latency_ms: float
 
 
-def resolve_key(environ=None, config_path=DEFAULT_CONFIG):
+def default_config_path(environ=None):
+    """Mirror config.GetConfigDir: ANTIGRAVITY_CONFIG_DIR, then CONFIG_DIR, then the home default."""
+    environ = os.environ if environ is None else environ
+    directory = environ.get("ANTIGRAVITY_CONFIG_DIR") or environ.get("CONFIG_DIR")
+    base = Path(directory) if directory else Path.home() / ".config" / "antigravity-proxy"
+    return base / "config.json"
+
+def resolve_key(environ=None, config_path=None):
     """Mirror zenAPIKey: zen.apiKey first, then OPENCODE_API_KEY."""
     environ = os.environ if environ is None else environ
+    path = config_path or default_config_path(environ)
     try:
-        key = json.loads(Path(config_path).read_text()).get("zen", {}).get("apiKey", "")
+        key = json.loads(Path(path).read_text()).get("zen", {}).get("apiKey", "")
     except (OSError, ValueError):
         key = ""
     return key or environ.get("OPENCODE_API_KEY", "")
-
 
 def is_oversize(action, state_chars):
     """Whether the proxy hands the action to the teacher instead of sending it.
