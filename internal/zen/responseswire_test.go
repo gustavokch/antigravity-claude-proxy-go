@@ -1736,23 +1736,9 @@ func TestStreamResponsesToAnthropic_CompletedOutputFallback(t *testing.T) {
 	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
-	var text strings.Builder
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"text_delta"`) {
-			continue
-		}
-		var ev struct {
-			Delta struct {
-				Text string `json:"text"`
-			} `json:"delta"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
-			t.Fatalf("decode %q: %v", line, err)
-		}
-		text.WriteString(ev.Delta.Text)
-	}
-	if text.String() != "hello world" {
-		t.Errorf("client text = %q, want %q", text.String(), "hello world")
+	text := streamedDeltas(t, out.String(), "text_delta", "text")
+	if text != "hello world" {
+		t.Errorf("client text = %q, want %q", text, "hello world")
 	}
 }
 
@@ -1840,23 +1826,9 @@ func TestStreamResponsesToAnthropic_CompletedOutputNoDuplicate(t *testing.T) {
 	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
-	var text strings.Builder
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"text_delta"`) {
-			continue
-		}
-		var ev struct {
-			Delta struct {
-				Text string `json:"text"`
-			} `json:"delta"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
-			t.Fatalf("decode %q: %v", line, err)
-		}
-		text.WriteString(ev.Delta.Text)
-	}
-	if text.String() != "hello world" {
-		t.Errorf("client text = %q, want exactly one delivery", text.String())
+	text := streamedDeltas(t, out.String(), "text_delta", "text")
+	if text != "hello world" {
+		t.Errorf("client text = %q, want exactly one delivery", text)
 	}
 }
 
@@ -1875,23 +1847,9 @@ func TestStreamResponsesToAnthropic_ReasoningMultiPartSeparator(t *testing.T) {
 	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
-	var thinking strings.Builder
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"thinking_delta"`) {
-			continue
-		}
-		var ev struct {
-			Delta struct {
-				Thinking string `json:"thinking"`
-			} `json:"delta"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
-			t.Fatalf("decode %q: %v", line, err)
-		}
-		thinking.WriteString(ev.Delta.Thinking)
-	}
-	if thinking.String() != "first\n\nsecond" {
-		t.Errorf("client thinking = %q, want %q", thinking.String(), "first\n\nsecond")
+	thinking := streamedDeltas(t, out.String(), "thinking_delta", "thinking")
+	if thinking != "first\n\nsecond" {
+		t.Errorf("client thinking = %q, want %q", thinking, "first\n\nsecond")
 	}
 }
 
@@ -1912,24 +1870,31 @@ func TestStreamResponsesToAnthropic_ReasoningPartialDeltasPreserved(t *testing.T
 	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
-	var thinking strings.Builder
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"thinking_delta"`) {
+	thinking := streamedDeltas(t, out.String(), "thinking_delta", "thinking")
+	if thinking != "firstsecond" {
+		t.Errorf("client thinking = %q, want fused %q (no loss)", thinking, "firstsecond")
+	}
+}
+
+// streamedDeltas concatenates one field of every content_block_delta of the
+// given delta type ("text_delta"/"text", "thinking_delta"/"thinking",
+// "input_json_delta"/"partial_json") across an Anthropic SSE transcript: what
+// the client would assemble.
+func streamedDeltas(t *testing.T, raw, deltaType, field string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, ev := range anthropicEvents(t, raw) {
+		if ev["type"] != "content_block_delta" {
 			continue
 		}
-		var ev struct {
-			Delta struct {
-				Thinking string `json:"thinking"`
-			} `json:"delta"`
+		delta, _ := ev["delta"].(map[string]any)
+		if delta["type"] != deltaType {
+			continue
 		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
-			t.Fatalf("decode %q: %v", line, err)
-		}
-		thinking.WriteString(ev.Delta.Thinking)
+		part, _ := delta[field].(string)
+		b.WriteString(part)
 	}
-	if thinking.String() != "firstsecond" {
-		t.Errorf("client thinking = %q, want fused %q (no loss)", thinking.String(), "firstsecond")
-	}
+	return b.String()
 }
 
 // anthropicEvents decodes the data: frames of an Anthropic SSE stream in order.
