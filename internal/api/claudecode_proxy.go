@@ -175,16 +175,8 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 	return ""
 }
 
-// ccExtractSessionID extracts a stable session key from request headers, then
-// from the request body. Inspects X-Claude-Code-Session-Id (sent by Claude Code)
-// followed by third-party harness session headers.
-//
-// The body fallback exists because a harness that sends no session header may
-// still carry the identifier in metadata. Mirrors openrouter.ExtractSessionID
-// minus the remote-address fallback, which would change account stickiness for
-// anonymous clients.
-// parseNestedSessionID attempts to parse a stringified JSON user_id object
-// (as sent by Claude Code in metadata.user_id) to extract the inner session_id.
+// parseNestedSessionID attempts to parse a stringified JSON object (as sent by
+// Claude Code in metadata.user_id or custom headers) to extract the inner session_id.
 func parseNestedSessionID(val string) string {
 	val = strings.TrimSpace(val)
 	if strings.HasPrefix(val, "{") && strings.HasSuffix(val, "}") {
@@ -201,6 +193,14 @@ func parseNestedSessionID(val string) string {
 	return val
 }
 
+// ccExtractSessionID extracts a stable session key from request headers, then
+// from the request body. Inspects X-Claude-Code-Session-Id (sent by Claude Code)
+// followed by third-party harness session headers.
+//
+// The body fallback exists because a harness that sends no session header may
+// still carry the identifier in metadata. Mirrors openrouter.ExtractSessionID
+// minus the remote-address fallback, which would change account stickiness for
+// anonymous clients.
 func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 	if r != nil {
 		for _, h := range []string{"X-Claude-Code-Session-Id", "x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
