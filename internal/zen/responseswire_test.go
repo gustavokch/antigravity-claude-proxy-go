@@ -1764,6 +1764,9 @@ func TestAggregateResponsesStream_CompletedOutputFallbackFunctionCall(t *testing
 	if got["type"] != "tool_use" || got["name"] != "get_weather" {
 		t.Errorf("content[0] = %s, want get_weather tool_use", mustJSON(t, content[0]))
 	}
+	if input, _ := got["input"].(map[string]any); input["city"] != "Sampa" {
+		t.Errorf("tool_use input = %s, want city=Sampa: the arguments must survive the fallback", mustJSON(t, got["input"]))
+	}
 	if msg["stop_reason"] != "tool_use" {
 		t.Errorf("stop_reason = %v, want tool_use", msg["stop_reason"])
 	}
@@ -1784,6 +1787,9 @@ func TestStreamResponsesToAnthropic_CompletedOutputFallbackFunctionCall(t *testi
 	}
 	if !strings.Contains(out.String(), `"tool_use"`) || !strings.Contains(out.String(), "get_weather") {
 		t.Errorf("stream missing tool_use get_weather:\n%s", out.String())
+	}
+	if got := streamedDeltas(t, out.String(), "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
+		t.Errorf("tool arguments = %q, want %q", got, `{"city":"Sampa"}`)
 	}
 	if !strings.Contains(out.String(), `"stop_reason":"tool_use"`) {
 		t.Errorf("stream missing tool_use stop:\n%s", out.String())
@@ -1997,6 +2003,77 @@ func TestStreamResponsesToAnthropic_FunctionCallOnlyInItemDone(t *testing.T) {
 	}
 	if got := streamedDeltas(t, out.String(), "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
 		t.Errorf("tool arguments = %q, want %q", got, `{"city":"Sampa"}`)
+	}
+	if stop := streamStopReason(t, sse); stop != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use", stop)
+	}
+}
+
+// A fully streamed call that response.completed restates must not open a second
+// tool_use block or repeat its arguments: a duplicated call would run twice.
+func TestStreamResponsesToAnthropic_CompletedOutputNoDuplicateCall(t *testing.T) {
+	call := `{"type":"function_call","name":"get_weather","call_id":"call_0","arguments":"{\"city\":\"Sampa\"}"}`
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_d"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","name":"get_weather","call_id":"call_0","arguments":""}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"city\":"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"Sampa\"}"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":` + call + `}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_d","output":[` + call + `],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	starts := 0
+	for _, ev := range anthropicEvents(t, out.String()) {
+		if block, _ := ev["content_block"].(map[string]any); ev["type"] == "content_block_start" && block["type"] == "tool_use" {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Errorf("tool_use blocks = %d, want 1", starts)
+	}
+	if got := streamedDeltas(t, out.String(), "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
+		t.Errorf("tool arguments = %q, want %q delivered once", got, `{"city":"Sampa"}`)
+	}
+}
+
+// Some items stream live while others appear only in response.completed: each
+// is delivered exactly once. Block order is not asserted; a late item can only
+// land after what already streamed.
+func TestStreamResponsesToAnthropic_CompletedOutputMixedDeliveredOnce(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_m"}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":1,"delta":"hello"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_m","output":[` +
+			`{"type":"reasoning","summary":[{"type":"summary_text","text":"pondering"}]},` +
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},` +
+			`{"type":"function_call","name":"get_weather","call_id":"call_2","arguments":"{\"city\":\"Sampa\"}"}` +
+			`],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	raw := out.String()
+	if got := streamedDeltas(t, raw, "text_delta", "text"); got != "hello" {
+		t.Errorf("client text = %q, want %q once", got, "hello")
+	}
+	if got := streamedDeltas(t, raw, "thinking_delta", "thinking"); got != "pondering" {
+		t.Errorf("client thinking = %q, want %q once", got, "pondering")
+	}
+	if got := streamedDeltas(t, raw, "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
+		t.Errorf("tool arguments = %q, want %q once", got, `{"city":"Sampa"}`)
 	}
 	if stop := streamStopReason(t, sse); stop != "tool_use" {
 		t.Errorf("stop_reason = %q, want tool_use", stop)
