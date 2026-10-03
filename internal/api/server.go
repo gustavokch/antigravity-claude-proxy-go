@@ -440,10 +440,16 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	}
 
 	if strings.HasPrefix(path, "/v1/") {
-		if !server.authorized(request) {
+		ok, label := server.authorized(request)
+		if !ok {
 			writeAPIError(writer, http.StatusUnauthorized, "authentication_error", "Invalid or missing API key")
 			return
 		}
+		if label == "" {
+			label = "open"
+		}
+		request = request.WithContext(context.WithValue(request.Context(), clientLabelKey{}, label))
+		server.logger.Info("v1 request", "client", label, "method", request.Method, "path", path)
 		switch {
 		case path == "/v1/models" && request.Method == http.MethodGet:
 			server.models(writer, request)
@@ -472,17 +478,70 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	writeAPIError(writer, http.StatusNotFound, "not_found_error", fmt.Sprintf("Endpoint %s %s not found", request.Method, request.URL.Path))
 }
 
-func (server *Server) authorized(request *http.Request) bool {
-	if server.apiKey == "" {
-		return true
-	}
+func (server *Server) authorized(request *http.Request) (bool, string) {
 	provided := request.Header.Get("x-api-key")
 	if provided == "" {
 		if authorization := request.Header.Get("Authorization"); strings.HasPrefix(authorization, "Bearer ") {
 			provided = strings.TrimPrefix(authorization, "Bearer ")
 		}
 	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(server.apiKey)) == 1
+	type candidate struct {
+		key   string
+		label string
+	}
+	var candidates []candidate
+	cfg := config.Get()
+	for _, entry := range cfg.APIKeys {
+		if !entry.Enabled || entry.Key == "" {
+			continue
+		}
+		label := entry.Label
+		if label == "" {
+			label = entry.ID
+		}
+		if label == "" {
+			label = "default"
+		}
+		candidates = append(candidates, candidate{key: entry.Key, label: label})
+	}
+	// Legacy single key is one implicit "default" entry while apiKeys is
+	// empty. The -api-key flag / ANTIGRAVITY_PROXY_API_KEY env value arrives
+	// via Options.APIKey (cmd/proxy/main.go merges the config value into it)
+	// and is honored as an implicit entry either way.
+	if len(candidates) == 0 && cfg.APIKey != "" {
+		candidates = append(candidates, candidate{key: cfg.APIKey, label: "default"})
+	}
+	if server.apiKey != "" {
+		duplicate := false
+		for _, c := range candidates {
+			if c.key == server.apiKey {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			candidates = append(candidates, candidate{key: server.apiKey, label: "default"})
+		}
+	}
+	if len(candidates) == 0 {
+		return true, ""
+	}
+	for _, c := range candidates {
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(c.key)) == 1 {
+			return true, c.label
+		}
+	}
+	return false, ""
+}
+
+// clientLabelKey carries the matched API-key label for log attribution.
+type clientLabelKey struct{}
+
+// ClientLabel returns the API-key label attributed to the request, or "" when
+// the proxy is open or the request was rejected.
+func ClientLabel(request *http.Request) string {
+	label, _ := request.Context().Value(clientLabelKey{}).(string)
+	return label
 }
 
 func (server *Server) health(writer http.ResponseWriter) {
