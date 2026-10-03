@@ -478,60 +478,53 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	writeAPIError(writer, http.StatusNotFound, "not_found_error", fmt.Sprintf("Endpoint %s %s not found", request.Method, request.URL.Path))
 }
 
+// authorized reports whether the request carries an accepted proxy key and the
+// label to attribute it to. The proxy is open only while no key exists anywhere
+// (no apiKeys entry in any state, no legacy apiKey, no flag/env key); once any
+// key is configured every /v1/* request must match an enabled one, so
+// disabling the last entry locks the proxy instead of opening it.
+//
+// apiKeys supersedes the legacy config apiKey, which is honored (as "default")
+// only while apiKeys is empty. server.apiKey is the -api-key flag /
+// ANTIGRAVITY_PROXY_API_KEY value, an out-of-band credential honored either
+// way. Config values are read live on every call, never snapshotted.
 func (server *Server) authorized(request *http.Request) (bool, string) {
+	cfg := config.Get()
+	if len(cfg.APIKeys) == 0 && cfg.APIKey == "" && server.apiKey == "" {
+		return true, ""
+	}
 	provided := request.Header.Get("x-api-key")
 	if provided == "" {
 		if authorization := request.Header.Get("Authorization"); strings.HasPrefix(authorization, "Bearer ") {
 			provided = strings.TrimPrefix(authorization, "Bearer ")
 		}
 	}
-	type candidate struct {
-		key   string
-		label string
+	matches := func(key string) bool {
+		return key != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(key)) == 1
 	}
-	var candidates []candidate
-	cfg := config.Get()
 	for _, entry := range cfg.APIKeys {
-		if !entry.Enabled || entry.Key == "" {
-			continue
-		}
-		label := entry.Label
-		if label == "" {
-			label = entry.ID
-		}
-		if label == "" {
-			label = "default"
-		}
-		candidates = append(candidates, candidate{key: entry.Key, label: label})
-	}
-	// Legacy single key is one implicit "default" entry while apiKeys is
-	// empty. The -api-key flag / ANTIGRAVITY_PROXY_API_KEY env value arrives
-	// via Options.APIKey (cmd/proxy/main.go merges the config value into it)
-	// and is honored as an implicit entry either way.
-	if len(candidates) == 0 && cfg.APIKey != "" {
-		candidates = append(candidates, candidate{key: cfg.APIKey, label: "default"})
-	}
-	if server.apiKey != "" {
-		duplicate := false
-		for _, c := range candidates {
-			if c.key == server.apiKey {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			candidates = append(candidates, candidate{key: server.apiKey, label: "default"})
+		if entry.Enabled && matches(entry.Key) {
+			return true, apiKeyLabel(entry)
 		}
 	}
-	if len(candidates) == 0 {
-		return true, ""
+	if len(cfg.APIKeys) == 0 && matches(cfg.APIKey) {
+		return true, "default"
 	}
-	for _, c := range candidates {
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(c.key)) == 1 {
-			return true, c.label
-		}
+	if matches(server.apiKey) {
+		return true, "default"
 	}
 	return false, ""
+}
+
+// apiKeyLabel is the attribution label of a matched apiKeys entry.
+func apiKeyLabel(entry config.APIKeyEntry) string {
+	if entry.Label != "" {
+		return entry.Label
+	}
+	if entry.ID != "" {
+		return entry.ID
+	}
+	return "default"
 }
 
 // clientLabelKey carries the matched API-key label for log attribution.
