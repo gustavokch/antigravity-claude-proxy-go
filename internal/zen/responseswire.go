@@ -279,16 +279,16 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 		}
 		switch item["type"] {
 		case "reasoning":
-			var b strings.Builder
+			var parts []string
 			for _, s := range anySlice(item["summary"]) {
 				if summary, ok := s.(map[string]any); ok {
 					if text, _ := summary["text"].(string); text != "" {
-						b.WriteString(text)
+						parts = append(parts, text)
 					}
 				}
 			}
-			if b.Len() > 0 {
-				content = append(content, map[string]any{"type": "thinking", "thinking": b.String(), "signature": ""})
+			if len(parts) > 0 {
+				content = append(content, map[string]any{"type": "thinking", "thinking": strings.Join(parts, "\n\n"), "signature": ""})
 			}
 		case "message":
 			for _, raw := range anySlice(item["content"]) {

@@ -41,11 +41,12 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 	argText := map[int]*strings.Builder{}
 	order := []int{}
 	var (
-		id     any
-		usage  map[string]any
-		trunc  map[string]any
-		done   bool
-		failed string
+		id              any
+		usage           map[string]any
+		trunc           map[string]any
+		done            bool
+		failed          string
+		completedOutput []any
 	)
 	// mark registers an index that only ever produced deltas. It must not
 	// clobber a real envelope: output_item.added carries a function call's
@@ -133,6 +134,9 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 				if d, ok := resp["incomplete_details"].(map[string]any); ok {
 					trunc = d
 				}
+				if o := anySlice(resp["output"]); len(o) > 0 {
+					completedOutput = o
+				}
 			}
 		case "response.failed", "response.error", "error":
 			done = true
@@ -147,6 +151,20 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 	}
 	if !done {
 		return nil, errors.New("Zen stream ended before completion")
+	}
+	// Fallback: a stream with no deltas or item envelopes still carries the
+	// answer in response.completed's output. Adopt only indices the live
+	// events never saw; streamed state always wins.
+	for i, raw := range completedOutput {
+		if _, seen := items[i]; seen {
+			continue
+		}
+		item, _ := raw.(map[string]any)
+		if item == nil {
+			continue
+		}
+		order = append(order, i)
+		items[i] = item
 	}
 	sort.Ints(order)
 	output := make([]any, 0, len(order))
@@ -177,13 +195,15 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 				b.WriteString(src.String())
 			}
 			if b.Len() == 0 {
+				var parts []string
 				for _, s := range anySlice(item["summary"]) {
 					if summary, ok := s.(map[string]any); ok {
 						if text, _ := summary["text"].(string); text != "" {
-							b.WriteString(text)
+							parts = append(parts, text)
 						}
 					}
 				}
+				b.WriteString(strings.Join(parts, "\n\n"))
 			}
 			if b.Len() == 0 {
 				continue
@@ -522,15 +542,28 @@ func (s *responsesStream) completeMessage(idx int, item map[string]any) error {
 }
 
 // completeReasoning emits the summary text a completed reasoning item carries
-// beyond its summary deltas.
+// beyond its summary deltas. With no streamed deltas the part boundaries
+// survive and are joined readably; once deltas flowed they carry no part
+// boundaries, so the restatement stays fused — joining there would break
+// missing()'s prefix match and drop text the client has not yet received.
 func (s *responsesStream) completeReasoning(idx int, item map[string]any) error {
-	var summary strings.Builder
+	var parts []string
 	for _, raw := range anySlice(item["summary"]) {
 		part, _ := raw.(map[string]any)
-		t, _ := part["text"].(string)
-		summary.WriteString(t)
+		if t, _ := part["text"].(string); t != "" {
+			parts = append(parts, t)
+		}
 	}
-	rest, ok := s.missing(sentThinking, idx, summary.String())
+	if b := s.sent[sentKey{sentThinking, idx}]; b == nil || b.Len() == 0 {
+		if len(parts) == 0 {
+			return nil
+		}
+		joined := strings.Join(parts, "\n\n")
+		s.record(sentThinking, idx, joined)
+		return s.writeThinking(idx, joined)
+	}
+	fused := strings.Join(parts, "")
+	rest, ok := s.missing(sentThinking, idx, fused)
 	if !ok {
 		return nil
 	}
@@ -660,6 +693,53 @@ func (s *responsesStream) handle(event map[string]any) error {
 					// responsesStopReason: the client must see the decline.
 					if s.stop != "refusal" {
 						s.stop = "max_tokens"
+					}
+				}
+			}
+			// Fallback: a stream with no deltas or item envelopes still
+			// carries the answer in response.output. Each item goes through
+			// the same completion as output_item.done; content the deltas
+			// already delivered is a no-op via missing().
+			for i, raw := range anySlice(resp["output"]) {
+				item, _ := raw.(map[string]any)
+				if item == nil {
+					continue
+				}
+				switch item["type"] {
+				case "message":
+					if err := s.completeMessage(i, item); err != nil {
+						return err
+					}
+				case "reasoning":
+					if err := s.completeReasoning(i, item); err != nil {
+						return err
+					}
+				case "function_call":
+					if s.dropped[i] {
+						continue
+					}
+					if _, known := s.itemBlocks[i]; !known {
+						name, _ := item["name"].(string)
+						if s.injected[name] {
+							s.dropped[i] = true
+							slog.Debug("zen responses stream: dropping call to gate-injected tool", "outputIndex", i, "tool", name)
+							continue
+						}
+						callID, _ := item["call_id"].(string)
+						if callID == "" {
+							callID = "call_" + strconv.Itoa(i)
+						}
+						if err := s.openBlock("tool", map[string]any{
+							"type": "tool_use", "id": callID,
+							"name": renameTool(s.toolNames, name), "input": map[string]any{},
+						}); err != nil {
+							return err
+						}
+						s.itemBlocks[i] = s.current
+						s.toolItems++
+					}
+					if err := s.completeCall(i, item); err != nil {
+						return err
 					}
 				}
 			}

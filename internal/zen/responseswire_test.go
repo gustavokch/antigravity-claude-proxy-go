@@ -1153,6 +1153,87 @@ func TestAggregateResponsesStream_RefusalOnlyInItemDone(t *testing.T) {
 	}
 }
 
+// A stream that carries no deltas and no item envelopes, but whose
+// response.completed restates the answer in response.output, must still
+// reach the client instead of an empty end_turn.
+func TestAggregateResponsesStream_CompletedOutputFallback(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_f"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_f","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want the completed-output text surfaced", mustJSON(t, msg["content"]))
+	}
+	got, _ := content[0].(map[string]any)
+	if text, _ := got["text"].(string); !strings.Contains(text, "hello world") {
+		t.Errorf("content[0] = %s, want hello world", mustJSON(t, content[0]))
+	}
+	if msg["stop_reason"] != "end_turn" {
+		t.Errorf("stop_reason = %v, want end_turn", msg["stop_reason"])
+	}
+}
+
+// Reasoning summary parts are separate blocks upstream; fusing them without a
+// separator would glue words together ("firstsecond").
+func TestResponsesResponseToAnthropic_ReasoningMultiPartSeparator(t *testing.T) {
+	resp := map[string]any{
+		"output": []any{
+			map[string]any{"type": "reasoning", "summary": []any{
+				map[string]any{"type": "summary_text", "text": "first"},
+				map[string]any{"type": "summary_text", "text": "second"},
+			}},
+		},
+	}
+	msg := ResponsesResponseToAnthropic(resp, "gpt-5", nil, nil)
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want one thinking block", mustJSON(t, msg["content"]))
+	}
+	part, _ := content[0].(map[string]any)
+	if thinking, _ := part["thinking"].(string); thinking != "first\n\nsecond" {
+		t.Errorf("thinking = %q, want %q", thinking, "first\n\nsecond")
+	}
+}
+
+// The aggregate fold joins multi-part reasoning summaries with the same
+// separator as the JSON translation.
+func TestAggregateResponsesStream_ReasoningMultiPartSeparator(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	output := anySlice(agg["output"])
+	if len(output) != 1 {
+		t.Fatalf("output = %s, want one reasoning item", mustJSON(t, agg["output"]))
+	}
+	item, _ := output[0].(map[string]any)
+	summary := anySlice(item["summary"])
+	if len(summary) != 1 {
+		t.Fatalf("summary = %s, want one folded part", mustJSON(t, item["summary"]))
+	}
+	if text, _ := summary[0].(map[string]any)["text"].(string); text != "first\n\nsecond" {
+		t.Errorf("summary text = %q, want %q", text, "first\n\nsecond")
+	}
+}
+
 // A function call whose arguments stream but whose response.output_item.done
 // never arrives keeps the envelope from response.output_item.added: dropping it
 // would lose a tool call and end the agent loop on a clean end_turn.
@@ -1612,6 +1693,112 @@ func TestStreamResponsesToAnthropic_DoesNotRepeatDeliveredText(t *testing.T) {
 	}
 	if text.String() != "hello world" {
 		t.Errorf("client text = %q, want %q", text.String(), "hello world")
+	}
+}
+
+// A stream that carries no deltas and no item envelopes, but whose
+// response.completed restates the answer in response.output, must still
+// stream the text instead of an empty end_turn.
+func TestStreamResponsesToAnthropic_CompletedOutputFallback(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_f"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_f","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	var text strings.Builder
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"text_delta"`) {
+			continue
+		}
+		var ev struct {
+			Delta struct {
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		text.WriteString(ev.Delta.Text)
+	}
+	if text.String() != "hello world" {
+		t.Errorf("client text = %q, want %q", text.String(), "hello world")
+	}
+}
+
+// A done-only multi-part reasoning summary streams joined with the same
+// separator as the aggregate and JSON paths.
+func TestStreamResponsesToAnthropic_ReasoningMultiPartSeparator(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	var thinking strings.Builder
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"thinking_delta"`) {
+			continue
+		}
+		var ev struct {
+			Delta struct {
+				Thinking string `json:"thinking"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		thinking.WriteString(ev.Delta.Thinking)
+	}
+	if thinking.String() != "first\n\nsecond" {
+		t.Errorf("client thinking = %q, want %q", thinking.String(), "first\n\nsecond")
+	}
+}
+
+// Deltas carry no part boundaries, so a restatement that extends partial
+// deltas stays fused: the suffix must still reach the client, not be dropped.
+func TestStreamResponsesToAnthropic_ReasoningPartialDeltasPreserved(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"first"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	var thinking strings.Builder
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"thinking_delta"`) {
+			continue
+		}
+		var ev struct {
+			Delta struct {
+				Thinking string `json:"thinking"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		thinking.WriteString(ev.Delta.Thinking)
+	}
+	if thinking.String() != "firstsecond" {
+		t.Errorf("client thinking = %q, want fused %q (no loss)", thinking.String(), "firstsecond")
 	}
 }
 
