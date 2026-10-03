@@ -451,7 +451,9 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 			label = "open"
 		}
 		request = request.WithContext(context.WithValue(request.Context(), clientLabelKey{}, label))
-		server.logger.Info("v1 request", "client", label, "method", request.Method, "path", path)
+		if !shouldSkipLogging(path) {
+			server.logger.Info("v1 request", "client", label, "method", request.Method, "path", path)
+		}
 		switch {
 		case path == "/v1/models" && request.Method == http.MethodGet:
 			server.models(writer, request)
