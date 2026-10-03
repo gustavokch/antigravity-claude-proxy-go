@@ -194,18 +194,18 @@ func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 	}
 	if reqBody != nil {
 		if meta, ok := reqBody["metadata"].(map[string]any); ok {
-			if s, ok := meta["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-				return sessionid.ParseNested(s)
+			if s := sessionid.FromValue(meta["session_id"]); s != "" {
+				return s
 			}
-			if u, ok := meta["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-				return sessionid.ParseNested(u)
+			if u := sessionid.FromValue(meta["user_id"]); u != "" {
+				return u
 			}
 		}
-		if s, ok := reqBody["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-			return sessionid.ParseNested(s)
+		if s := sessionid.FromValue(reqBody["session_id"]); s != "" {
+			return s
 		}
-		if u, ok := reqBody["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-			return sessionid.ParseNested(u)
+		if u := sessionid.FromValue(reqBody["user_id"]); u != "" {
+			return u
 		}
 	}
 	return ""

@@ -524,6 +524,13 @@ func TestExtractSessionID_TopLevelUserID(t *testing.T) {
 			want: "nested-top-456",
 		},
 		{
+			name: "metadata user_id as parsed object",
+			body: map[string]any{"metadata": map[string]any{
+				"user_id": map[string]any{"device_id": "d", "session_id": "obj-sess-1"},
+			}},
+			want: "obj-sess-1",
+		},
+		{
 			name: "empty body and header",
 			body: map[string]any{},
 			want: "",
