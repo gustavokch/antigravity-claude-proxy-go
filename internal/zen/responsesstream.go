@@ -158,8 +158,9 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 		return nil, errors.New("Zen stream ended before completion")
 	}
 	// Fallback: a stream with no deltas or item envelopes still carries the
-	// answer in response.completed's output. Adopt only indices the live
-	// events never saw; streamed state always wins.
+	// answer in response.completed's output. Adopt the completed item only for
+	// an index with no envelope (never seen, or seen only as a delta
+	// placeholder); deltas and envelopes already streamed always win.
 	for i, raw := range completedOutput {
 		if item, seen := items[i]; seen && len(item) > 0 {
 			continue

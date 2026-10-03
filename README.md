@@ -593,8 +593,9 @@ Stream translation is delta-first with envelope fallback: text, reasoning,
 and tool calls that arrive only in `response.output_item.done` — or only in
 the `response.completed` response output when a stream carries no deltas at
 all — still reach the client instead of an empty turn. Multi-part reasoning
-summaries join with a blank line; thinking text already streamed stays
-byte-identical (deltas carry no part boundaries).
+summaries are separated by a blank line, in the envelope and in live deltas
+that carry `summary_index`; deltas without it stream as received, and a later
+restatement appends only what they did not already deliver.
 
 `/zen/v1/systemone` (Jev) is served as a transparent passthrough on a
 dedicated route, `POST /v1/systemone` — the request body
