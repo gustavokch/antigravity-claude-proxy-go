@@ -186,9 +186,9 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 // alongside body metadata.user_id: {"device_id":"...","account_uuid":"","session_id":"..."}.
 //
 // The body fallback exists because a harness that sends no session header may
-// still carry the identifier in metadata. Mirrors openrouter.ExtractSessionID
-// minus the remote-address fallback, which would change account stickiness for
-// anonymous clients.
+// still carry the identifier in metadata. Shares parsing helpers with
+// openrouter.ExtractSessionID (internal/sessionid) but omits the remote-address
+// fallback, which would change account stickiness for anonymous clients.
 func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 	if r != nil {
 		for _, h := range []string{"X-Claude-Code-Session-Id", "x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
