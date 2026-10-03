@@ -254,3 +254,35 @@ func TestFlagKeyHonoredAlongsideAPIKeys(t *testing.T) {
 		})
 	}
 }
+
+// POST /api/config must reject an apiKeys list that would make attribution or
+// revocation ambiguous, and must not apply or persist what it rejects.
+func TestConfigSaveValidatesAPIKeys(t *testing.T) {
+	orig := config.Get()
+	t.Cleanup(func() { config.SetForTest(orig) })
+	srv, _, _ := newTestServerWithManager(t)
+
+	rejected := map[string]string{
+		"duplicate key":  `{"apiKeys":[{"id":"a","label":"a","key":"k","enabled":true},{"id":"b","label":"b","key":"k","enabled":true}]}`,
+		"empty key":      `{"apiKeys":[{"id":"a","label":"a","key":"","enabled":true}]}`,
+		"reserved label": `{"apiKeys":[{"id":"a","label":"open","key":"k","enabled":true}]}`,
+		"wrong type":     `{"apiKeys":"oops"}`,
+	}
+	for name, body := range rejected {
+		t.Run(name, func(t *testing.T) {
+			rec := doJSON(t, srv, http.MethodPost, "/api/config", body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want 400: %s", rec.Code, rec.Body.String())
+			}
+			if got := config.Get().APIKeys; len(got) != 0 {
+				t.Fatalf("rejected payload was applied: %+v", got)
+			}
+		})
+	}
+
+	rec := doJSON(t, srv, http.MethodPost, "/api/config",
+		`{"apiKeys":[{"id":"gus","label":"gus","key":"gus-secret","enabled":true}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid apiKeys status=%d: %s", rec.Code, rec.Body.String())
+	}
+}

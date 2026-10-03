@@ -90,3 +90,35 @@ func TestSaveDropsTopLevelHasKeyEchoes(t *testing.T) {
 		t.Errorf("real apiKey must survive a public-config save-back, got %v", stored["apiKey"])
 	}
 }
+func TestValidateAPIKeys(t *testing.T) {
+	ok := APIKeyEntry{ID: "gus", Label: "gus", Key: "gus-secret", Enabled: true}
+	cases := []struct {
+		name    string
+		entries []APIKeyEntry
+		wantErr string // substring; "" means valid
+	}{
+		{"empty list", nil, ""},
+		{"one valid", []APIKeyEntry{ok}, ""},
+		{"disabled entry is still validated", []APIKeyEntry{{ID: "x", Label: "x", Key: ""}}, "key must not be empty"},
+		{"blank id", []APIKeyEntry{{ID: " ", Label: "x", Key: "k"}}, "id must not be empty"},
+		{"blank key", []APIKeyEntry{{ID: "x", Label: "x", Key: "  "}}, "key must not be empty"},
+		{"duplicate id", []APIKeyEntry{ok, {ID: "gus", Label: "g2", Key: "other"}}, "duplicate id"},
+		{"duplicate key", []APIKeyEntry{ok, {ID: "friend", Label: "friend", Key: "gus-secret"}}, "duplicates another entry"},
+		{"reserved label", []APIKeyEntry{{ID: "x", Label: "Open", Key: "k"}}, "reserved"},
+		{"reserved id used as label", []APIKeyEntry{{ID: "default", Key: "k"}}, "reserved"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateAPIKeys(tc.entries)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+			}
+			if err != nil && strings.Contains(err.Error(), "gus-secret") {
+				t.Fatalf("error leaks key material: %v", err)
+			}
+		})
+	}
+}

@@ -170,6 +170,40 @@ type APIKeyEntry struct {
 	Enabled bool   `json:"enabled"`
 }
 
+// ValidateAPIKeys rejects an apiKeys list that would make attribution or
+// revocation ambiguous: a blank id or key, a repeated id or key, or a label the
+// proxy emits for itself ("open" for a keyless proxy, "default" for the legacy
+// and flag/env key). Disabled entries are validated too, so enabling one later
+// cannot introduce a collision. Errors name the entry, never its key.
+func ValidateAPIKeys(entries []APIKeyEntry) error {
+	ids := make(map[string]struct{}, len(entries))
+	keys := make(map[string]struct{}, len(entries))
+	for i, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			return fmt.Errorf("apiKeys[%d]: id must not be empty", i)
+		}
+		if strings.TrimSpace(entry.Key) == "" {
+			return fmt.Errorf("apiKeys[%d] (%s): key must not be empty", i, entry.ID)
+		}
+		label := entry.Label
+		if label == "" {
+			label = entry.ID
+		}
+		if strings.EqualFold(label, "open") || strings.EqualFold(label, "default") {
+			return fmt.Errorf("apiKeys[%d] (%s): label %q is reserved", i, entry.ID, label)
+		}
+		if _, dup := ids[entry.ID]; dup {
+			return fmt.Errorf("apiKeys[%d]: duplicate id %q", i, entry.ID)
+		}
+		if _, dup := keys[entry.Key]; dup {
+			return fmt.Errorf("apiKeys[%d] (%s): key duplicates another entry", i, entry.ID)
+		}
+		ids[entry.ID] = struct{}{}
+		keys[entry.Key] = struct{}{}
+	}
+	return nil
+}
+
 type Config struct {
 	APIKey                   string        `json:"apiKey,omitempty"`
 	APIKeys                  []APIKeyEntry `json:"apiKeys,omitempty"`
