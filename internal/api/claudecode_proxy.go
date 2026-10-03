@@ -16,6 +16,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/sessionid"
 )
 
 var (
@@ -176,42 +177,40 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 }
 
 // ccExtractSessionID extracts a stable session key from request headers, then
-// from the request body.
+// from the request body. Inspects X-Claude-Code-Session-Id (sent by Claude Code)
+// followed by third-party harness session headers.
 //
-// The four header names below are the spellings third-party harnesses use.
-// Claude Code itself sends none of them: it sends X-Claude-Code-Session-Id,
-// present on every captured POST /v1/messages in
-// .reference/claude-code-headers-20260923*.jsonl and absent from the captured
-// GETs. Reading that name here would change which requests get a session key
-// and therefore account stickiness, so it is a behaviour change rather than a
-// spelling to add to the list.
+// Header-first precedence matches wire captures (.reference/claude-code-headers-*.jsonl),
+// where vanilla Claude Code consistently transmits X-Claude-Code-Session-Id with
+// a stable UUID per conversation across multi-turn messages (entries 5 and 6),
+// alongside body metadata.user_id: {"device_id":"...","account_uuid":"","session_id":"..."}.
 //
 // The body fallback exists because a harness that sends no session header may
-// still carry the identifier in metadata. Mirrors openrouter.ExtractSessionID
-// minus the remote-address fallback, which would change account stickiness for
-// anonymous clients.
+// still carry the identifier in metadata. Shares parsing helpers with
+// openrouter.ExtractSessionID (internal/sessionid) but omits the remote-address
+// fallback, which would change account stickiness for anonymous clients.
 func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 	if r != nil {
-		for _, h := range []string{"x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
+		for _, h := range []string{"X-Claude-Code-Session-Id", "x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
 			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
-				return v
+				return sessionid.ParseNested(v)
 			}
 		}
 	}
 	if reqBody != nil {
 		if meta, ok := reqBody["metadata"].(map[string]any); ok {
-			if s, ok := meta["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-				return strings.TrimSpace(s)
+			if s := sessionid.FromValue(meta["session_id"]); s != "" {
+				return s
 			}
-			if u, ok := meta["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-				return strings.TrimSpace(u)
+			if u := sessionid.FromValue(meta["user_id"]); u != "" {
+				return u
 			}
 		}
-		if s, ok := reqBody["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
+		if s := sessionid.FromValue(reqBody["session_id"]); s != "" {
+			return s
 		}
-		if u, ok := reqBody["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-			return strings.TrimSpace(u)
+		if u := sessionid.FromValue(reqBody["user_id"]); u != "" {
+			return u
 		}
 	}
 	return ""
