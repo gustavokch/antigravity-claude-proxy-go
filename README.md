@@ -570,6 +570,13 @@ turn so nothing reads the stored copy, and the genuine OpenCode client sends
 the same flag for these models. A `store` field in the incoming Anthropic body
 is ignored.
 
+Stream translation is delta-first with envelope fallback: text, reasoning,
+and tool calls that arrive only in `response.output_item.done` — or only in
+the `response.completed` response output when a stream carries no deltas at
+all — still reach the client instead of an empty turn. Multi-part reasoning
+summaries join with a blank line; thinking text already streamed stays
+byte-identical (deltas carry no part boundaries).
+
 `/zen/v1/systemone` (Jev) is served as a transparent passthrough on a
 dedicated route, `POST /v1/systemone` — the request body
 (`{model, state, questions}`) is forwarded unchanged, because it has no
