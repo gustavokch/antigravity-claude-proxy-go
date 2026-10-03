@@ -129,7 +129,7 @@ A declared condition set matching autonomous Claude Code security-monitor prompt
 _Avoid_: Filter, classifier hook, security policy.
 
 **Target Backend**:
-A named external destination endpoint (`anthropic` or `openai` wire format) to which matched classifier requests are rerouted with format translation and optional synthetic streaming.
+A named external destination endpoint (`anthropic`, `openai`, `laya` or `jev` wire format) to which matched classifier requests are rerouted with format translation and optional synthetic streaming.
 _Avoid_: Fallback host, reroute target, classifier upstream.
 
 **Audit Event**:

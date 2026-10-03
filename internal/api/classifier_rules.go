@@ -180,9 +180,12 @@ func (server *Server) applyClassifierRule(
 		// reason as the stub branch above. A backend call that failed returns
 		// earlier and leaves the source alone, so a fall-through to built-in
 		// handling is still labeled by whichever path answers.
-		if req.backend != nil && req.backend.Format == config.BackendFormatLaya {
+		switch req.backend.Format {
+		case config.BackendFormatLaya:
 			req.setCaptureSource(corpus.SourceLaya)
-		} else {
+		case config.BackendFormatJev:
+			req.setCaptureSource(corpus.SourceJev)
+		default:
 			req.setCaptureSource(corpus.SourceRule)
 		}
 		if err := writeClassifierResponse(writer, message, req.streamRequested); err != nil {
@@ -210,6 +213,16 @@ type backendFormatAdapter struct {
 	preparePayload func(call classifierCall) ([]byte, error)
 	setHeaders     func(req *http.Request, apiKey string)
 	parseResponse  func(respBody []byte, call classifierCall) ([]byte, error)
+
+	// defaultTimeout bounds a call whose backend sets no timeoutMs. Zero
+	// means defaultClassifierBackendTimeout.
+	defaultTimeout time.Duration
+	// resolveKey, when non-nil, replaces the backend's own apiKey, so a
+	// format can fall back to a credential the proxy already holds. An error
+	// aborts the call before any network traffic.
+	resolveKey func(backend *config.TargetBackend) (string, error)
+	// client, when non-nil, replaces http.DefaultClient.
+	client func() *http.Client
 }
 
 var openAIFormatAdapter = backendFormatAdapter{
@@ -249,6 +262,8 @@ func getBackendFormatAdapter(format config.BackendFormat) backendFormatAdapter {
 		return openAIFormatAdapter
 	case config.BackendFormatLaya:
 		return layaFormatAdapter
+	case config.BackendFormatJev:
+		return jevFormatAdapter
 	default:
 		return anthropicFormatAdapter
 	}
@@ -261,30 +276,41 @@ func (server *Server) callClassifierBackend(
 	ctx context.Context,
 	call classifierCall,
 ) ([]byte, error) {
+	adapter := getBackendFormatAdapter(call.backend.Format)
+
 	timeout := time.Duration(call.backend.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = defaultClassifierBackendTimeout
-		if call.backend.Format == config.BackendFormatLaya {
-			timeout = defaultLayaBackendTimeout
+		if adapter.defaultTimeout > 0 {
+			timeout = adapter.defaultTimeout
 		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
-	adapter := getBackendFormatAdapter(call.backend.Format)
 
 	payload, err := adapter.preparePayload(call)
 	if err != nil {
 		return nil, err
 	}
 
+	apiKey := call.backend.APIKey
+	if adapter.resolveKey != nil {
+		if apiKey, err = adapter.resolveKey(call.backend); err != nil {
+			return nil, err
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, call.backend.URL, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	adapter.setHeaders(req, call.backend.APIKey)
+	adapter.setHeaders(req, apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	if adapter.client != nil {
+		client = adapter.client()
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

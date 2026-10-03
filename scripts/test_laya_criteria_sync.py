@@ -7,11 +7,16 @@ exporter (corpus_to_laya.py CRITERIA, baked into every training example),
 and the docs. A drift between the prompt text and the training labels
 teaches the checkpoint a confused mapping, so this test fails the build
 on any mismatch rather than letting it reach a training run.
+
+The question text and the constants replay_jev.py sends must follow the Go
+defaults too.
 """
+import json
 import re
 from pathlib import Path
 
 import corpus_to_laya
+import replay_jev
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_GO = REPO_ROOT / "internal" / "config" / "config.go"
@@ -58,3 +63,30 @@ def test_serving_severity_map_stays_sub_block_and_monotonic():
     assert all(severity < 50 for severity in ordered), (
         f"a laya verdict must never reach the block boundary 50: {severity_map}"
     )
+
+def go_const(name):
+    """A string or integer constant out of config.go, decoded."""
+    source = CONFIG_GO.read_text(encoding="utf-8")
+    match = re.search(rf'\b{name}\s*=\s*("(?:[^"\\]|\\.)*"|\d+)', source)
+    assert match, f"{name} not found in config.go"
+    token = match.group(1)
+    return json.loads(token) if token.startswith('"') else int(token)
+
+def go_escalate_labels():
+    """defaultLayaEscalateLabels out of config.go, as a tuple."""
+    source = CONFIG_GO.read_text(encoding="utf-8")
+    block = re.search(r"var defaultLayaEscalateLabels = \[\]string\{(.*?)\}", source, re.S)
+    assert block, "defaultLayaEscalateLabels not found in config.go"
+    return tuple(re.findall(r'"([^"]+)"', block.group(1)))
+
+def test_go_and_python_question_instructions_are_identical():
+    assert corpus_to_laya.INSTRUCTIONS == go_const("DefaultLayaInstructions")
+
+def test_replay_defaults_follow_the_go_defaults():
+    """replay_jev.py must send what a default jev backend sends. A constant
+    that drifts measures a request the proxy never makes, and the enablement
+    gate would then pass on evidence about something else."""
+    assert replay_jev.MODEL == go_const("DefaultJevModel")
+    assert replay_jev.QUESTION == go_const("DefaultLayaQuestionName")
+    assert replay_jev.STATE_CHARS == go_const("DefaultLayaStateChars")
+    assert replay_jev.ESCALATE == go_escalate_labels()

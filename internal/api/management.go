@@ -1387,10 +1387,10 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 				return
 			}
 			switch backend.Format {
-			case "", config.BackendFormatAnthropic, config.BackendFormatOpenAI, config.BackendFormatLaya:
+			case "", config.BackendFormatAnthropic, config.BackendFormatOpenAI, config.BackendFormatLaya, config.BackendFormatJev:
 				// valid
 			default:
-				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q format must be anthropic, openai or laya", key)})
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier backend %q format must be anthropic, openai, laya or jev", key)})
 				return
 			}
 			if backend.TimeoutMs < 0 || backend.MaxTokens < 0 {

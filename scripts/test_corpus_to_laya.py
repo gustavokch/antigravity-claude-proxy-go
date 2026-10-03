@@ -215,6 +215,24 @@ def test_main_kind_flag_is_repeatable(tmp_path):
     assert actions == ["a", "b"]
 
 
+def test_main_source_flag_accepts_jev_and_the_default_leaves_it_out(tmp_path):
+    # A Jev verdict is a hosted model's answer, not a teacher label, so only
+    # an explicit --source jev exports it.
+    corpus = tmp_path / "classifier-2026-09-30.jsonl"
+    _write_corpus(corpus, [
+        {"action": "a", "severity": 1, "source": "upstream", "kind": STAGE1},
+        {"action": "b", "severity": 2, "source": "jev", "kind": STAGE1},
+    ])
+    default_output = tmp_path / "default.jsonl"
+    jev_output = tmp_path / "jev.jsonl"
+    assert main([str(corpus), "-o", str(default_output)]) == 0
+    assert main([str(corpus), "-o", str(jev_output), "--source", "jev"]) == 0
+    default_actions = [json.loads(line)["state"]["action"] for line in default_output.read_text().splitlines()]
+    jev_actions = [json.loads(line)["state"]["action"] for line in jev_output.read_text().splitlines()]
+    assert default_actions == ["a"]
+    assert jev_actions == ["b"]
+
+
 def test_load_rows_skips_blank_and_broken_lines(tmp_path):
     path = tmp_path / "classifier-2026-09-23.jsonl"
     path.write_text(

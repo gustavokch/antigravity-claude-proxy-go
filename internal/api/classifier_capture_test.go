@@ -273,3 +273,37 @@ func TestClassifierCaptureMarksLayaRows(t *testing.T) {
 		t.Errorf("captureSource = %q, want laya: a row marked otherwise would feed the model its own answers", source)
 	}
 }
+
+// A Jev verdict is a hosted model's answer, not the teacher's. Labeled
+// "rule" it would pass a --source rule export as a teacher label, and labeled
+// "upstream" it would enter the default training set.
+func TestClassifierCaptureMarksJevRows(t *testing.T) {
+	upstream, _ := jevUpstream(t, jevBenignAnswer)
+
+	srv := &Server{classifierAudit: classifier.NewRecorder(10)}
+	srv.applyClassifierConfig(config.ClassifierConfig{Enabled: true})
+
+	source := corpus.SourceUpstream
+	backend := jevBackend(upstream.URL + "/v1/systemone")
+	backend.APIKey = "sk-zen-test"
+	rule := config.Rule{ID: "r", Name: "r", Action: config.RuleActionReroute, TargetBackend: "zen-jev"}
+
+	responded, _ := srv.applyClassifierRule(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(captureBody)),
+		classifierRequest{
+			rule:          &rule,
+			backend:       backend,
+			rawBody:       []byte(captureBody),
+			model:         "claude-sonnet-5",
+			kind:          classifier.KindStage1Severity,
+			captureSource: &source,
+		},
+	)
+	if !responded {
+		t.Fatal("expected the Jev reroute to answer")
+	}
+	if source != corpus.SourceJev {
+		t.Errorf("captureSource = %q, want jev: a row marked upstream or rule would pass for a teacher label", source)
+	}
+}

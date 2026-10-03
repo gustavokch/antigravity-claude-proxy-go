@@ -52,7 +52,7 @@ INSTRUCTIONS = "Classify the risk of this shell action taken by a coding agent."
 TRAINING_SOURCE = "upstream"
 
 # The sources the proxy writes; see corpus.Source in Go.
-KNOWN_SOURCES = ("upstream", "stub", "rule", "laya", "gateway")
+KNOWN_SOURCES = ("upstream", "stub", "rule", "laya", "jev", "gateway")
 
 DEFAULT_SOURCES = (TRAINING_SOURCE,)
 

@@ -327,6 +327,11 @@ const (
 	// protocol, which is not a chat API: the adapter builds a question from
 	// the graded action and maps the chosen label back to a severity.
 	BackendFormatLaya BackendFormat = "laya"
+	// BackendFormatJev speaks the same typed-decision protocol to a hosted
+	// Jev model, Zen's POST /zen/v1/systemone. The question, severity map and
+	// escalation policy are the Laya* settings; the Zen key and the OpenCode
+	// harness identity replace laya-serve's optional bearer token.
+	BackendFormatJev BackendFormat = "jev"
 )
 
 // TargetBackend is an endpoint a rule can reroute to. MaxTokens overrides
@@ -343,7 +348,8 @@ type TargetBackend struct {
 
 	// Laya overrides. Each empty or zero value falls back to the default in
 	// LayaSettings, except LayaMaxSeverity and LayaEscalateLabels, where only
-	// nil does. They are ignored unless Format is BackendFormatLaya.
+	// nil does. They are ignored unless Format is BackendFormatLaya or
+	// BackendFormatJev, which speak the same typed-decision protocol.
 	LayaQuestionName string            `json:"layaQuestionName,omitempty"`
 	LayaInstructions string            `json:"layaInstructions,omitempty"`
 	LayaCriteria     map[string]string `json:"layaCriteria,omitempty"`
@@ -358,8 +364,9 @@ type TargetBackend struct {
 	// whose labels mean whatever the operator wrote. An explicit empty list
 	// turns label escalation off, and omitzero keeps that [] through a save.
 	LayaEscalateLabels []string `json:"layaEscalateLabels,omitzero"`
-	// LayaMinConfidence escalates an answer whose calibrated
-	// answer_confidence is below it. 0 turns the floor off.
+	// LayaMinConfidence escalates an answer whose confidence is below it: the
+	// calibrated answer_confidence on a laya backend, Jev's own confidence on
+	// a jev backend. 0 turns the floor off.
 	LayaMinConfidence float64 `json:"layaMinConfidence,omitempty"`
 }
 
@@ -389,6 +396,9 @@ const (
 	// laya-serve routes by the action's language and can build a checkpoint
 	// it did not preload on the request path.
 	DefaultLayaModel = "english"
+	// DefaultJevModel is Zen's limited-time free Jev tier. When that ends,
+	// set the backend's model to "jev-1.13".
+	DefaultJevModel = "jev-1.13-free"
 )
 
 // defaultLayaCriteria uses opaque A-D keys on purpose: laya renders choice
@@ -428,6 +438,9 @@ func (backend TargetBackend) LayaSettings() LayaSettings {
 	}
 	if settings.Model == "" {
 		settings.Model = DefaultLayaModel
+		if backend.Format == BackendFormatJev {
+			settings.Model = DefaultJevModel
+		}
 	}
 	if settings.QuestionName == "" {
 		settings.QuestionName = DefaultLayaQuestionName
@@ -459,11 +472,12 @@ func (backend TargetBackend) LayaSettings() LayaSettings {
 var layaQuestionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,32}$`)
 
 // ValidateLaya reports the first Laya override that cannot be served safely,
-// or nil for any other format. The config save handler and the rule matcher
-// both call it, so a hand-edited config.json gets the same checks as a WebUI
-// save: an escalate-label typo must not silently turn escalation off.
+// or nil for a format that does not read them. Laya and Jev backends share
+// the overrides, so both are checked. The config save handler and the rule
+// matcher both call it, so a hand-edited config.json gets the same checks as
+// a WebUI save: an escalate-label typo must not silently turn escalation off.
 func (backend TargetBackend) ValidateLaya() error {
-	if backend.Format != BackendFormatLaya {
+	if backend.Format != BackendFormatLaya && backend.Format != BackendFormatJev {
 		return nil
 	}
 	if backend.LayaMaxSeverity != nil && (*backend.LayaMaxSeverity < 0 || *backend.LayaMaxSeverity > 100) {

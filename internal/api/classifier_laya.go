@@ -50,9 +50,19 @@ func buildLayaPayload(call classifierCall) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Truncate from the left: the graded action sits at the tail, so the head
-	// is what can be lost without losing the thing being judged.
 	if runes := []rune(action); len(runes) > settings.StateChars {
+		// Jev's allow stands in for the teacher's grade, and the state holds
+		// the action alone, so a left cut would remove the start of the
+		// command itself: one padded past the limit reaches Jev as padding.
+		// The teacher gets an over-long action whole instead.
+		if call.backend.Format == config.BackendFormatJev {
+			return nil, fmt.Errorf("%w: action is %d characters, over the %d a jev backend grades",
+				errClassifierEscalated, len(runes), settings.StateChars)
+		}
+		// Laya cuts from the left and keeps the tail. A command padded past the
+		// limit hides its head from the model that way, so this stays for Laya
+		// only because a Laya verdict is clamped below the block boundary and
+		// the stock checkpoint is documented as unfit to enable.
 		action = string(runes[len(runes)-settings.StateChars:])
 	}
 
@@ -79,11 +89,32 @@ func layaSettingsFor(backend *config.TargetBackend) config.LayaSettings {
 }
 
 // layaTypedAnswer is one typed answer in a /v1/systemone response.
-// AnswerConfidence is laya's calibrated max(p). Its "confidence" field is a
-// normalized entropy on another scale, so the floor never reads it.
+// AnswerConfidence is laya's calibrated max(p). laya's "confidence" field is
+// a normalized entropy on another scale, so a laya backend's floor never
+// reads it. Jev has no answer_confidence; its "confidence" is the certainty
+// TypeSafe documents for gating, derived from the probabilities.
 type layaTypedAnswer struct {
 	Choice           string   `json:"choice"`
 	AnswerConfidence *float64 `json:"answer_confidence"`
+	Confidence       *float64 `json:"confidence"`
+}
+
+// floorConfidence is the value layaMinConfidence compares for this backend,
+// with the response field it came from, which the escalation detail names.
+func (answer layaTypedAnswer) floorConfidence(backend *config.TargetBackend) (*float64, string) {
+	if backend != nil && backend.Format == config.BackendFormatJev {
+		return answer.Confidence, "confidence"
+	}
+	return answer.AnswerConfidence, "answer_confidence"
+}
+
+// systemOneName names the backend behind an error. The audit feed shows
+// err.Error(), and a Jev failure must not read as a laya one.
+func systemOneName(backend *config.TargetBackend) string {
+	if backend != nil && backend.Format == config.BackendFormatJev {
+		return "jev"
+	}
+	return "laya"
 }
 
 type layaResponse struct {
@@ -100,29 +131,31 @@ func parseLayaResponse(respBody []byte, call classifierCall) ([]byte, error) {
 		return nil, classifier.ErrUnsupportedKind
 	}
 	settings := layaSettingsFor(call.backend)
+	name := systemOneName(call.backend)
 
 	var decoded layaResponse
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
-		return nil, fmt.Errorf("laya: response is not JSON: %w", err)
+		return nil, fmt.Errorf("%s: response is not JSON: %w", name, err)
 	}
 	answer, exists := decoded.Answers[settings.QuestionName]
 	if !exists {
-		return nil, fmt.Errorf("laya: response carries no answer for question %q", settings.QuestionName)
+		return nil, fmt.Errorf("%s: response carries no answer for question %q", name, settings.QuestionName)
 	}
 	severity, known := settings.SeverityMap[answer.Choice]
 	if !known {
-		return nil, fmt.Errorf("laya: answer label %q is not in the severity map", answer.Choice)
+		return nil, fmt.Errorf("%s: answer label %q is not in the severity map", name, answer.Choice)
 	}
 	if slices.Contains(settings.EscalateLabels, answer.Choice) {
-		return nil, fmt.Errorf("%w: laya chose %s", errClassifierEscalated, answer.Choice)
+		return nil, fmt.Errorf("%w: %s chose %s", errClassifierEscalated, name, answer.Choice)
 	}
 	if settings.MinConfidence > 0 {
-		if answer.AnswerConfidence == nil {
-			return nil, fmt.Errorf("%w: laya chose %s with no answer_confidence to check against the floor", errClassifierEscalated, answer.Choice)
+		confidence, field := answer.floorConfidence(call.backend)
+		if confidence == nil {
+			return nil, fmt.Errorf("%w: %s chose %s with no %s to check against the floor", errClassifierEscalated, name, answer.Choice, field)
 		}
-		if *answer.AnswerConfidence < settings.MinConfidence {
-			return nil, fmt.Errorf("%w: laya chose %s with answer_confidence %.2f, below %.2f",
-				errClassifierEscalated, answer.Choice, *answer.AnswerConfidence, settings.MinConfidence)
+		if *confidence < settings.MinConfidence {
+			return nil, fmt.Errorf("%w: %s chose %s with %s %.2f, below %.2f",
+				errClassifierEscalated, name, answer.Choice, field, *confidence, settings.MinConfidence)
 		}
 	}
 	if severity > settings.MaxSeverity {
@@ -135,6 +168,7 @@ func parseLayaResponse(respBody []byte, call classifierCall) ([]byte, error) {
 }
 
 var layaFormatAdapter = backendFormatAdapter{
+	defaultTimeout: defaultLayaBackendTimeout,
 	preparePayload: buildLayaPayload,
 	setHeaders: func(req *http.Request, apiKey string) {
 		req.Header.Set("Content-Type", "application/json")
