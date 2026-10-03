@@ -156,14 +156,16 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 	// answer in response.completed's output. Adopt only indices the live
 	// events never saw; streamed state always wins.
 	for i, raw := range completedOutput {
-		if _, seen := items[i]; seen {
+		if item, seen := items[i]; seen && len(item) > 0 {
 			continue
 		}
 		item, _ := raw.(map[string]any)
 		if item == nil {
 			continue
 		}
-		order = append(order, i)
+		if _, seen := items[i]; !seen {
+			order = append(order, i)
+		}
 		items[i] = item
 	}
 	sort.Ints(order)

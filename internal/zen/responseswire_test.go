@@ -1182,6 +1182,32 @@ func TestAggregateResponsesStream_CompletedOutputFallback(t *testing.T) {
 	}
 }
 
+// An empty delta still registers a placeholder index via mark(); the
+// completed-output fallback must ignore placeholders and adopt the answer.
+func TestAggregateResponsesStream_CompletedOutputFallbackIgnoresEmptyPlaceholder(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_p"}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":""}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_p","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want fallback text despite empty delta", mustJSON(t, msg["content"]))
+	}
+	got, _ := content[0].(map[string]any)
+	if text, _ := got["text"].(string); !strings.Contains(text, "hello world") {
+		t.Errorf("content[0] = %s, want hello world", mustJSON(t, content[0]))
+	}
+}
+
 // Reasoning summary parts are separate blocks upstream; fusing them without a
 // separator would glue words together ("firstsecond").
 func TestResponsesResponseToAnthropic_ReasoningMultiPartSeparator(t *testing.T) {
