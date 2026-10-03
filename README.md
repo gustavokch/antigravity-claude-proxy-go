@@ -319,6 +319,25 @@ Additional environment controls:
 }
 ```
 
+#### Per-person API keys
+
+`apiKeys` gives each person their own key. Every `/v1/*` request must carry one enabled key (`x-api-key` or `Authorization: Bearer`), and the proxy logs `client=<label>` per request so usage is attributable.
+
+```json
+{
+  "apiKeys": [
+    { "id": "gus",    "label": "gus",    "key": "<openssl rand -hex 32>", "enabled": true },
+    { "id": "friend", "label": "friend", "key": "<openssl rand -hex 32>", "enabled": true }
+  ]
+}
+```
+
+- `enabled` must be `true`; an entry without it is disabled. Set it to `false` (or remove the entry) to revoke a key. Changes made through `POST /api/config` apply on the next request; edits to `config.json` by hand need a restart.
+- Once any key exists the proxy is closed: a request that matches no enabled entry gets `401`, even when every entry is disabled. With no `apiKeys`, no `apiKey` and no `-api-key`/`ANTIGRAVITY_PROXY_API_KEY`, the proxy is open (logged as `client=open`).
+- `apiKeys` supersedes the legacy single `apiKey` while the list has entries (the legacy key is then ignored). The `-api-key` flag / `ANTIGRAVITY_PROXY_API_KEY` value is honored either way and logged as `client=default`; remove it from the environment to revoke it.
+- `id` and `key` must be non-empty and unique, and the labels `open` and `default` are reserved. `POST /api/config` rejects violations; hand edits are not validated.
+- `GET /api/config` never returns key material, only `hasApiKey` / `hasApiKeys`.
+
 ---
 
 ## Headroom Native Context Compression & Output Shaping
@@ -870,7 +889,7 @@ daily-cloudcode-pa.googleapis.com    t13d131100_f57a46bbacb6_f50d94e863eb
 
 ## Troubleshooting
 
-- **`401 Unauthorized`**: Check that local `x-api-key` or Bearer token matches `ANTIGRAVITY_PROXY_API_KEY` or `config.json`.
+- **`401 Unauthorized`**: Check that local `x-api-key` or Bearer token matches an enabled `apiKeys` entry, `ANTIGRAVITY_PROXY_API_KEY`, or the legacy `apiKey` in `config.json` (ignored while `apiKeys` has entries).
 - **`400 Bad Request`**: Verify requested model ID is valid in `/v1/models`, mapped via `modelMapping`, allowlisted under `openrouter`, or configured in `customEndpoints`.
 - **`429 Rate Limit Exceeded`**: Handled via automatic account rotation and model cooldowns. Use `/v1/usage`, `/account-limits`, or Web UI to inspect cooldown status.
 - **`403 Verification Required`**: Account requires manual verification or re-authentication.
