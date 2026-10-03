@@ -474,10 +474,11 @@ func TestGetOrCreateCCPool_BaseURLUpdate(t *testing.T) {
 
 func TestExtractSessionID_TopLevelUserID(t *testing.T) {
 	tests := []struct {
-		name   string
-		header string
-		body   map[string]any
-		want   string
+		name       string
+		headerName string
+		header     string
+		body       map[string]any
+		want       string
 	}{
 		{
 			name:   "header takes precedence",
@@ -506,17 +507,37 @@ func TestExtractSessionID_TopLevelUserID(t *testing.T) {
 			want: "top-usr",
 		},
 		{
+			name:       "X-Claude-Code-Session-Id header",
+			headerName: "X-Claude-Code-Session-Id",
+			header:     "claude-code-sess-42",
+			body:       map[string]any{},
+			want:       "claude-code-sess-42",
+		},
+		{
+			name: "metadata nested json user_id",
+			body: map[string]any{"metadata": map[string]any{"user_id": `{"device_id":"dev1","account_uuid":"","session_id":"nested-sess-123"}`}},
+			want: "nested-sess-123",
+		},
+		{
+			name: "top-level nested json user_id",
+			body: map[string]any{"user_id": `{"device_id":"dev2","account_uuid":"","session_id":"nested-top-456"}`},
+			want: "nested-top-456",
+		},
+		{
 			name: "empty body and header",
 			body: map[string]any{},
 			want: "",
 		},
 	}
-
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 			if tc.header != "" {
-				req.Header.Set("x-session-id", tc.header)
+				hName := tc.headerName
+				if hName == "" {
+					hName = "x-session-id"
+				}
+				req.Header.Set(hName, tc.header)
 			}
 			got := ccExtractSessionID(req, tc.body)
 			if got != tc.want {

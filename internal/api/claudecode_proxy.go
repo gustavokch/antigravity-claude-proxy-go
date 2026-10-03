@@ -176,42 +176,53 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 }
 
 // ccExtractSessionID extracts a stable session key from request headers, then
-// from the request body.
-//
-// The four header names below are the spellings third-party harnesses use.
-// Claude Code itself sends none of them: it sends X-Claude-Code-Session-Id,
-// present on every captured POST /v1/messages in
-// .reference/claude-code-headers-20260923*.jsonl and absent from the captured
-// GETs. Reading that name here would change which requests get a session key
-// and therefore account stickiness, so it is a behaviour change rather than a
-// spelling to add to the list.
+// from the request body. Inspects X-Claude-Code-Session-Id (sent by Claude Code)
+// followed by third-party harness session headers.
 //
 // The body fallback exists because a harness that sends no session header may
 // still carry the identifier in metadata. Mirrors openrouter.ExtractSessionID
 // minus the remote-address fallback, which would change account stickiness for
 // anonymous clients.
+// parseNestedSessionID attempts to parse a stringified JSON user_id object
+// (as sent by Claude Code in metadata.user_id) to extract the inner session_id.
+func parseNestedSessionID(val string) string {
+	val = strings.TrimSpace(val)
+	if strings.HasPrefix(val, "{") && strings.HasSuffix(val, "}") {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(val), &parsed); err == nil {
+			if s, ok := parsed["session_id"].(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+			if uid, ok := parsed["user_id"].(string); ok && strings.TrimSpace(uid) != "" {
+				return strings.TrimSpace(uid)
+			}
+		}
+	}
+	return val
+}
+
 func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 	if r != nil {
-		for _, h := range []string{"x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
+		for _, h := range []string{"X-Claude-Code-Session-Id", "x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
 			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
-				return v
+				return parseNestedSessionID(v)
 			}
 		}
 	}
 	if reqBody != nil {
 		if meta, ok := reqBody["metadata"].(map[string]any); ok {
 			if s, ok := meta["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-				return strings.TrimSpace(s)
+				return parseNestedSessionID(s)
 			}
 			if u, ok := meta["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-				return strings.TrimSpace(u)
+				return parseNestedSessionID(u)
 			}
 		}
 		if s, ok := reqBody["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s)
+			return parseNestedSessionID(s)
 		}
 		if u, ok := reqBody["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-			return strings.TrimSpace(u)
+			return parseNestedSessionID(u)
 		}
 	}
 	return ""
