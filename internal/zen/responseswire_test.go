@@ -1897,6 +1897,30 @@ func streamedDeltas(t *testing.T, raw, deltaType, field string) string {
 	return b.String()
 }
 
+// A function_call delivered only in output_item.done — no output_item.added and
+// no restatement in response.completed — must still reach the client: dropping
+// it would end the agent loop on a clean end_turn.
+func TestStreamResponsesToAnthropic_FunctionCallOnlyInItemDone(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_o"}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","name":"get_weather","call_id":"call_0","arguments":"{\"city\":\"Sampa\"}"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_o","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	if got := streamedDeltas(t, out.String(), "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
+		t.Errorf("tool arguments = %q, want %q", got, `{"city":"Sampa"}`)
+	}
+	if stop := streamStopReason(t, sse); stop != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use", stop)
+	}
+}
+
 // anthropicEvents decodes the data: frames of an Anthropic SSE stream in order.
 func anthropicEvents(t *testing.T, raw string) []map[string]any {
 	t.Helper()

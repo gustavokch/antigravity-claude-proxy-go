@@ -513,6 +513,54 @@ func (s *responsesStream) completeCall(idx int, item map[string]any) error {
 	return s.delta(map[string]any{"type": "input_json_delta", "partial_json": rest})
 }
 
+// openCall opens the tool_use block for a function_call item. A call to a
+// gate-injected tool the client never declared opens nothing and is marked
+// dropped: a tool_use block would hand the client an unresolvable name.
+func (s *responsesStream) openCall(idx int, item map[string]any) error {
+	if s.dropped[idx] {
+		return nil
+	}
+	name, _ := item["name"].(string)
+	if s.injected[name] {
+		s.dropped[idx] = true
+		slog.Debug("zen responses stream: dropping call to gate-injected tool", "outputIndex", idx, "tool", name)
+		return nil
+	}
+	callID, _ := item["call_id"].(string)
+	if callID == "" {
+		callID = "call_" + strconv.Itoa(idx)
+	}
+	if err := s.openBlock("tool", map[string]any{
+		"type": "tool_use", "id": callID,
+		"name": renameTool(s.toolNames, name), "input": map[string]any{},
+	}); err != nil {
+		return err
+	}
+	s.itemBlocks[idx] = s.current
+	s.toolItems++
+	return nil
+}
+
+// completeItem emits whatever a completed output item carries beyond what its
+// deltas already delivered.
+func (s *responsesStream) completeItem(idx int, item map[string]any) error {
+	switch item["type"] {
+	case "function_call":
+		// A call whose output_item.added never arrived has no block yet.
+		if _, known := s.itemBlocks[idx]; !known {
+			if err := s.openCall(idx, item); err != nil {
+				return err
+			}
+		}
+		return s.completeCall(idx, item)
+	case "message":
+		return s.completeMessage(idx, item)
+	case "reasoning":
+		return s.completeReasoning(idx, item)
+	}
+	return nil
+}
+
 // completeMessage emits the refusal and text a completed message item carries
 // beyond its deltas. The refusal goes first, the order the aggregator and
 // ResponsesResponseToAnthropic give it, and marks the turn stop_reason refusal.
@@ -618,30 +666,7 @@ func (s *responsesStream) handle(event map[string]any) error {
 		if item == nil || item["type"] != "function_call" {
 			return nil
 		}
-		if s.dropped[idx] {
-			return nil
-		}
-		name, _ := item["name"].(string)
-		if s.injected[name] {
-			// Gate-injected tool the client never declared: opening a
-			// tool_use block would hand it an unresolvable name.
-			s.dropped[idx] = true
-			slog.Debug("zen responses stream: dropping call to gate-injected tool", "outputIndex", idx, "tool", name)
-			return nil
-		}
-		callID, _ := item["call_id"].(string)
-		if callID == "" {
-			callID = "call_" + strconv.Itoa(idx)
-		}
-		if err := s.openBlock("tool", map[string]any{
-			"type": "tool_use", "id": callID,
-			"name": renameTool(s.toolNames, name), "input": map[string]any{},
-		}); err != nil {
-			return err
-		}
-		s.itemBlocks[idx] = s.current
-		s.toolItems++
-		return nil
+		return s.openCall(idx, item)
 	case "response.function_call_arguments.delta":
 		if s.dropped[idx] {
 			return nil
@@ -671,15 +696,7 @@ func (s *responsesStream) handle(event map[string]any) error {
 		if item == nil {
 			return nil
 		}
-		switch item["type"] {
-		case "function_call":
-			return s.completeCall(idx, item)
-		case "message":
-			return s.completeMessage(idx, item)
-		case "reasoning":
-			return s.completeReasoning(idx, item)
-		}
-		return nil
+		return s.completeItem(idx, item)
 	case "response.completed", "response.incomplete":
 		s.settled = true
 		if resp, ok := event["response"].(map[string]any); ok {
@@ -701,48 +718,17 @@ func (s *responsesStream) handle(event map[string]any) error {
 			// Fallback: a stream with no deltas or item envelopes still
 			// carries the answer in response.output. Each item goes through
 			// the same completion as output_item.done; content the deltas
-			// already delivered is a no-op via missing().
+			// already delivered is a no-op via missing(). Items are matched to
+			// streamed state by array position, the same output_index ==
+			// position assumption ResponsesResponseToAnthropic makes when it
+			// numbers calls.
 			for i, raw := range anySlice(resp["output"]) {
 				item, _ := raw.(map[string]any)
 				if item == nil {
 					continue
 				}
-				switch item["type"] {
-				case "message":
-					if err := s.completeMessage(i, item); err != nil {
-						return err
-					}
-				case "reasoning":
-					if err := s.completeReasoning(i, item); err != nil {
-						return err
-					}
-				case "function_call":
-					if s.dropped[i] {
-						continue
-					}
-					if _, known := s.itemBlocks[i]; !known {
-						name, _ := item["name"].(string)
-						if s.injected[name] {
-							s.dropped[i] = true
-							slog.Debug("zen responses stream: dropping call to gate-injected tool", "outputIndex", i, "tool", name)
-							continue
-						}
-						callID, _ := item["call_id"].(string)
-						if callID == "" {
-							callID = "call_" + strconv.Itoa(i)
-						}
-						if err := s.openBlock("tool", map[string]any{
-							"type": "tool_use", "id": callID,
-							"name": renameTool(s.toolNames, name), "input": map[string]any{},
-						}); err != nil {
-							return err
-						}
-						s.itemBlocks[i] = s.current
-						s.toolItems++
-					}
-					if err := s.completeCall(i, item); err != nil {
-						return err
-					}
+				if err := s.completeItem(i, item); err != nil {
+					return err
 				}
 			}
 		}
