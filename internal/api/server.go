@@ -83,6 +83,8 @@ type ConfigUpdater interface {
 }
 
 type Options struct {
+	// APIKey is the -api-key flag / ANTIGRAVITY_PROXY_API_KEY value only.
+	// Keys in config.json are read live per request; never merge them in here.
 	APIKey             string
 	ProjectID          string
 	Credentials        func(context.Context) (auth.Credentials, error)
