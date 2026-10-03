@@ -180,6 +180,11 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 // from the request body. Inspects X-Claude-Code-Session-Id (sent by Claude Code)
 // followed by third-party harness session headers.
 //
+// Header-first precedence matches wire captures (.reference/claude-code-headers-*.jsonl),
+// where vanilla Claude Code consistently transmits X-Claude-Code-Session-Id with
+// a stable UUID per conversation across multi-turn messages (entries 5 and 6),
+// alongside body metadata.user_id: {"device_id":"...","account_uuid":"","session_id":"..."}.
+//
 // The body fallback exists because a harness that sends no session header may
 // still carry the identifier in metadata. Mirrors openrouter.ExtractSessionID
 // minus the remote-address fallback, which would change account stickiness for
