@@ -16,6 +16,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/sessionid"
 )
 
 var (
@@ -175,24 +176,6 @@ func matchClaudeCodeModel(cfg claudecode.Config, model string) string {
 	return ""
 }
 
-// parseNestedSessionID attempts to parse a stringified JSON object (as sent by
-// Claude Code in metadata.user_id or custom headers) to extract the inner session_id.
-func parseNestedSessionID(val string) string {
-	val = strings.TrimSpace(val)
-	if strings.HasPrefix(val, "{") && strings.HasSuffix(val, "}") {
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(val), &parsed); err == nil {
-			if s, ok := parsed["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-				return strings.TrimSpace(s)
-			}
-			if uid, ok := parsed["user_id"].(string); ok && strings.TrimSpace(uid) != "" {
-				return strings.TrimSpace(uid)
-			}
-		}
-	}
-	return val
-}
-
 // ccExtractSessionID extracts a stable session key from request headers, then
 // from the request body. Inspects X-Claude-Code-Session-Id (sent by Claude Code)
 // followed by third-party harness session headers.
@@ -205,24 +188,24 @@ func ccExtractSessionID(r *http.Request, reqBody map[string]any) string {
 	if r != nil {
 		for _, h := range []string{"X-Claude-Code-Session-Id", "x-session-id", "session-id", "anthropic-session-id", "x-conversation-id"} {
 			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
-				return parseNestedSessionID(v)
+				return sessionid.ParseNested(v)
 			}
 		}
 	}
 	if reqBody != nil {
 		if meta, ok := reqBody["metadata"].(map[string]any); ok {
 			if s, ok := meta["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-				return parseNestedSessionID(s)
+				return sessionid.ParseNested(s)
 			}
 			if u, ok := meta["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-				return parseNestedSessionID(u)
+				return sessionid.ParseNested(u)
 			}
 		}
 		if s, ok := reqBody["session_id"].(string); ok && strings.TrimSpace(s) != "" {
-			return parseNestedSessionID(s)
+			return sessionid.ParseNested(s)
 		}
 		if u, ok := reqBody["user_id"].(string); ok && strings.TrimSpace(u) != "" {
-			return parseNestedSessionID(u)
+			return sessionid.ParseNested(u)
 		}
 	}
 	return ""
