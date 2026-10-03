@@ -1756,6 +1756,74 @@ func TestStreamResponsesToAnthropic_CompletedOutputFallback(t *testing.T) {
 	}
 }
 
+// A function call that arrives only in response.completed's output still
+// surfaces as a tool_use block in the aggregate path.
+func TestAggregateResponsesStream_CompletedOutputFallbackFunctionCall(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_fc"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_fc","output":[{"type":"function_call","name":"get_weather","call_id":"call_0","arguments":"{\"city\":\"Sampa\"}"}],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want one tool_use", mustJSON(t, msg["content"]))
+	}
+	got, _ := content[0].(map[string]any)
+	if got["type"] != "tool_use" || got["name"] != "get_weather" {
+		t.Errorf("content[0] = %s, want get_weather tool_use", mustJSON(t, content[0]))
+	}
+	if msg["stop_reason"] != "tool_use" {
+		t.Errorf("stop_reason = %v, want tool_use", msg["stop_reason"])
+	}
+}
+
+// A function call that arrives only in response.completed's output still
+// streams as a tool_use block.
+func TestStreamResponsesToAnthropic_CompletedOutputFallbackFunctionCall(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_fc"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_fc","output":[{"type":"function_call","name":"get_weather","call_id":"call_0","arguments":"{\"city\":\"Sampa\"}"}],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	if !strings.Contains(out.String(), `"tool_use"`) || !strings.Contains(out.String(), "get_weather") {
+		t.Errorf("stream missing tool_use get_weather:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), `"stop_reason":"tool_use"`) {
+		t.Errorf("stream missing tool_use stop:\n%s", out.String())
+	}
+}
+
+// A completed-output call to a gate-injected tool stays dropped.
+func TestStreamResponsesToAnthropic_CompletedOutputFallbackDropsInjectedCall(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_inj"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_inj","output":[{"type":"function_call","name":"gate_secret","call_id":"call_0","arguments":"{}"}],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, map[string]bool{"gate_secret": true}); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	if strings.Contains(out.String(), "gate_secret") {
+		t.Errorf("stream leaked gate-injected call:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), `"stop_reason":"end_turn"`) {
+		t.Errorf("expected end_turn after drop:\n%s", out.String())
+	}
+}
+
 // A done-only multi-part reasoning summary streams joined with the same
 // separator as the aggregate and JSON paths.
 func TestStreamResponsesToAnthropic_ReasoningMultiPartSeparator(t *testing.T) {
