@@ -1824,6 +1824,42 @@ func TestStreamResponsesToAnthropic_CompletedOutputFallbackDropsInjectedCall(t *
 	}
 }
 
+// Deltas plus an identical completed-output restatement stream exactly once.
+func TestStreamResponsesToAnthropic_CompletedOutputNoDuplicate(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_d"}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"hello world"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_d","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"hello world"}]}],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	var text strings.Builder
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"text_delta"`) {
+			continue
+		}
+		var ev struct {
+			Delta struct {
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		text.WriteString(ev.Delta.Text)
+	}
+	if text.String() != "hello world" {
+		t.Errorf("client text = %q, want exactly one delivery", text.String())
+	}
+}
+
 // A done-only multi-part reasoning summary streams joined with the same
 // separator as the aggregate and JSON paths.
 func TestStreamResponsesToAnthropic_ReasoningMultiPartSeparator(t *testing.T) {
