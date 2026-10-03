@@ -474,11 +474,13 @@ func TestGetOrCreateCCPool_BaseURLUpdate(t *testing.T) {
 
 func TestExtractSessionID_TopLevelUserID(t *testing.T) {
 	tests := []struct {
-		name       string
-		headerName string
-		header     string
-		body       map[string]any
-		want       string
+		name            string
+		headerName      string
+		header          string
+		extraHeaderName string
+		extraHeader     string
+		body            map[string]any
+		want            string
 	}{
 		{
 			name:   "header takes precedence",
@@ -531,6 +533,31 @@ func TestExtractSessionID_TopLevelUserID(t *testing.T) {
 			want: "obj-sess-1",
 		},
 		{
+			name: "nested empty session_id falls back to inner user_id",
+			body: map[string]any{"metadata": map[string]any{"user_id": `{"session_id":"","user_id":"inner-u"}`}},
+			want: "inner-u",
+		},
+		{
+			name: "brace-wrapped invalid json returned raw",
+			body: map[string]any{"user_id": `{not json}`},
+			want: `{not json}`,
+		},
+		{
+			name:            "X-Claude-Code-Session-Id beats x-session-id",
+			headerName:      "X-Claude-Code-Session-Id",
+			header:          "cc-wins",
+			extraHeaderName: "x-session-id",
+			extraHeader:     "x-loses",
+			want:            "cc-wins",
+		},
+		{
+			name:       "header beats conflicting nested body session",
+			headerName: "X-Claude-Code-Session-Id",
+			header:     "hdr-sess",
+			body:       map[string]any{"metadata": map[string]any{"user_id": `{"session_id":"body-sess"}`}},
+			want:       "hdr-sess",
+		},
+		{
 			name: "empty body and header",
 			body: map[string]any{},
 			want: "",
@@ -545,6 +572,9 @@ func TestExtractSessionID_TopLevelUserID(t *testing.T) {
 					hName = "x-session-id"
 				}
 				req.Header.Set(hName, tc.header)
+			}
+			if tc.extraHeaderName != "" && tc.extraHeader != "" {
+				req.Header.Set(tc.extraHeaderName, tc.extraHeader)
 			}
 			got := ccExtractSessionID(req, tc.body)
 			if got != tc.want {
