@@ -37,6 +37,7 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 	items := map[int]map[string]any{}
 	texts := map[int]*strings.Builder{}
 	reasoning := map[int]*strings.Builder{}
+	summaryPart := map[int]int{}
 	refusals := map[int]*strings.Builder{}
 	argText := map[int]*strings.Builder{}
 	order := []int{}
@@ -110,7 +111,11 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 		case "response.reasoning_summary_text.delta":
 			mark(idx)
 			if delta, _ := event["delta"].(string); delta != "" {
-				builder(reasoning, idx).WriteString(delta)
+				b := builder(reasoning, idx)
+				if summaryBoundary(event, idx, summaryPart) && b.Len() > 0 {
+					b.WriteString("\n\n")
+				}
+				b.WriteString(delta)
 			}
 		case "response.refusal.delta":
 			mark(idx)
@@ -316,6 +321,7 @@ func streamResponsesToAnthropic(r io.Reader, w io.Writer, model string, toolName
 	s := &responsesStream{
 		w: w, model: model, current: -1,
 		itemBlocks: map[int]int{}, sent: map[sentKey]*strings.Builder{}, toolNames: toolNames, injected: injected, dropped: map[int]bool{},
+		summaryPart: map[int]int{},
 	}
 	done := false
 	scanner := bufio.NewScanner(r)
@@ -359,22 +365,23 @@ func streamResponsesToAnthropic(r io.Reader, w io.Writer, model string, toolName
 // Responses stream has no per-chunk usage, so the usage that arrives with
 // response.completed is carried until finish.
 type responsesStream struct {
-	w          io.Writer
-	model      string
-	toolNames  map[string]string            // upstream → client tool names, may be nil
-	injected   map[string]bool              // gate-only tool names, may be nil
-	dropped    map[int]bool                 // output indexes skipped as gate-injected
-	itemBlocks map[int]int                  // output_index → Anthropic block index
-	sent       map[sentKey]*strings.Builder // delivered output per (kind, output_index)
-	started    bool
-	failed     bool
-	settled    bool
-	toolItems  int // tool_use blocks opened (surviving gate-injected drops)
-	nextIndex  int
-	current    int    // open Anthropic block index, -1 when none
-	kind       string // "thinking" | "text" | "tool"
-	stop       string
-	usage      map[string]any
+	w           io.Writer
+	model       string
+	toolNames   map[string]string            // upstream → client tool names, may be nil
+	injected    map[string]bool              // gate-only tool names, may be nil
+	dropped     map[int]bool                 // output indexes skipped as gate-injected
+	itemBlocks  map[int]int                  // output_index → Anthropic block index
+	sent        map[sentKey]*strings.Builder // delivered output per (kind, output_index)
+	summaryPart map[int]int                  // output_index → summary_index of the last reasoning delta
+	started     bool
+	failed      bool
+	settled     bool
+	toolItems   int // tool_use blocks opened (surviving gate-injected drops)
+	nextIndex   int
+	current     int    // open Anthropic block index, -1 when none
+	kind        string // "thinking" | "text" | "tool"
+	stop        string
+	usage       map[string]any
 }
 
 // Kinds of output the stream has delivered to the client, tracked per output
@@ -463,6 +470,28 @@ func (s *responsesStream) writeThinking(idx int, text string) error {
 		s.itemBlocks[idx] = s.current
 	}
 	return s.delta(map[string]any{"type": "thinking_delta", "thinking": text})
+}
+
+// hasSent reports whether any text was delivered for one (kind, idx) stream.
+func (s *responsesStream) hasSent(kind string, idx int) bool {
+	b := s.sent[sentKey{kind, idx}]
+	return b != nil && b.Len() > 0
+}
+
+// summaryBoundary reports whether a reasoning_summary_text.delta opens a new
+// summary part of its item, and records the part it belongs to. The OpenAI
+// Responses schema tags every such delta with summary_index; an untagged delta
+// never reports a boundary, so an upstream that omits the field keeps its
+// deltas fused.
+func summaryBoundary(event map[string]any, idx int, last map[int]int) bool {
+	raw, tagged := event["summary_index"]
+	if !tagged {
+		return false
+	}
+	part := toInt(raw)
+	prev, seen := last[idx]
+	last[idx] = part
+	return seen && part != prev
 }
 
 // record notes text as delivered to the client for one (kind, idx) stream.
@@ -592,10 +621,10 @@ func (s *responsesStream) completeMessage(idx int, item map[string]any) error {
 }
 
 // completeReasoning emits the summary text a completed reasoning item carries
-// beyond its summary deltas. With no streamed deltas the part boundaries
-// survive and are joined readably; once deltas flowed they carry no part
-// boundaries, so the restatement stays fused — joining there would break
-// missing()'s prefix match and drop text the client has not yet received.
+// beyond its summary deltas. Parts are joined with a blank line, the same
+// separator tagged live deltas (summary_index) were given, so the joined text
+// extends what was streamed. Untagged deltas arrive fused, so the fused form is
+// the fallback comparison; either way only the missing suffix is emitted.
 func (s *responsesStream) completeReasoning(idx int, item map[string]any) error {
 	var parts []string
 	for _, raw := range anySlice(item["summary"]) {
@@ -604,21 +633,13 @@ func (s *responsesStream) completeReasoning(idx int, item map[string]any) error 
 			parts = append(parts, t)
 		}
 	}
-	if b := s.sent[sentKey{sentThinking, idx}]; b == nil || b.Len() == 0 {
-		if len(parts) == 0 {
-			return nil
+	for _, full := range [2]string{strings.Join(parts, "\n\n"), strings.Join(parts, "")} {
+		if rest, ok := s.missing(sentThinking, idx, full); ok {
+			s.record(sentThinking, idx, rest)
+			return s.writeThinking(idx, rest)
 		}
-		joined := strings.Join(parts, "\n\n")
-		s.record(sentThinking, idx, joined)
-		return s.writeThinking(idx, joined)
 	}
-	fused := strings.Join(parts, "")
-	rest, ok := s.missing(sentThinking, idx, fused)
-	if !ok {
-		return nil
-	}
-	s.record(sentThinking, idx, rest)
-	return s.writeThinking(idx, rest)
+	return nil
 }
 
 // handle consumes one Responses SSE event. Text, reasoning, and refusal deltas
@@ -658,6 +679,9 @@ func (s *responsesStream) handle(event map[string]any) error {
 		delta, _ := event["delta"].(string)
 		if delta == "" {
 			return nil
+		}
+		if summaryBoundary(event, idx, s.summaryPart) && s.hasSent(sentThinking, idx) {
+			delta = "\n\n" + delta
 		}
 		s.record(sentThinking, idx, delta)
 		return s.writeThinking(idx, delta)

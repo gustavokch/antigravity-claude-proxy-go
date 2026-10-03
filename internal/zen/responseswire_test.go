@@ -1853,8 +1853,8 @@ func TestStreamResponsesToAnthropic_ReasoningMultiPartSeparator(t *testing.T) {
 	}
 }
 
-// Deltas carry no part boundaries, so a restatement that extends partial
-// deltas stays fused: the suffix must still reach the client, not be dropped.
+// A restatement that extends partial deltas must still deliver the rest, with
+// the part separator, instead of dropping it or gluing the parts together.
 func TestStreamResponsesToAnthropic_ReasoningPartialDeltasPreserved(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
@@ -1871,8 +1871,90 @@ func TestStreamResponsesToAnthropic_ReasoningPartialDeltasPreserved(t *testing.T
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
 	thinking := streamedDeltas(t, out.String(), "thinking_delta", "thinking")
-	if thinking != "firstsecond" {
-		t.Errorf("client thinking = %q, want fused %q (no loss)", thinking, "firstsecond")
+	if thinking != "first\n\nsecond" {
+		t.Errorf("client thinking = %q, want %q (no loss, parts separated)", thinking, "first\n\nsecond")
+	}
+}
+
+// OpenAI tags every reasoning_summary_text.delta with the summary part it
+// belongs to. Parts are separate blocks upstream, so a part change in the live
+// deltas must read like the joined restatement, not glue words together, and
+// the restatement that follows must add nothing.
+func TestStreamResponsesToAnthropic_ReasoningSummaryIndexSeparator(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"fir"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"st"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"second"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	thinking := streamedDeltas(t, out.String(), "thinking_delta", "thinking")
+	if thinking != "first\n\nsecond" {
+		t.Errorf("client thinking = %q, want %q", thinking, "first\n\nsecond")
+	}
+}
+
+// The aggregate fold separates tagged parts the same way.
+func TestAggregateResponsesStream_ReasoningSummaryIndexSeparator(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"first"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"second"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want one thinking block", mustJSON(t, msg["content"]))
+	}
+	part, _ := content[0].(map[string]any)
+	if thinking, _ := part["thinking"].(string); thinking != "first\n\nsecond" {
+		t.Errorf("thinking = %q, want %q", thinking, "first\n\nsecond")
+	}
+}
+
+// Without summary_index nothing marks a part boundary, so deltas arrive fused.
+// The restatement must then neither repeat what was streamed nor drop the rest.
+func TestStreamResponsesToAnthropic_ReasoningUntaggedDeltasNoLossNoRepeat(t *testing.T) {
+	delta := func(text string) string {
+		return `data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"` + text + `"}` + "\n"
+	}
+	cases := []struct{ name, deltas, want string }{
+		{"fully streamed", delta("first") + delta("second"), "firstsecond"},
+		{"cut inside the second part", delta("firstsec"), "firstsecond"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sse := `data: {"type":"response.created","response":{"id":"resp_r"}}` + "\n" + tc.deltas +
+				`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}}` + "\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}` + "\n"
+			var out bytes.Buffer
+			if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+				t.Fatalf("streamResponsesToAnthropic: %v", err)
+			}
+			if got := streamedDeltas(t, out.String(), "thinking_delta", "thinking"); got != tc.want {
+				t.Errorf("client thinking = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
