@@ -1271,6 +1271,24 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "No valid configuration updates provided"})
 		return
 	}
+	if rawKeys, ok := updates["apiKeys"]; ok && rawKeys != nil {
+		// Reject here rather than in Save: Save persists first and ignores a
+		// post-write decode error, so a wrongly typed list would land on disk
+		// without ever being applied.
+		var entries []config.APIKeyEntry
+		keysBytes, err := json.Marshal(rawKeys)
+		if err == nil {
+			err = json.Unmarshal(keysBytes, &entries)
+		}
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid apiKeys configuration format"})
+			return
+		}
+		if err := config.ValidateAPIKeys(entries); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+			return
+		}
+	}
 
 	if rawMitm, ok := updates["mitm"]; ok && rawMitm != nil {
 		// Validate the patch over the defaults, the base Load uses. The in-memory

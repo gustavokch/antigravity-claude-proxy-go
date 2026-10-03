@@ -83,6 +83,8 @@ type ConfigUpdater interface {
 }
 
 type Options struct {
+	// APIKey is the -api-key flag / ANTIGRAVITY_PROXY_API_KEY value only.
+	// Keys in config.json are read live per request; never merge them in here.
 	APIKey             string
 	ProjectID          string
 	Credentials        func(context.Context) (auth.Credentials, error)
@@ -440,9 +442,17 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	}
 
 	if strings.HasPrefix(path, "/v1/") {
-		if !server.authorized(request) {
+		ok, label := server.authorized(request)
+		if !ok {
 			writeAPIError(writer, http.StatusUnauthorized, "authentication_error", "Invalid or missing API key")
 			return
+		}
+		if label == "" {
+			label = "open"
+		}
+		request = request.WithContext(context.WithValue(request.Context(), clientLabelKey{}, label))
+		if !shouldSkipLogging(path) {
+			server.logger.Info("v1 request", "client", label, "method", request.Method, "path", path)
 		}
 		switch {
 		case path == "/v1/models" && request.Method == http.MethodGet:
@@ -472,9 +482,20 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	writeAPIError(writer, http.StatusNotFound, "not_found_error", fmt.Sprintf("Endpoint %s %s not found", request.Method, request.URL.Path))
 }
 
-func (server *Server) authorized(request *http.Request) bool {
-	if server.apiKey == "" {
-		return true
+// authorized reports whether the request carries an accepted proxy key and the
+// label to attribute it to. The proxy is open only while no key exists anywhere
+// (no apiKeys entry in any state, no legacy apiKey, no flag/env key); once any
+// key is configured every /v1/* request must match an enabled one, so
+// disabling the last entry locks the proxy instead of opening it.
+//
+// apiKeys supersedes the legacy config apiKey, which is honored (as "default")
+// only while apiKeys is empty. server.apiKey is the -api-key flag /
+// ANTIGRAVITY_PROXY_API_KEY value, an out-of-band credential honored either
+// way. Config values are read live on every call, never snapshotted.
+func (server *Server) authorized(request *http.Request) (bool, string) {
+	cfg := config.Get()
+	if len(cfg.APIKeys) == 0 && cfg.APIKey == "" && server.apiKey == "" {
+		return true, ""
 	}
 	provided := request.Header.Get("x-api-key")
 	if provided == "" {
@@ -482,7 +503,42 @@ func (server *Server) authorized(request *http.Request) bool {
 			provided = strings.TrimPrefix(authorization, "Bearer ")
 		}
 	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(server.apiKey)) == 1
+	matches := func(key string) bool {
+		return key != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(key)) == 1
+	}
+	for _, entry := range cfg.APIKeys {
+		if entry.Enabled && matches(entry.Key) {
+			return true, apiKeyLabel(entry)
+		}
+	}
+	if len(cfg.APIKeys) == 0 && matches(cfg.APIKey) {
+		return true, "default"
+	}
+	if matches(server.apiKey) {
+		return true, "default"
+	}
+	return false, ""
+}
+
+// apiKeyLabel is the attribution label of a matched apiKeys entry.
+func apiKeyLabel(entry config.APIKeyEntry) string {
+	if entry.Label != "" {
+		return entry.Label
+	}
+	if entry.ID != "" {
+		return entry.ID
+	}
+	return "default"
+}
+
+// clientLabelKey carries the matched API-key label for log attribution.
+type clientLabelKey struct{}
+
+// ClientLabel returns the API-key label attributed to the request, or "" when
+// the proxy is open or the request was rejected.
+func ClientLabel(request *http.Request) string {
+	label, _ := request.Context().Value(clientLabelKey{}).(string)
+	return label
 }
 
 func (server *Server) health(writer http.ResponseWriter) {

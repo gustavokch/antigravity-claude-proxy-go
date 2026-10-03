@@ -95,11 +95,11 @@ func runServer(args []string) {
 	daemon := fs.Bool("daemon", false, "run proxy server in background daemon mode")
 	_ = fs.Parse(args)
 
-	// Load configuration file
+	// Load configuration file. Keys in config.json (apiKey, apiKeys) are read
+	// live by the server on every request; only the -api-key flag /
+	// ANTIGRAVITY_PROXY_API_KEY value is passed through Options.APIKey, so a
+	// config edit can revoke or rotate a key without a restart.
 	cfg, _ := config.Load()
-	if *apiKey == "" && cfg.APIKey != "" {
-		*apiKey = cfg.APIKey
-	}
 	if *port > 0 {
 		*listen = fmt.Sprintf("127.0.0.1:%d", *port)
 	}

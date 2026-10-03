@@ -161,22 +161,66 @@ type AccountSelectionConfig struct {
 	Weights     map[string]any `json:"weights,omitempty"`
 }
 
+// APIKeyEntry is one person's proxy API key. Keys gate /v1/* and the
+// matched entry's label is emitted in request logs for attribution.
+type APIKeyEntry struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Key     string `json:"key"`
+	Enabled bool   `json:"enabled"`
+}
+
+// ValidateAPIKeys rejects an apiKeys list that would make attribution or
+// revocation ambiguous: a blank id or key, a repeated id or key, or a label the
+// proxy emits for itself ("open" for a keyless proxy, "default" for the legacy
+// and flag/env key). Disabled entries are validated too, so enabling one later
+// cannot introduce a collision. Errors name the entry, never its key.
+func ValidateAPIKeys(entries []APIKeyEntry) error {
+	ids := make(map[string]struct{}, len(entries))
+	keys := make(map[string]struct{}, len(entries))
+	for i, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			return fmt.Errorf("apiKeys[%d]: id must not be empty", i)
+		}
+		if strings.TrimSpace(entry.Key) == "" {
+			return fmt.Errorf("apiKeys[%d] (%s): key must not be empty", i, entry.ID)
+		}
+		label := entry.Label
+		if label == "" {
+			label = entry.ID
+		}
+		if strings.EqualFold(label, "open") || strings.EqualFold(label, "default") {
+			return fmt.Errorf("apiKeys[%d] (%s): label %q is reserved", i, entry.ID, label)
+		}
+		if _, dup := ids[entry.ID]; dup {
+			return fmt.Errorf("apiKeys[%d]: duplicate id %q", i, entry.ID)
+		}
+		if _, dup := keys[entry.Key]; dup {
+			return fmt.Errorf("apiKeys[%d] (%s): key duplicates another entry", i, entry.ID)
+		}
+		ids[entry.ID] = struct{}{}
+		keys[entry.Key] = struct{}{}
+	}
+	return nil
+}
+
 type Config struct {
-	APIKey                   string  `json:"apiKey,omitempty"`
-	WebUIPassword            string  `json:"webuiPassword,omitempty"`
-	Debug                    bool    `json:"debug,omitempty"`
-	DevMode                  bool    `json:"devMode,omitempty"`
-	LogLevel                 string  `json:"logLevel,omitempty"`
-	MaxRetries               int     `json:"maxRetries,omitempty"`
-	RetryBaseMs              int     `json:"retryBaseMs,omitempty"`
-	RetryMaxMs               int     `json:"retryMaxMs,omitempty"`
-	PersistTokenCache        bool    `json:"persistTokenCache,omitempty"`
-	DefaultCooldownMs        int     `json:"defaultCooldownMs,omitempty"`
-	MaxWaitBeforeErrorMs     int     `json:"maxWaitBeforeErrorMs,omitempty"`
-	MaxAccounts              int     `json:"maxAccounts,omitempty"`
-	GlobalQuotaThreshold     float64 `json:"globalQuotaThreshold,omitempty"`
-	RequestThrottlingEnabled bool    `json:"requestThrottlingEnabled,omitempty"`
-	RequestDelayMs           int     `json:"requestDelayMs,omitempty"`
+	APIKey                   string        `json:"apiKey,omitempty"`
+	APIKeys                  []APIKeyEntry `json:"apiKeys,omitempty"`
+	WebUIPassword            string        `json:"webuiPassword,omitempty"`
+	Debug                    bool          `json:"debug,omitempty"`
+	DevMode                  bool          `json:"devMode,omitempty"`
+	LogLevel                 string        `json:"logLevel,omitempty"`
+	MaxRetries               int           `json:"maxRetries,omitempty"`
+	RetryBaseMs              int           `json:"retryBaseMs,omitempty"`
+	RetryMaxMs               int           `json:"retryMaxMs,omitempty"`
+	PersistTokenCache        bool          `json:"persistTokenCache,omitempty"`
+	DefaultCooldownMs        int           `json:"defaultCooldownMs,omitempty"`
+	MaxWaitBeforeErrorMs     int           `json:"maxWaitBeforeErrorMs,omitempty"`
+	MaxAccounts              int           `json:"maxAccounts,omitempty"`
+	GlobalQuotaThreshold     float64       `json:"globalQuotaThreshold,omitempty"`
+	RequestThrottlingEnabled bool          `json:"requestThrottlingEnabled,omitempty"`
+	RequestDelayMs           int           `json:"requestDelayMs,omitempty"`
 	// Upstream429ForensicsEnabled persists every upstream 429 verbatim to
 	// <configDir>/forensics/upstream-429.jsonl (R1 of the
 	// cloudcode-429-throttle-dimension spec). Off by default.
@@ -868,6 +912,11 @@ func Save(updates map[string]any) (Config, error) {
 
 	// Merge updates
 	for k, v := range updates {
+		// hasApiKey/hasApiKeys are read-only echoes from GetPublicConfig;
+		// a save-back of the public view must not persist them.
+		if k == "hasApiKey" || k == "hasApiKeys" {
+			continue
+		}
 		if k == "customEndpoints" {
 			if vMap, ok := v.(map[string]any); ok {
 				existingEndpoints, _ := currentMap["customEndpoints"].(map[string]any)
@@ -1128,6 +1177,26 @@ func GetPublicConfig() map[string]any {
 		result["hasPassword"] = false
 	}
 	delete(result, "webuiPassword")
+
+	// The proxy /v1/* keys never leave the server: report only whether any
+	// are set, following the kimi/zen apiKey redaction pattern. Labels are
+	// withheld too — the public GET is unauthenticated and labels reveal
+	// who holds access.
+	if currentConfig.APIKey != "" {
+		result["hasApiKey"] = true
+	} else {
+		result["hasApiKey"] = false
+	}
+	delete(result, "apiKey")
+	hasAPIKeys := false
+	for _, entry := range currentConfig.APIKeys {
+		if entry.Enabled && entry.Key != "" {
+			hasAPIKeys = true
+			break
+		}
+	}
+	result["hasApiKeys"] = hasAPIKeys
+	delete(result, "apiKeys")
 
 	// The WebUI needs the full gateway vocabulary to render appended
 	// providers. No secret, so no redaction.

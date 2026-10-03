@@ -37,6 +37,7 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 	items := map[int]map[string]any{}
 	texts := map[int]*strings.Builder{}
 	reasoning := map[int]*strings.Builder{}
+	summaryPart := map[int]int{}
 	refusals := map[int]*strings.Builder{}
 	argText := map[int]*strings.Builder{}
 	order := []int{}
@@ -110,7 +111,11 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 		case "response.reasoning_summary_text.delta":
 			mark(idx)
 			if delta, _ := event["delta"].(string); delta != "" {
-				builder(reasoning, idx).WriteString(delta)
+				b := builder(reasoning, idx)
+				if summaryBoundary(event, idx, summaryPart) && b.Len() > 0 {
+					b.WriteString("\n\n")
+				}
+				b.WriteString(delta)
 			}
 		case "response.refusal.delta":
 			mark(idx)
@@ -153,8 +158,9 @@ func aggregateResponsesStream(r io.Reader) (map[string]any, error) {
 		return nil, errors.New("Zen stream ended before completion")
 	}
 	// Fallback: a stream with no deltas or item envelopes still carries the
-	// answer in response.completed's output. Adopt only indices the live
-	// events never saw; streamed state always wins.
+	// answer in response.completed's output. Adopt the completed item only for
+	// an index with no envelope (never seen, or seen only as a delta
+	// placeholder); deltas and envelopes already streamed always win.
 	for i, raw := range completedOutput {
 		if item, seen := items[i]; seen && len(item) > 0 {
 			continue
@@ -316,6 +322,7 @@ func streamResponsesToAnthropic(r io.Reader, w io.Writer, model string, toolName
 	s := &responsesStream{
 		w: w, model: model, current: -1,
 		itemBlocks: map[int]int{}, sent: map[sentKey]*strings.Builder{}, toolNames: toolNames, injected: injected, dropped: map[int]bool{},
+		summaryPart: map[int]int{},
 	}
 	done := false
 	scanner := bufio.NewScanner(r)
@@ -359,22 +366,23 @@ func streamResponsesToAnthropic(r io.Reader, w io.Writer, model string, toolName
 // Responses stream has no per-chunk usage, so the usage that arrives with
 // response.completed is carried until finish.
 type responsesStream struct {
-	w          io.Writer
-	model      string
-	toolNames  map[string]string            // upstream → client tool names, may be nil
-	injected   map[string]bool              // gate-only tool names, may be nil
-	dropped    map[int]bool                 // output indexes skipped as gate-injected
-	itemBlocks map[int]int                  // output_index → Anthropic block index
-	sent       map[sentKey]*strings.Builder // delivered output per (kind, output_index)
-	started    bool
-	failed     bool
-	settled    bool
-	toolItems  int // tool_use blocks opened (surviving gate-injected drops)
-	nextIndex  int
-	current    int    // open Anthropic block index, -1 when none
-	kind       string // "thinking" | "text" | "tool"
-	stop       string
-	usage      map[string]any
+	w           io.Writer
+	model       string
+	toolNames   map[string]string            // upstream → client tool names, may be nil
+	injected    map[string]bool              // gate-only tool names, may be nil
+	dropped     map[int]bool                 // output indexes skipped as gate-injected
+	itemBlocks  map[int]int                  // output_index → Anthropic block index
+	sent        map[sentKey]*strings.Builder // delivered output per (kind, output_index)
+	summaryPart map[int]int                  // output_index → summary_index of the last reasoning delta
+	started     bool
+	failed      bool
+	settled     bool
+	toolItems   int // tool_use blocks opened (surviving gate-injected drops)
+	nextIndex   int
+	current     int    // open Anthropic block index, -1 when none
+	kind        string // "thinking" | "text" | "tool"
+	stop        string
+	usage       map[string]any
 }
 
 // Kinds of output the stream has delivered to the client, tracked per output
@@ -465,6 +473,28 @@ func (s *responsesStream) writeThinking(idx int, text string) error {
 	return s.delta(map[string]any{"type": "thinking_delta", "thinking": text})
 }
 
+// hasSent reports whether any text was delivered for one (kind, idx) stream.
+func (s *responsesStream) hasSent(kind string, idx int) bool {
+	b := s.sent[sentKey{kind, idx}]
+	return b != nil && b.Len() > 0
+}
+
+// summaryBoundary reports whether a reasoning_summary_text.delta opens a new
+// summary part of its item, and records the part it belongs to. The OpenAI
+// Responses schema tags every such delta with summary_index; an untagged delta
+// never reports a boundary, so an upstream that omits the field keeps its
+// deltas fused.
+func summaryBoundary(event map[string]any, idx int, last map[int]int) bool {
+	raw, tagged := event["summary_index"]
+	if !tagged {
+		return false
+	}
+	part := toInt(raw)
+	prev, seen := last[idx]
+	last[idx] = part
+	return seen && part != prev
+}
+
 // record notes text as delivered to the client for one (kind, idx) stream.
 func (s *responsesStream) record(kind string, idx int, text string) {
 	key := sentKey{kind, idx}
@@ -513,6 +543,54 @@ func (s *responsesStream) completeCall(idx int, item map[string]any) error {
 	return s.delta(map[string]any{"type": "input_json_delta", "partial_json": rest})
 }
 
+// openCall opens the tool_use block for a function_call item. A call to a
+// gate-injected tool the client never declared opens nothing and is marked
+// dropped: a tool_use block would hand the client an unresolvable name.
+func (s *responsesStream) openCall(idx int, item map[string]any) error {
+	if s.dropped[idx] {
+		return nil
+	}
+	name, _ := item["name"].(string)
+	if s.injected[name] {
+		s.dropped[idx] = true
+		slog.Debug("zen responses stream: dropping call to gate-injected tool", "outputIndex", idx, "tool", name)
+		return nil
+	}
+	callID, _ := item["call_id"].(string)
+	if callID == "" {
+		callID = "call_" + strconv.Itoa(idx)
+	}
+	if err := s.openBlock("tool", map[string]any{
+		"type": "tool_use", "id": callID,
+		"name": renameTool(s.toolNames, name), "input": map[string]any{},
+	}); err != nil {
+		return err
+	}
+	s.itemBlocks[idx] = s.current
+	s.toolItems++
+	return nil
+}
+
+// completeItem emits whatever a completed output item carries beyond what its
+// deltas already delivered.
+func (s *responsesStream) completeItem(idx int, item map[string]any) error {
+	switch item["type"] {
+	case "function_call":
+		// A call whose output_item.added never arrived has no block yet.
+		if _, known := s.itemBlocks[idx]; !known {
+			if err := s.openCall(idx, item); err != nil {
+				return err
+			}
+		}
+		return s.completeCall(idx, item)
+	case "message":
+		return s.completeMessage(idx, item)
+	case "reasoning":
+		return s.completeReasoning(idx, item)
+	}
+	return nil
+}
+
 // completeMessage emits the refusal and text a completed message item carries
 // beyond its deltas. The refusal goes first, the order the aggregator and
 // ResponsesResponseToAnthropic give it, and marks the turn stop_reason refusal.
@@ -544,10 +622,10 @@ func (s *responsesStream) completeMessage(idx int, item map[string]any) error {
 }
 
 // completeReasoning emits the summary text a completed reasoning item carries
-// beyond its summary deltas. With no streamed deltas the part boundaries
-// survive and are joined readably; once deltas flowed they carry no part
-// boundaries, so the restatement stays fused — joining there would break
-// missing()'s prefix match and drop text the client has not yet received.
+// beyond its summary deltas. Parts are joined with a blank line, the same
+// separator tagged live deltas (summary_index) were given, so the joined text
+// extends what was streamed. Untagged deltas arrive fused, so the fused form is
+// the fallback comparison; either way only the missing suffix is emitted.
 func (s *responsesStream) completeReasoning(idx int, item map[string]any) error {
 	var parts []string
 	for _, raw := range anySlice(item["summary"]) {
@@ -556,21 +634,13 @@ func (s *responsesStream) completeReasoning(idx int, item map[string]any) error 
 			parts = append(parts, t)
 		}
 	}
-	if b := s.sent[sentKey{sentThinking, idx}]; b == nil || b.Len() == 0 {
-		if len(parts) == 0 {
-			return nil
+	for _, full := range [2]string{strings.Join(parts, "\n\n"), strings.Join(parts, "")} {
+		if rest, ok := s.missing(sentThinking, idx, full); ok {
+			s.record(sentThinking, idx, rest)
+			return s.writeThinking(idx, rest)
 		}
-		joined := strings.Join(parts, "\n\n")
-		s.record(sentThinking, idx, joined)
-		return s.writeThinking(idx, joined)
 	}
-	fused := strings.Join(parts, "")
-	rest, ok := s.missing(sentThinking, idx, fused)
-	if !ok {
-		return nil
-	}
-	s.record(sentThinking, idx, rest)
-	return s.writeThinking(idx, rest)
+	return nil
 }
 
 // handle consumes one Responses SSE event. Text, reasoning, and refusal deltas
@@ -611,6 +681,9 @@ func (s *responsesStream) handle(event map[string]any) error {
 		if delta == "" {
 			return nil
 		}
+		if summaryBoundary(event, idx, s.summaryPart) && s.hasSent(sentThinking, idx) {
+			delta = "\n\n" + delta
+		}
 		s.record(sentThinking, idx, delta)
 		return s.writeThinking(idx, delta)
 	case "response.output_item.added":
@@ -618,30 +691,7 @@ func (s *responsesStream) handle(event map[string]any) error {
 		if item == nil || item["type"] != "function_call" {
 			return nil
 		}
-		if s.dropped[idx] {
-			return nil
-		}
-		name, _ := item["name"].(string)
-		if s.injected[name] {
-			// Gate-injected tool the client never declared: opening a
-			// tool_use block would hand it an unresolvable name.
-			s.dropped[idx] = true
-			slog.Debug("zen responses stream: dropping call to gate-injected tool", "outputIndex", idx, "tool", name)
-			return nil
-		}
-		callID, _ := item["call_id"].(string)
-		if callID == "" {
-			callID = "call_" + strconv.Itoa(idx)
-		}
-		if err := s.openBlock("tool", map[string]any{
-			"type": "tool_use", "id": callID,
-			"name": renameTool(s.toolNames, name), "input": map[string]any{},
-		}); err != nil {
-			return err
-		}
-		s.itemBlocks[idx] = s.current
-		s.toolItems++
-		return nil
+		return s.openCall(idx, item)
 	case "response.function_call_arguments.delta":
 		if s.dropped[idx] {
 			return nil
@@ -671,15 +721,7 @@ func (s *responsesStream) handle(event map[string]any) error {
 		if item == nil {
 			return nil
 		}
-		switch item["type"] {
-		case "function_call":
-			return s.completeCall(idx, item)
-		case "message":
-			return s.completeMessage(idx, item)
-		case "reasoning":
-			return s.completeReasoning(idx, item)
-		}
-		return nil
+		return s.completeItem(idx, item)
 	case "response.completed", "response.incomplete":
 		s.settled = true
 		if resp, ok := event["response"].(map[string]any); ok {
@@ -701,48 +743,17 @@ func (s *responsesStream) handle(event map[string]any) error {
 			// Fallback: a stream with no deltas or item envelopes still
 			// carries the answer in response.output. Each item goes through
 			// the same completion as output_item.done; content the deltas
-			// already delivered is a no-op via missing().
+			// already delivered is a no-op via missing(). Items are matched to
+			// streamed state by array position, the same output_index ==
+			// position assumption ResponsesResponseToAnthropic makes when it
+			// numbers calls.
 			for i, raw := range anySlice(resp["output"]) {
 				item, _ := raw.(map[string]any)
 				if item == nil {
 					continue
 				}
-				switch item["type"] {
-				case "message":
-					if err := s.completeMessage(i, item); err != nil {
-						return err
-					}
-				case "reasoning":
-					if err := s.completeReasoning(i, item); err != nil {
-						return err
-					}
-				case "function_call":
-					if s.dropped[i] {
-						continue
-					}
-					if _, known := s.itemBlocks[i]; !known {
-						name, _ := item["name"].(string)
-						if s.injected[name] {
-							s.dropped[i] = true
-							slog.Debug("zen responses stream: dropping call to gate-injected tool", "outputIndex", i, "tool", name)
-							continue
-						}
-						callID, _ := item["call_id"].(string)
-						if callID == "" {
-							callID = "call_" + strconv.Itoa(i)
-						}
-						if err := s.openBlock("tool", map[string]any{
-							"type": "tool_use", "id": callID,
-							"name": renameTool(s.toolNames, name), "input": map[string]any{},
-						}); err != nil {
-							return err
-						}
-						s.itemBlocks[i] = s.current
-						s.toolItems++
-					}
-					if err := s.completeCall(i, item); err != nil {
-						return err
-					}
+				if err := s.completeItem(i, item); err != nil {
+					return err
 				}
 			}
 		}

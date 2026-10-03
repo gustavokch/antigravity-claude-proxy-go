@@ -1736,23 +1736,9 @@ func TestStreamResponsesToAnthropic_CompletedOutputFallback(t *testing.T) {
 	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
-	var text strings.Builder
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"text_delta"`) {
-			continue
-		}
-		var ev struct {
-			Delta struct {
-				Text string `json:"text"`
-			} `json:"delta"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
-			t.Fatalf("decode %q: %v", line, err)
-		}
-		text.WriteString(ev.Delta.Text)
-	}
-	if text.String() != "hello world" {
-		t.Errorf("client text = %q, want %q", text.String(), "hello world")
+	text := streamedDeltas(t, out.String(), "text_delta", "text")
+	if text != "hello world" {
+		t.Errorf("client text = %q, want %q", text, "hello world")
 	}
 }
 
@@ -1778,6 +1764,9 @@ func TestAggregateResponsesStream_CompletedOutputFallbackFunctionCall(t *testing
 	if got["type"] != "tool_use" || got["name"] != "get_weather" {
 		t.Errorf("content[0] = %s, want get_weather tool_use", mustJSON(t, content[0]))
 	}
+	if input, _ := got["input"].(map[string]any); input["city"] != "Sampa" {
+		t.Errorf("tool_use input = %s, want city=Sampa: the arguments must survive the fallback", mustJSON(t, got["input"]))
+	}
 	if msg["stop_reason"] != "tool_use" {
 		t.Errorf("stop_reason = %v, want tool_use", msg["stop_reason"])
 	}
@@ -1798,6 +1787,9 @@ func TestStreamResponsesToAnthropic_CompletedOutputFallbackFunctionCall(t *testi
 	}
 	if !strings.Contains(out.String(), `"tool_use"`) || !strings.Contains(out.String(), "get_weather") {
 		t.Errorf("stream missing tool_use get_weather:\n%s", out.String())
+	}
+	if got := streamedDeltas(t, out.String(), "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
+		t.Errorf("tool arguments = %q, want %q", got, `{"city":"Sampa"}`)
 	}
 	if !strings.Contains(out.String(), `"stop_reason":"tool_use"`) {
 		t.Errorf("stream missing tool_use stop:\n%s", out.String())
@@ -1840,23 +1832,9 @@ func TestStreamResponsesToAnthropic_CompletedOutputNoDuplicate(t *testing.T) {
 	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
-	var text strings.Builder
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"text_delta"`) {
-			continue
-		}
-		var ev struct {
-			Delta struct {
-				Text string `json:"text"`
-			} `json:"delta"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
-			t.Fatalf("decode %q: %v", line, err)
-		}
-		text.WriteString(ev.Delta.Text)
-	}
-	if text.String() != "hello world" {
-		t.Errorf("client text = %q, want exactly one delivery", text.String())
+	text := streamedDeltas(t, out.String(), "text_delta", "text")
+	if text != "hello world" {
+		t.Errorf("client text = %q, want exactly one delivery", text)
 	}
 }
 
@@ -1875,28 +1853,14 @@ func TestStreamResponsesToAnthropic_ReasoningMultiPartSeparator(t *testing.T) {
 	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
-	var thinking strings.Builder
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"thinking_delta"`) {
-			continue
-		}
-		var ev struct {
-			Delta struct {
-				Thinking string `json:"thinking"`
-			} `json:"delta"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
-			t.Fatalf("decode %q: %v", line, err)
-		}
-		thinking.WriteString(ev.Delta.Thinking)
-	}
-	if thinking.String() != "first\n\nsecond" {
-		t.Errorf("client thinking = %q, want %q", thinking.String(), "first\n\nsecond")
+	thinking := streamedDeltas(t, out.String(), "thinking_delta", "thinking")
+	if thinking != "first\n\nsecond" {
+		t.Errorf("client thinking = %q, want %q", thinking, "first\n\nsecond")
 	}
 }
 
-// Deltas carry no part boundaries, so a restatement that extends partial
-// deltas stays fused: the suffix must still reach the client, not be dropped.
+// A restatement that extends partial deltas must still deliver the rest, with
+// the part separator, instead of dropping it or gluing the parts together.
 func TestStreamResponsesToAnthropic_ReasoningPartialDeltasPreserved(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
@@ -1912,23 +1876,207 @@ func TestStreamResponsesToAnthropic_ReasoningPartialDeltasPreserved(t *testing.T
 	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
 		t.Fatalf("streamResponsesToAnthropic: %v", err)
 	}
-	var thinking strings.Builder
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"thinking_delta"`) {
+	thinking := streamedDeltas(t, out.String(), "thinking_delta", "thinking")
+	if thinking != "first\n\nsecond" {
+		t.Errorf("client thinking = %q, want %q (no loss, parts separated)", thinking, "first\n\nsecond")
+	}
+}
+
+// OpenAI tags every reasoning_summary_text.delta with the summary part it
+// belongs to. Parts are separate blocks upstream, so a part change in the live
+// deltas must read like the joined restatement, not glue words together, and
+// the restatement that follows must add nothing.
+func TestStreamResponsesToAnthropic_ReasoningSummaryIndexSeparator(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"fir"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"st"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"second"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	thinking := streamedDeltas(t, out.String(), "thinking_delta", "thinking")
+	if thinking != "first\n\nsecond" {
+		t.Errorf("client thinking = %q, want %q", thinking, "first\n\nsecond")
+	}
+}
+
+// The aggregate fold separates tagged parts the same way.
+func TestAggregateResponsesStream_ReasoningSummaryIndexSeparator(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_r"}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"first"}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"second"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	agg, err := aggregateResponsesStream(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("aggregateResponsesStream: %v", err)
+	}
+	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %s, want one thinking block", mustJSON(t, msg["content"]))
+	}
+	part, _ := content[0].(map[string]any)
+	if thinking, _ := part["thinking"].(string); thinking != "first\n\nsecond" {
+		t.Errorf("thinking = %q, want %q", thinking, "first\n\nsecond")
+	}
+}
+
+// Without summary_index nothing marks a part boundary, so deltas arrive fused.
+// The restatement must then neither repeat what was streamed nor drop the rest.
+func TestStreamResponsesToAnthropic_ReasoningUntaggedDeltasNoLossNoRepeat(t *testing.T) {
+	delta := func(text string) string {
+		return `data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"` + text + `"}` + "\n"
+	}
+	cases := []struct{ name, deltas, want string }{
+		{"fully streamed", delta("first") + delta("second"), "firstsecond"},
+		{"cut inside the second part", delta("firstsec"), "firstsecond"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sse := `data: {"type":"response.created","response":{"id":"resp_r"}}` + "\n" + tc.deltas +
+				`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}}` + "\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_r","usage":{"input_tokens":5,"output_tokens":2}}}` + "\n"
+			var out bytes.Buffer
+			if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+				t.Fatalf("streamResponsesToAnthropic: %v", err)
+			}
+			if got := streamedDeltas(t, out.String(), "thinking_delta", "thinking"); got != tc.want {
+				t.Errorf("client thinking = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// streamedDeltas concatenates one field of every content_block_delta of the
+// given delta type ("text_delta"/"text", "thinking_delta"/"thinking",
+// "input_json_delta"/"partial_json") across an Anthropic SSE transcript: what
+// the client would assemble.
+func streamedDeltas(t *testing.T, raw, deltaType, field string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, ev := range anthropicEvents(t, raw) {
+		if ev["type"] != "content_block_delta" {
 			continue
 		}
-		var ev struct {
-			Delta struct {
-				Thinking string `json:"thinking"`
-			} `json:"delta"`
+		delta, _ := ev["delta"].(map[string]any)
+		if delta["type"] != deltaType {
+			continue
 		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
-			t.Fatalf("decode %q: %v", line, err)
-		}
-		thinking.WriteString(ev.Delta.Thinking)
+		part, _ := delta[field].(string)
+		b.WriteString(part)
 	}
-	if thinking.String() != "firstsecond" {
-		t.Errorf("client thinking = %q, want fused %q (no loss)", thinking.String(), "firstsecond")
+	return b.String()
+}
+
+// A function_call delivered only in output_item.done — no output_item.added and
+// no restatement in response.completed — must still reach the client: dropping
+// it would end the agent loop on a clean end_turn.
+func TestStreamResponsesToAnthropic_FunctionCallOnlyInItemDone(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_o"}}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","name":"get_weather","call_id":"call_0","arguments":"{\"city\":\"Sampa\"}"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_o","usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	if got := streamedDeltas(t, out.String(), "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
+		t.Errorf("tool arguments = %q, want %q", got, `{"city":"Sampa"}`)
+	}
+	if stop := streamStopReason(t, sse); stop != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use", stop)
+	}
+}
+
+// A fully streamed call that response.completed restates must not open a second
+// tool_use block or repeat its arguments: a duplicated call would run twice.
+func TestStreamResponsesToAnthropic_CompletedOutputNoDuplicateCall(t *testing.T) {
+	call := `{"type":"function_call","name":"get_weather","call_id":"call_0","arguments":"{\"city\":\"Sampa\"}"}`
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_d"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","name":"get_weather","call_id":"call_0","arguments":""}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"city\":"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"Sampa\"}"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":0,"item":` + call + `}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_d","output":[` + call + `],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	starts := 0
+	for _, ev := range anthropicEvents(t, out.String()) {
+		if block, _ := ev["content_block"].(map[string]any); ev["type"] == "content_block_start" && block["type"] == "tool_use" {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Errorf("tool_use blocks = %d, want 1", starts)
+	}
+	if got := streamedDeltas(t, out.String(), "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
+		t.Errorf("tool arguments = %q, want %q delivered once", got, `{"city":"Sampa"}`)
+	}
+}
+
+// Some items stream live while others appear only in response.completed: each
+// is delivered exactly once. Block order is not asserted; a late item can only
+// land after what already streamed.
+func TestStreamResponsesToAnthropic_CompletedOutputMixedDeliveredOnce(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_m"}}`,
+		``,
+		`data: {"type":"response.output_text.delta","output_index":1,"delta":"hello"}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"resp_m","output":[` +
+			`{"type":"reasoning","summary":[{"type":"summary_text","text":"pondering"}]},` +
+			`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},` +
+			`{"type":"function_call","name":"get_weather","call_id":"call_2","arguments":"{\"city\":\"Sampa\"}"}` +
+			`],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+		t.Fatalf("streamResponsesToAnthropic: %v", err)
+	}
+	raw := out.String()
+	if got := streamedDeltas(t, raw, "text_delta", "text"); got != "hello" {
+		t.Errorf("client text = %q, want %q once", got, "hello")
+	}
+	if got := streamedDeltas(t, raw, "thinking_delta", "thinking"); got != "pondering" {
+		t.Errorf("client thinking = %q, want %q once", got, "pondering")
+	}
+	if got := streamedDeltas(t, raw, "input_json_delta", "partial_json"); got != `{"city":"Sampa"}` {
+		t.Errorf("tool arguments = %q, want %q once", got, `{"city":"Sampa"}`)
+	}
+	if stop := streamStopReason(t, sse); stop != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use", stop)
 	}
 }
 
