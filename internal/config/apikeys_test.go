@@ -62,7 +62,13 @@ func TestPublicConfigWithoutKeys(t *testing.T) {
 }
 
 func TestSaveDropsTopLevelHasKeyEchoes(t *testing.T) {
+	// Save mutates the package-level config and writes under GetConfigDir(),
+	// which ANTIGRAVITY_CONFIG_DIR / CONFIG_DIR override ahead of HOME.
+	orig := Get()
+	t.Cleanup(func() { SetForTest(orig) })
 	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("CONFIG_DIR", "")
 	t.Setenv("HOME", tmpDir)
 
 	if _, err := Save(map[string]any{"apiKey": "real-secret"}); err != nil {
@@ -72,7 +78,7 @@ func TestSaveDropsTopLevelHasKeyEchoes(t *testing.T) {
 	if _, err := Save(pub); err != nil {
 		t.Fatalf("Save public config error: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(tmpDir, ".config", "antigravity-proxy", "config.json"))
+	data, err := os.ReadFile(filepath.Join(tmpDir, "config.json"))
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
