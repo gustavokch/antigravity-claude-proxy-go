@@ -293,6 +293,92 @@ func assertNoHeader(t *testing.T, request *http.Request, name string) {
 	}
 }
 
+func TestStreamHasNoTotalTimeout(t *testing.T) {
+	t.Parallel()
+	// A total Client.Timeout covers the full body read and kills SSE
+	// streams mid-generation; the downstream client then sees a stream
+	// that ends without message_stop ("stream ended before message_stop").
+	// The timeout must bound TTFB/unary only, never an open stream.
+	client := New(Options{AccessToken: "token", Timeout: 5 * time.Minute})
+	if client.httpClient.Timeout != 0 {
+		t.Errorf("httpClient.Timeout = %v, want 0 (kills long SSE streams)", client.httpClient.Timeout)
+	}
+	if !reflect.DeepEqual(client.transport.TLSClientConfig, &tls.Config{}) {
+		t.Errorf("TLS config must stay empty for agy JA3 parity: %#v", client.transport.TLSClientConfig)
+	}
+}
+
+func TestSlowStreamSurvivesConfiguredTimeout(t *testing.T) {
+	t.Parallel()
+	// Headers arrive fast; body trickles past the configured timeout.
+	// With a total Client.Timeout this fails; without it, it completes.
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		flusher, _ := writer.(http.Flusher)
+		_, _ = writer.Write([]byte("event: a\ndata: {\"n\":1}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(400 * time.Millisecond)
+		_, _ = writer.Write([]byte("event: b\ndata: {\"n\":2}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := New(Options{AccessToken: "token", Timeout: 100 * time.Millisecond})
+	client.generationEndpoints = []string{server.URL}
+	var events []SSEEvent
+	if _, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("slow stream killed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2 (stream truncated?)", len(events))
+	}
+}
+
+func TestDoJSONEndpointFallbackUnderTimeout(t *testing.T) {
+	t.Parallel()
+	// If the primary endpoint hangs and times out, the fallback endpoint
+	// must still get its own timeout window instead of failing immediately
+	// with context deadline exceeded.
+	release := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		select {
+		case <-release:
+		case <-request.Context().Done():
+		}
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer primary.Close()
+	defer close(release)
+
+	var secondaryCalls atomic.Int32
+	secondary := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		secondaryCalls.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	defer secondary.Close()
+
+	client := New(Options{AccessToken: "token", Timeout: 100 * time.Millisecond})
+	resp, err := client.DoJSON(context.Background(), []string{primary.URL, secondary.URL}, "/test", map[string]string{}, RequestOptions{})
+	if err != nil {
+		t.Fatalf("DoJSON failed: %v", err)
+	}
+	if secondaryCalls.Load() != 1 {
+		t.Errorf("secondary calls = %d, want 1", secondaryCalls.Load())
+	}
+	if resp.Endpoint != secondary.URL {
+		t.Errorf("endpoint = %q, want %q", resp.Endpoint, secondary.URL)
+	}
+}
+
 func TestFindHTTPError(t *testing.T) {
 	t.Parallel()
 	err400 := &HTTPError{StatusCode: http.StatusBadRequest, Status: "400", Body: "Corrupted thought signature"}

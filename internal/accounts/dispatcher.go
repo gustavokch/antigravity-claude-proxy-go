@@ -701,11 +701,6 @@ func (dispatcher *Dispatcher) client(account *Account, token string) CloudClient
 	if exists && entry.token == token {
 		return entry.client
 	}
-	if exists {
-		if closer, ok := entry.client.(interface{ CloseIdleConnections() }); ok {
-			closer.CloseIdleConnections()
-		}
-	}
 	client := dispatcher.newClient(token)
 	dispatcher.clients[account.Email] = accountClient{token: token, client: client}
 	return client

@@ -224,7 +224,7 @@ Proxy settings can be configured via flags, environment variables, or `~/.config
 | `-accounts` | `ANTIGRAVITY_ACCOUNTS_FILE` | auto | Account-pool JSON file path |
 | `-strategy` | `ACCOUNT_STRATEGY` | `hybrid` | Account selection strategy (`hybrid`, `sticky`, `round-robin`) |
 | `-project` | `AGY_PROJECT_ID` | auto-detected | Global Cloud Code project override |
-| `-upstream-timeout` | - | `5m` | Upstream Cloud Code request timeout |
+| `-upstream-timeout` | - | `5m` | Upstream Cloud Code timeout: TTFB bound for streams, whole attempt for unary requests |
 | `-pprof` | - | `false` | Enable pprof server on `localhost:6060` |
 | `-daemon` | - | `false` | Run proxy process in background |
 | - | `ANTIGRAVITY_GEMINI_THINKING_RECOVERY` | `0` (off) | Restores legacy synthetic Gemini tool-loop turns, which break implicit prompt caching; exists only as a rollback if a backend rejects `skip_thought_signature_validator` on a current-turn function call |

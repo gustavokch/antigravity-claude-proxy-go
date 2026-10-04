@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -63,6 +64,7 @@ type Client struct {
 	generationEndpoints   []string
 	provisioningEndpoints []string
 	defaultHeader         http.Header
+	timeout               time.Duration
 }
 
 type ClientMetadata struct {
@@ -167,11 +169,38 @@ type SSEEvent struct {
 	Retry time.Duration
 }
 
-var defaultTransport = &http.Transport{
-	TLSClientConfig:     &tls.Config{},
-	MaxIdleConns:        1000,
-	MaxIdleConnsPerHost: 500,
-	IdleConnTimeout:     90 * time.Second,
+func newTransport(responseHeaderTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		TLSClientConfig:       &tls.Config{},
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   500,
+		IdleConnTimeout:       90 * time.Second,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+	}
+}
+
+var (
+	defaultTransport = newTransport(0)
+	transportsMu     sync.Mutex
+	transports       = map[time.Duration]*http.Transport{
+		0: defaultTransport,
+	}
+)
+
+func transportForTimeout(timeout time.Duration) *http.Transport {
+	if timeout < 0 {
+		timeout = 0
+	}
+	transportsMu.Lock()
+	defer transportsMu.Unlock()
+	tr, ok := transports[timeout]
+	if !ok {
+		tr = newTransport(timeout)
+		transports[timeout] = tr
+	}
+	return tr
 }
 
 func SharedTransport() *http.Transport {
@@ -186,8 +215,19 @@ func New(options Options) *Client {
 	var transport *http.Transport
 	client := options.HTTPClient
 	if client == nil {
-		transport = defaultTransport
-		client = &http.Client{Transport: transport, Timeout: options.Timeout}
+		// No total Client.Timeout: it covers the full body read and kills
+		// long SSE streams mid-generation (client then sees a stream that
+		// ends without message_stop). Cancellation comes from the request
+		// context. The --upstream-timeout value instead bounds time to
+		// response headers (TTFB) via ResponseHeaderTimeout and bounds
+		// unary (non-streaming) requests via a per-request context timeout
+		// in DoJSON. Dial/TLS timeouts are local timers; they do not alter
+		// the ClientHello, so the agy JA3/JA4 match is unaffected.
+		//
+		// Transports are cached per configured timeout duration so idle
+		// connections and keep-alive pools are shared across accounts.
+		transport = transportForTimeout(options.Timeout)
+		client = &http.Client{Transport: transport}
 	}
 
 	// Header set matches agy 1.1.25 wire ground truth exactly (MITM capture
@@ -210,11 +250,8 @@ func New(options Options) *Client {
 		generationEndpoints:   append([]string(nil), GenerationEndpoints...),
 		provisioningEndpoints: append([]string(nil), ProvisioningEndpoints...),
 		defaultHeader:         header,
+		timeout:               options.Timeout,
 	}
-}
-
-func (c *Client) CloseIdleConnections() {
-	c.httpClient.CloseIdleConnections()
 }
 
 func Metadata(projectID string) ClientMetadata {
@@ -279,23 +316,42 @@ func (c *Client) DoJSON(ctx context.Context, endpoints []string, path string, pa
 	}
 	var failures []error
 	for _, endpoint := range endpoints {
-		request, err := c.newRequest(ctx, endpoint, path, body, options)
-		if err != nil {
-			return Response{}, err
+		result, err := c.doJSONAttempt(ctx, endpoint, path, body, options)
+		if err == nil {
+			return result, nil
 		}
-		response, err := c.httpClient.Do(request)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("Cloud Code request to %s: %w", endpoint, err))
-			continue
+		var reqErr *requestCreationError
+		if errors.As(err, &reqErr) {
+			return Response{}, reqErr.err
 		}
-		result, responseErr := readResponse(endpoint, response)
-		if responseErr != nil {
-			failures = append(failures, responseErr)
-			continue
-		}
-		return result, nil
+		failures = append(failures, err)
 	}
 	return Response{}, errors.Join(failures...)
+}
+
+type requestCreationError struct {
+	err error
+}
+
+func (e *requestCreationError) Error() string {
+	return e.err.Error()
+}
+
+func (c *Client) doJSONAttempt(ctx context.Context, endpoint, path string, body []byte, options RequestOptions) (Response, error) {
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+	request, err := c.newRequest(ctx, endpoint, path, body, options)
+	if err != nil {
+		return Response{}, &requestCreationError{err: err}
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return Response{}, fmt.Errorf("Cloud Code request to %s: %w", endpoint, err)
+	}
+	return readResponse(endpoint, response)
 }
 
 func (c *Client) DoSSE(ctx context.Context, endpoints []string, path string, payload any, options RequestOptions, consume func(SSEEvent) error) (Response, error) {

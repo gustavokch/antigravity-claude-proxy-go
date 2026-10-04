@@ -26,7 +26,6 @@ func main() {
 		log.Fatal(err)
 	}
 	client := cloudcode.New(cloudcode.Options{AccessToken: credentials.AccessToken, Timeout: *timeout})
-	defer client.CloseIdleConnections()
 
 	var response cloudcode.Response
 	switch *operation {
