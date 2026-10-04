@@ -293,6 +293,57 @@ func assertNoHeader(t *testing.T, request *http.Request, name string) {
 	}
 }
 
+func TestStreamHasNoTotalTimeout(t *testing.T) {
+	t.Parallel()
+	// A total Client.Timeout covers the full body read and kills SSE
+	// streams mid-generation; the downstream client then sees a stream
+	// that ends without message_stop ("stream ended before message_stop").
+	// The timeout must bound TTFB/unary only, never an open stream.
+	client := New(Options{AccessToken: "token", Timeout: 5 * time.Minute})
+	if client.httpClient.Timeout != 0 {
+		t.Errorf("httpClient.Timeout = %v, want 0 (kills long SSE streams)", client.httpClient.Timeout)
+	}
+	if client.transport == nil {
+		t.Fatal("expected dedicated transport")
+	}
+	if got := client.transport.ResponseHeaderTimeout; got != 5*time.Minute {
+		t.Errorf("ResponseHeaderTimeout = %v, want 5m (TTFB still bounded)", got)
+	}
+	if !reflect.DeepEqual(client.transport.TLSClientConfig, &tls.Config{}) {
+		t.Errorf("TLS config must stay empty for agy JA3 parity: %#v", client.transport.TLSClientConfig)
+	}
+}
+
+func TestSlowStreamSurvivesConfiguredTimeout(t *testing.T) {
+	t.Parallel()
+	// Headers arrive fast; body trickles past the configured timeout.
+	// With a total Client.Timeout this fails; without it, it completes.
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		flusher, _ := writer.(http.Flusher)
+		_, _ = writer.Write([]byte("event: a\ndata: {\"n\":1}\n\n"))
+		flusher.Flush()
+		time.Sleep(200 * time.Millisecond)
+		_, _ = writer.Write([]byte("event: b\ndata: {\"n\":2}\n\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := New(Options{AccessToken: "token", Timeout: 50 * time.Millisecond})
+	client.generationEndpoints = []string{server.URL}
+	var events []SSEEvent
+	if _, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(event SSEEvent) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("slow stream killed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2 (stream truncated?)", len(events))
+	}
+}
+
 func TestFindHTTPError(t *testing.T) {
 	t.Parallel()
 	err400 := &HTTPError{StatusCode: http.StatusBadRequest, Status: "400", Body: "Corrupted thought signature"}

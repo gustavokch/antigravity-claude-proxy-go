@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -63,6 +64,7 @@ type Client struct {
 	generationEndpoints   []string
 	provisioningEndpoints []string
 	defaultHeader         http.Header
+	timeout               time.Duration
 }
 
 type ClientMetadata struct {
@@ -186,8 +188,24 @@ func New(options Options) *Client {
 	var transport *http.Transport
 	client := options.HTTPClient
 	if client == nil {
-		transport = defaultTransport
-		client = &http.Client{Transport: transport, Timeout: options.Timeout}
+		// No total Client.Timeout: it covers the full body read and kills
+		// long SSE streams mid-generation (client then sees a stream that
+		// ends without message_stop). Cancellation comes from the request
+		// context. The --upstream-timeout value instead bounds time to
+		// response headers (TTFB) via ResponseHeaderTimeout and bounds
+		// unary (non-streaming) requests via a per-request context timeout
+		// in DoJSON. Dial/TLS timeouts are local timers; they do not alter
+		// the ClientHello, so the agy JA3/JA4 match is unaffected.
+		transport = &http.Transport{
+			TLSClientConfig:       &tls.Config{},
+			MaxIdleConns:          1000,
+			MaxIdleConnsPerHost:   500,
+			IdleConnTimeout:       90 * time.Second,
+			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: options.Timeout,
+		}
+		client = &http.Client{Transport: transport}
 	}
 
 	// Header set matches agy 1.1.25 wire ground truth exactly (MITM capture
@@ -210,6 +228,7 @@ func New(options Options) *Client {
 		generationEndpoints:   append([]string(nil), GenerationEndpoints...),
 		provisioningEndpoints: append([]string(nil), ProvisioningEndpoints...),
 		defaultHeader:         header,
+		timeout:               options.Timeout,
 	}
 }
 
@@ -276,6 +295,13 @@ func (c *Client) DoJSON(ctx context.Context, endpoints []string, path string, pa
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return Response{}, fmt.Errorf("encode Cloud Code request: %w", err)
+	}
+	// Unary requests get the configured timeout; streaming (DoSSE) must
+	// not, so long generations survive past it.
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
 	}
 	var failures []error
 	for _, endpoint := range endpoints {
