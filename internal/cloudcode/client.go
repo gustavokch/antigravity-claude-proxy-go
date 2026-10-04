@@ -257,10 +257,6 @@ func New(options Options) *Client {
 	}
 }
 
-func (c *Client) CloseIdleConnections() {
-	c.httpClient.CloseIdleConnections()
-}
-
 func Metadata(projectID string) ClientMetadata {
 	return ClientMetadata{
 		IdeType:     9,

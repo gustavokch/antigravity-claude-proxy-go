@@ -79,7 +79,6 @@ func main() {
 					}
 				}
 			}
-			client.CloseIdleConnections()
 			cancel()
 			continue
 		}
@@ -164,7 +163,6 @@ func main() {
 				fmt.Println("  error:", requestErr)
 			}
 		}
-		client.CloseIdleConnections()
 		cancel()
 	}
 }

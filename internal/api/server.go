@@ -3712,9 +3712,6 @@ func (server *Server) client(ctx context.Context) (auth.Credentials, Upstream, e
 	defer server.mu.Unlock()
 	server.cachedCredentials = credentials
 	if server.upstream == nil || server.upstreamToken != credentials.AccessToken {
-		if closer, ok := server.upstream.(interface{ CloseIdleConnections() }); ok {
-			closer.CloseIdleConnections()
-		}
 		server.upstream = server.newUpstream(credentials.AccessToken)
 		server.upstreamToken = credentials.AccessToken
 	}

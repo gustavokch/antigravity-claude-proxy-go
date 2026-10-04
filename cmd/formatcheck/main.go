@@ -40,7 +40,6 @@ func main() {
 	payload := builder.BuildCloudCodeRequest(request, *project, credentials.Email)
 
 	client := cloudcode.New(cloudcode.Options{AccessToken: credentials.AccessToken, Timeout: *timeout})
-	defer client.CloseIdleConnections()
 	stream := proxyformat.NewStreamConverter(*model, builder.Cache, "msg_format_gate")
 	accumulator := proxyformat.NewThinkingAccumulator()
 	eventCount := 0
