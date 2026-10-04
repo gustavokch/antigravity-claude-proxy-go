@@ -47,6 +47,30 @@ func TestSharedTransportConfiguration(t *testing.T) {
 		t.Errorf("expected MaxIdleConnsPerHost >= 500, got %d", client.transport.MaxIdleConnsPerHost)
 	}
 }
+func TestTransportSharingAcrossClients(t *testing.T) {
+	t.Parallel()
+	// Clients configured with the same timeout share the underlying
+	// http.Transport so idle connections and keep-alive pools survive
+	// across per-account client rotations.
+	c1 := New(Options{AccessToken: "token-1", Timeout: 5 * time.Minute})
+	c2 := New(Options{AccessToken: "token-2", Timeout: 5 * time.Minute})
+	if c1.transport != c2.transport {
+		t.Errorf("expected c1 and c2 to share transport: %p != %p", c1.transport, c2.transport)
+	}
+
+	// Zero or negative timeout uses the default shared transport without ResponseHeaderTimeout.
+	cZero := New(Options{AccessToken: "token-0", Timeout: 0})
+	cNeg := New(Options{AccessToken: "token-neg", Timeout: -1 * time.Second})
+	if cZero.transport != SharedTransport() {
+		t.Errorf("expected cZero to use SharedTransport(): got %p, want %p", cZero.transport, SharedTransport())
+	}
+	if cNeg.transport != SharedTransport() {
+		t.Errorf("expected cNeg to use SharedTransport(): got %p, want %p", cNeg.transport, SharedTransport())
+	}
+	if cZero.transport.ResponseHeaderTimeout != 0 {
+		t.Errorf("expected ResponseHeaderTimeout 0 for zero timeout, got %v", cZero.transport.ResponseHeaderTimeout)
+	}
+}
 
 func TestFetchAvailableModelsHeadersAndDailyFallback(t *testing.T) {
 	t.Parallel()

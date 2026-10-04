@@ -169,11 +169,41 @@ type SSEEvent struct {
 	Retry time.Duration
 }
 
-var defaultTransport = &http.Transport{
-	TLSClientConfig:     &tls.Config{},
-	MaxIdleConns:        1000,
-	MaxIdleConnsPerHost: 500,
-	IdleConnTimeout:     90 * time.Second,
+func newTransport(responseHeaderTimeout time.Duration) *http.Transport {
+	if responseHeaderTimeout < 0 {
+		responseHeaderTimeout = 0
+	}
+	return &http.Transport{
+		TLSClientConfig:       &tls.Config{},
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   500,
+		IdleConnTimeout:       90 * time.Second,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+	}
+}
+
+var (
+	defaultTransport = newTransport(0)
+	transportsMu     sync.Mutex
+	transports       = map[time.Duration]*http.Transport{
+		0: defaultTransport,
+	}
+)
+
+func transportForTimeout(timeout time.Duration) *http.Transport {
+	if timeout < 0 {
+		timeout = 0
+	}
+	transportsMu.Lock()
+	defer transportsMu.Unlock()
+	tr, ok := transports[timeout]
+	if !ok {
+		tr = newTransport(timeout)
+		transports[timeout] = tr
+	}
+	return tr
 }
 
 func SharedTransport() *http.Transport {
@@ -196,15 +226,10 @@ func New(options Options) *Client {
 		// unary (non-streaming) requests via a per-request context timeout
 		// in DoJSON. Dial/TLS timeouts are local timers; they do not alter
 		// the ClientHello, so the agy JA3/JA4 match is unaffected.
-		transport = &http.Transport{
-			TLSClientConfig:       &tls.Config{},
-			MaxIdleConns:          1000,
-			MaxIdleConnsPerHost:   500,
-			IdleConnTimeout:       90 * time.Second,
-			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: options.Timeout,
-		}
+		//
+		// Transports are cached per configured timeout duration so idle
+		// connections and keep-alive pools are shared across accounts.
+		transport = transportForTimeout(options.Timeout)
 		client = &http.Client{Transport: transport}
 	}
 
