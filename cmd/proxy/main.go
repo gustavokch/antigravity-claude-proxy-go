@@ -90,7 +90,7 @@ func runServer(args []string) {
 	projectID := fs.String("project", os.Getenv("AGY_PROJECT_ID"), "optional managed Cloud Code project ID")
 	accountsPath := fs.String("accounts", os.Getenv("ANTIGRAVITY_ACCOUNTS_FILE"), "optional account-pool JSON path (default ~/.config/antigravity-proxy/accounts.json when present)")
 	strategy := fs.String("strategy", envOr("ACCOUNT_STRATEGY", accounts.DefaultStrategy), "account strategy: sticky, round-robin, or hybrid")
-	upstreamTimeout := fs.Duration("upstream-timeout", 5*time.Minute, "Cloud Code request timeout")
+	upstreamTimeout := fs.Duration("upstream-timeout", 5*time.Minute, "Cloud Code upstream timeout: time to first response byte for streams, whole attempt for unary requests (open streams are not capped)")
 	pprof := fs.Bool("pprof", false, "enable pprof server on localhost:6060")
 	daemon := fs.Bool("daemon", false, "run proxy server in background daemon mode")
 	_ = fs.Parse(args)

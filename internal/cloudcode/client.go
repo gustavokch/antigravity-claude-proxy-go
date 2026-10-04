@@ -170,9 +170,6 @@ type SSEEvent struct {
 }
 
 func newTransport(responseHeaderTimeout time.Duration) *http.Transport {
-	if responseHeaderTimeout < 0 {
-		responseHeaderTimeout = 0
-	}
 	return &http.Transport{
 		TLSClientConfig:       &tls.Config{},
 		MaxIdleConns:          1000,
