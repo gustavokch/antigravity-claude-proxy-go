@@ -319,29 +319,42 @@ func (c *Client) DoJSON(ctx context.Context, endpoints []string, path string, pa
 	}
 	var failures []error
 	for _, endpoint := range endpoints {
-		attemptCtx := ctx
-		if c.timeout > 0 {
-			var cancel context.CancelFunc
-			attemptCtx, cancel = context.WithTimeout(ctx, c.timeout)
-			defer cancel()
+		result, err := c.doJSONAttempt(ctx, endpoint, path, body, options)
+		if err == nil {
+			return result, nil
 		}
-		request, err := c.newRequest(attemptCtx, endpoint, path, body, options)
-		if err != nil {
-			return Response{}, err
+		var reqErr *requestCreationError
+		if errors.As(err, &reqErr) {
+			return Response{}, reqErr.err
 		}
-		response, err := c.httpClient.Do(request)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("Cloud Code request to %s: %w", endpoint, err))
-			continue
-		}
-		result, responseErr := readResponse(endpoint, response)
-		if responseErr != nil {
-			failures = append(failures, responseErr)
-			continue
-		}
-		return result, nil
+		failures = append(failures, err)
 	}
 	return Response{}, errors.Join(failures...)
+}
+
+type requestCreationError struct {
+	err error
+}
+
+func (e *requestCreationError) Error() string {
+	return e.err.Error()
+}
+
+func (c *Client) doJSONAttempt(ctx context.Context, endpoint, path string, body []byte, options RequestOptions) (Response, error) {
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+	request, err := c.newRequest(ctx, endpoint, path, body, options)
+	if err != nil {
+		return Response{}, &requestCreationError{err: err}
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return Response{}, fmt.Errorf("Cloud Code request to %s: %w", endpoint, err)
+	}
+	return readResponse(endpoint, response)
 }
 
 func (c *Client) DoSSE(ctx context.Context, endpoints []string, path string, payload any, options RequestOptions, consume func(SSEEvent) error) (Response, error) {
