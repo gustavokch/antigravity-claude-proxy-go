@@ -296,16 +296,15 @@ func (c *Client) DoJSON(ctx context.Context, endpoints []string, path string, pa
 	if err != nil {
 		return Response{}, fmt.Errorf("encode Cloud Code request: %w", err)
 	}
-	// Unary requests get the configured timeout; streaming (DoSSE) must
-	// not, so long generations survive past it.
-	if c.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-	}
 	var failures []error
 	for _, endpoint := range endpoints {
-		request, err := c.newRequest(ctx, endpoint, path, body, options)
+		attemptCtx := ctx
+		if c.timeout > 0 {
+			var cancel context.CancelFunc
+			attemptCtx, cancel = context.WithTimeout(ctx, c.timeout)
+			defer cancel()
+		}
+		request, err := c.newRequest(attemptCtx, endpoint, path, body, options)
 		if err != nil {
 			return Response{}, err
 		}

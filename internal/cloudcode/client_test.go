@@ -343,6 +343,37 @@ func TestSlowStreamSurvivesConfiguredTimeout(t *testing.T) {
 		t.Fatalf("events = %d, want 2 (stream truncated?)", len(events))
 	}
 }
+func TestDoJSONEndpointFallbackUnderTimeout(t *testing.T) {
+	t.Parallel()
+	// If the primary endpoint hangs and times out, the fallback endpoint
+	// must still get its own timeout window instead of failing immediately
+	// with context deadline exceeded.
+	primary := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer primary.Close()
+
+	secondaryCalls := 0
+	secondary := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		secondaryCalls++
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	defer secondary.Close()
+
+	client := New(Options{AccessToken: "token", Timeout: 40 * time.Millisecond})
+	resp, err := client.DoJSON(context.Background(), []string{primary.URL, secondary.URL}, "/test", map[string]string{}, RequestOptions{})
+	if err != nil {
+		t.Fatalf("DoJSON failed: %v", err)
+	}
+	if secondaryCalls != 1 {
+		t.Errorf("secondary calls = %d, want 1", secondaryCalls)
+	}
+	if resp.Endpoint != secondary.URL {
+		t.Errorf("endpoint = %q, want %q", resp.Endpoint, secondary.URL)
+	}
+}
 
 func TestFindHTTPError(t *testing.T) {
 	t.Parallel()
