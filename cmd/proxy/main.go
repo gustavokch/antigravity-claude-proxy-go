@@ -278,7 +278,19 @@ func runServer(args []string) {
 	handler.StartCacheBumpScheduler(bgCtx)
 	handler.StartClaudeCodeUsage(bgCtx)
 
-	httpServer := newHTTPServer(*listen, handler.Handler())
+	// It must never set WriteTimeout: that deadline covers the full response
+	// write and kills long SSE streams mid-generation (same failure as a
+	// total http.Client Timeout on the upstream side: the client sees a
+	// stream ending without message_stop). ReadTimeout/ReadHeaderTimeout only
+	// bound request reads; IdleTimeout only applies to idle keep-alive
+	// connections, so long streams are unaffected.
+	httpServer := &http.Server{
+		Addr:              *listen,
+		Handler:           handler.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 
 	shutdownSignals := make(chan os.Signal, 1)
 	signal.Notify(shutdownSignals, syscall.SIGINT, syscall.SIGTERM)
@@ -321,22 +333,6 @@ func runServer(args []string) {
 	// ListenAndServe returns as soon as Shutdown starts; wait for the drain
 	// and the ledger flush before exiting.
 	<-shutdownDone
-}
-
-// newHTTPServer builds the proxy listener. It must never set WriteTimeout:
-// that deadline covers the full response write and kills long SSE streams
-// mid-generation (same failure as a total http.Client Timeout on the
-// upstream side: the client sees a stream ending without message_stop).
-// ReadTimeout/ReadHeaderTimeout only bound request reads; IdleTimeout only
-// applies to idle keep-alive connections, so long streams are unaffected.
-func newHTTPServer(addr string, handler http.Handler) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-	}
 }
 
 func envOr(name, fallback string) string {
