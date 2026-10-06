@@ -1,6 +1,7 @@
 package format
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -139,14 +140,11 @@ func intValue(value any, fallback int) int {
 		return int(typed)
 	case float32:
 		return int(typed)
-	case jsonNumber:
-		parsed, err := strconv.Atoi(string(typed))
+	case json.Number:
+		n, err := typed.Int64()
 		if err == nil {
-			return parsed
+			return int(n)
 		}
 	}
 	return fallback
 }
-
-// jsonNumber avoids importing encoding/json throughout the conversion files.
-type jsonNumber string

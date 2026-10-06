@@ -674,3 +674,11 @@ func TestCandidatesTokensDetails_ThinkingTokens(t *testing.T) {
 		t.Errorf("converter.ThinkingTokens() = %d, want 55", thinking)
 	}
 }
+
+func TestIntValue_JsonNumber(t *testing.T) {
+	t.Parallel()
+	num := json.Number("4096")
+	if got := intValue(num, 0); got != 4096 {
+		t.Fatalf("intValue(json.Number) = %d, want 4096", got)
+	}
+}
