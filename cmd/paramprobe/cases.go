@@ -161,7 +161,9 @@ func buildPayload(c Case, project, email string) map[string]any {
 		"model":    c.Model,
 		"messages": []any{map[string]any{"role": "user", "content": c.Prompt}},
 	}
-	payload := proxyformat.NewBuilder().BuildCloudCodeRequestWithModel(request, project, email, proxyformat.ModelOptions{})
+	payload := proxyformat.NewBuilder().BuildCloudCodeRequestWithModel(request, project, email, proxyformat.ModelOptions{
+		SupportsThinking: proxyformat.IsThinkingModel(c.Model),
+	})
 	inner, _ := payload["request"].(map[string]any)
 	inner["generationConfig"] = c.Config
 	return payload
