@@ -515,18 +515,12 @@ window.Components.serverConfig = () => ({
                 commandCrusher: false,
                 smartCrusher: false,
                 codeCompressor: false,
-                liveTurns: 2,
-                ccr: { enabled: false, maxStoreMB: 64, minChunkBytes: 2048 },
                 outputShaper: { enabled: false, verbositySteering: true, effortRouting: true, mechanicalThinkingBudget: 1024 }
             };
         }
         const previousHeadroom = JSON.parse(JSON.stringify(this.serverConfig.headroom));
 
         // Deep merge
-        if (patch.ccr) {
-            this.serverConfig.headroom.ccr = { ...(this.serverConfig.headroom.ccr || {}), ...patch.ccr };
-            delete patch.ccr;
-        }
         if (patch.outputShaper) {
             this.serverConfig.headroom.outputShaper = { ...(this.serverConfig.headroom.outputShaper || {}), ...patch.outputShaper };
             delete patch.outputShaper;
@@ -676,18 +670,11 @@ window.Components.serverConfig = () => ({
         this.saveHeadroom({ codeCompressor: enabled });
     },
 
-    toggleHeadroomLiveTurns(value) {
-        const parsed = parseInt(value) || 2;
-        this.saveHeadroom({ liveTurns: parsed });
-    },
 
     toggleHeadroomOutputShaper(patch) {
         this.saveHeadroom({ outputShaper: patch });
     },
 
-    toggleHeadroomCCR(patch) {
-        this.saveHeadroom({ ccr: patch });
-    },
 
     // ==========================================
     // Server Configuration Presets
