@@ -279,3 +279,24 @@ func TestRouter_PrefixPrefersLongerAllowlistedID(t *testing.T) {
 		}
 	}
 }
+
+// Limits below are Anthropic's published numbers, not the proxy's choice:
+// Models overview (platform.claude.com/docs/en/models/overview, checked
+// 2026-10-05) lists Claude Haiku 4.5 at a 200K context window and 64K max
+// output; the clamp in applyMaxTokensPolicy would otherwise cut a client's
+// 64K request to the stale value.
+func TestDefaultAllowlist_Haiku45MatchesAnthropicLimits(t *testing.T) {
+	for _, m := range DefaultAllowlist() {
+		if m.ID != "claude-haiku-4-5-20251001" {
+			continue
+		}
+		if m.ContextLen != 200000 {
+			t.Errorf("ContextLen = %d, want 200000", m.ContextLen)
+		}
+		if m.MaxOutputTokens != 64000 {
+			t.Errorf("MaxOutputTokens = %d, want 64000", m.MaxOutputTokens)
+		}
+		return
+	}
+	t.Fatal("claude-haiku-4-5-20251001 missing from DefaultAllowlist")
+}
