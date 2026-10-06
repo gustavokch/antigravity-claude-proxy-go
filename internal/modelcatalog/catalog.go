@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"antigravity-go-proxy/internal/reasoning"
 )
 
 // Model is the subset of Cloud Code ModelDetails that affects agent model
@@ -272,78 +274,37 @@ func (catalog *Catalog) Resolve(requested string) (Model, error) {
 	return Model{}, &SelectionError{Model: requested, Selectable: available}
 }
 
-func ExtractReasoningParams(request map[string]any) (effort string, budget int, hasBudget bool, disabled bool) {
-	if request == nil {
-		return "", 0, false, false
+// flashTiers are the tiers the Gemini flash families publish. A stronger
+// request (xhigh, max) falls back to high; minimal rides the low tier.
+var flashTiers = [...]reasoning.Level{reasoning.LevelLow, reasoning.LevelMedium, reasoning.LevelHigh}
+
+// effortTier returns the tier suffix ("low", "medium" or "high") the request
+// asks the flash families to route to, or "" when the model the client named
+// stands. output_config.effort is ambient (Claude Code sends it on every
+// request), so it only picks a tier for a family ID that does not already
+// name one. reasoning_effort and a bare thinking budget are deliberate, so
+// they override the name.
+func effortTier(requested string, params reasoning.Params) string {
+	if params.Level == reasoning.LevelUnset {
+		return ""
 	}
-	if val, ok := request["reasoning_effort"]; ok {
-		effort = strings.ToLower(fmt.Sprint(val))
+	if params.Source == reasoning.SourceOutputConfig && hasTierSuffix(requested) {
+		return ""
 	}
-	if effort == "" {
-		if val, ok := request["reasoning"]; ok {
-			effort = strings.ToLower(fmt.Sprint(val))
+	return string(params.Level.Supported(flashTiers[:]...))
+}
+
+// tierSuffixes end the per-tier flash IDs (gemini-3.8-flash-low, ...).
+var tierSuffixes = [...]string{"-high", "-medium", "-low", "-extra-low"}
+
+func hasTierSuffix(requested string) bool {
+	id := strings.ToLower(Strip1mSuffix(requested))
+	for _, suffix := range tierSuffixes {
+		if strings.HasSuffix(id, suffix) {
+			return true
 		}
 	}
-	switch effort {
-	case "xhigh", "extra-high", "very-high", "max", "maximum", "extreme":
-		effort = "high"
-	case "minimal":
-		effort = "low"
-	case "none", "disabled", "off", "false", "0":
-		effort = "disabled"
-		disabled = true
-	}
-	if thinking, ok := request["thinking"].(map[string]any); ok {
-		if tType, exists := thinking["type"]; exists && strings.ToLower(fmt.Sprint(tType)) == "disabled" {
-			disabled = true
-		}
-		if b, exists := thinking["budget_tokens"]; exists {
-			switch v := b.(type) {
-			case float64:
-				budget = int(v)
-				hasBudget = true
-			case int:
-				budget = v
-				hasBudget = true
-			case int64:
-				budget = int(v)
-				hasBudget = true
-			}
-		}
-	}
-	if b, ok := request["thinking_budget"]; ok {
-		switch v := b.(type) {
-		case float64:
-			budget = int(v)
-			hasBudget = true
-		case int:
-			budget = v
-			hasBudget = true
-		case int64:
-			budget = int(v)
-			hasBudget = true
-		}
-	}
-	if effort == "none" || effort == "disabled" {
-		disabled = true
-	}
-	if hasBudget && budget <= 0 && !disabled {
-		thinking, _ := request["thinking"].(map[string]any)
-		if thinking == nil || strings.ToLower(fmt.Sprint(thinking["type"])) != "enabled" {
-			disabled = true
-		}
-	}
-	if !disabled && effort == "" && hasBudget && budget > 0 {
-		switch {
-		case budget <= 2048:
-			effort = "low"
-		case budget < 12000:
-			effort = "medium"
-		default:
-			effort = "high"
-		}
-	}
-	return effort, budget, hasBudget, disabled
+	return false
 }
 
 func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]any) (Model, error) {
@@ -355,9 +316,9 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 		return model, nil
 	}
 
-	effort, budget, hasBudget, disabled := ExtractReasoningParams(request)
+	params := reasoning.Parse(request)
 
-	if disabled {
+	if params.Disabled {
 		if isGemini37Flash(model.ID) || isGemini37Flash(requested) {
 			if variant, err := catalog.Resolve("gemini-3.7-flash-low"); err == nil {
 				return variant, nil
@@ -379,33 +340,33 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 		return model, nil
 	}
 
-	if effort != "" {
+	if tier := effortTier(requested, params); tier != "" {
 		targetID := ""
 		lowerReq := strings.ToLower(strings.TrimSpace(requested))
 		switch {
 		case strings.HasPrefix(lowerReq, "gemini-3.8-flash"):
-			targetID = "gemini-3.8-flash-" + effort
+			targetID = "gemini-3.8-flash-" + tier
 		case strings.HasPrefix(lowerReq, "gemini-3.7-flash"):
-			targetID = "gemini-3.7-flash-" + effort
+			targetID = "gemini-3.7-flash-" + tier
 		case strings.HasPrefix(lowerReq, "gemini-3.6-flash"):
-			targetID = "gemini-3.6-flash-" + effort
+			targetID = "gemini-3.6-flash-" + tier
 		case strings.HasPrefix(lowerReq, "gemini-3.5-flash"):
 			// Legacy 3.5 IDs repoint to the 3.8 family (user decision
 			// 2026-09-03); fall back to a real 3.5 tier only when this
 			// account has no 3.8 at all.
-			targetID = "gemini-3.8-flash-" + effort
+			targetID = "gemini-3.8-flash-" + tier
 		}
 		if targetID != "" {
 			if variant, err := catalog.Resolve(targetID); err == nil {
-				if hasBudget && budget > 0 {
-					variant.ThinkingBudget = budget
+				if params.HasBudget && params.Budget > 0 {
+					variant.ThinkingBudget = params.Budget
 				}
 				return variant, nil
 			}
 			if strings.HasPrefix(lowerReq, "gemini-3.5-flash") {
-				if variant, err := catalog.Resolve("gemini-3.5-flash-" + effort); err == nil {
-					if hasBudget && budget > 0 {
-						variant.ThinkingBudget = budget
+				if variant, err := catalog.Resolve("gemini-3.5-flash-" + tier); err == nil {
+					if params.HasBudget && params.Budget > 0 {
+						variant.ThinkingBudget = params.Budget
 					}
 					return variant, nil
 				}
@@ -413,8 +374,8 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 		}
 	}
 
-	if hasBudget && budget > 0 {
-		model.ThinkingBudget = budget
+	if params.HasBudget && params.Budget > 0 {
+		model.ThinkingBudget = params.Budget
 	}
 	return model, nil
 }

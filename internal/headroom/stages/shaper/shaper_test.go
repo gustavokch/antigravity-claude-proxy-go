@@ -547,3 +547,26 @@ func TestOutputShaper_NilRequestIsNoOp(t *testing.T) {
 		t.Fatalf("unexpected error on nil request context: %v", err)
 	}
 }
+
+// Anthropic documents that changing the top-level output_config.effort between
+// requests invalidates the prompt cache, and Kimi says the same of its effort
+// level. The shaper runs before every gateway, so it must leave the field alone
+// even on a mechanical continuation where reasoning_effort would be lowered.
+func TestOutputShaper_LeavesOutputConfigEffortAlone(t *testing.T) {
+	req := map[string]any{
+		"max_tokens":    float64(8192),
+		"thinking":      map[string]any{"type": "adaptive"},
+		"output_config": map[string]any{"effort": "high"},
+		"messages":      []any{toolContinuation(false)},
+	}
+	reqCtx := &headroom.RequestContext{Request: req}
+	if err := (&OutputShaperStage{}).Execute(context.Background(), reqCtx, shaperCfg()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := req["output_config"].(map[string]any)["effort"]; got != "high" {
+		t.Errorf("output_config.effort = %v, want it left at high", got)
+	}
+	if reqCtx.EffortClamped {
+		t.Error("EffortClamped must stay false: nothing in this request is clampable")
+	}
+}
