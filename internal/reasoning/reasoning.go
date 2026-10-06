@@ -9,6 +9,7 @@
 package reasoning
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -205,12 +206,17 @@ func intOf(value any) (int, bool) {
 	switch typed := value.(type) {
 	case float64:
 		return int(typed), true
+	case float32:
+		return int(typed), true
 	case int:
 		return typed, true
 	case int32:
 		return int(typed), true
 	case int64:
 		return int(typed), true
+	case json.Number:
+		n, err := typed.Int64()
+		return int(n), err == nil
 	}
 	return 0, false
 }

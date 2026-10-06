@@ -1,6 +1,7 @@
 package reasoning
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -67,6 +68,10 @@ func TestParse(t *testing.T) {
 			obj("reasoning_effort", "low", "thinking_budget", float64(40000)),
 			Params{Level: LevelLow, Source: SourceExplicit, Budget: 40000, HasBudget: true}},
 
+		{"json.Number budget", obj("thinking", obj("budget_tokens", json.Number("2048"))),
+			Params{Level: LevelLow, Source: SourceBudget, Budget: 2048, HasBudget: true}},
+		{"float32 budget", obj("thinking", obj("budget_tokens", float32(2048))),
+			Params{Level: LevelLow, Source: SourceBudget, Budget: 2048, HasBudget: true}},
 		// output_config.effort is ambient and lowest precedence.
 		{"output_config effort", obj("output_config", obj("effort", "max")), Params{Level: LevelMax, Source: SourceOutputConfig}},
 		{"output_config effort with adaptive thinking",
