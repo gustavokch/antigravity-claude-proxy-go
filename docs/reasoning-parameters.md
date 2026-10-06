@@ -96,7 +96,7 @@ The proxy forwards reasoning fields untouched on both products. A normalization 
 - Anthropic model spellings (`claude-3-5-sonnet`, `sonnet`, `opus`, `fable`) are unmapped on Cloud Code: hard-mapping them would silently change which model answers (PR #75).
 - `reasoning_effort`, `reasoning`, `thinking_budget` are proxy extensions; `thinking_budget: -1` means "off" here, not Gemini's "dynamic".
 - Generation is pinned to the Daily host because a thought signature is rejected by the other host.
-- `max_output_tokens` is not a `/v1/messages` field and is not aliased; a missing `max_tokens` is tolerated on Cloud Code and forwarded as absent to gateways (Anthropic and Kimi will reject it themselves).
+- `max_output_tokens` is not a `/v1/messages` field and is not aliased; a missing `max_tokens` is tolerated on Cloud Code; gateways fill it from the entry's limit (raised to the floor of 16) and omit it only when no limit is known, in which case Anthropic and Kimi reject the request themselves.
 - `redacted_thinking` and foreign thinking signatures in history are stripped (they cannot be replayed to another backend); `thinking.display` is accepted and ignored.
 - Sampling parameters: copied on Cloud Code. Whether Cloud Code enforces Anthropic's thinking-time rule is gate GC, which is UNVERIFIED, so the copy is unchanged.
 - `ThinkingLevel.MINIMAL` is never emitted: no catalog field says which routes accept it and Google documents errors on some families.
