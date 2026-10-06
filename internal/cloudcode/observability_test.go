@@ -235,7 +235,6 @@ func TestLogObservability(t *testing.T) {
 		OutputTokens:     640,
 		CacheReadTokens:  8192,
 		ThinkingTokens:   256,
-		CCRRetrievals:    2,
 		Latency:          16600 * time.Millisecond,
 		ThroughputTPS:    38.5,
 		CacheHitRate:     57.7,
@@ -252,7 +251,7 @@ func TestLogObservability(t *testing.T) {
 
 	// Verify msg string format
 	msg, _ := record["msg"].(string)
-	wantMsg := "[Antigravity] claude-sonnet-4-6 (dev@example.com) | tokens: 14,200 in (8,192 cached, 57.7% hit), 640 out (256 thinking) | 38.5 TPS | 16.60s | $0.0520 saved ($0.8420 session) | CCR: 2 retrievals"
+	wantMsg := "[Antigravity] claude-sonnet-4-6 (dev@example.com) | tokens: 14,200 in (8,192 cached, 57.7% hit), 640 out (256 thinking) | 38.5 TPS | 16.60s | $0.0520 saved ($0.8420 session)"
 	if msg != wantMsg {
 		t.Errorf("msg mismatch:\n got:  %q\nwant: %q", msg, wantMsg)
 	}
@@ -276,15 +275,12 @@ func TestLogObservability(t *testing.T) {
 	if record["thinking_tokens"] != float64(256) {
 		t.Errorf("thinking_tokens = %v, want 256", record["thinking_tokens"])
 	}
-	if record["ccr_retrievals"] != float64(2) {
-		t.Errorf("ccr_retrievals = %v, want 2", record["ccr_retrievals"])
-	}
 	if record["level_tag"] != "SUCCESS" {
 		t.Errorf("level_tag = %v, want SUCCESS", record["level_tag"])
 	}
 }
 
-func TestLogObservability_NoCCRNoThinkingNoAccount(t *testing.T) {
+func TestLogObservability_SimpleNoThinkingNoAccount(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -313,39 +309,8 @@ func TestLogObservability_NoCCRNoThinkingNoAccount(t *testing.T) {
 	if msg != wantMsg {
 		t.Errorf("msg mismatch:\n got:  %q\nwant: %q", msg, wantMsg)
 	}
-	if strings.Contains(msg, "CCR:") {
-		t.Errorf("expected no CCR tag, got: %s", msg)
-	}
 	if strings.Contains(msg, "thinking") {
 		t.Errorf("expected no thinking tag, got: %s", msg)
-	}
-}
-
-func TestLogObservability_SingleCCRRetrieval(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	m := RequestMetrics{
-		Model:            "claude-sonnet-4-6",
-		CCRRetrievals:    1,
-		InputTokens:      1000,
-		OutputTokens:     100,
-		Latency:          2 * time.Second,
-		ThroughputTPS:    50.0,
-		RetailCostUSD:    0.004,
-		SessionRetailUSD: 0.004,
-	}
-
-	LogObservability(logger, m)
-
-	var record map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
-		t.Fatalf("failed to decode JSON log record: %v", err)
-	}
-
-	msg, _ := record["msg"].(string)
-	if !strings.Contains(msg, "| CCR: 1 retrieval") {
-		t.Errorf("expected singular CCR retrieval format, got: %s", msg)
 	}
 }
 

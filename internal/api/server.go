@@ -1549,7 +1549,7 @@ func kimiCredentialErrorStatus(err error) (int, string) {
 // forwardToKimi transparently forwards an /v1/messages request to the Kimi
 // Code gateway. The Kimi endpoint is Anthropic-compatible, so no translation
 // is needed: we rewrite Authorization, preserve the Anthropic version/beta
-// headers, and stream the response back. When CCR is enabled, it hydrates headroom_retrieve calls.
+// headers, and stream the response back.
 func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Request, kimiCfg config.KimiConfig, body []byte, model string) {
 	cred, err := server.resolveKimiCredential(request.Context(), kimiCfg)
 	if err != nil {
@@ -1637,8 +1637,7 @@ func zenAPIKey(cfg config.ZenConfig) string {
 // Anthropic-wire models are forwarded transparently (Authorization rewritten,
 // Anthropic version/beta headers preserved); Chat-Completions-wire and
 // Responses-wire models are translated to /v1/chat/completions and
-// /v1/responses respectively, and the response translated back. When CCR is
-// enabled, it hydrates headroom_retrieve calls.
+// /v1/responses respectively, and the response translated back.
 func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Request, zenCfg config.ZenConfig, body []byte, anthropicRequest map[string]any, model string, zenEntry config.ZenModelConfig) {
 	key := zenAPIKey(zenCfg)
 	if key == "" {
@@ -2859,8 +2858,6 @@ func effectiveAttemptPricing(base openrouter.Pricing, model, servedProvider stri
 }
 
 type streamSender func(context.Context, map[string]any, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
-
-const maxCCRHydrations = 3
 
 func (server *Server) nowTime() time.Time {
 	if server != nil && server.now != nil {

@@ -3428,7 +3428,7 @@
                                         :class="serverConfig.headroom?.enabled ? 'text-neon-purple' : ''"
                                         x-text="$store.global.t('headroomEnabled')">Enable Headroom Engine</span>
                                 </div>
-                                <span class="text-[11px] text-gray-500" x-text="$store.global.t('headroomDesc')">Native context compression, whitespace pruning, output shaping, and CCR.</span>
+                                <span class="text-[11px] text-gray-500" x-text="$store.global.t('headroomDesc')">Native context compression, whitespace pruning, and output shaping.</span>
                             </div>
                             <label class="relative inline-flex items-center cursor-pointer">
                                 <input type="checkbox" class="sr-only peer" :checked="serverConfig.headroom?.enabled === true"

@@ -630,7 +630,7 @@ window.translations.pt = {
 
     // Headroom Engine
     headroomSettings: "Otimização de Contexto Headroom",
-    headroomDesc: "Compressão nativa de contexto, poda de espaços em branco, moldagem de saída e recuperação condicionada por conteúdo (CCR).",
+    headroomDesc: "Compressão nativa de contexto, poda de espaços em branco e moldagem de saída.",
     headroomEnabled: "Ativar Motor Headroom",
     headroomCacheNotice: "Aviso: Alterar as configurações do Headroom invalida o cache de prompt uma vez para conversas ativas.",
     headroomSmartCrusher: "SmartCrusher (Compactador JSON)",

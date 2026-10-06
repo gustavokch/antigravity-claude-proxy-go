@@ -687,7 +687,7 @@ window.translations.en = {
 
     // Headroom Engine
     headroomSettings: "Headroom Context Optimization",
-    headroomDesc: "Native context compression, whitespace pruning, output shaping, and content-conditioned retrieval.",
+    headroomDesc: "Native context compression, whitespace pruning, and output shaping.",
     headroomEnabled: "Enable Headroom Engine",
     headroomCacheNotice: "Notice: Changing Headroom settings invalidates the prompt cache once for active conversations.",
     headroomSmartCrusher: "SmartCrusher (JSON Compactor)",

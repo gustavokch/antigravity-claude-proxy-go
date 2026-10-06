@@ -25,7 +25,6 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
   - Automatic `Authorization: Bearer` handling and beta header injection.
 - **Headroom Native Context Compression & Output Shaping**:
   - Provider-agnostic middleware pipeline (`internal/headroom`) executing across Cloud Code, OpenRouter, Kimi, Claude Code, and Custom Endpoints.
-  - **CCR (Content-Conditioned Retrieval)**: Reversible chunk storage with SHA-256 hashing, LRU eviction, dynamic `headroom_retrieve` tool injection, and transparent hydration passthrough loop across all upstreams.
   - **SmartCrusher**: Exact byte-for-byte JSON minification (`CompactJSON`) and automatic Markdown/TSV table conversion (`TabularArray`) for homogeneous object arrays with 30%+ savings.
   - **CodeCompressor**: Prunes trailing whitespace, collapses multi-line blank gaps, strips full-line comments, and deduplicates recurring logs.
   - **Output Shaper**: Verbosity steering via system prompt injection to suppress conversational filler, plus effort routing (thinking budget clamping on mechanical tool continuations).
@@ -53,7 +52,7 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ Proxy Router (internal/api/server.go)                                       │
 │                                                                             │
-│ 0. Headroom Pipeline (CCR, SmartCrusher, CodeCompressor, OutputShaper)      │
+│ 0. Headroom Pipeline (SmartCrusher, CodeCompressor, OutputShaper)            │
 │                                                                             │
 │ 1. Model Mapping Resolution (Resolves aliases & chained mappings <= 5 hops) │
 │                                                                             │
@@ -299,12 +298,6 @@ Additional environment controls:
     "smartCrusher": true,
     "tabularArrays": true,
     "codeCompressor": true,
-    "liveTurns": 2,
-    "ccr": {
-      "enabled": false,
-      "maxStoreMB": 64,
-      "minChunkBytes": 2048
-    },
     "outputShaper": {
       "enabled": false,
       "verbositySteering": true,
@@ -349,26 +342,15 @@ The proxy integrates native, provider-agnostic **Headroom** optimizations (`inte
 The Headroom Engine executes 4 stages in strict sequence, mutating the Anthropic request map in place:
 
 ```
-Request ──► [ 1. CCR Stage ] ──► [ 2. SmartCrusher ] ──► [ 3. CodeCompressor ] ──► [ 4. OutputShaper ] ──► Provider Dispatch
+Request ──► [ 1. SmartCrusher ] ──► [ 2. CodeCompressor ] ──► [ 3. OutputShaper ] ──► Provider Dispatch
 ```
 
 - **Invariant I1 (Cache-Stable Determinism)**: Transformations applied to historical messages (beyond the live window) are 100% deterministic and position-independent. This preserves byte-identical prefixes across conversation turns, keeping upstream provider KV/prompt caches warm.
 - **Invariant I3 (Target Isolation)**: Headroom only inspects and rewrites `tool_result` payload text blocks (via `walkToolResultText`). It **never** mutates user prompt text, assistant text, thinking blocks, signatures, tool use inputs, or images.
-- **Live Turns Window (`liveTurns`)**: Retains the trailing $N$ messages (default `2`) inline and unmodified. Only messages outside the live window (`FrozenPrefixIndex`) are eligible for chunking/demotion by CCR.
 
 ---
 
 ### Headroom Features & Functionality
-
-#### 1. Content-Conditioned Retrieval (CCR)
-- **Prefix Demotion**: Scans historical `tool_result` blocks in the frozen prefix.
-- **SHA-256 Chunk Storage**: Large payloads exceeding `minChunkBytes` (default 512B) are SHA-256 hashed (`chunk_<hex[:12]>`) and stored in a thread-safe, in-memory LRU `CCRStore` bounded by `maxStoreMB` (default 50MB).
-- **Stub Replacement**: Replaces the full payload in context with a compact retrieval stub:
-  ```text
-  [HEADROOM_CHUNK id="chunk_abc123456789" lines=42 preview="<first lines>"]
-  ```
-- **Dynamic Tool Injection**: Automatically injects a `headroom_retrieve` tool definition into the request's `tools` array.
-- **Transparent Dynamic Hydration Loop**: When the model calls `headroom_retrieve`, the proxy intercepts the call, fetches the raw chunk from `CCRStore`, updates context, and resumes execution transparently without client interruption. Supported across **all upstreams**: Google Cloud Code, OpenRouter, Kimi, Claude Code (`api.anthropic.com`), and Custom Endpoints.
 
 #### 2. SmartCrusher
 - **Exact JSON Minification (`CompactJSON`)**:
@@ -401,7 +383,7 @@ The Output Shaper optimizes downstream model responses to minimize output token 
 ---
 
 ### Headroom Telemetry & Management
-- Track input bytes saved, compression ratios, requests compressed, clamped thinking tokens, and CCR dynamic retrievals in the Web UI or via:
+- Track input bytes saved, compression ratios, requests compressed, and clamped thinking tokens in the Web UI or via:
   - `GET /api/headroom/stats`: Real-time compression telemetry and hit rates.
   - `POST /api/headroom/config`: Dynamic configuration updates without restarting the proxy.
 
@@ -661,7 +643,7 @@ Example `config.json`:
 - **TLS caveat**: headers alone are not enough — the gate also fingerprints
   the TLS handshake (genuine client is Bun/BoringSSL; every third-party
   stack has been rejected since Sep 2026). `"harness": {"tls": true}` opts
-  zen-bound connections (forward, models, CCR, cache-bump replay) into a
+  zen-bound connections (forward, models, cache-bump replay) into a
   utls ClientHello replayed from the captured genuine opencode hello
   (`internal/zen/tls.go`, JA3 `1523504b38f0fae0d881d4b6554aac1b`). It is
   **off by default** because it trades the repo's "normal Go TLS client"
@@ -836,7 +818,7 @@ All `/v1/*` routes accept authentication via `x-api-key` or `Authorization: Bear
 | `/api/claudecode/accounts` | `GET` | List configured Claude Code accounts and status |
 | `/api/claudecode/accounts/{email}` | `DELETE` | Remove a Claude Code account from pool |
 | `/api/claudecode/status` | `GET` | Retrieve Claude Code gateway and pool health status |
-| `/api/headroom/stats` | `GET` | Real-time Headroom compression and CCR dynamic retrieval statistics |
+| `/api/headroom/stats` | `GET` | Real-time Headroom compression statistics |
 | `/api/cache-bump` | `GET`/`DELETE` | List recorded cache-bump sessions with stats, or clear all records (bodies are never returned) |
 | `/api/cache-bump/{sessionID}/stop` | `POST` | Stop cache bumping for one session across all routes |
 | `/api/headroom/config` | `GET`/`POST` | Read or dynamically update Headroom compression and Output Shaper settings |

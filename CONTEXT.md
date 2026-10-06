@@ -101,7 +101,7 @@ _Avoid_: Server overload, Google capacity issue, backend down.
 ### Context Compression & Shaping (Headroom)
 
 **Headroom Engine**:
-The pre-dispatch request optimization pipeline applying deterministic compression, whitespace pruning, output shaping, and CCR.
+The pre-dispatch request optimization pipeline applying deterministic compression, whitespace pruning, and output shaping.
 _Avoid_: Context trimmer, optimizer middleware, token stripper.
 
 **SmartCrusher**:
