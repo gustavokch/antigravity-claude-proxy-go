@@ -116,6 +116,20 @@ _Avoid_: Code cleaner, log summarizer.
 The stage that appends verbosity steering instructions to the system prompt and limits thinking budgets on mechanical continuation turns.
 _Avoid_: Prompt injector, reasoning clamper.
 
+### Reasoning
+
+**Effort Level**:
+One of `low`, `medium`, `high`, `xhigh`, `max` — Anthropic's `output_config.effort` vocabulary, which `agy --effort` also accepts. A model that does not publish a level runs the highest published level at or below it.
+_Avoid_: Reasoning mode, thinking intensity, think level.
+
+**Ambient Effort**:
+The `output_config.effort` Claude Code sends on every request. It has the lowest precedence: it picks a tier for a bare family ID but never overrides a tier named in the model ID, an explicit `reasoning_effort`, or an explicit thinking budget.
+_Avoid_: Default effort, client effort.
+
+**Budget-Style Model**:
+A Cloud Code route whose thinking is set by a token budget (`thinking_budget`) rather than a tier (`thinking_level`): Claude 4.6, Gemini 3.1 Pro, GPT-OSS. The proxy turns an Effort Level into a budget; tiered Gemini flash routes get a tier from the model catalog instead.
+_Avoid_: Legacy thinking, budget thinking.
+
 ### Cache Management
 
 **Cache Bump**:
