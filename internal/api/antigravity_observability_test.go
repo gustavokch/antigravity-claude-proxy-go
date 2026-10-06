@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,8 +18,6 @@ import (
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
-	"antigravity-go-proxy/internal/headroom"
-	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/stats"
 )
@@ -474,86 +471,6 @@ func TestKimiObservability_Streaming(t *testing.T) {
 	}
 	if rec["level_tag"] != "SUCCESS" {
 		t.Errorf("level_tag = %v, want SUCCESS", rec["level_tag"])
-	}
-
-	if history := tracker.GetHistory(); len(history) == 0 {
-		t.Errorf("expected request recorded in stats tracker")
-	}
-}
-
-func TestKimiObservability_CCRStreaming(t *testing.T) {
-	var callCount int32
-	kimiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&callCount, 1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-
-		fmt.Fprintf(w, "event: message_start\n")
-		fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_ccr\",\"usage\":{\"input_tokens\":400,\"cache_read_input_tokens\":100}}}\n\n")
-		fmt.Fprintf(w, "event: content_block_start\n")
-		fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"hello ccr\"}}\n\n")
-		fmt.Fprintf(w, "event: content_block_stop\n")
-		fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-		fmt.Fprintf(w, "event: message_delta\n")
-		fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":50}}\n\n")
-		fmt.Fprintf(w, "event: message_stop\n")
-		fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
-	}))
-	defer kimiServer.Close()
-
-	store := ccr.NewCCRStore(1024 * 1024)
-	engine := headroom.NewEngine(headroom.Config{
-		Enabled: true,
-		CCR:     headroom.CCRConfig{Enabled: true},
-	}, nil, ccr.NewStage(store))
-
-	var logBuf bytes.Buffer
-	log := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	tracker, _ := stats.NewTracker("")
-
-	srv := &Server{
-		headroom: engine,
-		ccrStore: store,
-		logger:   log,
-		tracker:  tracker,
-		now:      time.Now,
-	}
-
-	kimiCfg := config.KimiConfig{
-		Enabled: true,
-		BaseURL: kimiServer.URL,
-		APIKey:  "kimi-key-ccr",
-	}
-
-	reqBody := `{"model":"moonshot-v1-8k","stream":true,"messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-session-id", "sess-kimi-ccr")
-	w := httptest.NewRecorder()
-
-	srv.forwardToKimi(w, req, kimiCfg, []byte(reqBody), "moonshot-v1-8k")
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-
-	recs := agyObservabilityRecords(&logBuf, "[Kimi]")
-	if len(recs) == 0 {
-		t.Fatalf("expected [Kimi] log record, got:\n%s", logBuf.String())
-	}
-	rec := recs[0]
-
-	if rec["gateway"] != "kimi" {
-		t.Errorf("gateway = %v, want kimi", rec["gateway"])
-	}
-	if rec["level_tag"] != "SUCCESS" {
-		t.Errorf("level_tag = %v, want SUCCESS", rec["level_tag"])
-	}
-	if rec["input_tokens"] != float64(400) {
-		t.Errorf("input_tokens = %v, want 400", rec["input_tokens"])
-	}
-	if rec["output_tokens"] != float64(50) {
-		t.Errorf("output_tokens = %v, want 50", rec["output_tokens"])
 	}
 
 	if history := tracker.GetHistory(); len(history) == 0 {

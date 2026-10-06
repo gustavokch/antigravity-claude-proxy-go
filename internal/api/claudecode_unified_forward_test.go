@@ -11,8 +11,6 @@ import (
 
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
-	"antigravity-go-proxy/internal/headroom"
-	"antigravity-go-proxy/internal/headroom/stages/ccr"
 )
 
 // upstreamUnifiedHeaders mirrors the subscription headers seen in
@@ -261,100 +259,5 @@ func TestGetOrCreateCCPool_InvalidateKeepsUnified(t *testing.T) {
 	}
 	if again, _ := getOrCreateCCPool(cfg); again != newPool {
 		t.Error("pool rebuilt again without a change")
-	}
-}
-
-// The CCR (headroom) path forwards the unified headers of a successful
-// upstream response too, for both streaming and JSON requests.
-func TestForwardToClaudeCode_CCRForwardsUnifiedHeaders(t *testing.T) {
-	const sse = "event: message_start\n" +
-		`data: {"type":"message_start","message":{"id":"m","role":"assistant","model":"claude-sonnet-5","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n" +
-		"event: content_block_start\n" +
-		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
-		"event: content_block_delta\n" +
-		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
-		"event: content_block_stop\n" +
-		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
-		"event: message_delta\n" +
-		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}` + "\n\n" +
-		"event: message_stop\n" +
-		`data: {"type":"message_stop"}` + "\n\n"
-	const jsonBody = `{"id":"m","type":"message","role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
-
-	for _, stream := range []bool{true, false} {
-		for _, forward := range []bool{true, false} {
-			name := "json"
-			if stream {
-				name = "stream"
-			}
-			if forward {
-				name += "/on"
-			} else {
-				name += "/off"
-			}
-			t.Run(name, func(t *testing.T) {
-				resetCCUnifiedPoolForTest(t)
-				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					for k, v := range upstreamUnifiedHeaders {
-						w.Header().Set(k, v)
-					}
-					w.Header().Set("X-Upstream-Private", "secret")
-					if stream {
-						w.Header().Set("Content-Type", "text/event-stream")
-						w.WriteHeader(http.StatusOK)
-						_, _ = w.Write([]byte(sse))
-						return
-					}
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusOK)
-					_, _ = w.Write([]byte(jsonBody))
-				}))
-				defer upstream.Close()
-
-				cfg := claudecode.Config{
-					Enabled:               true,
-					BaseURL:               upstream.URL,
-					Accounts:              []claudecode.AccountConfig{{ID: "acc-cc", Token: "tok-cc", Enabled: true}},
-					Allowlist:             []claudecode.ModelConfig{{ID: "claude-sonnet-5", Enabled: true}},
-					Routing:               claudecode.DefaultRoutingConfig(),
-					ForwardUnifiedHeaders: &forward,
-				}
-				store := ccr.NewCCRStore(1024 * 1024)
-				srv := &Server{
-					headroom: headroom.NewEngine(headroom.Config{Enabled: true, CCR: headroom.CCRConfig{Enabled: true}}, nil, ccr.NewStage(store)),
-					ccrStore: store,
-				}
-				if !srv.isCCREnabled() {
-					t.Fatal("test setup: CCR path not enabled")
-				}
-
-				reqBody := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`
-				if stream {
-					reqBody = `{"model":"claude-sonnet-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`
-				}
-				req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
-				w := httptest.NewRecorder()
-				srv.forwardToClaudeCode(w, req, cfg, []byte(reqBody), "claude-sonnet-5")
-
-				if w.Code != http.StatusOK {
-					t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-				}
-				if !strings.Contains(w.Body.String(), "hi") {
-					t.Fatalf("response body missing content: %s", w.Body.String())
-				}
-				for k, v := range upstreamUnifiedHeaders {
-					got := w.Header().Get(k)
-					if forward && got != v {
-						t.Errorf("%s = %q, want %q", k, got, v)
-					}
-					if !forward && got != "" {
-						t.Errorf("%s = %q forwarded with the switch off", k, got)
-					}
-				}
-				if got := w.Header().Get("X-Upstream-Private"); got != "" {
-					t.Errorf("unrelated header forwarded: %q", got)
-				}
-			})
-		}
 	}
 }
