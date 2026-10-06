@@ -86,7 +86,7 @@ func TestSmartCrusher_CompactsHistoryNotJustLastTurn(t *testing.T) {
 		}}
 	}
 	req := map[string]any{"messages": []any{mk(), mk(), mk()}}
-	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: 0}
+	reqCtx := &headroom.RequestContext{Request: req}
 
 	stage := &SmartCrusherStage{}
 	if err := stage.Execute(context.Background(), reqCtx, &headroom.Config{Enabled: true, SmartCrusher: true}); err != nil {
@@ -199,7 +199,7 @@ func TestSmartCrusherStage_LogsCompaction(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	reqCtx := &headroom.RequestContext{Request: req, Logger: logger}
 	cfg := &headroom.Config{Enabled: true, SmartCrusher: true}
 
 	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {

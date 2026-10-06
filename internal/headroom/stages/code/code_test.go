@@ -181,7 +181,7 @@ func TestCodeCompressorStage_LogsPruning(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	reqCtx := &headroom.RequestContext{Request: req, Logger: logger}
 	cfg := &headroom.Config{Enabled: true, CodeCompressor: true}
 
 	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {
