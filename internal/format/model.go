@@ -96,21 +96,6 @@ func IsThinkingModel(model string) bool {
 	return getModelFamilyInfo(model).isThinking
 }
 
-func clampGeminiThinkingBudget(model string, value any) int {
-	budget := intValue(value, DefaultGeminiThinkBudget)
-	if budget == 0 {
-		budget = DefaultGeminiThinkBudget
-	}
-	maximum := 128000
-	if strings.Contains(strings.ToLower(model), "gemini-2.5") {
-		maximum = 24576
-	}
-	if budget > maximum {
-		budget = maximum
-	}
-	return budget
-}
-
 func asMap(value any) map[string]any {
 	if value == nil {
 		return nil
