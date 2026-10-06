@@ -348,11 +348,20 @@ func TestModels_AdvertiseTheOutputLimitTheConverterSends(t *testing.T) {
 	want := map[string]float64{
 		"gemini-3.8-flash": float64(proxyformat.GeminiMaxOutputTokens),
 		"gemini-2.5-pro":   float64(proxyformat.GeminiMaxOutputTokens),
-		"claude-opus-4-6":  64000,
 	}
 	seen := map[string]bool{}
+	opusSeen := false
 	for _, m := range resp.Data {
 		id, _ := m["id"].(string)
+		if id == "claude-opus-4-6" {
+			opusSeen = true
+			maxOutput, _ := m["max_output_tokens"].(float64)
+			contextWindow, _ := m["context_window"].(float64)
+			if maxOutput <= 0 || maxOutput >= contextWindow {
+				t.Errorf("model %q advertises max_output_tokens %v outside (0, context_window %v)", id, m["max_output_tokens"], m["context_window"])
+			}
+			continue
+		}
 		wantOutput, ok := want[id]
 		if !ok {
 			continue
@@ -361,6 +370,9 @@ func TestModels_AdvertiseTheOutputLimitTheConverterSends(t *testing.T) {
 		if got, _ := m["max_output_tokens"].(float64); got != wantOutput {
 			t.Errorf("model %q advertises max_output_tokens %v, want %v", id, m["max_output_tokens"], wantOutput)
 		}
+	}
+	if !opusSeen {
+		t.Errorf("model %q missing from /v1/models", "claude-opus-4-6")
 	}
 	for id := range want {
 		if !seen[id] {
@@ -773,8 +785,8 @@ func TestKimiModels_EntryWithoutLimitsAdvertisesAnOutputBelowItsContext(t *testi
 		if maxOutput >= contextWindow {
 			t.Errorf("max_output_tokens = %v is not below context_window = %v", maxOutput, contextWindow)
 		}
-		if maxOutput != 32768 {
-			t.Errorf("max_output_tokens = %v, want 32768", maxOutput)
+		if maxOutput != float64(defaultDiscoveryMaxOutputTokens) {
+			t.Errorf("max_output_tokens = %v, want discovery default %d", maxOutput, defaultDiscoveryMaxOutputTokens)
 		}
 		return
 	}

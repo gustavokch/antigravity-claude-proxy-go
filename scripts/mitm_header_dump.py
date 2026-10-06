@@ -246,7 +246,9 @@ def body_fingerprint(content: bytes) -> dict | None:
     }
     for name in IDENTITY_SCALARS:
         if name in body and not isinstance(body[name], (dict, list)):
-            fingerprint[name] = body[name]
+            scalar = _config_scalar(body[name])
+            if scalar is not None:
+                fingerprint[name] = scalar
     generation = generation_config_fingerprint(body)
     if generation is not None:
         fingerprint["generation_config"] = generation
