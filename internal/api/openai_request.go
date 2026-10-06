@@ -172,6 +172,7 @@ func translateOpenAIRequest(openaiRequest map[string]any) (translatedOpenAIReque
 	if stream, exists := openaiRequest["stream"]; exists {
 		anthropic["stream"] = stream
 	}
+	applyOpenAIReasoning(anthropic, openaiRequest)
 
 	return translatedOpenAIRequest{
 		Anthropic:          anthropic,
