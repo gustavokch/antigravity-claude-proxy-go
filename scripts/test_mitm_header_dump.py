@@ -291,6 +291,22 @@ class GenerationConfigFingerprintTest(unittest.TestCase):
         for secret in ("SECRET_PROMPT_TEXT", "SECRET_STOP", "SECRET_SCHEMA", "SECRET_EXTRA"):
             self.assertNotIn(secret, repr(fingerprint))
 
+    def test_snake_case_knobs_are_kept_and_snake_case_prompt_fields_are_dropped(self):
+        fingerprint = body_fingerprint(self._cloud_code_body({
+            "max_output_tokens": 64000,
+            "top_p": 0.9,
+            "top_k": 5,
+            "stop_sequences": ["SECRET_STOP"],
+            "response_schema": {"description": "SECRET_SCHEMA"},
+        }))
+        self.assertEqual(fingerprint["generation_config"], {
+            "max_output_tokens": 64000,
+            "top_p": 0.9,
+            "top_k": 5,
+        })
+        for secret in ("SECRET_STOP", "SECRET_SCHEMA"):
+            self.assertNotIn(secret, repr(fingerprint))
+
     def test_wire_constants_of_the_envelope_are_identity_scalars(self):
         fingerprint = body_fingerprint(self._cloud_code_body({"maxOutputTokens": 1}))
         self.assertEqual(fingerprint["requestType"], "agent")

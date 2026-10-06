@@ -96,7 +96,11 @@ IDENTITY_SCALARS = ("model", "max_tokens", "stream", "requestType", "userAgent")
 # settle which one a client sends. Keys are kept verbatim, so the casing in the
 # file is the casing on the wire.
 GENERATION_CONFIG_KEYS = frozenset({
-    "temperature", "topP", "topK", "maxOutputTokens", "candidateCount", "seed",
+    "temperature", "seed",
+    "topP", "top_p",
+    "topK", "top_k",
+    "maxOutputTokens", "max_output_tokens",
+    "candidateCount", "candidate_count",
 })
 THINKING_CONFIG_KEYS = frozenset({
     "includeThoughts", "include_thoughts",
