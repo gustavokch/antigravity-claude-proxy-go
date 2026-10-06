@@ -133,7 +133,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		options.Now = time.Now
 	}
 	if options.ModelCacheTTL <= 0 {
-		options.ModelCacheTTL = 5 * time.Minute
+		options.ModelCacheTTL = 24 * time.Hour
 	}
 	if options.Random == nil {
 		options.Random = rand.Float64

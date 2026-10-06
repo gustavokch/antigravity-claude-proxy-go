@@ -530,7 +530,7 @@ func TestRefreshCatalogIfStaleKicksBackgroundFetch(t *testing.T) {
 	}
 
 	// Age it past the TTL: refresh is requested, and the caller is not blocked.
-	current = now.Add(10 * time.Minute)
+	current = now.Add(25 * time.Hour)
 	if !dispatcher.RefreshCatalogIfStale() {
 		t.Fatal("RefreshCatalogIfStale did not kick a fetch for a stale catalog")
 	}
@@ -561,7 +561,7 @@ func TestResolveModelFallsBackToStaleCatalogOnRefreshFailure(t *testing.T) {
 	// Age the catalog past the TTL so StreamGenerateContent must refresh it,
 	// then let the refresh fail: the stale catalog still resolves the model
 	// and the request reaches the client instead of 504ing.
-	current = now.Add(6 * time.Minute)
+	current = now.Add(25 * time.Hour)
 	if _, err := dispatcher.StreamGenerateContent(context.Background(), testRequest(), func(cloudcode.SSEEvent) error { return nil }); err != nil {
 		t.Fatalf("StreamGenerateContent failed on a refresh error with a stale catalog available: %v", err)
 	}

@@ -228,7 +228,7 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 		}
 	}
 
-	if family == FamilyGemini && intValue(generation["maxOutputTokens"], 0) > GeminiMaxOutputTokens {
+	if family == FamilyGemini && maxOutputTokens <= 0 && intValue(generation["maxOutputTokens"], 0) > GeminiMaxOutputTokens {
 		generation["maxOutputTokens"] = GeminiMaxOutputTokens
 	}
 	if maxOutputTokens > 0 && intValue(generation["maxOutputTokens"], 0) > maxOutputTokens {

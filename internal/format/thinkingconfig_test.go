@@ -73,11 +73,8 @@ func TestOutputConfigEffortSetsBudgetOnBudgetStyleModels(t *testing.T) {
 		{"claude: top-level thinking_budget is honored", "claude-opus-4-6-thinking", claudeOpts, map[string]any{"thinking_budget": float64(5000)}, 5000},
 		{"gemini budget model: medium", "gemini-3.1-pro", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
 			map[string]any{"output_config": effortConfig("medium")}, 8000},
-		// 8192, not 16000: the effort table's Gemini high budget would leave
-		// almost no answer under the 16,384 output ceiling (see
-		// TestEffortDerivedBudgetKeepsRoomForTheAnswer).
 		{"gemini budget model: max falls back to high", "gemini-3.1-pro", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
-			map[string]any{"output_config": effortConfig("max")}, 8192},
+			map[string]any{"output_config": effortConfig("max")}, 16000},
 		{"gpt-oss: low", "gpt-oss-120b", ModelOptions{SupportsThinking: true, ThinkingBudget: 8192, MaxOutputTokens: 32768},
 			map[string]any{"output_config": effortConfig("low")}, 1024},
 
@@ -283,9 +280,10 @@ func TestThinkingBudgetStaysBelowMaxOutputTokens(t *testing.T) {
 	}
 }
 
-// The proxy caps Gemini output at the fixed ceiling even when the live
-// catalog advertises more; a live limit below the ceiling still applies.
-func TestGeminiOutputIsCappedAtTheFixedCeiling(t *testing.T) {
+// /v1/models advertises the catalog's max output, so a client that sends
+// exactly that must not be cut to a smaller proxy-side ceiling. A live limit
+// takes precedence, while an entry with no live limit falls back to the ceiling.
+func TestGeminiOutputIsCappedByTheLiveLimitNotAFixedCeiling(t *testing.T) {
 	t.Parallel()
 	high := ModelOptions{SupportsThinking: true, ThinkingLevel: "HIGH", MaxOutputTokens: 65536}
 	low := ModelOptions{SupportsThinking: true, ThinkingLevel: "HIGH", MaxOutputTokens: 8192}
@@ -295,9 +293,9 @@ func TestGeminiOutputIsCappedAtTheFixedCeiling(t *testing.T) {
 		options   *ModelOptions
 		want      int
 	}{
-		{"a live limit above the ceiling does not lift it", 65536, &high, GeminiMaxOutputTokens},
-		{"above the limit is cut to the ceiling", 100000, &high, GeminiMaxOutputTokens},
-		{"below the ceiling is untouched", 4096, &high, 4096},
+		{"the advertised limit goes through", 65536, &high, 65536},
+		{"above the limit is cut to the limit", 100000, &high, 65536},
+		{"below the limit is untouched", 4096, &high, 4096},
 		{"a live limit below the ceiling still applies", 16000, &low, 8192},
 		{"no live limit falls back to the ceiling", 65536, nil, GeminiMaxOutputTokens},
 		{"an entry without a limit falls back to the ceiling", 65536, &ModelOptions{SupportsThinking: true, ThinkingLevel: "HIGH"}, GeminiMaxOutputTokens},
@@ -310,9 +308,9 @@ func TestGeminiOutputIsCappedAtTheFixedCeiling(t *testing.T) {
 	}
 }
 
-// Google counts thought tokens against maxOutputTokens and the proxy keeps
-// Gemini output at 16,384, so an effort-derived budget is capped to leave room
-// for the answer. A budget the client or the catalog chose is not touched.
+// Google counts thought tokens against maxOutputTokens, so an effort-derived
+// budget is capped to leave room for the answer when output headroom is tight.
+// A budget the client or the catalog chose is not touched.
 func TestEffortDerivedBudgetKeepsRoomForTheAnswer(t *testing.T) {
 	t.Parallel()
 	gemini := ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535}
@@ -325,14 +323,14 @@ func TestEffortDerivedBudgetKeepsRoomForTheAnswer(t *testing.T) {
 		wantMax    int
 		wantBudget int
 	}{
-		{"ambient high is capped under the ceiling", "gemini-3.1-pro", gemini,
-			map[string]any{"output_config": effortConfig("high")}, GeminiMaxOutputTokens, 8192},
+		{"ambient high has room under live cap", "gemini-3.1-pro", gemini,
+			map[string]any{"output_config": effortConfig("high")}, 64000, 16000},
 		{"ambient medium is below the limit and kept", "gemini-3.1-pro", gemini,
-			map[string]any{"output_config": effortConfig("medium")}, GeminiMaxOutputTokens, 8000},
-		{"explicit reasoning_effort high is capped too", "gemini-3.1-pro", gemini,
-			map[string]any{"reasoning_effort": "high"}, GeminiMaxOutputTokens, 8192},
+			map[string]any{"output_config": effortConfig("medium")}, 64000, 8000},
+		{"explicit reasoning_effort high has room under live cap", "gemini-3.1-pro", gemini,
+			map[string]any{"reasoning_effort": "high"}, 64000, 16000},
 		{"an explicit client budget is kept", "gemini-3.1-pro", gemini,
-			map[string]any{"thinking_budget": float64(16000)}, GeminiMaxOutputTokens, 16000},
+			map[string]any{"thinking_budget": float64(16000)}, 64000, 16000},
 		{"a small max_tokens halves the room", "gemini-3.1-pro", gemini,
 			map[string]any{"output_config": effortConfig("high"), "max_tokens": float64(4096)}, 4096, 2048},
 		{"gpt-oss has room under its own cap", "gpt-oss-120b", gptOSS,

@@ -10,7 +10,7 @@ import (
 
 const (
 	MinSignatureLength       = 50
-	GeminiMaxOutputTokens    = 16384
+	GeminiMaxOutputTokens    = 65536
 	GeminiSkipSignature      = "skip_thought_signature_validator"
 	DefaultClaudeThinkBudget = 32000
 	DefaultGeminiThinkBudget = 16000

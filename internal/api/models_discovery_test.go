@@ -322,9 +322,8 @@ func TestGeminiModels_AdvertiseMaxContextWindow(t *testing.T) {
 	}
 }
 
-// The converter caps Gemini output at proxyformat.GeminiMaxOutputTokens, so
-// discovery must not advertise the larger catalog value; other families keep
-// their catalog limit.
+// Discovery advertises the live catalog output limit, falling back to
+// proxyformat.GeminiMaxOutputTokens if unbounded.
 func TestModels_AdvertiseTheOutputLimitTheConverterSends(t *testing.T) {
 	server := &Server{
 		backend: &geminiDiscoveryTestBackend{},
@@ -791,4 +790,63 @@ func TestKimiModels_EntryWithoutLimitsAdvertisesAnOutputBelowItsContext(t *testi
 		return
 	}
 	t.Fatal("allowlist model missing from discovery response")
+}
+
+func TestKimiModels_DocumentedModelLimits(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.Kimi.Enabled = true
+	testCfg.Kimi.Allowlist = []config.KimiModelConfig{
+		{ID: "k3", Enabled: true},
+		{ID: "kimi-k3", Enabled: true},
+		{ID: "k3-256k", Enabled: true},
+		{ID: "kimi-for-coding", Enabled: true},
+		{ID: "kimi-for-coding-highspeed", Enabled: true},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	byID := make(map[string]map[string]any)
+	for _, m := range resp.Data {
+		if id, ok := m["id"].(string); ok {
+			byID[id] = m
+		}
+	}
+
+	for _, id := range []string{"k3", "kimi-k3"} {
+		entry, ok := byID[id]
+		if !ok {
+			t.Fatalf("model %s missing from discovery", id)
+		}
+		if cw, _ := entry["context_window"].(float64); cw != 1048576 {
+			t.Errorf("model %s context_window = %v, want 1048576", id, cw)
+		}
+		if mo, _ := entry["max_output_tokens"].(float64); mo != 131072 {
+			t.Errorf("model %s max_output_tokens = %v, want 131072", id, mo)
+		}
+	}
+
+	for _, id := range []string{"k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"} {
+		entry, ok := byID[id]
+		if !ok {
+			t.Fatalf("model %s missing from discovery", id)
+		}
+		if cw, _ := entry["context_window"].(float64); cw != 262144 {
+			t.Errorf("model %s context_window = %v, want 262144", id, cw)
+		}
+		if mo, _ := entry["max_output_tokens"].(float64); mo != 32768 {
+			t.Errorf("model %s max_output_tokens = %v, want 32768", id, mo)
+		}
+	}
 }

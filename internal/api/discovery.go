@@ -274,17 +274,38 @@ func appendKimiDiscovery(server *Server, cfg config.Config, models *[]any, seen 
 			desc = item.ID
 		}
 		contextLen := item.ContextLen
-		if contextLen <= 0 {
-			contextLen = defaultDiscoveryContextWindow
-		}
 		maxOutput := item.MaxOutputTokens
-		if maxOutput <= 0 {
-			// Nothing states the output cap. Fall back to the context
-			// window, but never above the conservative default: a large
-			// context says nothing about how much a model may emit.
-			maxOutput = contextLen
-			if maxOutput > defaultDiscoveryMaxOutputTokens {
-				maxOutput = defaultDiscoveryMaxOutputTokens
+		cleanID := strings.ToLower(stripKimi1mSuffix(item.ID))
+		if cleanID == "" {
+			cleanID = strings.ToLower(stripKimi1mSuffix(item.Alias))
+		}
+		switch cleanID {
+		case "k3", "kimi-k3":
+			if contextLen <= 0 {
+				contextLen = 1048576
+			}
+			if maxOutput <= 0 {
+				maxOutput = 131072
+			}
+		case "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed":
+			if contextLen <= 0 {
+				contextLen = 262144
+			}
+			if maxOutput <= 0 {
+				maxOutput = 32768
+			}
+		default:
+			if contextLen <= 0 {
+				contextLen = defaultDiscoveryContextWindow
+			}
+			if maxOutput <= 0 {
+				// Nothing states the output cap. Fall back to the context
+				// window, but never above the conservative default: a large
+				// context says nothing about how much a model may emit.
+				maxOutput = contextLen
+				if maxOutput > defaultDiscoveryMaxOutputTokens {
+					maxOutput = defaultDiscoveryMaxOutputTokens
+				}
 			}
 		}
 		if !seen[item.ID] {
