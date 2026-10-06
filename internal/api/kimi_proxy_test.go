@@ -660,3 +660,60 @@ func TestServer_ForwardToKimi_OmitsMaxTokensWhenNothingKnown(t *testing.T) {
 		t.Errorf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Kimi Code maps the Claude Code effort levels itself (medium->high, xhigh->max,
+// docs: kimi.com/code/docs/en/kimi-code/models.html "Effort mapping in
+// third-party tools"), and rejects unknown spellings with a 400. The gateway is
+// a transparent forwarder (ADR-0001), so every reasoning field must reach
+// Kimi exactly as the client sent it: normalizing here would hide the
+// vendor's own mapping and change which level the vendor actually runs.
+func TestServer_ForwardToKimi_PassesReasoningFieldsThrough(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	if _, err := config.Save(map[string]any{
+		"kimi": map[string]any{
+			"enabled": true, "apiKey": "sk-kimi-test", "baseUrl": upstream.URL,
+			"allowlist": []map[string]any{{"id": "k3", "enabled": true}},
+		},
+	}); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	server := newKimiTestServer(t)
+	body := `{"model":"k3[1m]","max_tokens":4096,` +
+		`"thinking":{"type":"enabled","budget_tokens":2048,"display":"summarized"},` +
+		`"output_config":{"effort":"xhigh"},"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	var sent map[string]any
+	if err := json.Unmarshal(gotBody, &sent); err != nil {
+		t.Fatalf("unmarshal upstream body %s: %v", gotBody, err)
+	}
+	if sent["model"] != "k3" {
+		t.Errorf("model = %v, want k3 (the [1m] suffix is a Claude Code convention, not a Kimi id)", sent["model"])
+	}
+	if got := sent["output_config"]; fmt.Sprint(got) != "map[effort:xhigh]" {
+		t.Errorf("output_config = %v, want it forwarded untouched", got)
+	}
+	if got := sent["thinking"]; fmt.Sprint(got) != "map[budget_tokens:2048 display:summarized type:enabled]" {
+		t.Errorf("thinking = %v, want it forwarded untouched", got)
+	}
+	if sent["max_tokens"] != float64(4096) {
+		t.Errorf("max_tokens = %v, want 4096", sent["max_tokens"])
+	}
+}
