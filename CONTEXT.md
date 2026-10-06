@@ -123,11 +123,11 @@ One of `low`, `medium`, `high`, `xhigh`, `max` — Anthropic's `output_config.ef
 _Avoid_: Reasoning mode, thinking intensity, think level.
 
 **Ambient Effort**:
-The `output_config.effort` Claude Code sends on every request. It has the lowest precedence: it picks a tier for a bare family ID but never overrides a tier named in the model ID, an explicit `reasoning_effort`, or an explicit thinking budget.
+The `output_config.effort` Claude Code sends on every request. It has the lowest precedence: it picks a tier for a bare family ID, and sets a budget for a budget-style model whose ID names no tier, but never overrides a tier named in the model ID (neither its route nor its catalog budget), an explicit `reasoning_effort`, or an explicit thinking budget.
 _Avoid_: Default effort, client effort.
 
 **Budget-Style Model**:
-A Cloud Code route whose thinking is set by a token budget (`thinking_budget`) rather than a tier (`thinking_level`): Claude 4.6, Gemini 3.1 Pro, GPT-OSS. The proxy turns an Effort Level into a budget; tiered Gemini flash routes get a tier from the model catalog instead.
+A Cloud Code route whose thinking is set by a token budget (`thinking_budget`) rather than a tier (`thinking_level`): Claude 4.6, Gemini 3.1 Pro, GPT-OSS, and the per-tier IDs upstream publishes directly (`gemini-3.8-flash-low`, `gemini-3.1-pro-high`), each of which carries its own catalog budget. The proxy turns an Effort Level into a budget unless the model ID already names a tier; only synthetic Gemini flash entries backed by a `-tiered` upstream entry get a `thinking_level` instead.
 _Avoid_: Legacy thinking, budget thinking.
 
 ### Cache Management

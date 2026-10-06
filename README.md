@@ -732,9 +732,9 @@ The router supports chained mappings with automatic recursion and loop protectio
 
 ### Reasoning effort and token limits
 
-Claude Code's `/effort` (`output_config.effort`) is honored on the Cloud Code route: it picks the tier for a bare `gemini-3.8-flash` ID and sets the thinking budget on the Claude, Gemini Pro and GPT-OSS routes, while a tier named in the model ID (`gemini-3.8-flash-low`) always wins. Gateways forward the field untouched. The full mapping, precedence, per-route limits, the Kimi Code vs Moonshot Open Platform differences and every intentional divergence from the upstream APIs are in [docs/reasoning-parameters.md](docs/reasoning-parameters.md).
+Claude Code's `/effort` (`output_config.effort`) is honored on the Cloud Code route: it picks the tier for a bare `gemini-3.8-flash` ID and sets the thinking budget on budget-style routes whose model ID names no tier (the Claude 4.6 thinking models, for example), while a tier named in the model ID (`gemini-3.8-flash-low`, `gemini-3.1-pro-high`) always wins: it keeps both its route and its own catalog budget, and only an explicit `reasoning_effort` or thinking budget overrides it. Gateways forward the field untouched. The full mapping, precedence, per-route limits, the Kimi Code vs Moonshot Open Platform differences and every intentional divergence from the upstream APIs are in [docs/reasoning-parameters.md](docs/reasoning-parameters.md).
 
-Claude Code matches effort support by model ID, so a Gemini-named model gets no `/effort` unless you declare it, for example `ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES=effort,thinking`.
+Claude Code matches effort support by model ID, so a Gemini-named model gets no `/effort` unless you declare it, for example `ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES=effort,thinking`. Declaring it changes nothing for a model ID that already names a tier.
 
 ---
 

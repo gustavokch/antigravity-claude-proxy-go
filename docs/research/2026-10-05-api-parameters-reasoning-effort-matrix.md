@@ -281,3 +281,4 @@ Severity: 🔴 behavior divergence a client can observe · 🟡 latent/inconsist
 - **G12** Not a gap: `/v1/messages` has no `max_output_tokens`, and Anthropic and Kimi both require `max_tokens`.
 - **§5.2** The Claude "pass-through" rows (200K / 8192) described the Claude Code gateway defaults, which are 1M / 128K for the 5-series and, for Haiku 4.5, 200K / **8192 where Anthropic publishes 64K** (fixed in the plan, Task 9).
 - **Missing from the report:** the agy CLI's own `--effort low|medium|high|xhigh|max`; the Claude Code gateway's deliberate omission of `claude-opus-5-5`/`claude-sonnet-5-5`; the OpenAI endpoint dropping `reasoning_effort`; the shaper/prompt-cache interaction.
+- **Executive Summary, first gap** `output_config.effort` dropped on the Cloud Code path is fixed on this branch: tier routing and budget emission both read it, at the lowest precedence.

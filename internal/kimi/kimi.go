@@ -5,8 +5,10 @@
 // default, API key) and Kimi Code (https://api.kimi.ai/coding, subscription,
 // OAuth). The proxy rewrites the Authorization header and preserves the
 // Anthropic version/beta headers the client sent; it never alters reasoning
-// fields, because Kimi Code maps Claude Code's effort levels server-side. See
-// docs/reasoning-parameters.md.
+// fields, because the gateway is a transparent forwarder (ADR-0001): Kimi Code
+// maps Claude Code's effort levels itself, while the Open Platform publishes
+// only low|high|max and answers other values with its own error, which the
+// proxy does not hide. See docs/reasoning-parameters.md.
 package kimi
 
 import "strings"

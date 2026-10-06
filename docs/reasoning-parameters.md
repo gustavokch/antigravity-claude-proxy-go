@@ -6,7 +6,7 @@ How the proxy treats the parameters that control how much a model thinks and how
 
 | Field | Convention (owner) | Proxy behavior |
 |---|---|---|
-| `max_tokens` | Anthropic Messages API: required, `minimum: 0` (`0` = cache pre-warm). Kimi Messages API: required, `minimum: 1`. | Cloud Code: sent as `maxOutputTokens`; absent stays absent. Gateways: `applyMaxTokensPolicy` — clamp down to the entry's limit, floor 16, never raise above the client's value, omit when no limit is known. |
+| `max_tokens` | Anthropic Messages API: required, `minimum: 0` (`0` = cache pre-warm). Kimi Messages API: required, `minimum: 1`. | Cloud Code: sent as `maxOutputTokens`; absent stays absent. Gateways: `applyMaxTokensPolicy` — clamp down to the entry's limit, floor 16, never raise above the client's value (except that a client value below the floor of 16 is raised to the floor), omit when no limit is known. |
 | `thinking.type` | Anthropic Thinking doc: `enabled`+`budget_tokens` (deprecated on 4.6, rejected on 4.7+), `adaptive`, `disabled`. | `disabled` → thinking off (a tiered Gemini 3.7/3.8 route drops to its lowest tier: Google does not allow full off). `adaptive` → the catalog's default depth. `enabled` → `budget_tokens` is honored. |
 | `thinking.budget_tokens` | Anthropic: ≥ 1024 and < `max_tokens`. | Honored on budget-style routes; on Claude it is kept below the final `maxOutputTokens`. |
 | `thinking.display` | Anthropic: `summarized` / `omitted`. | Not honored, by design: Cloud Code returns the thought text and the client collapses it. Signatures are always returned and must be replayed. |
@@ -27,15 +27,15 @@ Levels: `low < medium < high < xhigh < max` (plus `minimal`, which only OpenAI-s
 
 ## 3. Precedence
 
-Tier routing (catalog), highest first: `reasoning_effort` / `reasoning` → a bare thinking budget (back-mapped: ≤ 2048 `low`, < 12000 `medium`, else `high`) → a tier named in the model ID (`…-low|-medium|-high|-extra-low`) → `output_config.effort` → the catalog default. Budget emission (converter), highest first: `reasoning_effort` → explicit `budget_tokens` / `thinking_budget` → `output_config.effort` → the catalog's default budget.
+Tier routing (catalog), highest first: `reasoning_effort` / `reasoning` → a bare thinking budget (back-mapped: ≤ 2048 `low`, < 12000 `medium`, else `high`) → a tier named in the model ID (an ID ending in `-low`, `-medium` or `-high`, which includes `-extra-low`) → `output_config.effort` → the catalog default. Budget emission (converter), highest first: `reasoning_effort` → explicit `budget_tokens` / `thinking_budget` → `output_config.effort` → the catalog's default budget. When the model ID the converter receives names a tier (`gemini-3.8-flash-low`, `gemini-3.1-pro-high`, `gpt-oss-120b-medium`), `output_config.effort` is skipped for the budget: the tier's own catalog budget stands. `reasoning_effort` and explicit budgets still win over the name.
 
-Why `output_config.effort` is last: Claude Code sends it on every request. If it outranked the model ID, anyone who picked `gemini-3.8-flash-low` would be rerouted to `-high` by their default `high` effort.
+Why `output_config.effort` is last: Claude Code sends it on every request. If it outranked the model ID, anyone who picked `gemini-3.8-flash-low` would be rerouted to `-high` by their default `high` effort, and anyone who picked `gemini-3.1-pro-high` would have its catalog budget replaced by the budget of whatever effort Claude Code happened to send.
 
 ## 4. Per-route behavior
 
 | Route | Reasoning fields | Limits |
 |---|---|---|
-| **Cloud Code** (Gemini, Claude 4.6, GPT-OSS via agy) | Translated (§§2–3, 5). Tiered flash routes get `thinkingLevel`; everything else gets a budget; never both. | Gemini output is capped at the fixed 16,384 ceiling, and `/v1/models` advertises the capped value, because gate GE (is `maxOutputTokens` 65536 accepted?) is UNVERIFIED; a live catalog limit below the ceiling still applies. Claude and GPT-OSS use the live catalog's `maxOutputTokens`. |
+| **Cloud Code** (Gemini, Claude 4.6, GPT-OSS via agy) | Translated (§§2–3, 5). Per-tier IDs published upstream (`gemini-3.8-flash-high|medium|low`, `gemini-3.1-pro-high`, `gpt-oss-120b-medium`) are budget-style entries with their own catalog budget; only synthetic entries backed by a `-tiered` upstream entry carry a `thinkingLevel`. A route gets a budget or a tier, never both. | Gemini output is capped at the fixed 16,384 ceiling, and `/v1/models` advertises the capped value, because gate GE (is `maxOutputTokens` 65536 accepted?) is UNVERIFIED; a live catalog limit below the ceiling still applies. Claude and GPT-OSS use the live catalog's `maxOutputTokens`. |
 | **Claude Code gateway** (OAuth → Anthropic) | Forwarded untouched (ADR-0001/0004). | Defaults below (§6); client `max_tokens` is clamped down to the entry's limit. |
 | **Kimi gateway** | Forwarded untouched. | Operator-set per entry; discovery fallback 32768 (§6). |
 | **OpenRouter / custom endpoints** | Forwarded untouched. | OpenRouter catalog or operator-set. |
@@ -51,7 +51,9 @@ Cloud Code's `ThinkingConfig` carries a token budget (`thinking_budget`, tag 3) 
 | `medium` | 8000 | 8000 |
 | `high` / `xhigh` / `max` | 32000 | 16000 |
 
-The catalog's default budget (1024 for the Opus 4.6 fixture, which is also what agy sends by default) applies when the client states no effort and no budget. `max` on Claude runs as `high` (32000): a larger `max` budget depends on gate GD, which is UNVERIFIED. Anthropic's rule `budget_tokens < max_tokens` is enforced on the final `maxOutputTokens` after the model cap.
+The catalog's default budget (1024 for the Opus 4.6 fixture) applies when the client states no effort and no budget. `max` on Claude runs as `high` (32000): a larger `max` budget depends on gate GD, which is UNVERIFIED. Anthropic's rule `budget_tokens < max_tokens` is enforced on the final `maxOutputTokens` after the model cap.
+
+On the non-Claude budget routes (Gemini, GPT-OSS) Google counts thought tokens against `maxOutputTokens`, so a budget taken from this table (an explicit `reasoning_effort`, or ambient effort when the request carries no explicit budget) is capped to keep `min(8192, max/2)` of answer room under the final `maxOutputTokens`, never below the catalog's minimum budget. With the Gemini ceiling of 16,384 (gate GE is UNVERIFIED), `high` therefore becomes 8192 and `medium` (8000) stays. A catalog default or an explicit client budget is not capped.
 
 ## 6. Output limits and context windows
 
@@ -108,7 +110,7 @@ The proxy forwards reasoning fields untouched on both products. A normalization 
 No probe or agy capture was run for this verification: every gate below is UNVERIFIED and the conservative branch of each was taken. To re-verify, follow §11, then apply the TAKEN line's branches.
 
 ```
-Recorded 2026-10-05. NOT RUN: no probe, agy capture or Kimi request was executed (controller ruling R3 in the SDD ledger); every gate below is UNVERIFIED and takes its "rejected / unverified" branch. No evidence files exist.
+Recorded 2026-10-05. NOT RUN: no probe, agy capture or Kimi request was executed (they are operator-run: they use the owner's Google accounts, a sudo-trusted local CA and a Moonshot key); every gate below is UNVERIFIED and takes its "rejected / unverified" branch. No evidence files exist.
 GA casing:     snake=UNVERIFIED camel=UNVERIFIED  agy-claude-spelling=unverified
 GB no-budget:  status=UNVERIFIED thinkingBlocks=UNVERIFIED
 GC sampling:   temperature=UNVERIFIED top-k=UNVERIFIED
@@ -121,7 +123,7 @@ GM agy sends:  UNVERIFIED (no capture; agy-claude-spelling and the effort budget
 GG kimi:       medium=UNVERIFIED xhigh=UNVERIFIED
 PREFLIGHT build=ok paramprobe-list=3 mitmdump=present agy=present jq=present agy-effort-flag=seen agy-model-flag=seen
 TAKEN GA=keep GB=keep GC=keep GD=shrink only GE=alternative GM=keep GG=keep
-To replace this with evidence: run plan Task 3 Steps 2-6 (operator-run), overwrite this file, then apply the TAKEN line's branches (Task 7 default branch if GE accepted, Task 10b if GG rejected, Task 12 sub-tasks).
+To replace this with evidence: run plan docs/superpowers/plans/2026-10-05-api-parameter-parity.md Task 3 Steps 2-6 (operator-run), overwrite this file, then apply the TAKEN line's branches (Task 7 default branch if GE accepted, Task 10b if GG rejected, Task 12 sub-tasks).
 ```
 
 ## 11. Re-verify
