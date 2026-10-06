@@ -52,6 +52,16 @@ func main() {
 	}
 
 	ctx := context.Background()
+	var record *json.Encoder
+	if *out != "" {
+		file, err := os.OpenFile(*out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			fmt.Println("open results file:", err)
+			os.Exit(1)
+		}
+		defer file.Close()
+		record = json.NewEncoder(file)
+	}
 	var results []Result
 	for _, c := range cases {
 		if (c.Heavy && !*heavy) || (*only != "" && !strings.EqualFold(*only, c.Gate)) {
@@ -62,17 +72,21 @@ func main() {
 		fmt.Printf("    status=%d %s thinkingBlocks=%d thinkingTokens=%d %s\n",
 			result.Status, result.Outcome(), result.ThinkingBlocks, result.ThinkingTokens, result.Error)
 		results = append(results, result)
+		// Write each result as it arrives: an interrupt must not lose the
+		// results of -heavy cases that already spent thinking tokens.
+		if record != nil {
+			if err := record.Encode(result); err != nil {
+				fmt.Println("write result:", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	fmt.Println()
 	for _, line := range Summary(results) {
 		fmt.Println(line)
 	}
-	if *out != "" {
-		if err := writeJSONL(*out, results); err != nil {
-			fmt.Println("write results:", err)
-			os.Exit(1)
-		}
+	if record != nil {
 		fmt.Println("results written to", *out)
 	}
 }
@@ -83,7 +97,7 @@ type poolAccount struct {
 	Client  *cloudcode.Client
 }
 
-// loadAccount resolves the first enabled pool account's credentials.
+// loadAccount resolves the first enabled, valid pool account's credentials.
 func loadAccount() (poolAccount, error) {
 	path, err := accounts.DefaultConfigPath()
 	if err != nil {
@@ -95,6 +109,10 @@ func loadAccount() (poolAccount, error) {
 	}
 	resolver := accounts.NewCredentialResolver(auth.Manager{}, nil)
 	for _, account := range file.Accounts {
+		if !account.Enabled || account.IsInvalid {
+			fmt.Printf("  skip %s: disabled or marked invalid\n", account.Email)
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		credentials, err := resolver.Resolve(ctx, account)
 		cancel()
@@ -158,19 +176,4 @@ func truncate(text string, limit int) string {
 		return text
 	}
 	return text[:limit] + "..."
-}
-
-func writeJSONL(path string, results []Result) error {
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-	for _, result := range results {
-		if err := encoder.Encode(result); err != nil {
-			return err
-		}
-	}
-	return nil
 }
