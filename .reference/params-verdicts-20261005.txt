@@ -1,0 +1,14 @@
+Recorded 2026-10-05. NOT RUN: no probe, agy capture or Kimi request was executed (controller ruling R3 in the SDD ledger); every gate below is UNVERIFIED and takes its "rejected / unverified" branch. No evidence files exist.
+GA casing:     snake=UNVERIFIED camel=UNVERIFIED  agy-claude-spelling=unverified
+GB no-budget:  status=UNVERIFIED thinkingBlocks=UNVERIFIED
+GC sampling:   temperature=UNVERIFIED top-k=UNVERIFIED
+GD budgets:    equals-max-control=UNVERIFIED budget-55808=UNVERIFIED
+GE output cap: 65536=UNVERIFIED
+GF minimal:    UNVERIFIED
+GX both:       UNVERIFIED
+GH sweep:      thinkingTokens 1024=UNVERIFIED 8000=UNVERIFIED 32000=UNVERIFIED (no numbers exist for D3's sign-off)
+GM agy sends:  UNVERIFIED (no capture; agy-claude-spelling and the effort budgets stay as the provisional constants)
+GG kimi:       medium=UNVERIFIED xhigh=UNVERIFIED
+PREFLIGHT build=ok paramprobe-list=3 mitmdump=present agy=present jq=present agy-effort-flag=seen agy-model-flag=seen
+TAKEN GA=keep GB=keep GC=keep GD=shrink only GE=alternative GM=keep GG=keep
+To replace this with evidence: run plan Task 3 Steps 2-6 (operator-run), overwrite this file, then apply the TAKEN line's branches (Task 7 default branch if GE accepted, Task 10b if GG rejected, Task 12 sub-tasks).
