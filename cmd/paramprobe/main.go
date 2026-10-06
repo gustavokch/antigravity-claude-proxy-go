@@ -120,9 +120,17 @@ func loadAccount() (poolAccount, error) {
 			fmt.Printf("  skip %s: resolve: %v\n", account.Email, err)
 			continue
 		}
+		projectID := account.ProjectID
+		if projectID == "" {
+			projectID = account.Subscription.ProjectID
+		}
+		if projectID == "" {
+			fmt.Printf("  skip %s: no project ID configured\n", account.Email)
+			continue
+		}
 		return poolAccount{
 			Email:   account.Email,
-			Project: account.ProjectID,
+			Project: projectID,
 			Client:  cloudcode.New(cloudcode.Options{AccessToken: credentials.AccessToken, Timeout: 120 * time.Second}),
 		}, nil
 	}
