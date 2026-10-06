@@ -159,6 +159,7 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 	if options != nil {
 		thinkingLevel = options.ThinkingLevel
 	}
+	claudeBudget := 0
 	if thinkingLevel != "" {
 		if params.Disabled {
 			thinkingLevel = "LOW"
@@ -173,12 +174,8 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 		if defaultThinkingBudget <= 0 {
 			defaultThinkingBudget = DefaultClaudeThinkBudget
 		}
-		budget := thinkingBudget(params, family, defaultThinkingBudget, minThinkingBudget)
-		generation["thinkingConfig"] = map[string]any{claudeKeyIncludeThoughts: true, claudeKeyThinkingBudget: budget}
-		maximum := intValue(generation["maxOutputTokens"], 0)
-		if maximum > 0 && maximum <= budget {
-			generation["maxOutputTokens"] = budget + 8192
-		}
+		claudeBudget = thinkingBudget(params, family, defaultThinkingBudget, minThinkingBudget)
+		generation["thinkingConfig"] = map[string]any{claudeKeyIncludeThoughts: true, claudeKeyThinkingBudget: claudeBudget}
 	} else if isThinking {
 		fallback := defaultThinkingBudget
 		if fallback <= 0 {
@@ -234,6 +231,9 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 	}
 	if maxOutputTokens > 0 && intValue(generation["maxOutputTokens"], 0) > maxOutputTokens {
 		generation["maxOutputTokens"] = maxOutputTokens
+	}
+	if claudeBudget > 0 {
+		reconcileClaudeBudget(generation, claudeBudget, maxOutputTokens)
 	}
 	return result
 }

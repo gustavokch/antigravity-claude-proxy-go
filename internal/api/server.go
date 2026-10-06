@@ -589,11 +589,16 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 		case proxyformat.FamilyOpenAI:
 			ownedBy = "openai"
 		}
+		maxOutput := details.MaxOutputTokens
+		if proxyformat.GetModelFamily(details.ID) == proxyformat.FamilyGemini && maxOutput > proxyformat.GeminiMaxOutputTokens {
+			// The converter caps Gemini output at this ceiling; advertise what will be sent.
+			maxOutput = proxyformat.GeminiMaxOutputTokens
+		}
 		models = append(models, map[string]any{
 			"id": details.ID, "object": "model", "created": server.now().Unix(),
 			"owned_by": ownedBy, "description": description,
 			"display_name":   details.DisplayName,
-			"context_window": details.MaxTokens, "max_output_tokens": details.MaxOutputTokens,
+			"context_window": details.MaxTokens, "max_output_tokens": maxOutput,
 			"supports_thinking": details.SupportsThinking,
 		})
 		seen[details.ID] = true

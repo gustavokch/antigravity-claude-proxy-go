@@ -83,3 +83,29 @@ func geminiBudgetCeiling(model string) int {
 	}
 	return 128000
 }
+
+// thinkingResponseHeadroom is the room kept for the answer above a thinking
+// budget: it is added when max_tokens is too small for the budget, and kept
+// when the model cap forces the budget down.
+const thinkingResponseHeadroom = 8192
+
+// reconcileClaudeBudget keeps thinking_budget strictly below maxOutputTokens,
+// the rule Anthropic enforces as budget_tokens < max_tokens. It runs after the
+// model cap is applied so the cap cannot undo it. A maxOutputTokens at or
+// below the budget is raised to budget plus headroom first; when the cap
+// forbids that, the budget shrinks instead so the answer keeps its room.
+func reconcileClaudeBudget(generation map[string]any, budget, limit int) {
+	config := asMap(generation["thinkingConfig"])
+	maximum := intValue(generation["maxOutputTokens"], 0)
+	if config == nil || maximum <= 0 || maximum > budget {
+		return
+	}
+	maximum = budget + thinkingResponseHeadroom
+	if limit > 0 && maximum > limit {
+		maximum = limit
+	}
+	generation["maxOutputTokens"] = maximum
+	if maximum <= budget {
+		config[claudeKeyThinkingBudget] = maximum - min(thinkingResponseHeadroom, maximum/2)
+	}
+}

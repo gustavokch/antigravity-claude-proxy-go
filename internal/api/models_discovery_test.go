@@ -14,6 +14,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
+	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/openrouter"
 )
 
@@ -317,6 +318,53 @@ func TestGeminiModels_AdvertiseMaxContextWindow(t *testing.T) {
 			if cw < 1000000 {
 				t.Errorf("gemini model %q context_window = %v, expected >= 1M", id, cw)
 			}
+		}
+	}
+}
+
+// The converter caps Gemini output at proxyformat.GeminiMaxOutputTokens, so
+// discovery must not advertise the larger catalog value; other families keep
+// their catalog limit.
+func TestModels_AdvertiseTheOutputLimitTheConverterSends(t *testing.T) {
+	server := &Server{
+		backend: &geminiDiscoveryTestBackend{},
+		logger:  slog.Default(),
+		now:     time.Now,
+	}
+
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	want := map[string]float64{
+		"gemini-3.8-flash": float64(proxyformat.GeminiMaxOutputTokens),
+		"gemini-2.5-pro":   float64(proxyformat.GeminiMaxOutputTokens),
+		"claude-opus-4-6":  64000,
+	}
+	seen := map[string]bool{}
+	for _, m := range resp.Data {
+		id, _ := m["id"].(string)
+		wantOutput, ok := want[id]
+		if !ok {
+			continue
+		}
+		seen[id] = true
+		if got, _ := m["max_output_tokens"].(float64); got != wantOutput {
+			t.Errorf("model %q advertises max_output_tokens %v, want %v", id, m["max_output_tokens"], wantOutput)
+		}
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Errorf("model %q missing from /v1/models", id)
 		}
 	}
 }

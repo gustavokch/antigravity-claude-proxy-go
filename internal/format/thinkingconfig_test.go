@@ -225,3 +225,68 @@ func TestClaudeCodeCapturedBodyShapeConvertsToACleanGenerationConfig(t *testing.
 		}
 	}
 }
+
+// Anthropic rejects budget_tokens >= max_tokens, and Google counts thought
+// tokens against maxOutputTokens, so the budget must stay below the final
+// maxOutputTokens however the model cap and the client's value interact.
+func TestThinkingBudgetStaysBelowMaxOutputTokens(t *testing.T) {
+	t.Parallel()
+	enabled := func(budget float64) map[string]any {
+		return map[string]any{"type": "enabled", "budget_tokens": budget}
+	}
+	tests := []struct {
+		name       string
+		maxTokens  float64
+		budget     float64
+		cap        int
+		wantMax    int
+		wantBudget int
+	}{
+		{"max_tokens above budget is untouched", 64000, 20000, 64000, 64000, 20000},
+		{"max_tokens at the budget is raised by the headroom", 16000, 16000, 64000, 24192, 16000},
+		{"max_tokens below the budget is raised by the headroom", 16000, 20000, 64000, 28192, 20000},
+		{"the cap stops the raise and the budget shrinks", 80000, 70000, 64000, 64000, 55808},
+		{"a small cap halves the room instead", 5000, 10000, 8192, 8192, 4096},
+		{"no cap: only the raise applies", 16000, 20000, 0, 28192, 20000},
+	}
+	for _, tc := range tests {
+		options := ModelOptions{SupportsThinking: true, ThinkingBudget: 1024, MaxOutputTokens: tc.cap}
+		generation := convertWith(map[string]any{
+			"model": "claude-opus-4-6-thinking", "max_tokens": tc.maxTokens, "thinking": enabled(tc.budget),
+		}, &options)
+		gotMax, gotBudget := intValue(generation["maxOutputTokens"], 0), budgetOf(t, generation)
+		if gotMax != tc.wantMax || gotBudget != tc.wantBudget {
+			t.Errorf("%s: maxOutputTokens=%d budget=%d, want %d and %d", tc.name, gotMax, gotBudget, tc.wantMax, tc.wantBudget)
+		}
+		if gotBudget >= gotMax {
+			t.Errorf("%s: budget %d is not below maxOutputTokens %d", tc.name, gotBudget, gotMax)
+		}
+	}
+}
+
+// The proxy caps Gemini output at the fixed ceiling even when the live
+// catalog advertises more; a live limit below the ceiling still applies.
+func TestGeminiOutputIsCappedAtTheFixedCeiling(t *testing.T) {
+	t.Parallel()
+	high := ModelOptions{SupportsThinking: true, ThinkingLevel: "HIGH", MaxOutputTokens: 65536}
+	low := ModelOptions{SupportsThinking: true, ThinkingLevel: "HIGH", MaxOutputTokens: 8192}
+	tests := []struct {
+		name      string
+		maxTokens float64
+		options   *ModelOptions
+		want      int
+	}{
+		{"a live limit above the ceiling does not lift it", 65536, &high, GeminiMaxOutputTokens},
+		{"above the limit is cut to the ceiling", 100000, &high, GeminiMaxOutputTokens},
+		{"below the ceiling is untouched", 4096, &high, 4096},
+		{"a live limit below the ceiling still applies", 16000, &low, 8192},
+		{"no live limit falls back to the ceiling", 65536, nil, GeminiMaxOutputTokens},
+		{"an entry without a limit falls back to the ceiling", 65536, &ModelOptions{SupportsThinking: true, ThinkingLevel: "HIGH"}, GeminiMaxOutputTokens},
+	}
+	for _, tc := range tests {
+		generation := convertWith(map[string]any{"model": "gemini-3.8-flash-high", "max_tokens": tc.maxTokens}, tc.options)
+		if got := intValue(generation["maxOutputTokens"], 0); got != tc.want {
+			t.Errorf("%s: maxOutputTokens = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}

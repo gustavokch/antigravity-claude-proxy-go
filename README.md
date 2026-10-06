@@ -701,14 +701,14 @@ Bumping for a session stops automatically the moment it stops paying: a bump tha
 
 | Selection ID | Display Name | Provider | Context Window | Max Output |
 |---|---|---|---:|---:|
-| `gemini-3.7-flash-high` | Gemini 3.7 Flash (High) | Google | 1,048,576 | 65,536 |
-| `gemini-3.7-flash-medium` | Gemini 3.7 Flash (Medium) | Google | 1,048,576 | 65,536 |
-| `gemini-3.7-flash-low` | Gemini 3.7 Flash (Low) | Google | 1,048,576 | 65,536 |
-| `gemini-3.5-flash-low` | Gemini 3.5 Flash (Medium) | Google | 1,048,576 | 65,536 |
-| `gemini-3-flash-agent` | Gemini 3.5 Flash (High) | Google | 1,048,576 | 65,536 |
-| `gemini-3.5-flash-extra-low` | Gemini 3.5 Flash (Low) | Google | 1,048,576 | 65,536 |
-| `gemini-3.1-pro-low` | Gemini 3.1 Pro (Low) | Google | 1,048,576 | 65,535 |
-| `gemini-pro-agent` | Gemini 3.1 Pro (High) | Google | 1,048,576 | 65,535 |
+| `gemini-3.7-flash-high` | Gemini 3.7 Flash (High) | Google | 1,048,576 | 16,384 |
+| `gemini-3.7-flash-medium` | Gemini 3.7 Flash (Medium) | Google | 1,048,576 | 16,384 |
+| `gemini-3.7-flash-low` | Gemini 3.7 Flash (Low) | Google | 1,048,576 | 16,384 |
+| `gemini-3.5-flash-low` | Gemini 3.5 Flash (Medium) | Google | 1,048,576 | 16,384 |
+| `gemini-3-flash-agent` | Gemini 3.5 Flash (High) | Google | 1,048,576 | 16,384 |
+| `gemini-3.5-flash-extra-low` | Gemini 3.5 Flash (Low) | Google | 1,048,576 | 16,384 |
+| `gemini-3.1-pro-low` | Gemini 3.1 Pro (Low) | Google | 1,048,576 | 16,384 |
+| `gemini-pro-agent` | Gemini 3.1 Pro (High) | Google | 1,048,576 | 16,384 |
 | `claude-sonnet-4-6` | Claude Sonnet 4.6 (Thinking) | Anthropic | 250,000 | 64,000 |
 | `claude-opus-4-6-thinking` | Claude Opus 4.6 (Thinking) | Anthropic | 250,000 | 64,000 |
 | `gpt-oss-120b-medium` | GPT-OSS 120B (Medium) | OpenAI | 131,072 | 32,768 |
