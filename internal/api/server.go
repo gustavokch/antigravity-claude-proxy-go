@@ -555,8 +555,11 @@ const defaultDiscoveryContextWindow = 200000
 // defaultDiscoveryMaxOutputTokens caps the max_output_tokens that /v1/models
 // advertises when only the context window is known. A model's output cap is
 // always far below its context window, so reporting the context window as the
-// output cap invites clients to send a max_tokens the provider rejects.
-const defaultDiscoveryMaxOutputTokens = 200000
+// output cap invites clients to send a max_tokens the provider rejects. 32768
+// is the default max_tokens Kimi documents for its K2.x models and the value
+// zen.DefaultMaxOutputTokens already fills in, so every gateway fallback
+// advertises the same, conservative number.
+const defaultDiscoveryMaxOutputTokens = 32768
 
 func (server *Server) models(writer http.ResponseWriter, request *http.Request) {
 	catalog, err := server.fetchModelCatalog(request.Context())

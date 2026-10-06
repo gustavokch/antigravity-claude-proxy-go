@@ -738,3 +738,45 @@ func TestKimiModels_MaxOutputFallbackDoesNotEqualContextWindow(t *testing.T) {
 			entry["max_output_tokens"], defaultDiscoveryMaxOutputTokens)
 	}
 }
+
+// The two guards above use 1M-context fixtures, which pass whatever the
+// fallback is as long as it sits under 1M. An entry with no limits at all is
+// the shape that used to advertise max_output_tokens == context_window (both
+// 200000).
+func TestKimiModels_EntryWithoutLimitsAdvertisesAnOutputBelowItsContext(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.Kimi.Enabled = true
+	testCfg.Kimi.Allowlist = []config.KimiModelConfig{{ID: "kimi/no-limits", Enabled: true}}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	for _, m := range resp.Data {
+		if m["id"] != "kimi/no-limits" {
+			continue
+		}
+		contextWindow, _ := m["context_window"].(float64)
+		maxOutput, _ := m["max_output_tokens"].(float64)
+		if contextWindow != float64(defaultDiscoveryContextWindow) {
+			t.Errorf("context_window = %v, want the discovery default %d", contextWindow, defaultDiscoveryContextWindow)
+		}
+		if maxOutput >= contextWindow {
+			t.Errorf("max_output_tokens = %v is not below context_window = %v", maxOutput, contextWindow)
+		}
+		if maxOutput != 32768 {
+			t.Errorf("max_output_tokens = %v, want 32768", maxOutput)
+		}
+		return
+	}
+	t.Fatal("allowlist model missing from discovery response")
+}
