@@ -153,7 +153,7 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 		generation["stopSequences"] = cloneJSON(stops)
 	}
 
-	params := reasoning.Parse(request)
+	params := withoutAmbientEffortForNamedTier(reasoning.Parse(request), model)
 
 	thinkingLevel := ""
 	if options != nil {

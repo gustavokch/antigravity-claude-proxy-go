@@ -214,3 +214,25 @@ func intOf(value any) (int, bool) {
 	}
 	return 0, false
 }
+
+// tierSuffixes end a model ID that names a thinking tier directly
+// (gemini-3.8-flash-low, gemini-3.1-pro-high, gpt-oss-120b-medium). Upstream
+// publishes these as their own IDs.
+var tierSuffixes = [...]string{"-high", "-medium", "-low"}
+
+// NamesTier reports whether a model ID already names a thinking tier. A
+// trailing "[1m]" context-window marker and letter case are ignored, the same
+// normalization the catalog applies when it resolves a client's model string.
+func NamesTier(model string) bool {
+	id := strings.TrimSpace(model)
+	if strings.HasSuffix(strings.ToLower(id), "[1m]") {
+		id = strings.TrimSpace(id[:len(id)-len("[1m]")])
+	}
+	id = strings.ToLower(id)
+	for _, suffix := range tierSuffixes {
+		if strings.HasSuffix(id, suffix) {
+			return true
+		}
+	}
+	return false
+}

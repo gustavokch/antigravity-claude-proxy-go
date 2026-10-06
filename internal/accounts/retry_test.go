@@ -720,7 +720,8 @@ func TestDecorrelateHandlesNilSourceAndZero(t *testing.T) {
 
 // Claude Code sends output_config.effort on every request. Through the real
 // dispatcher it must pick the flash tier for a bare family ID and set the
-// budget on the Claude route, while leaving a tier named in the model ID alone.
+// budget on the Claude route, while a tier named in the model ID keeps both
+// its route and its own catalog budget.
 func TestDispatcherAppliesOutputConfigEffort(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 5, 4, 0, 0, 0, time.UTC)
@@ -729,49 +730,71 @@ func TestDispatcherAppliesOutputConfigEffort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The Claude entry's catalog default (2048) differs from the low effort
+	// budget (1024), so the low row below fails if ambient effort is ignored.
 	modelsBody := []byte(`{
 		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low","claude-opus-4-6-thinking"]}]}],
 		"models":{
 			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
 			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536},
 			"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":1048576,"maxOutputTokens":65536},
-			"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":250000,"maxOutputTokens":64000}
+			"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":2048,"maxTokens":250000,"maxOutputTokens":64000}
 		}
 	}`)
 	events := [][]byte{[]byte(`{}`)}
-	client := &scriptedClient{modelsBody: modelsBody, results: []scriptedResult{{events: events}, {events: events}, {events: events}, {events: events}}}
+	results := make([]scriptedResult, 8)
+	for i := range results {
+		results[i] = scriptedResult{events: events}
+	}
+	client := &scriptedClient{modelsBody: modelsBody, results: results}
 	dispatcher := newTestDispatcher(t, manager, &staticResolver{tokens: map[string]string{account.Email: "token"}}, map[string]*scriptedClient{"token": client}, now, func(context.Context, time.Duration) error { return nil })
 
-	send := func(model, effort string, thinking map[string]any) map[string]any {
+	send := func(model string, extra map[string]any) map[string]any {
 		t.Helper()
 		request := testRequest()
 		request["model"] = model
 		request["max_tokens"] = float64(64000)
-		request["output_config"] = map[string]any{"effort": effort}
-		if thinking != nil {
-			request["thinking"] = thinking
+		for key, value := range extra {
+			request[key] = value
 		}
 		if _, err := dispatcher.StreamGenerateContent(context.Background(), request, func(cloudcode.SSEEvent) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 		return client.payload
 	}
-
-	if got := send("gemini-3.8-flash", "low", nil)["model"]; got != "gemini-3.8-flash-low" {
-		t.Errorf("bare family with ambient low routed to %v, want gemini-3.8-flash-low", got)
+	ambient := func(effort string) map[string]any {
+		return map[string]any{"output_config": map[string]any{"effort": effort}}
 	}
-	if got := send("gemini-3.8-flash-high", "low", nil)["model"]; got != "gemini-3.8-flash-high" {
-		t.Errorf("a named tier must beat ambient effort, routed to %v", got)
+	thinkingConfigOf := func(payload map[string]any) map[string]any {
+		return payload["request"].(map[string]any)["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
+	}
+	expectGemini := func(name string, payload map[string]any, wantModel string, wantBudget int) {
+		t.Helper()
+		if got := payload["model"]; got != wantModel {
+			t.Errorf("%s: routed to %v, want %s", name, got, wantModel)
+		}
+		if got := thinkingConfigOf(payload)["thinkingBudget"]; got != wantBudget {
+			t.Errorf("%s: thinkingBudget = %v, want %d", name, got, wantBudget)
+		}
 	}
 
-	payload := send("claude-opus-4-6-thinking", "high", map[string]any{"type": "adaptive", "display": "summarized"})
-	thinking := payload["request"].(map[string]any)["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
-	if thinking["thinking_budget"] != 32000 {
+	expectGemini("bare family with ambient low", send("gemini-3.8-flash", ambient("low")), "gemini-3.8-flash-low", 1024)
+	expectGemini("named high tier with ambient low", send("gemini-3.8-flash-high", ambient("low")), "gemini-3.8-flash-high", 16000)
+	expectGemini("named low tier with ambient high", send("gemini-3.8-flash-low", ambient("high")), "gemini-3.8-flash-low", 1024)
+	expectGemini("named high tier with explicit reasoning_effort low", send("gemini-3.8-flash-high", map[string]any{"reasoning_effort": "low"}), "gemini-3.8-flash-low", 1024)
+
+	payload := send("claude-opus-4-6-thinking", map[string]any{
+		"output_config": map[string]any{"effort": "high"},
+		"thinking":      map[string]any{"type": "adaptive", "display": "summarized"},
+	})
+	if thinking := thinkingConfigOf(payload); thinking["thinking_budget"] != 32000 {
 		t.Errorf("claude route with ambient high: thinkingConfig=%#v, want thinking_budget 32000", thinking)
 	}
-	payload = send("claude-opus-4-6-thinking", "low", map[string]any{"type": "adaptive"})
-	thinking = payload["request"].(map[string]any)["generationConfig"].(map[string]any)["thinkingConfig"].(map[string]any)
-	if thinking["thinking_budget"] != 1024 {
+	payload = send("claude-opus-4-6-thinking", map[string]any{
+		"output_config": map[string]any{"effort": "low"},
+		"thinking":      map[string]any{"type": "adaptive"},
+	})
+	if thinking := thinkingConfigOf(payload); thinking["thinking_budget"] != 1024 {
 		t.Errorf("claude route with ambient low: thinkingConfig=%#v, want thinking_budget 1024", thinking)
 	}
 }

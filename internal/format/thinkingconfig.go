@@ -68,6 +68,21 @@ func thinkingBudget(params reasoning.Params, family ModelFamily, fallback, minim
 	return budget
 }
 
+// withoutAmbientEffortForNamedTier drops output_config.effort when the model
+// ID already names a tier. Claude Code sends that effort on every request, so
+// it must not override the budget of a tier the user picked by name; upstream
+// publishes those tiers (gemini-3.8-flash-low, gemini-3.1-pro-high,
+// gpt-oss-120b-medium) as budget-style entries that each carry their own
+// budget (plan decision D1). Tier routing applies the same rule. A deliberate
+// reasoning_effort or an explicit budget still wins.
+func withoutAmbientEffortForNamedTier(params reasoning.Params, model string) reasoning.Params {
+	if params.Source == reasoning.SourceOutputConfig && reasoning.NamesTier(model) {
+		params.Level = reasoning.LevelUnset
+		params.Source = reasoning.SourceNone
+	}
+	return params
+}
+
 // geminiBudgetCeiling is the largest thinkingBudget Google documents for the
 // Gemini 2.5 series (2.5 Pro 128-32768, 2.5 Flash and Flash-Lite up to 24576).
 // Other families have no documented budget range, so they keep the proxy's

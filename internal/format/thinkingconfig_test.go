@@ -6,8 +6,10 @@ import (
 )
 
 // claudeOpts mirrors a live Cloud Code entry for Claude Opus 4.6 (Thinking):
-// catalog default budget 1024, output cap 64000.
-var claudeOpts = ModelOptions{SupportsThinking: true, ThinkingBudget: 1024, MaxOutputTokens: 64000}
+// output cap 64000. Its catalog default budget (2048) is deliberately not one
+// of the effort table's values, so a row that expects 1024 proves effort moved
+// the budget instead of the catalog default standing.
+var claudeOpts = ModelOptions{SupportsThinking: true, ThinkingBudget: 2048, MaxOutputTokens: 64000}
 
 func convertWith(request map[string]any, options *ModelOptions) map[string]any {
 	request["messages"] = []any{map[string]any{"role": "user", "content": "hi"}}
@@ -63,18 +65,32 @@ func TestOutputConfigEffortSetsBudgetOnBudgetStyleModels(t *testing.T) {
 		{"claude: high", "claude-opus-4-6-thinking", claudeOpts, map[string]any{"thinking": adaptive, "output_config": effortConfig("high")}, 32000},
 		{"claude: xhigh falls back to high", "claude-opus-4-6-thinking", claudeOpts, map[string]any{"thinking": adaptive, "output_config": effortConfig("xhigh")}, 32000},
 		{"claude: max falls back to high", "claude-opus-4-6-thinking", claudeOpts, map[string]any{"thinking": adaptive, "output_config": effortConfig("max")}, 32000},
-		{"claude: no effort keeps the catalog default", "claude-opus-4-6-thinking", claudeOpts, map[string]any{"thinking": adaptive}, 1024},
+		{"claude: no effort keeps the catalog default", "claude-opus-4-6-thinking", claudeOpts, map[string]any{"thinking": adaptive}, 2048},
 		{"claude: explicit budget beats ambient effort", "claude-opus-4-6-thinking", claudeOpts,
 			map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": float64(20000)}, "output_config": effortConfig("low")}, 20000},
 		{"claude: reasoning_effort beats an explicit budget", "claude-opus-4-6-thinking", claudeOpts,
 			map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": float64(20000)}, "reasoning_effort": "low"}, 1024},
 		{"claude: top-level thinking_budget is honored", "claude-opus-4-6-thinking", claudeOpts, map[string]any{"thinking_budget": float64(5000)}, 5000},
-		{"gemini budget model: medium", "gemini-3.1-pro-high", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
+		{"gemini budget model: medium", "gemini-3.1-pro", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
 			map[string]any{"output_config": effortConfig("medium")}, 8000},
-		{"gemini budget model: max falls back to high", "gemini-3.1-pro-high", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
+		{"gemini budget model: max falls back to high", "gemini-3.1-pro", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
 			map[string]any{"output_config": effortConfig("max")}, 16000},
-		{"gpt-oss: low", "gpt-oss-120b-medium", ModelOptions{SupportsThinking: true, ThinkingBudget: 8192, MaxOutputTokens: 32768},
+		{"gpt-oss: low", "gpt-oss-120b", ModelOptions{SupportsThinking: true, ThinkingBudget: 8192, MaxOutputTokens: 32768},
 			map[string]any{"output_config": effortConfig("low")}, 1024},
+
+		// A tier named in the model ID keeps its own catalog budget: ambient
+		// effort never overrides it (plan decision D1), a deliberate
+		// reasoning_effort still does.
+		{"gemini named tier: ambient low keeps the catalog budget", "gemini-3.1-pro-high", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
+			map[string]any{"output_config": effortConfig("low")}, 10001},
+		{"gemini named tier: ambient max keeps the catalog budget", "gemini-3.1-pro-high", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
+			map[string]any{"output_config": effortConfig("max")}, 10001},
+		{"gpt-oss named tier: ambient low keeps the catalog budget", "gpt-oss-120b-medium", ModelOptions{SupportsThinking: true, ThinkingBudget: 8192, MaxOutputTokens: 32768},
+			map[string]any{"output_config": effortConfig("low")}, 8192},
+		{"gemini named tier: reasoning_effort overrides the catalog budget", "gemini-3.1-pro-high", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
+			map[string]any{"output_config": effortConfig("high"), "reasoning_effort": "low"}, 1024},
+		{"gemini named tier: an explicit budget still wins", "gemini-3.1-pro-high", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
+			map[string]any{"output_config": effortConfig("low"), "thinking_budget": float64(5000)}, 5000},
 	}
 	for _, tc := range tests {
 		options := tc.options
@@ -118,7 +134,7 @@ func TestLegacyGeminiPathHonorsEffortAndTopLevelBudget(t *testing.T) {
 		{"no signal uses the Gemini default", map[string]any{}, DefaultGeminiThinkBudget},
 	}
 	for _, tc := range tests {
-		generation := convertWith(claudeRequestFor("gemini-3.1-pro-high", tc.extra), nil)
+		generation := convertWith(claudeRequestFor("gemini-3.1-pro", tc.extra), nil)
 		if got := budgetOf(t, generation); got != tc.want {
 			t.Errorf("%s: budget = %d, want %d", tc.name, got, tc.want)
 		}

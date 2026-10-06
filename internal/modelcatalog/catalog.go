@@ -288,23 +288,10 @@ func effortTier(requested string, params reasoning.Params) string {
 	if params.Level == reasoning.LevelUnset {
 		return ""
 	}
-	if params.Source == reasoning.SourceOutputConfig && hasTierSuffix(requested) {
+	if params.Source == reasoning.SourceOutputConfig && reasoning.NamesTier(requested) {
 		return ""
 	}
 	return string(params.Level.Supported(flashTiers[:]...))
-}
-
-// tierSuffixes end the per-tier flash IDs (gemini-3.8-flash-low, ...).
-var tierSuffixes = [...]string{"-high", "-medium", "-low", "-extra-low"}
-
-func hasTierSuffix(requested string) bool {
-	id := strings.ToLower(Strip1mSuffix(requested))
-	for _, suffix := range tierSuffixes {
-		if strings.HasSuffix(id, suffix) {
-			return true
-		}
-	}
-	return false
 }
 
 func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]any) (Model, error) {

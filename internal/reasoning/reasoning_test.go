@@ -120,3 +120,28 @@ func TestSupported(t *testing.T) {
 		}
 	}
 }
+
+func TestNamesTier(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"gemini-3.8-flash-low", true},
+		{"gemini-3.8-flash-HIGH", true},
+		{"gemini-3.8-flash-medium[1m]", true},
+		{"gemini-3.5-flash-extra-low", true},
+		{"gpt-oss-120b-medium", true},
+		{"gemini-3.1-pro-high", true},
+		{"gemini-3.8-flash", false},
+		{"gemini-pro-agent", false},
+		{"claude-opus-4-6-thinking", false},
+		{"gemini-3.8-flash-tiered", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := NamesTier(tc.model); got != tc.want {
+			t.Errorf("NamesTier(%q) = %v, want %v", tc.model, got, tc.want)
+		}
+	}
+}
