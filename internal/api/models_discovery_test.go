@@ -837,7 +837,7 @@ func TestKimiModels_DocumentedModelLimits(t *testing.T) {
 		}
 	}
 
-	for _, id := range []string{"k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"} {
+	for _, id := range []string{"k3-256k", "kimi-for-coding-highspeed"} {
 		entry, ok := byID[id]
 		if !ok {
 			t.Fatalf("model %s missing from discovery", id)
@@ -847,6 +847,18 @@ func TestKimiModels_DocumentedModelLimits(t *testing.T) {
 		}
 		if mo, _ := entry["max_output_tokens"].(float64); mo != 32768 {
 			t.Errorf("model %s max_output_tokens = %v, want 32768", id, mo)
+		}
+	}
+
+	// kimi-for-coding is K2.8 Preview: 1M context (kimi.com/code/docs/en/kimi-code/models.html).
+	if entry, ok := byID["kimi-for-coding"]; !ok {
+		t.Fatalf("model kimi-for-coding missing from discovery")
+	} else {
+		if cw, _ := entry["context_window"].(float64); cw != 1048576 {
+			t.Errorf("model kimi-for-coding context_window = %v, want 1048576", cw)
+		}
+		if mo, _ := entry["max_output_tokens"].(float64); mo != 32768 {
+			t.Errorf("model kimi-for-coding max_output_tokens = %v, want 32768", mo)
 		}
 	}
 }

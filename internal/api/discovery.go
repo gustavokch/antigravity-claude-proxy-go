@@ -287,9 +287,17 @@ func appendKimiDiscovery(server *Server, cfg config.Config, models *[]any, seen 
 			if maxOutput <= 0 {
 				maxOutput = 131072
 			}
-		case "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed":
+		case "k3-256k", "kimi-for-coding-highspeed":
 			if contextLen <= 0 {
 				contextLen = 262144
+			}
+			if maxOutput <= 0 {
+				maxOutput = 32768
+			}
+		case "kimi-for-coding":
+			// K2.8 Preview: 1M context (kimi.com/code/docs/en/kimi-code/models.html).
+			if contextLen <= 0 {
+				contextLen = 1048576
 			}
 			if maxOutput <= 0 {
 				maxOutput = 32768
