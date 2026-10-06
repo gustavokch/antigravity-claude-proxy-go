@@ -46,18 +46,26 @@ func effortBudget(family ModelFamily, level reasoning.Level) int {
 	return 0
 }
 
+// budgetFromEffortTable reports whether thinkingBudget derives the budget from
+// the effort table: an explicit reasoning_effort always does, ambient
+// output_config.effort only when the request carries no explicit budget. Only
+// such a budget is the proxy's own choice, so only it may be capped for answer
+// room (capEffortBudgetForAnswer).
+func budgetFromEffortTable(params reasoning.Params) bool {
+	return params.Source == reasoning.SourceExplicit ||
+		(!params.HasBudget && params.Level != reasoning.LevelUnset)
+}
+
 // thinkingBudget picks the token budget for a budget-style model. Precedence:
 // an explicit reasoning_effort, then an explicit budget, then the ambient
 // output_config.effort, then fallback. The result honors the catalog minimum.
 func thinkingBudget(params reasoning.Params, family ModelFamily, fallback, minimum int) int {
 	budget := 0
 	switch {
-	case params.Source == reasoning.SourceExplicit:
+	case budgetFromEffortTable(params):
 		budget = effortBudget(family, params.Level)
 	case params.HasBudget:
 		budget = params.Budget
-	case params.Level != reasoning.LevelUnset:
-		budget = effortBudget(family, params.Level)
 	}
 	if budget <= 0 {
 		budget = fallback
@@ -122,5 +130,23 @@ func reconcileClaudeBudget(generation map[string]any, budget, limit int) {
 	generation["maxOutputTokens"] = maximum
 	if maximum <= budget {
 		config[claudeKeyThinkingBudget] = maximum - min(thinkingResponseHeadroom, maximum/2)
+	}
+}
+
+// capEffortBudgetForAnswer shrinks an effort-derived thinkingBudget so the
+// final maxOutputTokens keeps room for the answer, because Google counts
+// thought tokens against maxOutputTokens. The room is thinkingResponseHeadroom,
+// or half of maxOutputTokens when that is smaller. The catalog minimum is the
+// floor, even when it exceeds the limit. It does nothing without a
+// maxOutputTokens.
+func capEffortBudgetForAnswer(generation map[string]any, minimum int) {
+	config := asMap(generation["thinkingConfig"])
+	maximum := intValue(generation["maxOutputTokens"], 0)
+	if config == nil || maximum <= 0 {
+		return
+	}
+	limit := maximum - min(thinkingResponseHeadroom, maximum/2)
+	if intValue(config["thinkingBudget"], 0) > limit {
+		config["thinkingBudget"] = max(limit, minimum)
 	}
 }

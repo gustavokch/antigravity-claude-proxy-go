@@ -160,6 +160,7 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 		thinkingLevel = options.ThinkingLevel
 	}
 	claudeBudget := 0
+	effortDerivedBudget := false
 	if thinkingLevel != "" {
 		if params.Disabled {
 			thinkingLevel = "LOW"
@@ -181,6 +182,7 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 		if fallback <= 0 {
 			fallback = DefaultGeminiThinkBudget
 		}
+		effortDerivedBudget = budgetFromEffortTable(params)
 		budget := thinkingBudget(params, family, fallback, minThinkingBudget)
 		if family == FamilyGemini && options == nil {
 			// No live catalog entry describes the model, so cap the budget at
@@ -234,6 +236,9 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 	}
 	if claudeBudget > 0 {
 		reconcileClaudeBudget(generation, claudeBudget, maxOutputTokens)
+	}
+	if effortDerivedBudget {
+		capEffortBudgetForAnswer(generation, minThinkingBudget)
 	}
 	return result
 }

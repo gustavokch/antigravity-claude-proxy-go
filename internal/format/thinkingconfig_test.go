@@ -73,8 +73,11 @@ func TestOutputConfigEffortSetsBudgetOnBudgetStyleModels(t *testing.T) {
 		{"claude: top-level thinking_budget is honored", "claude-opus-4-6-thinking", claudeOpts, map[string]any{"thinking_budget": float64(5000)}, 5000},
 		{"gemini budget model: medium", "gemini-3.1-pro", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
 			map[string]any{"output_config": effortConfig("medium")}, 8000},
+		// 8192, not 16000: the effort table's Gemini high budget would leave
+		// almost no answer under the 16,384 output ceiling (see
+		// TestEffortDerivedBudgetKeepsRoomForTheAnswer).
 		{"gemini budget model: max falls back to high", "gemini-3.1-pro", ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535},
-			map[string]any{"output_config": effortConfig("max")}, 16000},
+			map[string]any{"output_config": effortConfig("max")}, 8192},
 		{"gpt-oss: low", "gpt-oss-120b", ModelOptions{SupportsThinking: true, ThinkingBudget: 8192, MaxOutputTokens: 32768},
 			map[string]any{"output_config": effortConfig("low")}, 1024},
 
@@ -303,6 +306,44 @@ func TestGeminiOutputIsCappedAtTheFixedCeiling(t *testing.T) {
 		generation := convertWith(map[string]any{"model": "gemini-3.8-flash-high", "max_tokens": tc.maxTokens}, tc.options)
 		if got := intValue(generation["maxOutputTokens"], 0); got != tc.want {
 			t.Errorf("%s: maxOutputTokens = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Google counts thought tokens against maxOutputTokens and the proxy keeps
+// Gemini output at 16,384, so an effort-derived budget is capped to leave room
+// for the answer. A budget the client or the catalog chose is not touched.
+func TestEffortDerivedBudgetKeepsRoomForTheAnswer(t *testing.T) {
+	t.Parallel()
+	gemini := ModelOptions{SupportsThinking: true, ThinkingBudget: 10001, MaxOutputTokens: 65535}
+	gptOSS := ModelOptions{SupportsThinking: true, ThinkingBudget: 8192, MaxOutputTokens: 32768}
+	tests := []struct {
+		name       string
+		model      string
+		options    ModelOptions
+		extra      map[string]any
+		wantMax    int
+		wantBudget int
+	}{
+		{"ambient high is capped under the ceiling", "gemini-3.1-pro", gemini,
+			map[string]any{"output_config": effortConfig("high")}, GeminiMaxOutputTokens, 8192},
+		{"ambient medium is below the limit and kept", "gemini-3.1-pro", gemini,
+			map[string]any{"output_config": effortConfig("medium")}, GeminiMaxOutputTokens, 8000},
+		{"explicit reasoning_effort high is capped too", "gemini-3.1-pro", gemini,
+			map[string]any{"reasoning_effort": "high"}, GeminiMaxOutputTokens, 8192},
+		{"an explicit client budget is kept", "gemini-3.1-pro", gemini,
+			map[string]any{"thinking_budget": float64(16000)}, GeminiMaxOutputTokens, 16000},
+		{"a small max_tokens halves the room", "gemini-3.1-pro", gemini,
+			map[string]any{"output_config": effortConfig("high"), "max_tokens": float64(4096)}, 4096, 2048},
+		{"gpt-oss has room under its own cap", "gpt-oss-120b", gptOSS,
+			map[string]any{"output_config": effortConfig("high")}, 32768, 16000},
+	}
+	for _, tc := range tests {
+		options := tc.options
+		generation := convertWith(claudeRequestFor(tc.model, tc.extra), &options)
+		gotMax, gotBudget := intValue(generation["maxOutputTokens"], 0), budgetOf(t, generation)
+		if gotMax != tc.wantMax || gotBudget != tc.wantBudget {
+			t.Errorf("%s: maxOutputTokens=%d budget=%d, want %d and %d", tc.name, gotMax, gotBudget, tc.wantMax, tc.wantBudget)
 		}
 	}
 }
