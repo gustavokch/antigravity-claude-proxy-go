@@ -345,6 +345,9 @@ func TestForwardToClaudeCode_Non2xxStatusRecording(t *testing.T) {
 }
 
 func TestForwardToClaudeCode_AutoRefreshOn401(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+
 	reqCount := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqCount++
@@ -429,6 +432,9 @@ func TestForwardToClaudeCode_AutoRefreshOn401(t *testing.T) {
 }
 
 func TestSyncRefreshedAccountToConfig_PreservesAllowlistAndRouting(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+
 	origCfg := config.Get()
 	defer config.SetForTest(origCfg)
 
@@ -481,6 +487,8 @@ func TestSyncRefreshedAccountToConfig_PreservesAllowlistAndRouting(t *testing.T)
 }
 
 func TestForwardToClaudeCode_401RetryFailure_FailsOver(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
 	reqCount := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqCount++
