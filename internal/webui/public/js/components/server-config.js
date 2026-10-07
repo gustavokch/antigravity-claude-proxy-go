@@ -670,11 +670,9 @@ window.Components.serverConfig = () => ({
         this.saveHeadroom({ codeCompressor: enabled });
     },
 
-
     toggleHeadroomOutputShaper(patch) {
         this.saveHeadroom({ outputShaper: patch });
     },
-
 
     // ==========================================
     // Server Configuration Presets
