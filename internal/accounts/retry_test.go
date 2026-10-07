@@ -133,6 +133,12 @@ func (client *scriptedClient) FetchAvailableModels(context.Context, string) (clo
 	return cloudcode.Response{StatusCode: http.StatusOK, Body: body}, nil
 }
 
+func (client *scriptedClient) modelsCallCount() int {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return client.modelsCalls
+}
+
 func (client *scriptedClient) StreamGenerateContent(_ context.Context, payload any, options cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
 	client.mu.Lock()
 	index := client.calls
@@ -796,5 +802,51 @@ func TestDispatcherAppliesOutputConfigEffort(t *testing.T) {
 	})
 	if thinking := thinkingConfigOf(payload); thinking["thinking_budget"] != 1024 {
 		t.Errorf("claude route with ambient low: thinkingConfig=%#v, want thinking_budget 1024", thinking)
+	}
+}
+
+// A fresh 24h-TTL catalog can still lack a model the upstream just published.
+// resolveModel must kick a background refresh (debounced by
+// missingModelFetchFloor) instead of waiting out the TTL, and must not block
+// the failing request on the fetch.
+func TestResolveModelMissingFromFreshCatalogKicksBackgroundFetch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	current := now
+	account := testAccount("missing-model@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return current }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedClient{}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-missing"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-missing": client}, now, nil)
+	dispatcher.now = func() time.Time { return current }
+
+	if _, err := dispatcher.fetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("seed fetch failed: %v", err)
+	}
+	seedCalls := client.modelsCallCount()
+
+	// Inside the debounce floor: resolve fails but no fetch starts.
+	if _, err := dispatcher.resolveModel(context.Background(), "brand-new-model", nil); err == nil {
+		t.Fatal("resolveModel resolved an unknown model")
+	}
+	time.Sleep(50 * time.Millisecond) // smoke guard: a wrongly kicked fetch lands well within this
+	if got := client.modelsCallCount(); got != seedCalls {
+		t.Fatalf("models fetch kicked inside missingModelFetchFloor: %d -> %d", seedCalls, got)
+	}
+
+	// Past the floor, still inside the 24h TTL: the miss kicks a refresh.
+	current = now.Add(6 * time.Minute)
+	if _, err := dispatcher.resolveModel(context.Background(), "brand-new-model", nil); err == nil {
+		t.Fatal("resolveModel resolved an unknown model")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && client.modelsCallCount() == seedCalls {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if client.modelsCallCount() == seedCalls {
+		t.Fatal("missing model on a fresh catalog did not kick a background fetch")
 	}
 }
