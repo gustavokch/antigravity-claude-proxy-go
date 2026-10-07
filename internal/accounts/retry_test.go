@@ -3,6 +3,7 @@ package accounts
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/modelcatalog"
 )
 
 func TestParseResetTimeAndClassifiers(t *testing.T) {
@@ -104,6 +106,13 @@ type scriptedClient struct {
 	modelsCalls    int
 	modelsErrAfter int
 	modelsErr      error
+	// modelsBlock, with modelsBlockFrom > 0, parks a fetch attempt whose
+	// 1-based call number reaches modelsBlockFrom before it increments
+	// modelsCalls. Tests hold a kicked background fetch open this way so
+	// "a fetch started" is observable (modelsFetch stays set) without
+	// racing the counter.
+	modelsBlock     chan struct{}
+	modelsBlockFrom int
 }
 
 func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
@@ -111,6 +120,12 @@ func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode
 }
 
 func (client *scriptedClient) FetchAvailableModels(context.Context, string) (cloudcode.Response, error) {
+	client.mu.Lock()
+	block, blockFrom, pending := client.modelsBlock, client.modelsBlockFrom, client.modelsCalls+1
+	client.mu.Unlock()
+	if block != nil && blockFrom > 0 && pending >= blockFrom {
+		<-block
+	}
 	client.mu.Lock()
 	client.modelsCalls++
 	failing := client.modelsErrAfter > 0 && client.modelsCalls > client.modelsErrAfter
@@ -807,8 +822,9 @@ func TestDispatcherAppliesOutputConfigEffort(t *testing.T) {
 
 // A fresh 24h-TTL catalog can still lack a model the upstream just published.
 // resolveModel must kick a background refresh (debounced by
-// missingModelFetchFloor) instead of waiting out the TTL, and must not block
-// the failing request on the fetch.
+// missingModelFetchFloor) instead of waiting out the TTL, must return the
+// selection error at once while the kicked fetch is still in flight, and must
+// not start any fetch while the catalog is inside the floor.
 func TestResolveModelMissingFromFreshCatalogKicksBackgroundFetch(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
@@ -828,25 +844,165 @@ func TestResolveModelMissingFromFreshCatalogKicksBackgroundFetch(t *testing.T) {
 	}
 	seedCalls := client.modelsCallCount()
 
-	// Inside the debounce floor: resolve fails but no fetch starts.
-	if _, err := dispatcher.resolveModel(context.Background(), "brand-new-model", nil); err == nil {
-		t.Fatal("resolveModel resolved an unknown model")
+	// Any fetch kicked from here parks before incrementing modelsCalls, so a
+	// wrongly started fetch is visible as modelsFetch staying set instead of
+	// being raced away by a completed goroutine.
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unlockFetch := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unlockFetch()
+	client.mu.Lock()
+	client.modelsBlock = release
+	client.modelsBlockFrom = seedCalls + 1
+	client.mu.Unlock()
+
+	// Inside the debounce floor: resolve fails but no fetch starts. The kick
+	// decision happens synchronously inside resolveModel, so modelsFetch being
+	// nil on return proves no fetch was requested — deterministically.
+	if _, err := dispatcher.resolveModel(context.Background(), "brand-new-model", nil); !isSelectionError(err, "brand-new-model") {
+		t.Fatalf("resolveModel error = %v, want selection error for brand-new-model", err)
 	}
-	time.Sleep(50 * time.Millisecond) // smoke guard: a wrongly kicked fetch lands well within this
+	if modelsFetchInFlight(dispatcher) != nil {
+		t.Fatal("models fetch kicked inside missingModelFetchFloor")
+	}
 	if got := client.modelsCallCount(); got != seedCalls {
 		t.Fatalf("models fetch kicked inside missingModelFetchFloor: %d -> %d", seedCalls, got)
 	}
 
-	// Past the floor, still inside the 24h TTL: the miss kicks a refresh.
+	// Past the floor, still inside the 24h TTL: the miss kicks a refresh, and
+	// the kick is synchronous — modelsFetch is set before resolveModel
+	// returns, while the request itself has already failed fast.
 	current = now.Add(6 * time.Minute)
-	if _, err := dispatcher.resolveModel(context.Background(), "brand-new-model", nil); err == nil {
-		t.Fatal("resolveModel resolved an unknown model")
+	if _, err := dispatcher.resolveModel(context.Background(), "brand-new-model", nil); !isSelectionError(err, "brand-new-model") {
+		t.Fatalf("resolveModel error = %v, want selection error for brand-new-model", err)
 	}
+	if modelsFetchInFlight(dispatcher) == nil {
+		t.Fatal("missing model on a fresh catalog did not kick a background fetch")
+	}
+	unlockFetch()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && client.modelsCallCount() == seedCalls {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if client.modelsCallCount() == seedCalls {
-		t.Fatal("missing model on a fresh catalog did not kick a background fetch")
+		t.Fatal("kicked background fetch never reached FetchAvailableModels")
+	}
+}
+
+// modelsFetchInFlight reports the shared fetch currently registered on the
+// dispatcher, read under its lock.
+func modelsFetchInFlight(dispatcher *Dispatcher) *modelFetchCall {
+	dispatcher.mu.RLock()
+	defer dispatcher.mu.RUnlock()
+	return dispatcher.modelsFetch
+}
+
+// isSelectionError reports whether err is the modelcatalog selection error
+// for want — the exact contract resolveModel has for an unresolvable model.
+func isSelectionError(err error, want string) bool {
+	var selErr *modelcatalog.SelectionError
+	return errors.As(err, &selErr) && selErr.Model == want
+}
+
+// The stale-refresh path fetches synchronously before resolving. If that
+// fetch succeeds at the HTTP layer but its body fails to parse, catalogAt
+// stays old — resolveModel must NOT kick a second background fetch then: it
+// just finished asking upstream, and the fresh-path gate is what forbids it.
+func TestResolveModelStaleRefreshParseFailureDoesNotKickSecondFetch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	current := now
+	account := testAccount("parse-fail-model@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return current }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedClient{}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-parse"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-parse": client}, now, nil)
+	dispatcher.now = func() time.Time { return current }
+
+	if _, err := dispatcher.fetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("seed fetch failed: %v", err)
+	}
+
+	// The stale refresh will be call 2; a wrongly kicked follow-up fetch is
+	// call 3 and parks before incrementing, leaving modelsFetch set for as
+	// long as this test runs. Call 2 completes normally, so a correct
+	// implementation settles with modelsFetch cleared and calls == 2.
+	release := make(chan struct{})
+	defer close(release)
+	client.mu.Lock()
+	client.modelsBlock = release
+	client.modelsBlockFrom = 3 // seed = call 1, stale refresh = call 2, kick = call 3
+	client.modelsBody = []byte("{not json")
+	client.mu.Unlock()
+
+	current = now.Add(25 * time.Hour) // past the 24h TTL: stale path
+	if _, err := dispatcher.resolveModel(context.Background(), "brand-new-model", nil); !isSelectionError(err, "brand-new-model") {
+		t.Fatalf("resolveModel error = %v, want selection error for brand-new-model", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && modelsFetchInFlight(dispatcher) != nil {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if modelsFetchInFlight(dispatcher) != nil {
+		t.Fatal("stale refresh with an unparseable body left a second fetch in flight")
+	}
+	if got := client.modelsCallCount(); got != 2 {
+		t.Fatalf("models fetches = %d, want 2 (seed + one stale refresh, no follow-up kick)", got)
+	}
+}
+
+// The kick must not make the failing request wait for the fetch: resolveModel
+// returns the selection error while the kicked fetch is still parked upstream.
+func TestResolveModelMissingKickDoesNotBlockRequest(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	current := now
+	account := testAccount("kick-block-model@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return current }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &scriptedClient{}
+	resolver := &staticResolver{tokens: map[string]string{account.Email: "tok-block"}}
+	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-block": client}, now, nil)
+	dispatcher.now = func() time.Time { return current }
+
+	if _, err := dispatcher.fetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("seed fetch failed: %v", err)
+	}
+
+	// The kicked fetch (call 2) parks at the upstream door: were resolveModel
+	// waiting on it, the call below could never return.
+	release := make(chan struct{})
+	defer close(release)
+	client.mu.Lock()
+	client.modelsBlock = release
+	client.modelsBlockFrom = 2
+	client.mu.Unlock()
+
+	current = now.Add(6 * time.Minute)
+	type result struct {
+		model modelcatalog.Model
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		model, err := dispatcher.resolveModel(context.Background(), "brand-new-model", nil)
+		done <- result{model: model, err: err}
+	}()
+	select {
+	case res := <-done:
+		if !isSelectionError(res.err, "brand-new-model") {
+			t.Fatalf("resolveModel error = %v, want selection error for brand-new-model", res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("resolveModel blocked on the kicked background fetch")
+	}
+	if modelsFetchInFlight(dispatcher) == nil {
+		t.Fatal("kick did not start a background fetch")
 	}
 }

@@ -539,10 +539,12 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 		}
 	}
 	model, err := catalog.ResolveWithRequest(requested, request)
-	if err != nil && dispatcher.catalogAge() >= missingModelFetchFloor {
+	if fresh && err != nil && dispatcher.catalogAge() >= missingModelFetchFloor {
 		// The catalog is fresh but lacks this model: the upstream may have
 		// published it after the last fetch. Kick one shared background
 		// refresh; this request still returns the selection error at once.
+		// Gating on fresh keeps the stale path from fetching twice when a
+		// refresh just ran and failed to parse into the cache.
 		dispatcher.startModelFetch()
 	}
 	return model, err
