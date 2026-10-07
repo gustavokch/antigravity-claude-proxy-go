@@ -1369,7 +1369,6 @@ func (b *testCustomEndpointBackend) StreamGenerateContent(ctx context.Context, r
 func TestServer_ClaudeCodeBackgroundWorker(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
-	t.Setenv("HOME", tmpDir)
 
 	refreshed := make(chan string, 1)
 	oauthMgr := auth.NewClaudeCodeOAuthManager()
@@ -1431,7 +1430,6 @@ func TestServer_ClaudeCodeBackgroundWorker(t *testing.T) {
 func TestServer_ClaudeCodeBackgroundWorker_InitialTick(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
-	t.Setenv("HOME", tmpDir)
 
 	refreshed := make(chan string, 1)
 	oauthMgr := auth.NewClaudeCodeOAuthManager()
@@ -1496,6 +1494,9 @@ func TestServer_ClaudeCodeBackgroundWorker_InitialTick(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timeout waiting for initial background token refresh tick")
 	}
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
 }
 
 func TestApplyMaxTokensPolicy_FloorNeverExceedsKnownLimit(t *testing.T) {
