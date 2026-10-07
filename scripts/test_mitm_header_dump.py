@@ -18,6 +18,7 @@ from mitm_header_dump import (
     MAX_RESPONSE_BODY,
     body_fingerprint,
     build_record,
+    generation_config_fingerprint,
     hosts_from_env,
     redact_identifier,
     request_body_enabled,
@@ -238,6 +239,84 @@ class BuildRecordRequestBodyTest(unittest.TestCase):
         record = build_record(f, capture_request_body=True)
         self.assertEqual(record["headers"][0][0], "authorization")
         self.assertNotIn("SECRET", repr(record))
+
+
+class GenerationConfigFingerprintTest(unittest.TestCase):
+    def _cloud_code_body(self, generation_config):
+        return json.dumps({
+            "project": "p",
+            "model": "claude-opus-4-6-thinking",
+            "requestType": "agent",
+            "userAgent": "antigravity",
+            "request": {
+                "contents": [{"role": "user", "parts": [{"text": "SECRET_PROMPT_TEXT"}]}],
+                "generationConfig": generation_config,
+            },
+        }).encode()
+
+    def test_thinking_and_sampling_scalars_are_kept_verbatim(self):
+        fingerprint = body_fingerprint(self._cloud_code_body({
+            "temperature": 0.2,
+            "maxOutputTokens": 64000,
+            "thinkingConfig": {"include_thoughts": True, "thinking_budget": 1024},
+        }))
+        self.assertEqual(fingerprint["generation_config"], {
+            "temperature": 0.2,
+            "maxOutputTokens": 64000,
+            "thinkingConfig": {"include_thoughts": True, "thinking_budget": 1024},
+        })
+
+    def test_key_casing_is_the_casing_on_the_wire(self):
+        snake = generation_config_fingerprint(
+            {"request": {"generationConfig": {"thinkingConfig": {"thinking_budget": 1}}}})
+        camel = generation_config_fingerprint(
+            {"request": {"generationConfig": {"thinkingConfig": {"thinkingBudget": 1}}}})
+        self.assertEqual(snake, {"thinkingConfig": {"thinking_budget": 1}})
+        self.assertEqual(camel, {"thinkingConfig": {"thinkingBudget": 1}})
+
+    def test_enum_level_is_kept(self):
+        got = generation_config_fingerprint(
+            {"request": {"generationConfig": {"thinkingConfig": {"thinkingLevel": "HIGH", "includeThoughts": True}}}})
+        self.assertEqual(got, {"thinkingConfig": {"thinkingLevel": "HIGH", "includeThoughts": True}})
+
+    def test_prompt_bearing_fields_never_land_in_the_capture(self):
+        fingerprint = body_fingerprint(self._cloud_code_body({
+            "stopSequences": ["SECRET_STOP"],
+            "responseSchema": {"description": "SECRET_SCHEMA"},
+            "responseMimeType": "application/json",
+            "maxOutputTokens": 1,
+            "thinkingConfig": {"thinkingLevel": "x" * 500, "extra": "SECRET_EXTRA"},
+        }))
+        self.assertEqual(fingerprint["generation_config"], {"maxOutputTokens": 1})
+        for secret in ("SECRET_PROMPT_TEXT", "SECRET_STOP", "SECRET_SCHEMA", "SECRET_EXTRA"):
+            self.assertNotIn(secret, repr(fingerprint))
+
+    def test_snake_case_knobs_are_kept_and_snake_case_prompt_fields_are_dropped(self):
+        fingerprint = body_fingerprint(self._cloud_code_body({
+            "max_output_tokens": 64000,
+            "top_p": 0.9,
+            "top_k": 5,
+            "stop_sequences": ["SECRET_STOP"],
+            "response_schema": {"description": "SECRET_SCHEMA"},
+        }))
+        self.assertEqual(fingerprint["generation_config"], {
+            "max_output_tokens": 64000,
+            "top_p": 0.9,
+            "top_k": 5,
+        })
+        for secret in ("SECRET_STOP", "SECRET_SCHEMA"):
+            self.assertNotIn(secret, repr(fingerprint))
+
+    def test_wire_constants_of_the_envelope_are_identity_scalars(self):
+        fingerprint = body_fingerprint(self._cloud_code_body({"maxOutputTokens": 1}))
+        self.assertEqual(fingerprint["requestType"], "agent")
+        self.assertEqual(fingerprint["userAgent"], "antigravity")
+        self.assertEqual(fingerprint["model"], "claude-opus-4-6-thinking")
+
+    def test_bodies_without_a_generation_config_add_nothing(self):
+        self.assertNotIn("generation_config", body_fingerprint(b'{"model":"m"}'))
+        self.assertNotIn("generation_config", body_fingerprint(b'{"request":{"contents":[]}}'))
+        self.assertNotIn("generation_config", body_fingerprint(b'{"request":"text"}'))
 
 
 if __name__ == "__main__":

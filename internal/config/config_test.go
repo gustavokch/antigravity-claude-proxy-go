@@ -482,12 +482,6 @@ func TestDefaultConfig_HeadroomDisabledByDefault(t *testing.T) {
 	if cfg.Headroom.Enabled {
 		t.Error("headroom must default to disabled")
 	}
-	if cfg.Headroom.LiveTurns != 2 {
-		t.Errorf("expected LiveTurns default 2, got %d", cfg.Headroom.LiveTurns)
-	}
-	if cfg.Headroom.CCR.MaxStoreMB != 64 || cfg.Headroom.CCR.MinChunkBytes != 2048 {
-		t.Errorf("unexpected CCR defaults: %+v", cfg.Headroom.CCR)
-	}
 	if cfg.Headroom.OutputShaper.MechanicalThinkingBudget != 1024 {
 		t.Errorf("unexpected shaper default: %+v", cfg.Headroom.OutputShaper)
 	}

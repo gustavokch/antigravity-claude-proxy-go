@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/headroom"
-	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/headroom/stages/code"
 	"antigravity-go-proxy/internal/headroom/stages/crusher"
 	"antigravity-go-proxy/internal/headroom/stages/shaper"
@@ -17,9 +16,8 @@ import (
 
 // testStages returns the production stage list. Tasks 3-7 update this single
 // helper as each stage moves into its own subpackage.
-func testStages(store *ccr.CCRStore) []headroom.Stage {
+func testStages() []headroom.Stage {
 	return []headroom.Stage{
-		ccr.NewStage(store),
 		crusher.NewStage(),
 		smart.NewStage(),
 		code.NewStage(),
@@ -28,15 +26,14 @@ func testStages(store *ccr.CCRStore) []headroom.Stage {
 }
 
 func newTestEngine(cfg headroom.Config) *headroom.Engine {
-	store := ccr.NewCCRStoreFromMB(cfg.CCR.MaxStoreMB)
-	return headroom.NewEngine(cfg, nil, testStages(store)...)
+	return headroom.NewEngine(cfg, nil, testStages()...)
 }
 
 // fullConfig and toolResultMsg move verbatim from engine_test.go, gaining
 // only the headroom. qualification.
 func fullConfig() headroom.Config {
 	return headroom.Config{
-		Enabled: true, SmartCrusher: true, CodeCompressor: true, LiveTurns: 2,
+		Enabled: true, SmartCrusher: true, CodeCompressor: true,
 		OutputShaper: headroom.OutputShaperConfig{
 			Enabled: true, VerbositySteering: true, EffortRouting: true,
 			MechanicalThinkingBudget: 1024,
@@ -326,12 +323,7 @@ func TestVerbatim_EditExactMatchSurvivesPipeline(t *testing.T) {
 		SmartCrusher:          true,
 		TabularArrays:         true,
 		CodeCompressor:        true,
-		LiveTurns:             2,
 		PreserveVerbatimReads: true,
-		CCR: headroom.CCRConfig{
-			Enabled:       true,
-			MinChunkBytes: 2048,
-		},
 	})
 
 	req := readEditRequest(payload)
@@ -353,12 +345,7 @@ func TestVerbatim_DisabledByConfig(t *testing.T) {
 		Enabled:               true,
 		SmartCrusher:          true,
 		CodeCompressor:        true,
-		LiveTurns:             2,
 		PreserveVerbatimReads: false,
-		CCR: headroom.CCRConfig{
-			Enabled:       true,
-			MinChunkBytes: 2048,
-		},
 	})
 
 	req := readEditRequest(payload)
@@ -369,51 +356,6 @@ func TestVerbatim_DisabledByConfig(t *testing.T) {
 	got := toolResultText(t, req, 2)
 	if got == payload {
 		t.Error("with PreserveVerbatimReads=false the payload must be rewritten as before")
-	}
-}
-
-// --- CCR pipeline integration tests ------------------------------------------
-
-func TestEngine_CCRStoresOriginalBeforeCompression(t *testing.T) {
-	prettyJSON := "{\n  \"field\": 1,\n  \"nested\": [\n    " + strings.Repeat("\"long_data_item\",\n    ", 150) + "\"end\"\n  ]\n}"
-	cfg := headroom.Config{
-		Enabled:        true,
-		SmartCrusher:   true,
-		CodeCompressor: true,
-		LiveTurns:      1,
-		CCR: headroom.CCRConfig{
-			Enabled:       true,
-			MinChunkBytes: 500,
-		},
-	}
-	store := ccr.NewCCRStoreFromMB(cfg.CCR.MaxStoreMB)
-	engine := headroom.NewEngine(cfg, nil, testStages(store)...)
-
-	req := map[string]any{
-		"tools": []any{map[string]any{"name": "test_tool"}},
-		"messages": []any{
-			// Frozen message 0 (len > 500)
-			map[string]any{"role": "user", "content": []any{
-				map[string]any{"type": "tool_result", "content": prettyJSON},
-			}},
-			// Live message 1
-			map[string]any{"role": "user", "content": "summarize please"},
-		},
-	}
-
-	reqCtx, err := engine.Process(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Process error: %v", err)
-	}
-
-	if reqCtx.ChunksStored != 1 {
-		t.Errorf("expected 1 chunk stored, got %d", reqCtx.ChunksStored)
-	}
-
-	chunkID := ccr.ChunkID(prettyJSON)
-	_, found := store.Get(chunkID)
-	if !found {
-		t.Fatalf("chunk not found in engine store")
 	}
 }
 
@@ -539,7 +481,6 @@ func BenchmarkEngine_Process(b *testing.B) {
 		SmartCrusher:   true,
 		TabularArrays:  true,
 		CodeCompressor: true,
-		LiveTurns:      2,
 		OutputShaper: headroom.OutputShaperConfig{
 			Enabled:                  true,
 			VerbositySteering:        true,
@@ -586,7 +527,6 @@ func BenchmarkEngineProcess_WithVerbatim(b *testing.B) {
 		TabularArrays:         true,
 		CodeCompressor:        true,
 		PreserveVerbatimReads: true,
-		LiveTurns:             2,
 		OutputShaper: headroom.OutputShaperConfig{
 			Enabled:                  true,
 			VerbositySteering:        true,

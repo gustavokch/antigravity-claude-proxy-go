@@ -195,7 +195,6 @@ type RequestMetrics struct {
 	OutputTokens     int           `json:"output_tokens"`
 	CacheReadTokens  int           `json:"cache_read_tokens"`
 	ThinkingTokens   int           `json:"thinking_tokens,omitempty"`
-	CCRRetrievals    int           `json:"ccr_retrievals,omitempty"`
 	Latency          time.Duration `json:"latency"`
 	ThroughputTPS    float64       `json:"throughput_tps"`
 	CacheHitRate     float64       `json:"cache_hit_rate"`
@@ -246,14 +245,7 @@ func LogObservability(logger *slog.Logger, m RequestMetrics) {
 		outPart += fmt.Sprintf(" (%s thinking)", formatInt(m.ThinkingTokens))
 	}
 
-	ccrPart := ""
-	if m.CCRRetrievals == 1 {
-		ccrPart = " | CCR: 1 retrieval"
-	} else if m.CCRRetrievals > 1 {
-		ccrPart = fmt.Sprintf(" | CCR: %d retrievals", m.CCRRetrievals)
-	}
-
-	msg := fmt.Sprintf("[Antigravity] %s | tokens: %s in (%s cached, %.1f%% hit), %s | %.1f TPS | %.2fs | $%.4f saved ($%.4f session)%s",
+	msg := fmt.Sprintf("[Antigravity] %s | tokens: %s in (%s cached, %.1f%% hit), %s | %.1f TPS | %.2fs | $%.4f saved ($%.4f session)",
 		modelPart,
 		formatInt(m.InputTokens),
 		formatInt(m.CacheReadTokens),
@@ -263,7 +255,6 @@ func LogObservability(logger *slog.Logger, m RequestMetrics) {
 		m.Latency.Seconds(),
 		m.RetailCostUSD,
 		m.SessionRetailUSD,
-		ccrPart,
 	)
 
 	attrs := []any{
@@ -276,7 +267,6 @@ func LogObservability(logger *slog.Logger, m RequestMetrics) {
 		slog.Int("output_tokens", m.OutputTokens),
 		slog.Int("cache_read_tokens", m.CacheReadTokens),
 		slog.Int("thinking_tokens", m.ThinkingTokens),
-		slog.Int("ccr_retrievals", m.CCRRetrievals),
 		slog.Float64("cache_hit_rate_pct", m.CacheHitRate),
 		slog.Float64("tps", m.ThroughputTPS),
 		slog.Duration("latency", m.Latency),

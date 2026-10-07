@@ -50,12 +50,13 @@ func DefaultAllowlist() []ModelConfig {
 			Enabled:         true,
 		},
 		{
-			ID:              "claude-haiku-4-5-20251001",
-			Alias:           "haiku-4-5",
-			Aliases:         []string{"haiku-4-5", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4.5"},
-			DisplayName:     "Claude Haiku 4.5",
+			ID:          "claude-haiku-4-5-20251001",
+			Alias:       "haiku-4-5",
+			Aliases:     []string{"haiku-4-5", "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4.5"},
+			DisplayName: "Claude Haiku 4.5",
+			// 200K context / 64K output: Anthropic Models overview, checked 2026-10-05.
 			ContextLen:      200000,
-			MaxOutputTokens: 8192,
+			MaxOutputTokens: 64000,
 			Thinking:        true,
 			Enabled:         true,
 		},

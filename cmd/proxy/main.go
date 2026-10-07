@@ -277,7 +277,11 @@ func runServer(args []string) {
 	handler.StartClaudeCodeBackgroundWorker(bgCtx)
 	handler.StartCacheBumpScheduler(bgCtx)
 	handler.StartClaudeCodeUsage(bgCtx)
-
+	go func() {
+		if _, err := dispatcher.FetchAvailableModels(bgCtx); err != nil {
+			slogger.Warn("startup catalog fetch failed", "error", err)
+		}
+	}()
 	// It must never set WriteTimeout: that deadline covers the full response
 	// write and kills long SSE streams mid-generation (same failure as a
 	// total http.Client Timeout on the upstream side: the client sees a

@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// defaultLiveTurns is how many trailing messages CCR leaves inline.
-const defaultLiveTurns = 2
-
 type Engine struct {
 	mu       sync.RWMutex
 	config   Config
@@ -48,10 +45,9 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 	cfg := e.GetConfig()
 
 	reqCtx := &RequestContext{
-		Request:           req,
-		RequestID:         e.seq.Add(1),
-		FrozenPrefixIndex: FrozenPrefixIndex(req, cfg.LiveTurns),
-		Logger:            e.logger,
+		Request:   req,
+		RequestID: e.seq.Add(1),
+		Logger:    e.logger,
 	}
 	// The inspector has two consumers: the verbatim skip guards, and the
 	// continuation classifier's tool-name lookup. Build it when either needs
@@ -84,7 +80,6 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 			"bytes_after", reqCtx.BytesAfter,
 			"saved_bytes", saved,
 			"saved_pct", savedPct,
-			"chunks_stored", reqCtx.ChunksStored,
 			"effort_clamped", reqCtx.EffortClamped,
 			"continuation", reqCtx.ContinuationKind,
 			"verbatim_skipped", reqCtx.VerbatimSkipped,
@@ -92,20 +87,4 @@ func (e *Engine) Process(ctx context.Context, req map[string]any) (*RequestConte
 		)
 	}
 	return reqCtx, nil
-}
-
-// FrozenPrefixIndex returns the highest message index outside the live window.
-// -1 means every message is live.
-func FrozenPrefixIndex(req map[string]any, liveTurns int) int {
-	if liveTurns <= 0 {
-		liveTurns = defaultLiveTurns
-	}
-	messages, ok := req["messages"].([]any)
-	if !ok {
-		return -1
-	}
-	if idx := len(messages) - liveTurns - 1; idx >= 0 {
-		return idx
-	}
-	return -1
 }

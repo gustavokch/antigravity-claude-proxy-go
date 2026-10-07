@@ -756,13 +756,7 @@ func DefaultConfig() Config {
 		},
 		Headroom: HeadroomConfig{
 			Enabled:               false,
-			LiveTurns:             2,
 			PreserveVerbatimReads: true,
-			CCR: headroom.CCRConfig{
-				Enabled:       false,
-				MaxStoreMB:    64,
-				MinChunkBytes: 2048,
-			},
 			OutputShaper: headroom.OutputShaperConfig{
 				Enabled:                  false,
 				VerbositySteering:        true,

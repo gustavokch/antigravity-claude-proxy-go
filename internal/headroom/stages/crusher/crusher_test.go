@@ -579,7 +579,7 @@ func TestCommandCrusherStage_LogsRewrite(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	reqCtx := &headroom.RequestContext{Request: req, Logger: logger}
 	cfg := &headroom.Config{Enabled: true, CommandCrusher: true}
 
 	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {
@@ -610,7 +610,7 @@ func TestCommandCrusherStage_SilentWhenDebugDisabled(t *testing.T) {
 			},
 		},
 	}
-	reqCtx := &headroom.RequestContext{Request: req, FrozenPrefixIndex: -1, Logger: logger}
+	reqCtx := &headroom.RequestContext{Request: req, Logger: logger}
 	cfg := &headroom.Config{Enabled: true, CommandCrusher: true}
 
 	if err := NewStage().Execute(context.Background(), reqCtx, cfg); err != nil {

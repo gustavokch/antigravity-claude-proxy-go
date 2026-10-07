@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,8 +14,6 @@ import (
 
 	"antigravity-go-proxy/internal/cachebump"
 	"antigravity-go-proxy/internal/config"
-	"antigravity-go-proxy/internal/headroom"
-	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/zen"
 )
 
@@ -80,43 +77,6 @@ func requireHarnessHeaders(t *testing.T, hdr http.Header) {
 	if hdr.Get("x-opencode-request") == "" {
 		t.Error("x-opencode-request empty")
 	}
-}
-
-// TestForwardToZen_CCRSender_SendsHarnessHeaders covers the CCR sender
-// closure inside forwardToZen (anthropic-wire model, CCR enabled), the
-// remaining header site for request-path traffic.
-func TestForwardToZen_CCRSender_SendsHarnessHeaders(t *testing.T) {
-	withHarnessDefaults(t)
-
-	capture := &harnessHeaderCapture{}
-	upstream := httptest.NewServer(capture.handler())
-	defer upstream.Close()
-
-	store := ccr.NewCCRStore(1024 * 1024)
-	eng := headroom.NewEngine(headroom.Config{
-		Enabled: true,
-		CCR:     headroom.CCRConfig{Enabled: true},
-	}, nil, ccr.NewStage(store))
-	server := &Server{headroom: eng, ccrStore: store}
-
-	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
-	var reqMap map[string]any
-	if err := json.Unmarshal(body, &reqMap); err != nil {
-		t.Fatal(err)
-	}
-	rec := httptest.NewRecorder()
-	server.forwardToZen(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
-		config.ZenConfig{Enabled: true, APIKey: "sk-zen-test", BaseURL: upstream.URL},
-		body, reqMap, "claude-sonnet-4-6",
-		config.ZenModelConfig{ID: "claude-sonnet-4-6", Enabled: true})
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
-	}
-	if n := capture.count(); n != 1 {
-		t.Fatalf("upstream calls = %d, want 1", n)
-	}
-	requireHarnessHeaders(t, capture.first(t))
 }
 
 // TestSendZenBump_SendsHarnessHeaders covers the cachebump replay path:

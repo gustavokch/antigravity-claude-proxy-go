@@ -1,6 +1,7 @@
 package format
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,7 +10,7 @@ import (
 
 const (
 	MinSignatureLength       = 50
-	GeminiMaxOutputTokens    = 16384
+	GeminiMaxOutputTokens    = 65536
 	GeminiSkipSignature      = "skip_thought_signature_validator"
 	DefaultClaudeThinkBudget = 32000
 	DefaultGeminiThinkBudget = 16000
@@ -96,21 +97,6 @@ func IsThinkingModel(model string) bool {
 	return getModelFamilyInfo(model).isThinking
 }
 
-func clampGeminiThinkingBudget(model string, value any) int {
-	budget := intValue(value, DefaultGeminiThinkBudget)
-	if budget == 0 {
-		budget = DefaultGeminiThinkBudget
-	}
-	maximum := 128000
-	if strings.Contains(strings.ToLower(model), "gemini-2.5") {
-		maximum = 24576
-	}
-	if budget > maximum {
-		budget = maximum
-	}
-	return budget
-}
-
 func asMap(value any) map[string]any {
 	if value == nil {
 		return nil
@@ -154,14 +140,11 @@ func intValue(value any, fallback int) int {
 		return int(typed)
 	case float32:
 		return int(typed)
-	case jsonNumber:
-		parsed, err := strconv.Atoi(string(typed))
+	case json.Number:
+		n, err := typed.Int64()
 		if err == nil {
-			return parsed
+			return int(n)
 		}
 	}
 	return fallback
 }
-
-// jsonNumber avoids importing encoding/json throughout the conversion files.
-type jsonNumber string

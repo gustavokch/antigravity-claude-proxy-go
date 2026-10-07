@@ -10,8 +10,6 @@ import (
 
 	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/config"
-	"antigravity-go-proxy/internal/headroom"
-	"antigravity-go-proxy/internal/headroom/stages/ccr"
 )
 
 // capturedForward is what the upstream received on one proxied request.
@@ -344,21 +342,6 @@ func TestCustomEndpoint_DisabledIdentityKeepsClientHeaders(t *testing.T) {
 	}
 }
 
-// ccrEnabledServer wires the headroom engine and store that
-// forwardToCustomEndpoint's first branch requires, so the sender path can be
-// driven instead of the reverse-proxy one.
-func ccrEnabledServer(t *testing.T) *Server {
-	t.Helper()
-	server := newTestServer(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
-	store := ccr.NewCCRStore(1024 * 1024)
-	server.ccrStore = store
-	server.headroom = headroom.NewEngine(headroom.Config{
-		Enabled: true,
-		CCR:     headroom.CCRConfig{Enabled: true},
-	}, nil, ccr.NewStage(store))
-	return server
-}
-
 // TestCustomEndpointAPIKeySurvivesNormalization is the credential regression.
 //
 // x-api-key is on the omit list (internal/ccidentity/defaults.go), ApplyHeaders
@@ -379,27 +362,6 @@ func TestCustomEndpointAPIKeySurvivesNormalization(t *testing.T) {
 
 		h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
 		if rec := serveCustomEndpointRequest(t, h); rec.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-		}
-		if got.apiKey != "target-secret-key" {
-			t.Errorf("x-api-key = %q, want the configured key; the endpoint cannot authenticate without it", got.apiKey)
-		}
-	})
-
-	t.Run("ccr sender path", func(t *testing.T) {
-		withConfigDir(t)
-
-		target, got := customEndpointUpstream(t)
-		endpoint := config.EndpointConfig{URL: target.URL + "/v1/messages", APIKey: "target-secret-key"}
-
-		server := ccrEnabledServer(t)
-		body := `{"model":"claude-custom-model","stream":false,"messages":[{"role":"user","content":"hello"}]}`
-		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
-		req.Header.Set("User-Agent", "cursor/1.2.3")
-		rec := httptest.NewRecorder()
-		server.forwardToCustomEndpoint(rec, req, endpoint, "claude-custom-model", []byte(body))
-
-		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 		}
 		if got.apiKey != "target-secret-key" {

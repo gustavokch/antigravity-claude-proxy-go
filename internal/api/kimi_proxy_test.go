@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -383,234 +382,6 @@ func TestServer_ForwardToKimi_Strips1mInPayload(t *testing.T) {
 	}
 }
 
-func TestServer_ForwardToKimi_CCRHydration_Streaming(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
-	t.Setenv("HOME", tmpDir)
-
-	var chunkID string
-	var callCount int32
-	mockKimi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		curr := atomic.AddInt32(&callCount, 1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-
-		if curr == 1 {
-			// Turn 1: headroom_retrieve
-			fmt.Fprintf(w, "event: message_start\n")
-			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_k1\",\"role\":\"assistant\",\"model\":\"kimi-k2-thinking\",\"usage\":{\"input_tokens\":40,\"output_tokens\":8}}}\n\n")
-
-			fmt.Fprintf(w, "event: content_block_start\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_k1\",\"name\":\"headroom_retrieve\",\"input\":{}}}\n\n")
-
-			fmt.Fprintf(w, "event: content_block_delta\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"chunk_id\\\":\\\"%s\\\"}\"}}\n\n", chunkID)
-
-			fmt.Fprintf(w, "event: content_block_stop\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-
-			fmt.Fprintf(w, "event: message_delta\n")
-			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":10}}\n\n")
-
-			fmt.Fprintf(w, "event: message_stop\n")
-			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
-		} else {
-			// Turn 2: Hydrated text answer
-			fmt.Fprintf(w, "event: message_start\n")
-			fmt.Fprintf(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_k2\",\"role\":\"assistant\",\"model\":\"kimi-k2-thinking\",\"usage\":{\"input_tokens\":100,\"output_tokens\":15}}}\n\n")
-
-			fmt.Fprintf(w, "event: content_block_start\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
-
-			fmt.Fprintf(w, "event: content_block_delta\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Kimi answered with hydrated knowledge.\"}}\n\n")
-
-			fmt.Fprintf(w, "event: content_block_stop\n")
-			fmt.Fprintf(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-
-			fmt.Fprintf(w, "event: message_delta\n")
-			fmt.Fprintf(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":15}}\n\n")
-
-			fmt.Fprintf(w, "event: message_stop\n")
-			fmt.Fprintf(w, "data: {\"type\":\"message_stop\"}\n\n")
-		}
-	}))
-	defer mockKimi.Close()
-
-	_, err := config.Save(map[string]any{
-		"kimi": map[string]any{
-			"enabled": true,
-			"apiKey":  "kimi-secret-key",
-			"baseUrl": mockKimi.URL,
-			"allowlist": []map[string]any{
-				{"id": "kimi-k2-thinking", "alias": "k2", "enabled": true},
-			},
-		},
-		"headroom": map[string]any{
-			"enabled": true,
-			"ccr": map[string]any{
-				"enabled": true,
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("config.Save: %v", err)
-	}
-
-	server := newKimiTestServer(t)
-	var ok bool
-	chunkID, ok = server.ccrStore.Put("Secret Kimi context payload")
-	if !ok {
-		t.Fatalf("Failed to put chunk into CCRStore")
-	}
-
-	reqBody := `{"model":"kimi-k2-thinking","stream":true,"messages":[{"role":"user","content":"Fetch chunk"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
-	req.Header.Set("x-api-key", "test-proxy-key")
-	req.Header.Set("Content-Type", "application/json")
-
-	w := httptest.NewRecorder()
-	server.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	if atomic.LoadInt32(&callCount) != 2 {
-		t.Fatalf("Expected 2 calls to Kimi backend, got %d", callCount)
-	}
-
-	respBody := w.Body.String()
-	if strings.Contains(respBody, "headroom_retrieve") {
-		t.Fatalf("Downstream client leaked headroom_retrieve tool_use: %s", respBody)
-	}
-	if !strings.Contains(respBody, "Kimi answered with hydrated knowledge.") {
-		t.Fatalf("Downstream client missing hydrated text: %s", respBody)
-	}
-	if !strings.Contains(respBody, "\"output_tokens\":25") { // 10 + 15 = 25
-		t.Fatalf("Expected patched output_tokens 25, got: %s", respBody)
-	}
-}
-
-func TestServer_ForwardToKimi_CCRHydration_Unary(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
-	t.Setenv("HOME", tmpDir)
-
-	var chunkID string
-	var callCount int32
-	mockKimi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		curr := atomic.AddInt32(&callCount, 1)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-
-		if curr == 1 {
-			resp := map[string]any{
-				"id":    "msg_ku_1",
-				"type":  "message",
-				"role":  "assistant",
-				"model": "kimi-k2-thinking",
-				"content": []any{
-					map[string]any{
-						"type":  "tool_use",
-						"id":    "toolu_ku1",
-						"name":  "headroom_retrieve",
-						"input": map[string]any{"chunk_id": chunkID},
-					},
-				},
-				"stop_reason": "tool_use",
-				"usage": map[string]any{
-					"input_tokens":  60,
-					"output_tokens": 10,
-				},
-			}
-			_ = json.NewEncoder(w).Encode(resp)
-		} else {
-			resp := map[string]any{
-				"id":    "msg_ku_2",
-				"type":  "message",
-				"role":  "assistant",
-				"model": "kimi-k2-thinking",
-				"content": []any{
-					map[string]any{
-						"type": "text",
-						"text": "Unary Kimi hydrated response",
-					},
-				},
-				"stop_reason": "end_turn",
-				"usage": map[string]any{
-					"input_tokens":  120,
-					"output_tokens": 14,
-				},
-			}
-			_ = json.NewEncoder(w).Encode(resp)
-		}
-	}))
-	defer mockKimi.Close()
-
-	_, err := config.Save(map[string]any{
-		"kimi": map[string]any{
-			"enabled": true,
-			"apiKey":  "kimi-secret-key",
-			"baseUrl": mockKimi.URL,
-			"allowlist": []map[string]any{
-				{"id": "kimi-k2-thinking", "alias": "k2", "enabled": true},
-			},
-		},
-		"headroom": map[string]any{
-			"enabled": true,
-			"ccr": map[string]any{
-				"enabled": true,
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("config.Save: %v", err)
-	}
-
-	server := newKimiTestServer(t)
-	var ok bool
-	chunkID, ok = server.ccrStore.Put("Secret Kimi Unary payload")
-	if !ok {
-		t.Fatalf("Failed to put chunk into CCRStore")
-	}
-
-	reqBody := `{"model":"kimi-k2-thinking","stream":false,"messages":[{"role":"user","content":"Fetch chunk"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
-	req.Header.Set("x-api-key", "test-proxy-key")
-	req.Header.Set("Content-Type", "application/json")
-
-	w := httptest.NewRecorder()
-	server.Handler().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	if atomic.LoadInt32(&callCount) != 2 {
-		t.Fatalf("Expected 2 calls to Kimi backend, got %d", callCount)
-	}
-
-	var respMap map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &respMap); err != nil {
-		t.Fatalf("Failed to unmarshal unary response: %v", err)
-	}
-
-	content, _ := respMap["content"].([]any)
-	if len(content) != 1 {
-		t.Fatalf("Expected 1 content block, got: %v", content)
-	}
-	firstBlock, _ := content[0].(map[string]any)
-	if firstBlock["text"] != "Unary Kimi hydrated response" {
-		t.Fatalf("Unexpected content text: %v", firstBlock["text"])
-	}
-
-	usage, _ := respMap["usage"].(map[string]any)
-	if usage["output_tokens"].(float64) != 24 { // 10 + 14 = 24
-		t.Fatalf("Expected output_tokens 24, got %v", usage["output_tokens"])
-	}
-}
-
 func TestServer_ForwardToKimi_OmitsMaxTokensWhenNothingKnown(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
@@ -658,5 +429,62 @@ func TestServer_ForwardToKimi_OmitsMaxTokensWhenNothingKnown(t *testing.T) {
 	}
 	if rec.Code != 200 {
 		t.Errorf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Kimi Code maps the Claude Code effort levels itself (medium->high, xhigh->max,
+// docs: kimi.com/code/docs/en/kimi-code/models.html "Effort mapping in
+// third-party tools"), and rejects unknown spellings with a 400. The gateway is
+// a transparent forwarder (ADR-0001), so every reasoning field must reach
+// Kimi exactly as the client sent it: normalizing here would hide the
+// vendor's own mapping and change which level the vendor actually runs.
+func TestServer_ForwardToKimi_PassesReasoningFieldsThrough(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	if _, err := config.Save(map[string]any{
+		"kimi": map[string]any{
+			"enabled": true, "apiKey": "sk-kimi-test", "baseUrl": upstream.URL,
+			"allowlist": []map[string]any{{"id": "k3", "enabled": true}},
+		},
+	}); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	server := newKimiTestServer(t)
+	body := `{"model":"k3[1m]","max_tokens":4096,` +
+		`"thinking":{"type":"enabled","budget_tokens":2048,"display":"summarized"},` +
+		`"output_config":{"effort":"xhigh"},"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	var sent map[string]any
+	if err := json.Unmarshal(gotBody, &sent); err != nil {
+		t.Fatalf("unmarshal upstream body %s: %v", gotBody, err)
+	}
+	if sent["model"] != "k3" {
+		t.Errorf("model = %v, want k3 (the [1m] suffix is a Claude Code convention, not a Kimi id)", sent["model"])
+	}
+	if got := sent["output_config"]; fmt.Sprint(got) != "map[effort:xhigh]" {
+		t.Errorf("output_config = %v, want it forwarded untouched", got)
+	}
+	if got := sent["thinking"]; fmt.Sprint(got) != "map[budget_tokens:2048 display:summarized type:enabled]" {
+		t.Errorf("thinking = %v, want it forwarded untouched", got)
+	}
+	if sent["max_tokens"] != float64(4096) {
+		t.Errorf("max_tokens = %v, want 4096", sent["max_tokens"])
 	}
 }

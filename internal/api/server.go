@@ -38,7 +38,6 @@ import (
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/headroom"
-	"antigravity-go-proxy/internal/headroom/stages/ccr"
 	"antigravity-go-proxy/internal/headroom/stages/code"
 	"antigravity-go-proxy/internal/headroom/stages/crusher"
 	"antigravity-go-proxy/internal/headroom/stages/shaper"
@@ -128,7 +127,6 @@ type Server struct {
 	kimiIdentity       http.Header
 	kimiRefreshMu      sync.Mutex
 	headroom           *headroom.Engine
-	ccrStore           *ccr.CCRStore
 	cacheBumpStore     *cachebump.Store
 	cacheBumpSched     *cachebump.Scheduler
 	classifierMatcher  *classifier.ConfigurableMatcher
@@ -194,11 +192,9 @@ func New(options Options) (*Server, error) {
 	cfg := config.Get()
 	srv.classifierAudit = classifier.NewRecorder(200)
 	srv.applyClassifierConfig(cfg.Classifier)
-	srv.ccrStore = ccr.NewCCRStoreFromMB(cfg.Headroom.CCR.MaxStoreMB)
 	srv.headroom = headroom.NewEngine(
 		cfg.Headroom,
 		srv.logger,
-		ccr.NewStage(srv.ccrStore),
 		crusher.NewStage(),
 		smart.NewStage(),
 		code.NewStage(),
@@ -263,9 +259,6 @@ func applyZenHarnessConfig(zenCfg config.ZenConfig) {
 func (server *Server) applyHeadroomConfig(cfg config.HeadroomConfig) {
 	if server.headroom != nil {
 		server.headroom.UpdateConfig(cfg)
-	}
-	if server.ccrStore != nil {
-		server.ccrStore.SetMaxMB(cfg.CCR.MaxStoreMB)
 	}
 }
 
@@ -555,8 +548,11 @@ const defaultDiscoveryContextWindow = 200000
 // defaultDiscoveryMaxOutputTokens caps the max_output_tokens that /v1/models
 // advertises when only the context window is known. A model's output cap is
 // always far below its context window, so reporting the context window as the
-// output cap invites clients to send a max_tokens the provider rejects.
-const defaultDiscoveryMaxOutputTokens = 200000
+// output cap invites clients to send a max_tokens the provider rejects. 32768
+// is the default max_tokens Kimi documents for its K2.x models and the value
+// zen.DefaultMaxOutputTokens already fills in, so every gateway fallback
+// advertises the same, conservative number.
+const defaultDiscoveryMaxOutputTokens = 32768
 
 func (server *Server) models(writer http.ResponseWriter, request *http.Request) {
 	catalog, err := server.fetchModelCatalog(request.Context())
@@ -589,11 +585,15 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 		case proxyformat.FamilyOpenAI:
 			ownedBy = "openai"
 		}
+		maxOutput := details.MaxOutputTokens
+		if proxyformat.GetModelFamily(details.ID) == proxyformat.FamilyGemini && maxOutput <= 0 {
+			maxOutput = proxyformat.GeminiMaxOutputTokens
+		}
 		models = append(models, map[string]any{
 			"id": details.ID, "object": "model", "created": server.now().Unix(),
 			"owned_by": ownedBy, "description": description,
 			"display_name":   details.DisplayName,
-			"context_window": details.MaxTokens, "max_output_tokens": details.MaxOutputTokens,
+			"context_window": details.MaxTokens, "max_output_tokens": maxOutput,
 			"supports_thinking": details.SupportsThinking,
 		})
 		seen[details.ID] = true
@@ -852,7 +852,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 					})
 				}
 			}
-			if hrCtx.BytesBefore > 0 || hrCtx.EffortClamped || hrCtx.RewritesCount > 0 || hrCtx.ChunksStored > 0 {
+			if hrCtx.BytesBefore > 0 || hrCtx.EffortClamped || hrCtx.RewritesCount > 0 {
 				bodyMutated = true
 			}
 		}
@@ -1275,61 +1275,6 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		isMessagesRequest = true
 	}
 
-	if server.isCCREnabled() && isMessagesRequest {
-		var reqMap map[string]any
-		if err := json.Unmarshal(reqBody, &reqMap); err == nil {
-			customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
-			identity, normalize := customEndpointIdentity(endpoint, customSessionKey)
-			sender := func(ctx context.Context, bodyBytes []byte) (*http.Response, error) {
-				if normalize {
-					normalized, err := ccidentity.ApplyBody(bodyBytes, ccDefaultProfile, identity, ccidentity.Turn{})
-					if err != nil {
-						return nil, fmt.Errorf("normalize request body: %w", err)
-					}
-					bodyBytes = normalized
-				}
-
-				httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL.String(), bytes.NewReader(bodyBytes))
-				if err != nil {
-					return nil, err
-				}
-				httpReq.Header.Set("Content-Type", "application/json")
-				if endpoint.APIKey != "" {
-					httpReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
-					httpReq.Header.Set("x-api-key", endpoint.APIKey)
-				}
-				if normalize {
-					ccidentity.ApplyHeaders(httpReq.Header, ccDefaultProfile, identity, ccidentity.Turn{})
-					httpReq.URL.RawQuery = withCapturedBetaQuery(httpReq.URL.RawQuery)
-				} else {
-					if v := request.Header.Get("anthropic-version"); v != "" {
-						httpReq.Header.Set("anthropic-version", v)
-					} else {
-						httpReq.Header.Set("anthropic-version", "2023-06-01")
-					}
-					if b := request.Header.Get("anthropic-beta"); b != "" {
-						httpReq.Header.Set("anthropic-beta", b)
-					}
-				}
-				httpReq.ContentLength = int64(len(bodyBytes))
-				resp, err := http.DefaultClient.Do(httpReq)
-				if err == nil && resp.StatusCode < 400 {
-					server.maybeRecordCacheBump(cachebump.RouteCustom, request, bodyBytes, customSessionKey, model, "", model, minMaxTokensFloor)
-				}
-				return resp, err
-			}
-
-			opts := server.defaultCCROptions(sender)
-			isStreaming, _ := reqMap["stream"].(bool)
-			if isStreaming {
-				_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
-			} else {
-				_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
-			}
-			return
-		}
-	}
-
 	customSessionKey := ccExtractSessionID(request, ccParseBodyMap(reqBody))
 
 	// Normalization happens HERE, not inside Rewrite. ApplyBody is fallible and
@@ -1603,7 +1548,7 @@ func kimiCredentialErrorStatus(err error) (int, string) {
 // forwardToKimi transparently forwards an /v1/messages request to the Kimi
 // Code gateway. The Kimi endpoint is Anthropic-compatible, so no translation
 // is needed: we rewrite Authorization, preserve the Anthropic version/beta
-// headers, and stream the response back. When CCR is enabled, it hydrates headroom_retrieve calls.
+// headers, and stream the response back.
 func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Request, kimiCfg config.KimiConfig, body []byte, model string) {
 	cred, err := server.resolveKimiCredential(request.Context(), kimiCfg)
 	if err != nil {
@@ -1622,83 +1567,14 @@ func (server *Server) forwardToKimi(writer http.ResponseWriter, request *http.Re
 	startTime := server.nowTime()
 	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
 
-	if !server.isCCREnabled() {
-		modify := func(resp *http.Response) error {
-			if resp.StatusCode < 400 {
-				server.maybeRecordCacheBump(cachebump.RouteKimi, request, body, sessionKey, model, "", "", minMaxTokensFloor)
-				server.kimiInstrumentResponse(resp, model, sessionKey, startTime)
-			}
-			return nil
+	modify := func(resp *http.Response) error {
+		if resp.StatusCode < 400 {
+			server.maybeRecordCacheBump(cachebump.RouteKimi, request, body, sessionKey, model, "", "", minMaxTokensFloor)
+			server.kimiInstrumentResponse(resp, model, sessionKey, startTime)
 		}
-		kimi.ForwardMessagesWithModify(writer, request, cred.baseURL, cred.token, body, identity, modify)
-		return
+		return nil
 	}
-
-	var reqMap map[string]any
-	if err := json.Unmarshal(body, &reqMap); err != nil {
-		modify := func(resp *http.Response) error {
-			if resp.StatusCode < 400 {
-				server.kimiInstrumentResponse(resp, model, sessionKey, startTime)
-			}
-			return nil
-		}
-		kimi.ForwardMessagesWithModify(writer, request, cred.baseURL, cred.token, body, identity, modify)
-		return
-	}
-
-	targetURL := kimi.NormalizeBaseURL(cred.baseURL) + "/v1/messages"
-	sender := func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBytes))
-		if err != nil {
-			return nil, err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+cred.token)
-		for k, vs := range identity {
-			if len(vs) > 0 {
-				httpReq.Header.Set(k, vs[0])
-			}
-		}
-		if v := request.Header.Get("anthropic-version"); v != "" {
-			httpReq.Header.Set("anthropic-version", v)
-		} else {
-			httpReq.Header.Set("anthropic-version", "2023-06-01")
-		}
-		if b := request.Header.Get("anthropic-beta"); b != "" {
-			httpReq.Header.Set("anthropic-beta", b)
-		}
-		resp, err := http.DefaultClient.Do(httpReq)
-		if err == nil && resp.StatusCode < 400 {
-			server.maybeRecordCacheBump(cachebump.RouteKimi, request, reqBytes, sessionKey, model, "", "", minMaxTokensFloor)
-		}
-		return resp, err
-	}
-
-	opts := server.defaultCCROptions(sender)
-	opts.OnUsage = func(in, out, cr, cw int) {
-		latency := server.nowTime().Sub(startTime)
-		metrics := kimi.RequestMetrics{
-			Model:               model,
-			SessionID:           sessionKey,
-			InputTokens:         in,
-			OutputTokens:        out,
-			CacheReadTokens:     cr,
-			CacheCreationTokens: cw,
-			Latency:             latency,
-		}
-		metrics.ComputeFinalMetrics()
-		kimi.LogObservability(server.logger, metrics)
-		if server.tracker != nil {
-			server.tracker.TrackRequest(model, latency, in, out, cr)
-		}
-	}
-
-	isStreaming, _ := reqMap["stream"].(bool)
-	if isStreaming {
-		_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
-	} else {
-		_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
-	}
+	kimi.ForwardMessagesWithModify(writer, request, cred.baseURL, cred.token, body, identity, modify)
 }
 
 func (server *Server) kimiInstrumentResponse(resp *http.Response, model, sessionID string, startTime time.Time) {
@@ -1760,8 +1636,7 @@ func zenAPIKey(cfg config.ZenConfig) string {
 // Anthropic-wire models are forwarded transparently (Authorization rewritten,
 // Anthropic version/beta headers preserved); Chat-Completions-wire and
 // Responses-wire models are translated to /v1/chat/completions and
-// /v1/responses respectively, and the response translated back. When CCR is
-// enabled, it hydrates headroom_retrieve calls.
+// /v1/responses respectively, and the response translated back.
 func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Request, zenCfg config.ZenConfig, body []byte, anthropicRequest map[string]any, model string, zenEntry config.ZenModelConfig) {
 	key := zenAPIKey(zenCfg)
 	if key == "" {
@@ -1808,101 +1683,28 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
 
 	if wire == zen.WireChat || wire == zen.WireResponses {
-		// Cache-bump replay posts to /v1/messages, which a translated-wire
-		// model cannot serve, so no bump is recorded on this path. The
-		// free-tier gate is not observed here either: the hooks below see the
-		// already-translated Anthropic body, while the translator's own error
-		// mapping warns from Zen's bytes.
-		forward, send := zen.ForwardChat, zen.SendChat
+		forward := zen.ForwardChat
 		if wire == zen.WireResponses {
-			forward, send = zen.ForwardResponses, zen.SendResponses
+			forward = zen.ForwardResponses
 		}
-		if !server.isCCREnabled() {
-			forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
-				if resp.StatusCode < 400 {
-					server.zenInstrumentResponse(resp, model, sessionKey, startTime)
-				}
-				return nil
-			})
-			return
-		}
-		var reqMap map[string]any
-		if err := json.Unmarshal(body, &reqMap); err != nil {
-			writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to parse Zen request: "+err.Error())
-			return
-		}
-		opts := server.defaultCCROptions(func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
-			return send(ctx, zen.TLSClient(), zenCfg.BaseURL, key, reqBytes)
+		forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
+			if resp.StatusCode < 400 {
+				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
+			}
+			return nil
 		})
-		opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
-		if isStreaming, _ := reqMap["stream"].(bool); isStreaming {
-			_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
-		} else {
-			_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
-		}
 		return
 	}
 
-	if !server.isCCREnabled() {
-		modify := func(resp *http.Response) error {
-			zen.ObserveFreeTierGate(resp, model)
-			if resp.StatusCode < 400 {
-				server.maybeRecordCacheBump(cachebump.RouteZen, request, body, sessionKey, model, "", "", minMaxTokensFloor)
-				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
-			}
-			return nil
-		}
-		zen.ForwardMessagesWithModify(writer, request, zenCfg.BaseURL, key, body, modify)
-		return
-	}
-
-	var reqMap map[string]any
-	if err := json.Unmarshal(body, &reqMap); err != nil {
-		modify := func(resp *http.Response) error {
-			zen.ObserveFreeTierGate(resp, model)
-			if resp.StatusCode < 400 {
-				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
-			}
-			return nil
-		}
-		zen.ForwardMessagesWithModify(writer, request, zenCfg.BaseURL, key, body, modify)
-		return
-	}
-
-	targetURL := zen.NormalizeBaseURL(zenCfg.BaseURL) + "/v1/messages"
-	sender := func(ctx context.Context, reqBytes []byte) (*http.Response, error) {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBytes))
-		if err != nil {
-			return nil, err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+key)
-		if v := request.Header.Get("anthropic-version"); v != "" {
-			httpReq.Header.Set("anthropic-version", v)
-		} else {
-			httpReq.Header.Set("anthropic-version", "2023-06-01")
-		}
-		if b := request.Header.Get("anthropic-beta"); b != "" {
-			httpReq.Header.Set("anthropic-beta", b)
-		}
-		zen.ApplyHarnessHeaders(httpReq)
-		resp, err := zen.TLSClient().Do(httpReq)
+	modify := func(resp *http.Response) error {
 		zen.ObserveFreeTierGate(resp, model)
-		if err == nil && resp.StatusCode < 400 {
-			server.maybeRecordCacheBump(cachebump.RouteZen, request, reqBytes, sessionKey, model, "", "", minMaxTokensFloor)
+		if resp.StatusCode < 400 {
+			server.maybeRecordCacheBump(cachebump.RouteZen, request, body, sessionKey, model, "", "", minMaxTokensFloor)
+			server.zenInstrumentResponse(resp, model, sessionKey, startTime)
 		}
-		return resp, err
+		return nil
 	}
-
-	opts := server.defaultCCROptions(sender)
-	opts.OnUsage = server.zenUsageRecorder(model, sessionKey, startTime)
-
-	isStreaming, _ := reqMap["stream"].(bool)
-	if isStreaming {
-		_ = ProxyAnthropicStreamWithCCR(request.Context(), writer, reqMap, opts)
-	} else {
-		_ = ProxyAnthropicJSONWithCCR(request.Context(), writer, reqMap, opts)
-	}
+	zen.ForwardMessagesWithModify(writer, request, zenCfg.BaseURL, key, body, modify)
 }
 
 // zenUsageRecorder returns the usage callback shared by every Zen path:
@@ -1953,26 +1755,6 @@ func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionI
 	resp.Body = io.NopCloser(bytes.NewReader(respBytes))
 	resp.ContentLength = int64(len(respBytes))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(respBytes)))
-}
-
-func (server *Server) defaultCCROptions(sender CCRSender) CCRProxyOptions {
-	return CCRProxyOptions{
-		IsCCREnabled: func() bool {
-			return server.isCCREnabled()
-		},
-		GetChunk: func(chunkID string) (string, bool) {
-			return server.getCCRChunkPayload(chunkID)
-		},
-		RecordHeadroom: func(count int) {
-			if server.tracker != nil {
-				server.tracker.RecordHeadroom(stats.HeadroomSample{
-					CCRRetrievals: count,
-				})
-			}
-		},
-		Sender:        sender,
-		MaxHydrations: maxCCRHydrations,
-	}
 }
 
 // minMaxTokensFloor guards against providers that reject tiny max_tokens
@@ -2356,24 +2138,14 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 	}
 
 	var (
-		lastStatus         int
-		lastBody           []byte
-		providerIdx        = 0
-		consec429          int
-		tried              = make(map[string]bool)
-		attempts           int
-		retryCycle         int
-		ccrHydrations      int
-		totalCCRRetrievals int
-		streamStarted      bool
-		baseBlockIndex     int
-		totalInput         int
-		totalOutput        int
-		totalCacheRead     int
+		lastStatus  int
+		lastBody    []byte
+		providerIdx = 0
+		consec429   int
+		tried       = make(map[string]bool)
+		attempts    int
+		retryCycle  int
 	)
-
-	bw := bufio.NewWriterSize(writer, 4096)
-	flusher, hasFlusher := writer.(http.Flusher)
 
 	// No ranked/pinned/custom provider available — single unpinned attempt
 	// (equivalent to the pre-routing passthrough behavior).
@@ -2565,210 +2337,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					continue
 				}
 
-				if !server.isCCREnabled() {
-					server.proxyStreamResponse(writer, resp, model, sessionID, pricing, startTime, attemptStart, provider, cancel)
-					return
-				}
-
-				// Stream with CCR interception and potential re-entry.
-				// ccrStreamState owns the upstream-to-downstream index mapping
-				// and the headroom_retrieve suppression, shared with the
-				// CloudCode and Kimi paths.
-				state := newCCRStreamState(baseBlockIndex)
-				var pendingTerminalEvents []map[string]any
-				var attemptIn, attemptOut, attemptCr, attemptCw int
-
-				parseErr := parseSSEStream(resp.Body, func(eventType string, dataObj map[string]any, rawData []byte) error {
-					openrouter.ParseUsageFromSSELine(string(rawData), &attemptIn, &attemptOut, &attemptCr, &attemptCw)
-					if p := openrouter.ExtractProviderFromSSELine(string(rawData)); p != "" {
-						provider = canonicalServedProvider(model, p)
-					}
-
-					switch eventType {
-					case ":comment":
-						if !streamStarted {
-							copyUpstreamHeaders(writer.Header(), resp.Header)
-							writer.WriteHeader(resp.StatusCode)
-							streamStarted = true
-						}
-						if _, err := bw.WriteString(string(rawData) + "\n\n"); err != nil {
-							return err
-						}
-						if err := bw.Flush(); err != nil {
-							return err
-						}
-						if hasFlusher && flusher != nil {
-							flusher.Flush()
-						}
-						return nil
-
-					case "message_start":
-						if ccrHydrations == 0 {
-							if !streamStarted {
-								copyUpstreamHeaders(writer.Header(), resp.Header)
-								writer.WriteHeader(resp.StatusCode)
-								streamStarted = true
-							}
-							return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
-						}
-						return nil
-
-					case "content_block_start":
-						idx := intValue(dataObj["index"], 0)
-						downstream, emit := state.StartBlock(idx, mapOrEmpty(dataObj["content_block"]))
-						if !emit {
-							return nil
-						}
-						if !streamStarted {
-							copyUpstreamHeaders(writer.Header(), resp.Header)
-							writer.WriteHeader(resp.StatusCode)
-							streamStarted = true
-						}
-						dataObj["index"] = downstream
-						// rawData still carries the upstream index; re-marshal.
-						return writeSSEEvent(bw, eventType, dataObj, nil, hasFlusher, flusher)
-
-					case "content_block_delta":
-						idx := intValue(dataObj["index"], 0)
-						delta := mapOrEmpty(dataObj["delta"])
-						switch deltaType, _ := delta["type"].(string); deltaType {
-						case "input_json_delta":
-							partial, _ := delta["partial_json"].(string)
-							state.AppendJSON(idx, partial)
-						case "text_delta":
-							text, _ := delta["text"].(string)
-							state.AppendText(idx, text)
-						case "thinking_delta":
-							if text, ok := delta["thinking"].(string); ok {
-								state.AppendThinking(idx, text)
-							}
-						case "signature_delta":
-							if sig, ok := delta["signature"].(string); ok {
-								state.AppendSignature(idx, sig)
-							}
-						}
-						downstream, emit := state.MapIndex(idx)
-						if !emit {
-							return nil
-						}
-						dataObj["index"] = downstream
-						return writeSSEEvent(bw, eventType, dataObj, nil, hasFlusher, flusher)
-
-					case "content_block_stop":
-						idx := intValue(dataObj["index"], 0)
-						downstream, emit := state.MapIndex(idx)
-						if !emit {
-							return nil
-						}
-						dataObj["index"] = downstream
-						return writeSSEEvent(bw, eventType, dataObj, nil, hasFlusher, flusher)
-
-					case "message_delta", "message_stop":
-						pendingTerminalEvents = append(pendingTerminalEvents, dataObj)
-						return nil
-
-					default:
-						if !streamStarted {
-							copyUpstreamHeaders(writer.Header(), resp.Header)
-							writer.WriteHeader(resp.StatusCode)
-							streamStarted = true
-						}
-						return writeSSEEvent(bw, eventType, dataObj, rawData, hasFlusher, flusher)
-					}
-				})
-				_ = resp.Body.Close()
-				cancel()
-
-				if parseErr != nil {
-					if !streamStarted {
-						if provider != "" {
-							openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
-						}
-						providerIdx++
-						if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
-							retryCycle++
-							providerIdx = 0
-							tried = make(map[string]bool)
-							d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
-							if server.now().Add(d).After(deadline) {
-								break
-							}
-							if !sleepOrDone(request.Context(), d) {
-								return
-							}
-						}
-						continue
-					}
-					return
-				}
-
-				totalInput += attemptIn
-				totalOutput += attemptOut
-				totalCacheRead += attemptCr
-
-				// Check for headroom_retrieve calls
-				retrieveCalls := state.Finalize()
-
-				if hydratable(retrieveCalls, state.HasVisibleToolUse()) && ccrHydrations < maxCCRHydrations {
-					ccrHydrations++
-					totalCCRRetrievals += len(retrieveCalls)
-					// Suppressed blocks consumed no downstream index, so
-					// advancing by VisibleCount keeps the sequence gapless.
-					baseBlockIndex += state.VisibleCount()
-
-					assistantMsg := map[string]any{
-						"role":    "assistant",
-						"content": state.AssistantBlocks(),
-					}
-					var toolResults []any
-					for _, call := range retrieveCalls {
-						toolID, _ := call["id"].(string)
-						inputMap, _ := call["input"].(map[string]any)
-						chunkID, _ := inputMap["chunk_id"].(string)
-						payload, isErr := server.getCCRChunkPayload(chunkID)
-						toolResults = append(toolResults, map[string]any{
-							"type":        "tool_result",
-							"tool_use_id": toolID,
-							"content":     payload,
-							"is_error":    isErr,
-						})
-					}
-					userMsg := map[string]any{
-						"role":    "user",
-						"content": toolResults,
-					}
-					existingMsgs, _ := anthropicRequest["messages"].([]any)
-					anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
-					reqBody, _ = json.Marshal(anthropicRequest)
-					bodyParsed = json.Unmarshal(reqBody, &payload) == nil
-					tried[provider] = false
-					continue
-				}
-
-				// Terminal events flush
-				for _, ev := range pendingTerminalEvents {
-					if ev["type"] == "message_delta" {
-						reconcileStopReasonEvent(ev, state.HasVisibleToolUse())
-						usage, ok := ev["usage"].(map[string]any)
-						if !ok || usage == nil {
-							usage = make(map[string]any)
-							ev["usage"] = usage
-						}
-						usage["output_tokens"] = totalOutput
-						usage["cache_read_input_tokens"] = totalCacheRead
-					}
-					_ = writeSSEEvent(bw, stringFrom(ev["type"]), ev, nil, hasFlusher, flusher)
-				}
-
-				attemptPricing := effectiveAttemptPricing(pricing, model, provider)
-				if provider != "" {
-					openrouter.DefaultRouter.RecordResult(model, provider, true, server.now().Sub(attemptStart), totalInput+totalOutput)
-					openrouter.DefaultRouter.SetSticky(sessionID, model, provider)
-				}
-				server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, totalInput, totalOutput, totalCacheRead, attemptCw, provider, cacheInfo)
-				if totalCCRRetrievals > 0 && server.tracker != nil {
-					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
-				}
+				server.proxyStreamResponse(writer, resp, model, sessionID, pricing, startTime, attemptStart, provider, cancel)
 				return
 			}
 			// Buffer full body before writing — failover impossible after first byte.
@@ -2805,49 +2374,6 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			// Cost follows the served endpoint, resolved after the override.
 			attemptPricing := effectiveAttemptPricing(pricing, model, provider)
 
-			// CCR Hydration for OpenRouter Unary
-			if server.isCCREnabled() && ccrHydrations < maxCCRHydrations {
-				var respObj map[string]any
-				if json.Unmarshal(bodyBytes, &respObj) == nil {
-					retrieveCalls := findRetrieveToolUsesFromResponse(respObj)
-					if hydratable(retrieveCalls, hasVisibleToolUse(respObj)) {
-						ccrHydrations++
-						totalCCRRetrievals += len(retrieveCalls)
-						assistantMsg := map[string]any{
-							"role":    "assistant",
-							"content": respObj["content"],
-						}
-						var toolResults []any
-						for _, call := range retrieveCalls {
-							toolID, _ := call["id"].(string)
-							inputMap, _ := call["input"].(map[string]any)
-							chunkID, _ := inputMap["chunk_id"].(string)
-							payload, isErr := server.getCCRChunkPayload(chunkID)
-							toolResults = append(toolResults, map[string]any{
-								"type":        "tool_result",
-								"tool_use_id": toolID,
-								"content":     payload,
-								"is_error":    isErr,
-							})
-						}
-						userMsg := map[string]any{
-							"role":    "user",
-							"content": toolResults,
-						}
-						existingMsgs, _ := anthropicRequest["messages"].([]any)
-						anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
-						reqBody, _ = json.Marshal(anthropicRequest)
-						bodyParsed = json.Unmarshal(reqBody, &payload) == nil
-						tried[provider] = false
-						continue
-					}
-				}
-			}
-
-			if server.isCCREnabled() {
-				bodyBytes = stripRetrieveBlocksJSON(bodyBytes)
-			}
-
 			// Write headers + status
 			copyUpstreamHeaders(writer.Header(), resp.Header)
 			writer.WriteHeader(resp.StatusCode)
@@ -2862,9 +2388,6 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				openrouter.DefaultRouter.SetSticky(sessionID, model, provider)
 			}
 			server.recordOpenRouterMetrics(model, sessionID, attemptPricing, startTime, in, out, cr, cw, provider, cacheInfo)
-			if totalCCRRetrievals > 0 && server.tracker != nil {
-				server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
-			}
 			return
 		}
 
@@ -3335,32 +2858,11 @@ func effectiveAttemptPricing(base openrouter.Pricing, model, servedProvider stri
 
 type streamSender func(context.Context, map[string]any, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
 
-const maxCCRHydrations = 3
-
 func (server *Server) nowTime() time.Time {
 	if server != nil && server.now != nil {
 		return server.now()
 	}
 	return time.Now()
-}
-
-func (server *Server) isCCREnabled() bool {
-	if server.headroom == nil {
-		return false
-	}
-	cfg := server.headroom.GetConfig()
-	return cfg.Enabled && cfg.CCR.Enabled && server.ccrStore != nil
-}
-
-func (server *Server) getCCRChunkPayload(chunkID string) (string, bool) {
-	if server.ccrStore == nil {
-		return fmt.Sprintf("Error: CCR store unavailable (chunk %s)", chunkID), true
-	}
-	payload, found := server.ccrStore.Get(chunkID)
-	if !found {
-		return fmt.Sprintf("Error: Chunk %s not found or evicted from CCR store", chunkID), true
-	}
-	return payload, false
 }
 
 func intValue(v any, defaultVal int) int {
@@ -3387,86 +2889,42 @@ func mapOrEmpty(v any) map[string]any {
 func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Request, send streamSender, anthropicRequest map[string]any, model string) {
 	startTime := server.nowTime()
 	reqCtx, meta := cloudcode.WithExecutionMetadata(request.Context())
-	totalCCRRetrievals := 0
-	var totalInput, totalOutput, totalCacheRead, totalThinking int
 
-	for iter := 0; iter <= maxCCRHydrations; iter++ {
-		accumulator := proxyformat.NewThinkingAccumulator()
-		_, err := send(reqCtx, anthropicRequest, func(event cloudcode.SSEEvent) error {
-			return accumulator.Consume(event.Data)
-		})
-		if err != nil {
-			server.writeError(writer, err)
-			return
-		}
-
-		totalInput += accumulator.InputTokens()
-		totalOutput += accumulator.OutputTokens()
-		totalCacheRead += accumulator.CacheReadTokens()
-		totalThinking += accumulator.ThinkingTokens()
-
-		response := accumulator.Response(model, server.builder.Cache, "")
-		retrieveCalls := findRetrieveToolUsesFromResponse(response)
-
-		if !hydratable(retrieveCalls, hasVisibleToolUse(response)) || iter == maxCCRHydrations || !server.isCCREnabled() {
-			stripRetrieveBlocks(response)
-			if usage, ok := response["usage"].(map[string]any); ok {
-				usage["input_tokens"] = totalInput
-				usage["output_tokens"] = totalOutput
-				usage["cache_read_input_tokens"] = totalCacheRead
-			}
-			latency := server.nowTime().Sub(startTime)
-			if server.tracker != nil {
-				server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
-				if totalCCRRetrievals > 0 {
-					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
-				}
-			}
-			sessionID := ccExtractSessionID(request, anthropicRequest)
-			metrics := cloudcode.RequestMetrics{
-				Model:           model,
-				Account:         meta.Account,
-				ProjectID:       meta.ProjectID,
-				SessionID:       sessionID,
-				InputTokens:     totalInput,
-				OutputTokens:    totalOutput,
-				CacheReadTokens: totalCacheRead,
-				ThinkingTokens:  totalThinking,
-				CCRRetrievals:   totalCCRRetrievals,
-				Latency:         latency,
-			}
-			metrics.ComputeFinalMetrics(cloudcode.DefaultSessionTracker, server.nowTime())
-			cloudcode.LogObservability(server.logger, metrics)
-
-			writeJSON(writer, http.StatusOK, response)
-			return
-		}
-
-		totalCCRRetrievals += len(retrieveCalls)
-		assistantMsg := map[string]any{
-			"role":    "assistant",
-			"content": response["content"],
-		}
-		var toolResults []any
-		for _, call := range retrieveCalls {
-			toolID, _ := call["id"].(string)
-			inputMap, _ := call["input"].(map[string]any)
-			chunkID, _ := inputMap["chunk_id"].(string)
-			payload, isErr := server.getCCRChunkPayload(chunkID)
-			toolResults = append(toolResults, map[string]any{
-				"type":        "tool_result",
-				"tool_use_id": toolID,
-				"content":     payload,
-				"is_error":    isErr,
-			})
-		}
-		userMsg := map[string]any{
-			"role":    "user",
-			"content": toolResults,
-		}
-		existingMsgs, _ := anthropicRequest["messages"].([]any)
-		anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
+	accumulator := proxyformat.NewThinkingAccumulator()
+	_, err := send(reqCtx, anthropicRequest, func(event cloudcode.SSEEvent) error {
+		return accumulator.Consume(event.Data)
+	})
+	if err != nil {
+		server.writeError(writer, err)
+		return
 	}
+
+	totalInput := accumulator.InputTokens()
+	totalOutput := accumulator.OutputTokens()
+	totalCacheRead := accumulator.CacheReadTokens()
+	totalThinking := accumulator.ThinkingTokens()
+
+	response := accumulator.Response(model, server.builder.Cache, "")
+	latency := server.nowTime().Sub(startTime)
+	if server.tracker != nil {
+		server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
+	}
+	sessionID := ccExtractSessionID(request, anthropicRequest)
+	metrics := cloudcode.RequestMetrics{
+		Model:           model,
+		Account:         meta.Account,
+		ProjectID:       meta.ProjectID,
+		SessionID:       sessionID,
+		InputTokens:     totalInput,
+		OutputTokens:    totalOutput,
+		CacheReadTokens: totalCacheRead,
+		ThinkingTokens:  totalThinking,
+		Latency:         latency,
+	}
+	metrics.ComputeFinalMetrics(cloudcode.DefaultSessionTracker, server.nowTime())
+	cloudcode.LogObservability(server.logger, metrics)
+
+	writeJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Request, send streamSender, anthropicRequest map[string]any, model string) {
@@ -3512,186 +2970,54 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 		return nil
 	}
 
-	baseBlockIndex := 0
-	totalCCRRetrievals := 0
-	var totalInput, totalOutput, totalCacheRead, totalThinking int
+	converter := proxyformat.NewStreamConverter(model, server.builder.Cache, "")
 
-	for iter := 0; iter <= maxCCRHydrations; iter++ {
-		converter := proxyformat.NewStreamConverter(model, server.builder.Cache, "")
-		state := newCCRStreamState(baseBlockIndex)
-		var pendingTerminalEvents []map[string]any
-
-		handleEvent := func(event map[string]any) error {
-			eventType, _ := event["type"].(string)
-			switch eventType {
-			case "message_start":
-				if iter == 0 {
-					return writeEvents([]map[string]any{event})
-				}
-				return nil
-
-			case "content_block_start":
-				idx := intValue(event["index"], 0)
-				downstream, emit := state.StartBlock(idx, mapOrEmpty(event["content_block"]))
-				if !emit {
-					return nil
-				}
-				event["index"] = downstream
-				return writeEvents([]map[string]any{event})
-
-			case "content_block_delta":
-				idx := intValue(event["index"], 0)
-				delta := mapOrEmpty(event["delta"])
-				switch deltaType, _ := delta["type"].(string); deltaType {
-				case "input_json_delta":
-					partial, _ := delta["partial_json"].(string)
-					state.AppendJSON(idx, partial)
-				case "text_delta":
-					text, _ := delta["text"].(string)
-					state.AppendText(idx, text)
-				case "thinking_delta":
-					if text, ok := delta["thinking"].(string); ok {
-						state.AppendThinking(idx, text)
-					}
-				case "signature_delta":
-					if sig, ok := delta["signature"].(string); ok {
-						state.AppendSignature(idx, sig)
-					}
-				}
-				downstream, emit := state.MapIndex(idx)
-				if !emit {
-					return nil
-				}
-				event["index"] = downstream
-				return writeEvents([]map[string]any{event})
-
-			case "content_block_stop":
-				idx := intValue(event["index"], 0)
-				downstream, emit := state.MapIndex(idx)
-				if !emit {
-					return nil
-				}
-				event["index"] = downstream
-				return writeEvents([]map[string]any{event})
-
-			case "message_delta", "message_stop":
-				pendingTerminalEvents = append(pendingTerminalEvents, event)
-				return nil
-
-			default:
-				return writeEvents([]map[string]any{event})
-			}
-		}
-
-		_, err := send(reqCtx, anthropicRequest, func(event cloudcode.SSEEvent) error {
-			events, err := converter.Consume(event.Data)
-			if err != nil {
-				return err
-			}
-			for _, ev := range events {
-				if err := handleEvent(ev); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err == nil {
-			finishEvents, fErr := converter.Finish()
-			if fErr == nil {
-				for _, ev := range finishEvents {
-					if err := handleEvent(ev); err != nil {
-						break
-					}
-				}
-			}
-		}
+	_, err := send(reqCtx, anthropicRequest, func(event cloudcode.SSEEvent) error {
+		events, err := converter.Consume(event.Data)
 		if err != nil {
-			if !started {
-				server.writeError(writer, err)
-				return
-			}
-			errorEvent := map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": err.Error()}}
-			_ = writeEvents([]map[string]any{errorEvent})
-			return
+			return err
 		}
-
-		totalInput += converter.InputTokens()
-		totalOutput += converter.OutputTokens()
-		totalCacheRead += converter.CacheReadTokens()
-		totalThinking += converter.ThinkingTokens()
-
-		retrieveCalls := state.Finalize()
-
-		needsHydration := hydratable(retrieveCalls, state.HasVisibleToolUse()) && iter < maxCCRHydrations && server.isCCREnabled()
-
-		if !needsHydration {
-			for _, ev := range pendingTerminalEvents {
-				if ev["type"] == "message_delta" {
-					reconcileStopReasonEvent(ev, state.HasVisibleToolUse())
-					usage, ok := ev["usage"].(map[string]any)
-					if !ok || usage == nil {
-						usage = make(map[string]any)
-						ev["usage"] = usage
-					}
-					usage["output_tokens"] = totalOutput
-					usage["cache_read_input_tokens"] = totalCacheRead
-				}
-			}
-			_ = writeEvents(pendingTerminalEvents)
-
-			latency := server.nowTime().Sub(startTime)
-			if server.tracker != nil {
-				server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
-				if totalCCRRetrievals > 0 {
-					server.tracker.RecordHeadroom(stats.HeadroomSample{CCRRetrievals: totalCCRRetrievals})
-				}
-			}
-			sessionID := ccExtractSessionID(request, anthropicRequest)
-			metrics := cloudcode.RequestMetrics{
-				Model:           model,
-				Account:         meta.Account,
-				ProjectID:       meta.ProjectID,
-				SessionID:       sessionID,
-				InputTokens:     totalInput,
-				OutputTokens:    totalOutput,
-				CacheReadTokens: totalCacheRead,
-				ThinkingTokens:  totalThinking,
-				CCRRetrievals:   totalCCRRetrievals,
-				Latency:         latency,
-			}
-			metrics.ComputeFinalMetrics(cloudcode.DefaultSessionTracker, server.nowTime())
-			cloudcode.LogObservability(server.logger, metrics)
-			return
+		return writeEvents(events)
+	})
+	if err == nil {
+		finishEvents, fErr := converter.Finish()
+		if fErr == nil {
+			_ = writeEvents(finishEvents)
 		}
-
-		totalCCRRetrievals += len(retrieveCalls)
-		baseBlockIndex += state.VisibleCount()
-
-		assistantMsg := map[string]any{
-			"role":    "assistant",
-			"content": state.AssistantBlocks(),
-		}
-
-		var toolResults []any
-		for _, call := range retrieveCalls {
-			toolID, _ := call["id"].(string)
-			inputMap, _ := call["input"].(map[string]any)
-			chunkID, _ := inputMap["chunk_id"].(string)
-			payload, isErr := server.getCCRChunkPayload(chunkID)
-			toolResults = append(toolResults, map[string]any{
-				"type":        "tool_result",
-				"tool_use_id": toolID,
-				"content":     payload,
-				"is_error":    isErr,
-			})
-		}
-		userMsg := map[string]any{
-			"role":    "user",
-			"content": toolResults,
-		}
-		existingMsgs, _ := anthropicRequest["messages"].([]any)
-		anthropicRequest["messages"] = append(existingMsgs, assistantMsg, userMsg)
 	}
+	if err != nil {
+		if !started {
+			server.writeError(writer, err)
+			return
+		}
+		errorEvent := map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": err.Error()}}
+		_ = writeEvents([]map[string]any{errorEvent})
+		return
+	}
+
+	totalInput := converter.InputTokens()
+	totalOutput := converter.OutputTokens()
+	totalCacheRead := converter.CacheReadTokens()
+	totalThinking := converter.ThinkingTokens()
+
+	latency := server.nowTime().Sub(startTime)
+	if server.tracker != nil {
+		server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
+	}
+	sessionID := ccExtractSessionID(request, anthropicRequest)
+	metrics := cloudcode.RequestMetrics{
+		Model:           model,
+		Account:         meta.Account,
+		ProjectID:       meta.ProjectID,
+		SessionID:       sessionID,
+		InputTokens:     totalInput,
+		OutputTokens:    totalOutput,
+		CacheReadTokens: totalCacheRead,
+		ThinkingTokens:  totalThinking,
+		Latency:         latency,
+	}
+	metrics.ComputeFinalMetrics(cloudcode.DefaultSessionTracker, server.nowTime())
+	cloudcode.LogObservability(server.logger, metrics)
 }
 
 func (server *Server) client(ctx context.Context) (auth.Credentials, Upstream, error) {

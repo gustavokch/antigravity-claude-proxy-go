@@ -1,0 +1,152 @@
+package format
+
+import (
+	"strings"
+
+	"antigravity-go-proxy/internal/reasoning"
+)
+
+// The effort-to-budget table is the proxy's own translation choice. Cloud
+// Code's ThinkingConfig carries a token budget or a tier and never an effort
+// level, so an Anthropic output_config.effort has to become a number here.
+const (
+	effortBudgetLow        = 1024
+	effortBudgetMedium     = 8000
+	effortBudgetHighClaude = 32000
+	effortBudgetHighGemini = 16000
+)
+
+// Spelling of the Claude route's thinkingConfig keys. The proxy has always sent
+// snake_case here while every other branch sends the proto JSON (camelCase)
+// names. Whether the Claude route may use camelCase too is decided by probe GA
+// and the agy capture (plan Task 12a); keep the two keys together.
+const (
+	claudeKeyIncludeThoughts = "include_thoughts"
+	claudeKeyThinkingBudget  = "thinking_budget"
+)
+
+// budgetLevels are the effort levels the budget table distinguishes. A
+// stronger request falls back to the highest level listed, the rule Claude
+// Code documents for a level a model does not accept.
+var budgetLevels = [...]reasoning.Level{reasoning.LevelLow, reasoning.LevelMedium, reasoning.LevelHigh}
+
+// effortBudget returns the thinking budget for an effort level, 0 for none.
+func effortBudget(family ModelFamily, level reasoning.Level) int {
+	switch level.Supported(budgetLevels[:]...) {
+	case reasoning.LevelLow:
+		return effortBudgetLow
+	case reasoning.LevelMedium:
+		return effortBudgetMedium
+	case reasoning.LevelHigh:
+		if family == FamilyClaude {
+			return effortBudgetHighClaude
+		}
+		return effortBudgetHighGemini
+	}
+	return 0
+}
+
+// budgetFromEffortTable reports whether thinkingBudget derives the budget from
+// the effort table: an explicit reasoning_effort always does, ambient
+// output_config.effort only when the request carries no explicit budget. Only
+// such a budget is the proxy's own choice, so only it may be capped for answer
+// room (capEffortBudgetForAnswer).
+func budgetFromEffortTable(params reasoning.Params) bool {
+	return params.Source == reasoning.SourceExplicit ||
+		(!params.HasBudget && params.Level != reasoning.LevelUnset)
+}
+
+// thinkingBudget picks the token budget for a budget-style model. Precedence:
+// an explicit reasoning_effort, then an explicit budget, then the ambient
+// output_config.effort, then fallback. The result honors the catalog minimum.
+func thinkingBudget(params reasoning.Params, family ModelFamily, fallback, minimum int) int {
+	budget := 0
+	switch {
+	case budgetFromEffortTable(params):
+		budget = effortBudget(family, params.Level)
+	case params.HasBudget:
+		budget = params.Budget
+	}
+	if budget <= 0 {
+		budget = fallback
+	}
+	if minimum > 0 && budget < minimum {
+		budget = minimum
+	}
+	return budget
+}
+
+// withoutAmbientEffortForNamedTier drops output_config.effort when the model
+// ID already names a tier. Claude Code sends that effort on every request, so
+// it must not override the budget of a tier the user picked by name; upstream
+// publishes those tiers (gemini-3.8-flash-low, gemini-3.1-pro-high,
+// gpt-oss-120b-medium) as budget-style entries that each carry their own
+// budget (plan decision D1). Tier routing applies the same rule. A deliberate
+// reasoning_effort or an explicit budget still wins.
+func withoutAmbientEffortForNamedTier(params reasoning.Params, model string) reasoning.Params {
+	if params.Source == reasoning.SourceOutputConfig && reasoning.NamesTier(model) {
+		params.Level = reasoning.LevelUnset
+		params.Source = reasoning.SourceNone
+	}
+	return params
+}
+
+// geminiBudgetCeiling is the largest thinkingBudget Google documents for the
+// Gemini 2.5 series (2.5 Pro 128-32768, 2.5 Flash and Flash-Lite up to 24576).
+// Other families have no documented budget range, so they keep the proxy's
+// historical 128000 ceiling. It applies only when no live catalog entry
+// describes the model.
+func geminiBudgetCeiling(model string) int {
+	lower := strings.ToLower(model)
+	switch {
+	case strings.Contains(lower, "gemini-2.5-pro"):
+		return 32768
+	case strings.Contains(lower, "gemini-2.5"):
+		return 24576
+	}
+	return 128000
+}
+
+// thinkingResponseHeadroom is the room kept for the answer above a thinking
+// budget: it is added when max_tokens is too small for the budget, and kept
+// when the model cap forces the budget down.
+const thinkingResponseHeadroom = 8192
+
+// reconcileClaudeBudget keeps thinking_budget strictly below maxOutputTokens,
+// the rule Anthropic enforces as budget_tokens < max_tokens. It runs after the
+// model cap is applied so the cap cannot undo it. A maxOutputTokens at or
+// below the budget is raised to budget plus headroom first; when the cap
+// forbids that, the budget shrinks instead so the answer keeps its room.
+func reconcileClaudeBudget(generation map[string]any, budget, limit int) {
+	config := asMap(generation["thinkingConfig"])
+	maximum := intValue(generation["maxOutputTokens"], 0)
+	if config == nil || maximum <= 0 || maximum > budget {
+		return
+	}
+	maximum = budget + thinkingResponseHeadroom
+	if limit > 0 && maximum > limit {
+		maximum = limit
+	}
+	generation["maxOutputTokens"] = maximum
+	if maximum <= budget {
+		config[claudeKeyThinkingBudget] = maximum - min(thinkingResponseHeadroom, maximum/2)
+	}
+}
+
+// capEffortBudgetForAnswer shrinks an effort-derived thinkingBudget so the
+// final maxOutputTokens keeps room for the answer, because Google counts
+// thought tokens against maxOutputTokens. The room is thinkingResponseHeadroom,
+// or half of maxOutputTokens when that is smaller. The catalog minimum is the
+// floor, even when it exceeds the limit. It does nothing without a
+// maxOutputTokens.
+func capEffortBudgetForAnswer(generation map[string]any, minimum int) {
+	config := asMap(generation["thinkingConfig"])
+	maximum := intValue(generation["maxOutputTokens"], 0)
+	if config == nil || maximum <= 0 {
+		return
+	}
+	limit := maximum - min(thinkingResponseHeadroom, maximum/2)
+	if intValue(config["thinkingBudget"], 0) > limit {
+		config["thinkingBudget"] = max(limit, minimum)
+	}
+}

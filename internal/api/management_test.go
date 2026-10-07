@@ -978,8 +978,7 @@ func TestManagement_SaveHeadroomConfig(t *testing.T) {
 	srv, _, _ := newTestServerWithManager(t)
 
 	body, _ := json.Marshal(map[string]any{"headroom": map[string]any{
-		"enabled": true, "smartCrusher": true, "codeCompressor": true, "liveTurns": 3,
-		"ccr":          map[string]any{"enabled": false, "maxStoreMB": 32, "minChunkBytes": 4096},
+		"enabled": true, "smartCrusher": true, "codeCompressor": true,
 		"outputShaper": map[string]any{"enabled": true, "verbositySteering": true, "effortRouting": false, "mechanicalThinkingBudget": 2048},
 	}})
 	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewReader(body))
@@ -990,10 +989,10 @@ func TestManagement_SaveHeadroomConfig(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	got := config.Get().Headroom
-	if !got.Enabled || got.LiveTurns != 3 || got.CCR.MaxStoreMB != 32 || got.OutputShaper.MechanicalThinkingBudget != 2048 {
+	if !got.Enabled || !got.SmartCrusher || got.OutputShaper.MechanicalThinkingBudget != 2048 {
 		t.Errorf("headroom config not persisted: %+v", got)
 	}
-	if srv.headroom.GetConfig().LiveTurns != 3 {
+	if !srv.headroom.GetConfig().SmartCrusher {
 		t.Error("live engine was not updated after config save")
 	}
 }

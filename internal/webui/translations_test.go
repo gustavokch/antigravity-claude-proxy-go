@@ -52,16 +52,13 @@ var headroomKeys = []string{
 	"headroomSmartCrusher", "headroomSmartCrusherDesc",
 	"headroomTabularArrays", "headroomTabularArraysDesc",
 	"headroomCodeCompressor", "headroomCodeCompressorDesc",
-	"headroomLiveTurns", "headroomLiveTurnsDesc",
 	"headroomOutputShaper", "headroomOutputShaperDesc",
 	"headroomVerbositySteering", "headroomVerbositySteeringDesc",
 	"headroomSteeringText", "headroomSteeringTextPlaceholder",
 	"headroomEffortRouting", "headroomEffortRoutingDesc",
 	"headroomThinkingBudget",
-	"headroomCcr", "headroomCcrDesc", "headroomCcrEnabled",
-	"headroomMaxStoreMB", "headroomMinChunkBytes",
 	"headroomStatsTitle", "headroomBytesSaved", "headroomCompressionRatio",
-	"headroomRequestsCompressed", "headroomThinkingClamped", "headroomCcrRetrievals",
+	"headroomRequestsCompressed", "headroomThinkingClamped",
 }
 
 var commandCrusherKeys = []string{

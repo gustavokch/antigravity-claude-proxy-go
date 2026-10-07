@@ -352,11 +352,7 @@ echo "=== [8/9] Driving a custom endpoint authenticated by API key ==="
 # key, not the captured identity.
 #
 # The caller's User-Agent survives because this endpoint is forwarded by the
-# ReverseProxy path, which clones the inbound headers. The CCR branch in
-# forwardToCustomEndpoint builds a fresh request instead and copies none of
-# them, so if headroom.ccr.enabled ever defaults to true this phase fails with
-# Go-http-client/1.1 for a reason that has nothing to do with T1. The stub
-# configuration sets no headroom block, and the default is false.
+# ReverseProxy path, which clones the inbound headers.
 curl -sS -o /dev/null --max-time 60 \
   -X POST "http://127.0.0.1:${PROXY_PORT}/v1/messages" \
   -H 'Content-Type: application/json' \

@@ -687,7 +687,7 @@ window.translations.en = {
 
     // Headroom Engine
     headroomSettings: "Headroom Context Optimization",
-    headroomDesc: "Native context compression, whitespace pruning, output shaping, and content-conditioned retrieval.",
+    headroomDesc: "Native context compression, whitespace pruning, and output shaping.",
     headroomEnabled: "Enable Headroom Engine",
     headroomCacheNotice: "Notice: Changing Headroom settings invalidates the prompt cache once for active conversations.",
     headroomSmartCrusher: "SmartCrusher (JSON Compactor)",
@@ -696,8 +696,6 @@ window.translations.en = {
     headroomTabularArraysDesc: "Converts uniform JSON object arrays into Markdown pipe tables when savings exceed 30%.",
     headroomCodeCompressor: "CodeCompressor (Whitespace & Repetition Pruning)",
     headroomCodeCompressorDesc: "Removes trailing whitespace, collapses multiple blank lines, and folds repetitive log lines.",
-    headroomLiveTurns: "CCR Live Turns (Preserved Inline)",
-    headroomLiveTurnsDesc: "Number of trailing recent messages kept inline without retrieval chunking.",
     headroomOutputShaper: "Output Shaper",
     headroomOutputShaperDesc: "Appends precision steering prompt and manages mechanical-turn thinking budget.",
     headroomVerbositySteering: "Verbosity Steering",
@@ -707,17 +705,11 @@ window.translations.en = {
     headroomEffortRouting: "Effort Routing",
     headroomEffortRoutingDesc: "Clamps thinking budget during mechanical tool continuations.",
     headroomThinkingBudget: "Mechanical Thinking Budget",
-    headroomCcr: "Content-Conditioned Retrieval (CCR)",
-    headroomCcrDesc: "Offload large tool outputs to chunk storage and retrieve dynamically (Cloud Code & OpenRouter only).",
-    headroomCcrEnabled: "Enable CCR Demotion",
-    headroomMaxStoreMB: "Max Store Size (MB)",
-    headroomMinChunkBytes: "Min Chunk Size (Bytes)",
     headroomStatsTitle: "Headroom Compression",
     headroomBytesSaved: "Bytes Saved",
     headroomCompressionRatio: "Compression Ratio",
     headroomRequestsCompressed: "Requests Compressed",
     headroomThinkingClamped: "Thinking Tokens Clamped",
-    headroomCcrRetrievals: "CCR Retrievals",
 
     // CommandCrusher (RTK Suite)
     commandCrusherSettings: "CommandCrusher (CLI Tool Output Optimization)",

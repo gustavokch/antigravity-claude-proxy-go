@@ -780,3 +780,66 @@ func TestDirectTierTakesPrecedenceOverTieredWhenBothPresent(t *testing.T) {
 		}
 	}
 }
+
+// output_config.effort is ambient: Claude Code sends it on every request, so
+// it may choose a tier for a bare family ID but must never override a tier the
+// client already chose by model name. reasoning_effort and a bare thinking
+// budget are deliberate and still win over the name.
+func TestResolveWithRequest_OutputConfigEffortRouting(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low","claude-opus-4-6-thinking"
+		]}]}],
+		"models":{
+			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":1048576,"maxOutputTokens":65536},
+			"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":250000,"maxOutputTokens":64000}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	effort := func(level string) map[string]any {
+		return map[string]any{"output_config": map[string]any{"effort": level}}
+	}
+	with := func(base map[string]any, key string, value any) map[string]any {
+		out := map[string]any{}
+		for k, v := range base {
+			out[k] = v
+		}
+		out[key] = value
+		return out
+	}
+
+	cases := []struct {
+		name      string
+		requested string
+		request   map[string]any
+		want      string
+	}{
+		{"bare family follows ambient low", "gemini-3.8-flash", effort("low"), "gemini-3.8-flash-low"},
+		{"bare family follows ambient medium", "gemini-3.8-flash", effort("medium"), "gemini-3.8-flash-medium"},
+		{"xhigh has no tier above high", "gemini-3.8-flash", effort("xhigh"), "gemini-3.8-flash-high"},
+		{"max has no tier above high", "gemini-3.8-flash", effort("max"), "gemini-3.8-flash-high"},
+		{"legacy 3.5 id repoints then follows ambient", "gemini-3.5-flash", effort("low"), "gemini-3.8-flash-low"},
+		{"named tier beats ambient effort", "gemini-3.8-flash-low", effort("high"), "gemini-3.8-flash-low"},
+		{"named high tier beats ambient low", "gemini-3.8-flash-high", effort("low"), "gemini-3.8-flash-high"},
+		{"reasoning_effort overrides the named tier", "gemini-3.8-flash-high", with(effort("high"), "reasoning_effort", "low"), "gemini-3.8-flash-low"},
+		{"bare budget overrides the named tier", "gemini-3.8-flash-low", with(effort("low"), "thinking_budget", float64(40000)), "gemini-3.8-flash-high"},
+		{"thinking disabled beats ambient effort", "gemini-3.8-flash", with(effort("high"), "thinking", map[string]any{"type": "disabled"}), "gemini-3.8-flash-low"},
+		{"unknown ambient spelling is ignored", "gemini-3.8-flash", effort("turbo"), "gemini-3.8-flash-high"},
+		{"non-flash model is never retiered", "claude-opus-4-6-thinking", effort("low"), "claude-opus-4-6-thinking"},
+	}
+	for _, tc := range cases {
+		got, err := catalog.ResolveWithRequest(tc.requested, tc.request)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got.ID != tc.want {
+			t.Errorf("%s: ResolveWithRequest(%q) = %q, want %q", tc.name, tc.requested, got.ID, tc.want)
+		}
+	}
+}

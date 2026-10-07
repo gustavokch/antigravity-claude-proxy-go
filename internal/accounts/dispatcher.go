@@ -133,7 +133,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		options.Now = time.Now
 	}
 	if options.ModelCacheTTL <= 0 {
-		options.ModelCacheTTL = 5 * time.Minute
+		options.ModelCacheTTL = 24 * time.Hour
 	}
 	if options.Random == nil {
 		options.Random = rand.Float64
@@ -501,6 +501,12 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	return cloudcode.Response{}, fmt.Errorf("max retries exceeded: %w", lastError)
 }
 
+// missingModelFetchFloor debounces the background catalog refresh that a
+// model miss triggers: at most one upstream list-models call per floor
+// (shared by all models) while fetches succeed, the same catch-up spacing
+// the pre-24h TTL gave for free.
+const missingModelFetchFloor = 5 * time.Minute
+
 func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string, request map[string]any) (modelcatalog.Model, error) {
 	dispatcher.mu.RLock()
 	catalog := dispatcher.catalog
@@ -532,7 +538,16 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 			dispatcher.storeCatalog(catalog)
 		}
 	}
-	return catalog.ResolveWithRequest(requested, request)
+	model, err := catalog.ResolveWithRequest(requested, request)
+	if fresh && err != nil && dispatcher.catalogAge() >= missingModelFetchFloor {
+		// The catalog is fresh but lacks this model: the upstream may have
+		// published it after the last fetch. Kick one shared background
+		// refresh; this request still returns the selection error at once.
+		// Gating on fresh keeps the stale path from fetching twice when a
+		// refresh just ran and failed to parse into the cache.
+		dispatcher.startModelFetch()
+	}
+	return model, err
 }
 
 func (dispatcher *Dispatcher) cacheCatalog(body []byte) {
@@ -557,6 +572,13 @@ func (dispatcher *Dispatcher) CachedCatalog() *modelcatalog.Catalog {
 	dispatcher.mu.RLock()
 	defer dispatcher.mu.RUnlock()
 	return dispatcher.catalog
+}
+
+// catalogAge reports how long ago the catalog was last stored.
+func (dispatcher *Dispatcher) catalogAge() time.Duration {
+	dispatcher.mu.RLock()
+	defer dispatcher.mu.RUnlock()
+	return dispatcher.now().Sub(dispatcher.catalogAt)
 }
 
 // RefreshCatalogIfStale starts a background catalog refresh when the cached

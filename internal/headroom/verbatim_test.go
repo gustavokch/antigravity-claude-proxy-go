@@ -6,8 +6,7 @@ import (
 )
 
 // realisticReadPayload builds `cat -n` Read output with the three shapes the
-// lossy stages destroy: trailing whitespace, a run of identical lines, and
-// enough bytes to trip CCR demotion.
+// lossy stages destroy: trailing whitespace, and a run of identical lines.
 func realisticReadPayload() string {
 	var b strings.Builder
 	b.WriteString("     1\tpackage main\n")

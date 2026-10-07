@@ -459,7 +459,7 @@ func translateResponsesResponse(resp *http.Response, model string, clientStream 
 // rewritten into the Anthropic shape (JSON body, SSE event stream, or
 // Anthropic error envelope). The returned response is therefore
 // indistinguishable from a /v1/messages answer, so callers reuse their
-// Anthropic handling (CCR hydration, usage interception) unchanged.
+// Anthropic handling (usage interception) unchanged.
 func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte) (*http.Response, error) {
 	var req map[string]any
 	if err := json.Unmarshal(anthropicBody, &req); err != nil {
@@ -491,7 +491,7 @@ func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey str
 	return translateResponsesResponse(resp, model, clientStream, toolNames, injected), nil
 }
 
-// ForwardResponses is the non-CCR entry point: SendResponses, then copy the
+// ForwardResponses is the forwarding entry point: SendResponses, then copy the
 // translated response to w (flushing per write so SSE stays incremental).
 // modify runs on the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.

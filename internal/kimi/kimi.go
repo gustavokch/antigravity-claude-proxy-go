@@ -1,7 +1,14 @@
-// Package kimi implements the Kimi Code gateway: a thin transparent forwarder
-// to https://api.moonshot.ai/anthropic, which exposes an Anthropic-compatible
-// /v1/messages endpoint. The proxy rewrites the Authorization header and
-// preserves the Anthropic version/beta headers the client sent.
+// Package kimi implements the Kimi gateway: a thin transparent forwarder to an
+// Anthropic-compatible /v1/messages endpoint. Two vendor products share it and
+// they are different APIs with different model IDs and effort defaults: the
+// Moonshot Open Platform (https://api.moonshot.ai/anthropic, the config
+// default, API key) and Kimi Code (https://api.kimi.ai/coding, subscription,
+// OAuth). The proxy rewrites the Authorization header and preserves the
+// Anthropic version/beta headers the client sent; it never alters reasoning
+// fields, because the gateway is a transparent forwarder (ADR-0001): Kimi Code
+// maps Claude Code's effort levels itself, while the Open Platform publishes
+// only low|high|max and answers other values with its own error, which the
+// proxy does not hide. See docs/reasoning-parameters.md.
 package kimi
 
 import "strings"

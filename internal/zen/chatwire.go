@@ -23,7 +23,7 @@ import (
 // returned rewritten into the Anthropic shape (JSON body, SSE event stream, or
 // Anthropic error envelope). The returned response is therefore
 // indistinguishable from a /v1/messages answer, so callers reuse their
-// Anthropic handling (CCR hydration, usage interception) unchanged.
+// Anthropic handling (usage interception) unchanged.
 func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte) (*http.Response, error) {
 	var req map[string]any
 	if err := json.Unmarshal(anthropicBody, &req); err != nil {
@@ -55,7 +55,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	return translateChatResponse(resp, model, clientStream, toolNames, injected), nil
 }
 
-// ForwardChat is the non-CCR entry point: SendChat, then copy the translated
+// ForwardChat is the forwarding entry point: SendChat, then copy the translated
 // response to w (flushing per write so SSE stays incremental). modify runs on
 // the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.

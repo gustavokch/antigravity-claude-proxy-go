@@ -21,8 +21,10 @@ capture exists to find.
 
 REQUEST bodies are NOT dumped. Even with $MITM_DUMP_REQUEST_BODY=1 the addon
 records a body *fingerprint* instead of the body: the key tree with value
-types, the redacted metadata map, and a short prefix of the first system block
-(the client identity marker). Everything the caller typed — prompts, file
+types, the redacted metadata map, a short prefix of the first system block
+(the client identity marker) and, for Cloud Code bodies, the allowlisted
+request.generationConfig scalars (sampling and thinking knobs, key spelling
+preserved). Everything the caller typed — prompts, file
 contents, tool output — stays out of the capture file by construction, not by
 review.
 
@@ -85,7 +87,57 @@ _HEX_RUN_RE = re.compile(r"[0-9a-fA-F]{16,}")
 
 # Scalar fields whose exact value IS the fingerprint the capture exists to
 # record: the wire contract, not the caller's content.
-IDENTITY_SCALARS = ("model", "max_tokens", "stream")
+IDENTITY_SCALARS = ("model", "max_tokens", "stream", "requestType", "userAgent")
+
+# generationConfig knobs describe HOW the model runs, never WHAT the caller
+# typed. They are kept by name allowlist so a prompt-bearing field
+# (stopSequences, responseSchema, ...) cannot reach the capture file by
+# construction, and both key spellings are listed because the capture exists to
+# settle which one a client sends. Keys are kept verbatim, so the casing in the
+# file is the casing on the wire.
+GENERATION_CONFIG_KEYS = frozenset({
+    "temperature", "seed",
+    "topP", "top_p",
+    "topK", "top_k",
+    "maxOutputTokens", "max_output_tokens",
+    "candidateCount", "candidate_count",
+})
+THINKING_CONFIG_KEYS = frozenset({
+    "includeThoughts", "include_thoughts",
+    "thinkingBudget", "thinking_budget",
+    "thinkingLevel", "thinking_level",
+})
+MAX_CONFIG_STRING = 32
+
+
+def _config_scalar(value):
+    """The value if it is a short scalar, else None (drops strings that could be text)."""
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str) and len(value) <= MAX_CONFIG_STRING:
+        return value
+    return None
+
+
+def generation_config_fingerprint(body: dict) -> dict | None:
+    """Allowlisted request.generationConfig scalars of a Cloud Code body, or None."""
+    inner = body.get("request")
+    config = inner.get("generationConfig") if isinstance(inner, dict) else None
+    if not isinstance(config, dict):
+        return None
+    kept = {}
+    for key, value in config.items():
+        if key in GENERATION_CONFIG_KEYS and _config_scalar(value) is not None:
+            kept[key] = value
+    thinking = config.get("thinkingConfig", config.get("thinking_config"))
+    if isinstance(thinking, dict):
+        kept_thinking = {
+            key: value for key, value in thinking.items()
+            if key in THINKING_CONFIG_KEYS and _config_scalar(value) is not None
+        }
+        if kept_thinking:
+            kept["thinkingConfig" if "thinkingConfig" in config else "thinking_config"] = kept_thinking
+    return kept
 
 
 def _redact(value: str) -> dict:
@@ -194,7 +246,12 @@ def body_fingerprint(content: bytes) -> dict | None:
     }
     for name in IDENTITY_SCALARS:
         if name in body and not isinstance(body[name], (dict, list)):
-            fingerprint[name] = body[name]
+            scalar = _config_scalar(body[name])
+            if scalar is not None:
+                fingerprint[name] = scalar
+    generation = generation_config_fingerprint(body)
+    if generation is not None:
+        fingerprint["generation_config"] = generation
     return fingerprint
 
 

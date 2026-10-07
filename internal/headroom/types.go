@@ -5,13 +5,6 @@ import (
 	"log/slog"
 )
 
-// CCRConfig controls Content-Conditioned Retrieval (Phase 2).
-type CCRConfig struct {
-	Enabled       bool `json:"enabled"`
-	MaxStoreMB    int  `json:"maxStoreMB,omitempty"`
-	MinChunkBytes int  `json:"minChunkBytes,omitempty"`
-}
-
 // OutputShaperConfig controls verbosity steering and effort routing.
 type OutputShaperConfig struct {
 	Enabled                  bool   `json:"enabled"`
@@ -36,16 +29,11 @@ type Config struct {
 	SmartCrusher   bool `json:"smartCrusher,omitempty"`
 	TabularArrays  bool `json:"tabularArrays,omitempty"`
 	CodeCompressor bool `json:"codeCompressor,omitempty"`
-	// LiveTurns is the number of trailing messages CCR leaves untouched.
-	// It has no effect on SmartCrusher/CodeCompressor, which are position
-	// independent by design (see invariant I1).
-	LiveTurns int `json:"liveTurns,omitempty"`
 	// PreserveVerbatimReads keeps file-read tool results byte-for-byte, so a
 	// later Edit or patch call can quote them exactly. Default true.
 	// No `,omitempty`: with a true default, omitempty would silently drop the
 	// key from persisted config and reload would read false.
 	PreserveVerbatimReads bool               `json:"preserveVerbatimReads"`
-	CCR                   CCRConfig          `json:"ccr,omitempty"`
 	OutputShaper          OutputShaperConfig `json:"outputShaper,omitempty"`
 }
 
@@ -65,11 +53,6 @@ type RequestContext struct {
 	// request.
 	Logger *slog.Logger
 
-	// FrozenPrefixIndex is the highest message index CCR is allowed to demote.
-	// Messages with index > FrozenPrefixIndex are the live turns and stay
-	// inline. -1 means "everything is live".
-	FrozenPrefixIndex int
-
 	// Byte accounting over rewritten blocks only (not whole-request sizes).
 	BytesBefore   int
 	BytesAfter    int
@@ -80,9 +63,6 @@ type RequestContext struct {
 	OriginalThinking int
 	ClampedThinking  int
 	ContinuationKind string
-
-	// CCR telemetry (Phase 2).
-	ChunksStored int
 
 	// Verbatim classifies which tool_result payloads must not be rewritten. It
 	// is built before the first stage runs.

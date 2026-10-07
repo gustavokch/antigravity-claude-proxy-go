@@ -2,7 +2,8 @@ package format
 
 import (
 	"regexp"
-	"strings"
+
+	"antigravity-go-proxy/internal/reasoning"
 )
 
 const interleavedThinkingHint = "Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer."
@@ -152,95 +153,41 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 		generation["stopSequences"] = cloneJSON(stops)
 	}
 
-	thinking := asMap(request["thinking"])
-	reasoningEffort := strings.ToLower(stringValue(request["reasoning_effort"]))
-	if reasoningEffort == "" {
-		reasoningEffort = strings.ToLower(stringValue(request["reasoning"]))
-	}
-	switch reasoningEffort {
-	case "xhigh", "extra-high", "very-high", "max", "maximum", "extreme":
-		reasoningEffort = "high"
-	case "minimal":
-		reasoningEffort = "low"
-	case "none", "disabled", "off", "false", "0":
-		reasoningEffort = "disabled"
-	}
-	isDisabled := false
-	if thinking != nil && stringValue(thinking["type"]) == "disabled" {
-		isDisabled = true
-	}
-	if reasoningEffort == "none" || reasoningEffort == "disabled" {
-		isDisabled = true
-	}
+	params := withoutAmbientEffortForNamedTier(reasoning.Parse(request), model)
 
 	thinkingLevel := ""
 	if options != nil {
 		thinkingLevel = options.ThinkingLevel
 	}
+	claudeBudget := 0
+	effortDerivedBudget := false
 	if thinkingLevel != "" {
-		if isDisabled {
+		if params.Disabled {
 			thinkingLevel = "LOW"
 		}
 		generation["thinkingConfig"] = map[string]any{
 			"includeThoughts": true,
 			"thinkingLevel":   thinkingLevel,
 		}
-	} else if isDisabled {
+	} else if params.Disabled {
 		delete(generation, "thinkingConfig")
 	} else if isThinking && family == FamilyClaude {
 		if defaultThinkingBudget <= 0 {
 			defaultThinkingBudget = DefaultClaudeThinkBudget
 		}
-		budget := intValue(thinking["budget_tokens"], defaultThinkingBudget)
-		if budget == 0 {
-			budget = defaultThinkingBudget
-		}
-		if reasoningEffort != "" {
-			switch reasoningEffort {
-			case "low":
-				budget = 1024
-			case "medium":
-				budget = 8000
-			case "high":
-				budget = 32000
-			}
-		}
-		if minThinkingBudget > 0 && budget < minThinkingBudget {
-			budget = minThinkingBudget
-		}
-		generation["thinkingConfig"] = map[string]any{"include_thoughts": true, "thinking_budget": budget}
-		maximum := intValue(generation["maxOutputTokens"], 0)
-		if maximum > 0 && maximum <= budget {
-			generation["maxOutputTokens"] = budget + 8192
-		}
+		claudeBudget = thinkingBudget(params, family, defaultThinkingBudget, minThinkingBudget)
+		generation["thinkingConfig"] = map[string]any{claudeKeyIncludeThoughts: true, claudeKeyThinkingBudget: claudeBudget}
 	} else if isThinking {
-		budget := defaultThinkingBudget
-		if thinking != nil {
-			if _, explicit := thinking["budget_tokens"]; explicit {
-				budget = intValue(thinking["budget_tokens"], budget)
-			}
+		fallback := defaultThinkingBudget
+		if fallback <= 0 {
+			fallback = DefaultGeminiThinkBudget
 		}
-		if _, explicit := request["thinking_budget"]; explicit {
-			budget = intValue(request["thinking_budget"], budget)
-		}
-		if reasoningEffort != "" {
-			switch reasoningEffort {
-			case "low":
-				budget = 1024
-			case "medium":
-				budget = 8000
-			case "high":
-				budget = 16000
-			}
-		}
+		effortDerivedBudget = budgetFromEffortTable(params)
+		budget := thinkingBudget(params, family, fallback, minThinkingBudget)
 		if family == FamilyGemini && options == nil {
-			budget = clampGeminiThinkingBudget(model, thinking["budget_tokens"])
-		}
-		if budget <= 0 {
-			budget = DefaultGeminiThinkBudget
-		}
-		if minThinkingBudget > 0 && budget < minThinkingBudget {
-			budget = minThinkingBudget
+			// No live catalog entry describes the model, so cap the budget at
+			// the ceiling Google documents for its series.
+			budget = min(budget, geminiBudgetCeiling(model))
 		}
 		generation["thinkingConfig"] = map[string]any{
 			"includeThoughts": true,
@@ -281,11 +228,17 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 		}
 	}
 
-	if family == FamilyGemini && intValue(generation["maxOutputTokens"], 0) > GeminiMaxOutputTokens {
+	if family == FamilyGemini && maxOutputTokens <= 0 && intValue(generation["maxOutputTokens"], 0) > GeminiMaxOutputTokens {
 		generation["maxOutputTokens"] = GeminiMaxOutputTokens
 	}
 	if maxOutputTokens > 0 && intValue(generation["maxOutputTokens"], 0) > maxOutputTokens {
 		generation["maxOutputTokens"] = maxOutputTokens
+	}
+	if claudeBudget > 0 {
+		reconcileClaudeBudget(generation, claudeBudget, maxOutputTokens)
+	}
+	if effortDerivedBudget {
+		capEffortBudgetForAnswer(generation, minThinkingBudget)
 	}
 	return result
 }

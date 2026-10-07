@@ -22,14 +22,12 @@ type HeadroomSample struct {
 	BytesBefore           int
 	BytesAfter            int
 	ThinkingTokensClamped int
-	CCRRetrievals         int
 }
 
 type HeadroomStats struct {
 	BytesBefore           int `json:"bytesBefore"`
 	BytesAfter            int `json:"bytesAfter"`
 	ThinkingTokensClamped int `json:"thinkingTokensClamped"`
-	CCRRetrievals         int `json:"ccrRetrievals"`
 	RequestsCompressed    int `json:"requestsCompressed"`
 }
 
@@ -107,11 +105,6 @@ func parseHeadroomStats(m map[string]any) HeadroomStats {
 		s.ThinkingTokensClamped = int(tc)
 	} else if tc, ok := m["thinkingTokensClamped"].(int); ok {
 		s.ThinkingTokensClamped = tc
-	}
-	if ccr, ok := m["ccrRetrievals"].(float64); ok {
-		s.CCRRetrievals = int(ccr)
-	} else if ccr, ok := m["ccrRetrievals"].(int); ok {
-		s.CCRRetrievals = ccr
 	}
 	if rc, ok := m["requestsCompressed"].(float64); ok {
 		s.RequestsCompressed = int(rc)
@@ -452,7 +445,6 @@ func (t *Tracker) RecordHeadroom(sample HeadroomSample) {
 	t.headroom.BytesBefore += sample.BytesBefore
 	t.headroom.BytesAfter += sample.BytesAfter
 	t.headroom.ThinkingTokensClamped += sample.ThinkingTokensClamped
-	t.headroom.CCRRetrievals += sample.CCRRetrievals
 	t.headroom.RequestsCompressed++
 	t.dirty = true
 }
