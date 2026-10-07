@@ -14,8 +14,18 @@ rm -rf "${REPO_ROOT}/bin" "${REPO_ROOT}/proxy"
 
 echo "==> Running tests..."
 TEST_CONFIG_DIR="$(mktemp -d)"
-ANTIGRAVITY_CONFIG_DIR="${TEST_CONFIG_DIR}" HOME="${TEST_CONFIG_DIR}" go test ./...
-rm -rf "${TEST_CONFIG_DIR}"
+cleanup_test_dir() {
+    chmod -R u+w "${TEST_CONFIG_DIR}" 2>/dev/null || true
+    rm -rf "${TEST_CONFIG_DIR}" 2>/dev/null || true
+}
+trap cleanup_test_dir EXIT
+
+GOPATH="$(go env GOPATH)" GOCACHE="$(go env GOCACHE)" \
+    ANTIGRAVITY_CONFIG_DIR="${TEST_CONFIG_DIR}" HOME="${TEST_CONFIG_DIR}" \
+    go test ./...
+
+trap - EXIT
+cleanup_test_dir
 
 echo "==> Building release binary (version: ${VERSION})..."
 mkdir -p "${REPO_ROOT}/bin"
