@@ -13,7 +13,9 @@ echo "==> Cleaning previous build artifacts..."
 rm -rf "${REPO_ROOT}/bin" "${REPO_ROOT}/proxy"
 
 echo "==> Running tests..."
-go test ./...
+TEST_CONFIG_DIR="$(mktemp -d)"
+ANTIGRAVITY_CONFIG_DIR="${TEST_CONFIG_DIR}" HOME="${TEST_CONFIG_DIR}" go test ./...
+rm -rf "${TEST_CONFIG_DIR}"
 
 echo "==> Building release binary (version: ${VERSION})..."
 mkdir -p "${REPO_ROOT}/bin"

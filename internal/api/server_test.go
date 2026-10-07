@@ -1367,6 +1367,10 @@ func (b *testCustomEndpointBackend) StreamGenerateContent(ctx context.Context, r
 }
 
 func TestServer_ClaudeCodeBackgroundWorker(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
 	refreshed := make(chan string, 1)
 	oauthMgr := auth.NewClaudeCodeOAuthManager()
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1425,6 +1429,10 @@ func TestServer_ClaudeCodeBackgroundWorker(t *testing.T) {
 }
 
 func TestServer_ClaudeCodeBackgroundWorker_InitialTick(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
 	refreshed := make(chan string, 1)
 	oauthMgr := auth.NewClaudeCodeOAuthManager()
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
