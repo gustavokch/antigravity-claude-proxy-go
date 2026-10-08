@@ -17,6 +17,11 @@ import (
 	"antigravity-go-proxy/internal/format"
 )
 
+// emptyStopFallbackText keeps a translated end_turn from carrying no text,
+// which OMP turn recovery classifies as an empty assistant stop. Non-whitespace
+// on purpose: a trimmed emptiness check would still reject " ".
+const emptyStopFallbackText = "No response text."
+
 // SendChat serves an Anthropic Messages request against a Zen
 // Chat-Completions-wire model: the Anthropic body is translated to an OpenAI
 // /v1/chat/completions body, posted to Zen, and the upstream response is
@@ -662,6 +667,7 @@ func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[st
 	content := make([]any, 0, 2)
 	stop := "end_turn"
 	emittedCalls := 0
+	hasText := false
 	if choices, _ := chat["choices"].([]any); len(choices) > 0 {
 		choice, _ := choices[0].(map[string]any)
 		msg, _ := choice["message"].(map[string]any)
@@ -670,6 +676,9 @@ func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[st
 		}
 		if t, _ := msg["content"].(string); t != "" {
 			content = append(content, map[string]any{"type": "text", "text": t})
+			if strings.TrimSpace(t) != "" {
+				hasText = true
+			}
 		}
 		calls, _ := msg["tool_calls"].([]any)
 		for _, c := range calls {
@@ -699,6 +708,9 @@ func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[st
 		// no tool_use block would make the client wait for one.
 		if emittedCalls == 0 && stop == "tool_use" {
 			stop = "end_turn"
+		}
+		if !hasText && stop == "end_turn" {
+			content = append(content, map[string]any{"type": "text", "text": emptyStopFallbackText})
 		}
 	}
 	usage, _ := chat["usage"].(map[string]any)
@@ -927,6 +939,7 @@ type chatStream struct {
 	dropped    map[int]bool      // call indexes skipped as gate-injected
 	started    bool
 	failed     bool
+	hasText    bool
 	nextIndex  int
 	current    int    // open Anthropic block index, -1 when none
 	kind       string // "thinking" | "text" | "tool"
@@ -1021,6 +1034,9 @@ func (s *chatStream) handle(chunk map[string]any) error {
 		}
 	}
 	if t, _ := d["content"].(string); t != "" {
+		if strings.TrimSpace(t) != "" {
+			s.hasText = true
+		}
 		if s.kind != "text" {
 			if err := s.openBlock("text", map[string]any{"type": "text", "text": ""}); err != nil {
 				return err
@@ -1099,6 +1115,17 @@ func (s *chatStream) finish() error {
 	// no tool_use block would make the client wait for one.
 	if len(s.toolBlocks) == 0 && stop == "tool_use" {
 		stop = "end_turn"
+	}
+	if !s.hasText && stop == "end_turn" {
+		if err := s.openBlock("text", map[string]any{"type": "text", "text": ""}); err != nil {
+			return err
+		}
+		if err := s.delta(map[string]any{"type": "text_delta", "text": emptyStopFallbackText}); err != nil {
+			return err
+		}
+		if err := s.closeBlock(); err != nil {
+			return err
+		}
 	}
 	if err := s.emit("message_delta", map[string]any{
 		"type":  "message_delta",

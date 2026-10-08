@@ -564,3 +564,316 @@ func TestTranslatedWires_OmitClaudeCodeBillingHeader(t *testing.T) {
 		}
 	}
 }
+
+// sseTextDeltas concatenates every text_delta in an Anthropic SSE stream.
+func sseTextDeltas(t *testing.T, sse string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, line := range strings.Split(sse, "\n") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		var ev struct {
+			Type  string
+			Delta struct{ Type, Text string }
+		}
+		if json.Unmarshal([]byte(data), &ev) != nil || ev.Type != "content_block_delta" || ev.Delta.Type != "text_delta" {
+			continue
+		}
+		b.WriteString(ev.Delta.Text)
+	}
+	return b.String()
+}
+
+// assertFallbackBeforeStop checks the fallback text is emitted before
+// message_delta, so it is part of the turn the client sees.
+func assertFallbackBeforeStop(t *testing.T, sse string) {
+	t.Helper()
+	if got := sseTextDeltas(t, sse); got != emptyStopFallbackText {
+		t.Errorf("text deltas = %q, want %q\n%s", got, emptyStopFallbackText, sse)
+	}
+	if strings.Index(sse, `"text_delta"`) > strings.Index(sse, "message_delta") {
+		t.Errorf("fallback text emitted after message_delta:\n%s", sse)
+	}
+}
+
+func TestEmptyStop_ChatNonStream(t *testing.T) {
+	cases := []struct {
+		name         string
+		chat         map[string]any
+		injected     map[string]bool
+		wantStop     string
+		wantFallback bool
+		wantThinking bool
+		wantToolUse  bool
+		wantEmpty    bool
+	}{
+		{
+			name: "all calls dropped",
+			chat: map[string]any{"choices": []any{map[string]any{
+				"message": map[string]any{
+					"content": "",
+					"tool_calls": []any{map[string]any{
+						"id": "c1", "function": map[string]any{"name": "bash", "arguments": "{}"},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}}},
+			injected:     map[string]bool{"bash": true},
+			wantStop:     "end_turn",
+			wantFallback: true,
+		},
+		{
+			name: "thinking only",
+			chat: map[string]any{"choices": []any{map[string]any{
+				"message": map[string]any{
+					"reasoning_content": "hmm",
+				},
+				"finish_reason": "stop",
+			}}},
+			wantStop:     "end_turn",
+			wantFallback: true,
+			wantThinking: true,
+		},
+		{
+			name: "whitespace-only text",
+			chat: map[string]any{"choices": []any{map[string]any{
+				"message": map[string]any{
+					"content": "\n ",
+				},
+				"finish_reason": "stop",
+			}}},
+			wantStop:     "end_turn",
+			wantFallback: true,
+		},
+		{
+			name: "real text",
+			chat: map[string]any{"choices": []any{map[string]any{
+				"message": map[string]any{
+					"content": "hello",
+				},
+				"finish_reason": "stop",
+			}}},
+			wantStop:     "end_turn",
+			wantFallback: false,
+		},
+		{
+			name: "surviving tool call",
+			chat: map[string]any{"choices": []any{map[string]any{
+				"message": map[string]any{
+					"tool_calls": []any{map[string]any{
+						"id": "c1", "function": map[string]any{"name": "edit", "arguments": "{}"},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}}},
+			wantStop:     "tool_use",
+			wantFallback: false,
+			wantToolUse:  true,
+		},
+		{
+			name: "truncated thinking",
+			chat: map[string]any{"choices": []any{map[string]any{
+				"message": map[string]any{
+					"reasoning_content": "hmm",
+				},
+				"finish_reason": "length",
+			}}},
+			wantStop:     "max_tokens",
+			wantFallback: false,
+			wantThinking: true,
+		},
+		{
+			name:      "no choices",
+			chat:      map[string]any{},
+			wantStop:  "end_turn",
+			wantEmpty: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ChatResponseToAnthropic(tc.chat, "model", nil, tc.injected)
+			if stop := got["stop_reason"]; stop != tc.wantStop {
+				t.Errorf("stop_reason = %v, want %v", stop, tc.wantStop)
+			}
+			content, _ := got["content"].([]any)
+			if tc.wantEmpty {
+				if len(content) != 0 {
+					t.Errorf("content = %v, want empty", content)
+				}
+				return
+			}
+			var hasFallback, hasThinking, hasToolUse bool
+			for _, blk := range content {
+				b := blk.(map[string]any)
+				switch b["type"] {
+				case "text":
+					if b["text"] == emptyStopFallbackText {
+						hasFallback = true
+					}
+				case "thinking":
+					hasThinking = true
+					if b["signature"] != "" {
+						t.Errorf("thinking signature = %q, want empty", b["signature"])
+					}
+				case "tool_use":
+					hasToolUse = true
+				}
+			}
+			if hasFallback != tc.wantFallback {
+				t.Errorf("hasFallback = %v, want %v (content: %v)", hasFallback, tc.wantFallback, content)
+			}
+			if tc.wantThinking && !hasThinking {
+				t.Errorf("expected thinking block in content: %v", content)
+			}
+			if tc.wantToolUse && !hasToolUse {
+				t.Errorf("expected tool_use block in content: %v", content)
+			}
+		})
+	}
+}
+
+func TestEmptyStop_ChatStream(t *testing.T) {
+	t.Run("all calls dropped", func(t *testing.T) {
+		in := strings.Join([]string{
+			`data: {"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":"{}"}}]}}]}`,
+			`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil, map[string]bool{"bash": true}); err != nil {
+			t.Fatal(err)
+		}
+		assertFallbackBeforeStop(t, out.String())
+	})
+
+	t.Run("thinking only", func(t *testing.T) {
+		in := strings.Join([]string{
+			`data: {"id":"c1","choices":[{"delta":{"reasoning_content":"hmm"}}]}`,
+			`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		sse := out.String()
+		assertFallbackBeforeStop(t, sse)
+		// Text content_block_start must have index: 1 (thinking is 0).
+		if !strings.Contains(sse, `"index":1`) || !strings.Contains(sse, `"content_block":{"text":"","type":"text"}`) {
+			t.Errorf("text content_block_start with index 1 missing:\n%s", sse)
+		}
+	})
+
+	t.Run("whitespace-only text deltas", func(t *testing.T) {
+		in := strings.Join([]string{
+			`data: {"id":"c1","choices":[{"delta":{"content":"\n  "}}]}`,
+			`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		sse := out.String()
+		if !strings.Contains(sse, emptyStopFallbackText) {
+			t.Errorf("fallback text missing for whitespace deltas:\n%s", sse)
+		}
+	})
+
+	t.Run("real text", func(t *testing.T) {
+		in := strings.Join([]string{
+			`data: {"id":"c1","choices":[{"delta":{"content":"hello"}}]}`,
+			`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		sse := out.String()
+		if got := sseTextDeltas(t, sse); got != "hello" {
+			t.Errorf("text deltas = %q, want hello", got)
+		}
+		if strings.Contains(sse, emptyStopFallbackText) {
+			t.Errorf("unexpected fallback text in real text stream:\n%s", sse)
+		}
+	})
+
+	t.Run("truncated thinking", func(t *testing.T) {
+		in := strings.Join([]string{
+			`data: {"id":"c1","choices":[{"delta":{"reasoning_content":"hmm"}}]}`,
+			`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"length"}]}`,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		sse := out.String()
+		if got := sseTextDeltas(t, sse); got != "" {
+			t.Errorf("text deltas = %q, want empty for truncated thinking", got)
+		}
+		if !strings.Contains(sse, `"stop_reason":"max_tokens"`) {
+			t.Errorf("stop_reason max_tokens missing:\n%s", sse)
+		}
+	})
+
+	t.Run("surviving tool call", func(t *testing.T) {
+		in := strings.Join([]string{
+			`data: {"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"edit","arguments":"{}"}}]}}]}`,
+			`data: {"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamChatToAnthropic(strings.NewReader(in), &out, "m", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		sse := out.String()
+		if strings.Contains(sse, emptyStopFallbackText) {
+			t.Errorf("unexpected fallback text when tool_call survived:\n%s", sse)
+		}
+		if !strings.Contains(sse, `"stop_reason":"tool_use"`) {
+			t.Errorf("stop_reason tool_use missing:\n%s", sse)
+		}
+	})
+}
+
+func TestEmptyStop_SendChatAggregate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	resp, err := SendChat(context.Background(), srv.Client(), srv.URL, "k",
+		[]byte(`{"model":"mimo-v2.6-flash-free","stream":false,"messages":[{"role":"user","content":"q"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := msg["content"].([]any)
+	var foundFallback bool
+	for _, b := range content {
+		blk := b.(map[string]any)
+		if blk["type"] == "text" && blk["text"] == emptyStopFallbackText {
+			foundFallback = true
+		}
+	}
+	if !foundFallback {
+		t.Errorf("aggregate Chat response missing fallback text: %v", content)
+	}
+}

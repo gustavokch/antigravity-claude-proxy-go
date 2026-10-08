@@ -377,6 +377,7 @@ type responsesStream struct {
 	started     bool
 	failed      bool
 	settled     bool
+	hasText     bool
 	toolItems   int // tool_use blocks opened (surviving gate-injected drops)
 	nextIndex   int
 	current     int    // open Anthropic block index, -1 when none
@@ -453,6 +454,9 @@ func (s *responsesStream) delta(delta map[string]any) error {
 // writeText streams text into the open text block, opening one first when a
 // different kind of block is open. idx is the output item the text belongs to.
 func (s *responsesStream) writeText(idx int, text string) error {
+	if strings.TrimSpace(text) != "" {
+		s.hasText = true
+	}
 	if s.kind != "text" {
 		if err := s.openBlock("text", map[string]any{"type": "text", "text": ""}); err != nil {
 			return err
@@ -782,6 +786,17 @@ func (s *responsesStream) finish() error {
 	}
 	if stop == "" {
 		stop = "end_turn"
+	}
+	if !s.hasText && stop == "end_turn" {
+		if err := s.openBlock("text", map[string]any{"type": "text", "text": ""}); err != nil {
+			return err
+		}
+		if err := s.delta(map[string]any{"type": "text_delta", "text": emptyStopFallbackText}); err != nil {
+			return err
+		}
+		if err := s.closeBlock(); err != nil {
+			return err
+		}
 	}
 	if err := s.emit("message_delta", map[string]any{
 		"type":  "message_delta",

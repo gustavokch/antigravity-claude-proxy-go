@@ -272,6 +272,7 @@ func assistantToResponses(content any, renames map[string]string) []any {
 func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames map[string]string, injected map[string]bool) map[string]any {
 	content := make([]any, 0, 2)
 	toolCalls, refusals := 0, 0
+	hasText := false
 	for i, raw := range anySlice(resp["output"]) {
 		item, ok := raw.(map[string]any)
 		if !ok {
@@ -300,6 +301,9 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 				case "output_text":
 					if text, _ := part["text"].(string); text != "" {
 						content = append(content, map[string]any{"type": "text", "text": text})
+						if strings.TrimSpace(text) != "" {
+							hasText = true
+						}
 					}
 				case "refusal":
 					// A decline rides as a refusal part. Anthropic has no
@@ -335,6 +339,10 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 			toolCalls++
 		}
 	}
+	stop := responsesStopReason(resp, toolCalls, refusals)
+	if !hasText && stop == "end_turn" {
+		content = append(content, map[string]any{"type": "text", "text": emptyStopFallbackText})
+	}
 	usage, _ := resp["usage"].(map[string]any)
 	return map[string]any{
 		"id":            messageID(resp["id"]),
@@ -343,7 +351,7 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 		"model":         model,
 		"content":       content,
 		"stop_sequence": nil,
-		"stop_reason":   responsesStopReason(resp, toolCalls, refusals),
+		"stop_reason":   stop,
 		"usage":         responsesUsage(usage),
 	}
 }
