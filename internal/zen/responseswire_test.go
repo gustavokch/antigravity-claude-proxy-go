@@ -1221,8 +1221,11 @@ func TestResponsesResponseToAnthropic_ReasoningMultiPartSeparator(t *testing.T) 
 	}
 	msg := ResponsesResponseToAnthropic(resp, "gpt-5", nil, nil)
 	content, _ := msg["content"].([]any)
-	if len(content) < 1 {
-		t.Fatalf("content = %s, want at least one thinking block", mustJSON(t, msg["content"]))
+	if len(content) != 2 {
+		t.Fatalf("content = %s, want thinking block + empty-stop fallback", mustJSON(t, msg["content"]))
+	}
+	if fb, _ := content[1].(map[string]any); fb["type"] != "text" || fb["text"] != emptyStopFallbackText {
+		t.Errorf("content[1] = %v, want fallback text block", content[1])
 	}
 	part, _ := content[0].(map[string]any)
 	if thinking, _ := part["thinking"].(string); thinking != "first\n\nsecond" {
@@ -1929,8 +1932,11 @@ func TestAggregateResponsesStream_ReasoningSummaryIndexSeparator(t *testing.T) {
 	}
 	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)
 	content, _ := msg["content"].([]any)
-	if len(content) < 1 {
-		t.Fatalf("content = %s, want at least one thinking block", mustJSON(t, msg["content"]))
+	if len(content) != 2 {
+		t.Fatalf("content = %s, want thinking block + empty-stop fallback", mustJSON(t, msg["content"]))
+	}
+	if fb, _ := content[1].(map[string]any); fb["type"] != "text" || fb["text"] != emptyStopFallbackText {
+		t.Errorf("content[1] = %v, want fallback text block", content[1])
 	}
 	part, _ := content[0].(map[string]any)
 	if thinking, _ := part["thinking"].(string); thinking != "first\n\nsecond" {
