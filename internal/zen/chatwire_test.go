@@ -607,7 +607,6 @@ func TestEmptyStop_ChatNonStream(t *testing.T) {
 		wantFallback bool
 		wantThinking bool
 		wantToolUse  bool
-		wantEmpty    bool
 	}{
 		{
 			name: "all calls dropped",
@@ -685,10 +684,10 @@ func TestEmptyStop_ChatNonStream(t *testing.T) {
 			wantThinking: true,
 		},
 		{
-			name:      "no choices",
-			chat:      map[string]any{},
-			wantStop:  "end_turn",
-			wantEmpty: true,
+			name:         "no choices",
+			chat:         map[string]any{},
+			wantStop:     "end_turn",
+			wantFallback: true,
 		},
 	}
 
@@ -699,12 +698,6 @@ func TestEmptyStop_ChatNonStream(t *testing.T) {
 				t.Errorf("stop_reason = %v, want %v", stop, tc.wantStop)
 			}
 			content, _ := got["content"].([]any)
-			if tc.wantEmpty {
-				if len(content) != 0 {
-					t.Errorf("content = %v, want empty", content)
-				}
-				return
-			}
 			var hasFallback, hasThinking, hasToolUse bool
 			for _, blk := range content {
 				b := blk.(map[string]any)

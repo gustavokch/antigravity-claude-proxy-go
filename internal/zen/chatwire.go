@@ -709,9 +709,9 @@ func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[st
 		if emittedCalls == 0 && stop == "tool_use" {
 			stop = "end_turn"
 		}
-		if !hasText && stop == "end_turn" {
-			content = append(content, map[string]any{"type": "text", "text": emptyStopFallbackText})
-		}
+	}
+	if !hasText && stop == "end_turn" {
+		content = append(content, map[string]any{"type": "text", "text": emptyStopFallbackText})
 	}
 	usage, _ := chat["usage"].(map[string]any)
 	return map[string]any{
