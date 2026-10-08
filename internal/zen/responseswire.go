@@ -272,6 +272,7 @@ func assistantToResponses(content any, renames map[string]string) []any {
 func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames map[string]string, injected map[string]bool) map[string]any {
 	content := make([]any, 0, 2)
 	toolCalls, refusals := 0, 0
+	hasText := false
 	for i, raw := range anySlice(resp["output"]) {
 		item, ok := raw.(map[string]any)
 		if !ok {
@@ -300,6 +301,9 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 				case "output_text":
 					if text, _ := part["text"].(string); text != "" {
 						content = append(content, map[string]any{"type": "text", "text": text})
+						if strings.TrimSpace(text) != "" {
+							hasText = true
+						}
 					}
 				case "refusal":
 					// A decline rides as a refusal part. Anthropic has no
@@ -335,6 +339,10 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 			toolCalls++
 		}
 	}
+	stop := responsesStopReason(resp, toolCalls, refusals)
+	if !hasText && stop == "end_turn" {
+		content = append(content, map[string]any{"type": "text", "text": emptyStopFallbackText})
+	}
 	usage, _ := resp["usage"].(map[string]any)
 	return map[string]any{
 		"id":            messageID(resp["id"]),
@@ -343,7 +351,7 @@ func ResponsesResponseToAnthropic(resp map[string]any, model string, toolNames m
 		"model":         model,
 		"content":       content,
 		"stop_sequence": nil,
-		"stop_reason":   responsesStopReason(resp, toolCalls, refusals),
+		"stop_reason":   stop,
 		"usage":         responsesUsage(usage),
 	}
 }
@@ -461,6 +469,12 @@ func translateResponsesResponse(resp *http.Response, model string, clientStream 
 // indistinguishable from a /v1/messages answer, so callers reuse their
 // Anthropic handling (usage interception) unchanged.
 func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte) (*http.Response, error) {
+	return SendResponsesWithHeaders(ctx, client, baseURL, apiKey, anthropicBody, nil)
+}
+
+// SendResponsesWithHeaders is SendResponses with inbound client headers preserved
+// when they originate from a genuine OpenCode client.
+func SendResponsesWithHeaders(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte, clientHeaders http.Header) (*http.Response, error) {
 	var req map[string]any
 	if err := json.Unmarshal(anthropicBody, &req); err != nil {
 		return nil, fmt.Errorf("parse anthropic request: %w", err)
@@ -482,7 +496,7 @@ func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey str
 	} else {
 		httpReq.Header.Set("Accept", "*/*")
 	}
-	ApplyHarnessHeaders(httpReq)
+	ApplyHarnessHeaderMapPreserving(httpReq.Header, clientHeaders)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -491,12 +505,12 @@ func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey str
 	return translateResponsesResponse(resp, model, clientStream, toolNames, injected), nil
 }
 
-// ForwardResponses is the forwarding entry point: SendResponses, then copy the
+// ForwardResponses is the forwarding entry point: SendResponsesWithHeaders, then copy the
 // translated response to w (flushing per write so SSE stays incremental).
 // modify runs on the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.
 func ForwardResponses(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
 	forwardTranslated(w, "responses", modify, func() (*http.Response, error) {
-		return SendResponses(r.Context(), TLSClient(), baseURL, apiKey, body)
+		return SendResponsesWithHeaders(r.Context(), TLSClient(), baseURL, apiKey, body, r.Header)
 	})
 }

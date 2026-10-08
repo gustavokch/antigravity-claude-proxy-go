@@ -82,37 +82,37 @@ func GetHarnessConfig() HarnessConfig {
 	return harnessCfg
 }
 
-// ApplyHarnessHeaderMap stamps the OpenCode harness headers onto an outgoing
-// header map. It is a no-op when the harness is disabled. Empty or
-// whitespace-only config values fall back to the package defaults;
-// OPENCODE_VERSION and OPENCODE_CLIENT override version and client, mirroring
-// the genuine client's env behavior. Session/request ids are regenerated on
-// every call.
-func ApplyHarnessHeaderMap(hdr http.Header) {
-	if hdr == nil {
-		return
-	}
-	cfg := GetHarnessConfig()
-	if !cfg.Enabled {
-		return
-	}
-	version := strings.TrimSpace(cfg.Version)
+// resolveHarnessIdentity resolves the version, client and project identity
+// fields from cfg and the environment. Empty or whitespace-only config values
+// fall back to the package defaults; OPENCODE_VERSION and OPENCODE_CLIENT
+// override version and client, mirroring the genuine client's env behavior.
+func resolveHarnessIdentity(cfg HarnessConfig) (version, client, project string) {
+	version = strings.TrimSpace(cfg.Version)
 	if v := strings.TrimSpace(os.Getenv("OPENCODE_VERSION")); v != "" {
 		version = v
 	} else if version == "" {
 		version = DefaultVersion
 	}
-	client := strings.TrimSpace(cfg.Client)
+	client = strings.TrimSpace(cfg.Client)
 	if v := strings.TrimSpace(os.Getenv("OPENCODE_CLIENT")); v != "" {
 		client = v
 	} else if client == "" {
 		client = DefaultHarnessClient
 	}
-	project := strings.TrimSpace(cfg.Project)
+	project = strings.TrimSpace(cfg.Project)
 	if project == "" {
 		project = DefaultProject
 	}
+	return version, client, project
+}
 
+// stampHarnessHeaders writes the full harness identity for cfg onto hdr with
+// freshly generated session/request ids. No-op when cfg disables the harness.
+func stampHarnessHeaders(hdr http.Header, cfg HarnessConfig) {
+	if !cfg.Enabled {
+		return
+	}
+	version, client, project := resolveHarnessIdentity(cfg)
 	hdr.Set(HeaderUA, "opencode/"+version)
 	hdr.Set(HeaderClient, client)
 	hdr.Set(HeaderProject, project)
@@ -122,6 +122,98 @@ func ApplyHarnessHeaderMap(hdr http.Header) {
 	if rid, err := NewRequestID(); err == nil {
 		hdr.Set(HeaderRequest, rid)
 	}
+}
+
+// ApplyHarnessHeaderMap stamps the OpenCode harness headers onto an outgoing
+// header map. It is a no-op when the harness is disabled. Session/request ids
+// are regenerated on every call; see resolveHarnessIdentity for how the
+// remaining fields are resolved.
+func ApplyHarnessHeaderMap(hdr http.Header) {
+	if hdr == nil {
+		return
+	}
+	stampHarnessHeaders(hdr, GetHarnessConfig())
+}
+
+// getHeader retrieves the first value for key in hdr. It checks hdr.Get(key)
+// first (canonical lookup), falling back to case-insensitive key matching so
+// that non-canonical map literals (e.g. in tests) behave identically.
+func getHeader(hdr http.Header, key string) string {
+	if hdr == nil {
+		return ""
+	}
+	if v := hdr.Get(key); v != "" {
+		return v
+	}
+	for k, vv := range hdr {
+		if strings.EqualFold(k, key) && len(vv) > 0 {
+			return vv[0]
+		}
+	}
+	return ""
+}
+
+// isOpenCodeClient reports whether the inbound headers come from a genuine
+// OpenCode client: an opencode/ User-Agent or any x-opencode-* identity header.
+func isOpenCodeClient(hdr http.Header) bool {
+	if strings.HasPrefix(strings.ToLower(getHeader(hdr, HeaderUA)), "opencode/") {
+		return true
+	}
+	for _, k := range []string{HeaderSession, HeaderClient, HeaderProject, HeaderRequest} {
+		if getHeader(hdr, k) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ApplyHarnessHeaderMapPreserving stamps the harness identity onto dst. A
+// genuine OpenCode client's session, client, project and request id are copied
+// from src; missing fields are filled from config/env/defaults. The inbound
+// User-Agent is kept only when it is itself an opencode/ UA, so a foreign UA on
+// an opencode-labelled request never reaches Zen. Every other caller gets the
+// full disguise. No-op when the harness is disabled.
+func ApplyHarnessHeaderMapPreserving(dst, src http.Header) {
+	cfg := GetHarnessConfig()
+	if dst == nil || !cfg.Enabled {
+		return
+	}
+	if !isOpenCodeClient(src) {
+		stampHarnessHeaders(dst, cfg)
+		return
+	}
+	version, client, project := resolveHarnessIdentity(cfg)
+	if ua := getHeader(src, HeaderUA); strings.HasPrefix(strings.ToLower(ua), "opencode/") {
+		dst.Set(HeaderUA, ua)
+	} else {
+		dst.Set(HeaderUA, "opencode/"+version)
+	}
+	setOr := func(key, fallback string) {
+		if v := getHeader(src, key); v != "" {
+			dst.Set(key, v)
+		} else if fallback != "" {
+			dst.Set(key, fallback)
+		}
+	}
+	setOr(HeaderClient, client)
+	setOr(HeaderProject, project)
+	var sid, rid string
+	if getHeader(src, HeaderSession) == "" {
+		sid, _ = NewSessionID()
+	}
+	if getHeader(src, HeaderRequest) == "" {
+		rid, _ = NewRequestID()
+	}
+	setOr(HeaderSession, sid)
+	setOr(HeaderRequest, rid)
+}
+
+// ApplyHarnessHeadersPreserving is ApplyHarnessHeaderMapPreserving for a request.
+func ApplyHarnessHeadersPreserving(dst *http.Request, src http.Header) {
+	if dst == nil {
+		return
+	}
+	ApplyHarnessHeaderMapPreserving(dst.Header, src)
 }
 
 // ApplyHarnessHeaders stamps the OpenCode harness headers onto a request.

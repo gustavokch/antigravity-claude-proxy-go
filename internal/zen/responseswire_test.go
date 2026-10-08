@@ -1221,8 +1221,11 @@ func TestResponsesResponseToAnthropic_ReasoningMultiPartSeparator(t *testing.T) 
 	}
 	msg := ResponsesResponseToAnthropic(resp, "gpt-5", nil, nil)
 	content, _ := msg["content"].([]any)
-	if len(content) != 1 {
-		t.Fatalf("content = %s, want one thinking block", mustJSON(t, msg["content"]))
+	if len(content) != 2 {
+		t.Fatalf("content = %s, want thinking block + empty-stop fallback", mustJSON(t, msg["content"]))
+	}
+	if fb, _ := content[1].(map[string]any); fb["type"] != "text" || fb["text"] != emptyStopFallbackText {
+		t.Errorf("content[1] = %v, want fallback text block", content[1])
 	}
 	part, _ := content[0].(map[string]any)
 	if thinking, _ := part["thinking"].(string); thinking != "first\n\nsecond" {
@@ -1929,8 +1932,11 @@ func TestAggregateResponsesStream_ReasoningSummaryIndexSeparator(t *testing.T) {
 	}
 	msg := ResponsesResponseToAnthropic(agg, "gpt-5", nil, nil)
 	content, _ := msg["content"].([]any)
-	if len(content) != 1 {
-		t.Fatalf("content = %s, want one thinking block", mustJSON(t, msg["content"]))
+	if len(content) != 2 {
+		t.Fatalf("content = %s, want thinking block + empty-stop fallback", mustJSON(t, msg["content"]))
+	}
+	if fb, _ := content[1].(map[string]any); fb["type"] != "text" || fb["text"] != emptyStopFallbackText {
+		t.Errorf("content[1] = %v, want fallback text block", content[1])
 	}
 	part, _ := content[0].(map[string]any)
 	if thinking, _ := part["thinking"].(string); thinking != "first\n\nsecond" {
@@ -2293,5 +2299,266 @@ func TestStreamResponsesToAnthropic_ParallelToolCalls(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"stop_reason":"tool_use"`) {
 		t.Errorf("stop_reason tool_use missing:\n%s", out.String())
+	}
+}
+
+func TestEmptyStop_ResponsesNonStream(t *testing.T) {
+	cases := []struct {
+		name         string
+		resp         map[string]any
+		injected     map[string]bool
+		wantStop     string
+		wantFallback bool
+		wantReason   bool
+		wantToolUse  bool
+	}{
+		{
+			name: "function_call bash dropped",
+			resp: map[string]any{
+				"output": []any{
+					map[string]any{"type": "function_call", "name": "bash", "arguments": "{}"},
+				},
+			},
+			injected:     map[string]bool{"bash": true},
+			wantStop:     "end_turn",
+			wantFallback: true,
+		},
+		{
+			name: "reasoning item only",
+			resp: map[string]any{
+				"output": []any{
+					map[string]any{"type": "reasoning", "summary": []any{map[string]any{"text": "hmm"}}},
+				},
+			},
+			wantStop:     "end_turn",
+			wantFallback: true,
+			wantReason:   true,
+		},
+		{
+			name: "whitespace output_text",
+			resp: map[string]any{
+				"output": []any{
+					map[string]any{
+						"type":    "message",
+						"content": []any{map[string]any{"type": "output_text", "text": "   \n\t"}},
+					},
+				},
+			},
+			wantStop:     "end_turn",
+			wantFallback: true,
+		},
+		{
+			name: "real text",
+			resp: map[string]any{
+				"output": []any{
+					map[string]any{
+						"type":    "message",
+						"content": []any{map[string]any{"type": "output_text", "text": "hello"}},
+					},
+				},
+			},
+			wantStop:     "end_turn",
+			wantFallback: false,
+		},
+		{
+			name: "surviving call",
+			resp: map[string]any{
+				"output": []any{
+					map[string]any{"type": "function_call", "name": "edit", "arguments": "{}"},
+				},
+			},
+			wantStop:     "tool_use",
+			wantFallback: false,
+			wantToolUse:  true,
+		},
+		{
+			name: "reasoning + max_output_tokens",
+			resp: map[string]any{
+				"incomplete_details": map[string]any{"reason": "max_output_tokens"},
+				"output": []any{
+					map[string]any{"type": "reasoning", "summary": []any{map[string]any{"text": "hmm"}}},
+				},
+			},
+			wantStop:     "max_tokens",
+			wantFallback: false,
+			wantReason:   true,
+		},
+		{
+			name: "refusal part",
+			resp: map[string]any{
+				"output": []any{
+					map[string]any{
+						"type":    "message",
+						"content": []any{map[string]any{"type": "refusal", "refusal": "cannot do that"}},
+					},
+				},
+			},
+			wantStop:     "refusal",
+			wantFallback: false,
+		},
+		{
+			name:         "empty output",
+			resp:         map[string]any{"output": []any{}},
+			wantStop:     "end_turn",
+			wantFallback: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResponsesResponseToAnthropic(tc.resp, "model", nil, tc.injected)
+			if stop := got["stop_reason"]; stop != tc.wantStop {
+				t.Errorf("stop_reason = %v, want %v", stop, tc.wantStop)
+			}
+			content, _ := got["content"].([]any)
+			var hasFallback, hasReason, hasToolUse bool
+			for _, blk := range content {
+				b := blk.(map[string]any)
+				switch b["type"] {
+				case "text":
+					if b["text"] == emptyStopFallbackText {
+						hasFallback = true
+					}
+				case "thinking":
+					hasReason = true
+					if b["signature"] != "" {
+						t.Errorf("thinking signature = %q, want empty", b["signature"])
+					}
+				case "tool_use":
+					hasToolUse = true
+				}
+			}
+			if hasFallback != tc.wantFallback {
+				t.Errorf("hasFallback = %v, want %v (content: %v)", hasFallback, tc.wantFallback, content)
+			}
+			if tc.wantReason && !hasReason {
+				t.Errorf("expected thinking block in content: %v", content)
+			}
+			if tc.wantToolUse && !hasToolUse {
+				t.Errorf("expected tool_use block in content: %v", content)
+			}
+		})
+	}
+}
+
+func TestEmptyStop_ResponsesStream(t *testing.T) {
+	t.Run("dropped-call-only", func(t *testing.T) {
+		sse := strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","name":"bash","arguments":""}}`,
+			``,
+			`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"}`,
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, map[string]bool{"bash": true}); err != nil {
+			t.Fatal(err)
+		}
+		assertFallbackBeforeStop(t, out.String())
+	})
+
+	t.Run("reasoning-summary-only", func(t *testing.T) {
+		sse := strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"r_1","type":"reasoning"}}`,
+			``,
+			`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thinking..."}`,
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		assertFallbackBeforeStop(t, out.String())
+	})
+
+	t.Run("max_output_tokens reasoning-only", func(t *testing.T) {
+		sse := strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"r_1","type":"reasoning"}}`,
+			``,
+			`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"thinking..."}`,
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_1","incomplete_details":{"reason":"max_output_tokens"}}}`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		got := out.String()
+		if strings.Contains(got, emptyStopFallbackText) {
+			t.Errorf("unexpected fallback on max_tokens:\n%s", got)
+		}
+		if !strings.Contains(got, `"stop_reason":"max_tokens"`) {
+			t.Errorf("stop_reason max_tokens missing:\n%s", got)
+		}
+	})
+
+	t.Run("refusal", func(t *testing.T) {
+		sse := strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+			``,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant"}}`,
+			``,
+			`data: {"type":"response.content_part.added","output_index":0,"part":{"type":"refusal","refusal":"no"}}`,
+			``,
+			`data: {"type":"response.completed","response":{"id":"resp_1","incomplete_details":{"reason":"content_filter"}}}`,
+			``,
+		}, "\n")
+		var out bytes.Buffer
+		if err := streamResponsesToAnthropic(strings.NewReader(sse), &out, "gpt-5", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		got := out.String()
+		if strings.Contains(got, emptyStopFallbackText) {
+			t.Errorf("unexpected fallback on refusal:\n%s", got)
+		}
+		if !strings.Contains(got, `"stop_reason":"refusal"`) {
+			t.Errorf("stop_reason refusal missing:\n%s", got)
+		}
+	})
+}
+
+func TestEmptyStop_SendResponsesAggregate(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","name":"bash","arguments":"{}"}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":4,"output_tokens":2}}}`,
+			``,
+		}, "\n"))
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"ping"}],"max_tokens":64,"stream":false}`)
+	resp, err := SendResponses(context.Background(), upstream.Client(), upstream.URL, "sk-zen-test", body)
+	if err != nil {
+		t.Fatalf("SendResponses: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var msg map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := msg["content"].([]any)
+	var foundFallback bool
+	for _, b := range content {
+		blk := b.(map[string]any)
+		if blk["type"] == "text" && blk["text"] == emptyStopFallbackText {
+			foundFallback = true
+		}
+	}
+	if !foundFallback {
+		t.Errorf("aggregate Responses response missing fallback text: %v", content)
 	}
 }

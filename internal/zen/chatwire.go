@@ -17,6 +17,11 @@ import (
 	"antigravity-go-proxy/internal/format"
 )
 
+// emptyStopFallbackText keeps a translated end_turn from carrying no text,
+// which OMP turn recovery classifies as an empty assistant stop. Non-whitespace
+// on purpose: a trimmed emptiness check would still reject " ".
+const emptyStopFallbackText = "No response text."
+
 // SendChat serves an Anthropic Messages request against a Zen
 // Chat-Completions-wire model: the Anthropic body is translated to an OpenAI
 // /v1/chat/completions body, posted to Zen, and the upstream response is
@@ -25,6 +30,12 @@ import (
 // indistinguishable from a /v1/messages answer, so callers reuse their
 // Anthropic handling (usage interception) unchanged.
 func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte) (*http.Response, error) {
+	return SendChatWithHeaders(ctx, client, baseURL, apiKey, anthropicBody, nil)
+}
+
+// SendChatWithHeaders is SendChat with inbound client headers preserved when
+// they originate from a genuine OpenCode client.
+func SendChatWithHeaders(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte, clientHeaders http.Header) (*http.Response, error) {
 	var req map[string]any
 	if err := json.Unmarshal(anthropicBody, &req); err != nil {
 		return nil, fmt.Errorf("parse anthropic request: %w", err)
@@ -46,7 +57,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	} else {
 		httpReq.Header.Set("Accept", "*/*")
 	}
-	ApplyHarnessHeaders(httpReq)
+	ApplyHarnessHeaderMapPreserving(httpReq.Header, clientHeaders)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -55,13 +66,13 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	return translateChatResponse(resp, model, clientStream, toolNames, injected), nil
 }
 
-// ForwardChat is the forwarding entry point: SendChat, then copy the translated
+// ForwardChat is the forwarding entry point: SendChatWithHeaders, then copy the translated
 // response to w (flushing per write so SSE stays incremental). modify runs on
 // the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.
 func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
 	forwardTranslated(w, "chat", modify, func() (*http.Response, error) {
-		return SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
+		return SendChatWithHeaders(r.Context(), TLSClient(), baseURL, apiKey, body, r.Header)
 	})
 }
 
@@ -656,6 +667,7 @@ func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[st
 	content := make([]any, 0, 2)
 	stop := "end_turn"
 	emittedCalls := 0
+	hasText := false
 	if choices, _ := chat["choices"].([]any); len(choices) > 0 {
 		choice, _ := choices[0].(map[string]any)
 		msg, _ := choice["message"].(map[string]any)
@@ -664,6 +676,9 @@ func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[st
 		}
 		if t, _ := msg["content"].(string); t != "" {
 			content = append(content, map[string]any{"type": "text", "text": t})
+			if strings.TrimSpace(t) != "" {
+				hasText = true
+			}
 		}
 		calls, _ := msg["tool_calls"].([]any)
 		for _, c := range calls {
@@ -694,6 +709,9 @@ func ChatResponseToAnthropic(chat map[string]any, model string, toolNames map[st
 		if emittedCalls == 0 && stop == "tool_use" {
 			stop = "end_turn"
 		}
+	}
+	if !hasText && stop == "end_turn" {
+		content = append(content, map[string]any{"type": "text", "text": emptyStopFallbackText})
 	}
 	usage, _ := chat["usage"].(map[string]any)
 	return map[string]any{
@@ -921,6 +939,7 @@ type chatStream struct {
 	dropped    map[int]bool      // call indexes skipped as gate-injected
 	started    bool
 	failed     bool
+	hasText    bool
 	nextIndex  int
 	current    int    // open Anthropic block index, -1 when none
 	kind       string // "thinking" | "text" | "tool"
@@ -1015,6 +1034,9 @@ func (s *chatStream) handle(chunk map[string]any) error {
 		}
 	}
 	if t, _ := d["content"].(string); t != "" {
+		if strings.TrimSpace(t) != "" {
+			s.hasText = true
+		}
 		if s.kind != "text" {
 			if err := s.openBlock("text", map[string]any{"type": "text", "text": ""}); err != nil {
 				return err
@@ -1093,6 +1115,17 @@ func (s *chatStream) finish() error {
 	// no tool_use block would make the client wait for one.
 	if len(s.toolBlocks) == 0 && stop == "tool_use" {
 		stop = "end_turn"
+	}
+	if !s.hasText && stop == "end_turn" {
+		if err := s.openBlock("text", map[string]any{"type": "text", "text": ""}); err != nil {
+			return err
+		}
+		if err := s.delta(map[string]any{"type": "text_delta", "text": emptyStopFallbackText}); err != nil {
+			return err
+		}
+		if err := s.closeBlock(); err != nil {
+			return err
+		}
 	}
 	if err := s.emit("message_delta", map[string]any{
 		"type":  "message_delta",

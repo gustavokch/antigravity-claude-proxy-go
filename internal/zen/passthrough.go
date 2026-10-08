@@ -115,9 +115,10 @@ func forwardZenPath(w http.ResponseWriter, r *http.Request, baseURL, apiKey stri
 				}
 			}
 
-			// Claim the genuine OpenCode harness identity; the incoming
-			// client's UA (claude-cli/…) is overwritten on purpose.
-			ApplyHarnessHeaders(req)
+			// Claim the genuine OpenCode harness identity; a non-OpenCode
+			// client's incoming UA (claude-cli/…) is overwritten, while a
+			// genuine OpenCode client's identity is preserved.
+			ApplyHarnessHeadersPreserving(req, r.Header)
 		},
 		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, proxyErr error) {
 			slog.Default().Error("zen upstream proxy error", "error", proxyErr, "url", target.String())
