@@ -25,6 +25,12 @@ import (
 // indistinguishable from a /v1/messages answer, so callers reuse their
 // Anthropic handling (usage interception) unchanged.
 func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte) (*http.Response, error) {
+	return SendChatWithHeaders(ctx, client, baseURL, apiKey, anthropicBody, nil)
+}
+
+// SendChatWithHeaders is SendChat with inbound client headers preserved when
+// they originate from a genuine OpenCode client.
+func SendChatWithHeaders(ctx context.Context, client *http.Client, baseURL, apiKey string, anthropicBody []byte, clientHeaders http.Header) (*http.Response, error) {
 	var req map[string]any
 	if err := json.Unmarshal(anthropicBody, &req); err != nil {
 		return nil, fmt.Errorf("parse anthropic request: %w", err)
@@ -46,7 +52,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	} else {
 		httpReq.Header.Set("Accept", "*/*")
 	}
-	ApplyHarnessHeaders(httpReq)
+	ApplyHarnessHeaderMapPreserving(httpReq.Header, clientHeaders)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -55,13 +61,13 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	return translateChatResponse(resp, model, clientStream, toolNames, injected), nil
 }
 
-// ForwardChat is the forwarding entry point: SendChat, then copy the translated
+// ForwardChat is the forwarding entry point: SendChatWithHeaders, then copy the translated
 // response to w (flushing per write so SSE stays incremental). modify runs on
 // the translated response before any byte is written, mirroring
 // ForwardMessagesWithModify.
 func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
 	forwardTranslated(w, "chat", modify, func() (*http.Response, error) {
-		return SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
+		return SendChatWithHeaders(r.Context(), TLSClient(), baseURL, apiKey, body, r.Header)
 	})
 }
 

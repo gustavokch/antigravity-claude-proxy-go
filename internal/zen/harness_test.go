@@ -486,3 +486,122 @@ func TestObserveFreeTierGate_LargeBodyStillLogs(t *testing.T) {
 		t.Errorf("body truncated: got %d bytes, want %d", len(got), buf.Len())
 	}
 }
+
+func TestIsOpenCodeClient(t *testing.T) {
+	cases := []struct {
+		name string
+		hdr  http.Header
+		want bool
+	}{
+		{"nil", nil, false},
+		{"generic curl", http.Header{"User-Agent": {"curl/8.0"}}, false},
+		{"claude code", http.Header{"User-Agent": {"claude-cli/2.1.280 (external, sdk-cli)"}}, false},
+		{"omp", http.Header{"X-Omp-Install-Id": {"inst_123"}}, false},
+		{"opencode UA", http.Header{"User-Agent": {"opencode/1.18.30"}}, true},
+		{"opencode UA mixed case", http.Header{"User-Agent": {"OpenCode/1.18.30"}}, true},
+		{"session header", http.Header{"X-Opencode-Session": {"ses_1"}}, true},
+		{"client header", http.Header{"X-Opencode-Client": {"desktop"}}, true},
+		{"project header", http.Header{"X-Opencode-Project": {"abc"}}, true},
+		{"request header", http.Header{"X-Opencode-Request": {"msg_1"}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOpenCodeClient(tc.hdr); got != tc.want {
+				t.Errorf("isOpenCodeClient() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyHarnessHeaderMapPreserving(t *testing.T) {
+	t.Run("copies genuine identity and fills gaps from config", func(t *testing.T) {
+		withHarness(t, HarnessConfig{Enabled: true, Version: "9.9.9", Client: "desktop", Project: "abc123"})
+		src := http.Header{
+			"User-Agent":         {"opencode/1.18.30"},
+			"X-Opencode-Session": {"ses_original"},
+			"X-Opencode-Client":  {"cli"},
+			// project and request intentionally missing
+		}
+		dst := http.Header{}
+		ApplyHarnessHeaderMapPreserving(dst, src)
+
+		if got := dst.Get(HeaderUA); got != "opencode/1.18.30" {
+			t.Errorf("User-Agent = %q, want preserved", got)
+		}
+		if got := dst.Get(HeaderSession); got != "ses_original" {
+			t.Errorf("session = %q, want preserved", got)
+		}
+		if got := dst.Get(HeaderClient); got != "cli" {
+			t.Errorf("client = %q, want preserved cli (not config desktop)", got)
+		}
+		if got := dst.Get(HeaderProject); got != "abc123" {
+			t.Errorf("project = %q, want config fill", got)
+		}
+		if got := dst.Get(HeaderRequest); !strings.HasPrefix(got, "msg_") {
+			t.Errorf("request id = %q, want generated msg_ id", got)
+		}
+	})
+
+	t.Run("non-opencode UA on an opencode-labelled request is replaced", func(t *testing.T) {
+		withHarness(t, HarnessConfig{Enabled: true})
+		src := http.Header{
+			"User-Agent":         {"claude-cli/2.0.0"},
+			"X-Opencode-Session": {"ses_original"},
+		}
+		dst := http.Header{}
+		ApplyHarnessHeaderMapPreserving(dst, src)
+
+		if got := dst.Get(HeaderUA); got != "opencode/"+DefaultVersion {
+			t.Errorf("User-Agent = %q, want disguise UA (claude-cli must not leak)", got)
+		}
+		if got := dst.Get(HeaderSession); got != "ses_original" {
+			t.Errorf("session = %q, want preserved", got)
+		}
+	})
+
+	t.Run("generic caller gets the full disguise", func(t *testing.T) {
+		withHarness(t, HarnessConfig{Enabled: true})
+		src := http.Header{"User-Agent": {"claude-cli/2.0.0"}}
+		dst := http.Header{}
+		ApplyHarnessHeaderMapPreserving(dst, src)
+
+		if got := dst.Get(HeaderUA); got != "opencode/"+DefaultVersion {
+			t.Errorf("User-Agent = %q, want disguise", got)
+		}
+		if got := dst.Get(HeaderSession); !strings.HasPrefix(got, "ses_") {
+			t.Errorf("session = %q, want generated", got)
+		}
+	})
+
+	t.Run("nil src is generic", func(t *testing.T) {
+		withHarness(t, HarnessConfig{Enabled: true})
+		dst := http.Header{}
+		ApplyHarnessHeaderMapPreserving(dst, nil)
+		if got := dst.Get(HeaderUA); got != "opencode/"+DefaultVersion {
+			t.Errorf("User-Agent = %q, want disguise", got)
+		}
+	})
+
+	t.Run("disabled harness writes nothing", func(t *testing.T) {
+		withHarness(t, HarnessConfig{Enabled: false})
+		dst := http.Header{}
+		ApplyHarnessHeaderMapPreserving(dst, http.Header{"X-Opencode-Session": {"ses_1"}})
+		if len(dst) != 0 {
+			t.Errorf("disabled harness wrote headers: %v", dst)
+		}
+	})
+
+	t.Run("fill path agrees with the full disguise", func(t *testing.T) {
+		withHarness(t, HarnessConfig{Enabled: true, Version: "9.9.9", Client: "desktop", Project: "abc123"})
+		t.Setenv("OPENCODE_VERSION", "8.8.8")
+		full, filled := http.Header{}, http.Header{}
+		ApplyHarnessHeaderMap(full)
+		// Only the session is supplied, so UA/client/project all come from fill.
+		ApplyHarnessHeaderMapPreserving(filled, http.Header{"X-Opencode-Session": {"ses_1"}})
+		for _, k := range []string{HeaderUA, HeaderClient, HeaderProject} {
+			if full.Get(k) != filled.Get(k) {
+				t.Errorf("%s: full = %q, fill = %q; paths drifted", k, full.Get(k), filled.Get(k))
+			}
+		}
+	})
+}
