@@ -29,7 +29,7 @@ import (
 )
 
 func main() {
-	claude := flag.String("claude", "claude-opus-4-6-thinking", "upstream Claude thinking model ID")
+	claude := flag.String("claude", "claude-sonnet-5-5-high", "upstream Claude thinking model ID")
 	tier := flag.String("tier", "gemini-3.8-flash-high", "upstream thinkingLevel-style Gemini model ID")
 	heavy := flag.Bool("heavy", false, "also run the effort sweep (spends real thinking tokens)")
 	only := flag.String("gate", "", "run only the probes of this gate (GA, GB, ...)")
