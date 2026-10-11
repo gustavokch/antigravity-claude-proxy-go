@@ -96,6 +96,7 @@ var routingAliases = map[string]string{
 	"gemini-3.1-pro-high": "Gemini 3.1 Pro (High)",
 	"gemini-3.1-pro":      "Gemini 3.1 Pro (High)",
 	"gemini-pro":          "Gemini 3.1 Pro (High)",
+	"gemini-pro-agent":    "Gemini 3.1 Pro (High)",
 	"gemini-3.6-flash":    "Gemini 3.6 Flash (High)",
 	"gemini-3.7-flash":    "Gemini 3.7 Flash (High)",
 	"gpt-oss-120b":        "GPT-OSS 120B (Medium)",
@@ -118,17 +119,22 @@ var routingAliases = map[string]string{
 	"gemini-3.7-flash-low":       "Gemini 3.7 Flash (Low)",
 
 	// Claude Models & Aliases mapped to Cloud Code display names.
-	// Only real Cloud Code Claude IDs belong here. Names agy/Cloud Code never
-	// publishes (Anthropic API spellings like claude-3-5-sonnet, generic names
-	// like sonnet/opus/fable, and the 1M-advertised Claude 5 / Fable IDs) are
-	// deliberately absent: hard-mapping them would silently change which model
-	// serves the request (PR #75 review). Accounts whose upstream publishes a
-	// requested model resolve it via byID/byDisplay; everyone else gets an
-	// honest SelectionError.
-	"claude-sonnet-4-6-thinking": "Claude Sonnet 4.6 (Thinking)",
-	"claude-sonnet-4-6":          "Claude Sonnet 4.6 (Thinking)",
-	"claude-opus-4-6":            "Claude Opus 4.6 (Thinking)",
-	"claude-opus-4-6-thinking":   "Claude Opus 4.6 (Thinking)",
+	// agy 1.3.3 publishes Claude 5.5 tiers:
+	"claude-opus-5-5":          "Claude Opus 5.5 (High)",
+	"claude-opus-5-5-high":     "Claude Opus 5.5 (High)",
+	"claude-opus-5-5-medium":   "Claude Opus 5.5 (Medium)",
+	"claude-opus-5-5-low":      "Claude Opus 5.5 (Low)",
+	"claude-sonnet-5-5":        "Claude Sonnet 5.5 (High)",
+	"claude-sonnet-5-5-high":   "Claude Sonnet 5.5 (High)",
+	"claude-sonnet-5-5-medium": "Claude Sonnet 5.5 (Medium)",
+	"claude-sonnet-5-5-low":    "Claude Sonnet 5.5 (Low)",
+
+	// Legacy Claude 4.6 IDs repoint to the Claude 5.5 family (tier-preserving: High).
+	// Accounts that still publish real 4.6 are unaffected: byID/byDisplay lookups win before routingAliases.
+	"claude-sonnet-4-6-thinking": "Claude Sonnet 5.5 (High)",
+	"claude-sonnet-4-6":          "Claude Sonnet 5.5 (High)",
+	"claude-opus-4-6":            "Claude Opus 5.5 (High)",
+	"claude-opus-4-6-thinking":   "Claude Opus 5.5 (High)",
 }
 
 const gemini37TieredID = "gemini-3.7-flash-tiered"
