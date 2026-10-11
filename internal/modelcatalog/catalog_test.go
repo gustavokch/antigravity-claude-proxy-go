@@ -843,3 +843,51 @@ func TestResolveWithRequest_OutputConfigEffortRouting(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePopulatesThinkingLevelFromUpstreamInteger(t *testing.T) {
+	t.Parallel()
+	raw := `{
+		"defaultAgentModelId":"claude-sonnet-5-5-high",
+		"agentModelSorts":[{"groups":[{"modelIds":[
+			"claude-sonnet-5-5-high",
+			"claude-sonnet-5-5-medium",
+			"claude-sonnet-5-5-low",
+			"claude-opus-5-5-high"
+		]}]}],
+		"models":{
+			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-medium":{"displayName":"Claude Sonnet 5.5 (Medium)","supportsThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-low":{"displayName":"Claude Sonnet 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-opus-5-5-high":{"displayName":"Claude Opus 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000}
+		}
+	}`
+
+	catalog, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	high, err := catalog.Resolve("claude-sonnet-5-5-high")
+	if err != nil {
+		t.Fatalf("Resolve high: %v", err)
+	}
+	if high.ThinkingLevel != "HIGH" {
+		t.Errorf("claude-sonnet-5-5-high ThinkingLevel = %q, want HIGH", high.ThinkingLevel)
+	}
+
+	med, err := catalog.Resolve("claude-sonnet-5-5-medium")
+	if err != nil {
+		t.Fatalf("Resolve medium: %v", err)
+	}
+	if med.ThinkingLevel != "MEDIUM" {
+		t.Errorf("claude-sonnet-5-5-medium ThinkingLevel = %q, want MEDIUM", med.ThinkingLevel)
+	}
+
+	low, err := catalog.Resolve("claude-sonnet-5-5-low")
+	if err != nil {
+		t.Fatalf("Resolve low: %v", err)
+	}
+	if low.ThinkingLevel != "LOW" {
+		t.Errorf("claude-sonnet-5-5-low ThinkingLevel = %q, want LOW", low.ThinkingLevel)
+	}
+}

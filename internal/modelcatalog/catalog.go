@@ -79,6 +79,7 @@ type modelDetails struct {
 	SupportsAdaptiveThinking bool      `json:"supportsAdaptiveThinking"`
 	ThinkingBudget           int       `json:"thinkingBudget"`
 	MinThinkingBudget        int       `json:"minThinkingBudget"`
+	ThinkingLevel            int       `json:"thinkingLevel"`
 	MaxTokens                int       `json:"maxTokens"`
 	MaxOutputTokens          int       `json:"maxOutputTokens"`
 	QuotaInfo                quotaInfo `json:"quotaInfo"`
@@ -194,6 +195,7 @@ func Parse(body []byte) (*Catalog, error) {
 		if model.DisplayName == "" {
 			model.DisplayName = id
 		}
+		model.ThinkingLevel = thinkingLevelString(details.ThinkingLevel)
 		catalog.selectable = append(catalog.selectable, model)
 		catalog.byID[strings.ToLower(id)] = model
 		catalog.byDisplay[strings.ToLower(model.DisplayName)] = model
@@ -437,6 +439,21 @@ func isGemini38Flash(id string) bool {
 	return strings.HasPrefix(strings.ToLower(id), "gemini-3.8-flash")
 }
 
+func thinkingLevelString(level int) string {
+	switch level {
+	case 1:
+		return "LOW"
+	case 2:
+		return "MEDIUM"
+	case 3:
+		return "HIGH"
+	case 4:
+		return "MINIMAL"
+	default:
+		return ""
+	}
+}
+
 func modelFromDetails(id string, details modelDetails) Model {
 	remaining := details.QuotaInfo.RemainingFraction
 	if remaining == nil && details.QuotaInfo.ResetTime != "" {
@@ -456,6 +473,7 @@ func modelFromDetails(id string, details modelDetails) Model {
 	if model.DisplayName == "" {
 		model.DisplayName = id
 	}
+	model.ThinkingLevel = thinkingLevelString(details.ThinkingLevel)
 	return model
 }
 
