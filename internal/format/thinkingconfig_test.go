@@ -345,3 +345,74 @@ func TestEffortDerivedBudgetKeepsRoomForTheAnswer(t *testing.T) {
 		}
 	}
 }
+
+func TestClaude55EmitsThinkingLevel(t *testing.T) {
+	t.Parallel()
+
+	if !IsThinkingModel("claude-sonnet-5-5-high") {
+		t.Errorf("IsThinkingModel(claude-sonnet-5-5-high) = false, want true")
+	}
+	if !IsThinkingModel("claude-5-sonnet") {
+		t.Errorf("IsThinkingModel(claude-5-sonnet) = false, want true")
+	}
+
+	builder := NewBuilder()
+
+	// High tier options
+	options := ModelOptions{
+		SupportsThinking: true,
+		ThinkingLevel:    "HIGH",
+		MaxOutputTokens:  128000,
+	}
+
+	req := map[string]any{
+		"model": "claude-sonnet-5-5-high",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+		},
+	}
+
+	payload := builder.BuildCloudCodeRequestWithModel(req, "test-proj", "user@example.com", options)
+	inner, ok := payload["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing inner request: %#v", payload)
+	}
+	gen, ok := inner["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing generationConfig: %#v", inner)
+	}
+	tc, ok := gen["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing thinkingConfig: %#v", gen)
+	}
+	if tc["thinkingLevel"] != "HIGH" {
+		t.Errorf("thinkingLevel = %v, want HIGH", tc["thinkingLevel"])
+	}
+	if tc["includeThoughts"] != true {
+		t.Errorf("includeThoughts = %v, want true", tc["includeThoughts"])
+	}
+	// thinkingBudget must NOT be present when thinkingLevel is set
+	if _, hasBudget := tc["thinkingBudget"]; hasBudget {
+		t.Errorf("unexpected thinkingBudget in thinkingConfig: %#v", tc)
+	}
+
+	// Disabled thinking removes thinkingConfig
+	reqDisabled := map[string]any{
+		"model": "claude-sonnet-5-5-high",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hi"},
+		},
+		"thinking": map[string]any{"type": "disabled"},
+	}
+	optionsDisabled := ModelOptions{
+		SupportsThinking: false,
+		ThinkingLevel:    "",
+		MaxOutputTokens:  128000,
+	}
+	payloadDis := builder.BuildCloudCodeRequestWithModel(reqDisabled, "test-proj", "user@example.com", optionsDisabled)
+	innerDis := payloadDis["request"].(map[string]any)
+	genDis := innerDis["generationConfig"].(map[string]any)
+	if _, hasTC := genDis["thinkingConfig"]; hasTC {
+		t.Errorf("disabled thinking must omit thinkingConfig, got %#v", genDis["thinkingConfig"])
+	}
+}

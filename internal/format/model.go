@@ -62,8 +62,10 @@ func getModelFamilyInfo(model string) modelFamilyInfo {
 	}
 
 	isThinking := false
-	if family == FamilyClaude && strings.Contains(lower, "thinking") {
-		isThinking = true
+	if family == FamilyClaude {
+		if strings.Contains(lower, "thinking") || strings.Contains(lower, "5-5") || strings.Contains(lower, "claude-5") {
+			isThinking = true
+		}
 	} else if family == FamilyGemini {
 		if strings.Contains(lower, "thinking") {
 			isThinking = true
