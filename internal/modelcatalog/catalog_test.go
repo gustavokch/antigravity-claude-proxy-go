@@ -985,3 +985,30 @@ func TestClaude55RoutingAliasesAndLegacy46Fallback(t *testing.T) {
 		t.Errorf("legacy account claude-sonnet-4-6 = %q, want claude-sonnet-4-6", legacyDirect.ID)
 	}
 }
+
+func TestCleanModelIDAndNameClaude55(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		id          string
+		displayName string
+		wantID      string
+		wantName    string
+	}{
+		{"claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)", "claude-sonnet-5-5", "Claude Sonnet 5.5"},
+		{"claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)", "claude-sonnet-5-5", "Claude Sonnet 5.5"},
+		{"claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)", "claude-sonnet-5-5", "Claude Sonnet 5.5"},
+		{"claude-opus-5-5-high", "Claude Opus 5.5 (High)", "claude-opus-5-5", "Claude Opus 5.5"},
+		{"claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)", "claude-opus-5-5", "Claude Opus 5.5"},
+		{"claude-opus-5-5-low", "Claude Opus 5.5 (Low)", "claude-opus-5-5", "Claude Opus 5.5"},
+		{"gemini-pro-agent", "Gemini 3.1 Pro (High)", "gemini-3.1-pro", "Gemini 3.1 Pro"},
+		{"claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", "claude-opus-4-6", "Claude Opus 4.6"},
+	}
+
+	for _, tc := range cases {
+		gotID, gotName := CleanModelIDAndName(tc.id, tc.displayName)
+		if gotID != tc.wantID || gotName != tc.wantName {
+			t.Errorf("CleanModelIDAndName(%q, %q) = (%q, %q), want (%q, %q)",
+				tc.id, tc.displayName, gotID, gotName, tc.wantID, tc.wantName)
+		}
+	}
+}

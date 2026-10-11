@@ -398,9 +398,18 @@ func CleanModelIDAndName(id, displayName string) (string, string) {
 	case lowerID == "gemini-pro-agent" || lowerID == "gemini-3.1-pro-high" || lowerID == "gemini-3.1-pro-low":
 		cleanID = "gemini-3.1-pro"
 		cleanName = "Gemini 3.1 Pro"
+	case strings.HasPrefix(lowerID, "claude-opus-5-5"):
+		cleanID = "claude-opus-5-5"
+		cleanName = "Claude Opus 5.5"
+	case strings.HasPrefix(lowerID, "claude-sonnet-5-5"):
+		cleanID = "claude-sonnet-5-5"
+		cleanName = "Claude Sonnet 5.5"
 	case lowerID == "claude-opus-4-6-thinking" || lowerID == "claude-opus-4-6":
 		cleanID = "claude-opus-4-6"
 		cleanName = "Claude Opus 4.6"
+	case lowerID == "claude-sonnet-4-6-thinking" || lowerID == "claude-sonnet-4-6":
+		cleanID = "claude-sonnet-4-6"
+		cleanName = "Claude Sonnet 4.6"
 	case lowerID == "gpt-oss-120b-medium" || lowerID == "gpt-oss-120b":
 		cleanID = "gpt-oss-120b"
 		cleanName = "GPT-OSS 120B"
