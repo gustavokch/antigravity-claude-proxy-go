@@ -332,6 +332,7 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 		}
 		model.SupportsThinking = false
 		model.ThinkingBudget = 0
+		model.ThinkingLevel = ""
 		return model, nil
 	}
 
@@ -346,10 +347,15 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 		case strings.HasPrefix(lowerReq, "gemini-3.6-flash"):
 			targetID = "gemini-3.6-flash-" + tier
 		case strings.HasPrefix(lowerReq, "gemini-3.5-flash"):
-			// Legacy 3.5 IDs repoint to the 3.8 family (user decision
-			// 2026-09-03); fall back to a real 3.5 tier only when this
-			// account has no 3.8 at all.
 			targetID = "gemini-3.8-flash-" + tier
+		case strings.HasPrefix(lowerReq, "claude-sonnet-5-5"):
+			targetID = "claude-sonnet-5-5-" + tier
+		case strings.HasPrefix(lowerReq, "claude-opus-5-5"):
+			targetID = "claude-opus-5-5-" + tier
+		case strings.HasPrefix(lowerReq, "claude-sonnet-4-6") || lowerReq == "claude-sonnet":
+			targetID = "claude-sonnet-5-5-" + tier
+		case strings.HasPrefix(lowerReq, "claude-opus-4-6") || lowerReq == "claude-opus":
+			targetID = "claude-opus-5-5-" + tier
 		}
 		if targetID != "" {
 			if variant, err := catalog.Resolve(targetID); err == nil {

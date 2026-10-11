@@ -1012,3 +1012,82 @@ func TestCleanModelIDAndNameClaude55(t *testing.T) {
 		}
 	}
 }
+
+func TestClaude55EffortTierResolution(t *testing.T) {
+	t.Parallel()
+	raw := `{
+		"defaultAgentModelId":"claude-sonnet-5-5-high",
+		"agentModelSorts":[{"groups":[{"modelIds":[
+			"claude-sonnet-5-5-high",
+			"claude-sonnet-5-5-medium",
+			"claude-sonnet-5-5-low",
+			"claude-opus-5-5-high",
+			"claude-opus-5-5-medium",
+			"claude-opus-5-5-low"
+		]}]}],
+		"models":{
+			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-medium":{"displayName":"Claude Sonnet 5.5 (Medium)","supportsThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-low":{"displayName":"Claude Sonnet 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-opus-5-5-high":{"displayName":"Claude Opus 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-opus-5-5-medium":{"displayName":"Claude Opus 5.5 (Medium)","supportsThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-opus-5-5-low":{"displayName":"Claude Opus 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000}
+		}
+	}`
+
+	catalog, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	effort := func(level string) map[string]any {
+		return map[string]any{"reasoning_effort": level}
+	}
+
+	// claude-sonnet-5-5 with effort low routes to low tier
+	lowSonnet, err := catalog.ResolveWithRequest("claude-sonnet-5-5", effort("low"))
+	if err != nil {
+		t.Fatalf("Resolve lowSonnet: %v", err)
+	}
+	if lowSonnet.ID != "claude-sonnet-5-5-low" || lowSonnet.ThinkingLevel != "LOW" {
+		t.Errorf("lowSonnet = (%q, %q), want (claude-sonnet-5-5-low, LOW)", lowSonnet.ID, lowSonnet.ThinkingLevel)
+	}
+
+	// claude-sonnet-5-5 with effort medium routes to medium tier
+	medSonnet, err := catalog.ResolveWithRequest("claude-sonnet-5-5", effort("medium"))
+	if err != nil {
+		t.Fatalf("Resolve medSonnet: %v", err)
+	}
+	if medSonnet.ID != "claude-sonnet-5-5-medium" || medSonnet.ThinkingLevel != "MEDIUM" {
+		t.Errorf("medSonnet = (%q, %q), want (claude-sonnet-5-5-medium, MEDIUM)", medSonnet.ID, medSonnet.ThinkingLevel)
+	}
+
+	// claude-opus-5-5 with effort low routes to low tier
+	lowOpus, err := catalog.ResolveWithRequest("claude-opus-5-5", effort("low"))
+	if err != nil {
+		t.Fatalf("Resolve lowOpus: %v", err)
+	}
+	if lowOpus.ID != "claude-opus-5-5-low" || lowOpus.ThinkingLevel != "LOW" {
+		t.Errorf("lowOpus = (%q, %q), want (claude-opus-5-5-low, LOW)", lowOpus.ID, lowOpus.ThinkingLevel)
+	}
+
+	// claude-sonnet-4-6 with effort medium routes to claude-sonnet-5-5-medium
+	repSonnet, err := catalog.ResolveWithRequest("claude-sonnet-4-6", effort("medium"))
+	if err != nil {
+		t.Fatalf("Resolve repSonnet: %v", err)
+	}
+	if repSonnet.ID != "claude-sonnet-5-5-medium" {
+		t.Errorf("repSonnet = %q, want claude-sonnet-5-5-medium", repSonnet.ID)
+	}
+
+	// disabled thinking clears ThinkingLevel and sets SupportsThinking = false
+	disabled := map[string]any{"thinking": map[string]any{"type": "disabled"}}
+	disSonnet, err := catalog.ResolveWithRequest("claude-sonnet-5-5-high", disabled)
+	if err != nil {
+		t.Fatalf("Resolve disabled: %v", err)
+	}
+	if disSonnet.SupportsThinking || disSonnet.ThinkingLevel != "" {
+		t.Errorf("disSonnet SupportsThinking=%v ThinkingLevel=%q, want false, \"\"",
+			disSonnet.SupportsThinking, disSonnet.ThinkingLevel)
+	}
+}
