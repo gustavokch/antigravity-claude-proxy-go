@@ -77,10 +77,17 @@ Key specifications:
 - Context limit (`maxTokens`): 1,000,000 tokens
 - Max output limit (`maxOutputTokens`): 128,000 tokens
 - Thinking levels: Upstream Cloud Code PA uses integer `thinkingLevel`
-  (matches Vertex content.proto / PredictionService ThinkingLevel enum):
-    * 1 = Low (`THINKING_LEVEL_LOW`)
-    * 2 = Medium (`THINKING_LEVEL_MEDIUM`)
-    * 3 = High (`THINKING_LEVEL_HIGH`)
+  (matches Vertex content.proto / PredictionService ThinkingLevel enum).
+  CONFIRMED LIVE 2026-10-11 by a single FetchAvailableModels response from a
+  real 5.5 account (`cmd/cloudcodecheck -operation models -details`,
+  179,685 bytes, 37 models): all six published Claude 5.5 models carry
+  low=1, medium=2, high=3, and each reports `maxTokens` 1000000 and
+  `maxOutputTokens` 128000. No model in that account published level 4, so
+  MINIMAL is not exercised on the wire and stays covered by the enum
+  descriptor only:
+    * 1 = Low (`THINKING_LEVEL_LOW`) — observed live
+    * 2 = Medium (`THINKING_LEVEL_MEDIUM`) — observed live
+    * 3 = High (`THINKING_LEVEL_HIGH`) — observed live
     * 4 = Minimal (`THINKING_LEVEL_MINIMAL`, preserved in parser)
 - Models published upstream:
     * `claude-opus-5-5-low`    (thinkingLevel: 1)
@@ -89,6 +96,9 @@ Key specifications:
     * `claude-sonnet-5-5-low`    (thinkingLevel: 1)
     * `claude-sonnet-5-5-medium` (thinkingLevel: 2)
     * `claude-sonnet-5-5-high`   (thinkingLevel: 3)
+  Live capture also shows this account publishes NO Claude 4.6 model at all,
+  which is why the catalog needs `supersededRoutes` to serve legacy 4.6 names
+  on migrated accounts without a hard failure.
 - Upstream flags:
     * `supportsThinking`: true
     * `supportsAdaptiveThinking`: true
