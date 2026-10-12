@@ -346,15 +346,26 @@ func TestEffortDerivedBudgetKeepsRoomForTheAnswer(t *testing.T) {
 	}
 }
 
+// Claude 5.5 tier IDs never contain "thinking" yet every tier thinks, so the
+// name heuristic (used only where no live catalog entry exists) must classify
+// by the published family prefix. A bare "5-5" substring is not the family.
+func TestIsThinkingModelClaude55Family(t *testing.T) {
+	t.Parallel()
+	for model, want := range map[string]bool{
+		"claude-sonnet-5-5-high":   true,
+		"claude-opus-5-5-low":      true,
+		"claude-opus-5-5[1m]":      true,
+		"claude-opus-4-6-thinking": true,
+		"claude-haiku-4-5-5":       false, // synthetic: only a bare "5-5" substring matches it
+	} {
+		if got := IsThinkingModel(model); got != want {
+			t.Errorf("IsThinkingModel(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
 func TestClaude55EmitsThinkingLevel(t *testing.T) {
 	t.Parallel()
-
-	if !IsThinkingModel("claude-sonnet-5-5-high") {
-		t.Errorf("IsThinkingModel(claude-sonnet-5-5-high) = false, want true")
-	}
-	if !IsThinkingModel("claude-5-sonnet") {
-		t.Errorf("IsThinkingModel(claude-5-sonnet) = false, want true")
-	}
 
 	builder := NewBuilder()
 

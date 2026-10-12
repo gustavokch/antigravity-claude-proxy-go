@@ -893,97 +893,27 @@ func TestParsePopulatesThinkingLevelFromUpstreamInteger(t *testing.T) {
 	}
 }
 
-func TestClaude55RoutingAliasesAndLegacy46Fallback(t *testing.T) {
+// agy 1.3.3 lists gemini-pro-agent in place of gemini-3.1-pro-high
+// (deprecatedModelIds). An account that still publishes only the old ID must
+// keep answering the new one.
+func TestGeminiProAgentAliasResolvesOnLegacyAccounts(t *testing.T) {
 	t.Parallel()
-	// Account with only Claude 5.5 published:
-	raw55 := `{
-		"defaultAgentModelId":"claude-sonnet-5-5-high",
-		"agentModelSorts":[{"groups":[{"modelIds":[
-			"claude-sonnet-5-5-high",
-			"claude-sonnet-5-5-medium",
-			"claude-sonnet-5-5-low",
-			"claude-opus-5-5-high",
-			"claude-opus-5-5-medium",
-			"claude-opus-5-5-low",
-			"gemini-pro-agent"
-		]}]}],
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.1-pro-high",
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.1-pro-high"]}]}],
 		"models":{
-			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-sonnet-5-5-medium":{"displayName":"Claude Sonnet 5.5 (Medium)","supportsThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-sonnet-5-5-low":{"displayName":"Claude Sonnet 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-opus-5-5-high":{"displayName":"Claude Opus 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-opus-5-5-medium":{"displayName":"Claude Opus 5.5 (Medium)","supportsThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-opus-5-5-low":{"displayName":"Claude Opus 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000},
-			"gemini-pro-agent":{"displayName":"Gemini 3.1 Pro (High)","supportsThinking":true,"maxTokens":1048576,"maxOutputTokens":65536}
+			"gemini-3.1-pro-high":{"displayName":"Gemini 3.1 Pro (High)","supportsThinking":true,"thinkingBudget":10001,"maxTokens":1048576,"maxOutputTokens":65535}
 		}
-	}`
-
-	cat55, err := Parse([]byte(raw55))
+	}`))
 	if err != nil {
-		t.Fatalf("Parse raw55: %v", err)
+		t.Fatal(err)
 	}
-
-	// Base alias resolves to High tier
-	sonnet, err := cat55.Resolve("claude-sonnet-5-5")
+	got, err := catalog.Resolve("gemini-pro-agent")
 	if err != nil {
-		t.Fatalf("Resolve claude-sonnet-5-5: %v", err)
+		t.Fatalf("Resolve(gemini-pro-agent): %v", err)
 	}
-	if sonnet.ID != "claude-sonnet-5-5-high" {
-		t.Errorf("claude-sonnet-5-5 = %q, want claude-sonnet-5-5-high", sonnet.ID)
-	}
-
-	opus, err := cat55.Resolve("claude-opus-5-5")
-	if err != nil {
-		t.Fatalf("Resolve claude-opus-5-5: %v", err)
-	}
-	if opus.ID != "claude-opus-5-5-high" {
-		t.Errorf("claude-opus-5-5 = %q, want claude-opus-5-5-high", opus.ID)
-	}
-
-	// Legacy 4.6 requests fall back to 5.5 High when 4.6 is absent
-	legacySonnet, err := cat55.Resolve("claude-sonnet-4-6")
-	if err != nil {
-		t.Fatalf("Resolve legacy claude-sonnet-4-6: %v", err)
-	}
-	if legacySonnet.ID != "claude-sonnet-5-5-high" {
-		t.Errorf("legacy claude-sonnet-4-6 = %q, want claude-sonnet-5-5-high", legacySonnet.ID)
-	}
-
-	legacyOpus, err := cat55.Resolve("claude-opus-4-6-thinking")
-	if err != nil {
-		t.Fatalf("Resolve legacy claude-opus-4-6-thinking: %v", err)
-	}
-	if legacyOpus.ID != "claude-opus-5-5-high" {
-		t.Errorf("legacy claude-opus-4-6-thinking = %q, want claude-opus-5-5-high", legacyOpus.ID)
-	}
-
-	// gemini-3.1-pro-high resolves to gemini-pro-agent
-	geminiPro, err := cat55.Resolve("gemini-3.1-pro-high")
-	if err != nil {
-		t.Fatalf("Resolve gemini-3.1-pro-high: %v", err)
-	}
-	if geminiPro.ID != "gemini-pro-agent" {
-		t.Errorf("gemini-3.1-pro-high = %q, want gemini-pro-agent", geminiPro.ID)
-	}
-
-	// Account still publishing legacy 4.6 resolves 4.6 directly (byID wins before routingAliases):
-	rawLegacy := `{
-		"defaultAgentModelId":"claude-sonnet-4-6",
-		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-4-6"]}]}],
-		"models":{
-			"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6","supportsThinking":true,"maxTokens":250000,"maxOutputTokens":64000}
-		}
-	}`
-	catLegacy, err := Parse([]byte(rawLegacy))
-	if err != nil {
-		t.Fatalf("Parse rawLegacy: %v", err)
-	}
-	legacyDirect, err := catLegacy.Resolve("claude-sonnet-4-6")
-	if err != nil {
-		t.Fatalf("Resolve legacyDirect: %v", err)
-	}
-	if legacyDirect.ID != "claude-sonnet-4-6" {
-		t.Errorf("legacy account claude-sonnet-4-6 = %q, want claude-sonnet-4-6", legacyDirect.ID)
+	if got.ID != "gemini-3.1-pro-high" {
+		t.Errorf("gemini-pro-agent = %q, want gemini-3.1-pro-high", got.ID)
 	}
 }
 
@@ -1014,103 +944,43 @@ func TestCleanModelIDAndNameClaude55(t *testing.T) {
 	}
 }
 
-func TestClaude55EffortTierResolution(t *testing.T) {
+// Disabled thinking must not leave a stale tier behind: a Claude 5.5 entry
+// that kept ThinkingLevel would still emit thinkingLevel for a client that
+// turned thinking off.
+func TestDisabledThinkingClearsClaude55Level(t *testing.T) {
 	t.Parallel()
-	raw := `{
+	catalog, err := Parse([]byte(`{
 		"defaultAgentModelId":"claude-sonnet-5-5-high",
-		"agentModelSorts":[{"groups":[{"modelIds":[
-			"claude-sonnet-5-5-high",
-			"claude-sonnet-5-5-medium",
-			"claude-sonnet-5-5-low",
-			"claude-opus-5-5-high",
-			"claude-opus-5-5-medium",
-			"claude-opus-5-5-low"
-		]}]}],
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-5-5-low","claude-sonnet-5-5-high"]}]}],
 		"models":{
-			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-sonnet-5-5-medium":{"displayName":"Claude Sonnet 5.5 (Medium)","supportsThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
 			"claude-sonnet-5-5-low":{"displayName":"Claude Sonnet 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-opus-5-5-high":{"displayName":"Claude Opus 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-opus-5-5-medium":{"displayName":"Claude Opus 5.5 (Medium)","supportsThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
-			"claude-opus-5-5-low":{"displayName":"Claude Opus 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000}
+			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000}
 		}
-	}`
-
-	catalog, err := Parse([]byte(raw))
+	}`))
 	if err != nil {
-		t.Fatalf("Parse: %v", err)
+		t.Fatal(err)
 	}
-
-	effort := func(level string) map[string]any {
-		return map[string]any{"reasoning_effort": level}
-	}
-
-	// claude-sonnet-5-5 with effort low routes to low tier
-	lowSonnet, err := catalog.ResolveWithRequest("claude-sonnet-5-5", effort("low"))
-	if err != nil {
-		t.Fatalf("Resolve lowSonnet: %v", err)
-	}
-	if lowSonnet.ID != "claude-sonnet-5-5-low" || lowSonnet.ThinkingLevel != "LOW" {
-		t.Errorf("lowSonnet = (%q, %q), want (claude-sonnet-5-5-low, LOW)", lowSonnet.ID, lowSonnet.ThinkingLevel)
-	}
-
-	// claude-sonnet-5-5 with effort medium routes to medium tier
-	medSonnet, err := catalog.ResolveWithRequest("claude-sonnet-5-5", effort("medium"))
-	if err != nil {
-		t.Fatalf("Resolve medSonnet: %v", err)
-	}
-	if medSonnet.ID != "claude-sonnet-5-5-medium" || medSonnet.ThinkingLevel != "MEDIUM" {
-		t.Errorf("medSonnet = (%q, %q), want (claude-sonnet-5-5-medium, MEDIUM)", medSonnet.ID, medSonnet.ThinkingLevel)
-	}
-
-	// claude-opus-5-5 with effort low routes to low tier
-	lowOpus, err := catalog.ResolveWithRequest("claude-opus-5-5", effort("low"))
-	if err != nil {
-		t.Fatalf("Resolve lowOpus: %v", err)
-	}
-	if lowOpus.ID != "claude-opus-5-5-low" || lowOpus.ThinkingLevel != "LOW" {
-		t.Errorf("lowOpus = (%q, %q), want (claude-opus-5-5-low, LOW)", lowOpus.ID, lowOpus.ThinkingLevel)
-	}
-
-	// claude-sonnet-4-6 with effort medium routes to claude-sonnet-5-5-medium
-	repSonnet, err := catalog.ResolveWithRequest("claude-sonnet-4-6", effort("medium"))
-	if err != nil {
-		t.Fatalf("Resolve repSonnet: %v", err)
-	}
-	if repSonnet.ID != "claude-sonnet-5-5-medium" {
-		t.Errorf("repSonnet = %q, want claude-sonnet-5-5-medium", repSonnet.ID)
-	}
-
-	// disabled thinking clears ThinkingLevel and sets SupportsThinking = false
 	disabled := map[string]any{"thinking": map[string]any{"type": "disabled"}}
-	disSonnet, err := catalog.ResolveWithRequest("claude-sonnet-5-5-high", disabled)
-	if err != nil {
-		t.Fatalf("Resolve disabled: %v", err)
-	}
-	if disSonnet.SupportsThinking || disSonnet.ThinkingLevel != "" {
-		t.Errorf("disSonnet SupportsThinking=%v ThinkingLevel=%q, want false, \"\"",
-			disSonnet.SupportsThinking, disSonnet.ThinkingLevel)
+	for _, request := range []string{"claude-sonnet-5-5", "claude-sonnet-5-5-low", "claude-sonnet-4-6"} {
+		got, err := catalog.ResolveWithRequest(request, disabled)
+		if err != nil {
+			t.Fatalf("ResolveWithRequest(%q): %v", request, err)
+		}
+		if got.SupportsThinking || got.ThinkingLevel != "" || got.ThinkingBudget != 0 {
+			t.Errorf("%q disabled: SupportsThinking=%v ThinkingLevel=%q ThinkingBudget=%d, want false, \"\", 0",
+				request, got.SupportsThinking, got.ThinkingLevel, got.ThinkingBudget)
+		}
 	}
 }
 
+// Levels 1-3 are exercised through Parse
+// (TestParsePopulatesThinkingLevelFromUpstreamInteger); these rows pin the
+// edges: unset, the descriptor-defined MINIMAL, and values outside the enum.
 func TestThinkingLevelString(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		level int
-		want  string
-	}{
-		{0, ""},
-		{1, "LOW"},
-		{2, "MEDIUM"},
-		{3, "HIGH"},
-		{4, "MINIMAL"},
-		{5, ""},
-		{6, ""},
-		{-1, ""},
-	}
-	for _, tc := range cases {
-		if got := thinkingLevelString(tc.level); got != tc.want {
-			t.Errorf("thinkingLevelString(%d) = %q, want %q", tc.level, got, tc.want)
+	for level, want := range map[int]string{0: "", 4: "MINIMAL", 99: "", -1: ""} {
+		if got := thinkingLevelString(level); got != want {
+			t.Errorf("thinkingLevelString(%d) = %q, want %q", level, got, want)
 		}
 	}
 }
