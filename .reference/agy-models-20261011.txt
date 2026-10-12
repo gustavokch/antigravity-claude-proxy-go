@@ -76,19 +76,37 @@ Claude 5.5 family replaces the earlier Claude 4.6 family (`claude-sonnet-4-6`, `
 Key specifications:
 - Context limit (`maxTokens`): 1,000,000 tokens
 - Max output limit (`maxOutputTokens`): 128,000 tokens
-- Thinking levels: Upstream Cloud Code PA uses integer `thinkingLevel`
-  (matches Vertex content.proto / PredictionService ThinkingLevel enum).
+- Thinking levels: Cloud Code publishes `thinkingLevel` as a bare integer on
+  the model entry (v1internal ModelDetails field 35, int32, no enum type).
   CONFIRMED LIVE 2026-10-11 by a single FetchAvailableModels response from a
   real 5.5 account (`cmd/cloudcodecheck -operation models -details`,
   179,685 bytes, 37 models): all six published Claude 5.5 models carry
   low=1, medium=2, high=3, and each reports `maxTokens` 1000000 and
-  `maxOutputTokens` 128000. No model in that account published level 4, so
-  MINIMAL is not exercised on the wire and stays covered by the enum
-  descriptor only:
-    * 1 = Low (`THINKING_LEVEL_LOW`) — observed live
-    * 2 = Medium (`THINKING_LEVEL_MEDIUM`) — observed live
-    * 3 = High (`THINKING_LEVEL_HIGH`) — observed live
-    * 4 = Minimal (`THINKING_LEVEL_MINIMAL`, preserved in parser)
+  `maxOutputTokens` 128000. No Claude 5.5 entry publishes a `thinkingBudget`.
+  Re-confirmed 2026-10-12: among the 18 agentModelSorts entries only the six
+  Claude 5.5 tiers carry `thinkingLevel`; four non-agent Gemini entries
+  (gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.5-flash-thinking,
+  gemini-3.5-flash-lite) carry level 1 and are outside the catalog.
+  The number-to-name map the proxy uses is the `ThinkingLevel` enum of
+  `google.cloud.aiplatform.v1beta1.GenerationConfig.ThinkingConfig` (the same
+  numbering appears in `google.cloud.businessaicode.v1beta/v1main` and
+  `google.gca.aicode.v1main`), read from the file descriptors embedded in the
+  agy 1.3.3 binary:
+    * 1 = LOW      — observed live
+    * 2 = MEDIUM   — observed live
+    * 3 = HIGH     — observed live
+    * 4 = MINIMAL  — descriptor only; no live model publishes it
+    * 5 = EXTRA_HIGH, 6 = MAX — descriptor only (the aiplatform descriptors
+      carry a GOOGLE_INTERNAL option on them); the proxy leaves both unmapped
+  Do not read numbers from the other ThinkingLevel enums in the same binary:
+    * `genai/api/interactions/proto/thinking.proto` (the only place the names
+      THINKING_LEVEL_LOW/MEDIUM/HIGH/MINIMAL occur): LOW=1, HIGH=2,
+      MINIMAL=3, MEDIUM=4
+    * `google.gca.aicode.v1main.FetchConfigResponse.ThinkingConfig`:
+      MINIMAL=1, LOW=2, MEDIUM=3, HIGH=4, EXTRA_HIGH=5
+  Re-derive: scan the binary for EnumDescriptorProto records named
+  ThinkingLevel (bytes 0x0a 0x0d "ThinkingLevel" 0x12) and decode each
+  following 0x0a <len> <name> 0x10 <number> value.
 - Models published upstream:
     * `claude-opus-5-5-low`    (thinkingLevel: 1)
     * `claude-opus-5-5-medium` (thinkingLevel: 2)

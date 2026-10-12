@@ -6,7 +6,7 @@ Binary: $HOME/.local/bin/agy 1.3.3
 Sources (all live on this host; see .reference/agy-models-20261011.txt for
 the full ground-truth analysis):
 
-  agy models                                   (/Users/gus/.local/bin/agy models)
+  agy models                                   ($HOME/.local/bin/agy models)
   cloudcodecheck -operation models -details    (cmd/cloudcodecheck)
 
 `agy models` (agy 1.3.3, user's agy account) returned, in order:

@@ -1,6 +1,6 @@
 # Reasoning, Thinking and Output-Limit Parameters
 
-How the proxy treats the parameters that control how much a model thinks and how much it may write, per route, and where it deliberately differs from the vendor. Last verified 2026-10-05. Every row names the document that owns the convention; evidence the proxy produced itself lives in `.reference/`.
+How the proxy treats the parameters that control how much a model thinks and how much it may write, per route, and where it deliberately differs from the vendor. Last verified 2026-10-05; the Cloud Code Claude rows were refreshed against the live catalog on 2026-10-12. Every row names the document that owns the convention; evidence the proxy produced itself lives in `.reference/`.
 
 ## 1. Request fields the proxy reads
 
@@ -23,7 +23,8 @@ Levels: `low < medium < high < xhigh < max` (plus `minimal`, which only OpenAI-s
 |---|---|---|
 | Gemini flash tiers (3.8 / 3.7 / 3.6, legacy 3.5 repointed) | `low`, `medium`, `high` | `xhigh` and `max` route to the `-high` tier; `minimal` to `-low`. |
 | Budget-style Gemini (3.1 Pro), GPT-OSS | `low`, `medium`, `high` | same fallback, then the budget in §5. |
-| Claude 4.6 (Opus, Sonnet) | `low`, `medium`, `high`, `max` (Effort doc: no `xhigh` on 4.6) | `xhigh` → `high`; `max` → `high` as well: the proxy's budget table has no level above `high` and the larger `max` budget (gate GD) is UNVERIFIED, so it was not applied. |
+| Claude 4.6 (Opus, Sonnet; accounts agy 1.3.3 has not migrated) | `low`, `medium`, `high`, `max` (Effort doc: no `xhigh` on 4.6) | `xhigh` → `high`; `max` → `high` as well: the proxy's budget table has no level above `high` and the larger `max` budget (gate GD) is UNVERIFIED, so it was not applied. |
+| Claude 5.5 (Opus, Sonnet) | `low`, `medium`, `high` (tier IDs `-low`, `-medium`, `-high`; catalog `thinkingLevel` 1 / 2 / 3, no budget) | `xhigh` and `max` route to the `-high` tier; `minimal` to `-low`. A client that names no tier gets the tier its effort names. |
 
 ## 3. Precedence
 
@@ -35,7 +36,7 @@ Why `output_config.effort` is last: Claude Code sends it on every request. If it
 
 | Route | Reasoning fields | Limits |
 |---|---|---|
-| **Cloud Code** (Gemini, Claude 4.6, GPT-OSS via agy) | Translated (§§2–3, 5). Per-tier IDs published upstream (`gemini-3.8-flash-high|medium|low`, `gemini-3.1-pro-high`, `gpt-oss-120b-medium`) are budget-style entries with their own catalog budget; only synthetic entries backed by a `-tiered` upstream entry carry a `thinkingLevel`. A route gets a budget or a tier, never both. | Gemini output is capped at the fixed 16,384 ceiling, and `/v1/models` advertises the capped value, because gate GE (is `maxOutputTokens` 65536 accepted?) is UNVERIFIED; a live catalog limit below the ceiling still applies. Claude and GPT-OSS use the live catalog's `maxOutputTokens`. |
+| **Cloud Code** (Gemini, Claude 5.5, GPT-OSS via agy; Claude 4.6 on accounts agy 1.3.3 has not migrated) | Translated (§§2–3, 5). Per-tier IDs published upstream (`gemini-3.8-flash-high|medium|low`, `gemini-3.1-pro-high`, `gpt-oss-120b-medium`) are budget-style entries with their own catalog budget; only synthetic entries backed by a `-tiered` upstream entry carry a `thinkingLevel`. A route gets a budget or a tier, never both. The Claude 5.5 tier entries are published as tiers (`thinkingLevel` 1 / 2 / 3, no `thinkingBudget`, live 2026-10-12), so they are level-style routes: the converter sends `includeThoughts` + `thinkingLevel`, and the spelling and header verdicts are gate GI (§10a). | Gemini output is capped at the fixed 16,384 ceiling, and `/v1/models` advertises the capped value, because gate GE (is `maxOutputTokens` 65536 accepted?) is UNVERIFIED; a live catalog limit below the ceiling still applies. Claude and GPT-OSS use the live catalog's `maxOutputTokens`. |
 | **Claude Code gateway** (OAuth → Anthropic) | Forwarded untouched (ADR-0001/0004). | Defaults below (§6); client `max_tokens` is clamped down to the entry's limit. |
 | **Kimi gateway** | Forwarded untouched. | Operator-set per entry; discovery fallback 32768 (§6). |
 | **OpenRouter / custom endpoints** | Forwarded untouched. | OpenRouter catalog or operator-set. |
@@ -61,7 +62,8 @@ On the non-Claude budget routes (Gemini, GPT-OSS) Google counts thought tokens a
 |---|---|---|---|---|
 | Cloud Code | Gemini 3.x Flash | 1,048,576 | 65,536 | `.reference/agy-models-20260903.txt` (View B) |
 | Cloud Code | Gemini 3.1 Pro | 1,048,576 | 65,535 | same |
-| Cloud Code | Claude Sonnet / Opus 4.6 | 250,000 | 64,000 | same (Google's serving limits, not Anthropic's) |
+| Cloud Code | Claude Sonnet / Opus 5.5 | 1,000,000 | 128,000 | `.reference/agy-models-20261011.txt` (live 2026-10-11) |
+| Cloud Code | Claude Sonnet / Opus 4.6 (unmigrated accounts only) | 250,000 | 64,000 | `.reference/agy-models-20260903.txt` (View B; Google's serving limits, not Anthropic's) |
 | Cloud Code | GPT-OSS 120B | 131,072 | 32,768 | same |
 | Claude Code gateway | Fable 5 / 5.1, Opus 5, Sonnet 5 | 1,000,000 | 128,000 | platform.claude.com/docs/en/models/overview; build-with-claude/context-windows |
 | Claude Code gateway | Haiku 4.5 | 200,000 | 64,000 | Models overview |
@@ -101,10 +103,10 @@ The proxy forwards reasoning fields untouched on both products. A normalization 
 - `max_output_tokens` is not a `/v1/messages` field and is not aliased; a missing `max_tokens` is tolerated on Cloud Code; gateways fill it from the entry's limit (raised to the floor of 16) and omit it only when no limit is known, in which case Anthropic and Kimi reject the request themselves.
 - `redacted_thinking` and foreign thinking signatures in history are stripped (they cannot be replayed to another backend); `thinking.display` is accepted and ignored.
 - Sampling parameters: copied on Cloud Code. Whether Cloud Code enforces Anthropic's thinking-time rule is gate GC, which is UNVERIFIED, so the copy is unchanged.
-- `ThinkingLevel.MINIMAL` is never emitted: no catalog field says which routes accept it and Google documents errors on some families.
+- `ThinkingLevel.MINIMAL` is never derived from a client's effort (`minimal` rides the `-low` tier). It is emitted only when a catalog entry itself publishes `thinkingLevel` 4, which no model does as of 2026-10-12; whether any route accepts it is gate GF (UNVERIFIED), and Google documents errors on some families.
 - The Zen wires drop reasoning (§4); the Claude Code gateway defaults omit 5.5 and 4.x IDs (§8).
 - Gemini output is capped at 16,384 although the catalog advertises 65,536 / 65,535; lifting the cap needs probe GE and agy's own value (gate GM), both UNVERIFIED.
-
+- A cached catalog (24 h TTL, `internal/accounts/dispatcher.go:136`) that still lists Claude 4.6 keeps resolving the real 4.6 ID after the account migrates, and upstream answers "no longer available" until the catalog refreshes: the background refresh only fires when a request fails to resolve (`dispatcher.go:541-545`). Not mitigated; the upstream error shape has not been captured.
 ## 10. Probe verdicts (2026-10-05)
 
 No probe or agy capture was run for this verification: every gate below is UNVERIFIED and the conservative branch of each was taken. To re-verify, follow §11, then apply the TAKEN line's branches.
@@ -124,6 +126,14 @@ GG kimi:       medium=UNVERIFIED xhigh=UNVERIFIED
 PREFLIGHT build=ok paramprobe-list=3 mitmdump=present agy=present jq=present agy-effort-flag=seen agy-model-flag=seen
 TAKEN GA=keep GB=keep GC=keep GD=shrink only GE=alternative GM=keep GG=keep
 To replace this with evidence: run plan docs/superpowers/plans/2026-10-05-api-parameter-parity.md Task 3 Steps 2-6 (operator-run), overwrite this file, then apply the TAKEN line's branches (Task 7 default branch if GE accepted, Task 10b if GG rejected, Task 12 sub-tasks).
+```
+## 10a. Level-route verdicts (gate GI)
+
+`.reference/params-verdicts-20261012.txt`:
+```
+GI level route: camel=accepted snake=accepted no-beta=accepted level+budget=accepted no-config=200 thinkingBlocks=0
+GH level sweep: camel low=0 (thinkingBlocks=0) high=0 (thinkingBlocks=1)  snake low=0 (thinkingBlocks=0) high=0 (thinkingBlocks=1)
+TAKEN GI-spelling=keep GI-beta=3e GI-noconfig=keep
 ```
 
 ## 11. Re-verify

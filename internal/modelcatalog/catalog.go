@@ -495,11 +495,16 @@ func isGemini38Flash(id string) bool {
 	return strings.HasPrefix(strings.ToLower(id), "gemini-3.8-flash")
 }
 
-// thinkingLevelString maps the upstream integer thinkingLevel (found in
-// Cloud Code PA ModelDetails.thinking_level) to the string required by
-// thinkingConfig.thinkingLevel. Ground truth recovered from agy 1.3.3 binary
-// descriptors (google/cloud/aiplatform/v1beta1/content.proto ThinkingLevel enum):
-// 1=LOW, 2=MEDIUM, 3=HIGH, 4=MINIMAL. Unmapped levels return "".
+// thinkingLevelString maps the upstream integer thinkingLevel to the string
+// thinkingConfig.thinkingLevel takes. Cloud Code publishes the field as a bare
+// int32 (ModelDetails field 35), observed live as 1/2/3 on the Claude 5.5
+// tiers. The numbering is the ThinkingLevel enum of
+// google.cloud.aiplatform.v1beta1 GenerationConfig.ThinkingConfig, read from
+// the agy 1.3.3 binary's embedded descriptors
+// (.reference/agy-models-20261011.txt §3): 1=LOW, 2=MEDIUM, 3=HIGH,
+// 4=MINIMAL. The same descriptors define 5=EXTRA_HIGH and 6=MAX (the
+// aiplatform ones carry a GOOGLE_INTERNAL option); both stay unmapped, so an
+// unknown level returns "" and the route falls back to its budget.
 func thinkingLevelString(level int) string {
 	switch level {
 	case 1:
