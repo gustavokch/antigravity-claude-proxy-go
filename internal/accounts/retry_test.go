@@ -886,6 +886,10 @@ func TestDispatcherClaude55EmitsThinkingLevel(t *testing.T) {
 	}
 
 	expect("bare family with ambient low", send("claude-sonnet-5-5", ambient("low")), "claude-sonnet-5-5-low", "LOW")
+	// Level routes carry no anthropic-beta header (gate GI, no-beta probe).
+	if got := client.requestOption.Headers.Get("anthropic-beta"); got != "" {
+		t.Errorf("level route sent anthropic-beta %q, want none", got)
+	}
 	expect("named high tier with ambient low", send("claude-sonnet-5-5-high", ambient("low")), "claude-sonnet-5-5-high", "HIGH")
 	expect("named low tier with explicit reasoning_effort high", send("claude-sonnet-5-5-low", map[string]any{"reasoning_effort": "high"}), "claude-sonnet-5-5-high", "HIGH")
 	expect("legacy 4.6 name with ambient medium", send("claude-sonnet-4-6", ambient("medium")), "claude-sonnet-5-5-medium", "MEDIUM")
@@ -897,6 +901,7 @@ func TestDispatcherClaude55EmitsThinkingLevel(t *testing.T) {
 	if config, present := generationOf(payload)["thinkingConfig"]; present {
 		t.Errorf("thinking disabled: thinkingConfig = %#v, want none", config)
 	}
+
 }
 
 // A fresh 24h-TTL catalog can still lack a model the upstream just published.

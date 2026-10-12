@@ -396,7 +396,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			ThinkingLevel: modelDetails.ThinkingLevel,
 		})
 		options := cloudcode.RequestOptions{}
-		if proxyformat.GetModelFamily(model) == proxyformat.FamilyClaude && modelDetails.SupportsThinking {
+		if proxyformat.GetModelFamily(model) == proxyformat.FamilyClaude && modelDetails.SupportsThinking && modelDetails.ThinkingLevel == "" {
 			options.Headers = make(http.Header)
 			options.Headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
 		}
