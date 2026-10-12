@@ -602,6 +602,7 @@ func TestCatalogResolve_Strips1mSuffix(t *testing.T) {
 		{"gemini-3.7-flash-high[1m]", "gemini-3.7-flash-high", 1048576},
 		{"gemini-3.1-pro-high[1m]", "gemini-pro-agent", 1048576},
 		{"gemini-pro[1m]", "gemini-pro-agent", 1048576},
+		{"claude-opus-4-6[1m]", "claude-opus-4-6-thinking", 250000},
 		{"claude-opus-4-6-thinking[1m]", "claude-opus-4-6-thinking", 250000},
 	}
 

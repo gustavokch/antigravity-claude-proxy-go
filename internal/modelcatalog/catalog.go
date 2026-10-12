@@ -129,8 +129,25 @@ var routingAliases = map[string]string{
 	"claude-sonnet-5-5-medium": "Claude Sonnet 5.5 (Medium)",
 	"claude-sonnet-5-5-low":    "Claude Sonnet 5.5 (Low)",
 
-	// Legacy Claude 4.6 IDs repoint to the Claude 5.5 family (tier-preserving: High).
-	// Accounts that still publish real 4.6 are unaffected: byID/byDisplay lookups win before routingAliases.
+	// Claude 4.6 routing aliases map published IDs to their Cloud Code
+	// display names. Accounts that still publish real 4.6 resolve them here.
+	// Names that agy/Cloud Code never publishes (Anthropic API spellings like
+	// claude-3-5-sonnet, generic family names) remain deliberately absent.
+	"claude-sonnet-4-6-thinking": "Claude Sonnet 4.6 (Thinking)",
+	"claude-sonnet-4-6":          "Claude Sonnet 4.6 (Thinking)",
+	"claude-opus-4-6":            "Claude Opus 4.6 (Thinking)",
+	"claude-opus-4-6-thinking":   "Claude Opus 4.6 (Thinking)",
+}
+
+// supersededRoutes maps legacy model IDs that Cloud Code once published to the
+// display name of their newer replacement. Consulted ONLY after direct ID,
+// display name, and routingAliases lookups all miss, ensuring accounts that
+// still serve the legacy model keep serving it while migrated accounts fall
+// back to the current replacement without a hard failure.
+var supersededRoutes = map[string]string{
+	// Claude 4.6 was removed from agentModelSorts in agy 1.3.3 and replaced
+	// by the Claude 5.5 family (.reference/agy-models-20261011.txt). Legacy
+	// requests that miss the account catalog fall back to 5.5 High tier:
 	"claude-sonnet-4-6-thinking": "Claude Sonnet 5.5 (High)",
 	"claude-sonnet-4-6":          "Claude Sonnet 5.5 (High)",
 	"claude-opus-4-6":            "Claude Opus 5.5 (High)",
@@ -270,6 +287,16 @@ func (catalog *Catalog) Resolve(requested string) (Model, error) {
 	}
 	normalized := strings.ReplaceAll(key, ".", "-")
 	if displayName := routingAliases[normalized]; displayName != "" {
+		if model, exists := catalog.byDisplay[strings.ToLower(displayName)]; exists {
+			return model, nil
+		}
+	}
+	if displayName := supersededRoutes[key]; displayName != "" {
+		if model, exists := catalog.byDisplay[strings.ToLower(displayName)]; exists {
+			return model, nil
+		}
+	}
+	if displayName := supersededRoutes[normalized]; displayName != "" {
 		if model, exists := catalog.byDisplay[strings.ToLower(displayName)]; exists {
 			return model, nil
 		}

@@ -46,6 +46,7 @@ Important routing facts (2026-10-11):
   (documented in `deprecatedModelIds` mapping `gemini-3.1-pro-high` -> `gemini-pro-agent`).
   Both IDs must be supported.
 - The upstream catalog is ACCOUNT-DEPENDENT. Accounts that still publish legacy
-  models must continue resolving them via direct ID lookup before routing aliases.
+  models must continue resolving them via direct ID/display lookup and the
+  account's own routing aliases before superseded routes are consulted.
 - `gpt-oss-120b-medium` carries deprecation notice: scheduled for removal on
   November 2, 2026.
