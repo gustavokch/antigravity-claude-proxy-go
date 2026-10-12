@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-var testModels = Models{Claude: "claude-opus-4-6-thinking", Tier: "gemini-3.8-flash-high"}
+var testModels = Models{Claude: "claude-opus-4-6-thinking", Level: "claude-sonnet-5-5-low", Tier: "gemini-3.8-flash-high"}
 
 func TestBuildCasesAreWellFormed(t *testing.T) {
 	t.Parallel()
 	gates := map[string]bool{
 		GateCasing: true, GateAdaptive: true, GateSampling: true, GateMaxBudget: true,
-		GateOutputCap: true, GateMinimal: true, GateBoth: true, GateEffort: true,
+		GateOutputCap: true, GateMinimal: true, GateBoth: true, GateEffort: true, GateLevel: true,
 	}
 	seen := map[string]bool{}
 	covered := map[string]bool{}
@@ -48,15 +48,16 @@ func TestBuildCasesAreWellFormed(t *testing.T) {
 func TestCasesTargetTheRightModelFamily(t *testing.T) {
 	t.Parallel()
 	for _, c := range buildCases(testModels) {
-		_, snakeKeys := c.Config["thinkingConfig"].(map[string]any)["include_thoughts"]
-		wantClaude := c.Model == testModels.Claude
+		thinking, _ := c.Config["thinkingConfig"].(map[string]any)
+		_, snakeKeys := thinking["include_thoughts"]
+		wantClaude := c.Model == testModels.Claude || c.Model == testModels.Level
 		if c.Gate == GateOutputCap || c.Gate == GateMinimal || c.Gate == GateBoth {
 			if wantClaude {
-				t.Errorf("%s: Gemini gate probes must not run against the Claude route", c.ID)
+				t.Errorf("%s: Gemini gate probes must not run against a Claude route", c.ID)
 			}
 		}
 		if snakeKeys && !wantClaude {
-			t.Errorf("%s: snake_case thinkingConfig belongs to the Claude route", c.ID)
+			t.Errorf("%s: snake_case thinkingConfig belongs to a Claude route", c.ID)
 		}
 	}
 }
@@ -109,11 +110,46 @@ func TestClaudeCasesCarryTheInterleavedThinkingBeta(t *testing.T) {
 	t.Parallel()
 	for _, c := range buildCases(testModels) {
 		got := requestOptions(c).Headers.Get("anthropic-beta")
-		if c.Model == testModels.Claude && got != "interleaved-thinking-2025-05-14" {
+		claude := c.Model == testModels.Claude || c.Model == testModels.Level
+		if claude && !c.NoBeta && got != "interleaved-thinking-2025-05-14" {
 			t.Errorf("%s: anthropic-beta = %q", c.ID, got)
 		}
-		if c.Model != testModels.Claude && got != "" {
-			t.Errorf("%s: a non-Claude probe must not send anthropic-beta, got %q", c.ID, got)
+		if (!claude || c.NoBeta) && got != "" {
+			t.Errorf("%s: a non-Claude or no-beta probe must not send anthropic-beta, got %q", c.ID, got)
 		}
+	}
+}
+
+// The level route (Claude 5.5) publishes thinkingLevel and no thinkingBudget:
+// its probes must target Models.Level and carry no budget, except the one
+// control that asks whether level plus budget is rejected.
+func TestLevelCasesProbeTheLevelRoute(t *testing.T) {
+	t.Parallel()
+	byID := map[string]Case{}
+	for _, c := range buildCases(testModels) {
+		byID[c.ID] = c
+	}
+	for _, id := range []string{
+		"GI-level-camel", "GI-level-snake", "GI-level-camel-no-beta", "GI-level-and-budget", "GI-level-no-config",
+		"GH-level-camel-low", "GH-level-camel-high", "GH-level-snake-low", "GH-level-snake-high",
+	} {
+		c, ok := byID[id]
+		if !ok {
+			t.Errorf("missing probe %s", id)
+			continue
+		}
+		if c.Model != testModels.Level {
+			t.Errorf("%s: model = %q, want the level route %q", id, c.Model, testModels.Level)
+		}
+		thinking, _ := c.Config["thinkingConfig"].(map[string]any)
+		if _, hasBudget := thinking["thinkingBudget"]; hasBudget != (id == "GI-level-and-budget") {
+			t.Errorf("%s: thinkingBudget present = %v", id, hasBudget)
+		}
+	}
+	if !byID["GI-level-camel-no-beta"].NoBeta || byID["GI-level-camel"].NoBeta {
+		t.Error("only GI-level-camel-no-beta may drop the anthropic-beta header")
+	}
+	if _, present := byID["GI-level-no-config"].Config["thinkingConfig"]; present {
+		t.Errorf("GI-level-no-config must send no thinkingConfig, got %#v", byID["GI-level-no-config"].Config)
 	}
 }
