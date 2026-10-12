@@ -319,6 +319,7 @@ func TestRouter_RefusesTieredVariants(t *testing.T) {
 		"claude-opus-5-5-medium",
 		"claude-opus-5-5-low",
 		"claude-haiku-5-5-high",
+		"claude-sonnet-5.5-high",
 	} {
 		if _, ok := r.ResolveModel(req); ok {
 			t.Errorf("ResolveModel(%q) matched; tiered variants must be refused", req)
@@ -340,14 +341,6 @@ func TestRouter_RefusesTieredVariants(t *testing.T) {
 		got, ok := r.ResolveModel(tt.req)
 		if !ok || got != tt.want {
 			t.Errorf("ResolveModel(%q) = %v, %v; want %v, true", tt.req, got, ok, tt.want)
-		}
-	}
-
-	// Exact allowlist ids are verbatim; a tiered variant must not be rewritten.
-	for _, req := range []string{"claude-sonnet-5-5-high", "claude-sonnet-5.5-high"} {
-		got, ok := r.ResolveModel(req)
-		if ok {
-			t.Errorf("ResolveModel(%q) = %v, true; tiered variants must be refused, not rewritten", req, got)
 		}
 	}
 }

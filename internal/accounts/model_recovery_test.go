@@ -1,0 +1,139 @@
+package accounts
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+const (
+	recoveryModel = "claude-sonnet-5-5-high"
+	// catalogWithoutModel is what a poisoned shared fetch returns.
+	catalogWithoutModel = `{
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-4-6"]}]}],
+		"models":{"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":250000,"maxOutputTokens":64000}}
+	}`
+	catalogWithModel = `{
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-4-6","claude-sonnet-5-5-high"]}]}],
+		"models":{
+			"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":250000,"maxOutputTokens":64000},
+			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"supportsAdaptiveThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000}
+		}
+	}`
+)
+
+// recoveryPool builds a two-account pool whose sticky selection seeds the
+// shared catalog from account A (which does not publish recoveryModel) while
+// the quota caches of A and B both list it. B publishes it.
+func recoveryPool(t *testing.T, bBody string) (dispatcher *Dispatcher, a, b *scriptedClient, manager *Manager, clock *time.Time) {
+	t.Helper()
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	clock = &now
+	accountA, accountB := testAccount("a@example.com"), testAccount("b@example.com")
+	var err error
+	manager, err = New(Options{Accounts: []*Account{accountA, accountB}, Strategy: StrategySticky, Now: func() time.Time { return *clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a = &scriptedClient{modelsBody: []byte(catalogWithoutModel)}
+	b = &scriptedClient{modelsBody: []byte(bBody)}
+	resolver := &staticResolver{tokens: map[string]string{accountA.Email: "tok-a", accountB.Email: "tok-b"}}
+	dispatcher = newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"tok-a": a, "tok-b": b}, now, nil)
+	dispatcher.now = func() time.Time { return *clock }
+	if _, err := dispatcher.fetchAvailableModels(context.Background()); err != nil {
+		t.Fatalf("seed fetch: %v", err)
+	}
+	for _, email := range []string{accountA.Email, accountB.Email} {
+		manager.UpdateAccountQuota(email, Quota{Models: map[string]ModelQuota{recoveryModel: {}}}, nil)
+	}
+	return dispatcher, a, b, manager, clock
+}
+
+// A catalog poisoned by an account that does not publish a model recovers
+// through an account whose quota cache lists it, and the recovery fetch's
+// success is recorded on the live pool account.
+func TestResolveModelRecoversPoisonedCatalogViaQuotaCache(t *testing.T) {
+	t.Parallel()
+	dispatcher, a, b, _, _ := recoveryPool(t, catalogWithModel)
+	aSeed := a.modelsCallCount()
+
+	model, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
+	if err != nil {
+		t.Fatalf("resolveModel: %v", err)
+	}
+	if model.ID != recoveryModel {
+		t.Fatalf("resolved %q, want %q", model.ID, recoveryModel)
+	}
+	if got := b.modelsCallCount(); got != 1 {
+		t.Errorf("B models calls = %d, want 1", got)
+	}
+	if got := a.modelsCallCount(); got != aSeed+1 {
+		t.Errorf("A recovery fetches = %d, want 1 (A lists the model too and is tried first)", got-aSeed)
+	}
+}
+
+// A client retrying a model that no account actually publishes must not drive
+// an upstream fetch per request: attempts are debounced per model.
+func TestResolveModelRecoveryIsDebouncedPerModel(t *testing.T) {
+	t.Parallel()
+	dispatcher, a, b, manager, clock := recoveryPool(t, catalogWithoutModel)
+	seed := a.modelsCallCount()
+
+	// A fetch rewrites the account's quota cache from the response, dropping
+	// the model; re-seed so only the debounce can stop the next attempt.
+	resolve := func() {
+		t.Helper()
+		for _, email := range []string{"a@example.com", "b@example.com"} {
+			manager.UpdateAccountQuota(email, Quota{Models: map[string]ModelQuota{recoveryModel: {}}}, nil)
+		}
+		if _, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil); !isSelectionError(err, recoveryModel) {
+			t.Fatalf("err = %v, want selection error", err)
+		}
+	}
+	// One recovery pass visits both accounts that list the model (A, then B).
+	for range 3 {
+		resolve()
+	}
+	if got := a.modelsCallCount() - seed; got != 1 {
+		t.Errorf("A recovery fetches inside the floor = %d, want 1", got)
+	}
+	if got := b.modelsCallCount(); got != 1 {
+		t.Errorf("B recovery fetches inside the floor = %d, want 1", got)
+	}
+
+	*clock = clock.Add(missingModelFetchFloor + time.Second)
+	resolve()
+	if got := b.modelsCallCount(); got != 2 {
+		t.Errorf("B fetches after the floor = %d, want 2", got)
+	}
+}
+
+// A failing account is recorded on the live pool state and skipped; the next
+// account that lists the model still recovers the catalog.
+func TestResolveModelRecoverySkipsFailingAccountAndRecordsFailure(t *testing.T) {
+	t.Parallel()
+	dispatcher, a, b, manager, _ := recoveryPool(t, catalogWithModel)
+	a.mu.Lock()
+	a.modelsErrAfter = a.modelsCalls // every later call fails
+	a.mu.Unlock()
+
+	model, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
+	if err != nil {
+		t.Fatalf("resolveModel: %v", err)
+	}
+	if model.ID != recoveryModel {
+		t.Fatalf("resolved %q, want %q", model.ID, recoveryModel)
+	}
+	if got := b.modelsCallCount(); got != 1 {
+		t.Errorf("B models calls = %d, want 1", got)
+	}
+	var failures int
+	for _, account := range manager.AccountsWithQuotaModel(recoveryModel) {
+		if account.Email == "a@example.com" {
+			failures = manager.FailureCount(account)
+		}
+	}
+	if failures == 0 {
+		t.Error("failed recovery fetch left no failure on the live pool account")
+	}
+}

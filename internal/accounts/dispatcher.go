@@ -97,6 +97,9 @@ type Dispatcher struct {
 	clients   map[string]accountClient
 	catalog   *modelcatalog.Catalog
 	catalogAt time.Time
+	// modelRecoveryAt is the last quota-cache catalog recovery attempt per
+	// model key, guarded by mu; it debounces recoverModelFromQuotaCache.
+	modelRecoveryAt map[string]time.Time
 	// modelsFetch is the shared in-flight catalog fetch; guarded by mu.
 	modelsFetch *modelFetchCall
 	// liveQuotaRefreshMS is the last live-quota refresh per account email,
@@ -325,14 +328,13 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 	return cloudcode.Response{}, fmt.Errorf("model listing exhausted account retries: %w", lastError)
 }
 
-// fetchAvailableModelsForAccount fetches the selectable model list using the
-// given account's credentials instead of selecting an account via the
-// selection strategy. It is used as a recovery path when a requested model is
-// missing from the shared catalog but present in one account's quota cache:
-// refreshing with that account's credentials can recover a catalog that
-// includes the model (the shared list was fetched with a different account
-// whose upstream list does not publish it).
+// fetchAvailableModelsForAccount fetches the selectable model list with the
+// given account's credentials instead of selecting one via the strategy. The
+// fetch is bounded by fetchModelsTimeout, and an upstream failure is recorded
+// through rotateForError (cooldown, invalidation) like any other pool call.
 func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, fetchModelsTimeout)
+	defer cancel()
 	credentials, err := dispatcher.resolver.Resolve(ctx, account)
 	if err != nil {
 		dispatcher.manager.MarkFailure(account, "")
@@ -342,14 +344,15 @@ func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context
 	response, err := dispatcher.metered(account.Email, func() (cloudcode.Response, error) {
 		return modelsClient.FetchAvailableModels(ctx, dispatcher.project(account))
 	})
-	if err == nil {
-		dispatcher.manager.MarkSuccess(account, "")
-		dispatcher.cacheCatalog(response.Body)
-		dispatcher.updateAccountQuota(account, response.Body)
-		dispatcher.refreshLiveQuota(ctx, account, modelsClient, dispatcher.project(account))
-		return response, nil
+	if err != nil {
+		dispatcher.rotateForError(account, "", err)
+		return cloudcode.Response{}, err
 	}
-	return cloudcode.Response{}, err
+	dispatcher.manager.MarkSuccess(account, "")
+	dispatcher.cacheCatalog(response.Body)
+	dispatcher.updateAccountQuota(account, response.Body)
+	dispatcher.refreshLiveQuota(ctx, account, modelsClient, dispatcher.project(account))
+	return response, nil
 }
 
 func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
@@ -528,6 +531,52 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	return cloudcode.Response{}, fmt.Errorf("max retries exceeded: %w", lastError)
 }
 
+// recoverModelFromQuotaCache handles a model missing from the shared catalog
+// that an account's quota cache still lists. The shared list is fetched with
+// one account and can be poisoned by an account whose upstream list does not
+// publish the model; refreshing with an account that does publish it recovers
+// the catalog. Attempts are debounced per model by missingModelFetchFloor so a
+// client retrying an unpublishable model cannot drive an upstream fetch per
+// request. Accounts are tried in turn until one's fetch yields the model; a
+// failed fetch is recorded through rotateForError.
+func (dispatcher *Dispatcher) recoverModelFromQuotaCache(ctx context.Context, requested string, request map[string]any) (modelcatalog.Model, bool) {
+	accounts := dispatcher.manager.AccountsWithQuotaModel(requested)
+	if len(accounts) == 0 || !dispatcher.claimRecoveryAttempt(requested) {
+		return modelcatalog.Model{}, false
+	}
+	for _, account := range accounts {
+		if _, err := dispatcher.fetchAvailableModelsForAccount(ctx, account); err != nil {
+			continue
+		}
+		if catalog := dispatcher.CachedCatalog(); catalog != nil {
+			if model, err := catalog.ResolveWithRequest(requested, request); err == nil {
+				return model, true
+			}
+		}
+		// Fetched fine but this account does not publish it either; the next
+		// account may.
+	}
+	return modelcatalog.Model{}, false
+}
+
+// claimRecoveryAttempt reports whether a recovery fetch for model may run now,
+// and stamps the attempt. It is false while the previous attempt for the same
+// model is inside missingModelFetchFloor.
+func (dispatcher *Dispatcher) claimRecoveryAttempt(model string) bool {
+	key := rateLimitModelKey(model)
+	dispatcher.mu.Lock()
+	defer dispatcher.mu.Unlock()
+	now := dispatcher.now()
+	if last, seen := dispatcher.modelRecoveryAt[key]; seen && now.Sub(last) < missingModelFetchFloor {
+		return false
+	}
+	if dispatcher.modelRecoveryAt == nil {
+		dispatcher.modelRecoveryAt = make(map[string]time.Time)
+	}
+	dispatcher.modelRecoveryAt[key] = now
+	return true
+}
+
 // missingModelFetchFloor debounces the background catalog refresh that a
 // model miss triggers: at most one upstream list-models call per floor
 // (shared by all models) while fetches succeed, the same catch-up spacing
@@ -566,32 +615,9 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 		}
 	}
 	model, err := catalog.ResolveWithRequest(requested, request)
-	if err != nil && dispatcher.catalog != nil {
-		// The shared catalog lacks this model. Before failing, check whether
-		// any pooled account has the model in its quota cache. If so, that
-		// account's upstream credentials publish it, and a targeted refresh
-		// with that account can recover a catalog that includes the model:
-		// the shared list is fetched with one account and can be poisoned by
-		// another account's list that does not publish the model.
-		canon := rateLimitModelKey(requested)
-		for _, account := range dispatcher.manager.GetAllAccounts() {
-			_, has := account.Quota.Models[requested]
-			if !has && canon != "" {
-				_, has = account.Quota.Models[canon]
-			}
-			if has {
-				_, refreshErr := dispatcher.fetchAvailableModelsForAccount(ctx, account)
-				if refreshErr == nil {
-					if refreshCatalog := dispatcher.CachedCatalog(); refreshCatalog != nil {
-						if refreshModel, rerr := refreshCatalog.ResolveWithRequest(requested, request); rerr == nil {
-							return refreshModel, nil
-						}
-					}
-				}
-				// One recovering account is enough; if it did not bring the
-				// model, keep the original catalog error.
-				break
-			}
+	if err != nil {
+		if recovered, ok := dispatcher.recoverModelFromQuotaCache(ctx, requested, request); ok {
+			return recovered, nil
 		}
 	}
 	if fresh && err != nil && dispatcher.catalogAge() >= missingModelFetchFloor {

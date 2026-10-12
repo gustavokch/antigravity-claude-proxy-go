@@ -224,7 +224,7 @@ func (r *Router) ResolveModel(requested string) (string, bool) {
 	if _, ok := r.allowlist[normalized]; ok {
 		return normalized, true
 	}
-	if canonical, ok := r.aliases[normalized]; ok && !isTierVariantOf(canonical, req) {
+	if canonical, ok := r.aliases[normalized]; ok && !isTierVariantOf(canonical, normalized) {
 		return canonical, true
 	}
 
@@ -279,11 +279,8 @@ func isThinkingTier(rest string) bool {
 // remain exclusive to Cloud Code rather than being collapsed onto a bare
 // family id.
 func isTierVariantOf(canonical, requested string) bool {
-	if canonical == "" || len(requested) <= len(canonical) {
-		return false
-	}
-	t := strings.ToLower(requested[len(canonical):])
-	return t == "-low" || t == "-medium" || t == "-high"
+	rest, ok := strings.CutPrefix(requested, canonical)
+	return ok && canonical != "" && isThinkingTier(rest)
 }
 
 // GetAllowedModels returns a slice of currently enabled models.

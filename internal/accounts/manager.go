@@ -1312,6 +1312,30 @@ func (manager *Manager) GetAllAccounts() []*Account {
 	return result
 }
 
+// AccountsWithQuotaModel returns the live (not cloned) enabled, valid accounts
+// whose quota cache lists model, matching on the raw id or its canonical rate
+// limit key. Live pointers match what Select returns, so Mark* calls on the
+// result land on pool state.
+func (manager *Manager) AccountsWithQuotaModel(model string) []*Account {
+	canon := rateLimitModelKey(model)
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	var result []*Account
+	for _, account := range manager.accounts {
+		if !account.Enabled || account.IsInvalid {
+			continue
+		}
+		_, has := account.Quota.Models[model]
+		if !has && canon != "" {
+			_, has = account.Quota.Models[canon]
+		}
+		if has {
+			result = append(result, account)
+		}
+	}
+	return result
+}
+
 func (manager *Manager) GetSettings() map[string]any {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
