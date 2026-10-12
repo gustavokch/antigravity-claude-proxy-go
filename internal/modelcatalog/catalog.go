@@ -291,11 +291,6 @@ func (catalog *Catalog) Resolve(requested string) (Model, error) {
 			return model, nil
 		}
 	}
-	if displayName := supersededRoutes[key]; displayName != "" {
-		if model, exists := catalog.byDisplay[strings.ToLower(displayName)]; exists {
-			return model, nil
-		}
-	}
 	if displayName := supersededRoutes[normalized]; displayName != "" {
 		if model, exists := catalog.byDisplay[strings.ToLower(displayName)]; exists {
 			return model, nil

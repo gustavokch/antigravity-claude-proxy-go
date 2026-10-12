@@ -100,6 +100,8 @@ func TestLegacyClaude46Resolution(t *testing.T) {
 		{"migrated thinking-suffixed sonnet", migrated, "claude-sonnet-4-6-thinking", claude55SonnetHighID},
 		{"migrated base opus", migrated, "claude-opus-4-6", claude55OpusHighID},
 		{"migrated thinking-suffixed opus", migrated, "claude-opus-4-6-thinking", claude55OpusHighID},
+		{"migrated dotted sonnet", migrated, "claude-sonnet-4.6", claude55SonnetHighID},
+		{"migrated dotted opus", migrated, "claude-opus-4.6", claude55OpusHighID},
 
 		// Account publishing both: real 4.6 takes precedence.
 		{"both-account sonnet", both, "claude-sonnet-4-6", claude46SonnetID},
