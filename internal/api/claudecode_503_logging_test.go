@@ -114,8 +114,8 @@ func TestForwardToClaudeCode_AllAttemptsFailedLogsReason(t *testing.T) {
 	}
 }
 
-// cc503RequestInto is cc503Request split so tests can pre-fabricate the
-// recorder and run the same request twice against a shared pool.
+// cc503RequestInto sends one /v1/messages request through forwardToClaudeCode
+// into w, so tests can run the same request twice against a shared pool.
 func cc503RequestInto(t *testing.T, srv *Server, cfg claudecode.Config, w *httptest.ResponseRecorder) {
 	t.Helper()
 	reqBody := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`
