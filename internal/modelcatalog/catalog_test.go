@@ -1092,3 +1092,25 @@ func TestClaude55EffortTierResolution(t *testing.T) {
 			disSonnet.SupportsThinking, disSonnet.ThinkingLevel)
 	}
 }
+
+func TestThinkingLevelString(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		level int
+		want  string
+	}{
+		{0, ""},
+		{1, "LOW"},
+		{2, "MEDIUM"},
+		{3, "HIGH"},
+		{4, "MINIMAL"},
+		{5, ""},
+		{6, ""},
+		{-1, ""},
+	}
+	for _, tc := range cases {
+		if got := thinkingLevelString(tc.level); got != tc.want {
+			t.Errorf("thinkingLevelString(%d) = %q, want %q", tc.level, got, tc.want)
+		}
+	}
+}

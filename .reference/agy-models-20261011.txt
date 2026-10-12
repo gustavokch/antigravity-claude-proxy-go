@@ -76,10 +76,12 @@ Claude 5.5 family replaces the earlier Claude 4.6 family (`claude-sonnet-4-6`, `
 Key specifications:
 - Context limit (`maxTokens`): 1,000,000 tokens
 - Max output limit (`maxOutputTokens`): 128,000 tokens
-- Thinking levels: Upstream Cloud Code PA uses integer `thinkingLevel`:
-    * 1 = Low (`thinkingBudget` not fixed; represented by level 1)
-    * 2 = Medium (level 2)
-    * 3 = High (level 3)
+- Thinking levels: Upstream Cloud Code PA uses integer `thinkingLevel`
+  (matches Vertex content.proto / PredictionService ThinkingLevel enum):
+    * 1 = Low (`THINKING_LEVEL_LOW`)
+    * 2 = Medium (`THINKING_LEVEL_MEDIUM`)
+    * 3 = High (`THINKING_LEVEL_HIGH`)
+    * 4 = Minimal (`THINKING_LEVEL_MINIMAL`, preserved in parser)
 - Models published upstream:
     * `claude-opus-5-5-low`    (thinkingLevel: 1)
     * `claude-opus-5-5-medium` (thinkingLevel: 2)

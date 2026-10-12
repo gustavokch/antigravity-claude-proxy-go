@@ -500,6 +500,11 @@ func isGemini38Flash(id string) bool {
 	return strings.HasPrefix(strings.ToLower(id), "gemini-3.8-flash")
 }
 
+// thinkingLevelString maps the upstream integer thinkingLevel (found in
+// Cloud Code PA ModelDetails.thinking_level) to the string required by
+// thinkingConfig.thinkingLevel. Ground truth recovered from agy 1.3.3 binary
+// descriptors (google/cloud/aiplatform/v1beta1/content.proto ThinkingLevel enum):
+// 1=LOW, 2=MEDIUM, 3=HIGH, 4=MINIMAL. Unmapped levels return "".
 func thinkingLevelString(level int) string {
 	switch level {
 	case 1:
