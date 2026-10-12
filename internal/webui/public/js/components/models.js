@@ -1307,8 +1307,8 @@ window.Components.models = () => ({
         const defaults = [
             { id: 'claude-fable-5', displayName: 'Claude Fable 5', aliases: ['claude-fable-5', 'fable-5', 'fable', 'claude-fable'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
             { id: 'claude-fable-5-1', displayName: 'Claude Fable 5.1', aliases: ['claude-fable-5-1', 'fable-5-1', 'claude-fable-5.1', 'fable-5.1'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
-            { id: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', aliases: ['claude-opus-5-5'], enabled: true },
-            { id: 'claude-sonnet-5-5', displayName: 'Claude Sonnet 5.5', aliases: ['claude-sonnet-5-5'], enabled: true },
+            { id: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', aliases: ['claude-opus-5-5'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
+            { id: 'claude-sonnet-5-5', displayName: 'Claude Sonnet 5.5', aliases: ['claude-sonnet-5-5'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
             { id: 'claude-opus-5', displayName: 'Claude Opus 5', aliases: ['claude-opus-5', 'opus-5', 'opus', 'claude-5-opus'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
             { id: 'claude-sonnet-5', displayName: 'Claude Sonnet 5', aliases: ['claude-sonnet-5', 'sonnet-5', 'sonnet', 'claude-5-sonnet'], contextLength: 1000000, maxOutputTokens: 128000, enabled: true },
             { id: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', aliases: ['claude-haiku-4-5', 'claude-haiku-4.5', 'haiku'], enabled: true },
