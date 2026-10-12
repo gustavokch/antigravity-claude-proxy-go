@@ -264,6 +264,7 @@ window.translations.pt = {
     logLevelSuccess: "SUCESSO",
     logLevelWarn: "AVISO",
     logLevelError: "ERRO",
+    logLevelDebug: "DEBUG",
     totalColon: "Total:",
     todayColon: "Hoje:",
     hour1Colon: "1H:",
