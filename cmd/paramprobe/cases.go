@@ -18,7 +18,8 @@ const (
 	GateOutputCap = "GE" // Gemini maxOutputTokens at the advertised limit
 	GateMinimal   = "GF" // thinkingLevel MINIMAL
 	GateBoth      = "GX" // thinkingLevel and thinkingBudget in one request
-	GateEffort    = "GH" // whether the budget moves real thinking
+	GateEffort    = "GH" // whether the budget (or, on the level route, the level) moves real thinking
+	GateLevel     = "GI" // level-style Claude route (Claude 5.5): thinkingLevel spelling, beta header, no config
 )
 
 const (
@@ -26,10 +27,11 @@ const (
 	reasonPrompt = "What is the sum of the first 40 prime numbers? Reply with only the number."
 )
 
-// Models are the upstream routing IDs the matrix runs against. Both must be
-// IDs the account's fetchAvailableModels catalog publishes.
+// Models are the upstream routing IDs the matrix runs against. Each must be
+// an ID the account's fetchAvailableModels catalog publishes.
 type Models struct {
-	Claude string // a Claude thinking route, e.g. claude-opus-4-6-thinking
+	Claude string // a budget-style Claude route, e.g. claude-opus-4-6-thinking (needs an account that still publishes 4.6)
+	Level  string // a level-style Claude route (thinkingLevel, no thinkingBudget), e.g. claude-sonnet-5-5-low
 	Tier   string // a thinkingLevel-style Gemini route, e.g. gemini-3.8-flash-high
 }
 
@@ -43,6 +45,7 @@ type Case struct {
 	Model    string
 	Prompt   string
 	Heavy    bool // spends real thinking tokens; needs -heavy
+	NoBeta   bool // send without the anthropic-beta header the proxy adds for Claude routes
 	Config   map[string]any
 }
 
@@ -54,6 +57,23 @@ func tierCase(m Models, id, gate, question string, config map[string]any) Case {
 	return Case{ID: id, Gate: gate, Question: question, Model: m.Tier, Prompt: okPrompt, Config: config}
 }
 
+func levelCase(m Models, id, gate, question string, config map[string]any) Case {
+	return Case{ID: id, Gate: gate, Question: question, Model: m.Level, Prompt: okPrompt, Config: config}
+}
+
+// levelConfig spells a thinkingLevel config the way the proxy sends it today
+// (camel) or the way the budget route's snake_case keys would spell it.
+func levelConfig(spelling, level string) map[string]any {
+	if spelling == "snake" {
+		return map[string]any{"include_thoughts": true, "thinking_level": level}
+	}
+	return map[string]any{"includeThoughts": true, "thinkingLevel": level}
+}
+
+func withoutBeta(c Case) Case {
+	c.NoBeta = true
+	return c
+}
 func snake(budget any) map[string]any {
 	config := map[string]any{"include_thoughts": true}
 	if budget != nil {
@@ -95,6 +115,21 @@ func buildCases(m Models) []Case {
 		tierCase(m, "GX-tier-level-and-budget", GateBoth,
 			"is thinkingLevel together with thinkingBudget rejected?",
 			map[string]any{"maxOutputTokens": 512, "thinkingConfig": map[string]any{"includeThoughts": true, "thinkingLevel": "LOW", "thinkingBudget": 1024}}),
+		levelCase(m, "GI-level-camel", GateLevel,
+			"baseline: the camelCase thinkingLevel config the proxy sends to a level route today",
+			map[string]any{"maxOutputTokens": 512, "thinkingConfig": levelConfig("camel", "LOW")}),
+		levelCase(m, "GI-level-snake", GateLevel,
+			"does the level route also accept the snake_case spelling the budget route uses?",
+			map[string]any{"maxOutputTokens": 512, "thinkingConfig": levelConfig("snake", "LOW")}),
+		withoutBeta(levelCase(m, "GI-level-camel-no-beta", GateLevel,
+			"is the anthropic-beta interleaved-thinking header needed on the level route?",
+			map[string]any{"maxOutputTokens": 512, "thinkingConfig": levelConfig("camel", "LOW")})),
+		levelCase(m, "GI-level-and-budget", GateLevel,
+			"is thinkingLevel together with thinkingBudget rejected on the level route?",
+			map[string]any{"maxOutputTokens": 512, "thinkingConfig": map[string]any{"includeThoughts": true, "thinkingLevel": "LOW", "thinkingBudget": 1024}}),
+		levelCase(m, "GI-level-no-config", GateLevel,
+			"what does the level route do with no thinkingConfig (the disabled-thinking path sends none)?",
+			map[string]any{"maxOutputTokens": 512}),
 	}
 	for _, budget := range []int{1024, 8000, 32000} {
 		cases = append(cases, Case{
@@ -103,6 +138,16 @@ func buildCases(m Models) []Case {
 			Model:    m.Claude, Prompt: reasonPrompt, Heavy: true,
 			Config: map[string]any{"maxOutputTokens": 40000, "thinkingConfig": snake(budget)},
 		})
+	}
+	for _, spelling := range []string{"camel", "snake"} {
+		for _, level := range []string{"LOW", "HIGH"} {
+			cases = append(cases, Case{
+				ID: "GH-level-" + spelling + "-" + strings.ToLower(level), Gate: GateEffort,
+				Question: "does thinkingLevel change how much the level route thinks (" + spelling + " spelling)?",
+				Model:    m.Level, Prompt: reasonPrompt, Heavy: true,
+				Config: map[string]any{"maxOutputTokens": 40000, "thinkingConfig": levelConfig(spelling, level)},
+			})
+		}
 	}
 	return cases
 }

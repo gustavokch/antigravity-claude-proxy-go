@@ -216,8 +216,8 @@ func TestClaudeRoutingAliases(t *testing.T) {
 			"claude-sonnet-agent","claude-opus-agent"
 		]}]}],
 		"models":{
-			"claude-sonnet-agent":{"displayName":"Claude Sonnet 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":4000,"maxTokens":200000,"maxOutputTokens":8192},
-			"claude-opus-agent":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":4000,"maxTokens":200000,"maxOutputTokens":8192}
+			"claude-sonnet-agent":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"thinkingBudget":4000,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-opus-agent":{"displayName":"Claude Opus 5.5 (High)","supportsThinking":true,"thinkingBudget":4000,"maxTokens":1000000,"maxOutputTokens":128000}
 		}
 	}`))
 	if err != nil {
@@ -225,7 +225,7 @@ func TestClaudeRoutingAliases(t *testing.T) {
 	}
 
 	sonnetAliases := []string{
-		"claude-sonnet-4-6-thinking", "claude-sonnet-4-6",
+		"claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-4-6-thinking", "claude-sonnet-4-6",
 	}
 
 	for _, alias := range sonnetAliases {
@@ -240,7 +240,7 @@ func TestClaudeRoutingAliases(t *testing.T) {
 	}
 
 	opusAliases := []string{
-		"claude-opus-4-6-thinking", "claude-opus-4-6",
+		"claude-opus-5-5", "claude-opus-5-5-high", "claude-opus-4-6-thinking", "claude-opus-4-6",
 	}
 
 	for _, alias := range opusAliases {
@@ -603,6 +603,7 @@ func TestCatalogResolve_Strips1mSuffix(t *testing.T) {
 		{"gemini-3.1-pro-high[1m]", "gemini-pro-agent", 1048576},
 		{"gemini-pro[1m]", "gemini-pro-agent", 1048576},
 		{"claude-opus-4-6[1m]", "claude-opus-4-6-thinking", 250000},
+		{"claude-opus-4-6-thinking[1m]", "claude-opus-4-6-thinking", 250000},
 	}
 
 	for _, tc := range testCases {
@@ -840,6 +841,146 @@ func TestResolveWithRequest_OutputConfigEffortRouting(t *testing.T) {
 		}
 		if got.ID != tc.want {
 			t.Errorf("%s: ResolveWithRequest(%q) = %q, want %q", tc.name, tc.requested, got.ID, tc.want)
+		}
+	}
+}
+
+func TestParsePopulatesThinkingLevelFromUpstreamInteger(t *testing.T) {
+	t.Parallel()
+	raw := `{
+		"defaultAgentModelId":"claude-sonnet-5-5-high",
+		"agentModelSorts":[{"groups":[{"modelIds":[
+			"claude-sonnet-5-5-high",
+			"claude-sonnet-5-5-medium",
+			"claude-sonnet-5-5-low",
+			"claude-opus-5-5-high"
+		]}]}],
+		"models":{
+			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-medium":{"displayName":"Claude Sonnet 5.5 (Medium)","supportsThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-low":{"displayName":"Claude Sonnet 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-opus-5-5-high":{"displayName":"Claude Opus 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000}
+		}
+	}`
+
+	catalog, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	high, err := catalog.Resolve("claude-sonnet-5-5-high")
+	if err != nil {
+		t.Fatalf("Resolve high: %v", err)
+	}
+	if high.ThinkingLevel != "HIGH" {
+		t.Errorf("claude-sonnet-5-5-high ThinkingLevel = %q, want HIGH", high.ThinkingLevel)
+	}
+
+	med, err := catalog.Resolve("claude-sonnet-5-5-medium")
+	if err != nil {
+		t.Fatalf("Resolve medium: %v", err)
+	}
+	if med.ThinkingLevel != "MEDIUM" {
+		t.Errorf("claude-sonnet-5-5-medium ThinkingLevel = %q, want MEDIUM", med.ThinkingLevel)
+	}
+
+	low, err := catalog.Resolve("claude-sonnet-5-5-low")
+	if err != nil {
+		t.Fatalf("Resolve low: %v", err)
+	}
+	if low.ThinkingLevel != "LOW" {
+		t.Errorf("claude-sonnet-5-5-low ThinkingLevel = %q, want LOW", low.ThinkingLevel)
+	}
+}
+
+// agy 1.3.3 lists gemini-pro-agent in place of gemini-3.1-pro-high
+// (deprecatedModelIds). An account that still publishes only the old ID must
+// keep answering the new one.
+func TestGeminiProAgentAliasResolvesOnLegacyAccounts(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.1-pro-high",
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.1-pro-high"]}]}],
+		"models":{
+			"gemini-3.1-pro-high":{"displayName":"Gemini 3.1 Pro (High)","supportsThinking":true,"thinkingBudget":10001,"maxTokens":1048576,"maxOutputTokens":65535}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := catalog.Resolve("gemini-pro-agent")
+	if err != nil {
+		t.Fatalf("Resolve(gemini-pro-agent): %v", err)
+	}
+	if got.ID != "gemini-3.1-pro-high" {
+		t.Errorf("gemini-pro-agent = %q, want gemini-3.1-pro-high", got.ID)
+	}
+}
+
+func TestCleanModelIDAndNameClaude55(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		id          string
+		displayName string
+		wantID      string
+		wantName    string
+	}{
+		{"claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)", "claude-sonnet-5-5", "Claude Sonnet 5.5"},
+		{"claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)", "claude-sonnet-5-5", "Claude Sonnet 5.5"},
+		{"claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)", "claude-sonnet-5-5", "Claude Sonnet 5.5"},
+		{"claude-opus-5-5-high", "Claude Opus 5.5 (High)", "claude-opus-5-5", "Claude Opus 5.5"},
+		{"claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)", "claude-opus-5-5", "Claude Opus 5.5"},
+		{"claude-opus-5-5-low", "Claude Opus 5.5 (Low)", "claude-opus-5-5", "Claude Opus 5.5"},
+		{"gemini-pro-agent", "Gemini 3.1 Pro (High)", "gemini-3.1-pro", "Gemini 3.1 Pro"},
+		{"claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", "claude-opus-4-6", "Claude Opus 4.6"},
+	}
+
+	for _, tc := range cases {
+		gotID, gotName := CleanModelIDAndName(tc.id, tc.displayName)
+		if gotID != tc.wantID || gotName != tc.wantName {
+			t.Errorf("CleanModelIDAndName(%q, %q) = (%q, %q), want (%q, %q)",
+				tc.id, tc.displayName, gotID, gotName, tc.wantID, tc.wantName)
+		}
+	}
+}
+
+// Disabled thinking must not leave a stale tier behind: a Claude 5.5 entry
+// that kept ThinkingLevel would still emit thinkingLevel for a client that
+// turned thinking off.
+func TestDisabledThinkingClearsClaude55Level(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"claude-sonnet-5-5-high",
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-5-5-low","claude-sonnet-5-5-high"]}]}],
+		"models":{
+			"claude-sonnet-5-5-low":{"displayName":"Claude Sonnet 5.5 (Low)","supportsThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := map[string]any{"thinking": map[string]any{"type": "disabled"}}
+	for _, request := range []string{"claude-sonnet-5-5", "claude-sonnet-5-5-low", "claude-sonnet-4-6"} {
+		got, err := catalog.ResolveWithRequest(request, disabled)
+		if err != nil {
+			t.Fatalf("ResolveWithRequest(%q): %v", request, err)
+		}
+		if got.SupportsThinking || got.ThinkingLevel != "" || got.ThinkingBudget != 0 {
+			t.Errorf("%q disabled: SupportsThinking=%v ThinkingLevel=%q ThinkingBudget=%d, want false, \"\", 0",
+				request, got.SupportsThinking, got.ThinkingLevel, got.ThinkingBudget)
+		}
+	}
+}
+
+// Levels 1-3 are exercised through Parse
+// (TestParsePopulatesThinkingLevelFromUpstreamInteger); these rows pin the
+// edges: unset, the descriptor-defined MINIMAL, and values outside the enum.
+func TestThinkingLevelString(t *testing.T) {
+	t.Parallel()
+	for level, want := range map[int]string{0: "", 4: "MINIMAL", 99: "", -1: ""} {
+		if got := thinkingLevelString(level); got != want {
+			t.Errorf("thinkingLevelString(%d) = %q, want %q", level, got, want)
 		}
 	}
 }

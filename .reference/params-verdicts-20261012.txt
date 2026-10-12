@@ -1,0 +1,4 @@
+Recorded 2026-10-12. Sources: cloudcode-params-probe-20261012.jsonl.
+GI level route: camel=accepted snake=accepted no-beta=accepted level+budget=accepted no-config=200 thinkingBlocks=0
+GH level sweep: camel low=0 (thinkingBlocks=0) high=0 (thinkingBlocks=1)  snake low=0 (thinkingBlocks=0) high=0 (thinkingBlocks=1)
+TAKEN GI-spelling=keep GI-beta=3e GI-noconfig=keep

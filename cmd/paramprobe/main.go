@@ -29,7 +29,8 @@ import (
 )
 
 func main() {
-	claude := flag.String("claude", "claude-opus-4-6-thinking", "upstream Claude thinking model ID")
+	claude := flag.String("claude", "claude-opus-4-6-thinking", "upstream budget-style Claude route (gates GA-GD, GH budgets); needs an account that still publishes 4.6, otherwise run -gate GI")
+	level := flag.String("claude-level", "claude-sonnet-5-5-low", "upstream level-style Claude route (gate GI, GH levels): publishes thinkingLevel and no thinkingBudget")
 	tier := flag.String("tier", "gemini-3.8-flash-high", "upstream thinkingLevel-style Gemini model ID")
 	heavy := flag.Bool("heavy", false, "also run the effort sweep (spends real thinking tokens)")
 	only := flag.String("gate", "", "run only the probes of this gate (GA, GB, ...)")
@@ -37,7 +38,7 @@ func main() {
 	list := flag.Bool("list", false, "print the probe matrix and exit without calling upstream")
 	flag.Parse()
 
-	cases := buildCases(Models{Claude: *claude, Tier: *tier})
+	cases := buildCases(Models{Claude: *claude, Level: *level, Tier: *tier})
 	if *list {
 		for _, c := range cases {
 			fmt.Printf("%-28s %s heavy=%-5v %s\n", c.ID, c.Gate, c.Heavy, c.Question)
@@ -140,7 +141,7 @@ func loadAccount() (poolAccount, error) {
 // requestOptions adds the beta header the proxy sends for Claude thinking
 // routes (accounts.Dispatcher.StreamGenerateContent does the same).
 func requestOptions(c Case) cloudcode.RequestOptions {
-	if proxyformat.GetModelFamily(c.Model) != proxyformat.FamilyClaude {
+	if c.NoBeta || proxyformat.GetModelFamily(c.Model) != proxyformat.FamilyClaude {
 		return cloudcode.RequestOptions{}
 	}
 	headers := make(http.Header)

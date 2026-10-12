@@ -1,15 +1,15 @@
 Current agy selectable-model baseline
 =====================================
 
-Captured: 2026-09-03
-Binary: $HOME/.local/bin/agy 1.1.25
-Sources (all live on this host; see .reference/agy-models-20260903.txt for
+Captured: 2026-10-11
+Binary: $HOME/.local/bin/agy 1.3.3
+Sources (all live on this host; see .reference/agy-models-20261011.txt for
 the full ground-truth analysis):
 
-  agy models                                   (/tmp/agy-models-20260903.txt)
-  proxy /v1/models + /v1/usage                 (.reference/cloudcode-models-20260903.json)
+  agy models                                   ($HOME/.local/bin/agy models)
+  cloudcodecheck -operation models -details    (cmd/cloudcodecheck)
 
-`agy models` (agy 1.1.25, user's agy account) returned, in order:
+`agy models` (agy 1.3.3, user's agy account) returned, in order:
 
   gemini-3.8-flash-high      Gemini 3.8 Flash (High)
   gemini-3.8-flash-medium    Gemini 3.8 Flash (Medium)
@@ -22,36 +22,31 @@ the full ground-truth analysis):
   gemini-3.6-flash-low       Gemini 3.6 Flash (Low)
   gemini-3.1-pro-high        Gemini 3.1 Pro (High)
   gemini-3.1-pro-low         Gemini 3.1 Pro (Low)
-  claude-sonnet-4-6          Claude Sonnet 4.6 (Thinking)
-  claude-opus-4-6-thinking   Claude Opus 4.6 (Thinking)
+  claude-opus-5-5-low        Claude Opus 5.5 (Low)
+  claude-opus-5-5-medium     Claude Opus 5.5 (Medium)
+  claude-opus-5-5-high       Claude Opus 5.5 (High)
+  claude-sonnet-5-5-low      Claude Sonnet 5.5 (Low)
+  claude-sonnet-5-5-medium   Claude Sonnet 5.5 (Medium)
+  claude-sonnet-5-5-high     Claude Sonnet 5.5 (High)
   gpt-oss-120b-medium        GPT-OSS 120B (Medium)
 
-Supersedes the 2026-07-15 capture (agy 1.1.2, gemini-3.5-era routing IDs
-gemini-3.5-flash-low / gemini-3-flash-agent / gemini-3.5-flash-extra-low).
+Supersedes the 2026-09-03 capture (agy 1.1.25, Claude 4.6 era models).
 
-Important routing facts (2026-09-03):
+Important routing facts (2026-10-11):
 
-- The upstream catalog is ACCOUNT-DEPENDENT. The proxy's own accounts
-  returned gemini-3.5-flash tiers, gemini-3.6-flash tiers, and gemini-3.8
-  tiers in different fetches on the same day. Every family any account can
-  publish stays resolvable.
-- gemini-3.8 tiers are published directly (also true for 3.7 in this
-  version); no "tiered" single ID was observed. applyGemini37/38 still
-  prefer a tiered upstream entry when one appears and keep direct tier
-  entries verbatim otherwise.
-- Legacy gemini-3.5 IDs repoint to the gemini-3.8 family tier-preserving
-  (user decision 2026-09-03). Accounts publishing real 3.5 still resolve
-  it directly: byID/byDisplay lookups win before routingAliases.
-
-Live generation gate on 2026-09-03 (updated proxy, 3 configured accounts):
-
-- GET /v1/models lists gemini-3.8-flash as its own public row, alongside
-  gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash, gemini-3.1-pro,
-  the Claude and GPT-OSS rows, and the OpenRouter/Kimi allowlists.
-- POST /v1/messages with gemini-3.7-flash-low returned HTTP 200 ("PONG").
-- POST /v1/messages with gemini-3.8-flash-high resolved and routed
-  correctly but upstream returned 429 RATE_LIMIT_EXCEEDED on all
-  accounts: the proxy's accounts have no live 3.8 quota yet.
-- POST /v1/messages with legacy gemini-3.5-flash-high logged
-  "Mapping model gemini-3.5-flash-high -> gemini-3.8-flash-high" and hit
-  the same account-level 429, proving the repoint end-to-end.
+- Upstream `FetchAvailableModels` now defaults to Claude 5.5 tiers:
+  `claude-opus-5-5-{low,medium,high}` and `claude-sonnet-5-5-{low,medium,high}`.
+  Claude 5.5 models support 1,000,000 max context tokens and 128,000 max output tokens.
+  Upstream represents thinking levels as integers: 1 (Low), 2 (Medium), 3 (High).
+- Claude 4.6 is deprecated upstream: accounts migrated to 1.3.3 receive
+  "Claude Sonnet 4.6 is no longer available. Please switch to Claude Sonnet 5.5."
+  when requesting legacy IDs. The proxy must route legacy 4.6 model requests to
+  Claude 5.5 equivalents.
+- In upstream `agentModelSorts`, `gemini-pro-agent` replaces `gemini-3.1-pro-high`
+  (documented in `deprecatedModelIds` mapping `gemini-3.1-pro-high` -> `gemini-pro-agent`).
+  Both IDs must be supported.
+- The upstream catalog is ACCOUNT-DEPENDENT. Accounts that still publish legacy
+  models must continue resolving them via direct ID/display lookup and the
+  account's own routing aliases before superseded routes are consulted.
+- `gpt-oss-120b-medium` carries deprecation notice: scheduled for removal on
+  November 2, 2026.

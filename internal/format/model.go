@@ -62,8 +62,14 @@ func getModelFamilyInfo(model string) modelFamilyInfo {
 	}
 
 	isThinking := false
-	if family == FamilyClaude && strings.Contains(lower, "thinking") {
-		isThinking = true
+	if family == FamilyClaude {
+		// Claude 5.5 tier IDs (claude-opus-5-5-high, ...) never say "thinking":
+		// every tier thinks. Match the published family prefixes, not a bare
+		// "5-5" substring.
+		if strings.Contains(lower, "thinking") ||
+			strings.HasPrefix(lower, "claude-opus-5-5") || strings.HasPrefix(lower, "claude-sonnet-5-5") {
+			isThinking = true
+		}
 	} else if family == FamilyGemini {
 		if strings.Contains(lower, "thinking") {
 			isThinking = true

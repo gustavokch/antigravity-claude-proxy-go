@@ -691,11 +691,16 @@ Bumping for a session stops automatically the moment it stops paying: a bump tha
 | `gemini-3.5-flash-extra-low` | Gemini 3.5 Flash (Low) | Google | 1,048,576 | 16,384 |
 | `gemini-3.1-pro-low` | Gemini 3.1 Pro (Low) | Google | 1,048,576 | 16,384 |
 | `gemini-pro-agent` | Gemini 3.1 Pro (High) | Google | 1,048,576 | 16,384 |
-| `claude-sonnet-4-6` | Claude Sonnet 4.6 (Thinking) | Anthropic | 250,000 | 64,000 |
-| `claude-opus-4-6-thinking` | Claude Opus 4.6 (Thinking) | Anthropic | 250,000 | 64,000 |
+| `claude-opus-5-5-low` | Claude Opus 5.5 (Low) | Anthropic | 1,000,000 | 128,000 |
+| `claude-opus-5-5-medium` | Claude Opus 5.5 (Medium) | Anthropic | 1,000,000 | 128,000 |
+| `claude-opus-5-5-high` | Claude Opus 5.5 (High) | Anthropic | 1,000,000 | 128,000 |
+| `claude-sonnet-5-5-low` | Claude Sonnet 5.5 (Low) | Anthropic | 1,000,000 | 128,000 |
+| `claude-sonnet-5-5-medium` | Claude Sonnet 5.5 (Medium) | Anthropic | 1,000,000 | 128,000 |
+| `claude-sonnet-5-5-high` | Claude Sonnet 5.5 (High) | Anthropic | 1,000,000 | 128,000 |
 | `gpt-oss-120b-medium` | GPT-OSS 120B (Medium) | OpenAI | 131,072 | 32,768 |
 
 *Note: Allowlisted OpenRouter models and aliases are dynamically appended to this catalog when OpenRouter is enabled.*
+*Note: accounts that agy 1.3.3 has migrated no longer publish Claude 4.6. `claude-sonnet-4-6`, `claude-opus-4-6` and `claude-opus-4-6-thinking` then resolve to the matching Claude 5.5 High tier; an account that still publishes 4.6 keeps serving it (`claude-sonnet-4-6` and `claude-opus-4-6-thinking`, 250,000 / 64,000). The catalog is cached for 24 hours, so a cached catalog that still lists 4.6 keeps resolving the real 4.6 ID until it refreshes.*
 
 ### Server-Side Model Mapping
 Map incoming requested model names to internal models, OpenRouter models, or custom endpoints in Web UI under Model Mapping or in `config.json`:
@@ -714,7 +719,7 @@ The router supports chained mappings with automatic recursion and loop protectio
 
 ### Reasoning effort and token limits
 
-Claude Code's `/effort` (`output_config.effort`) is honored on the Cloud Code route: it picks the tier for a bare `gemini-3.8-flash` ID and sets the thinking budget on budget-style routes whose model ID names no tier (the Claude 4.6 thinking models, for example), while a tier named in the model ID (`gemini-3.8-flash-low`, `gemini-3.1-pro-high`) always wins: it keeps both its route and its own catalog budget, and only an explicit `reasoning_effort` or thinking budget overrides it. Gateways forward the field untouched. The full mapping, precedence, per-route limits, the Kimi Code vs Moonshot Open Platform differences and every intentional divergence from the upstream APIs are in [docs/reasoning-parameters.md](docs/reasoning-parameters.md).
+Claude Code's `/effort` (`output_config.effort`) is honored on the Cloud Code route: it picks the tier for a bare `gemini-3.8-flash`, `claude-opus-5-5` or `claude-sonnet-5-5` ID and sets the thinking budget on budget-style routes whose model ID names no tier (the Claude 4.6 thinking models on accounts agy 1.3.3 has not migrated, for example), while a tier named in the model ID (`gemini-3.8-flash-low`, `claude-sonnet-5-5-high`, `gemini-3.1-pro-high`) always wins: it keeps both its route and its own catalog budget, and only an explicit `reasoning_effort` or thinking budget overrides it. Gateways forward the field untouched. The full mapping, precedence, per-route limits, the Kimi Code vs Moonshot Open Platform differences and every intentional divergence from the upstream APIs are in [docs/reasoning-parameters.md](docs/reasoning-parameters.md).
 
 Claude Code matches effort support by model ID, so a Gemini-named model gets no `/effort` unless you declare it, for example `ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES=effort,thinking`. Declaring it changes nothing for a model ID that already names a tier.
 

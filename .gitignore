@@ -18,3 +18,5 @@ benchmark_results.txt
 
 # Machine-local OMP config (absolute tool paths).
 /.omp/
+/.worktrees/
+/.superpowers/

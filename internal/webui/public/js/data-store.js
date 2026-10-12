@@ -582,6 +582,8 @@ document.addEventListener('alpine:init', () => {
          */
         _generatePlaceholderData() {
             const models = [
+                'claude-opus-5-5-high',
+                'claude-sonnet-5-5-high',
                 'claude-3-7-sonnet-20250219',
                 'claude-3-5-sonnet-20241022',
                 'claude-opus-5',
@@ -594,7 +596,8 @@ document.addEventListener('alpine:init', () => {
                 'gemini-3.1-pro-high',
                 'gemini-3.1-pro-low',
                 'gemini-3-flash',
-                'gemini-3.1-flash-lite'
+                'gemini-3.1-flash-lite',
+                'gemini-pro-agent'
             ];
 
             const inMinutes = (m) => new Date(Date.now() + m * 60000).toISOString();

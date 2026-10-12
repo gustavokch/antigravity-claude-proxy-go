@@ -79,6 +79,7 @@ type modelDetails struct {
 	SupportsAdaptiveThinking bool      `json:"supportsAdaptiveThinking"`
 	ThinkingBudget           int       `json:"thinkingBudget"`
 	MinThinkingBudget        int       `json:"minThinkingBudget"`
+	ThinkingLevel            int       `json:"thinkingLevel"`
 	MaxTokens                int       `json:"maxTokens"`
 	MaxOutputTokens          int       `json:"maxOutputTokens"`
 	QuotaInfo                quotaInfo `json:"quotaInfo"`
@@ -95,6 +96,7 @@ var routingAliases = map[string]string{
 	"gemini-3.1-pro-high": "Gemini 3.1 Pro (High)",
 	"gemini-3.1-pro":      "Gemini 3.1 Pro (High)",
 	"gemini-pro":          "Gemini 3.1 Pro (High)",
+	"gemini-pro-agent":    "Gemini 3.1 Pro (High)",
 	"gemini-3.6-flash":    "Gemini 3.6 Flash (High)",
 	"gemini-3.7-flash":    "Gemini 3.7 Flash (High)",
 	"gpt-oss-120b":        "GPT-OSS 120B (Medium)",
@@ -117,17 +119,39 @@ var routingAliases = map[string]string{
 	"gemini-3.7-flash-low":       "Gemini 3.7 Flash (Low)",
 
 	// Claude Models & Aliases mapped to Cloud Code display names.
-	// Only real Cloud Code Claude IDs belong here. Names agy/Cloud Code never
-	// publishes (Anthropic API spellings like claude-3-5-sonnet, generic names
-	// like sonnet/opus/fable, and the 1M-advertised Claude 5 / Fable IDs) are
-	// deliberately absent: hard-mapping them would silently change which model
-	// serves the request (PR #75 review). Accounts whose upstream publishes a
-	// requested model resolve it via byID/byDisplay; everyone else gets an
-	// honest SelectionError.
+	// agy 1.3.3 publishes Claude 5.5 tiers:
+	"claude-opus-5-5":          "Claude Opus 5.5 (High)",
+	"claude-opus-5-5-high":     "Claude Opus 5.5 (High)",
+	"claude-opus-5-5-medium":   "Claude Opus 5.5 (Medium)",
+	"claude-opus-5-5-low":      "Claude Opus 5.5 (Low)",
+	"claude-sonnet-5-5":        "Claude Sonnet 5.5 (High)",
+	"claude-sonnet-5-5-high":   "Claude Sonnet 5.5 (High)",
+	"claude-sonnet-5-5-medium": "Claude Sonnet 5.5 (Medium)",
+	"claude-sonnet-5-5-low":    "Claude Sonnet 5.5 (Low)",
+
+	// Claude 4.6 routing aliases map published IDs to their Cloud Code
+	// display names. Accounts that still publish real 4.6 resolve them here.
+	// Names that agy/Cloud Code never publishes (Anthropic API spellings like
+	// claude-3-5-sonnet, generic family names) remain deliberately absent.
 	"claude-sonnet-4-6-thinking": "Claude Sonnet 4.6 (Thinking)",
 	"claude-sonnet-4-6":          "Claude Sonnet 4.6 (Thinking)",
 	"claude-opus-4-6":            "Claude Opus 4.6 (Thinking)",
 	"claude-opus-4-6-thinking":   "Claude Opus 4.6 (Thinking)",
+}
+
+// supersededRoutes maps legacy model IDs that Cloud Code once published to the
+// display name of their newer replacement. Consulted ONLY after direct ID,
+// display name, and routingAliases lookups all miss, ensuring accounts that
+// still serve the legacy model keep serving it while migrated accounts fall
+// back to the current replacement without a hard failure.
+var supersededRoutes = map[string]string{
+	// Claude 4.6 was removed from agentModelSorts in agy 1.3.3 and replaced
+	// by the Claude 5.5 family (.reference/agy-models-20261011.txt). Legacy
+	// requests that miss the account catalog fall back to 5.5 High tier:
+	"claude-sonnet-4-6-thinking": "Claude Sonnet 5.5 (High)",
+	"claude-sonnet-4-6":          "Claude Sonnet 5.5 (High)",
+	"claude-opus-4-6":            "Claude Opus 5.5 (High)",
+	"claude-opus-4-6-thinking":   "Claude Opus 5.5 (High)",
 }
 
 const gemini37TieredID = "gemini-3.7-flash-tiered"
@@ -194,6 +218,7 @@ func Parse(body []byte) (*Catalog, error) {
 		if model.DisplayName == "" {
 			model.DisplayName = id
 		}
+		model.ThinkingLevel = thinkingLevelString(details.ThinkingLevel)
 		catalog.selectable = append(catalog.selectable, model)
 		catalog.byID[strings.ToLower(id)] = model
 		catalog.byDisplay[strings.ToLower(model.DisplayName)] = model
@@ -266,6 +291,11 @@ func (catalog *Catalog) Resolve(requested string) (Model, error) {
 			return model, nil
 		}
 	}
+	if displayName := supersededRoutes[normalized]; displayName != "" {
+		if model, exists := catalog.byDisplay[strings.ToLower(displayName)]; exists {
+			return model, nil
+		}
+	}
 
 	available := make([]string, 0, len(catalog.selectable))
 	for _, m := range catalog.selectable {
@@ -274,16 +304,17 @@ func (catalog *Catalog) Resolve(requested string) (Model, error) {
 	return Model{}, &SelectionError{Model: requested, Selectable: available}
 }
 
-// flashTiers are the tiers the Gemini flash families publish. A stronger
-// request (xhigh, max) falls back to high; minimal rides the low tier.
+// flashTiers are the tiers published by the Gemini flash and Claude 5.5
+// families. A stronger request (xhigh, max) falls back to high; minimal rides
+// the low tier.
 var flashTiers = [...]reasoning.Level{reasoning.LevelLow, reasoning.LevelMedium, reasoning.LevelHigh}
 
 // effortTier returns the tier suffix ("low", "medium" or "high") the request
-// asks the flash families to route to, or "" when the model the client named
-// stands. output_config.effort is ambient (Claude Code sends it on every
-// request), so it only picks a tier for a family ID that does not already
-// name one. reasoning_effort and a bare thinking budget are deliberate, so
-// they override the name.
+// asks tiered families (Gemini flash, Claude 5.5) to route to, or "" when the
+// model the client named stands. output_config.effort is ambient (Claude Code
+// sends it on every request), so it only picks a tier for a family ID that does
+// not already name one. reasoning_effort and a bare thinking budget are
+// deliberate, so they override the name.
 func effortTier(requested string, params reasoning.Params) string {
 	if params.Level == reasoning.LevelUnset {
 		return ""
@@ -324,6 +355,7 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 		}
 		model.SupportsThinking = false
 		model.ThinkingBudget = 0
+		model.ThinkingLevel = ""
 		return model, nil
 	}
 
@@ -342,6 +374,8 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 			// 2026-09-03); fall back to a real 3.5 tier only when this
 			// account has no 3.8 at all.
 			targetID = "gemini-3.8-flash-" + tier
+		case claude55Family(model) != "":
+			targetID = claude55Family(model) + "-" + tier
 		}
 		if targetID != "" {
 			if variant, err := catalog.Resolve(targetID); err == nil {
@@ -390,9 +424,18 @@ func CleanModelIDAndName(id, displayName string) (string, string) {
 	case lowerID == "gemini-pro-agent" || lowerID == "gemini-3.1-pro-high" || lowerID == "gemini-3.1-pro-low":
 		cleanID = "gemini-3.1-pro"
 		cleanName = "Gemini 3.1 Pro"
+	case strings.HasPrefix(lowerID, "claude-opus-5-5"):
+		cleanID = "claude-opus-5-5"
+		cleanName = "Claude Opus 5.5"
+	case strings.HasPrefix(lowerID, "claude-sonnet-5-5"):
+		cleanID = "claude-sonnet-5-5"
+		cleanName = "Claude Sonnet 5.5"
 	case lowerID == "claude-opus-4-6-thinking" || lowerID == "claude-opus-4-6":
 		cleanID = "claude-opus-4-6"
 		cleanName = "Claude Opus 4.6"
+	case lowerID == "claude-sonnet-4-6-thinking" || lowerID == "claude-sonnet-4-6":
+		cleanID = "claude-sonnet-4-6"
+		cleanName = "Claude Sonnet 4.6"
 	case lowerID == "gpt-oss-120b-medium" || lowerID == "gpt-oss-120b":
 		cleanID = "gpt-oss-120b"
 		cleanName = "GPT-OSS 120B"
@@ -402,6 +445,21 @@ func CleanModelIDAndName(id, displayName string) (string, string) {
 		}
 	}
 	return cleanID, cleanName
+}
+
+// claude55Family returns the Claude 5.5 family stem ("claude-sonnet-5-5" or
+// "claude-opus-5-5") when the model resolved to a Claude 5.5 tier, or "" for
+// any other model (including real Claude 4.6 models on unmigrated accounts).
+func claude55Family(m Model) string {
+	lowerDisplay := strings.ToLower(m.DisplayName)
+	switch {
+	case strings.HasPrefix(lowerDisplay, "claude sonnet 5.5"):
+		return "claude-sonnet-5-5"
+	case strings.HasPrefix(lowerDisplay, "claude opus 5.5"):
+		return "claude-opus-5-5"
+	default:
+		return ""
+	}
 }
 
 func (catalog *Catalog) PublicModels() []Model {
@@ -437,6 +495,31 @@ func isGemini38Flash(id string) bool {
 	return strings.HasPrefix(strings.ToLower(id), "gemini-3.8-flash")
 }
 
+// thinkingLevelString maps the upstream integer thinkingLevel to the string
+// thinkingConfig.thinkingLevel takes. Cloud Code publishes the field as a bare
+// int32 (ModelDetails field 35), observed live as 1/2/3 on the Claude 5.5
+// tiers. The numbering is the ThinkingLevel enum of
+// google.cloud.aiplatform.v1beta1 GenerationConfig.ThinkingConfig, read from
+// the agy 1.3.3 binary's embedded descriptors
+// (.reference/agy-models-20261011.txt §3): 1=LOW, 2=MEDIUM, 3=HIGH,
+// 4=MINIMAL. The same descriptors define 5=EXTRA_HIGH and 6=MAX (the
+// aiplatform ones carry a GOOGLE_INTERNAL option); both stay unmapped, so an
+// unknown level returns "" and the route falls back to its budget.
+func thinkingLevelString(level int) string {
+	switch level {
+	case 1:
+		return "LOW"
+	case 2:
+		return "MEDIUM"
+	case 3:
+		return "HIGH"
+	case 4:
+		return "MINIMAL"
+	default:
+		return ""
+	}
+}
+
 func modelFromDetails(id string, details modelDetails) Model {
 	remaining := details.QuotaInfo.RemainingFraction
 	if remaining == nil && details.QuotaInfo.ResetTime != "" {
@@ -456,6 +539,7 @@ func modelFromDetails(id string, details modelDetails) Model {
 	if model.DisplayName == "" {
 		model.DisplayName = id
 	}
+	model.ThinkingLevel = thinkingLevelString(details.ThinkingLevel)
 	return model
 }
 

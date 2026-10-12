@@ -820,6 +820,90 @@ func TestDispatcherAppliesOutputConfigEffort(t *testing.T) {
 	}
 }
 
+// Claude 5.5 publishes thinkingLevel (1/2/3) and no thinkingBudget. Through
+// the real dispatcher a bare family ID must route to the tier the ambient
+// effort names, and the payload must carry that tier's level instead of a
+// budget. A tier named in the model ID keeps its route; an explicit
+// reasoning_effort overrides the name; thinking disabled sends no
+// thinkingConfig at all.
+func TestDispatcherClaude55EmitsThinkingLevel(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 12, 4, 0, 0, 0, time.UTC)
+	account := testAccount("claude55@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Shape and order follow the live 2026-10-12 FetchAvailableModels: tiers
+	// are published low, medium, high; each carries thinkingLevel and none
+	// carries thinkingBudget.
+	modelsBody := []byte(`{
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-5-5-low","claude-sonnet-5-5-medium","claude-sonnet-5-5-high"]}]}],
+		"models":{
+			"claude-sonnet-5-5-low":{"displayName":"Claude Sonnet 5.5 (Low)","supportsThinking":true,"supportsAdaptiveThinking":true,"thinkingLevel":1,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-medium":{"displayName":"Claude Sonnet 5.5 (Medium)","supportsThinking":true,"supportsAdaptiveThinking":true,"thinkingLevel":2,"maxTokens":1000000,"maxOutputTokens":128000},
+			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"supportsAdaptiveThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000}
+		}
+	}`)
+	results := make([]scriptedResult, 8)
+	for i := range results {
+		results[i] = scriptedResult{events: [][]byte{[]byte(`{}`)}}
+	}
+	client := &scriptedClient{modelsBody: modelsBody, results: results}
+	dispatcher := newTestDispatcher(t, manager, &staticResolver{tokens: map[string]string{account.Email: "token"}}, map[string]*scriptedClient{"token": client}, now, func(context.Context, time.Duration) error { return nil })
+
+	send := func(model string, extra map[string]any) map[string]any {
+		t.Helper()
+		request := testRequest()
+		request["model"] = model
+		request["max_tokens"] = float64(64000)
+		for key, value := range extra {
+			request[key] = value
+		}
+		if _, err := dispatcher.StreamGenerateContent(context.Background(), request, func(cloudcode.SSEEvent) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		return client.payload
+	}
+	ambient := func(effort string) map[string]any {
+		return map[string]any{
+			"output_config": map[string]any{"effort": effort},
+			"thinking":      map[string]any{"type": "adaptive"},
+		}
+	}
+	generationOf := func(payload map[string]any) map[string]any {
+		return payload["request"].(map[string]any)["generationConfig"].(map[string]any)
+	}
+	expect := func(name string, payload map[string]any, wantModel, wantLevel string) {
+		t.Helper()
+		if got := payload["model"]; got != wantModel {
+			t.Errorf("%s: routed to %v, want %s", name, got, wantModel)
+		}
+		want := map[string]any{"includeThoughts": true, "thinkingLevel": wantLevel}
+		if got := generationOf(payload)["thinkingConfig"]; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: thinkingConfig = %#v, want %#v", name, got, want)
+		}
+	}
+
+	expect("bare family with ambient low", send("claude-sonnet-5-5", ambient("low")), "claude-sonnet-5-5-low", "LOW")
+	// Level routes carry no anthropic-beta header (gate GI, no-beta probe).
+	if got := client.requestOption.Headers.Get("anthropic-beta"); got != "" {
+		t.Errorf("level route sent anthropic-beta %q, want none", got)
+	}
+	expect("named high tier with ambient low", send("claude-sonnet-5-5-high", ambient("low")), "claude-sonnet-5-5-high", "HIGH")
+	expect("named low tier with explicit reasoning_effort high", send("claude-sonnet-5-5-low", map[string]any{"reasoning_effort": "high"}), "claude-sonnet-5-5-high", "HIGH")
+	expect("legacy 4.6 name with ambient medium", send("claude-sonnet-4-6", ambient("medium")), "claude-sonnet-5-5-medium", "MEDIUM")
+
+	payload := send("claude-sonnet-5-5", map[string]any{"thinking": map[string]any{"type": "disabled"}})
+	if got := payload["model"]; got != "claude-sonnet-5-5-high" {
+		t.Errorf("thinking disabled: routed to %v, want claude-sonnet-5-5-high", got)
+	}
+	if config, present := generationOf(payload)["thinkingConfig"]; present {
+		t.Errorf("thinking disabled: thinkingConfig = %#v, want none", config)
+	}
+
+}
+
 // A fresh 24h-TTL catalog can still lack a model the upstream just published.
 // resolveModel must kick a background refresh (debounced by
 // missingModelFetchFloor) instead of waiting out the TTL, must return the
