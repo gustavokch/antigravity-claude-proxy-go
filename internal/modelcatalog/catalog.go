@@ -309,16 +309,17 @@ func (catalog *Catalog) Resolve(requested string) (Model, error) {
 	return Model{}, &SelectionError{Model: requested, Selectable: available}
 }
 
-// flashTiers are the tiers the Gemini flash families publish. A stronger
-// request (xhigh, max) falls back to high; minimal rides the low tier.
+// flashTiers are the tiers published by the Gemini flash and Claude 5.5
+// families. A stronger request (xhigh, max) falls back to high; minimal rides
+// the low tier.
 var flashTiers = [...]reasoning.Level{reasoning.LevelLow, reasoning.LevelMedium, reasoning.LevelHigh}
 
 // effortTier returns the tier suffix ("low", "medium" or "high") the request
-// asks the flash families to route to, or "" when the model the client named
-// stands. output_config.effort is ambient (Claude Code sends it on every
-// request), so it only picks a tier for a family ID that does not already
-// name one. reasoning_effort and a bare thinking budget are deliberate, so
-// they override the name.
+// asks tiered families (Gemini flash, Claude 5.5) to route to, or "" when the
+// model the client named stands. output_config.effort is ambient (Claude Code
+// sends it on every request), so it only picks a tier for a family ID that does
+// not already name one. reasoning_effort and a bare thinking budget are
+// deliberate, so they override the name.
 func effortTier(requested string, params reasoning.Params) string {
 	if params.Level == reasoning.LevelUnset {
 		return ""
@@ -374,15 +375,12 @@ func (catalog *Catalog) ResolveWithRequest(requested string, request map[string]
 		case strings.HasPrefix(lowerReq, "gemini-3.6-flash"):
 			targetID = "gemini-3.6-flash-" + tier
 		case strings.HasPrefix(lowerReq, "gemini-3.5-flash"):
+			// Legacy 3.5 IDs repoint to the 3.8 family (user decision
+			// 2026-09-03); fall back to a real 3.5 tier only when this
+			// account has no 3.8 at all.
 			targetID = "gemini-3.8-flash-" + tier
-		case strings.HasPrefix(lowerReq, "claude-sonnet-5-5"):
-			targetID = "claude-sonnet-5-5-" + tier
-		case strings.HasPrefix(lowerReq, "claude-opus-5-5"):
-			targetID = "claude-opus-5-5-" + tier
-		case strings.HasPrefix(lowerReq, "claude-sonnet-4-6") || lowerReq == "claude-sonnet":
-			targetID = "claude-sonnet-5-5-" + tier
-		case strings.HasPrefix(lowerReq, "claude-opus-4-6") || lowerReq == "claude-opus":
-			targetID = "claude-opus-5-5-" + tier
+		case claude55Family(model) != "":
+			targetID = claude55Family(model) + "-" + tier
 		}
 		if targetID != "" {
 			if variant, err := catalog.Resolve(targetID); err == nil {
@@ -452,6 +450,21 @@ func CleanModelIDAndName(id, displayName string) (string, string) {
 		}
 	}
 	return cleanID, cleanName
+}
+
+// claude55Family returns the Claude 5.5 family stem ("claude-sonnet-5-5" or
+// "claude-opus-5-5") when the model resolved to a Claude 5.5 tier, or "" for
+// any other model (including real Claude 4.6 models on unmigrated accounts).
+func claude55Family(m Model) string {
+	lowerDisplay := strings.ToLower(m.DisplayName)
+	switch {
+	case strings.HasPrefix(lowerDisplay, "claude sonnet 5.5"):
+		return "claude-sonnet-5-5"
+	case strings.HasPrefix(lowerDisplay, "claude opus 5.5"):
+		return "claude-opus-5-5"
+	default:
+		return ""
+	}
 }
 
 func (catalog *Catalog) PublicModels() []Model {
