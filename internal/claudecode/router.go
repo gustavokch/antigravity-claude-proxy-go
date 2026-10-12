@@ -196,6 +196,10 @@ func (r *Router) IsModelAllowed(requested string) bool {
 }
 
 // ResolveModel maps a requested model ID or alias to the canonical model ID.
+// Tiered family variants (claude-sonnet-5-5-high, claude-opus-5-5-medium,
+// ...) are refused so they remain exclusive to the Cloud Code gateway rather
+// than being rewritten to a bare family id and served by the Claude Code
+// gateway.
 func (r *Router) ResolveModel(requested string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -211,7 +215,7 @@ func (r *Router) ResolveModel(requested string) (string, bool) {
 	}
 
 	// 2. Alias match
-	if canonical, ok := r.aliases[req]; ok {
+	if canonical, ok := r.aliases[req]; ok && !isTierVariantOf(canonical, req) {
 		return canonical, true
 	}
 
@@ -220,15 +224,18 @@ func (r *Router) ResolveModel(requested string) (string, bool) {
 	if _, ok := r.allowlist[normalized]; ok {
 		return normalized, true
 	}
-	if canonical, ok := r.aliases[normalized]; ok {
+	if canonical, ok := r.aliases[normalized]; ok && !isTierVariantOf(canonical, req) {
 		return canonical, true
 	}
 
 	// 4. Prefix matching against known canonical IDs or aliases (longest prefix
 	// first). A hit that continues the version number is a different model,
-	// not a variant of the matched one, so it does not match.
+	// not a variant of the matched one, so it does not match. A hit whose
+	// remainder is a thinking tier is likewise a different model: tiered family
+	// variants are exclusive to Cloud Code and must never be collapsed onto a
+	// bare family id.
 	for _, pm := range r.prefixes {
-		if rest, ok := strings.CutPrefix(req, pm.prefix); ok && !continuesVersion(rest) {
+		if rest, ok := strings.CutPrefix(req, pm.prefix); ok && !continuesVersion(rest) && !isThinkingTier(rest) {
 			return pm.canonicalID, true
 		}
 	}
@@ -257,6 +264,26 @@ func continuesVersion(rest string) bool {
 		digits++
 	}
 	return digits >= 1 && digits <= 3
+}
+
+// isThinkingTier reports whether rest is a thinking tier suffix: -low, -medium
+// or -high.
+func isThinkingTier(rest string) bool {
+	t := strings.ToLower(rest)
+	return t == "-low" || t == "-medium" || t == "-high"
+}
+
+// isTierVariantOf reports whether requested is canonical followed by a
+// thinking tier suffix (for example requested "claude-sonnet-5-5-high" and
+// canonical "claude-sonnet-5-5"). Tiered family variants are refused so they
+// remain exclusive to Cloud Code rather than being collapsed onto a bare
+// family id.
+func isTierVariantOf(canonical, requested string) bool {
+	if canonical == "" || len(requested) <= len(canonical) {
+		return false
+	}
+	t := strings.ToLower(requested[len(canonical):])
+	return t == "-low" || t == "-medium" || t == "-high"
 }
 
 // GetAllowedModels returns a slice of currently enabled models.

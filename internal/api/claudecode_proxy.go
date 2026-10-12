@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -381,6 +382,12 @@ func (server *Server) forwardToClaudeCode(
 				writeCCUpstream429(writer, last429Body, last429Header, ccCfg.ForwardUnifiedHeadersEnabled())
 				return
 			}
+			// The 503 body alone never reaches the operator: log the reason
+			// and each account's state so the log shows why selection failed.
+			if server.logger != nil {
+				server.logger.Error("claudecode: no account available, replying 503",
+					"model", model, "error", err, "accounts", ccAccountStates(pool))
+			}
 			writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "No Claude Code accounts available: "+err.Error())
 			return
 		}
@@ -492,7 +499,39 @@ func (server *Server) forwardToClaudeCode(
 		writeCCUpstream429(writer, last429Body, last429Header, ccCfg.ForwardUnifiedHeadersEnabled())
 		return
 	}
-	writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", "All Claude Code accounts rate-limited or unavailable")
+	// Log the exhaustion that the response body alone hides from the operator.
+	// reason is shared with the body so log and client always agree.
+	reason := "All Claude Code accounts rate-limited or unavailable"
+	if server.logger != nil {
+		server.logger.Error("claudecode: all account attempts failed, replying 503",
+			"model", model, "reason", reason, "excluded", ccExcludedIDs(excluded), "accounts", ccAccountStates(pool))
+	}
+	writeAPIError(writer, http.StatusServiceUnavailable, "overloaded_error", reason)
+}
+
+// ccAccountStates renders every pool account as "id=status". A bare
+// SelectAccount error hides the cause: an empty pool, a disabled account and
+// a rate-limited one all fail selection identically.
+func ccAccountStates(pool *claudecode.AccountPool) []string {
+	if pool == nil {
+		return nil
+	}
+	snaps := pool.Snapshots()
+	states := make([]string, 0, len(snaps))
+	for _, s := range snaps {
+		states = append(states, s.ID+"="+s.Status)
+	}
+	return states
+}
+
+// ccExcludedIDs returns the excluded account IDs sorted for stable log output.
+func ccExcludedIDs(excluded map[string]bool) []string {
+	ids := make([]string, 0, len(excluded))
+	for id := range excluded {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // writeCCUpstream429 mirrors an upstream rate-limit rejection to the client

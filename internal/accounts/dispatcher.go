@@ -325,6 +325,33 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 	return cloudcode.Response{}, fmt.Errorf("model listing exhausted account retries: %w", lastError)
 }
 
+// fetchAvailableModelsForAccount fetches the selectable model list using the
+// given account's credentials instead of selecting an account via the
+// selection strategy. It is used as a recovery path when a requested model is
+// missing from the shared catalog but present in one account's quota cache:
+// refreshing with that account's credentials can recover a catalog that
+// includes the model (the shared list was fetched with a different account
+// whose upstream list does not publish it).
+func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
+	credentials, err := dispatcher.resolver.Resolve(ctx, account)
+	if err != nil {
+		dispatcher.manager.MarkFailure(account, "")
+		return cloudcode.Response{}, err
+	}
+	modelsClient := dispatcher.client(account, credentials.AccessToken)
+	response, err := dispatcher.metered(account.Email, func() (cloudcode.Response, error) {
+		return modelsClient.FetchAvailableModels(ctx, dispatcher.project(account))
+	})
+	if err == nil {
+		dispatcher.manager.MarkSuccess(account, "")
+		dispatcher.cacheCatalog(response.Body)
+		dispatcher.updateAccountQuota(account, response.Body)
+		dispatcher.refreshLiveQuota(ctx, account, modelsClient, dispatcher.project(account))
+		return response, nil
+	}
+	return cloudcode.Response{}, err
+}
+
 func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
 	requestedModel, _ := request["model"].(string)
 	stream, _ := request["stream"].(bool)
@@ -539,6 +566,34 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 		}
 	}
 	model, err := catalog.ResolveWithRequest(requested, request)
+	if err != nil && dispatcher.catalog != nil {
+		// The shared catalog lacks this model. Before failing, check whether
+		// any pooled account has the model in its quota cache. If so, that
+		// account's upstream credentials publish it, and a targeted refresh
+		// with that account can recover a catalog that includes the model:
+		// the shared list is fetched with one account and can be poisoned by
+		// another account's list that does not publish the model.
+		canon := rateLimitModelKey(requested)
+		for _, account := range dispatcher.manager.GetAllAccounts() {
+			_, has := account.Quota.Models[requested]
+			if !has && canon != "" {
+				_, has = account.Quota.Models[canon]
+			}
+			if has {
+				_, refreshErr := dispatcher.fetchAvailableModelsForAccount(ctx, account)
+				if refreshErr == nil {
+					if refreshCatalog := dispatcher.CachedCatalog(); refreshCatalog != nil {
+						if refreshModel, rerr := refreshCatalog.ResolveWithRequest(requested, request); rerr == nil {
+							return refreshModel, nil
+						}
+					}
+				}
+				// One recovering account is enough; if it did not bring the
+				// model, keep the original catalog error.
+				break
+			}
+		}
+	}
 	if fresh && err != nil && dispatcher.catalogAge() >= missingModelFetchFloor {
 		// The catalog is fresh but lacks this model: the upstream may have
 		// published it after the last fetch. Kick one shared background
