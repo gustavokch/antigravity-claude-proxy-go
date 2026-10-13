@@ -610,52 +610,28 @@ func stripTierSuffix(model string) string {
 	return lower
 }
 
-// MarkModelUnavailable applies a 24-hour rate-limit block for model on account
-// and removes it from account.Quota.Models when upstream returns 404 Not Found.
+// MarkModelUnavailable records an upstream 404 for model on account: the exact
+// model key is blocked for 24 hours and dropped from the account's quota cache.
+// Sibling tiers stay: one withdrawn tier says nothing about the others.
 func (manager *Manager) MarkModelUnavailable(account *Account, model string) {
-	if account == nil {
+	key := rateLimitModelKey(model)
+	if account == nil || key == "" {
 		return
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-
-	key := rateLimitModelKey(model)
-	if key != "" {
-		if account.ModelRateLimits == nil {
-			account.ModelRateLimits = make(map[string]*RateLimit)
-		}
-		rateLimit := &RateLimit{
-			IsRateLimited: true,
-			ResetTimeMS:   manager.now().Add(24 * time.Hour).UnixMilli(),
-			ActualResetMS: (24 * time.Hour).Milliseconds(),
-		}
-		account.ModelRateLimits[key] = rateLimit
-		family := stripTierSuffix(key)
-		if family != "" && family != key {
-			account.ModelRateLimits[family] = rateLimit
-		}
+	if account.ModelRateLimits == nil {
+		account.ModelRateLimits = make(map[string]*RateLimit)
 	}
-	if account.Quota.Models != nil {
-		modelLower := strings.ToLower(strings.TrimSpace(model))
-		keyLower := strings.ToLower(key)
-		familyLower := stripTierSuffix(keyLower)
-
-		familyPrefix := ""
-		if familyLower != "" {
-			familyPrefix = familyLower + "-"
-		}
-		canonPrefix := ""
-		if keyLower != "" {
-			canonPrefix = keyLower + "-"
-		}
-		for k := range account.Quota.Models {
-			kLower := strings.ToLower(k)
-			if kLower == modelLower || (keyLower != "" && kLower == keyLower) ||
-				(familyLower != "" && kLower == familyLower) ||
-				(canonPrefix != "" && strings.HasPrefix(kLower, canonPrefix)) ||
-				(familyPrefix != "" && strings.HasPrefix(kLower, familyPrefix)) {
-				delete(account.Quota.Models, k)
-			}
+	account.ModelRateLimits[key] = &RateLimit{
+		IsRateLimited: true,
+		ResetTimeMS:   manager.now().Add(24 * time.Hour).UnixMilli(),
+		ActualResetMS: (24 * time.Hour).Milliseconds(),
+	}
+	want := quotaMatchKey(model)
+	for cached := range account.Quota.Models {
+		if quotaMatchKey(cached) == want {
+			delete(account.Quota.Models, cached)
 		}
 	}
 }

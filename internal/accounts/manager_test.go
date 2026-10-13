@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -1102,43 +1101,44 @@ func TestManager_SelectFiltersAccountsByModelSupport(t *testing.T) {
 	}
 }
 
-func TestMarkModelUnavailable_GuardsNilMapAndPurgesFamilyVariants(t *testing.T) {
+// One withdrawn tier must not take its siblings with it: after a 404 on
+// claude-sonnet-5-5-high the account still serves claude-sonnet-5-5-low.
+func TestMarkModelUnavailable_BlocksOnlyTheMissingTier(t *testing.T) {
 	t.Parallel()
 	mgr, err := New(Options{
-		Accounts: []*Account{
-			{
-				Email:   "test@example.com",
-				Enabled: true,
-				// ModelRateLimits is nil initially
-				Quota: Quota{
-					Models: map[string]ModelQuota{
-						"Claude-Sonnet-5-5-High": {},
-						"claude-sonnet-5-5-low":  {},
-						"gemini-3.8-flash-high":  {},
-					},
-				},
-			},
-		},
+		Strategy: StrategySticky,
+		Accounts: []*Account{{
+			Email:   "test@example.com",
+			Enabled: true,
+			// ModelRateLimits is nil: MarkModelUnavailable must allocate it.
+			Quota: Quota{Models: map[string]ModelQuota{
+				"Claude-Sonnet-5-5-High": {},
+				"claude-sonnet-5-5-low":  {},
+				"gemini-3.8-flash-high":  {},
+			}},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-
 	acc := mgr.accounts[0]
-	// Must not panic on nil ModelRateLimits
 	mgr.MarkModelUnavailable(acc, "claude-sonnet-5-5-high")
 
-	if acc.ModelRateLimits == nil || !acc.ModelRateLimits["claude-sonnet-5-5"].IsRateLimited {
-		t.Errorf("expected rate limit set for canonical key claude-sonnet-5-5")
+	if limit := acc.ModelRateLimits["claude-sonnet-5-5-high"]; limit == nil || !limit.IsRateLimited {
+		t.Errorf("claude-sonnet-5-5-high not blocked: %+v", acc.ModelRateLimits)
 	}
-
-	// Must purge both high and low tier variants of claude-sonnet-5-5
-	for k := range acc.Quota.Models {
-		if strings.HasPrefix(strings.ToLower(k), "claude-sonnet-5-5") {
-			t.Errorf("expected all claude-sonnet-5-5 keys purged, found %q", k)
+	if _, blocked := acc.ModelRateLimits["claude-sonnet-5-5"]; blocked {
+		t.Error("family key claude-sonnet-5-5 blocked; only the 404ed tier may be")
+	}
+	if _, ok := acc.Quota.Models["Claude-Sonnet-5-5-High"]; ok {
+		t.Error("404ed tier still in the quota cache")
+	}
+	for _, kept := range []string{"claude-sonnet-5-5-low", "gemini-3.8-flash-high"} {
+		if _, ok := acc.Quota.Models[kept]; !ok {
+			t.Errorf("%s purged; only the 404ed tier may be", kept)
 		}
 	}
-	if _, ok := acc.Quota.Models["gemini-3.8-flash-high"]; !ok {
-		t.Errorf("expected unrelated model gemini-3.8-flash-high preserved")
+	if sel := mgr.Select("claude-sonnet-5-5-low"); sel.Account != acc {
+		t.Errorf("Select(claude-sonnet-5-5-low) = %v, want the account", sel.Account)
 	}
 }
