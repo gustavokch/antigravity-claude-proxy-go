@@ -91,6 +91,7 @@ type Dispatcher struct {
 	now                      func() time.Time
 	random                   func() float64
 	modelCacheTTL            time.Duration
+	recoveryAccountTimeout   time.Duration
 	forensics429             *Forensics429Recorder
 	meter                    *throttleMeter
 
@@ -169,6 +170,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		now:                      options.Now,
 		random:                   options.Random,
 		modelCacheTTL:            options.ModelCacheTTL,
+		recoveryAccountTimeout:   defaultRecoveryAccountTimeout,
 		forensics429:             options.Forensics429,
 		meter:                    newThrottleMeter(nil),
 		clients:                  make(map[string]accountClient),
@@ -224,6 +226,11 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 // token refresh it triggers, so work abandoned by one disconnected client
 // still completes and cannot run forever.
 const fetchModelsTimeout = 30 * time.Second
+
+// defaultRecoveryAccountTimeout bounds one account's list-models call inside a
+// catalog recovery pass. The pass as a whole is bounded by fetchModelsTimeout,
+// so one account that never answers cannot consume the whole budget.
+const defaultRecoveryAccountTimeout = 10 * time.Second
 
 // modelFetchCall is one shared catalog fetch. Concurrent FetchAvailableModels
 // callers attach to the same call; done is closed once response and err are
@@ -340,18 +347,22 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 }
 
 // fetchAvailableModelsForAccount fetches the selectable model list with the
-// given account's credentials instead of selecting one via the strategy. The
-// fetch is bounded by fetchModelsTimeout, and an upstream failure is recorded
-// through rotateForError (cooldown, invalidation) like any other pool call.
+// given account's credentials instead of selecting one via the strategy. Each
+// call is bounded by recoveryAccountTimeout inside the caller's context.
+// Failures reach pool state like any other pool call, except when the
+// caller's context ended (an abandoned or out-of-budget pass is not the
+// account's fault). An account that uses its whole own budget is marked
+// failed, so recovery tries it last next time. No live-quota RPCs ride along:
+// recovery sits on a request path, and the post-request refresh covers them.
 func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
-	if ctx.Err() != nil {
-		return cloudcode.Response{}, ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return cloudcode.Response{}, err
 	}
-	fetchCtx, cancel := context.WithTimeout(ctx, fetchModelsTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, dispatcher.recoveryAccountTimeout)
 	defer cancel()
 	credentials, err := dispatcher.resolver.Resolve(fetchCtx, account)
 	if err != nil {
-		if !isCanceled(err) && fetchCtx.Err() == nil {
+		if ctx.Err() == nil {
 			dispatcher.manager.MarkFailure(account, "")
 		}
 		return cloudcode.Response{}, err
@@ -361,7 +372,11 @@ func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context
 		return modelsClient.FetchAvailableModels(fetchCtx, dispatcher.project(account))
 	})
 	if err != nil {
-		if !isCanceled(err) && fetchCtx.Err() == nil {
+		switch {
+		case ctx.Err() != nil:
+		case fetchCtx.Err() != nil:
+			dispatcher.manager.MarkFailure(account, "")
+		default:
 			dispatcher.rotateForError(account, "", err)
 		}
 		return cloudcode.Response{}, err
@@ -369,7 +384,6 @@ func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context
 	dispatcher.manager.MarkSuccess(account, "")
 	dispatcher.cacheCatalog(account.Email, response.Body)
 	dispatcher.updateAccountQuota(account, response.Body)
-	dispatcher.refreshLiveQuota(fetchCtx, account, modelsClient, dispatcher.project(account))
 	return response, nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"antigravity-go-proxy/internal/cloudcode"
 )
 
 const (
@@ -17,7 +19,7 @@ const (
 		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-4-6","claude-sonnet-5-5-high"]}]}],
 		"models":{
 			"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":250000,"maxOutputTokens":64000},
-			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"supportsAdaptiveThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000}
+			"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)","supportsThinking":true,"supportsAdaptiveThinking":true,"thinkingLevel":3,"maxTokens":1000000,"maxOutputTokens":128000,"quotaInfo":{"remainingFraction":1}}
 		}
 	}`
 )
@@ -254,4 +256,86 @@ func TestResolveModelRecoverySkipsCooledDownAccount(t *testing.T) {
 	if got := b.modelsCallCount(); got != 1 {
 		t.Errorf("B models calls = %d, want 1", got)
 	}
+}
+
+func setModelsErr(c *scriptedClient, err error) {
+	c.mu.Lock()
+	c.modelsErr = err
+	c.mu.Unlock()
+}
+
+// Each recovery fetch is bounded by the per-account budget, not just the
+// caller's context.
+func TestRecoveryFetchHasPerAccountDeadline(t *testing.T) {
+	t.Parallel()
+	dispatcher, _, b, _, _ := recoveryPool(t, catalogWithModel)
+	if _, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil); err != nil {
+		t.Fatalf("resolveModel: %v", err)
+	}
+	b.mu.Lock()
+	budget := b.modelsBudget
+	b.mu.Unlock()
+	if budget <= 0 || budget > dispatcher.recoveryAccountTimeout {
+		t.Errorf("recovery fetch budget = %v, want in (0, %v]", budget, dispatcher.recoveryAccountTimeout)
+	}
+}
+
+// An account that hangs until its own budget expires is counted as a failure,
+// so the next recovery tries it last; recovery still succeeds through B.
+func TestRecoveryPenalizesHungAccount(t *testing.T) {
+	t.Parallel()
+	dispatcher, a, _, manager, _ := recoveryPool(t, catalogWithModel)
+	dispatcher.recoveryAccountTimeout = 50 * time.Millisecond
+	a.mu.Lock()
+	a.modelsHang = true
+	a.mu.Unlock()
+
+	model, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
+	if err != nil || model.ID != recoveryModel {
+		t.Fatalf("resolveModel = %q, %v; want %q", model.ID, err, recoveryModel)
+	}
+	if got := manager.FailureCount(manager.accounts[0]); got != 1 {
+		t.Errorf("hung account failures = %d, want 1", got)
+	}
+	order := manager.AccountsWithQuotaModel(recoveryModel)
+	if len(order) != 2 || order[0].Email != "b@example.com" {
+		t.Errorf("candidate order after hang = %v, want b@example.com first", order)
+	}
+}
+
+// Upstream HTTP errors from a recovery fetch reach the pool state: 401
+// invalidates the cached credentials, 429 puts the account in a listing
+// cooldown that removes it from the next recovery.
+func TestRecoveryRecordsUpstreamHTTPErrors(t *testing.T) {
+	t.Parallel()
+	t.Run("401 invalidates credentials", func(t *testing.T) {
+		t.Parallel()
+		dispatcher, a, _, _, _ := recoveryPool(t, catalogWithModel)
+		setModelsErr(a, &cloudcode.HTTPError{StatusCode: 401, Status: "401 Unauthorized",
+			Body: `{"error":{"code":401,"status":"UNAUTHENTICATED"}}`})
+		if _, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil); err != nil {
+			t.Fatalf("resolveModel: %v", err)
+		}
+		resolver := dispatcher.resolver.(*staticResolver)
+		resolver.mu.Lock()
+		invalidated := append([]string(nil), resolver.invalidated...)
+		resolver.mu.Unlock()
+		if len(invalidated) != 1 || invalidated[0] != "a@example.com" {
+			t.Errorf("invalidated = %v, want [a@example.com]", invalidated)
+		}
+	})
+	t.Run("429 cools the account down", func(t *testing.T) {
+		t.Parallel()
+		dispatcher, a, _, manager, _ := recoveryPool(t, catalogWithModel)
+		setModelsErr(a, &cloudcode.HTTPError{StatusCode: 429, Status: "429 Too Many Requests",
+			Body: `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}`})
+		if _, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil); err != nil {
+			t.Fatalf("resolveModel: %v", err)
+		}
+		for _, account := range manager.AccountsWithQuotaModel(recoveryModel) {
+			if account.Email == "a@example.com" {
+				t.Error("account that answered 429 is still a recovery candidate")
+			}
+		}
+	})
 }
