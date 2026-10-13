@@ -1,4 +1,4 @@
-<div x-data="logsViewer" class="view-container h-full flex flex-col">
+<div x-data="logsViewer" x-init="if ($store.settings && typeof $store.settings.debugLogging !== 'undefined') { filters.DEBUG = Boolean($store.settings.debugLogging); }" class="view-container h-full flex flex-col">
     <div class="view-card !p-0 flex flex-col flex-1 min-h-0">
         <!-- Toolbar -->
         <div class="bg-space-900 flex flex-wrap gap-y-2 justify-between items-center p-2 px-4 border-b border-space-border select-none min-h-[48px] shrink-0">
