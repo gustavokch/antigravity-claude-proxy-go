@@ -598,30 +598,30 @@ func (manager *Manager) MarkFailure(account *Account, model string) {
 	}
 }
 
-// stripTierSuffix removes any trailing thinking tier (-high, -medium, -low)
-// from a model string.
-func stripTierSuffix(model string) string {
-	lower := strings.ToLower(strings.TrimSpace(model))
-	for _, suffix := range []string{"-high", "-medium", "-low"} {
-		if strings.HasSuffix(lower, suffix) {
-			return strings.TrimSpace(lower[:len(lower)-len(suffix)])
-		}
-	}
-	return lower
-}
-
-// MarkModelUnavailable records an upstream 404 for model on account: the exact
-// model key is blocked for 24 hours and dropped from the account's quota cache.
-// Sibling tiers stay: one withdrawn tier says nothing about the others.
-func (manager *Manager) MarkModelUnavailable(account *Account, model string) {
+// MarkModelUnavailable records an upstream 404 for model on account and
+// reports whether the request can move to another account. When another
+// account can serve model, the exact model key is blocked on account for 24
+// hours and dropped from its quota cache; sibling tiers stay, because one
+// withdrawn tier says nothing about the others. When none can, nothing is
+// recorded and the result is false: the 404 is the answer, and blocking the
+// only candidate would turn one 404 into a day-long outage.
+func (manager *Manager) MarkModelUnavailable(account *Account, model string) bool {
 	key := rateLimitModelKey(model)
 	if account == nil || key == "" {
-		return
+		return false
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if account.ModelRateLimits == nil {
-		account.ModelRateLimits = make(map[string]*RateLimit)
+	poolSupports := manager.poolSupportsModelLocked(model)
+	alternative := false
+	for _, other := range manager.accounts {
+		if other != account && manager.usableLocked(other, model, poolSupports) {
+			alternative = true
+			break
+		}
+	}
+	if !alternative {
+		return false
 	}
 	account.ModelRateLimits[key] = &RateLimit{
 		IsRateLimited: true,
@@ -634,6 +634,7 @@ func (manager *Manager) MarkModelUnavailable(account *Account, model string) {
 			delete(account.Quota.Models, cached)
 		}
 	}
+	return true
 }
 
 func (manager *Manager) MarkSuccess(account *Account, model string) {
@@ -1399,8 +1400,49 @@ func accountSupportsQuotaModel(account *Account, model string) bool {
 		return false
 	}
 	for key := range account.Quota.Models {
-		have := quotaMatchKey(key)
-		if have == want || stripTierSuffix(have) == want {
+		if quotaKeyMatches(key, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// foldModelByte lowercases an ASCII letter and maps '.' to '-': the two
+// spellings quotaMatchKey treats as equal.
+func foldModelByte(c byte) byte {
+	switch {
+	case c == '.':
+		return '-'
+	case 'A' <= c && c <= 'Z':
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+// equalModelKey reports whether a and b are the same quotaMatchKey, without
+// allocating. Model ids are ASCII.
+func equalModelKey(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range len(a) {
+		if foldModelByte(a[i]) != foldModelByte(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// quotaKeyMatches reports whether the quota-cache key have lists the model
+// whose quotaMatchKey is want: the same key, or the key plus one thinking tier.
+// Lengths are compared first, so keys of any other length cost no byte compare.
+func quotaKeyMatches(have, want string) bool {
+	have = modelcatalog.Strip1mSuffix(have)
+	if len(have) == len(want) {
+		return equalModelKey(have, want)
+	}
+	for _, tier := range [...]string{"-high", "-medium", "-low"} {
+		if len(have) == len(want)+len(tier) && equalModelKey(have[len(want):], tier) && equalModelKey(have[:len(want)], want) {
 			return true
 		}
 	}

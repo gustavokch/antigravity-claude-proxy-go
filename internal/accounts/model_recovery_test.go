@@ -362,45 +362,127 @@ func TestRecoveryFailureDoesNotConsumeTheDebounce(t *testing.T) {
 }
 
 // A request that misses while another request's recovery is in flight waits
-// for that pass and resolves, instead of failing with HTTP 400.
+// for that pass and resolves, instead of failing with HTTP 400. Spellings of
+// one model ("5.5" and "5-5") share the pass.
 func TestConcurrentRequestJoinsInFlightRecovery(t *testing.T) {
 	t.Parallel()
-	dispatcher, a, b, _, _ := recoveryPool(t, catalogWithModel)
-	aSeed := a.modelsCallCount()
-	release := make(chan struct{})
-	b.mu.Lock()
-	b.modelsBlock = release
-	b.modelsBlockFrom = 1 // B's first recovery fetch parks
-	b.mu.Unlock()
+	for _, secondSpelling := range []string{recoveryModel, "claude-sonnet-5.5-high"} {
+		t.Run(secondSpelling, func(t *testing.T) {
+			t.Parallel()
+			dispatcher, a, b, _, _ := recoveryPool(t, catalogWithModel)
+			aSeed := a.modelsCallCount()
+			release := make(chan struct{})
+			b.mu.Lock()
+			b.modelsBlock = release
+			b.modelsBlockFrom = 1 // B's first recovery fetch parks
+			b.mu.Unlock()
 
-	first := make(chan error, 1)
+			first := make(chan error, 1)
+			go func() {
+				_, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
+				first <- err
+			}()
+			// A is tried first and does not publish the model; once its fetch is done
+			// the pass is parked on B and still in flight.
+			deadline := time.Now().Add(5 * time.Second)
+			for a.modelsCallCount() == aSeed {
+				if time.Now().After(deadline) {
+					t.Fatal("recovery never reached account A")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			second := make(chan error, 1)
+			go func() {
+				_, err := dispatcher.resolveModel(context.Background(), secondSpelling, nil)
+				second <- err
+			}()
+			time.Sleep(20 * time.Millisecond) // let the second request reach the join
+			close(release)
+			if err := <-first; err != nil {
+				t.Errorf("request owning the recovery: %v", err)
+			}
+			if err := <-second; err != nil {
+				t.Errorf("concurrent request: %v, want it to wait for the in-flight recovery", err)
+			}
+			if got := b.modelsCallCount(); got != 1 {
+				t.Errorf("B models calls = %d, want 1 (one shared pass)", got)
+			}
+		})
+	}
+}
+
+// A caller that disconnects while the account's fetch is running, not before
+// it, must not cost the account a failure: the pass was abandoned and the
+// account did nothing wrong.
+func TestFetchAvailableModelsForAccount_CancelMidCallIsNotAFailure(t *testing.T) {
+	t.Parallel()
+	dispatcher, a, _, manager, _ := recoveryPool(t, catalogWithModel)
+	a.mu.Lock()
+	a.modelsHang = true
+	a.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go func() {
-		_, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
-		first <- err
-	}()
-	// A is tried first and does not publish the model; once its fetch is done
-	// the pass is parked on B and still in flight.
-	deadline := time.Now().Add(5 * time.Second)
-	for a.modelsCallCount() == aSeed {
-		if time.Now().After(deadline) {
-			t.Fatal("recovery never reached account A")
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			a.mu.Lock()
+			started := a.modelsBudget > 0 // set when the hung fetch begins
+			a.mu.Unlock()
+			if started {
+				break
+			}
+			time.Sleep(time.Millisecond)
 		}
-		time.Sleep(time.Millisecond)
-	}
-	second := make(chan error, 1)
-	go func() {
-		_, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
-		second <- err
+		cancel()
 	}()
-	time.Sleep(20 * time.Millisecond) // let the second request reach the join
-	close(release)
-	if err := <-first; err != nil {
-		t.Errorf("request owning the recovery: %v", err)
+	_, err := dispatcher.fetchAvailableModelsForAccount(ctx, manager.accounts[0])
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if err := <-second; err != nil {
-		t.Errorf("concurrent request: %v, want it to wait for the in-flight recovery", err)
+	if got := manager.FailureCount(manager.accounts[0]); got != 0 {
+		t.Errorf("failures after the caller canceled mid-fetch = %d, want 0", got)
 	}
-	if got := b.modelsCallCount(); got != 1 {
-		t.Errorf("B models calls = %d, want 1 (one shared pass)", got)
+}
+
+// accountSupportsQuotaModel decides which accounts Select may use and which
+// ones recovery fetches with, so its spelling rules are pinned directly:
+// case, dots, the "[1m]" marker and one thinking tier are ignored; any other
+// prefix is a different model.
+func TestAccountSupportsQuotaModel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		keys    []string
+		request string
+		want    bool
+	}{
+		{"exact id", []string{"claude-sonnet-5-5-high"}, "claude-sonnet-5-5-high", true},
+		{"request case", []string{"claude-sonnet-5-5-high"}, "Claude-Sonnet-5-5-HIGH", true},
+		{"request dots", []string{"claude-sonnet-5-5-high"}, "claude-sonnet-5.5-high", true},
+		{"request 1m marker", []string{"claude-sonnet-5-5-high"}, "claude-sonnet-5-5-high[1m]", true},
+		{"bare family matches its tier", []string{"claude-sonnet-5-5-high"}, "claude-sonnet-5-5", true},
+		{"other tier", []string{"claude-sonnet-5-5-high"}, "claude-sonnet-5-5-medium", false},
+		{"non-tier prefix", []string{"claude-sonnet-5-5-high"}, "claude-sonnet-5", false},
+		{"vendor prefix", []string{"claude-sonnet-5-5-high"}, "claude", false},
+		{"empty request", []string{"claude-sonnet-5-5-high"}, "", false},
+		{"blank request", []string{"claude-sonnet-5-5-high"}, "  ", false},
+		{"key case", []string{"Claude-Sonnet-5-5-High"}, "claude-sonnet-5-5", true},
+		{"key dots", []string{"gemini-3.8-flash-high"}, "gemini-3.8-flash", true},
+		{"key dots, hyphen request", []string{"gemini-3.8-flash-high"}, "gemini-3-8-flash-high", true},
+		{"key dots, shorter request", []string{"gemini-3.8-flash-high"}, "gemini-3.8", false},
+		{"no quota", nil, "claude-sonnet-5-5-high", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			models := make(map[string]ModelQuota, len(tt.keys))
+			for _, key := range tt.keys {
+				models[key] = ModelQuota{}
+			}
+			account := &Account{Email: "a@example.com", Enabled: true, Quota: Quota{Models: models}}
+			if got := accountSupportsQuotaModel(account, tt.request); got != tt.want {
+				t.Errorf("accountSupportsQuotaModel(keys=%v, %q) = %v, want %v", tt.keys, tt.request, got, tt.want)
+			}
+		})
 	}
 }

@@ -837,3 +837,46 @@ func TestFetchAvailableModelsForAccount_DoesNotRotateOnContextCancellation(t *te
 		t.Errorf("expected 0 failures on cancelled context, got %d", failures)
 	}
 }
+
+// Cancelling while the fetch is in flight (past the entry guard) must not
+// penalize the account: the caller left, the account did not fail.
+func TestFetchAvailableModelsForAccount_NoPenaltyWhenCancelledMidFetch(t *testing.T) {
+	t.Parallel()
+	manager, err := New(Options{
+		Accounts: []*Account{{Email: "acc@example.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	client := &scriptedClient{modelsHang: true}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return client },
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for client.modelsCallCount() == 0 {
+			client.mu.Lock()
+			started := client.modelsBudget > 0
+			client.mu.Unlock()
+			if started {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+
+	acc := manager.accounts[0]
+	if _, err := dispatcher.fetchAvailableModelsForAccount(ctx, acc); err == nil {
+		t.Fatal("expected context error")
+	}
+	if failures := manager.FailureCount(acc); failures != 0 {
+		t.Errorf("failures after mid-fetch cancel = %d, want 0", failures)
+	}
+}

@@ -604,7 +604,7 @@ func (dispatcher *Dispatcher) recoverModelFromQuotaCache(ctx context.Context, re
 // It returns nil when no usable account lists the model, or when a definitive
 // negative pass for it ran within missingModelFetchFloor.
 func (dispatcher *Dispatcher) startModelRecovery(requested string) *modelRecoveryCall {
-	key := rateLimitModelKey(requested)
+	key := quotaMatchKey(requested)
 	if key == "" {
 		return nil
 	}
@@ -977,10 +977,10 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 	case http.StatusBadRequest:
 		return false
 	case http.StatusNotFound:
-		if model != "" && account != nil {
-			dispatcher.manager.MarkModelUnavailable(account, model)
-		}
-		return true
+		// The 404 is the upstream's answer for model. It rotates only when
+		// another account can serve the model; a listing call (model == "")
+		// has nothing to block and fails on the first answer.
+		return model != "" && dispatcher.manager.MarkModelUnavailable(account, model)
 	case http.StatusTooManyRequests:
 		wait := Decorrelate(UpstreamCooldown(upstreamError, dispatcher.manager.FailureCount(account), dispatcher.now()).Wait, dispatcher.random)
 		email := ""
