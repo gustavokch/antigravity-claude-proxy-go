@@ -397,8 +397,9 @@ func (manager *Manager) Available(model string) int {
 		return 0
 	}
 	count := 0
+	poolSupports := manager.poolSupportsModelLocked(model)
 	for _, account := range manager.accounts {
-		if manager.usableLocked(account, model) {
+		if manager.usableLocked(account, model, poolSupports) {
 			count++
 		}
 	}
@@ -868,17 +869,18 @@ func (manager *Manager) selectStickyLocked(model string) Selection {
 	if len(manager.accounts) == 0 {
 		return Selection{} // No accounts available
 	}
+	poolSupports := manager.poolSupportsModelLocked(model)
 	if manager.currentIndex < 0 || manager.currentIndex >= len(manager.accounts) {
 		manager.currentIndex = 0
 	}
 	current := manager.accounts[manager.currentIndex]
-	if manager.usableLocked(current, model) {
+	if manager.usableLocked(current, model, poolSupports) {
 		current.LastUsedMS = manager.now().UnixMilli()
 		return Selection{Account: current}
 	}
 	for offset := 1; offset <= len(manager.accounts); offset++ {
 		index := (manager.currentIndex + offset) % len(manager.accounts)
-		if manager.usableLocked(manager.accounts[index], model) {
+		if manager.usableLocked(manager.accounts[index], model, poolSupports) {
 			manager.currentIndex = index
 			manager.accounts[index].LastUsedMS = manager.now().UnixMilli()
 			return Selection{Account: manager.accounts[index]}
@@ -897,6 +899,7 @@ func (manager *Manager) selectRoundRobinLocked(model string) Selection {
 	if len(manager.accounts) == 0 {
 		return Selection{} // No accounts available
 	}
+	poolSupports := manager.poolSupportsModelLocked(model)
 	if manager.cursor >= len(manager.accounts) {
 		manager.cursor = 0
 	}
@@ -904,7 +907,7 @@ func (manager *Manager) selectRoundRobinLocked(model string) Selection {
 	for offset := range len(manager.accounts) {
 		index := (start + offset) % len(manager.accounts)
 		account := manager.accounts[index]
-		if manager.usableLocked(account, model) {
+		if manager.usableLocked(account, model, poolSupports) {
 			manager.cursor = index
 			manager.currentIndex = index
 			account.LastUsedMS = manager.now().UnixMilli()
@@ -922,8 +925,9 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	}
 	candidates := make([]candidate, 0)
 	minUsable := mapFloat(manager.selectionConfig.HealthScore, "minUsable", 50)
+	poolSupports := manager.poolSupportsModelLocked(model)
 	for index, account := range manager.accounts {
-		if !manager.usableLocked(account, model) || manager.healthScoreLocked(account.Email) < minUsable || manager.tokensLocked(account.Email) < 1 {
+		if !manager.usableLocked(account, model, poolSupports) || manager.healthScoreLocked(account.Email) < minUsable || manager.tokensLocked(account.Email) < 1 {
 			continue
 		}
 		if manager.quotaCriticalLocked(account, model) {
@@ -933,7 +937,7 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	}
 	if len(candidates) == 0 {
 		for index, account := range manager.accounts {
-			if manager.usableLocked(account, model) {
+			if manager.usableLocked(account, model, poolSupports) {
 				candidates = append(candidates, candidate{account: account, index: index, score: manager.scoreLocked(account, model)})
 			}
 		}
@@ -966,7 +970,7 @@ func (manager *Manager) poolSupportsModelLocked(model string) bool {
 	return false
 }
 
-func (manager *Manager) usableLocked(account *Account, model string) bool {
+func (manager *Manager) usableLocked(account *Account, model string, poolSupports bool) bool {
 	if account == nil || !account.Enabled || account.IsInvalid {
 		return false
 	}
@@ -980,8 +984,8 @@ func (manager *Manager) usableLocked(account *Account, model string) bool {
 	// In a heterogeneous pool where at least one account explicitly supports
 	// model, filter out accounts whose non-empty quota models do not support it.
 	// Accounts with uninitialized quota (len == 0) remain usable to allow initial discovery.
-	if strings.TrimSpace(model) != "" && len(account.Quota.Models) > 0 {
-		if manager.poolSupportsModelLocked(model) && !accountSupportsQuotaModel(account, model) {
+	if poolSupports && len(account.Quota.Models) > 0 {
+		if !accountSupportsQuotaModel(account, model) {
 			return false
 		}
 	}
