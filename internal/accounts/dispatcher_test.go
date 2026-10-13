@@ -757,3 +757,48 @@ func TestStoreCatalog_MergesWithExistingCatalog(t *testing.T) {
 		t.Fatalf("expected claude-sonnet-4-6 present from catB, err=%v", err)
 	}
 }
+
+type cancelingResolver struct{}
+
+func (cancelingResolver) Resolve(ctx context.Context, account *Account) (auth.Credentials, error) {
+	if ctx.Err() != nil {
+		return auth.Credentials{}, ctx.Err()
+	}
+	return auth.Credentials{AccessToken: "token", Email: account.Email}, nil
+}
+
+func (cancelingResolver) Invalidate(string) {}
+
+func TestFetchAvailableModelsForAccount_DoesNotRotateOnContextCancellation(t *testing.T) {
+	t.Parallel()
+	manager, err := New(Options{
+		Accounts: []*Account{{Email: "acc@example.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:  manager,
+		Resolver: cancelingResolver{},
+		NewClient: func(string) CloudClient {
+			return &blockingModelsClient{release: make(chan struct{})}
+		},
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	acc := manager.accounts[0]
+	_, err = dispatcher.fetchAvailableModelsForAccount(ctx, acc)
+	if err == nil {
+		t.Fatal("expected context error")
+	}
+
+	if failures := manager.FailureCount(acc); failures != 0 {
+		t.Errorf("expected 0 failures on cancelled context, got %d", failures)
+	}
+}

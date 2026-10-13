@@ -333,25 +333,32 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 // fetch is bounded by fetchModelsTimeout, and an upstream failure is recorded
 // through rotateForError (cooldown, invalidation) like any other pool call.
 func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
-	ctx, cancel := context.WithTimeout(ctx, fetchModelsTimeout)
+	if ctx.Err() != nil {
+		return cloudcode.Response{}, ctx.Err()
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchModelsTimeout)
 	defer cancel()
-	credentials, err := dispatcher.resolver.Resolve(ctx, account)
+	credentials, err := dispatcher.resolver.Resolve(fetchCtx, account)
 	if err != nil {
-		dispatcher.manager.MarkFailure(account, "")
+		if !isCanceled(err) && fetchCtx.Err() == nil {
+			dispatcher.manager.MarkFailure(account, "")
+		}
 		return cloudcode.Response{}, err
 	}
 	modelsClient := dispatcher.client(account, credentials.AccessToken)
 	response, err := dispatcher.metered(account.Email, func() (cloudcode.Response, error) {
-		return modelsClient.FetchAvailableModels(ctx, dispatcher.project(account))
+		return modelsClient.FetchAvailableModels(fetchCtx, dispatcher.project(account))
 	})
 	if err != nil {
-		dispatcher.rotateForError(account, "", err)
+		if !isCanceled(err) && fetchCtx.Err() == nil {
+			dispatcher.rotateForError(account, "", err)
+		}
 		return cloudcode.Response{}, err
 	}
 	dispatcher.manager.MarkSuccess(account, "")
 	dispatcher.cacheCatalog(response.Body)
 	dispatcher.updateAccountQuota(account, response.Body)
-	dispatcher.refreshLiveQuota(ctx, account, modelsClient, dispatcher.project(account))
+	dispatcher.refreshLiveQuota(fetchCtx, account, modelsClient, dispatcher.project(account))
 	return response, nil
 }
 
