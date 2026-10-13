@@ -3,7 +3,7 @@ BIN_DIR=bin
 VERSION?=1.0.0
 LDFLAGS=-s -w -X main.version=$(VERSION)
 
-.PHONY: all build test clean cross-compile dist install install-hooks fmt fmt-check
+.PHONY: all build test clean cross-compile dist install install-hooks fmt fmt-check secret-scan
 
 all: build
 
@@ -71,3 +71,7 @@ install-hooks:
 	@echo "core.hooksPath -> scripts/git-hooks"
 	@echo "Installed: $$(ls scripts/git-hooks)"
 	@echo "Bypass once with: git commit --no-verify   (or SKIP_GOFMT_HOOK=1)"
+
+# Scan the full git history for verified or unverifiable secrets (needs trufflehog).
+secret-scan:
+	@scripts/secret-scan.sh history
