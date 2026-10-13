@@ -184,3 +184,30 @@ func TestAccountsWithQuotaModel_MatchesTieredPrefix(t *testing.T) {
 		t.Fatalf("expected [legacy@example.com], got %v", accsLegacy)
 	}
 }
+
+func TestAccountsWithQuotaModel_MatchesDotNotation(t *testing.T) {
+	t.Parallel()
+	mgr, err := New(Options{
+		Accounts: []*Account{
+			{
+				Email:   "capable@example.com",
+				Enabled: true,
+				Quota: Quota{
+					Models: map[string]ModelQuota{
+						"claude-sonnet-5-5-high": {},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, req := range []string{"claude-sonnet-5.5", "claude-sonnet-5.5-high"} {
+		accs := mgr.AccountsWithQuotaModel(req)
+		if len(accs) != 1 || accs[0].Email != "capable@example.com" {
+			t.Errorf("AccountsWithQuotaModel(%q) = %v, want [capable@example.com]", req, accs)
+		}
+	}
+}

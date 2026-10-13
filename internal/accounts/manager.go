@@ -1406,8 +1406,9 @@ func accountSupportsQuotaModel(account *Account, model string) bool {
 	if account == nil || account.Quota.Models == nil {
 		return false
 	}
-	canon := rateLimitModelKey(model)
-	trimmed := strings.ToLower(strings.TrimSpace(model))
+	normalized := strings.ReplaceAll(model, ".", "-")
+	canon := rateLimitModelKey(normalized)
+	trimmed := strings.ToLower(strings.TrimSpace(normalized))
 	prefix := trimmed + "-"
 	canonPrefix := ""
 	if canon != "" {
@@ -1415,14 +1416,14 @@ func accountSupportsQuotaModel(account *Account, model string) bool {
 	}
 
 	for k := range account.Quota.Models {
-		kLower := strings.ToLower(k)
-		if kLower == trimmed || (canon != "" && kLower == canon) {
+		kNorm := strings.ToLower(strings.ReplaceAll(k, ".", "-"))
+		if kNorm == trimmed || (canon != "" && kNorm == canon) {
 			return true
 		}
-		if trimmed != "" && strings.HasPrefix(kLower, prefix) {
+		if trimmed != "" && strings.HasPrefix(kNorm, prefix) {
 			return true
 		}
-		if canonPrefix != "" && strings.HasPrefix(kLower, canonPrefix) {
+		if canonPrefix != "" && strings.HasPrefix(kNorm, canonPrefix) {
 			return true
 		}
 	}
