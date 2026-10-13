@@ -1403,31 +1403,28 @@ func (manager *Manager) GetAllAccounts() []*Account {
 	return result
 }
 
-// accountSupportsQuotaModel reports whether account's quota cache contains
-// model, matching on the exact ID, its canonical rate-limit key, or as a
-// tiered prefix (e.g. "claude-sonnet-5-5" matches "claude-sonnet-5-5-high").
+// quotaMatchKey normalizes a model id for quota-cache matching: trimmed,
+// "[1m]" stripped, lowercased, dots as hyphens ("claude-sonnet-5.5-high"
+// and "claude-sonnet-5-5-high" are the same key).
+func quotaMatchKey(model string) string {
+	return strings.ReplaceAll(rateLimitModelKey(strings.TrimSpace(model)), ".", "-")
+}
+
+// accountSupportsQuotaModel reports whether account's quota cache lists model:
+// the same key, or the key plus one thinking tier (a bare family id such as
+// "claude-sonnet-5-5" matches "claude-sonnet-5-5-high"). Any other prefix is a
+// different model ("claude-sonnet-5" does not match "claude-sonnet-5-5-high").
 func accountSupportsQuotaModel(account *Account, model string) bool {
-	if account == nil || account.Quota.Models == nil {
+	if account == nil || len(account.Quota.Models) == 0 {
 		return false
 	}
-	normalized := strings.ReplaceAll(model, ".", "-")
-	canon := rateLimitModelKey(normalized)
-	trimmed := strings.ToLower(strings.TrimSpace(normalized))
-	prefix := trimmed + "-"
-	canonPrefix := ""
-	if canon != "" {
-		canonPrefix = canon + "-"
+	want := quotaMatchKey(model)
+	if want == "" {
+		return false
 	}
-
-	for k := range account.Quota.Models {
-		kNorm := strings.ToLower(strings.ReplaceAll(k, ".", "-"))
-		if kNorm == trimmed || (canon != "" && kNorm == canon) {
-			return true
-		}
-		if trimmed != "" && strings.HasPrefix(kNorm, prefix) {
-			return true
-		}
-		if canonPrefix != "" && strings.HasPrefix(kNorm, canonPrefix) {
+	for key := range account.Quota.Models {
+		have := quotaMatchKey(key)
+		if have == want || stripTierSuffix(have) == want {
 			return true
 		}
 	}

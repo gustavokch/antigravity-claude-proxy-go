@@ -211,3 +211,27 @@ func TestAccountsWithQuotaModel_MatchesDotNotation(t *testing.T) {
 		}
 	}
 }
+
+// A family prefix is not a tier: "claude-sonnet-5" must not match an account
+// that only holds "claude-sonnet-5-5-high", and "claude" must match nothing.
+func TestAccountsWithQuotaModel_RejectsNonTierPrefix(t *testing.T) {
+	t.Parallel()
+	mgr, err := New(Options{Accounts: []*Account{{
+		Email:   "capable@example.com",
+		Enabled: true,
+		Quota:   Quota{Models: map[string]ModelQuota{"claude-sonnet-5-5-high": {}}},
+	}}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, req := range []string{"claude-sonnet-5", "claude", "claude-sonnet"} {
+		if accs := mgr.AccountsWithQuotaModel(req); len(accs) != 0 {
+			t.Errorf("AccountsWithQuotaModel(%q) = %v, want none", req, accs)
+		}
+	}
+	for _, req := range []string{"claude-sonnet-5-5", "claude-sonnet-5-5-high", "claude-sonnet-5.5-high", "claude-sonnet-5-5-high[1m]", "Claude-Sonnet-5-5-High"} {
+		if accs := mgr.AccountsWithQuotaModel(req); len(accs) != 1 {
+			t.Errorf("AccountsWithQuotaModel(%q) = %v, want [capable@example.com]", req, accs)
+		}
+	}
+}
