@@ -1048,3 +1048,55 @@ func TestModelThresholdFor_NormalizesSuffixAndCase(t *testing.T) {
 		t.Errorf("modelThresholdFor should not resolve an unrelated model")
 	}
 }
+
+func TestManager_SelectFiltersAccountsByModelSupport(t *testing.T) {
+	t.Parallel()
+	capable := &Account{
+		Email:   "capable@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"claude-sonnet-5-5-high": {},
+				"gemini-3.8-flash-high":  {},
+			},
+		},
+	}
+	legacy := &Account{
+		Email:   "legacy@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"claude-sonnet-4-6":     {},
+				"gemini-3.8-flash-high": {},
+			},
+		},
+	}
+	mgr, err := New(Options{
+		Accounts: []*Account{legacy, capable},
+		Strategy: "round-robin",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Requesting Claude 5.5 must NEVER select legacy account
+	for i := range 5 {
+		sel := mgr.Select("claude-sonnet-5-5-high")
+		if sel.Account == nil || sel.Account.Email != "capable@example.com" {
+			t.Fatalf("iteration %d: expected capable@example.com, got %v", i, sel.Account)
+		}
+	}
+
+	// Requesting Claude 4.6 must select legacy account
+	sel46 := mgr.Select("claude-sonnet-4-6")
+	if sel46.Account == nil || sel46.Account.Email != "legacy@example.com" {
+		t.Fatalf("expected legacy@example.com, got %v", sel46.Account)
+	}
+
+	// When capable is rate limited for claude-5-5, selection must NOT fall back to legacy
+	mgr.MarkRateLimited(capable, "claude-sonnet-5-5-high", time.Minute)
+	selBlocked := mgr.Select("claude-sonnet-5-5-high")
+	if selBlocked.Account != nil {
+		t.Fatalf("expected nil account when capable is rate limited, got %v", selBlocked.Account.Email)
+	}
+}

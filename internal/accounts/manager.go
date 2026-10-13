@@ -887,6 +887,23 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	return Selection{Account: best.account}
 }
 
+// poolSupportsModelLocked reports whether any active, valid account in the
+// manager's pool has explicitly recorded quota for model (or its prefix/key).
+func (manager *Manager) poolSupportsModelLocked(model string) bool {
+	if strings.TrimSpace(model) == "" {
+		return false
+	}
+	for _, account := range manager.accounts {
+		if account == nil || !account.Enabled || account.IsInvalid {
+			continue
+		}
+		if accountSupportsQuotaModel(account, model) {
+			return true
+		}
+	}
+	return false
+}
+
 func (manager *Manager) usableLocked(account *Account, model string) bool {
 	if account == nil || !account.Enabled || account.IsInvalid {
 		return false
@@ -897,6 +914,14 @@ func (manager *Manager) usableLocked(account *Account, model string) bool {
 	}
 	if limit := account.ModelRateLimits[rateLimitModelKey(model)]; limit != nil && limit.IsRateLimited && limit.ResetTimeMS > now {
 		return false
+	}
+	// In a heterogeneous pool where at least one account explicitly supports
+	// model, filter out accounts whose non-empty quota models do not support it.
+	// Accounts with uninitialized quota (len == 0) remain usable to allow initial discovery.
+	if strings.TrimSpace(model) != "" && len(account.Quota.Models) > 0 {
+		if manager.poolSupportsModelLocked(model) && !accountSupportsQuotaModel(account, model) {
+			return false
+		}
 	}
 	return true
 }
