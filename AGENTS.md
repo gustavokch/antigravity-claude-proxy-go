@@ -48,6 +48,7 @@ Overriding anything *breaks* the match.
 - Git hooks (opt-in): `make install-hooks` points `core.hooksPath` at `scripts/git-hooks`, which refuses a commit whose staged Go files are not gofmt-clean. Bypass once with `git commit --no-verify` or `SKIP_GOFMT_HOOK=1`.
 - Proto: `protodump -output ./proto /root/.local/bin/agy` then `protoc --go_out=gen --go-grpc_out=gen ...`
 - Fingerprint test: capture with `tcpdump -i any -w /tmp/go.pcap host daily-cloudcode-pa.googleapis.com -c 30` while hitting the proxy (generation only goes to daily; on macOS use `tcpdump -i pktap,all -P` as in `.reference/fingerprint-recheck-20260924.txt`), then run the tshark gate above.
+- Git remote: ALWAYS push to `fork` (`git push fork <branch>`). NEVER push to `origin`.
 
 ## Definition of done
 
