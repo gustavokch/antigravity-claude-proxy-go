@@ -597,6 +597,31 @@ func (manager *Manager) MarkFailure(account *Account, model string) {
 	}
 }
 
+// MarkModelUnavailable applies a 24-hour rate-limit block for model on account
+// and removes it from account.Quota.Models when upstream returns 404 Not Found.
+func (manager *Manager) MarkModelUnavailable(account *Account, model string) {
+	if account == nil {
+		return
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	key := rateLimitModelKey(model)
+	if key != "" {
+		account.ModelRateLimits[key] = &RateLimit{
+			IsRateLimited: true,
+			ResetTimeMS:   manager.now().Add(24 * time.Hour).UnixMilli(),
+			ActualResetMS: (24 * time.Hour).Milliseconds(),
+		}
+	}
+	if account.Quota.Models != nil {
+		delete(account.Quota.Models, model)
+		if key != "" {
+			delete(account.Quota.Models, key)
+		}
+	}
+}
+
 func (manager *Manager) MarkSuccess(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()

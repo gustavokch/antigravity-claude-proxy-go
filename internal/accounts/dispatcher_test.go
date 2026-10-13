@@ -636,3 +636,124 @@ func TestModelFetchCountsAgainstTheAccountRate(t *testing.T) {
 		t.Fatalf("inFlight after the call returned: got %d, want 0", inFlight)
 	}
 }
+
+type notFoundThenSuccessClient struct {
+	blockingModelsClient
+	email string
+}
+
+func (c *notFoundThenSuccessClient) StreamGenerateContent(ctx context.Context, request any, options cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	if c.email == "acc1@example.com" {
+		return cloudcode.Response{}, &cloudcode.HTTPError{
+			StatusCode: 404,
+			Body:       `{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}`,
+		}
+	}
+	return cloudcode.Response{}, nil
+}
+
+type accountTokenResolver struct{}
+
+func (accountTokenResolver) Resolve(ctx context.Context, account *Account) (auth.Credentials, error) {
+	return auth.Credentials{AccessToken: account.Email, Email: account.Email}, nil
+}
+
+func (accountTokenResolver) Invalidate(string) {}
+
+func TestStreamGenerateContent_404RotatesToCapableAccount(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	close(release)
+	manager, err := New(Options{
+		Accounts: []*Account{
+			{Email: "acc1@example.com", Enabled: true},
+			{Email: "acc2@example.com", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:  manager,
+		Resolver: accountTokenResolver{},
+		NewClient: func(email string) CloudClient {
+			return &notFoundThenSuccessClient{
+				blockingModelsClient: blockingModelsClient{release: release},
+				email:                email,
+			}
+		},
+		ProjectID: "test-proj-404",
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+	dispatcher.cacheCatalog([]byte(`{
+		"models": {
+			"claude-sonnet-5-5-high": {"displayName": "Claude Sonnet 5.5 (High)"}
+		},
+		"agentModelSorts": [{"groups": [{"modelIds": ["claude-sonnet-5-5-high"]}]}]
+	}`))
+
+	ctx, meta := cloudcode.WithExecutionMetadata(context.Background())
+	req := map[string]any{
+		"model": "claude-sonnet-5-5-high",
+	}
+
+	_, err = dispatcher.StreamGenerateContent(ctx, req, func(cloudcode.SSEEvent) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerateContent failed on 404 failover: %v", err)
+	}
+
+	if meta.Account != "acc2@example.com" {
+		t.Errorf("meta.Account = %q, want %q", meta.Account, "acc2@example.com")
+	}
+}
+
+func TestStoreCatalog_MergesWithExistingCatalog(t *testing.T) {
+	t.Parallel()
+	manager, err := New(Options{
+		Accounts: []*Account{{Email: "acc1@example.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return &blockingModelsClient{} },
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+
+	catA := []byte(`{
+		"models": {
+			"claude-sonnet-5-5-high": {"displayName": "Claude Sonnet 5.5 (High)"}
+		},
+		"agentModelSorts": [{"groups": [{"modelIds": ["claude-sonnet-5-5-high"]}]}]
+	}`)
+	catB := []byte(`{
+		"models": {
+			"claude-sonnet-4-6": {"displayName": "Claude Sonnet 4.6"}
+		},
+		"agentModelSorts": [{"groups": [{"modelIds": ["claude-sonnet-4-6"]}]}]
+	}`)
+
+	dispatcher.cacheCatalog(catA)
+	dispatcher.cacheCatalog(catB)
+
+	cached := dispatcher.CachedCatalog()
+	if cached == nil {
+		t.Fatal("expected cached catalog")
+	}
+	if _, err := cached.Resolve("claude-sonnet-5-5-high"); err != nil {
+		t.Fatalf("expected claude-sonnet-5-5-high preserved after catB update, err=%v", err)
+	}
+	if _, err := cached.Resolve("claude-sonnet-4-6"); err != nil {
+		t.Fatalf("expected claude-sonnet-4-6 present from catB, err=%v", err)
+	}
+}

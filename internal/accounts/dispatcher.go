@@ -641,7 +641,11 @@ func (dispatcher *Dispatcher) cacheCatalog(body []byte) {
 func (dispatcher *Dispatcher) storeCatalog(catalog *modelcatalog.Catalog) {
 	dispatcher.mu.Lock()
 	defer dispatcher.mu.Unlock()
-	dispatcher.catalog = catalog
+	if dispatcher.catalog == nil {
+		dispatcher.catalog = catalog
+	} else {
+		dispatcher.catalog = dispatcher.catalog.Merge(catalog)
+	}
 	dispatcher.catalogAt = dispatcher.now()
 }
 
@@ -854,8 +858,13 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 			return true
 		}
 		return false
-	case http.StatusBadRequest, http.StatusNotFound:
+	case http.StatusBadRequest:
 		return false
+	case http.StatusNotFound:
+		if model != "" && account != nil {
+			dispatcher.manager.MarkModelUnavailable(account, model)
+		}
+		return true
 	case http.StatusTooManyRequests:
 		wait := Decorrelate(UpstreamCooldown(upstreamError, dispatcher.manager.FailureCount(account), dispatcher.now()).Wait, dispatcher.random)
 		email := ""
