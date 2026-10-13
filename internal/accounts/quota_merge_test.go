@@ -227,7 +227,7 @@ func TestStreamGenerateContent_RefreshesLiveQuotaThrottled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dispatcher.storeCatalog(catalog)
+	dispatcher.storeCatalog("", catalog)
 
 	consume := func(cloudcode.SSEEvent) error { return nil }
 	if _, err := dispatcher.StreamGenerateContent(context.Background(),

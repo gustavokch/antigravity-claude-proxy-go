@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -97,6 +98,9 @@ type Dispatcher struct {
 	clients   map[string]accountClient
 	catalog   *modelcatalog.Catalog
 	catalogAt time.Time
+	// catalogs holds each account's latest model list, keyed by email and
+	// guarded by mu. catalog is their union; see storeCatalog.
+	catalogs map[string]catalogSnapshot
 	// modelRecoveryAt is the last quota-cache catalog recovery attempt per
 	// model key, guarded by mu; it debounces recoverModelFromQuotaCache.
 	modelRecoveryAt map[string]time.Time
@@ -105,6 +109,13 @@ type Dispatcher struct {
 	// liveQuotaRefreshMS is the last live-quota refresh per account email,
 	// guarded by mu; it throttles post-request quota RPCs.
 	liveQuotaRefreshMS map[string]int64
+}
+
+// catalogSnapshot is one account's model list and when it was fetched.
+type catalogSnapshot struct {
+	email   string
+	catalog *modelcatalog.Catalog
+	at      time.Time
 }
 
 func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
@@ -315,7 +326,7 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 		})
 		if err == nil {
 			dispatcher.manager.MarkSuccess(selection.Account, "")
-			dispatcher.cacheCatalog(response.Body)
+			dispatcher.cacheCatalog(selection.Account.Email, response.Body)
 			dispatcher.updateAccountQuota(selection.Account, response.Body)
 			dispatcher.refreshLiveQuota(ctx, selection.Account, modelsClient, dispatcher.project(selection.Account))
 			return response, nil
@@ -356,7 +367,7 @@ func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context
 		return cloudcode.Response{}, err
 	}
 	dispatcher.manager.MarkSuccess(account, "")
-	dispatcher.cacheCatalog(response.Body)
+	dispatcher.cacheCatalog(account.Email, response.Body)
 	dispatcher.updateAccountQuota(account, response.Body)
 	dispatcher.refreshLiveQuota(fetchCtx, account, modelsClient, dispatcher.project(account))
 	return response, nil
@@ -618,7 +629,7 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 			if err != nil {
 				return modelcatalog.Model{}, err
 			}
-			dispatcher.storeCatalog(catalog)
+			dispatcher.storeCatalog("", catalog)
 		}
 	}
 	model, err := catalog.ResolveWithRequest(requested, request)
@@ -638,22 +649,51 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 	return model, err
 }
 
-func (dispatcher *Dispatcher) cacheCatalog(body []byte) {
+func (dispatcher *Dispatcher) cacheCatalog(email string, body []byte) {
 	catalog, err := modelcatalog.Parse(body)
 	if err == nil {
-		dispatcher.storeCatalog(catalog)
+		dispatcher.storeCatalog(email, catalog)
 	}
 }
 
-func (dispatcher *Dispatcher) storeCatalog(catalog *modelcatalog.Catalog) {
+// storeCatalog records email's model list and rebuilds the shared catalog as
+// the union of every snapshot fetched within modelCacheTTL. Accounts publish
+// different lists, so one account's list must not hide another's models; a
+// model an account withdraws leaves once that account's next list replaces its
+// snapshot (or the snapshot ages past modelCacheTTL). The snapshot just stored
+// is merged last, so it wins on overlapping ids and the default model.
+func (dispatcher *Dispatcher) storeCatalog(email string, catalog *modelcatalog.Catalog) {
 	dispatcher.mu.Lock()
 	defer dispatcher.mu.Unlock()
-	if dispatcher.catalog == nil {
-		dispatcher.catalog = catalog
-	} else {
-		dispatcher.catalog = dispatcher.catalog.Merge(catalog)
+	now := dispatcher.now()
+	if dispatcher.catalogs == nil {
+		dispatcher.catalogs = make(map[string]catalogSnapshot)
 	}
-	dispatcher.catalogAt = dispatcher.now()
+	current := catalogSnapshot{email: email, catalog: catalog, at: now}
+	dispatcher.catalogs[email] = current
+	others := make([]catalogSnapshot, 0, len(dispatcher.catalogs))
+	for key, snapshot := range dispatcher.catalogs {
+		if key == email {
+			continue
+		}
+		if now.Sub(snapshot.at) >= dispatcher.modelCacheTTL {
+			delete(dispatcher.catalogs, key)
+			continue
+		}
+		others = append(others, snapshot)
+	}
+	sort.Slice(others, func(i, j int) bool {
+		if !others[i].at.Equal(others[j].at) {
+			return others[i].at.Before(others[j].at)
+		}
+		return others[i].email < others[j].email
+	})
+	var union *modelcatalog.Catalog
+	for _, snapshot := range others {
+		union = union.Merge(snapshot.catalog)
+	}
+	dispatcher.catalog = union.Merge(current.catalog)
+	dispatcher.catalogAt = now
 }
 
 // CachedCatalog returns the last successfully fetched model catalog without

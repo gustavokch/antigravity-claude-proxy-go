@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -688,7 +689,7 @@ func TestStreamGenerateContent_404RotatesToCapableAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new dispatcher: %v", err)
 	}
-	dispatcher.cacheCatalog([]byte(`{
+	dispatcher.cacheCatalog("acc1@example.com", []byte(`{
 		"models": {
 			"claude-sonnet-5-5-high": {"displayName": "Claude Sonnet 5.5 (High)"}
 		},
@@ -712,15 +713,15 @@ func TestStreamGenerateContent_404RotatesToCapableAccount(t *testing.T) {
 	}
 }
 
-func TestStoreCatalog_MergesWithExistingCatalog(t *testing.T) {
+// The shared catalog is the union of each account's latest list: a model one
+// account publishes survives another account's refresh, and leaves when its
+// own publisher's next list drops it.
+func TestStoreCatalog_UnionsPerAccountSnapshots(t *testing.T) {
 	t.Parallel()
-	manager, err := New(Options{
-		Accounts: []*Account{{Email: "acc1@example.com", Enabled: true}},
-	})
+	manager, err := New(Options{Accounts: []*Account{{Email: "acc1@example.com", Enabled: true}}})
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
 	}
-
 	dispatcher, err := NewDispatcher(DispatcherOptions{
 		Manager:   manager,
 		Resolver:  stubResolver{},
@@ -729,33 +730,67 @@ func TestStoreCatalog_MergesWithExistingCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new dispatcher: %v", err)
 	}
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	dispatcher.now = func() time.Time { return now }
 
-	catA := []byte(`{
-		"models": {
-			"claude-sonnet-5-5-high": {"displayName": "Claude Sonnet 5.5 (High)"}
-		},
-		"agentModelSorts": [{"groups": [{"modelIds": ["claude-sonnet-5-5-high"]}]}]
-	}`)
-	catB := []byte(`{
-		"models": {
-			"claude-sonnet-4-6": {"displayName": "Claude Sonnet 4.6"}
-		},
-		"agentModelSorts": [{"groups": [{"modelIds": ["claude-sonnet-4-6"]}]}]
-	}`)
+	with55 := []byte(`{"models":{"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)"}},
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-5-5-high"]}]}]}`)
+	only46 := []byte(`{"models":{"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6"}},
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-4-6"]}]}]}`)
+	resolves := func(id string) bool {
+		_, err := dispatcher.CachedCatalog().Resolve(id)
+		return err == nil
+	}
 
-	dispatcher.cacheCatalog(catA)
-	dispatcher.cacheCatalog(catB)
+	dispatcher.cacheCatalog("acc1@example.com", with55)
+	dispatcher.cacheCatalog("acc2@example.com", only46)
+	if !resolves("claude-sonnet-5-5-high") || !resolves("claude-sonnet-4-6") {
+		t.Fatal("union lost a model published by one account")
+	}
 
-	cached := dispatcher.CachedCatalog()
-	if cached == nil {
-		t.Fatal("expected cached catalog")
+	// acc1 withdraws 5.5: its next list replaces its snapshot.
+	dispatcher.cacheCatalog("acc1@example.com", only46)
+	if resolves("claude-sonnet-5-5-high") {
+		t.Error("withdrawn model still resolves after its publisher refetched")
 	}
-	if _, err := cached.Resolve("claude-sonnet-5-5-high"); err != nil {
-		t.Fatalf("expected claude-sonnet-5-5-high preserved after catB update, err=%v", err)
+	if !resolves("claude-sonnet-4-6") {
+		t.Error("claude-sonnet-4-6 lost")
 	}
-	if _, err := cached.Resolve("claude-sonnet-4-6"); err != nil {
-		t.Fatalf("expected claude-sonnet-4-6 present from catB, err=%v", err)
+
+	// A snapshot older than modelCacheTTL no longer contributes.
+	dispatcher.cacheCatalog("acc3@example.com", with55)
+	now = now.Add(dispatcher.modelCacheTTL + time.Second)
+	dispatcher.cacheCatalog("acc2@example.com", only46)
+	if resolves("claude-sonnet-5-5-high") {
+		t.Error("snapshot older than modelCacheTTL still contributes")
 	}
+}
+
+// Regression guard for round-1 item 1: resolveModel must not read the catalog
+// fields without the dispatcher lock. Run under -race.
+func TestResolveModelDoesNotRaceStoreCatalog(t *testing.T) {
+	t.Parallel()
+	dispatcher, _, _, _, _ := recoveryPool(t, catalogWithModel)
+	catalog := dispatcher.CachedCatalog()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				dispatcher.storeCatalog("a@example.com", catalog)
+			}
+		}
+	}()
+	for range 200 {
+		_, _ = dispatcher.resolveModel(context.Background(), "unknown-model-xyz", nil)
+	}
+	close(stop)
+	wg.Wait()
 }
 
 type cancelingResolver struct{}

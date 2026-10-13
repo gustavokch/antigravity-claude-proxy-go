@@ -319,7 +319,7 @@ func TestQuotaKeyPrefersTheCatalogTierId(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dispatcher.storeCatalog(catalog)
+	dispatcher.storeCatalog("", catalog)
 
 	body := `{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",` +
 		`"reason":"QUOTA_EXHAUSTED","metadata":{"model":"gemini-3.8-flash-tiered",` +
