@@ -597,6 +597,18 @@ func (manager *Manager) MarkFailure(account *Account, model string) {
 	}
 }
 
+// stripTierSuffix removes any trailing thinking tier (-high, -medium, -low)
+// from a model string.
+func stripTierSuffix(model string) string {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	for _, suffix := range []string{"-high", "-medium", "-low"} {
+		if strings.HasSuffix(lower, suffix) {
+			return strings.TrimSpace(lower[:len(lower)-len(suffix)])
+		}
+	}
+	return lower
+}
+
 // MarkModelUnavailable applies a 24-hour rate-limit block for model on account
 // and removes it from account.Quota.Models when upstream returns 404 Not Found.
 func (manager *Manager) MarkModelUnavailable(account *Account, model string) {
@@ -608,16 +620,41 @@ func (manager *Manager) MarkModelUnavailable(account *Account, model string) {
 
 	key := rateLimitModelKey(model)
 	if key != "" {
-		account.ModelRateLimits[key] = &RateLimit{
+		if account.ModelRateLimits == nil {
+			account.ModelRateLimits = make(map[string]*RateLimit)
+		}
+		rateLimit := &RateLimit{
 			IsRateLimited: true,
 			ResetTimeMS:   manager.now().Add(24 * time.Hour).UnixMilli(),
 			ActualResetMS: (24 * time.Hour).Milliseconds(),
 		}
+		account.ModelRateLimits[key] = rateLimit
+		family := stripTierSuffix(key)
+		if family != "" && family != key {
+			account.ModelRateLimits[family] = rateLimit
+		}
 	}
 	if account.Quota.Models != nil {
-		delete(account.Quota.Models, model)
-		if key != "" {
-			delete(account.Quota.Models, key)
+		modelLower := strings.ToLower(strings.TrimSpace(model))
+		keyLower := strings.ToLower(key)
+		familyLower := stripTierSuffix(keyLower)
+
+		familyPrefix := ""
+		if familyLower != "" {
+			familyPrefix = familyLower + "-"
+		}
+		canonPrefix := ""
+		if keyLower != "" {
+			canonPrefix = keyLower + "-"
+		}
+		for k := range account.Quota.Models {
+			kLower := strings.ToLower(k)
+			if kLower == modelLower || (keyLower != "" && kLower == keyLower) ||
+				(familyLower != "" && kLower == familyLower) ||
+				(canonPrefix != "" && strings.HasPrefix(kLower, canonPrefix)) ||
+				(familyPrefix != "" && strings.HasPrefix(kLower, familyPrefix)) {
+				delete(account.Quota.Models, k)
+			}
 		}
 	}
 }

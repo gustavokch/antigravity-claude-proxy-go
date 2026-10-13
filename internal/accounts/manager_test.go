@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1098,5 +1099,46 @@ func TestManager_SelectFiltersAccountsByModelSupport(t *testing.T) {
 	selBlocked := mgr.Select("claude-sonnet-5-5-high")
 	if selBlocked.Account != nil {
 		t.Fatalf("expected nil account when capable is rate limited, got %v", selBlocked.Account.Email)
+	}
+}
+
+func TestMarkModelUnavailable_GuardsNilMapAndPurgesFamilyVariants(t *testing.T) {
+	t.Parallel()
+	mgr, err := New(Options{
+		Accounts: []*Account{
+			{
+				Email:   "test@example.com",
+				Enabled: true,
+				// ModelRateLimits is nil initially
+				Quota: Quota{
+					Models: map[string]ModelQuota{
+						"Claude-Sonnet-5-5-High": {},
+						"claude-sonnet-5-5-low":  {},
+						"gemini-3.8-flash-high":  {},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	acc := mgr.accounts[0]
+	// Must not panic on nil ModelRateLimits
+	mgr.MarkModelUnavailable(acc, "claude-sonnet-5-5-high")
+
+	if acc.ModelRateLimits == nil || !acc.ModelRateLimits["claude-sonnet-5-5"].IsRateLimited {
+		t.Errorf("expected rate limit set for canonical key claude-sonnet-5-5")
+	}
+
+	// Must purge both high and low tier variants of claude-sonnet-5-5
+	for k := range acc.Quota.Models {
+		if strings.HasPrefix(strings.ToLower(k), "claude-sonnet-5-5") {
+			t.Errorf("expected all claude-sonnet-5-5 keys purged, found %q", k)
+		}
+	}
+	if _, ok := acc.Quota.Models["gemini-3.8-flash-high"]; !ok {
+		t.Errorf("expected unrelated model gemini-3.8-flash-high preserved")
 	}
 }
