@@ -102,9 +102,13 @@ type Dispatcher struct {
 	// catalogs holds each account's latest model list, keyed by email and
 	// guarded by mu. catalog is their union; see storeCatalog.
 	catalogs map[string]catalogSnapshot
-	// modelRecoveryAt is the last quota-cache catalog recovery attempt per
-	// model key, guarded by mu; it debounces recoverModelFromQuotaCache.
+	// modelRecoveryAt is the time of the last definitive negative recovery
+	// pass per model key (every candidate answered and none publishes the
+	// model), guarded by mu; it debounces recoverModelFromQuotaCache.
 	modelRecoveryAt map[string]time.Time
+	// modelRecoveries is the in-flight recovery pass per model key, guarded
+	// by mu; concurrent misses for one model share it.
+	modelRecoveries map[string]*modelRecoveryCall
 	// modelsFetch is the shared in-flight catalog fetch; guarded by mu.
 	modelsFetch *modelFetchCall
 	// liveQuotaRefreshMS is the last live-quota refresh per account email,
@@ -563,56 +567,107 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	return cloudcode.Response{}, fmt.Errorf("max retries exceeded: %w", lastError)
 }
 
+// modelRecoveryCall is one shared recovery pass for a model key. found is set
+// before done is closed, so every waiter reads it without locking.
+type modelRecoveryCall struct {
+	done  chan struct{}
+	found bool
+}
+
 // recoverModelFromQuotaCache handles a model missing from the shared catalog
-// that an account's quota cache still lists. The shared list is fetched with
-// one account and can be poisoned by an account whose upstream list does not
-// publish the model; refreshing with an account that does publish it recovers
-// the catalog. Attempts are debounced per model by missingModelFetchFloor so a
-// client retrying an unpublishable model cannot drive an upstream fetch per
-// request. Accounts are tried in turn until one's fetch yields the model; a
-// failed fetch is recorded through rotateForError.
+// that an account's quota cache still lists: a list fetched with that account
+// can add the model to the catalog. Concurrent misses for one model share one
+// pass, which runs in the background so a caller that disconnects does not
+// abort it for the others. The caller waits for the pass or for its own ctx.
 func (dispatcher *Dispatcher) recoverModelFromQuotaCache(ctx context.Context, requested string, request map[string]any) (modelcatalog.Model, bool) {
-	accounts := dispatcher.manager.AccountsWithQuotaModel(requested)
-	if len(accounts) == 0 || !dispatcher.claimRecoveryAttempt(requested) {
+	call := dispatcher.startModelRecovery(requested)
+	if call == nil {
 		return modelcatalog.Model{}, false
 	}
+	select {
+	case <-call.done:
+	case <-ctx.Done():
+		return modelcatalog.Model{}, false
+	}
+	if !call.found {
+		return modelcatalog.Model{}, false
+	}
+	catalog := dispatcher.CachedCatalog()
+	if catalog == nil {
+		return modelcatalog.Model{}, false
+	}
+	model, err := catalog.ResolveWithRequest(requested, request)
+	return model, err == nil
+}
+
+// startModelRecovery returns the in-flight pass for requested, or starts one.
+// It returns nil when no usable account lists the model, or when a definitive
+// negative pass for it ran within missingModelFetchFloor.
+func (dispatcher *Dispatcher) startModelRecovery(requested string) *modelRecoveryCall {
+	key := rateLimitModelKey(requested)
+	if key == "" {
+		return nil
+	}
+	accounts := dispatcher.manager.AccountsWithQuotaModel(requested)
+	dispatcher.mu.Lock()
+	defer dispatcher.mu.Unlock()
+	if call := dispatcher.modelRecoveries[key]; call != nil {
+		return call
+	}
+	if len(accounts) == 0 {
+		return nil
+	}
+	if last, seen := dispatcher.modelRecoveryAt[key]; seen && dispatcher.now().Sub(last) < missingModelFetchFloor {
+		return nil
+	}
+	call := &modelRecoveryCall{done: make(chan struct{})}
+	if dispatcher.modelRecoveries == nil {
+		dispatcher.modelRecoveries = make(map[string]*modelRecoveryCall)
+	}
+	dispatcher.modelRecoveries[key] = call
+	go dispatcher.runModelRecovery(key, requested, accounts, call)
+	return call
+}
+
+// runModelRecovery tries each candidate in order, on a background context
+// bounded by fetchModelsTimeout, until one's list adds the model. Only a
+// definitive negative — every candidate answered and none publishes the
+// model — stamps the debounce; a pass with any failed fetch is retried by the
+// next miss. Each failure is recorded on the account (cooldown, invalidation,
+// failure count), which removes or demotes it as a later candidate.
+func (dispatcher *Dispatcher) runModelRecovery(key, requested string, accounts []*Account, call *modelRecoveryCall) {
+	ctx, cancel := context.WithTimeout(context.Background(), fetchModelsTimeout)
+	defer cancel()
+	definitive := true
 	for _, account := range accounts {
 		if _, err := dispatcher.fetchAvailableModelsForAccount(ctx, account); err != nil {
+			definitive = false
 			continue
 		}
 		if catalog := dispatcher.CachedCatalog(); catalog != nil {
-			if model, err := catalog.ResolveWithRequest(requested, request); err == nil {
-				return model, true
+			if _, err := catalog.Resolve(requested); err == nil {
+				call.found = true
+				break
 			}
 		}
-		// Fetched fine but this account does not publish it either; the next
-		// account may.
 	}
-	return modelcatalog.Model{}, false
-}
-
-// claimRecoveryAttempt reports whether a recovery fetch for model may run now,
-// and stamps the attempt. It is false while the previous attempt for the same
-// model is inside missingModelFetchFloor.
-func (dispatcher *Dispatcher) claimRecoveryAttempt(model string) bool {
-	key := rateLimitModelKey(model)
 	dispatcher.mu.Lock()
-	defer dispatcher.mu.Unlock()
-	now := dispatcher.now()
-	if last, seen := dispatcher.modelRecoveryAt[key]; seen && now.Sub(last) < missingModelFetchFloor {
-		return false
+	delete(dispatcher.modelRecoveries, key)
+	if !call.found && definitive {
+		if dispatcher.modelRecoveryAt == nil {
+			dispatcher.modelRecoveryAt = make(map[string]time.Time)
+		}
+		dispatcher.modelRecoveryAt[key] = dispatcher.now()
 	}
-	if dispatcher.modelRecoveryAt == nil {
-		dispatcher.modelRecoveryAt = make(map[string]time.Time)
-	}
-	dispatcher.modelRecoveryAt[key] = now
-	return true
+	dispatcher.mu.Unlock()
+	close(call.done)
 }
 
-// missingModelFetchFloor debounces the background catalog refresh that a
-// model miss triggers: at most one upstream list-models call per floor
-// (shared by all models) while fetches succeed, the same catch-up spacing
-// the pre-24h TTL gave for free.
+// missingModelFetchFloor spaces two kinds of catalog work a model miss can
+// trigger. The background refresh in resolveModel: at most one upstream
+// list-models call per floor, shared by all models, keyed on the last
+// successful fetch. And quota-cache recovery: per model, a definitive negative
+// pass suppresses another pass for that model for one floor.
 const missingModelFetchFloor = 5 * time.Minute
 
 func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string, request map[string]any) (modelcatalog.Model, error) {

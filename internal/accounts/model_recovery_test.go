@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -338,4 +339,68 @@ func TestRecoveryRecordsUpstreamHTTPErrors(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A pass in which every candidate failed is not a verdict on the model: the
+// next request, once upstream answers again, must recover instead of waiting
+// out missingModelFetchFloor.
+func TestRecoveryFailureDoesNotConsumeTheDebounce(t *testing.T) {
+	t.Parallel()
+	dispatcher, a, b, _, clock := recoveryPool(t, catalogWithModel)
+	setModelsErr(a, errors.New("transient 503"))
+	setModelsErr(b, errors.New("transient 503"))
+	if _, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil); !isSelectionError(err, recoveryModel) {
+		t.Fatalf("attempt with upstream down: err = %v, want selection error", err)
+	}
+	setModelsErr(a, nil)
+	setModelsErr(b, nil)
+	*clock = clock.Add(time.Second)
+	model, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
+	if err != nil || model.ID != recoveryModel {
+		t.Fatalf("attempt after upstream healed = %q, %v; want %q", model.ID, err, recoveryModel)
+	}
+}
+
+// A request that misses while another request's recovery is in flight waits
+// for that pass and resolves, instead of failing with HTTP 400.
+func TestConcurrentRequestJoinsInFlightRecovery(t *testing.T) {
+	t.Parallel()
+	dispatcher, a, b, _, _ := recoveryPool(t, catalogWithModel)
+	aSeed := a.modelsCallCount()
+	release := make(chan struct{})
+	b.mu.Lock()
+	b.modelsBlock = release
+	b.modelsBlockFrom = 1 // B's first recovery fetch parks
+	b.mu.Unlock()
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
+		first <- err
+	}()
+	// A is tried first and does not publish the model; once its fetch is done
+	// the pass is parked on B and still in flight.
+	deadline := time.Now().Add(5 * time.Second)
+	for a.modelsCallCount() == aSeed {
+		if time.Now().After(deadline) {
+			t.Fatal("recovery never reached account A")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	second := make(chan error, 1)
+	go func() {
+		_, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
+		second <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // let the second request reach the join
+	close(release)
+	if err := <-first; err != nil {
+		t.Errorf("request owning the recovery: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Errorf("concurrent request: %v, want it to wait for the in-flight recovery", err)
+	}
+	if got := b.modelsCallCount(); got != 1 {
+		t.Errorf("B models calls = %d, want 1 (one shared pass)", got)
+	}
 }
