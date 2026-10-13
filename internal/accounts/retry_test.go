@@ -113,16 +113,35 @@ type scriptedClient struct {
 	// racing the counter.
 	modelsBlock     chan struct{}
 	modelsBlockFrom int
+	// modelsHang makes FetchAvailableModels wait for its context to end and
+	// return the context error: an account that never answers.
+	modelsHang bool
+	// modelsBudget is the time left on the context deadline of the most
+	// recent FetchAvailableModels call (0 when it had no deadline).
+	modelsBudget time.Duration
 }
 
 func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
 	return cloudcode.Response{StatusCode: http.StatusOK, Body: []byte(`{"cloudaicompanionProject":{"id":"discovered"}}`)}, nil
 }
 
-func (client *scriptedClient) FetchAvailableModels(context.Context, string) (cloudcode.Response, error) {
+func (client *scriptedClient) FetchAvailableModels(ctx context.Context, _ string) (cloudcode.Response, error) {
 	client.mu.Lock()
 	block, blockFrom, pending := client.modelsBlock, client.modelsBlockFrom, client.modelsCalls+1
+	hang := client.modelsHang
+	if deadline, ok := ctx.Deadline(); ok {
+		client.modelsBudget = time.Until(deadline)
+	} else {
+		client.modelsBudget = 0
+	}
 	client.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		client.mu.Lock()
+		client.modelsCalls++
+		client.mu.Unlock()
+		return cloudcode.Response{}, ctx.Err()
+	}
 	if block != nil && blockFrom > 0 && pending >= blockFrom {
 		<-block
 	}

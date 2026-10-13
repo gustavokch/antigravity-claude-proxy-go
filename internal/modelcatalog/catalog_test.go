@@ -984,3 +984,58 @@ func TestThinkingLevelString(t *testing.T) {
 		}
 	}
 }
+
+func TestCatalog_MergeUnionsDisjointModels(t *testing.T) {
+	t.Parallel()
+	catA := &Catalog{
+		defaultID: "claude-sonnet-5-5-high",
+		selectable: []Model{
+			{ID: "claude-sonnet-5-5-high", DisplayName: "Claude Sonnet 5.5 (High)"},
+			{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"},
+		},
+		byID: map[string]Model{
+			"claude-sonnet-5-5-high": {ID: "claude-sonnet-5-5-high", DisplayName: "Claude Sonnet 5.5 (High)"},
+			"gemini-3.8-flash-high":  {ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"},
+		},
+		byDisplay: map[string]Model{
+			"claude sonnet 5.5 (high)": {ID: "claude-sonnet-5-5-high", DisplayName: "Claude Sonnet 5.5 (High)"},
+			"gemini 3.8 flash (high)":  {ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High)"},
+		},
+	}
+
+	catB := &Catalog{
+		defaultID: "claude-sonnet-4-6",
+		selectable: []Model{
+			{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
+			{ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High) Updated"},
+		},
+		byID: map[string]Model{
+			"claude-sonnet-4-6":     {ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
+			"gemini-3.8-flash-high": {ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High) Updated"},
+		},
+		byDisplay: map[string]Model{
+			"claude sonnet 4.6":               {ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
+			"gemini 3.8 flash (high) updated": {ID: "gemini-3.8-flash-high", DisplayName: "Gemini 3.8 Flash (High) Updated"},
+		},
+	}
+
+	merged := catA.Merge(catB)
+	if merged == nil {
+		t.Fatal("expected non-nil merged catalog")
+	}
+
+	// Must retain Claude 5.5 from catA
+	if m, err := merged.Resolve("claude-sonnet-5-5-high"); err != nil || m.ID != "claude-sonnet-5-5-high" {
+		t.Fatalf("expected claude-sonnet-5-5-high preserved, got err=%v m=%+v", err, m)
+	}
+
+	// Must include Claude 4.6 from catB
+	if m, err := merged.Resolve("claude-sonnet-4-6"); err != nil || m.ID != "claude-sonnet-4-6" {
+		t.Fatalf("expected claude-sonnet-4-6 merged in, got err=%v m=%+v", err, m)
+	}
+
+	// Overlapping model must be updated from catB
+	if m, err := merged.Resolve("gemini-3.8-flash-high"); err != nil || m.DisplayName != "Gemini 3.8 Flash (High) Updated" {
+		t.Fatalf("expected updated display name, got err=%v m=%+v", err, m)
+	}
+}

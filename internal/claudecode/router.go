@@ -196,6 +196,10 @@ func (r *Router) IsModelAllowed(requested string) bool {
 }
 
 // ResolveModel maps a requested model ID or alias to the canonical model ID.
+// Tiered family variants (claude-sonnet-5-5-high, claude-opus-5-5-medium[1m],
+// ...) are never matched by prefix, so they stay on the Cloud Code gateway
+// instead of being rewritten to a bare family id. Only an exact allowlist id
+// or an alias the operator configured can resolve a tiered name.
 func (r *Router) ResolveModel(requested string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -226,9 +230,12 @@ func (r *Router) ResolveModel(requested string) (string, bool) {
 
 	// 4. Prefix matching against known canonical IDs or aliases (longest prefix
 	// first). A hit that continues the version number is a different model,
-	// not a variant of the matched one, so it does not match.
+	// not a variant of the matched one, so it does not match. A hit whose
+	// remainder is a thinking tier is likewise a different model: tiered family
+	// variants are exclusive to Cloud Code and must never be collapsed onto a
+	// bare family id.
 	for _, pm := range r.prefixes {
-		if rest, ok := strings.CutPrefix(req, pm.prefix); ok && !continuesVersion(rest) {
+		if rest, ok := strings.CutPrefix(req, pm.prefix); ok && !continuesVersion(rest) && !startsWithThinkingTier(rest) {
 			return pm.canonicalID, true
 		}
 	}
@@ -257,6 +264,20 @@ func continuesVersion(rest string) bool {
 		digits++
 	}
 	return digits >= 1 && digits <= 3
+}
+
+// startsWithThinkingTier reports whether rest, the tail of a request after a
+// matched prefix, begins with a thinking tier (-low, -medium, -high) that ends
+// the id or is followed by another suffix ("[1m]", "-latest", "-20260101").
+// Such a request names a tiered model, not a variant of the matched one.
+func startsWithThinkingTier(rest string) bool {
+	t := strings.ToLower(rest)
+	for _, tier := range []string{"-low", "-medium", "-high"} {
+		if after, ok := strings.CutPrefix(t, tier); ok {
+			return after == "" || after[0] == '[' || after[0] == '-'
+		}
+	}
+	return false
 }
 
 // GetAllowedModels returns a slice of currently enabled models.

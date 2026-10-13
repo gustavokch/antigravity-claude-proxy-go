@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +91,7 @@ type Dispatcher struct {
 	now                      func() time.Time
 	random                   func() float64
 	modelCacheTTL            time.Duration
+	recoveryAccountTimeout   time.Duration
 	forensics429             *Forensics429Recorder
 	meter                    *throttleMeter
 
@@ -97,11 +99,28 @@ type Dispatcher struct {
 	clients   map[string]accountClient
 	catalog   *modelcatalog.Catalog
 	catalogAt time.Time
+	// catalogs holds each account's latest model list, keyed by email and
+	// guarded by mu. catalog is their union; see storeCatalog.
+	catalogs map[string]catalogSnapshot
+	// modelRecoveryAt is the time of the last definitive negative recovery
+	// pass per model key (every candidate answered and none publishes the
+	// model), guarded by mu; it debounces recoverModelFromQuotaCache.
+	modelRecoveryAt map[string]time.Time
+	// modelRecoveries is the in-flight recovery pass per model key, guarded
+	// by mu; concurrent misses for one model share it.
+	modelRecoveries map[string]*modelRecoveryCall
 	// modelsFetch is the shared in-flight catalog fetch; guarded by mu.
 	modelsFetch *modelFetchCall
 	// liveQuotaRefreshMS is the last live-quota refresh per account email,
 	// guarded by mu; it throttles post-request quota RPCs.
 	liveQuotaRefreshMS map[string]int64
+}
+
+// catalogSnapshot is one account's model list and when it was fetched.
+type catalogSnapshot struct {
+	email   string
+	catalog *modelcatalog.Catalog
+	at      time.Time
 }
 
 func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
@@ -155,6 +174,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		now:                      options.Now,
 		random:                   options.Random,
 		modelCacheTTL:            options.ModelCacheTTL,
+		recoveryAccountTimeout:   defaultRecoveryAccountTimeout,
 		forensics429:             options.Forensics429,
 		meter:                    newThrottleMeter(nil),
 		clients:                  make(map[string]accountClient),
@@ -210,6 +230,11 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 // token refresh it triggers, so work abandoned by one disconnected client
 // still completes and cannot run forever.
 const fetchModelsTimeout = 30 * time.Second
+
+// defaultRecoveryAccountTimeout bounds one account's list-models call inside a
+// catalog recovery pass. The pass as a whole is bounded by fetchModelsTimeout,
+// so one account that never answers cannot consume the whole budget.
+const defaultRecoveryAccountTimeout = 10 * time.Second
 
 // modelFetchCall is one shared catalog fetch. Concurrent FetchAvailableModels
 // callers attach to the same call; done is closed once response and err are
@@ -312,7 +337,7 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 		})
 		if err == nil {
 			dispatcher.manager.MarkSuccess(selection.Account, "")
-			dispatcher.cacheCatalog(response.Body)
+			dispatcher.cacheCatalog(selection.Account.Email, response.Body)
 			dispatcher.updateAccountQuota(selection.Account, response.Body)
 			dispatcher.refreshLiveQuota(ctx, selection.Account, modelsClient, dispatcher.project(selection.Account))
 			return response, nil
@@ -323,6 +348,47 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 		}
 	}
 	return cloudcode.Response{}, fmt.Errorf("model listing exhausted account retries: %w", lastError)
+}
+
+// fetchAvailableModelsForAccount fetches the selectable model list with the
+// given account's credentials instead of selecting one via the strategy. Each
+// call is bounded by recoveryAccountTimeout inside the caller's context.
+// Failures reach pool state like any other pool call, except when the
+// caller's context ended (an abandoned or out-of-budget pass is not the
+// account's fault). An account that uses its whole own budget is marked
+// failed, so recovery tries it last next time. No live-quota RPCs ride along:
+// recovery sits on a request path, and the post-request refresh covers them.
+func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
+	if err := ctx.Err(); err != nil {
+		return cloudcode.Response{}, err
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, dispatcher.recoveryAccountTimeout)
+	defer cancel()
+	credentials, err := dispatcher.resolver.Resolve(fetchCtx, account)
+	if err != nil {
+		if ctx.Err() == nil {
+			dispatcher.manager.MarkFailure(account, "")
+		}
+		return cloudcode.Response{}, err
+	}
+	modelsClient := dispatcher.client(account, credentials.AccessToken)
+	response, err := dispatcher.metered(account.Email, func() (cloudcode.Response, error) {
+		return modelsClient.FetchAvailableModels(fetchCtx, dispatcher.project(account))
+	})
+	if err != nil {
+		switch {
+		case ctx.Err() != nil:
+		case fetchCtx.Err() != nil:
+			dispatcher.manager.MarkFailure(account, "")
+		default:
+			dispatcher.rotateForError(account, "", err)
+		}
+		return cloudcode.Response{}, err
+	}
+	dispatcher.manager.MarkSuccess(account, "")
+	dispatcher.cacheCatalog(account.Email, response.Body)
+	dispatcher.updateAccountQuota(account, response.Body)
+	return response, nil
 }
 
 func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
@@ -501,10 +567,107 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	return cloudcode.Response{}, fmt.Errorf("max retries exceeded: %w", lastError)
 }
 
-// missingModelFetchFloor debounces the background catalog refresh that a
-// model miss triggers: at most one upstream list-models call per floor
-// (shared by all models) while fetches succeed, the same catch-up spacing
-// the pre-24h TTL gave for free.
+// modelRecoveryCall is one shared recovery pass for a model key. found is set
+// before done is closed, so every waiter reads it without locking.
+type modelRecoveryCall struct {
+	done  chan struct{}
+	found bool
+}
+
+// recoverModelFromQuotaCache handles a model missing from the shared catalog
+// that an account's quota cache still lists: a list fetched with that account
+// can add the model to the catalog. Concurrent misses for one model share one
+// pass, which runs in the background so a caller that disconnects does not
+// abort it for the others. The caller waits for the pass or for its own ctx.
+func (dispatcher *Dispatcher) recoverModelFromQuotaCache(ctx context.Context, requested string, request map[string]any) (modelcatalog.Model, bool) {
+	call := dispatcher.startModelRecovery(requested)
+	if call == nil {
+		return modelcatalog.Model{}, false
+	}
+	select {
+	case <-call.done:
+	case <-ctx.Done():
+		return modelcatalog.Model{}, false
+	}
+	if !call.found {
+		return modelcatalog.Model{}, false
+	}
+	catalog := dispatcher.CachedCatalog()
+	if catalog == nil {
+		return modelcatalog.Model{}, false
+	}
+	model, err := catalog.ResolveWithRequest(requested, request)
+	return model, err == nil
+}
+
+// startModelRecovery returns the in-flight pass for requested, or starts one.
+// It returns nil when no usable account lists the model, or when a definitive
+// negative pass for it ran within missingModelFetchFloor.
+func (dispatcher *Dispatcher) startModelRecovery(requested string) *modelRecoveryCall {
+	key := quotaMatchKey(requested)
+	if key == "" {
+		return nil
+	}
+	accounts := dispatcher.manager.AccountsWithQuotaModel(requested)
+	dispatcher.mu.Lock()
+	defer dispatcher.mu.Unlock()
+	if call := dispatcher.modelRecoveries[key]; call != nil {
+		return call
+	}
+	if len(accounts) == 0 {
+		return nil
+	}
+	if last, seen := dispatcher.modelRecoveryAt[key]; seen && dispatcher.now().Sub(last) < missingModelFetchFloor {
+		return nil
+	}
+	call := &modelRecoveryCall{done: make(chan struct{})}
+	if dispatcher.modelRecoveries == nil {
+		dispatcher.modelRecoveries = make(map[string]*modelRecoveryCall)
+	}
+	dispatcher.modelRecoveries[key] = call
+	go dispatcher.runModelRecovery(key, requested, accounts, call)
+	return call
+}
+
+// runModelRecovery tries each candidate in order, on a background context
+// bounded by fetchModelsTimeout, until one's list adds the model. Only a
+// definitive negative — every candidate answered and none publishes the
+// model — stamps the debounce; a pass with any failed fetch is retried by the
+// next miss. Each failure is recorded on the account (cooldown, invalidation,
+// failure count), which removes or demotes it as a later candidate.
+func (dispatcher *Dispatcher) runModelRecovery(key, requested string, accounts []*Account, call *modelRecoveryCall) {
+	ctx, cancel := context.WithTimeout(context.Background(), fetchModelsTimeout)
+	defer cancel()
+	definitive := true
+	for _, account := range accounts {
+		if _, err := dispatcher.fetchAvailableModelsForAccount(ctx, account); err != nil {
+			definitive = false
+			continue
+		}
+		if catalog := dispatcher.CachedCatalog(); catalog != nil {
+			if _, err := catalog.Resolve(requested); err == nil {
+				call.found = true
+				break
+			}
+		}
+	}
+	dispatcher.mu.Lock()
+	delete(dispatcher.modelRecoveries, key)
+	if !call.found && definitive {
+		if dispatcher.modelRecoveryAt == nil {
+			dispatcher.modelRecoveryAt = make(map[string]time.Time)
+		}
+		dispatcher.modelRecoveryAt[key] = dispatcher.now()
+	}
+	dispatcher.mu.Unlock()
+	close(call.done)
+}
+
+// missingModelFetchFloor spaces two kinds of catalog work a model miss can
+// trigger. The background refresh in resolveModel: at most one upstream
+// list-models call per floor, shared by all models, keyed on the last
+// successful fetch. And quota-cache recovery: per model, a definitive negative
+// pass suppresses another pass for that model for one floor.
 const missingModelFetchFloor = 5 * time.Minute
 
 func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string, request map[string]any) (modelcatalog.Model, error) {
@@ -535,10 +698,15 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 			if err != nil {
 				return modelcatalog.Model{}, err
 			}
-			dispatcher.storeCatalog(catalog)
+			dispatcher.storeCatalog("", catalog)
 		}
 	}
 	model, err := catalog.ResolveWithRequest(requested, request)
+	if err != nil {
+		if recovered, ok := dispatcher.recoverModelFromQuotaCache(ctx, requested, request); ok {
+			return recovered, nil
+		}
+	}
 	if fresh && err != nil && dispatcher.catalogAge() >= missingModelFetchFloor {
 		// The catalog is fresh but lacks this model: the upstream may have
 		// published it after the last fetch. Kick one shared background
@@ -550,18 +718,51 @@ func (dispatcher *Dispatcher) resolveModel(ctx context.Context, requested string
 	return model, err
 }
 
-func (dispatcher *Dispatcher) cacheCatalog(body []byte) {
+func (dispatcher *Dispatcher) cacheCatalog(email string, body []byte) {
 	catalog, err := modelcatalog.Parse(body)
 	if err == nil {
-		dispatcher.storeCatalog(catalog)
+		dispatcher.storeCatalog(email, catalog)
 	}
 }
 
-func (dispatcher *Dispatcher) storeCatalog(catalog *modelcatalog.Catalog) {
+// storeCatalog records email's model list and rebuilds the shared catalog as
+// the union of every snapshot fetched within modelCacheTTL. Accounts publish
+// different lists, so one account's list must not hide another's models; a
+// model an account withdraws leaves once that account's next list replaces its
+// snapshot (or the snapshot ages past modelCacheTTL). The snapshot just stored
+// is merged last, so it wins on overlapping ids and the default model.
+func (dispatcher *Dispatcher) storeCatalog(email string, catalog *modelcatalog.Catalog) {
 	dispatcher.mu.Lock()
 	defer dispatcher.mu.Unlock()
-	dispatcher.catalog = catalog
-	dispatcher.catalogAt = dispatcher.now()
+	now := dispatcher.now()
+	if dispatcher.catalogs == nil {
+		dispatcher.catalogs = make(map[string]catalogSnapshot)
+	}
+	current := catalogSnapshot{email: email, catalog: catalog, at: now}
+	dispatcher.catalogs[email] = current
+	others := make([]catalogSnapshot, 0, len(dispatcher.catalogs))
+	for key, snapshot := range dispatcher.catalogs {
+		if key == email {
+			continue
+		}
+		if now.Sub(snapshot.at) >= dispatcher.modelCacheTTL {
+			delete(dispatcher.catalogs, key)
+			continue
+		}
+		others = append(others, snapshot)
+	}
+	sort.Slice(others, func(i, j int) bool {
+		if !others[i].at.Equal(others[j].at) {
+			return others[i].at.Before(others[j].at)
+		}
+		return others[i].email < others[j].email
+	})
+	var union *modelcatalog.Catalog
+	for _, snapshot := range others {
+		union = union.Merge(snapshot.catalog)
+	}
+	dispatcher.catalog = union.Merge(current.catalog)
+	dispatcher.catalogAt = now
 }
 
 // CachedCatalog returns the last successfully fetched model catalog without
@@ -773,8 +974,13 @@ func (dispatcher *Dispatcher) rotateForError(account *Account, model string, err
 			return true
 		}
 		return false
-	case http.StatusBadRequest, http.StatusNotFound:
+	case http.StatusBadRequest:
 		return false
+	case http.StatusNotFound:
+		// The 404 is the upstream's answer for model. It rotates only when
+		// another account can serve the model; a listing call (model == "")
+		// has nothing to block and fails on the first answer.
+		return model != "" && dispatcher.manager.MarkModelUnavailable(account, model)
 	case http.StatusTooManyRequests:
 		wait := Decorrelate(UpstreamCooldown(upstreamError, dispatcher.manager.FailureCount(account), dispatcher.now()).Wait, dispatcher.random)
 		email := ""

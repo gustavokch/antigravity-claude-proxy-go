@@ -300,3 +300,97 @@ func TestDefaultAllowlist_Haiku45MatchesAnthropicLimits(t *testing.T) {
 	}
 	t.Fatal("claude-haiku-4-5-20251001 missing from DefaultAllowlist")
 }
+
+// Tiered family variants (claude-sonnet-5-5-high, claude-opus-5-5-medium, etc.)
+// are refused by the Claude Code router so they remain exclusive to the Cloud
+// Code gateway instead of being rewritten to a bare family id.
+func TestRouter_RefusesTieredVariants(t *testing.T) {
+	r := NewRouter([]ModelConfig{
+		{ID: "claude-sonnet-5-5", Alias: "sonnet-5-5", Aliases: []string{"sonnet-5-5", "sonnet"}, Enabled: true},
+		{ID: "claude-opus-5-5", Alias: "opus-5-5", Aliases: []string{"opus-5-5", "opus"}, Enabled: true},
+		{ID: "claude-haiku-5-5", Alias: "haiku-5-5", Aliases: []string{"haiku-5-5", "haiku"}, Enabled: true},
+	})
+
+	for _, req := range []string{
+		"claude-sonnet-5-5-high",
+		"claude-sonnet-5-5-medium",
+		"claude-sonnet-5-5-low",
+		"claude-opus-5-5-high",
+		"claude-opus-5-5-medium",
+		"claude-opus-5-5-low",
+		"claude-haiku-5-5-high",
+		"claude-sonnet-5.5-high",
+	} {
+		if _, ok := r.ResolveModel(req); ok {
+			t.Errorf("ResolveModel(%q) matched; tiered variants must be refused", req)
+		}
+	}
+
+	// Bare family ids and their aliases still match.
+	tests := []struct {
+		req  string
+		want string
+	}{
+		{"claude-sonnet-5-5", "claude-sonnet-5-5"},
+		{"sonnet-5-5", "claude-sonnet-5-5"},
+		{"sonnet", "claude-sonnet-5-5"},
+		{"claude-opus-5-5", "claude-opus-5-5"},
+		{"claude-haiku-5-5", "claude-haiku-5-5"},
+	}
+	for _, tt := range tests {
+		got, ok := r.ResolveModel(tt.req)
+		if !ok || got != tt.want {
+			t.Errorf("ResolveModel(%q) = %v, %v; want %v, true", tt.req, got, ok, tt.want)
+		}
+	}
+}
+
+// The production allowlist must never serve a Claude 5.5 tiered id through
+// the Claude Code gateway, with or without the 1M-context marker.
+func TestRouter_DefaultAllowlistRefusesClaude55Tiers(t *testing.T) {
+	r := NewRouter(DefaultAllowlist())
+	for _, family := range []string{"claude-sonnet-5-5", "claude-opus-5-5"} {
+		for _, tier := range []string{"-low", "-medium", "-high"} {
+			for _, tail := range []string{"", "[1m]"} {
+				req := family + tier + tail
+				if got, ok := r.ResolveModel(req); ok {
+					t.Errorf("ResolveModel(%q) = %q; Claude 5.5 tiers must stay on Cloud Code", req, got)
+				}
+			}
+		}
+	}
+}
+
+// A tier followed by another suffix is still a tiered id, not a variant of
+// the bare family.
+func TestRouter_RefusesTierWithTrailingSuffix(t *testing.T) {
+	r := NewRouter([]ModelConfig{{ID: "claude-sonnet-5-5", Enabled: true}})
+	for _, req := range []string{
+		"claude-sonnet-5-5-high[1m]",
+		"claude-sonnet-5-5-medium-latest",
+		"claude-sonnet-5-5-low-20260101",
+	} {
+		if got, ok := r.ResolveModel(req); ok {
+			t.Errorf("ResolveModel(%q) = %q; tiered ids must be refused", req, got)
+		}
+	}
+	for _, req := range []string{"claude-sonnet-5-5[1m]", "claude-sonnet-5-5-latest", "claude-sonnet-5-5-20260101", "claude-sonnet-5-5-highlander"} {
+		if got, ok := r.ResolveModel(req); !ok || got != "claude-sonnet-5-5" {
+			t.Errorf("ResolveModel(%q) = %q, %v; want claude-sonnet-5-5, true", req, got, ok)
+		}
+	}
+}
+
+// An operator who lists a tiered id as an alias has asked for that routing;
+// every spelling of the alias resolves the same way.
+func TestRouter_HonorsExplicitTieredAlias(t *testing.T) {
+	r := NewRouter([]ModelConfig{{ID: "claude-sonnet-5-5", Aliases: []string{"claude-sonnet-5-5-high"}, Enabled: true}})
+	for _, req := range []string{"claude-sonnet-5-5-high", "claude-sonnet-5.5-high", "claude-sonnet-5-5-high[1m]"} {
+		if got, ok := r.ResolveModel(req); !ok || got != "claude-sonnet-5-5" {
+			t.Errorf("ResolveModel(%q) = %q, %v; want claude-sonnet-5-5, true", req, got, ok)
+		}
+	}
+	if got, ok := r.ResolveModel("claude-sonnet-5-5-medium"); ok {
+		t.Errorf("ResolveModel(claude-sonnet-5-5-medium) = %q; only the listed tier is aliased", got)
+	}
+}

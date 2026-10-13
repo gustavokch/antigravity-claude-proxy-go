@@ -106,7 +106,7 @@ The proxy forwards reasoning fields untouched on both products. A normalization 
 - `ThinkingLevel.MINIMAL` is never derived from a client's effort (`minimal` rides the `-low` tier). It is emitted only when a catalog entry itself publishes `thinkingLevel` 4, which no model does as of 2026-10-12; whether any route accepts it is gate GF (UNVERIFIED), and Google documents errors on some families.
 - The Zen wires drop reasoning (§4); the Claude Code gateway defaults omit 5.5 and 4.x IDs (§8).
 - Gemini output is capped at 16,384 although the catalog advertises 65,536 / 65,535; lifting the cap needs probe GE and agy's own value (gate GM), both UNVERIFIED.
-- A cached catalog (24 h TTL, `internal/accounts/dispatcher.go:136`) that still lists Claude 4.6 keeps resolving the real 4.6 ID after the account migrates, and upstream answers "no longer available" until the catalog refreshes: the background refresh only fires when a request fails to resolve (`dispatcher.go:541-545`). Not mitigated; the upstream error shape has not been captured.
+- The shared catalog is the union of each account's latest model list, each kept up to the 24 h TTL (`storeCatalog` in `internal/accounts/dispatcher.go`). An account list that still contains Claude 4.6 keeps resolving the real 4.6 ID after that account migrates, until the account's list is fetched again or ages out; meanwhile upstream answers 404, which blocks that model on that account for 24 h (`MarkModelUnavailable`) and rotates the request. The upstream error shape has not been captured.
 ## 10. Probe verdicts (2026-10-05)
 
 No probe or agy capture was run for this verification: every gate below is UNVERIFIED and the conservative branch of each was taken. To re-verify, follow §11, then apply the TAKEN line's branches.

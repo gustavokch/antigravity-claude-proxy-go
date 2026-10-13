@@ -1048,3 +1048,154 @@ func TestModelThresholdFor_NormalizesSuffixAndCase(t *testing.T) {
 		t.Errorf("modelThresholdFor should not resolve an unrelated model")
 	}
 }
+
+func TestManager_SelectFiltersAccountsByModelSupport(t *testing.T) {
+	t.Parallel()
+	capable := &Account{
+		Email:   "capable@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"claude-sonnet-5-5-high": {},
+				"gemini-3.8-flash-high":  {},
+			},
+		},
+	}
+	legacy := &Account{
+		Email:   "legacy@example.com",
+		Enabled: true,
+		Quota: Quota{
+			Models: map[string]ModelQuota{
+				"claude-sonnet-4-6":     {},
+				"gemini-3.8-flash-high": {},
+			},
+		},
+	}
+	mgr, err := New(Options{
+		Accounts: []*Account{legacy, capable},
+		Strategy: "round-robin",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Requesting Claude 5.5 must NEVER select legacy account
+	for i := range 5 {
+		sel := mgr.Select("claude-sonnet-5-5-high")
+		if sel.Account == nil || sel.Account.Email != "capable@example.com" {
+			t.Fatalf("iteration %d: expected capable@example.com, got %v", i, sel.Account)
+		}
+	}
+
+	// Requesting Claude 4.6 must select legacy account
+	sel46 := mgr.Select("claude-sonnet-4-6")
+	if sel46.Account == nil || sel46.Account.Email != "legacy@example.com" {
+		t.Fatalf("expected legacy@example.com, got %v", sel46.Account)
+	}
+
+	// When capable is rate limited for claude-5-5, selection must NOT fall back to legacy
+	mgr.MarkRateLimited(capable, "claude-sonnet-5-5-high", time.Minute)
+	selBlocked := mgr.Select("claude-sonnet-5-5-high")
+	if selBlocked.Account != nil {
+		t.Fatalf("expected nil account when capable is rate limited, got %v", selBlocked.Account.Email)
+	}
+}
+
+// One withdrawn tier must not take its siblings with it: after a 404 on
+// claude-sonnet-5-5-high the account still serves claude-sonnet-5-5-low. A
+// spare account exists, so the 404 may rotate and the tier is blocked.
+func TestMarkModelUnavailable_BlocksOnlyTheMissingTier(t *testing.T) {
+	t.Parallel()
+	mgr, err := New(Options{
+		Strategy: StrategySticky,
+		Accounts: []*Account{
+			{
+				Email:   "test@example.com",
+				Enabled: true,
+				Quota: Quota{Models: map[string]ModelQuota{
+					"Claude-Sonnet-5-5-High": {},
+					"claude-sonnet-5-5-low":  {},
+					"gemini-3.8-flash-high":  {},
+				}},
+			},
+			{Email: "spare@example.com", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	acc := mgr.accounts[0]
+	if !mgr.MarkModelUnavailable(acc, "claude-sonnet-5-5-high") {
+		t.Fatal("MarkModelUnavailable = false with a usable spare account, want true so the request rotates")
+	}
+
+	if limit := acc.ModelRateLimits["claude-sonnet-5-5-high"]; limit == nil || !limit.IsRateLimited {
+		t.Errorf("claude-sonnet-5-5-high not blocked: %+v", acc.ModelRateLimits)
+	}
+	if _, blocked := acc.ModelRateLimits["claude-sonnet-5-5"]; blocked {
+		t.Error("family key claude-sonnet-5-5 blocked; only the 404ed tier may be")
+	}
+	if _, ok := acc.Quota.Models["Claude-Sonnet-5-5-High"]; ok {
+		t.Error("404ed tier still in the quota cache")
+	}
+	for _, kept := range []string{"claude-sonnet-5-5-low", "gemini-3.8-flash-high"} {
+		if _, ok := acc.Quota.Models[kept]; !ok {
+			t.Errorf("%s purged; only the 404ed tier may be", kept)
+		}
+	}
+	if sel := mgr.Select("claude-sonnet-5-5-low"); sel.Account != acc {
+		t.Errorf("Select(claude-sonnet-5-5-low) = %v, want the account", sel.Account)
+	}
+}
+
+// A 404 on the only account that can serve a model has nowhere to rotate. It
+// must not lock the model out for 24 hours: nothing is recorded, so the caller
+// returns the upstream error and the next request still reaches the upstream.
+func TestMarkModelUnavailable_KeepsTheOnlyCandidate(t *testing.T) {
+	t.Parallel()
+	mgr, err := New(Options{
+		Strategy: StrategySticky,
+		Accounts: []*Account{
+			{Email: "only@example.com", Enabled: true, Quota: Quota{Models: map[string]ModelQuota{"claude-sonnet-5-5-high": {}}}},
+			// Lists other models only: the quota filter keeps it from serving 5.5.
+			{Email: "legacy@example.com", Enabled: true, Quota: Quota{Models: map[string]ModelQuota{"claude-sonnet-4-6": {}}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	only := mgr.accounts[0]
+	if mgr.MarkModelUnavailable(only, "claude-sonnet-5-5-high") {
+		t.Error("MarkModelUnavailable = true with no other account able to serve the model, want false")
+	}
+	if len(only.ModelRateLimits) != 0 {
+		t.Errorf("a block was recorded on the only candidate: %+v", only.ModelRateLimits)
+	}
+	if _, ok := only.Quota.Models["claude-sonnet-5-5-high"]; !ok {
+		t.Error("quota cache purged although the model was not blocked")
+	}
+	if sel := mgr.Select("claude-sonnet-5-5-high"); sel.Account != only {
+		t.Errorf("Select(claude-sonnet-5-5-high) = %v, want the only candidate", sel.Account)
+	}
+}
+
+// An account whose quota cache is still empty has not been discovered yet. It
+// stays selectable even when another account is known to list the model, so a
+// new account can take its first request (or 404 and be rotated past).
+func TestManager_SelectKeepsUndiscoveredAccountWhenPoolListsModel(t *testing.T) {
+	t.Parallel()
+	listed := &Account{
+		Email:   "listed@example.com",
+		Enabled: true,
+		Quota:   Quota{Models: map[string]ModelQuota{"claude-sonnet-5-5-high": {}}},
+	}
+	fresh := &Account{Email: "fresh@example.com", Enabled: true}
+	mgr, err := New(Options{Accounts: []*Account{listed, fresh}, Strategy: StrategyRoundRobin})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	mgr.MarkRateLimited(listed, "claude-sonnet-5-5-high", time.Minute)
+	if sel := mgr.Select("claude-sonnet-5-5-high"); sel.Account != fresh {
+		t.Fatalf("Select = %v, want the undiscovered account", sel.Account)
+	}
+}

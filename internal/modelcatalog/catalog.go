@@ -250,6 +250,73 @@ func (catalog *Catalog) Selectable() []Model {
 	return append([]Model(nil), catalog.selectable...)
 }
 
+// Merge returns a new Catalog that combines models from catalog and other. Models
+// in other override or update models in catalog with the same ID, while models
+// unique to catalog are preserved. If catalog is nil, other is returned. If
+// other is nil, catalog is returned.
+func (catalog *Catalog) Merge(other *Catalog) *Catalog {
+	if catalog == nil {
+		return other
+	}
+	if other == nil {
+		return catalog
+	}
+
+	merged := &Catalog{
+		defaultID: catalog.defaultID,
+		byID:      make(map[string]Model, len(catalog.byID)+len(other.byID)),
+		byDisplay: make(map[string]Model, len(catalog.byDisplay)+len(other.byDisplay)),
+	}
+	if other.defaultID != "" {
+		merged.defaultID = other.defaultID
+	}
+
+	// Copy base models
+	for k, v := range catalog.byID {
+		merged.byID[k] = v
+	}
+	for k, v := range catalog.byDisplay {
+		merged.byDisplay[k] = v
+	}
+
+	// Overlay incoming models
+	for k, v := range other.byID {
+		merged.byID[k] = v
+	}
+	for k, v := range other.byDisplay {
+		merged.byDisplay[k] = v
+	}
+
+	// Rebuild selectable list preserving order without duplicate IDs
+	seen := make(map[string]bool)
+	var selectable []Model
+	for _, m := range other.selectable {
+		idLower := strings.ToLower(m.ID)
+		if !seen[idLower] {
+			seen[idLower] = true
+			if updated, ok := merged.byID[idLower]; ok {
+				selectable = append(selectable, updated)
+			} else {
+				selectable = append(selectable, m)
+			}
+		}
+	}
+	for _, m := range catalog.selectable {
+		idLower := strings.ToLower(m.ID)
+		if !seen[idLower] {
+			seen[idLower] = true
+			if updated, ok := merged.byID[idLower]; ok {
+				selectable = append(selectable, updated)
+			} else {
+				selectable = append(selectable, m)
+			}
+		}
+	}
+	merged.selectable = selectable
+
+	return merged
+}
+
 // Strip1mSuffix drops the "[1m]" context-window marker clients append to a
 // model ID. Exported because the rate-limit map's key namespace (see
 // accounts.rateLimitModelKey) never carries the marker, so rate-limit

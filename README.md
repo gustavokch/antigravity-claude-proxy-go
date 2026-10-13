@@ -700,7 +700,7 @@ Bumping for a session stops automatically the moment it stops paying: a bump tha
 | `gpt-oss-120b-medium` | GPT-OSS 120B (Medium) | OpenAI | 131,072 | 32,768 |
 
 *Note: Allowlisted OpenRouter models and aliases are dynamically appended to this catalog when OpenRouter is enabled.*
-*Note: accounts that agy 1.3.3 has migrated no longer publish Claude 4.6. `claude-sonnet-4-6`, `claude-opus-4-6` and `claude-opus-4-6-thinking` then resolve to the matching Claude 5.5 High tier; an account that still publishes 4.6 keeps serving it (`claude-sonnet-4-6` and `claude-opus-4-6-thinking`, 250,000 / 64,000). The catalog is cached for 24 hours, so a cached catalog that still lists 4.6 keeps resolving the real 4.6 ID until it refreshes.*
+*Note: accounts that agy 1.3.3 has migrated no longer publish Claude 4.6. `claude-sonnet-4-6`, `claude-opus-4-6` and `claude-opus-4-6-thinking` then resolve to the matching Claude 5.5 High tier; an account that still publishes 4.6 keeps serving it (`claude-sonnet-4-6` and `claude-opus-4-6-thinking`, 250,000 / 64,000). The catalog is the union of each account's latest model list (cached up to 24 hours per account), so a list that still contains 4.6 keeps resolving the real 4.6 ID until that account's list is fetched again or ages past 24 hours.*
 
 ### Server-Side Model Mapping
 Map incoming requested model names to internal models, OpenRouter models, or custom endpoints in Web UI under Model Mapping or in `config.json`:

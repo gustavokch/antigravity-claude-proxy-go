@@ -397,8 +397,9 @@ func (manager *Manager) Available(model string) int {
 		return 0
 	}
 	count := 0
+	poolSupports := manager.poolSupportsModelLocked(model)
 	for _, account := range manager.accounts {
-		if manager.usableLocked(account, model) {
+		if manager.usableLocked(account, model, poolSupports) {
 			count++
 		}
 	}
@@ -595,6 +596,45 @@ func (manager *Manager) MarkFailure(account *Account, model string) {
 			IsRateLimited: true, ResetTimeMS: manager.now().Add(time.Minute).UnixMilli(), ActualResetMS: time.Minute.Milliseconds(),
 		}
 	}
+}
+
+// MarkModelUnavailable records an upstream 404 for model on account and
+// reports whether the request can move to another account. When another
+// account can serve model, the exact model key is blocked on account for 24
+// hours and dropped from its quota cache; sibling tiers stay, because one
+// withdrawn tier says nothing about the others. When none can, nothing is
+// recorded and the result is false: the 404 is the answer, and blocking the
+// only candidate would turn one 404 into a day-long outage.
+func (manager *Manager) MarkModelUnavailable(account *Account, model string) bool {
+	key := rateLimitModelKey(model)
+	if account == nil || key == "" {
+		return false
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	poolSupports := manager.poolSupportsModelLocked(model)
+	alternative := false
+	for _, other := range manager.accounts {
+		if other != account && manager.usableLocked(other, model, poolSupports) {
+			alternative = true
+			break
+		}
+	}
+	if !alternative {
+		return false
+	}
+	account.ModelRateLimits[key] = &RateLimit{
+		IsRateLimited: true,
+		ResetTimeMS:   manager.now().Add(24 * time.Hour).UnixMilli(),
+		ActualResetMS: (24 * time.Hour).Milliseconds(),
+	}
+	want := quotaMatchKey(model)
+	for cached := range account.Quota.Models {
+		if quotaMatchKey(cached) == want {
+			delete(account.Quota.Models, cached)
+		}
+	}
+	return true
 }
 
 func (manager *Manager) MarkSuccess(account *Account, model string) {
@@ -806,17 +846,18 @@ func (manager *Manager) selectStickyLocked(model string) Selection {
 	if len(manager.accounts) == 0 {
 		return Selection{} // No accounts available
 	}
+	poolSupports := manager.poolSupportsModelLocked(model)
 	if manager.currentIndex < 0 || manager.currentIndex >= len(manager.accounts) {
 		manager.currentIndex = 0
 	}
 	current := manager.accounts[manager.currentIndex]
-	if manager.usableLocked(current, model) {
+	if manager.usableLocked(current, model, poolSupports) {
 		current.LastUsedMS = manager.now().UnixMilli()
 		return Selection{Account: current}
 	}
 	for offset := 1; offset <= len(manager.accounts); offset++ {
 		index := (manager.currentIndex + offset) % len(manager.accounts)
-		if manager.usableLocked(manager.accounts[index], model) {
+		if manager.usableLocked(manager.accounts[index], model, poolSupports) {
 			manager.currentIndex = index
 			manager.accounts[index].LastUsedMS = manager.now().UnixMilli()
 			return Selection{Account: manager.accounts[index]}
@@ -835,6 +876,7 @@ func (manager *Manager) selectRoundRobinLocked(model string) Selection {
 	if len(manager.accounts) == 0 {
 		return Selection{} // No accounts available
 	}
+	poolSupports := manager.poolSupportsModelLocked(model)
 	if manager.cursor >= len(manager.accounts) {
 		manager.cursor = 0
 	}
@@ -842,7 +884,7 @@ func (manager *Manager) selectRoundRobinLocked(model string) Selection {
 	for offset := range len(manager.accounts) {
 		index := (start + offset) % len(manager.accounts)
 		account := manager.accounts[index]
-		if manager.usableLocked(account, model) {
+		if manager.usableLocked(account, model, poolSupports) {
 			manager.cursor = index
 			manager.currentIndex = index
 			account.LastUsedMS = manager.now().UnixMilli()
@@ -860,8 +902,9 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	}
 	candidates := make([]candidate, 0)
 	minUsable := mapFloat(manager.selectionConfig.HealthScore, "minUsable", 50)
+	poolSupports := manager.poolSupportsModelLocked(model)
 	for index, account := range manager.accounts {
-		if !manager.usableLocked(account, model) || manager.healthScoreLocked(account.Email) < minUsable || manager.tokensLocked(account.Email) < 1 {
+		if !manager.usableLocked(account, model, poolSupports) || manager.healthScoreLocked(account.Email) < minUsable || manager.tokensLocked(account.Email) < 1 {
 			continue
 		}
 		if manager.quotaCriticalLocked(account, model) {
@@ -871,7 +914,7 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	}
 	if len(candidates) == 0 {
 		for index, account := range manager.accounts {
-			if manager.usableLocked(account, model) {
+			if manager.usableLocked(account, model, poolSupports) {
 				candidates = append(candidates, candidate{account: account, index: index, score: manager.scoreLocked(account, model)})
 			}
 		}
@@ -887,7 +930,24 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	return Selection{Account: best.account}
 }
 
-func (manager *Manager) usableLocked(account *Account, model string) bool {
+// poolSupportsModelLocked reports whether any active, valid account in the
+// manager's pool has explicitly recorded quota for model (or its prefix/key).
+func (manager *Manager) poolSupportsModelLocked(model string) bool {
+	if strings.TrimSpace(model) == "" {
+		return false
+	}
+	for _, account := range manager.accounts {
+		if account == nil || !account.Enabled || account.IsInvalid {
+			continue
+		}
+		if accountSupportsQuotaModel(account, model) {
+			return true
+		}
+	}
+	return false
+}
+
+func (manager *Manager) usableLocked(account *Account, model string, poolSupports bool) bool {
 	if account == nil || !account.Enabled || account.IsInvalid {
 		return false
 	}
@@ -897,6 +957,14 @@ func (manager *Manager) usableLocked(account *Account, model string) bool {
 	}
 	if limit := account.ModelRateLimits[rateLimitModelKey(model)]; limit != nil && limit.IsRateLimited && limit.ResetTimeMS > now {
 		return false
+	}
+	// In a heterogeneous pool where at least one account explicitly supports
+	// model, filter out accounts whose non-empty quota models do not support it.
+	// Accounts with uninitialized quota (len == 0) remain usable to allow initial discovery.
+	if poolSupports && len(account.Quota.Models) > 0 {
+		if !accountSupportsQuotaModel(account, model) {
+			return false
+		}
 	}
 	return true
 }
@@ -1309,6 +1377,97 @@ func (manager *Manager) GetAllAccounts() []*Account {
 	for i, acc := range manager.accounts {
 		result[i] = cloneAccount(acc)
 	}
+	return result
+}
+
+// quotaMatchKey normalizes a model id for quota-cache matching: trimmed,
+// "[1m]" stripped, lowercased, dots as hyphens ("claude-sonnet-5.5-high"
+// and "claude-sonnet-5-5-high" are the same key).
+func quotaMatchKey(model string) string {
+	return strings.ReplaceAll(rateLimitModelKey(strings.TrimSpace(model)), ".", "-")
+}
+
+// accountSupportsQuotaModel reports whether account's quota cache lists model:
+// the same key, or the key plus one thinking tier (a bare family id such as
+// "claude-sonnet-5-5" matches "claude-sonnet-5-5-high"). Any other prefix is a
+// different model ("claude-sonnet-5" does not match "claude-sonnet-5-5-high").
+func accountSupportsQuotaModel(account *Account, model string) bool {
+	if account == nil || len(account.Quota.Models) == 0 {
+		return false
+	}
+	want := quotaMatchKey(model)
+	if want == "" {
+		return false
+	}
+	for key := range account.Quota.Models {
+		if quotaKeyMatches(key, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// foldModelByte lowercases an ASCII letter and maps '.' to '-': the two
+// spellings quotaMatchKey treats as equal.
+func foldModelByte(c byte) byte {
+	switch {
+	case c == '.':
+		return '-'
+	case 'A' <= c && c <= 'Z':
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+// equalModelKey reports whether a and b are the same quotaMatchKey, without
+// allocating. Model ids are ASCII.
+func equalModelKey(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range len(a) {
+		if foldModelByte(a[i]) != foldModelByte(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// quotaKeyMatches reports whether the quota-cache key have lists the model
+// whose quotaMatchKey is want: the same key, or the key plus one thinking tier.
+// Lengths are compared first, so keys of any other length cost no byte compare.
+func quotaKeyMatches(have, want string) bool {
+	have = modelcatalog.Strip1mSuffix(have)
+	if len(have) == len(want) {
+		return equalModelKey(have, want)
+	}
+	for _, tier := range [...]string{"-high", "-medium", "-low"} {
+		if len(have) == len(want)+len(tier) && equalModelKey(have[len(want):], tier) && equalModelKey(have[:len(want)], want) {
+			return true
+		}
+	}
+	return false
+}
+
+// AccountsWithQuotaModel returns the live (not cloned) accounts whose quota
+// cache lists model and that may make a model-listing call now: enabled, valid,
+// not cooling down, and not rate limited in the listing ("") namespace. They
+// are ordered by fewest consecutive failures, so an account that keeps failing
+// or hanging is tried last. Live pointers match what Select returns, so Mark*
+// calls on the result land on pool state.
+func (manager *Manager) AccountsWithQuotaModel(model string) []*Account {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	var result []*Account
+	for _, account := range manager.accounts {
+		if !manager.usableLocked(account, "", false) || !accountSupportsQuotaModel(account, model) {
+			continue
+		}
+		result = append(result, account)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return result[i].ConsecutiveFailure < result[j].ConsecutiveFailure
+	})
 	return result
 }
 

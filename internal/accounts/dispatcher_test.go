@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -634,5 +635,248 @@ func TestModelFetchCountsAgainstTheAccountRate(t *testing.T) {
 	}
 	if inFlight != 0 {
 		t.Fatalf("inFlight after the call returned: got %d, want 0", inFlight)
+	}
+}
+
+type notFoundThenSuccessClient struct {
+	blockingModelsClient
+	email string
+}
+
+func (c *notFoundThenSuccessClient) StreamGenerateContent(ctx context.Context, request any, options cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	if c.email == "acc1@example.com" {
+		return cloudcode.Response{}, &cloudcode.HTTPError{
+			StatusCode: 404,
+			Body:       `{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}`,
+		}
+	}
+	return cloudcode.Response{}, nil
+}
+
+type accountTokenResolver struct{}
+
+func (accountTokenResolver) Resolve(ctx context.Context, account *Account) (auth.Credentials, error) {
+	return auth.Credentials{AccessToken: account.Email, Email: account.Email}, nil
+}
+
+func (accountTokenResolver) Invalidate(string) {}
+
+func TestStreamGenerateContent_404RotatesToCapableAccount(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	close(release)
+	manager, err := New(Options{
+		Accounts: []*Account{
+			{Email: "acc1@example.com", Enabled: true},
+			{Email: "acc2@example.com", Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:  manager,
+		Resolver: accountTokenResolver{},
+		NewClient: func(email string) CloudClient {
+			return &notFoundThenSuccessClient{
+				blockingModelsClient: blockingModelsClient{release: release},
+				email:                email,
+			}
+		},
+		ProjectID: "test-proj-404",
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+	dispatcher.cacheCatalog("acc1@example.com", []byte(`{
+		"models": {
+			"claude-sonnet-5-5-high": {"displayName": "Claude Sonnet 5.5 (High)"}
+		},
+		"agentModelSorts": [{"groups": [{"modelIds": ["claude-sonnet-5-5-high"]}]}]
+	}`))
+
+	ctx, meta := cloudcode.WithExecutionMetadata(context.Background())
+	req := map[string]any{
+		"model": "claude-sonnet-5-5-high",
+	}
+
+	_, err = dispatcher.StreamGenerateContent(ctx, req, func(cloudcode.SSEEvent) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerateContent failed on 404 failover: %v", err)
+	}
+
+	if meta.Account != "acc2@example.com" {
+		t.Errorf("meta.Account = %q, want %q", meta.Account, "acc2@example.com")
+	}
+}
+
+// The shared catalog is the union of each account's latest list: a model one
+// account publishes survives another account's refresh, and leaves when its
+// own publisher's next list drops it.
+func TestStoreCatalog_UnionsPerAccountSnapshots(t *testing.T) {
+	t.Parallel()
+	manager, err := New(Options{Accounts: []*Account{{Email: "acc1@example.com", Enabled: true}}})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return &blockingModelsClient{} },
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	dispatcher.now = func() time.Time { return now }
+
+	with55 := []byte(`{"models":{"claude-sonnet-5-5-high":{"displayName":"Claude Sonnet 5.5 (High)"}},
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-5-5-high"]}]}]}`)
+	only46 := []byte(`{"models":{"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6"}},
+		"agentModelSorts":[{"groups":[{"modelIds":["claude-sonnet-4-6"]}]}]}`)
+	resolves := func(id string) bool {
+		_, err := dispatcher.CachedCatalog().Resolve(id)
+		return err == nil
+	}
+
+	dispatcher.cacheCatalog("acc1@example.com", with55)
+	dispatcher.cacheCatalog("acc2@example.com", only46)
+	if !resolves("claude-sonnet-5-5-high") || !resolves("claude-sonnet-4-6") {
+		t.Fatal("union lost a model published by one account")
+	}
+
+	// acc1 withdraws 5.5: its next list replaces its snapshot.
+	dispatcher.cacheCatalog("acc1@example.com", only46)
+	if resolves("claude-sonnet-5-5-high") {
+		t.Error("withdrawn model still resolves after its publisher refetched")
+	}
+	if !resolves("claude-sonnet-4-6") {
+		t.Error("claude-sonnet-4-6 lost")
+	}
+
+	// A snapshot older than modelCacheTTL no longer contributes.
+	dispatcher.cacheCatalog("acc3@example.com", with55)
+	now = now.Add(dispatcher.modelCacheTTL + time.Second)
+	dispatcher.cacheCatalog("acc2@example.com", only46)
+	if resolves("claude-sonnet-5-5-high") {
+		t.Error("snapshot older than modelCacheTTL still contributes")
+	}
+}
+
+// Regression guard for round-1 item 1: resolveModel must not read the catalog
+// fields without the dispatcher lock. Run under -race.
+func TestResolveModelDoesNotRaceStoreCatalog(t *testing.T) {
+	t.Parallel()
+	dispatcher, _, _, _, _ := recoveryPool(t, catalogWithModel)
+	catalog := dispatcher.CachedCatalog()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				dispatcher.storeCatalog("a@example.com", catalog)
+			}
+		}
+	}()
+	for range 200 {
+		_, _ = dispatcher.resolveModel(context.Background(), "unknown-model-xyz", nil)
+	}
+	close(stop)
+	wg.Wait()
+}
+
+type cancelingResolver struct{}
+
+func (cancelingResolver) Resolve(ctx context.Context, account *Account) (auth.Credentials, error) {
+	if ctx.Err() != nil {
+		return auth.Credentials{}, ctx.Err()
+	}
+	return auth.Credentials{AccessToken: "token", Email: account.Email}, nil
+}
+
+func (cancelingResolver) Invalidate(string) {}
+
+func TestFetchAvailableModelsForAccount_DoesNotRotateOnContextCancellation(t *testing.T) {
+	t.Parallel()
+	manager, err := New(Options{
+		Accounts: []*Account{{Email: "acc@example.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:  manager,
+		Resolver: cancelingResolver{},
+		NewClient: func(string) CloudClient {
+			return &blockingModelsClient{release: make(chan struct{})}
+		},
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	acc := manager.accounts[0]
+	_, err = dispatcher.fetchAvailableModelsForAccount(ctx, acc)
+	if err == nil {
+		t.Fatal("expected context error")
+	}
+
+	if failures := manager.FailureCount(acc); failures != 0 {
+		t.Errorf("expected 0 failures on cancelled context, got %d", failures)
+	}
+}
+
+// Cancelling while the fetch is in flight (past the entry guard) must not
+// penalize the account: the caller left, the account did not fail.
+func TestFetchAvailableModelsForAccount_NoPenaltyWhenCancelledMidFetch(t *testing.T) {
+	t.Parallel()
+	manager, err := New(Options{
+		Accounts: []*Account{{Email: "acc@example.com", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	client := &scriptedClient{modelsHang: true}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  stubResolver{},
+		NewClient: func(string) CloudClient { return client },
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for client.modelsCallCount() == 0 {
+			client.mu.Lock()
+			started := client.modelsBudget > 0
+			client.mu.Unlock()
+			if started {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+
+	acc := manager.accounts[0]
+	if _, err := dispatcher.fetchAvailableModelsForAccount(ctx, acc); err == nil {
+		t.Fatal("expected context error")
+	}
+	if failures := manager.FailureCount(acc); failures != 0 {
+		t.Errorf("failures after mid-fetch cancel = %d, want 0", failures)
 	}
 }
