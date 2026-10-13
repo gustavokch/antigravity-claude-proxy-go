@@ -1407,22 +1407,25 @@ func accountSupportsQuotaModel(account *Account, model string) bool {
 	return false
 }
 
-// AccountsWithQuotaModel returns the live (not cloned) enabled, valid accounts
-// whose quota cache lists model, matching on the raw id, its canonical rate
-// limit key, or a tiered family prefix. Live pointers match what Select
-// returns, so Mark* calls on the result land on pool state.
+// AccountsWithQuotaModel returns the live (not cloned) accounts whose quota
+// cache lists model and that may make a model-listing call now: enabled, valid,
+// not cooling down, and not rate limited in the listing ("") namespace. They
+// are ordered by fewest consecutive failures, so an account that keeps failing
+// or hanging is tried last. Live pointers match what Select returns, so Mark*
+// calls on the result land on pool state.
 func (manager *Manager) AccountsWithQuotaModel(model string) []*Account {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 	var result []*Account
 	for _, account := range manager.accounts {
-		if !account.Enabled || account.IsInvalid {
+		if !manager.usableLocked(account, "", false) || !accountSupportsQuotaModel(account, model) {
 			continue
 		}
-		if accountSupportsQuotaModel(account, model) {
-			result = append(result, account)
-		}
+		result = append(result, account)
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return result[i].ConsecutiveFailure < result[j].ConsecutiveFailure
+	})
 	return result
 }
 

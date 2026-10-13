@@ -235,3 +235,23 @@ func TestAccountsWithQuotaModel_RejectsNonTierPrefix(t *testing.T) {
 		}
 	}
 }
+
+// An account in a model-listing cooldown is not a recovery candidate: recovery
+// must not spend a fetch on it, and still recovers through the other account.
+func TestResolveModelRecoverySkipsCooledDownAccount(t *testing.T) {
+	t.Parallel()
+	dispatcher, a, b, manager, _ := recoveryPool(t, catalogWithModel)
+	manager.MarkRateLimited(manager.accounts[0], "", time.Hour) // a@example.com
+	aBefore := a.modelsCallCount()
+
+	model, err := dispatcher.resolveModel(context.Background(), recoveryModel, nil)
+	if err != nil || model.ID != recoveryModel {
+		t.Fatalf("resolveModel = %q, %v; want %q", model.ID, err, recoveryModel)
+	}
+	if got := a.modelsCallCount() - aBefore; got != 0 {
+		t.Errorf("cooled-down account fetched %d times during recovery, want 0", got)
+	}
+	if got := b.modelsCallCount(); got != 1 {
+		t.Errorf("B models calls = %d, want 1", got)
+	}
+}
