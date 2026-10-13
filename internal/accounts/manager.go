@@ -1312,12 +1312,41 @@ func (manager *Manager) GetAllAccounts() []*Account {
 	return result
 }
 
-// AccountsWithQuotaModel returns the live (not cloned) enabled, valid accounts
-// whose quota cache lists model, matching on the raw id or its canonical rate
-// limit key. Live pointers match what Select returns, so Mark* calls on the
-// result land on pool state.
-func (manager *Manager) AccountsWithQuotaModel(model string) []*Account {
+// accountSupportsQuotaModel reports whether account's quota cache contains
+// model, matching on the exact ID, its canonical rate-limit key, or as a
+// tiered prefix (e.g. "claude-sonnet-5-5" matches "claude-sonnet-5-5-high").
+func accountSupportsQuotaModel(account *Account, model string) bool {
+	if account == nil || account.Quota.Models == nil {
+		return false
+	}
 	canon := rateLimitModelKey(model)
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	prefix := trimmed + "-"
+	canonPrefix := ""
+	if canon != "" {
+		canonPrefix = canon + "-"
+	}
+
+	for k := range account.Quota.Models {
+		kLower := strings.ToLower(k)
+		if kLower == trimmed || (canon != "" && kLower == canon) {
+			return true
+		}
+		if trimmed != "" && strings.HasPrefix(kLower, prefix) {
+			return true
+		}
+		if canonPrefix != "" && strings.HasPrefix(kLower, canonPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// AccountsWithQuotaModel returns the live (not cloned) enabled, valid accounts
+// whose quota cache lists model, matching on the raw id, its canonical rate
+// limit key, or a tiered family prefix. Live pointers match what Select
+// returns, so Mark* calls on the result land on pool state.
+func (manager *Manager) AccountsWithQuotaModel(model string) []*Account {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 	var result []*Account
@@ -1325,11 +1354,7 @@ func (manager *Manager) AccountsWithQuotaModel(model string) []*Account {
 		if !account.Enabled || account.IsInvalid {
 			continue
 		}
-		_, has := account.Quota.Models[model]
-		if !has && canon != "" {
-			_, has = account.Quota.Models[canon]
-		}
-		if has {
+		if accountSupportsQuotaModel(account, model) {
 			result = append(result, account)
 		}
 	}

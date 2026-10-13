@@ -137,3 +137,50 @@ func TestResolveModelRecoverySkipsFailingAccountAndRecordsFailure(t *testing.T) 
 		t.Error("failed recovery fetch left no failure on the live pool account")
 	}
 }
+
+func TestAccountsWithQuotaModel_MatchesTieredPrefix(t *testing.T) {
+	t.Parallel()
+	mgr, err := New(Options{
+		Accounts: []*Account{
+			{
+				Email:   "capable@example.com",
+				Enabled: true,
+				Quota: Quota{
+					Models: map[string]ModelQuota{
+						"claude-sonnet-5-5-high": {},
+					},
+				},
+			},
+			{
+				Email:   "legacy@example.com",
+				Enabled: true,
+				Quota: Quota{
+					Models: map[string]ModelQuota{
+						"claude-sonnet-4-6": {},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Bare family request "claude-sonnet-5-5" must find capable@example.com
+	accs := mgr.AccountsWithQuotaModel("claude-sonnet-5-5")
+	if len(accs) != 1 || accs[0].Email != "capable@example.com" {
+		t.Fatalf("expected [capable@example.com], got %v", accs)
+	}
+
+	// Exact match "claude-sonnet-5-5-high" must also find capable@example.com
+	accsExact := mgr.AccountsWithQuotaModel("claude-sonnet-5-5-high")
+	if len(accsExact) != 1 || accsExact[0].Email != "capable@example.com" {
+		t.Fatalf("expected [capable@example.com], got %v", accsExact)
+	}
+
+	// Request for "claude-sonnet-4-6" must find legacy@example.com
+	accsLegacy := mgr.AccountsWithQuotaModel("claude-sonnet-4-6")
+	if len(accsLegacy) != 1 || accsLegacy[0].Email != "legacy@example.com" {
+		t.Fatalf("expected [legacy@example.com], got %v", accsLegacy)
+	}
+}
