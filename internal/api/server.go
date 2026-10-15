@@ -1715,12 +1715,14 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 		if wire == zen.WireResponses {
 			forward = zen.ForwardResponses
 		}
-		forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
+		if err := forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
 			if resp.StatusCode < 400 {
 				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
 			}
 			return nil
-		})
+		}); err != nil {
+			server.logStreamBreak(request, err, "gateway", "zen", "model", model, "session", sessionKey)
+		}
 		return
 	}
 

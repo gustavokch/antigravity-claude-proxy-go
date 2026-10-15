@@ -494,9 +494,10 @@ func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey str
 // ForwardResponses is the forwarding entry point: SendResponses, then copy the
 // translated response to w (flushing per write so SSE stays incremental).
 // modify runs on the translated response before any byte is written, mirroring
-// ForwardMessagesWithModify.
-func ForwardResponses(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	forwardTranslated(w, "responses", modify, func() (*http.Response, error) {
+// ForwardMessagesWithModify. The result is the copy's terminal error, nil for a
+// clean end of stream.
+func ForwardResponses(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) error {
+	return forwardTranslated(w, "responses", modify, func() (*http.Response, error) {
 		return SendResponses(r.Context(), TLSClient(), baseURL, apiKey, body)
 	})
 }

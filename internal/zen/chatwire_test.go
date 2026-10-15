@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -185,8 +186,11 @@ func TestStreamTerminationRequiresMarker(t *testing.T) {
 	}
 	for _, c := range cases {
 		var out bytes.Buffer
-		if err := streamChatToAnthropic(strings.NewReader(c.in), &out, "m", nil, nil); err != nil {
-			t.Fatalf("%s: %v", c.name, err)
+		err := streamChatToAnthropic(strings.NewReader(c.in), &out, "m", nil, nil)
+		// The in-band error event and the returned sentinel are the same
+		// judgement: the client is told, and the caller can log the break.
+		if gotTruncation := errors.Is(err, ErrStreamTruncated); gotTruncation != c.wantError {
+			t.Fatalf("%s: truncation error = %v, wantError=%v", c.name, err, c.wantError)
 		}
 		s := out.String()
 		gotError := strings.Contains(s, "event: error")
