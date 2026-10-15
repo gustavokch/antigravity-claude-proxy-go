@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -257,5 +259,80 @@ func TestManagementPreflightAllowsThePasswordHeader(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "x-webui-password") {
 		t.Errorf("x-webui-password not allowed: %q", rec.Header().Get("Access-Control-Allow-Headers"))
+	}
+}
+
+// publicByDesign names the dispatcher paths outside /api/ that are served by
+// handleManagement and deliberately kept on the public CORS path.
+var publicByDesign = map[string]string{
+	"/health": "monitoring probe; counts only",
+}
+
+// fragments are not routes. The dispatcher matches them as a suffix of an
+// /api/ path, so the source scan below sees them; they are named here instead of
+// weakening the scan.
+var fragments = map[string]string{
+	"/refresh": "suffix of /api/accounts/{email}/refresh",
+	"/toggle":  "suffix of /api/accounts/{email}/toggle",
+	"/stop":    "suffix of /api/cache-bump/{id}/stop",
+}
+
+// TestEveryNonAPIDispatchRouteIsOriginChecked reads the dispatcher itself, so a
+// route added to handleManagement outside /api/ fails here until it is named in
+// isManagementRoute (or listed above with a reason). A hand-written route list
+// in the test would guard nothing.
+func TestEveryNonAPIDispatchRouteIsOriginChecked(t *testing.T) {
+	src, err := os.ReadFile("management.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	start := strings.Index(text, "func (server *Server) handleManagement(")
+	if start < 0 {
+		t.Fatal("handleManagement not found in management.go")
+	}
+	body := text[start:]
+	if end := strings.Index(body[1:], "\nfunc "); end >= 0 {
+		body = body[:end+1]
+	}
+	lit := regexp.MustCompile(`"(/[A-Za-z0-9_\-./]+)"`) // "+" skips the bare "/" used by strings.SplitN
+	seen := 0
+	for _, m := range lit.FindAllStringSubmatch(body, -1) {
+		p := m[1]
+		if strings.HasPrefix(p, "/api/") {
+			continue
+		}
+		seen++
+		if _, ok := fragments[p]; ok {
+			continue
+		}
+		if _, ok := publicByDesign[p]; ok {
+			if isManagementRoute(p) {
+				t.Errorf("%s is listed public-by-design but isManagementRoute claims it", p)
+			}
+			continue
+		}
+		if !isManagementRoute(p) {
+			t.Errorf("handleManagement serves %q outside /api/ but isManagementRoute does not name it: "+
+				"it would be answered with Access-Control-Allow-Origin: * and no Origin check", p)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("scan found no non-/api/ routes: the regexp or the function boundary is wrong")
+	}
+}
+
+// TestAccountLimitsOrigin covers the GET route TestRefreshTokenAliasOrigin does not.
+func TestAccountLimitsOrigin(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin GET /account-limits = %d, want 403", rec.Code)
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") == "*" {
+		t.Error("/account-limits advertises a wildcard origin")
 	}
 }

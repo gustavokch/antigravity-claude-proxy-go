@@ -54,12 +54,15 @@ func (server *Server) checkWebUIPassword(request *http.Request) bool {
 	return provided == password
 }
 
-// isManagementRoute reports whether handleManagement serves path, and so whether
-// the request gets the management cross-origin treatment instead of the wildcard
-// CORS the public model API uses. It must name every route the dispatch table
-// serves outside the /api/ prefix: a route missing here is answered with
-// Access-Control-Allow-Origin: * and no Origin check, which is how /refresh-token
-// let a foreign page both trigger a pool reload and read the result.
+// isManagementRoute reports whether serveHTTP applies the management Origin
+// check and body cap to path. It is not the set handleManagement serves: /health
+// and /api/event_logging/batch are served there and deliberately kept on the
+// public CORS path. Every other route the dispatch table serves outside /api/
+// must be named here, or it is answered with Access-Control-Allow-Origin: * and
+// no Origin check — which is how /refresh-token let a foreign page both trigger
+// a pool reload and read the result.
+// TestEveryNonAPIDispatchRouteIsOriginChecked fails when a route is added
+// without being named here.
 func isManagementRoute(path string) bool {
 	if path == "/api/event_logging/batch" {
 		return false // telemetry swallow: no state, no secret
