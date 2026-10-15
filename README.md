@@ -796,9 +796,17 @@ custom_providers:
 
 All `/v1/*` routes accept authentication via `x-api-key` or `Authorization: Bearer <key>`. Routes are mirrored under `/anthropic` prefix.
 
+Management routes are password-gated by `webuiPassword` (send it as `x-webui-password`, or as `?password=`). The gate is default-deny over the management API: only `GET /api/config` and `GET /api/auth/url` answer without it, plus `GET /health`, which is not a management route. `/v1/*` keeps its own `x-api-key` rule, and the WebUI assets stay public so the login form can load. `GET /api/config` is public so the login form can read `hasPassword` first; its output is redacted: it carries account emails but no token, key, or password.
+
+With no `webuiPassword` set the whole management surface is open, and it answers with plaintext credentials: `GET /api/accounts/export` returns each account's Google refresh token, and `GET /api/claude/config` returns the `ANTHROPIC_AUTH_TOKEN` from `~/.claude/settings.json`. On the default loopback bind the trust boundary is the local machine, so open mode answers only to a `Host` of `localhost` or an IP address: a web page on a DNS-rebinding domain reaches the loopback listener under its own name, and that name is refused with `403`. Set `webuiPassword` to reach the management API under any other name. Beyond loopback open mode is not safe at all, so the proxy refuses to start on a non-loopback `-listen` with no `webuiPassword` set.
+
+That refusal is new in the release that ships this change. A deployment that already binds `0.0.0.0`, or sets `ANTIGRAVITY_PROXY_LISTEN` to a wide address, stops starting after the upgrade until it does one of two things: set `webuiPassword` in `config.json`, or bind to loopback and put a reverse proxy in front.
+
+Management payloads are small, so they are capped: a management request body over 8 MiB is refused with `413`, and `POST /api/accounts/import` takes at most 1000 accounts per call. The `/v1/*` limit is separate and larger (50 MiB).
+
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/health` | `GET` | Proxy status, account pool health summary (public) |
+| `/health` | `GET` | Proxy status and account pool counts only — no emails, project IDs, or quota (public) |
 | `/account-limits` | `GET` | Real-time rate limits, account quota details, and model configurations (`?format=table` supported) |
 | `/v1/models` | `GET` | Unified catalog of available models, context lengths, thinking support |
 | `/v1/usage` | `GET` | Quota usage per model and grouped quota reset windows |
@@ -810,8 +818,9 @@ All `/v1/*` routes accept authentication via `x-api-key` or `Authorization: Bear
 | `/api/accounts/{email}/refresh` | `POST` | Clear token caches and re-verify upstream access |
 | `/api/accounts/{email}/toggle` | `POST` | Enable or disable account |
 | `/api/accounts/reload` | `POST` | Reload accounts from disk |
+| `/refresh-token` | `POST` | Deprecated alias of `/api/accounts/reload`; kept for compatibility, and gated like its twin |
 | `/api/accounts/export` | `GET` | Export accounts payload |
-| `/api/accounts/import` | `POST` | Import accounts payload |
+| `/api/accounts/import` | `POST` | Import accounts payload (at most 1000 per call; answers `500` when the pool could not be written to disk) |
 | `/api/config` | `GET`/`POST` | Read (redacted) or save proxy runtime configuration |
 | `/api/config/password` | `POST` | Set or update Web UI protection password |
 | `/api/settings` | `GET` | Retrieve combined runtime configuration and active account pool stats |

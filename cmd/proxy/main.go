@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -102,6 +103,22 @@ func runServer(args []string) {
 	cfg, _ := config.Load()
 	if *port > 0 {
 		*listen = fmt.Sprintf("127.0.0.1:%d", *port)
+	}
+
+	// The management API answers with plaintext credentials: GET
+	// /api/accounts/export returns a Google refresh token, and GET
+	// /api/claude/config returns the Anthropic key from settings.json. With no
+	// webuiPassword set, any peer that can reach the listener reads both, and can
+	// also POST /api/config — including setting the password that then locks the
+	// operator out. A loopback bind puts that trust boundary on the local
+	// machine, which is the documented default. A wider bind has to carry a
+	// password, so refuse rather than put a long-lived token on a network.
+	if !bindAllowed(*listen, cfg.WebUIPassword != "") {
+		fmt.Fprintf(os.Stderr,
+			"Refusing to start: -listen %s is not a loopback address and no webuiPassword is set.\n"+
+				"The management API exposes account refresh tokens and the Claude credential to any peer that can reach it.\n"+
+				"Set webuiPassword in config.json, or bind -listen to 127.0.0.1.\n", *listen)
+		os.Exit(2)
 	}
 
 	// Daemon mode
@@ -268,6 +285,10 @@ func runServer(args []string) {
 		Tracker:        tracker,
 		CCUsage:        ccUsage,
 		Mitm:           mitmRuntime,
+
+		// Open mode (no webuiPassword) answers management requests only to
+		// localhost or an IP-literal Host: a DNS-rebinding page cannot send either.
+		StrictManagementHost: true,
 	})
 	if err != nil {
 		slogger.Error("invalid proxy configuration", "error", err)
@@ -344,4 +365,25 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// listenIsLoopback reports whether addr binds only to loopback. An empty host
+// (":8080") means every interface, so it is not loopback.
+func listenIsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// bindAllowed reports whether a listener may serve the management surface. It
+// answers with plaintext credentials, so a bind beyond loopback has to carry a
+// webuiPassword.
+func bindAllowed(listen string, hasPassword bool) bool {
+	return hasPassword || listenIsLoopback(listen)
 }

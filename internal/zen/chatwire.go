@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/format"
+	"antigravity-go-proxy/internal/transport"
 )
 
 // SendChat serves an Anthropic Messages request against a Zen
@@ -55,12 +57,18 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	return translateChatResponse(resp, model, clientStream, toolNames, injected), nil
 }
 
+// ErrStreamTruncated marks a translated stream that ended before its terminal
+// event. The client already received an in-band error event; the error exists
+// so the caller can log the break.
+var ErrStreamTruncated = errors.New("zen stream ended before its terminal event")
+
 // ForwardChat is the forwarding entry point: SendChat, then copy the translated
 // response to w (flushing per write so SSE stays incremental). modify runs on
 // the translated response before any byte is written, mirroring
-// ForwardMessagesWithModify.
-func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	forwardTranslated(w, "chat", modify, func() (*http.Response, error) {
+// ForwardMessagesWithModify. The result is the copy's terminal error, nil for a
+// clean end of stream.
+func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) error {
+	return forwardTranslated(w, "chat", modify, func() (*http.Response, error) {
 		return SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
 	})
 }
@@ -69,18 +77,22 @@ func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string,
 // (ForwardChat, ForwardResponses): send the upstream request, run modify on
 // the already-translated response, and copy it to w, flushing per write so
 // SSE stays incremental. wire names the wire in the upstream-error log line.
-func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Response) error, send func() (*http.Response, error)) {
+// It returns the copy's terminal error, nil for a clean end of stream — the
+// same split ccCopyStream and openrouter.SSEInterceptor.TerminalErr draw. The
+// upstream and modify failures already answered with a 502 and were logged, so
+// they report nil.
+func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Response) error, send func() (*http.Response, error)) error {
 	resp, err := send()
 	if err != nil {
 		slog.Default().Error("zen "+wire+" upstream error", "error", err)
 		writeAPIError(w, http.StatusBadGateway, "api_error", "Zen upstream error: "+err.Error())
-		return
+		return nil
 	}
 	defer resp.Body.Close()
 	if modify != nil {
 		if err := modify(resp); err != nil {
 			writeAPIError(w, http.StatusBadGateway, "api_error", "Zen response handling error: "+err.Error())
-			return
+			return nil
 		}
 	}
 	for _, h := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
@@ -95,14 +107,17 @@ func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Res
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
+				return werr
 			}
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
 		if readErr != nil {
-			return
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			return readErr
 		}
 	}
 }
@@ -487,9 +502,14 @@ func ensureGateTools(tools []any) ([]any, map[string]bool) {
 
 // --- Response translation ---
 
+// The reads below are capped at transport.MaxUpstreamBody and
+// transport.MaxErrorBody, the shared bounds. A body cut off at either cap fails
+// the JSON decode that follows it, so a truncated upstream answer surfaces as a
+// decode failure instead of exhausting memory.
+
 func translateChatResponse(resp *http.Response, model string, clientStream bool, toolNames map[string]string, injected map[string]bool) *http.Response {
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, transport.MaxErrorBody))
 		_ = resp.Body.Close()
 		return rebody(resp, "application/json", chatErrorToAnthropic(resp.StatusCode, raw, model))
 	}
@@ -520,7 +540,7 @@ func translateChatResponse(resp *http.Response, model string, clientStream bool,
 		out, _ := json.Marshal(ChatResponseToAnthropic(chat, model, toolNames, injected))
 		return rebody(resp, "application/json", out)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, transport.MaxUpstreamBody))
 	_ = resp.Body.Close()
 	if err != nil {
 		return failResponse(resp, "Zen response read error: "+err.Error())
@@ -901,14 +921,14 @@ func streamChatToAnthropic(r io.Reader, w io.Writer, model string, toolNames map
 	}
 	if err := scanner.Err(); err != nil {
 		s.emitError("api_error", "Zen stream read error: "+err.Error())
-		return nil
+		return fmt.Errorf("%w: %v", ErrStreamTruncated, err)
 	}
 	// Clean EOF with neither [DONE] nor a finish_reason is a truncated
 	// stream (dropped connection, proxy timeout); finishing it as end_turn
 	// would pass a partial answer off as complete.
 	if !done && s.stop == "" {
 		s.emitError("api_error", "Zen stream ended before completion")
-		return nil
+		return ErrStreamTruncated
 	}
 	return s.finish()
 }

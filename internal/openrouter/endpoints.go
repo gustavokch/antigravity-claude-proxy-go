@@ -238,7 +238,10 @@ func (e *EndpointsClient) FetchModelEndpoints(ctx context.Context, modelID, apiK
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// Bound the read so a hostile or broken upstream cannot exhaust memory; a
+	// truncated body fails the decode below instead of silently losing entries.
+	const maxEndpointsBody = 16 << 20
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxEndpointsBody))
 	if err != nil {
 		return nil, fmt.Errorf("read endpoints body: %w", err)
 	}

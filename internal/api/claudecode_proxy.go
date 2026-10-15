@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/sessionid"
+	"antigravity-go-proxy/internal/transport"
 )
 
 var (
@@ -324,13 +326,8 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 		return
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if err != nil {
-		if server.logger != nil {
-			server.logger.Warn("claudecode response read failed", "account", a.accountID, "err", err)
-		}
-		resp.Body = io.NopCloser(bytes.NewReader(body))
+	body, ok := capUpstreamBody(resp, transport.MaxUpstreamBody, server.logger, "gateway", "claudecode")
+	if !ok {
 		return
 	}
 	server.recordClaudeCodeMetrics(a, claudecode.ParseUsageJSON(body))
@@ -339,21 +336,29 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 
 // ccCopyStream forwards the upstream body, flushing per chunk so SSE events
 // reach the client as they arrive instead of at end of stream.
-func ccCopyStream(writer http.ResponseWriter, body io.Reader) {
+//
+// It returns the terminal error, nil for a clean EOF — the same split
+// openrouter.SSEInterceptor.TerminalErr draws. Without that return the copy is
+// the only party that knows a stream stopped early, and the operator sees a
+// short answer with nothing in the log to explain it.
+func ccCopyStream(writer http.ResponseWriter, body io.Reader) error {
 	flusher, hasFlusher := writer.(http.Flusher)
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
 			if _, werr := writer.Write(buf[:n]); werr != nil {
-				return
+				return werr
 			}
 			if hasFlusher {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
-			return
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
 		}
 	}
 }
@@ -490,7 +495,24 @@ func (server *Server) forwardToClaudeCode(
 		ccCopyResponseHeaders(writer.Header(), resp.Header, ccCfg.ForwardUnifiedHeadersEnabled())
 		writer.WriteHeader(resp.StatusCode)
 
-		ccCopyStream(writer, resp.Body)
+		// A stream that ends with no read error is not necessarily a finished
+		// one: a graceful close ahead of message_stop reads as io.EOF. Watch the
+		// event stream for its terminal marker; a JSON body or an error status
+		// has none to look for.
+		var body io.Reader = resp.Body
+		var watch *terminalWatcher
+		if resp.StatusCode < 400 && ccIsSSEResponse(resp.Header) {
+			watch = &terminalWatcher{r: resp.Body}
+			body = watch
+		}
+		copyErr := ccCopyStream(writer, body)
+		if watch != nil {
+			copyErr = watch.breakReason(copyErr)
+		}
+		if copyErr != nil {
+			server.logStreamBreak(request, copyErr,
+				"gateway", "claudecode", "account", acc.ID, "model", model, "session", sessionKey)
+		}
 
 		return
 	}

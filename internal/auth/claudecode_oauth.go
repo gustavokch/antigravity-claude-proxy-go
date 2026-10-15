@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net"
@@ -442,7 +443,7 @@ func (m *ClaudeCodeOAuthManager) handleLoopbackCallback(session *ClaudeCodeAuthS
 		session.mu.Unlock()
 
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Authentication Failed</title><style>body{font-family:sans-serif;text-align:center;padding:40px;background:#18181b;color:#f4f4f5;}.error{color:#ef4444;margin-top:20px;}</style></head><body><h2>Authentication Failed</h2><p class="error">` + errMsg + `</p><p>You can close this tab and return to Antigravity Proxy.</p></body></html>`))
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Authentication Failed</title><style>body{font-family:sans-serif;text-align:center;padding:40px;background:#18181b;color:#f4f4f5;}.error{color:#ef4444;margin-top:20px;}</style></head><body><h2>Authentication Failed</h2><p class="error">` + template.HTMLEscapeString(errMsg) + `</p><p>You can close this tab and return to Antigravity Proxy.</p></body></html>`))
 		m.closeSessionServer(session)
 		return
 	}
@@ -485,7 +486,7 @@ func (m *ClaudeCodeOAuthManager) handleLoopbackCallback(session *ClaudeCodeAuthS
 		session.mu.Unlock()
 
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Authentication Error</title><style>body{font-family:sans-serif;text-align:center;padding:40px;background:#18181b;color:#f4f4f5;}</style></head><body><h2>Token Exchange Failed</h2><p>` + err.Error() + `</p><p>Please return to Antigravity Proxy and try again.</p></body></html>`))
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Authentication Error</title><style>body{font-family:sans-serif;text-align:center;padding:40px;background:#18181b;color:#f4f4f5;}</style></head><body><h2>Token Exchange Failed</h2><p>` + template.HTMLEscapeString(err.Error()) + `</p><p>Please return to Antigravity Proxy and try again.</p></body></html>`))
 		m.closeSessionServer(session)
 		return
 	}
@@ -513,7 +514,7 @@ func (m *ClaudeCodeOAuthManager) handleLoopbackCallback(session *ClaudeCodeAuthS
 	slog.Info("Claude Code OAuth loopback authentication successful", "session_id", session.ID, "email", profile.Account.Email)
 
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Authentication Successful</title><style>body{font-family:sans-serif;text-align:center;padding:40px;background:#18181b;color:#f4f4f5;}.success{color:#22c55e;font-size:24px;margin-bottom:12px;}.email{font-weight:bold;color:#60a5fa;}</style></head><body><div class="success">&#10004; Login Successful</div><p>Authenticated as <span class="email">` + profile.Account.Email + `</span></p><p>You can close this tab and return to Antigravity Proxy.</p></body></html>`))
+	_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Authentication Successful</title><style>body{font-family:sans-serif;text-align:center;padding:40px;background:#18181b;color:#f4f4f5;}.success{color:#22c55e;font-size:24px;margin-bottom:12px;}.email{font-weight:bold;color:#60a5fa;}</style></head><body><div class="success">&#10004; Login Successful</div><p>Authenticated as <span class="email">` + template.HTMLEscapeString(profile.Account.Email) + `</span></p><p>You can close this tab and return to Antigravity Proxy.</p></body></html>`))
 
 	m.closeSessionServer(session)
 }

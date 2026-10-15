@@ -1199,3 +1199,46 @@ func TestManager_SelectKeepsUndiscoveredAccountWhenPoolListsModel(t *testing.T) 
 		t.Fatalf("Select = %v, want the undiscovered account", sel.Account)
 	}
 }
+
+// TestCountsMatchGetStatus: /health reads Counts so that the public probe stops
+// building the per-account list under the pool's write lock. The numbers have to
+// stay the ones GetStatus reports, including the rule that a rate limit whose
+// reset time has passed does not count.
+func TestCountsMatchGetStatus(t *testing.T) {
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	nowMS := now.UnixMilli()
+
+	disabled := testAccount("disabled@example.com")
+	disabled.Enabled = false
+	invalid := testAccount("invalid@example.com")
+	invalid.IsInvalid = true
+	limited := testAccount("limited@example.com")
+	limited.ModelRateLimits["claude"] = &RateLimit{IsRateLimited: true, ResetTimeMS: nowMS + 60_000}
+	expired := testAccount("expired@example.com")
+	expired.ModelRateLimits["claude"] = &RateLimit{IsRateLimited: true, ResetTimeMS: nowMS - 60_000}
+
+	manager, err := New(Options{
+		Accounts: []*Account{testAccount("ok@example.com"), disabled, invalid, limited, expired},
+		Strategy: StrategyHybrid,
+		Now:      func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := manager.Counts()
+	want := StatusCounts{Total: 5, Available: 3, RateLimited: 1, Invalid: 1}
+	if got != want {
+		t.Errorf("Counts() = %+v, want %+v", got, want)
+	}
+
+	status := manager.GetStatus()
+	if status["total"] != got.Total || status["available"] != got.Available ||
+		status["rateLimited"] != got.RateLimited || status["invalid"] != got.Invalid {
+		t.Errorf("GetStatus counts %v/%v/%v/%v disagree with Counts() %+v",
+			status["total"], status["available"], status["rateLimited"], status["invalid"], got)
+	}
+	if status["summary"] != got.Summary() {
+		t.Errorf("summary = %q, want %q", status["summary"], got.Summary())
+	}
+}

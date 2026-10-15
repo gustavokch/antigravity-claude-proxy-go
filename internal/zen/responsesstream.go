@@ -350,14 +350,14 @@ func streamResponsesToAnthropic(r io.Reader, w io.Writer, model string, toolName
 	}
 	if err := scanner.Err(); err != nil {
 		s.emitError("api_error", "Zen stream read error: "+err.Error())
-		return nil
+		return fmt.Errorf("%w: %v", ErrStreamTruncated, err)
 	}
 	// A clean EOF without response.completed is a truncated stream (dropped
 	// connection, proxy timeout); finishing it as end_turn would pass a partial
 	// answer off as complete.
 	if !done && !s.settled {
 		s.emitError("api_error", "Zen stream ended before completion")
-		return nil
+		return ErrStreamTruncated
 	}
 	return s.finish()
 }

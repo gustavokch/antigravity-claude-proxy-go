@@ -48,6 +48,7 @@ import (
 	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
+	"antigravity-go-proxy/internal/transport"
 	"antigravity-go-proxy/internal/zen"
 )
 
@@ -55,6 +56,14 @@ const (
 	maxRequestBody = 50 << 20
 	maxMappingHops = 5
 )
+
+// customEndpointTransport serves every custom-endpoint forward. The
+// ReverseProxy would otherwise use http.DefaultTransport, which has no bound on
+// time to response headers: an endpoint that accepts the connection and then
+// stays silent holds the request open until the client disconnects. The clone
+// changes that one field, so the ClientHello toward the custom endpoint is
+// unchanged.
+var customEndpointTransport = transport.Upstream()
 
 var jsonBufferPool = sync.Pool{
 	New: func() any {
@@ -102,6 +111,12 @@ type Options struct {
 	CCUsage *ccusage.Engine
 	// Mitm is the running observe-only forward proxy; nil when disabled.
 	Mitm *mitm.Runtime
+
+	// StrictManagementHost makes the management surface answer only to a loopback
+	// name or an IP-literal Host while no webuiPassword is set. The real server
+	// turns it on. A test's httptest request carries Host example.com, so the zero
+	// value leaves the check off.
+	StrictManagementHost bool
 }
 
 type Server struct {
@@ -132,6 +147,9 @@ type Server struct {
 	classifierMatcher  *classifier.ConfigurableMatcher
 	classifierAudit    *classifier.Recorder
 	classifierCorpus   atomic.Pointer[corpus.Recorder]
+
+	// strictManagementHost is Options.StrictManagementHost.
+	strictManagementHost bool
 
 	// Kimi OAuth refresh state, guarded by kimiRefreshMu.
 	kimiDeadRefreshToken string                  // refresh token Kimi rejected
@@ -188,7 +206,7 @@ func New(options Options) (*Server, error) {
 		projects:           make(map[string]string),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
-
+	srv.strictManagementHost = options.StrictManagementHost
 	cfg := config.Get()
 	srv.classifierAudit = classifier.NewRecorder(200)
 	srv.applyClassifierConfig(cfg.Classifier)
@@ -392,9 +410,35 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	} else if strings.HasPrefix(path, "/anthropic/") {
 		path = strings.TrimPrefix(path, "/anthropic")
 	}
-	isManagement := (strings.HasPrefix(path, "/api/") && path != "/api/event_logging/batch") || path == "/account-limits"
+	isManagement := isManagementRoute(path)
 
 	if isManagement {
+		// Cap the body once for every management route instead of at each of the
+		// decoders in the dispatch table. A known ContentLength gets an explicit
+		// 413; a chunked body is cut off by MaxBytesReader and reaches its handler
+		// as a decode error, i.e. the 400 that handler already returns for a body
+		// it cannot parse.
+		request.Body = http.MaxBytesReader(writer, request.Body, maxManagementRequestBody)
+		if request.ContentLength > maxManagementRequestBody {
+			writeJSON(writer, http.StatusRequestEntityTooLarge, map[string]any{"status": "error", "error": "Request body too large"})
+			return
+		}
+
+		// With no webuiPassword the loopback bind is the whole trust boundary, and
+		// a page on a DNS-rebinding domain walks through it: the browser sends
+		// Host: <attacker name>, the request is same-origin from its point of
+		// view (so it carries no Origin, or one equal to the Host), and the origin
+		// check below passes. A name that is not loopback cannot be told apart
+		// from that attacker, so open mode refuses it. A password makes the gate
+		// the boundary instead, and then any Host may carry it.
+		if server.strictManagementHost && config.Get().WebUIPassword == "" && !isAllowedManagementHost(request.Host) {
+			writeJSON(writer, http.StatusForbidden, map[string]any{
+				"status": "error",
+				"error":  "management API without a webuiPassword answers only to localhost or an IP address",
+			})
+			return
+		}
+
 		origin := request.Header.Get("Origin")
 		if origin != "" {
 			if !isAllowedManagementOrigin(origin, request.Host) {
@@ -409,7 +453,7 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 				return
 			}
 			writer.Header().Set("Access-Control-Allow-Origin", origin)
-			writer.Header().Set("Access-Control-Allow-Headers", "authorization, content-type, x-api-key, anthropic-version, anthropic-beta")
+			writer.Header().Set("Access-Control-Allow-Headers", "authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-webui-password")
 			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			writer.Header().Set("Vary", "Origin")
 		}
@@ -1312,6 +1356,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	// HTTP/2, which lowercases everything on the wire.
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
+		Transport:     customEndpointTransport,
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode < 400 && isMessagesRequest {
 				server.maybeRecordCacheBump(cachebump.RouteCustom, request, reqBody, customSessionKey, model, "", model, minMaxTokensFloor)
@@ -1599,17 +1644,18 @@ func (server *Server) kimiInstrumentResponse(resp *http.Response, model, session
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
 		return
 	}
-	respBytes, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if err != nil {
-		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+	respBytes, ok := capUpstreamBody(resp, transport.MaxUpstreamBody, server.logger, "gateway", "kimi")
+	if !ok {
 		return
 	}
 	payloadBytes := respBytes
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
-			if decompressed, err := io.ReadAll(gz); err == nil {
+			decompressed, truncated, derr := transport.ReadCapped(gz, transport.MaxUpstreamBody)
+			if derr == nil && !truncated {
 				payloadBytes = decompressed
+			} else if truncated && server.logger != nil {
+				server.logger.Warn("usage skipped: decompressed body capped", "gateway", "kimi", "limit", transport.MaxUpstreamBody)
 			}
 			_ = gz.Close()
 		}
@@ -1687,12 +1733,14 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 		if wire == zen.WireResponses {
 			forward = zen.ForwardResponses
 		}
-		forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
+		if err := forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
 			if resp.StatusCode < 400 {
 				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
 			}
 			return nil
-		})
+		}); err != nil {
+			server.logStreamBreak(request, err, "gateway", "zen", "model", model, "session", sessionKey)
+		}
 		return
 	}
 
@@ -1735,17 +1783,18 @@ func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionI
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
 		return
 	}
-	respBytes, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if err != nil {
-		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+	respBytes, ok := capUpstreamBody(resp, transport.MaxUpstreamBody, server.logger, "gateway", "zen")
+	if !ok {
 		return
 	}
 	payloadBytes := respBytes
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
-			if decompressed, err := io.ReadAll(gz); err == nil {
+			decompressed, truncated, derr := transport.ReadCapped(gz, transport.MaxUpstreamBody)
+			if derr == nil && !truncated {
 				payloadBytes = decompressed
+			} else if truncated && server.logger != nil {
+				server.logger.Warn("usage skipped: decompressed body capped", "gateway", "zen", "limit", transport.MaxUpstreamBody)
 			}
 			_ = gz.Close()
 		}
@@ -2341,11 +2390,16 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return
 			}
 			// Buffer full body before writing — failover impossible after first byte.
-			bodyBytes, readErr := io.ReadAll(resp.Body)
+			bodyBytes, capped, readErr := transport.ReadCapped(resp.Body, transport.MaxUpstreamBody)
 			_ = resp.Body.Close()
 			headersCutoff.Stop()
 			cancel()
-			if readErr != nil {
+			if capped && server.logger != nil {
+				// A capped 2xx is a failed provider attempt, not an answer: the
+				// bytes are a prefix, and a prefix written out is a short 200.
+				server.logger.Warn("upstream response body capped", "gateway", "openrouter", "model", model, "limit", transport.MaxUpstreamBody)
+			}
+			if readErr != nil || capped {
 				if provider != "" {
 					openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 				}
@@ -2392,7 +2446,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 
 		// Non-2xx: buffer body, classify, decide next.
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, capped, _ := transport.ReadCapped(resp.Body, transport.MaxUpstreamBody)
+		if capped && server.logger != nil {
+			server.logger.Warn("upstream response body capped", "gateway", "openrouter", "model", model, "limit", transport.MaxUpstreamBody)
+		}
 		_ = resp.Body.Close()
 		headersCutoff.Stop()
 		cancel()
@@ -2521,6 +2578,10 @@ var openRouterSharedClient = &http.Client{
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		// Same bound as the other upstream paths: a silent OpenRouter stops
+		// holding this request open. Streams are not capped, only the wait for
+		// response headers.
+		ResponseHeaderTimeout: transport.ResponseHeaderTimeout,
 	},
 }
 
@@ -2662,6 +2723,26 @@ func truncate(s string, n int) string {
 	return s[:cut] + "…"
 }
 
+// logStreamBreak reports a stream that stopped before its end. Every gateway
+// copy ends the same silent way, so the client sees a short answer and the
+// operator sees nothing; this is the one place that decides how loud that is.
+// A downstream cancel is the client walking away, which is routine and logs at
+// Debug. Anything else is the upstream letting go, and that is a Warn. attrs
+// carries the caller's identity: gateway, provider or account, model, session.
+func (server *Server) logStreamBreak(request *http.Request, err error, attrs ...any) {
+	if server.logger == nil || err == nil {
+		return
+	}
+	fields := make([]any, 0, len(attrs)+2)
+	fields = append(fields, attrs...)
+	fields = append(fields, "err", err)
+	if request != nil && request.Context().Err() != nil {
+		server.logger.Debug("stream cancelled by client", fields...)
+		return
+	}
+	server.logger.Warn("stream ended before its terminal event", fields...)
+}
+
 // proxyStreamResponse streams a successful response to the client while
 // capturing usage and the served provider via SSE. It owns cancel: the attempt
 // context lives until the stream ends (headers already arrived within budget).
@@ -2695,16 +2776,33 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 	})
 	defer interceptor.Close()
 
+	// The interceptor reports a read error and treats io.EOF as no fault, so a
+	// graceful close ahead of message_stop would pass for a finished stream. The
+	// watcher is what tells the two apart.
+	watch := &terminalWatcher{r: interceptor}
 	buf := make([]byte, 4096)
 	for {
-		n, err := interceptor.Read(buf)
+		n, err := watch.Read(buf)
 		if n > 0 {
-			_, _ = writer.Write(buf[:n])
+			if _, werr := writer.Write(buf[:n]); werr != nil {
+				// The upstream body is intact; the client let go. The
+				// interceptor never sees this one.
+				server.logStreamBreak(resp.Request, werr,
+					"gateway", "openrouter", "model", model, "session", sessionID)
+				return
+			}
 			if hasFlusher {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
+			// breakReason keeps the interceptor's read error, and adds the case it
+			// cannot see: a clean EOF before any terminal event.
+			attrs := []any{"gateway", "openrouter", "model", model, "session", sessionID}
+			if provider != "" {
+				attrs = append(attrs, "provider", provider)
+			}
+			server.logStreamBreak(resp.Request, watch.breakReason(interceptor.TerminalErr()), attrs...)
 			return
 		}
 	}
@@ -3198,6 +3296,22 @@ func isAllowedManagementOrigin(originHeader, reqHost string) bool {
 		}
 	}
 	return false
+}
+
+// isAllowedManagementHost reports whether a Host header may reach the management
+// surface in open mode: localhost, or an IP literal. A DNS-rebinding page has to
+// send its own domain name, and a name can resolve to anything; an IP literal
+// cannot be rebound.
+func isAllowedManagementHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	return net.ParseIP(host) != nil
 }
 
 func stringFrom(value any) string {

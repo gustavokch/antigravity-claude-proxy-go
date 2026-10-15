@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net"
 	"net/http"
@@ -184,7 +185,20 @@ func (om *OAuthManager) StartFlow() (string, string, error) {
 	}
 	om.flows[state] = flow
 
-	mux.HandleFunc("/oauth-callback", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/oauth-callback", om.callbackHandler(srv))
+
+	go func() {
+		_ = srv.Serve(listener)
+	}()
+
+	return authURL, state, nil
+}
+
+// callbackHandler serves the loopback redirect. It is a method rather than a
+// closure inside StartFlow so a test can drive it without binding one of the
+// fixed callback ports.
+func (om *OAuthManager) callbackHandler(srv *http.Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		code := q.Get("code")
 		cbState := q.Get("state")
@@ -193,7 +207,10 @@ func (om *OAuthManager) StartFlow() (string, string, error) {
 		if errParam != "" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "<html><body><h1>❌ Authentication Failed</h1><p>%s</p></body></html>", errParam)
+			// errParam comes from the redirect query string, so it is caller
+			// data: escaped, or an error page carrying error=<script>… runs the
+			// script on the loopback origin.
+			fmt.Fprintf(w, "<html><body><h1>❌ Authentication Failed</h1><p>%s</p></body></html>", template.HTMLEscapeString(errParam))
 			go func() { _ = srv.Close() }()
 			return
 		}
@@ -233,13 +250,7 @@ func (om *OAuthManager) StartFlow() (string, string, error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "<html><body style=\"font-family:system-ui;text-align:center;padding:40px;\"><h1 style=\"color:#28a745;\">✅ Authentication Successful!</h1><p>You can close this window.</p><script>setTimeout(()=>window.close(),2000);</script></body></html>")
-	})
-
-	go func() {
-		_ = srv.Serve(listener)
-	}()
-
-	return authURL, state, nil
+	}
 }
 
 // CompleteFlow exchanges code for tokens, gets user info, and saves account.

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,21 @@ import (
 	"antigravity-go-proxy/internal/zen"
 )
 
+// maxManagementRequestBody bounds the body of any request serveHTTP classifies
+// as management traffic. Every handler the dispatch table serves decodes a small
+// JSON payload: a config, a preset, one account, or an exported pool. The cap
+// sits far below maxRequestBody, the /v1/messages limit, because no management
+// payload is anywhere near that size; without it a single POST to the management
+// API could pin a worker as hard as a generation request can.
+const maxManagementRequestBody = 8 << 20
+
+// maxImportedAccounts bounds one POST /api/accounts/import. The body cap alone
+// would still admit millions of two-byte objects, and the pool has no ceiling:
+// every added account is walked on later /v1/messages selections, so an
+// oversized array is a permanent cost, not only a request-time one. 1000 is far
+// above any real pool.
+const maxImportedAccounts = 1000
+
 func (server *Server) checkWebUIPassword(request *http.Request) bool {
 	cfg := config.Get()
 	password := cfg.WebUIPassword
@@ -36,7 +52,49 @@ func (server *Server) checkWebUIPassword(request *http.Request) bool {
 	if provided == "" {
 		provided = request.URL.Query().Get("password")
 	}
-	return provided == password
+	// The compare authorized uses for API keys. This password is the only guard
+	// on a non-loopback bind, so a plain == would be a timing oracle on it.
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(password)) == 1
+}
+
+// isManagementRoute reports whether path belongs to the management surface. It
+// is the one list behind three rules: the Origin check and the body cap in
+// serveHTTP, and the password gate in handleManagement. It is not the set
+// handleManagement dispatches: /health and /api/event_logging/batch are served
+// there and deliberately stay outside it, on the public CORS path. Every other
+// route the dispatchers serve outside /api/ must be named here, or it is answered
+// with Access-Control-Allow-Origin: *, no Origin check, no body cap and no
+// password, which is how /refresh-token let a foreign page both trigger a pool
+// reload and read the result.
+// TestEveryNonAPIDispatchRouteIsManagementScoped fails when a route is added
+// without being named here.
+func isManagementRoute(path string) bool {
+	if path == "/api/event_logging/batch" {
+		return false // telemetry swallow: no state, no secret
+	}
+	switch path {
+	case "/account-limits", "/refresh-token":
+		return true
+	}
+	return strings.HasPrefix(path, "/api/")
+}
+
+// requiresWebUIPassword is default-deny over the management surface: a route
+// isManagementRoute names is gated unless it is named public here. Every other
+// path (/v1/*, /health, the WebUI assets) is not this gate's business, and
+// handleManagement sees them too, so the scope check has to live here. GET
+// /api/config stays public so the login form can read hasPassword before it has
+// a credential; GET /api/auth/url starts the OAuth flow before login; GET
+// /health answers with counts only, which is what a monitoring probe needs.
+func requiresWebUIPassword(path, method string) bool {
+	if !isManagementRoute(path) {
+		return false
+	}
+	switch path {
+	case "/api/config", "/api/auth/url":
+		return method != http.MethodGet
+	}
+	return true
 }
 
 func (server *Server) handleManagement(writer http.ResponseWriter, request *http.Request, path string) bool {
@@ -48,16 +106,14 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	}
 
-	// WebUI Password protection for protected routes
-	isPublicAuthRoute := path == "/api/auth/url"
-	isPublicConfigGet := path == "/api/config" && method == http.MethodGet
-	if strings.HasPrefix(path, "/api/") && !isPublicAuthRoute && !isPublicConfigGet {
-		if !server.checkWebUIPassword(request) {
-			writeJSON(writer, http.StatusUnauthorized, map[string]any{"status": "error", "error": "Unauthorized: Password required"})
-			return true
-		}
-	}
-	if path == "/account-limits" && !server.checkWebUIPassword(request) {
+	// WebUI Password protection. Default-deny over the management surface:
+	// requiresWebUIPassword gates every route isManagementRoute names unless it
+	// names the route public. The earlier form gated only the /api/ prefix, which
+	// left the /refresh-token alias below serving a state-changing reload with no
+	// credential while its own twin /api/accounts/reload asked for one. The scope
+	// matters the other way too: this function runs for every request, so a gate
+	// with no scope answers /v1/* and the WebUI assets with this 401.
+	if requiresWebUIPassword(path, method) && !server.checkWebUIPassword(request) {
 		writeJSON(writer, http.StatusUnauthorized, map[string]any{"status": "error", "error": "Unauthorized: Password required"})
 		return true
 	}
@@ -266,13 +322,24 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	return false
 }
 
+// handleHealth answers a monitoring probe. It is one of the two routes served
+// with no credential, so it carries counts only, and it reads them with Counts:
+// GetStatus also builds the per-account list — emails, project IDs, subscription
+// tier, quota windows and last-used timestamps — under the pool's write lock, and
+// that list belongs on the gated /api/accounts view, not on a public probe.
 func (server *Server) handleHealth(writer http.ResponseWriter, request *http.Request) {
 	if server.accountManager != nil {
-		status := server.accountManager.GetStatus()
+		counts := server.accountManager.Counts()
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status":    "ok",
 			"timestamp": server.now().UTC().Format(time.RFC3339Nano),
-			"accounts":  status,
+			"accounts": map[string]any{
+				"total":       counts.Total,
+				"available":   counts.Available,
+				"rateLimited": counts.RateLimited,
+				"invalid":     counts.Invalid,
+				"summary":     counts.Summary(),
+			},
 		})
 		return
 	}
@@ -1087,15 +1154,45 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 		return
 	}
 
-	var importList []map[string]any
-	var wrapper struct {
-		Accounts []map[string]any `json:"accounts"`
-	}
-	if err := json.Unmarshal(rawData, &wrapper); err == nil && len(wrapper.Accounts) > 0 {
-		importList = wrapper.Accounts
-	} else if err := json.Unmarshal(rawData, &importList); err != nil || len(importList) == 0 {
+	// The array is decoded as raw items so the length cap is paid before the
+	// items are. Decoding straight into []map[string]any builds the whole map
+	// expansion of an over-long body before the cap can answer, and the body is
+	// already decoded twice over — once into the wrapper, once into the list.
+	// The shape comes from the first non-space byte, so {"accounts": [...]}
+	// still wins over a bare array.
+	var rawItems []json.RawMessage
+	if bytes.HasPrefix(bytes.TrimSpace(rawData), []byte("{")) {
+		var wrapper struct {
+			Accounts []json.RawMessage `json:"accounts"`
+		}
+		if err := json.Unmarshal(rawData, &wrapper); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
+			return
+		}
+		rawItems = wrapper.Accounts
+	} else if err := json.Unmarshal(rawData, &rawItems); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
 		return
+	}
+	if len(rawItems) > maxImportedAccounts {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{
+			"status": "error",
+			"error":  fmt.Sprintf("accounts array is too large: %d entries, maximum %d", len(rawItems), maxImportedAccounts),
+		})
+		return
+	}
+	if len(rawItems) == 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
+		return
+	}
+	importList := make([]map[string]any, 0, len(rawItems))
+	for _, raw := range rawItems {
+		var item map[string]any
+		if err := json.Unmarshal(raw, &item); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
+			return
+		}
+		importList = append(importList, item)
 	}
 
 	results := map[string][]any{
@@ -1103,12 +1200,17 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 		"updated": {},
 		"failed":  {},
 	}
+	response := map[string]any{
+		"status":  "ok",
+		"results": results,
+	}
 
 	existingMap := make(map[string]bool)
 	for _, acc := range server.accountManager.GetAllAccounts() {
 		existingMap[acc.Email] = true
 	}
 
+	applied := 0
 	for _, item := range importList {
 		email, _ := item["email"].(string)
 		if email == "" {
@@ -1141,9 +1243,10 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 			Enabled:      true,
 		}
 		exists := existingMap[email]
-		if err := server.accountManager.AddOrUpdateAccount(acc); err != nil {
+		if err := server.accountManager.AddOrUpdateAccountNoSave(acc); err != nil {
 			results["failed"] = append(results["failed"], map[string]string{"email": email, "reason": err.Error()})
 		} else {
+			applied++
 			if exists {
 				results["updated"] = append(results["updated"], email)
 			} else {
@@ -1152,11 +1255,26 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 		}
 	}
 
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"results": results,
-		"message": fmt.Sprintf("Imported %d accounts", len(results["added"])+len(results["updated"])),
-	})
+	// One write for the whole import. AddOrUpdateAccount would serialize the
+	// entire pool once per item.
+	if applied > 0 {
+		if err := server.accountManager.SaveToDisk(); err != nil {
+			// The pool is updated in memory; only its persistence failed. The
+			// WebUI shows status, results and error and nothing else, so a 200
+			// with a side-channel field reads as a clean import and the accounts
+			// are gone on the next restart. Answer as an error, and keep the
+			// results so a client can still see what the pool took.
+			if server.logger != nil {
+				server.logger.Warn("accounts import: save to disk failed", "error", err)
+			}
+			response["status"] = "error"
+			response["error"] = "Import applied in memory but could not be saved: " + err.Error()
+			writeJSON(writer, http.StatusInternalServerError, response)
+			return
+		}
+	}
+	response["message"] = fmt.Sprintf("Imported %d accounts", len(results["added"])+len(results["updated"]))
+	writeJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) handleConfigGet(writer http.ResponseWriter, request *http.Request) {
