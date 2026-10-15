@@ -55,13 +55,6 @@ import (
 const (
 	maxRequestBody = 50 << 20
 	maxMappingHops = 5
-	// maxUpstreamBody bounds what the usage-instrumentation reads pull an
-	// upstream body into memory. 64 MiB is the cap internal/cloudcode already
-	// puts on a Cloud Code response body, and a non-streaming completion that
-	// large does not occur; the read exists only to find the usage fields. The
-	// gzip leg is capped at the same value, because a small compressed body can
-	// expand far past its own size.
-	maxUpstreamBody = 64 << 20
 )
 
 // customEndpointTransport serves every custom-endpoint forward. The
@@ -1627,17 +1620,18 @@ func (server *Server) kimiInstrumentResponse(resp *http.Response, model, session
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
 		return
 	}
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
-	_ = resp.Body.Close()
-	if err != nil {
-		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+	respBytes, ok := capUpstreamBody(resp, transport.MaxUpstreamBody, server.logger, "gateway", "kimi")
+	if !ok {
 		return
 	}
 	payloadBytes := respBytes
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
-			if decompressed, err := io.ReadAll(io.LimitReader(gz, maxUpstreamBody)); err == nil {
+			decompressed, truncated, derr := transport.ReadCapped(gz, transport.MaxUpstreamBody)
+			if derr == nil && !truncated {
 				payloadBytes = decompressed
+			} else if truncated && server.logger != nil {
+				server.logger.Warn("usage skipped: decompressed body capped", "gateway", "kimi", "limit", transport.MaxUpstreamBody)
 			}
 			_ = gz.Close()
 		}
@@ -1765,17 +1759,18 @@ func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionI
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
 		return
 	}
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
-	_ = resp.Body.Close()
-	if err != nil {
-		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
+	respBytes, ok := capUpstreamBody(resp, transport.MaxUpstreamBody, server.logger, "gateway", "zen")
+	if !ok {
 		return
 	}
 	payloadBytes := respBytes
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
-			if decompressed, err := io.ReadAll(io.LimitReader(gz, maxUpstreamBody)); err == nil {
+			decompressed, truncated, derr := transport.ReadCapped(gz, transport.MaxUpstreamBody)
+			if derr == nil && !truncated {
 				payloadBytes = decompressed
+			} else if truncated && server.logger != nil {
+				server.logger.Warn("usage skipped: decompressed body capped", "gateway", "zen", "limit", transport.MaxUpstreamBody)
 			}
 			_ = gz.Close()
 		}
@@ -2371,11 +2366,16 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return
 			}
 			// Buffer full body before writing — failover impossible after first byte.
-			bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
+			bodyBytes, capped, readErr := transport.ReadCapped(resp.Body, transport.MaxUpstreamBody)
 			_ = resp.Body.Close()
 			headersCutoff.Stop()
 			cancel()
-			if readErr != nil {
+			if capped && server.logger != nil {
+				// A capped 2xx is a failed provider attempt, not an answer: the
+				// bytes are a prefix, and a prefix written out is a short 200.
+				server.logger.Warn("upstream response body capped", "gateway", "openrouter", "model", model, "limit", transport.MaxUpstreamBody)
+			}
+			if readErr != nil || capped {
 				if provider != "" {
 					openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 				}
@@ -2422,7 +2422,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 
 		// Non-2xx: buffer body, classify, decide next.
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
+		bodyBytes, capped, _ := transport.ReadCapped(resp.Body, transport.MaxUpstreamBody)
+		if capped && server.logger != nil {
+			server.logger.Warn("upstream response body capped", "gateway", "openrouter", "model", model, "limit", transport.MaxUpstreamBody)
+		}
 		_ = resp.Body.Close()
 		headersCutoff.Stop()
 		cancel()

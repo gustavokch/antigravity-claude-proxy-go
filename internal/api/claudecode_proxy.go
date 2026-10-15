@@ -17,6 +17,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/sessionid"
+	"antigravity-go-proxy/internal/transport"
 )
 
 var (
@@ -325,13 +326,8 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
-	_ = resp.Body.Close()
-	if err != nil {
-		if server.logger != nil {
-			server.logger.Warn("claudecode response read failed", "account", a.accountID, "err", err)
-		}
-		resp.Body = io.NopCloser(bytes.NewReader(body))
+	body, ok := capUpstreamBody(resp, transport.MaxUpstreamBody, server.logger, "gateway", "claudecode")
+	if !ok {
 		return
 	}
 	server.recordClaudeCodeMetrics(a, claudecode.ParseUsageJSON(body))

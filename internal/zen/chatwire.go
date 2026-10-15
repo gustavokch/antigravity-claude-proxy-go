@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/format"
+	"antigravity-go-proxy/internal/transport"
 )
 
 // SendChat serves an Anthropic Messages request against a Zen
@@ -501,19 +502,14 @@ func ensureGateTools(tools []any) ([]any, map[string]bool) {
 
 // --- Response translation ---
 
-// maxUpstreamBody and maxErrorBody bound what the translators below pull an
-// upstream body into memory. 64 MiB matches the cap internal/cloudcode puts on a
-// Cloud Code response body, and a completion that large does not occur; an error
-// envelope is short by nature, so it gets the smaller bound. A body cut off at
-// either cap fails the JSON decode below instead of exhausting memory.
-const (
-	maxUpstreamBody = 64 << 20
-	maxErrorBody    = 1 << 20
-)
+// The reads below are capped at transport.MaxUpstreamBody and
+// transport.MaxErrorBody, the shared bounds. A body cut off at either cap fails
+// the JSON decode that follows it, so a truncated upstream answer surfaces as a
+// decode failure instead of exhausting memory.
 
 func translateChatResponse(resp *http.Response, model string, clientStream bool, toolNames map[string]string, injected map[string]bool) *http.Response {
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, transport.MaxErrorBody))
 		_ = resp.Body.Close()
 		return rebody(resp, "application/json", chatErrorToAnthropic(resp.StatusCode, raw, model))
 	}
@@ -544,7 +540,7 @@ func translateChatResponse(resp *http.Response, model string, clientStream bool,
 		out, _ := json.Marshal(ChatResponseToAnthropic(chat, model, toolNames, injected))
 		return rebody(resp, "application/json", out)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, transport.MaxUpstreamBody))
 	_ = resp.Body.Close()
 	if err != nil {
 		return failResponse(resp, "Zen response read error: "+err.Error())
