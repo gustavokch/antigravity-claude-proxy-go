@@ -113,7 +113,7 @@ func runServer(args []string) {
 	// operator out. A loopback bind puts that trust boundary on the local
 	// machine, which is the documented default. A wider bind has to carry a
 	// password, so refuse rather than put a long-lived token on a network.
-	if cfg.WebUIPassword == "" && !listenIsLoopback(*listen) {
+	if !bindAllowed(*listen, cfg.WebUIPassword != "") {
 		fmt.Fprintf(os.Stderr,
 			"Refusing to start: -listen %s is not a loopback address and no webuiPassword is set.\n"+
 				"The management API exposes account refresh tokens and the Claude credential to any peer that can reach it.\n"+
@@ -375,4 +375,11 @@ func listenIsLoopback(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// bindAllowed reports whether a listener may serve the management surface. It
+// answers with plaintext credentials, so a bind beyond loopback has to carry a
+// webuiPassword.
+func bindAllowed(listen string, hasPassword bool) bool {
+	return hasPassword || listenIsLoopback(listen)
 }

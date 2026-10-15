@@ -787,6 +787,8 @@ Management routes are password-gated by `webuiPassword` (send it as `x-webui-pas
 
 With no `webuiPassword` set the whole management surface is open, and it answers with plaintext credentials: `GET /api/accounts/export` returns each account's Google refresh token, and `GET /api/claude/config` returns the `ANTHROPIC_AUTH_TOKEN` from `~/.claude/settings.json`. That is safe on the default loopback bind, where the trust boundary is the local machine. Beyond loopback it is not, so the proxy refuses to start on a non-loopback `-listen` with no `webuiPassword` set.
 
+That refusal is new in the release that ships this change. A deployment that already binds `0.0.0.0`, or sets `ANTIGRAVITY_PROXY_LISTEN` to a wide address, stops starting after the upgrade until it does one of two things: set `webuiPassword` in `config.json`, or bind to loopback and put a reverse proxy in front.
+
 Management payloads are small, so they are capped: a management request body over 8 MiB is refused with `413`, and `POST /api/accounts/import` takes at most 1000 accounts per call. The `/v1/*` limit is separate and larger (50 MiB).
 
 | Endpoint | Method | Purpose |
