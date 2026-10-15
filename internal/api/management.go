@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,7 +52,9 @@ func (server *Server) checkWebUIPassword(request *http.Request) bool {
 	if provided == "" {
 		provided = request.URL.Query().Get("password")
 	}
-	return provided == password
+	// The compare authorized uses for API keys. This password is the only guard
+	// on a non-loopback bind, so a plain == would be a timing oracle on it.
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(password)) == 1
 }
 
 // isManagementRoute reports whether path belongs to the management surface. It

@@ -490,3 +490,35 @@ func TestHostCheckLeavesNonManagementRoutesAlone(t *testing.T) {
 		t.Errorf("GET /health with a foreign Host = %d, want 200", rec.Code)
 	}
 }
+
+// TestWebUIPasswordCompare pins both outcomes of the compare: the exact password
+// is accepted, and every near miss is refused, including the same-length one a
+// hand-rolled constant-time loop gets wrong. The password is the only guard on a
+// non-loopback bind.
+func TestWebUIPasswordCompare(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	withWebUIPassword(t, srv, "s3cret")
+
+	for _, tc := range []struct {
+		name, sent string
+		want       int
+	}{
+		{"exact", "s3cret", http.StatusOK},
+		{"same length, last byte off", "s3creT", http.StatusUnauthorized},
+		{"a prefix of the password", "s3cre", http.StatusUnauthorized},
+		{"the password plus one byte", "s3crets", http.StatusUnauthorized},
+		{"none sent", "", http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/accounts/export", nil)
+			if tc.sent != "" {
+				req.Header.Set("x-webui-password", tc.sent)
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Errorf("sent %q = %d, want %d", tc.sent, rec.Code, tc.want)
+			}
+		})
+	}
+}
