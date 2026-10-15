@@ -783,7 +783,7 @@ custom_providers:
 
 All `/v1/*` routes accept authentication via `x-api-key` or `Authorization: Bearer <key>`. Routes are mirrored under `/anthropic` prefix.
 
-Management routes are password-gated by `webuiPassword` (send it as `x-webui-password`, or as `?password=`). The gate is default-deny: only `GET /health`, `GET /api/config` and `GET /api/auth/url` answer without it. `GET /api/config` is public so the login form can read `hasPassword` first; its output is redacted, so no credential crosses it.
+Management routes are password-gated by `webuiPassword` (send it as `x-webui-password`, or as `?password=`). The gate is default-deny: only `GET /health`, `GET /api/config` and `GET /api/auth/url` answer without it. `GET /api/config` is public so the login form can read `hasPassword` first; its output is redacted: it carries account emails but no token, key, or password.
 
 With no `webuiPassword` set the whole management surface is open, and it answers with plaintext credentials: `GET /api/accounts/export` returns each account's Google refresh token, and `GET /api/claude/config` returns the `ANTHROPIC_AUTH_TOKEN` from `~/.claude/settings.json`. That is safe on the default loopback bind, where the trust boundary is the local machine. Beyond loopback it is not, so the proxy refuses to start on a non-loopback `-listen` with no `webuiPassword` set.
 
