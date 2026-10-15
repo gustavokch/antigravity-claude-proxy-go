@@ -111,6 +111,12 @@ type Options struct {
 	CCUsage *ccusage.Engine
 	// Mitm is the running observe-only forward proxy; nil when disabled.
 	Mitm *mitm.Runtime
+
+	// StrictManagementHost makes the management surface answer only to a loopback
+	// name or an IP-literal Host while no webuiPassword is set. The real server
+	// turns it on. A test's httptest request carries Host example.com, so the zero
+	// value leaves the check off.
+	StrictManagementHost bool
 }
 
 type Server struct {
@@ -141,6 +147,9 @@ type Server struct {
 	classifierMatcher  *classifier.ConfigurableMatcher
 	classifierAudit    *classifier.Recorder
 	classifierCorpus   atomic.Pointer[corpus.Recorder]
+
+	// strictManagementHost is Options.StrictManagementHost.
+	strictManagementHost bool
 
 	// Kimi OAuth refresh state, guarded by kimiRefreshMu.
 	kimiDeadRefreshToken string                  // refresh token Kimi rejected
@@ -197,7 +206,7 @@ func New(options Options) (*Server, error) {
 		projects:           make(map[string]string),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
-
+	srv.strictManagementHost = options.StrictManagementHost
 	cfg := config.Get()
 	srv.classifierAudit = classifier.NewRecorder(200)
 	srv.applyClassifierConfig(cfg.Classifier)
@@ -412,6 +421,21 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 		request.Body = http.MaxBytesReader(writer, request.Body, maxManagementRequestBody)
 		if request.ContentLength > maxManagementRequestBody {
 			writeJSON(writer, http.StatusRequestEntityTooLarge, map[string]any{"status": "error", "error": "Request body too large"})
+			return
+		}
+
+		// With no webuiPassword the loopback bind is the whole trust boundary, and
+		// a page on a DNS-rebinding domain walks through it: the browser sends
+		// Host: <attacker name>, the request is same-origin from its point of
+		// view (so it carries no Origin, or one equal to the Host), and the origin
+		// check below passes. A name that is not loopback cannot be told apart
+		// from that attacker, so open mode refuses it. A password makes the gate
+		// the boundary instead, and then any Host may carry it.
+		if server.strictManagementHost && config.Get().WebUIPassword == "" && !isAllowedManagementHost(request.Host) {
+			writeJSON(writer, http.StatusForbidden, map[string]any{
+				"status": "error",
+				"error":  "management API without a webuiPassword answers only to localhost or an IP address",
+			})
 			return
 		}
 
@@ -3268,6 +3292,22 @@ func isAllowedManagementOrigin(originHeader, reqHost string) bool {
 		}
 	}
 	return false
+}
+
+// isAllowedManagementHost reports whether a Host header may reach the management
+// surface in open mode: localhost, or an IP literal. A DNS-rebinding page has to
+// send its own domain name, and a name can resolve to anything; an IP literal
+// cannot be rebound.
+func isAllowedManagementHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	return net.ParseIP(host) != nil
 }
 
 func stringFrom(value any) string {

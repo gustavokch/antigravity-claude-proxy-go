@@ -285,6 +285,10 @@ func runServer(args []string) {
 		Tracker:        tracker,
 		CCUsage:        ccUsage,
 		Mitm:           mitmRuntime,
+
+		// Open mode (no webuiPassword) answers management requests only to
+		// localhost or an IP-literal Host: a DNS-rebinding page cannot send either.
+		StrictManagementHost: true,
 	})
 	if err != nil {
 		slogger.Error("invalid proxy configuration", "error", err)

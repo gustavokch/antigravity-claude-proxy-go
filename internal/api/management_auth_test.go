@@ -404,3 +404,73 @@ func TestGateScopeIsTheManagementSurface(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenManagementSurfaceRefusesAForeignHost: with no webuiPassword the
+// loopback bind is the trust boundary, and DNS rebinding crosses it. The page
+// sends Host: <its own domain>, which resolves to 127.0.0.1, and the browser
+// treats the request as same-origin: a GET carries no Origin at all, and a POST
+// carries one equal to the Host. isAllowedManagementOrigin passes both, so only
+// the Host itself can refuse them.
+func TestOpenManagementSurfaceRefusesAForeignHost(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	srv.strictManagementHost = true
+	withWebUIPassword(t, srv, "") // open mode
+
+	for _, tc := range []struct {
+		name, host, origin string
+		want               int
+	}{
+		{"rebinding name, same-origin GET carries no Origin", "evil.example:8091", "", http.StatusForbidden},
+		{"rebinding name with an Origin equal to the Host", "evil.example:8091", "http://evil.example:8091", http.StatusForbidden},
+		{"localhost", "localhost:8091", "", http.StatusOK},
+		{"loopback IPv4", "127.0.0.1:8091", "", http.StatusOK},
+		{"loopback IPv6", "[::1]:8091", "", http.StatusOK},
+		{"IP literal reached over the network", "192.168.1.5:8091", "", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/accounts/export", nil)
+			req.Host = tc.host
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Errorf("Host %q Origin %q = %d, want %d: %s", tc.host, tc.origin, rec.Code, tc.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestPasswordedManagementSurfaceAcceptsAnyHost: a password makes the gate the
+// boundary, so a reverse proxy's public name must keep working.
+func TestPasswordedManagementSurfaceAcceptsAnyHost(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	srv.strictManagementHost = true
+	withWebUIPassword(t, srv, "s3cret")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts/export", nil)
+	req.Host = "proxy.example.net"
+	req.Header.Set("x-webui-password", "s3cret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("Host proxy.example.net with the password = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHostCheckLeavesNonManagementRoutesAlone: /health and the inference routes
+// are not management and keep answering to any Host.
+func TestHostCheckLeavesNonManagementRoutesAlone(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	srv.strictManagementHost = true
+	withWebUIPassword(t, srv, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Host = "proxy.example.net"
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /health with a foreign Host = %d, want 200", rec.Code)
+	}
+}
