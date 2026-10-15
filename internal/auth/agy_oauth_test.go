@@ -18,6 +18,43 @@ func fixtureClientSecret(character string) string {
 	return "GOC" + "SPX-" + strings.Repeat(character, 28)
 }
 
+func TestFindAgyClientIDsMatchesRegexpSemantics(t *testing.T) {
+	suffix := ".apps." + "googleusercontent.com"
+	inputs := []string{
+		"",
+		"no match here",
+		suffix,
+		"-" + suffix,
+		"1" + suffix,
+		"1-" + suffix,
+		"1-a" + suffix,
+		"x 123-abc_DEF-9" + suffix + " y",
+		"abc123-def" + suffix,
+		"abc-123-def" + suffix,
+		"a1-b2-c3" + suffix,
+		"123-abc" + suffix + "456-def" + suffix,
+		"123-abc" + suffix + suffix,
+		"123-abc" + suffix + "-" + suffix,
+		"123-abc.apps.googleusercontent.co 789-zzz" + suffix,
+		"123.456-abc" + suffix,
+		strings.Repeat("a", 5000) + "1-b" + suffix,
+		strings.Repeat("9", 5000) + "-b" + suffix,
+		strings.Repeat("9", 3) + strings.Repeat("-", 3) + "z" + suffix,
+	}
+	for _, input := range inputs {
+		want := agyClientIDPattern.FindAll([]byte(input), -1)
+		got := findAgyClientIDs([]byte(input))
+		if len(got) != len(want) {
+			t.Fatalf("input %.60q: got %d matches, want %d", input, len(got), len(want))
+		}
+		for i := range want {
+			if string(got[i]) != string(want[i]) {
+				t.Fatalf("input %.60q: match %d = %.80q, want %.80q", input, i, got[i], want[i])
+			}
+		}
+	}
+}
+
 func TestAgyOAuthCredentialsReadsInstalledConsumerPair(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "agy")
