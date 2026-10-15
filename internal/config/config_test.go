@@ -1403,3 +1403,50 @@ func TestValidateLayaAlsoChecksJevBackends(t *testing.T) {
 		})
 	}
 }
+
+func TestJevBlockSettingsDefaultsAndOverride(t *testing.T) {
+	settings := TargetBackend{Format: BackendFormatJev}.JevBlockSettings()
+	if settings.QuestionName != "block" || settings.Threshold != 0.10 {
+		t.Errorf("defaults = %+v, want question block and threshold 0.10", settings)
+	}
+	if settings.Criteria["true"] == "" || settings.Criteria["false"] == "" {
+		t.Errorf("criteria = %v, want both a true and a false description", settings.Criteria)
+	}
+	if got := (TargetBackend{JevBlockThreshold: 0.3}).JevBlockSettings().Threshold; got != 0.3 {
+		t.Errorf("Threshold = %v, want the configured 0.3", got)
+	}
+}
+
+// The built-in default must escalate band C: its serving severity (15) is
+// under Claude Code's Stage 1 threshold of 25, so a C answer would be an
+// outright allow of an action the teacher scores 25-49.
+func TestDefaultJevBackend(t *testing.T) {
+	backend := DefaultJevBackend("https://opencode.ai/zen/")
+	if backend.URL != "https://opencode.ai/zen/v1/systemone" {
+		t.Errorf("URL = %q, want the base joined without a double slash", backend.URL)
+	}
+	settings := backend.LayaSettings()
+	if settings.Model != "jev-1.13-free" || settings.MinConfidence != 0.5 {
+		t.Errorf("model/floor = %q/%v, want jev-1.13-free and 0.5", settings.Model, settings.MinConfidence)
+	}
+	if !slices.Equal(settings.EscalateLabels, []string{"C", "D"}) {
+		t.Errorf("EscalateLabels = %v, want [C D]", settings.EscalateLabels)
+	}
+	if settings.MaxSeverity != DefaultLayaMaxSeverity {
+		t.Errorf("MaxSeverity = %d, want the default %d so a Jev verdict cannot block", settings.MaxSeverity, DefaultLayaMaxSeverity)
+	}
+	if err := backend.ValidateLaya(); err != nil {
+		t.Errorf("ValidateLaya: %v", err)
+	}
+}
+
+func TestValidateLayaRejectsAJevBlockThresholdOutsideZeroToOne(t *testing.T) {
+	for _, threshold := range []float64{-0.1, 1.01} {
+		if err := (TargetBackend{Format: BackendFormatJev, JevBlockThreshold: threshold}).ValidateLaya(); err == nil {
+			t.Errorf("threshold %v accepted, want an error", threshold)
+		}
+	}
+	if err := (TargetBackend{Format: BackendFormatJev, JevBlockThreshold: 1}).ValidateLaya(); err != nil {
+		t.Errorf("threshold 1 rejected: %v", err)
+	}
+}
