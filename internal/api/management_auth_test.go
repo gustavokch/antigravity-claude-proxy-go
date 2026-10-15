@@ -270,22 +270,38 @@ var publicByDesign = map[string]string{
 
 // fragments are not routes. The dispatcher matches them as the second argument
 // of a HasSuffix/TrimSuffix call against an /api/ path, so the source scan below
-// sees them. They are excused only while that stays true: if a literal is ever
-// compared as a whole path, it is a route and the scan checks it. A real
-// non-/api/ route named /refresh therefore cannot hide behind this list.
+// sees them. They are excused only while every occurrence stays in that slot: any
+// other use makes the literal a route, and the scan checks it. A real non-/api/
+// route named /refresh therefore cannot hide behind this list.
 var fragments = map[string]string{
 	"/refresh": "suffix of /api/accounts/{email}/refresh",
 	"/toggle":  "suffix of /api/accounts/{email}/toggle",
 	"/stop":    "suffix of /api/cache-bump/{id}/stop",
 }
 
-// isFragmentOnly reports whether path appears in body only as a suffix argument
-// and never as a whole-path comparison.
+// isFragmentOnly reports whether every occurrence of path in body sits in the
+// second-argument slot of a HasSuffix/TrimSuffix call. Any other occurrence makes
+// it a route: a whole-path comparison, or a later slot of a multi-value case such
+// as `case "/zzz", "/stop":`. Checking every occurrence, not only the literal
+// that follows `case` or `path ==`, is what keeps a later slot from hiding.
 func isFragmentOnly(body, path string) bool {
-	quoted := regexp.QuoteMeta(path)
-	wholePath := regexp.MustCompile(`(?:path\s*==|case)\s+"` + quoted + `"`)
-	suffixArg := regexp.MustCompile(`Suffix\([^\n]*,\s*"` + quoted + `"`)
-	return !wholePath.MatchString(body) && suffixArg.MatchString(body)
+	quoted := `"` + regexp.QuoteMeta(path) + `"`
+	// The suffix match ends on the literal, so its end index identifies the
+	// occurrence it justifies. An occurrence with no such match is a route.
+	justified := map[int]bool{}
+	for _, m := range regexp.MustCompile(`Suffix\([^\n]*,\s*`+quoted).FindAllStringIndex(body, -1) {
+		justified[m[1]] = true
+	}
+	hits := regexp.MustCompile(quoted).FindAllStringIndex(body, -1)
+	if len(hits) == 0 {
+		return false
+	}
+	for _, h := range hits {
+		if !justified[h[1]] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestEveryNonAPIDispatchRouteIsOriginChecked reads the dispatcher itself, so a
