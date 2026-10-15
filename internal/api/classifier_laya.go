@@ -39,9 +39,18 @@ func buildLayaPayload(call classifierCall) ([]byte, error) {
 		// laya Stage 1 answer never is, so this request follows a teacher
 		// verdict, which a capped laya allow must not overrule.
 		return nil, fmt.Errorf("%w: stage 2 goes to the teacher", errClassifierEscalated)
+	case classifier.KindBlockPrefilter:
+		// Claude Code's parser for this variant is `<block>(yes|no)`, read out
+		// of the installed bundle (see classifier_jev_block.go). Only a jev
+		// backend answers it, through a yes/no question; a laya checkpoint
+		// scores near chance on typed decisions and is not offered the block
+		// verdict.
+		if call.backend != nil && call.backend.Format == config.BackendFormatJev {
+			return buildJevBlockPayload(call)
+		}
+		return nil, classifier.ErrUnsupportedKind
 	default:
-		// KindBlockPrefilter's response format was never captured, so it must
-		// not be guessed; KindNone is not a classifier request at all.
+		// KindNone is not a classifier request at all.
 		return nil, classifier.ErrUnsupportedKind
 	}
 	settings := call.backend.LayaSettings()
@@ -126,6 +135,9 @@ type layaResponse struct {
 // goes to built-in handling instead. Severity is clamped by MaxSeverity,
 // which defaults below the 50 allow/block boundary.
 func parseLayaResponse(respBody []byte, call classifierCall) ([]byte, error) {
+	if call.kind == classifier.KindBlockPrefilter {
+		return parseJevBlockResponse(respBody, call)
+	}
 	// buildLayaPayload stops every other kind before the call.
 	if call.kind != classifier.KindStage1Severity {
 		return nil, classifier.ErrUnsupportedKind
