@@ -63,7 +63,7 @@ func (server *Server) checkWebUIPassword(request *http.Request) bool {
 // with Access-Control-Allow-Origin: *, no Origin check, no body cap and no
 // password, which is how /refresh-token let a foreign page both trigger a pool
 // reload and read the result.
-// TestEveryNonAPIDispatchRouteIsOriginChecked fails when a route is added
+// TestEveryNonAPIDispatchRouteIsManagementScoped fails when a route is added
 // without being named here.
 func isManagementRoute(path string) bool {
 	if path == "/api/event_logging/batch" {

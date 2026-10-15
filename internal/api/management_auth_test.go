@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -269,84 +271,98 @@ var publicByDesign = map[string]string{
 	"/health": "monitoring probe; counts only",
 }
 
-// fragments are not routes. The dispatcher matches them as the second argument
-// of a HasSuffix/TrimSuffix call against an /api/ path, so the source scan below
-// sees them. They are excused only while every occurrence stays in that slot: any
-// other use makes the literal a route, and the scan checks it. A real non-/api/
-// route named /refresh therefore cannot hide behind this list.
-var fragments = map[string]string{
-	"/refresh": "suffix of /api/accounts/{email}/refresh",
-	"/toggle":  "suffix of /api/accounts/{email}/toggle",
-	"/stop":    "suffix of /api/cache-bump/{id}/stop",
-}
-
-// isFragmentOnly reports whether every occurrence of path in body sits in the
-// second-argument slot of a HasSuffix/TrimSuffix call. Any other occurrence makes
-// it a route: a whole-path comparison, or a later slot of a multi-value case such
-// as `case "/zzz", "/stop":`. Checking every occurrence, not only the literal
-// that follows `case` or `path ==`, is what keeps a later slot from hiding.
-func isFragmentOnly(body, path string) bool {
-	quoted := `"` + regexp.QuoteMeta(path) + `"`
-	// The suffix match ends on the literal, so its end index identifies the
-	// occurrence it justifies. An occurrence with no such match is a route.
-	justified := map[int]bool{}
-	for _, m := range regexp.MustCompile(`Suffix\([^\n]*,\s*`+quoted).FindAllStringIndex(body, -1) {
-		justified[m[1]] = true
-	}
-	hits := regexp.MustCompile(quoted).FindAllStringIndex(body, -1)
-	if len(hits) == 0 {
-		return false
-	}
-	for _, h := range hits {
-		if !justified[h[1]] {
-			return false
-		}
-	}
-	return true
-}
-
-// TestEveryNonAPIDispatchRouteIsOriginChecked reads the dispatcher itself, so a
-// route added to handleManagement outside /api/ fails here until it is named in
-// isManagementRoute (or listed above with a reason). A hand-written route list
-// in the test would guard nothing.
-func TestEveryNonAPIDispatchRouteIsOriginChecked(t *testing.T) {
-	src, err := os.ReadFile("management.go")
+// dispatcherRoutes returns every path literal the named function matches against
+// its path parameter: `path == "/x"` and strings.HasPrefix(path, "/x/"). It reads
+// the syntax tree, so a HasSuffix or TrimSuffix argument (the /refresh, /toggle,
+// /stop and /test fragments of /api/ routes) is never mistaken for a route, and
+// no excuse list has to track them. A function that routes by `switch path`
+// fails the test instead of being read wrongly.
+func dispatcherRoutes(t *testing.T, file, funcName string) []string {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(src)
-	start := strings.Index(text, "func (server *Server) handleManagement(")
-	if start < 0 {
-		t.Fatal("handleManagement not found in management.go")
-	}
-	body := text[start:]
-	if end := strings.Index(body[1:], "\nfunc "); end >= 0 {
-		body = body[:end+1]
-	}
-	lit := regexp.MustCompile(`"(/[A-Za-z0-9_\-./]+)"`) // "+" skips the bare "/" used by strings.SplitN
-	seen := 0
-	for _, m := range lit.FindAllStringSubmatch(body, -1) {
-		p := m[1]
-		if strings.HasPrefix(p, "/api/") {
-			continue
+	var fn *ast.FuncDecl
+	for _, decl := range f.Decls {
+		if d, ok := decl.(*ast.FuncDecl); ok && d.Name.Name == funcName {
+			fn = d
 		}
-		seen++
-		if _, ok := fragments[p]; ok && isFragmentOnly(body, p) {
-			continue
+	}
+	if fn == nil {
+		t.Fatalf("%s not found in %s", funcName, file)
+	}
+
+	isPath := func(e ast.Expr) bool {
+		id, ok := e.(*ast.Ident)
+		return ok && id.Name == "path"
+	}
+	literal := func(e ast.Expr) (string, bool) {
+		lit, ok := e.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return "", false
 		}
-		if _, ok := publicByDesign[p]; ok {
-			if isManagementRoute(p) {
-				t.Errorf("%s is listed public-by-design but isManagementRoute claims it", p)
+		s, err := strconv.Unquote(lit.Value)
+		return s, err == nil
+	}
+
+	var routes []string
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.BinaryExpr: // path == "/x"
+			if n.Op == token.EQL && isPath(n.X) {
+				if s, ok := literal(n.Y); ok {
+					routes = append(routes, s)
+				}
 			}
-			continue
+		case *ast.CallExpr: // strings.HasPrefix(path, "/x/")
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "HasPrefix" && len(n.Args) == 2 && isPath(n.Args[0]) {
+				if s, ok := literal(n.Args[1]); ok {
+					routes = append(routes, s)
+				}
+			}
+		case *ast.SwitchStmt: // switch path { case "/x": }
+			if isPath(n.Tag) {
+				t.Errorf("%s routes with `switch path`, a form dispatcherRoutes does not read", funcName)
+			}
 		}
-		if !isManagementRoute(p) {
-			t.Errorf("handleManagement serves %q outside /api/ but isManagementRoute does not name it: "+
-				"it would be answered with Access-Control-Allow-Origin: * and no Origin check", p)
+		return true
+	})
+	return routes
+}
+
+// TestEveryNonAPIDispatchRouteIsManagementScoped reads the dispatchers
+// themselves, so a route added outside /api/ fails here until it is named in
+// isManagementRoute (or listed above with a reason). isManagementRoute is the one
+// list behind the Origin check, the body cap and the password gate, so a route it
+// misses is answered with a wildcard origin, no body cap and no password. A
+// hand-written route list in the test would guard nothing. handleManagement hands
+// the /api/claudecode/ routes to routeClaudeCodeManagement, so both are read.
+func TestEveryNonAPIDispatchRouteIsManagementScoped(t *testing.T) {
+	seen := 0
+	for _, d := range []struct{ file, fn string }{
+		{"management.go", "handleManagement"},
+		{"claudecode_management.go", "routeClaudeCodeManagement"},
+	} {
+		for _, p := range dispatcherRoutes(t, d.file, d.fn) {
+			if strings.HasPrefix(p, "/api/") {
+				continue
+			}
+			seen++
+			if _, ok := publicByDesign[p]; ok {
+				if isManagementRoute(p) {
+					t.Errorf("%s is listed public-by-design but isManagementRoute claims it", p)
+				}
+				continue
+			}
+			if !isManagementRoute(p) {
+				t.Errorf("%s serves %q outside /api/ but isManagementRoute does not name it: "+
+					"it would be answered with a wildcard origin, no body cap and no password", d.fn, p)
+			}
 		}
 	}
 	if seen == 0 {
-		t.Fatal("scan found no non-/api/ routes: the regexp or the function boundary is wrong")
+		t.Fatal("found no non-/api/ routes: the extraction is wrong")
 	}
 }
 
