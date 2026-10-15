@@ -21,17 +21,17 @@ func capUpstreamBody(resp *http.Response, limit int64, logger *slog.Logger, attr
 	if err == nil && !truncated {
 		return body, true
 	}
+	// Two causes, one status. Name the cause in the log and in the client
+	// message, so neither calls a short read a cap.
+	reason, clientMessage := "upstream response body capped", "upstream response exceeded the proxy's body limit"
+	if !truncated {
+		reason, clientMessage = "upstream response body read failed", "upstream response could not be read"
+	}
 	if logger != nil {
-		// Two causes, one outcome. Say which one reached, so the log does not
-		// call a short read a cap.
-		reason := "upstream response body capped"
-		if !truncated {
-			reason = "upstream response body read failed"
-		}
 		logger.Warn(reason, append(attrs, "limit", limit, "truncated", truncated, "err", err)...)
 	}
 	msg, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{
-		"type": "api_error", "message": "upstream response exceeded the proxy's body limit",
+		"type": "api_error", "message": clientMessage,
 	}})
 	resp.StatusCode, resp.Status = http.StatusBadGateway, "502 Bad Gateway"
 	resp.Body = io.NopCloser(bytes.NewReader(msg))

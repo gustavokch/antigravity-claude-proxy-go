@@ -41,6 +41,9 @@ func TestCapUpstreamBody(t *testing.T) {
 		if !strings.Contains(string(got), "api_error") {
 			t.Errorf("body = %q, want an api_error envelope", got)
 		}
+		if !strings.Contains(string(got), "exceeded the proxy's body limit") {
+			t.Errorf("client message does not name the cap: %q", got)
+		}
 		if resp.Header.Get("Content-Length") != strconv.Itoa(len(got)) || resp.ContentLength != int64(len(got)) {
 			t.Errorf("Content-Length %q / %d disagrees with body length %d",
 				resp.Header.Get("Content-Length"), resp.ContentLength, len(got))
@@ -59,6 +62,10 @@ func TestCapUpstreamBody(t *testing.T) {
 		}
 		if !strings.Contains(log.String(), "read failed") || strings.Contains(log.String(), "capped") {
 			t.Errorf("the log calls a short read a cap:\n%s", log.String())
+		}
+		got, _ := io.ReadAll(resp.Body)
+		if !strings.Contains(string(got), "could not be read") || strings.Contains(string(got), "body limit") {
+			t.Errorf("the client message calls a short read a cap: %q", got)
 		}
 	})
 }
@@ -99,6 +106,9 @@ func TestInstrumentedUpstreamBodyFailureIsNotAShort200(t *testing.T) {
 			got, _ := io.ReadAll(resp.Body)
 			if !strings.Contains(string(got), "api_error") {
 				t.Errorf("body = %q, want an api_error envelope", got)
+			}
+			if !strings.Contains(string(got), "could not be read") {
+				t.Errorf("client message does not name the cause: %q", got)
 			}
 			if resp.Header.Get("Content-Length") != strconv.Itoa(len(got)) || resp.ContentLength != int64(len(got)) {
 				t.Errorf("Content-Length %q / %d disagrees with body length %d",
