@@ -96,6 +96,27 @@ func TestAccountsImportCapsArrayLength(t *testing.T) {
 		}
 	})
 
+	t.Run("over the cap is refused before any item is decoded", func(t *testing.T) {
+		// maxImportedAccounts+1 items that are not objects. Today the whole body
+		// is decoded into []map[string]any first, so this fails as "non-empty
+		// array". With the array held as raw items, the length cap answers first.
+		body := "[" + strings.TrimSuffix(strings.Repeat("1,", maxImportedAccounts+1), ",") + "]"
+		req := httptest.NewRequest(http.MethodPost, "/api/accounts/import", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "too large") {
+			t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("a malformed item under the cap is still one 400", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/accounts/import", strings.NewReader(`[1]`))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "non-empty array") {
+			t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
 	t.Run("at the cap is applied and persisted once", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/accounts/import", strings.NewReader(importBody(maxImportedAccounts)))
 		rec := httptest.NewRecorder()

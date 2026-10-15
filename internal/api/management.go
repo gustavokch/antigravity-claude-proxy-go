@@ -1144,22 +1144,45 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 		return
 	}
 
-	var importList []map[string]any
-	var wrapper struct {
-		Accounts []map[string]any `json:"accounts"`
-	}
-	if err := json.Unmarshal(rawData, &wrapper); err == nil && len(wrapper.Accounts) > 0 {
-		importList = wrapper.Accounts
-	} else if err := json.Unmarshal(rawData, &importList); err != nil || len(importList) == 0 {
+	// The array is decoded as raw items so the length cap is paid before the
+	// items are. Decoding straight into []map[string]any builds the whole map
+	// expansion of an over-long body before the cap can answer, and the body is
+	// already decoded twice over — once into the wrapper, once into the list.
+	// The shape comes from the first non-space byte, so {"accounts": [...]}
+	// still wins over a bare array.
+	var rawItems []json.RawMessage
+	if bytes.HasPrefix(bytes.TrimSpace(rawData), []byte("{")) {
+		var wrapper struct {
+			Accounts []json.RawMessage `json:"accounts"`
+		}
+		if err := json.Unmarshal(rawData, &wrapper); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
+			return
+		}
+		rawItems = wrapper.Accounts
+	} else if err := json.Unmarshal(rawData, &rawItems); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
 		return
 	}
-	if len(importList) > maxImportedAccounts {
+	if len(rawItems) > maxImportedAccounts {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{
 			"status": "error",
-			"error":  fmt.Sprintf("accounts array is too large: %d entries, maximum %d", len(importList), maxImportedAccounts),
+			"error":  fmt.Sprintf("accounts array is too large: %d entries, maximum %d", len(rawItems), maxImportedAccounts),
 		})
 		return
+	}
+	if len(rawItems) == 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
+		return
+	}
+	importList := make([]map[string]any, 0, len(rawItems))
+	for _, raw := range rawItems {
+		var item map[string]any
+		if err := json.Unmarshal(raw, &item); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
+			return
+		}
+		importList = append(importList, item)
 	}
 
 	results := map[string][]any{
