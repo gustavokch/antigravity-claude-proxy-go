@@ -661,7 +661,7 @@ Route non-Google models to external providers or local mock endpoints without pa
 2. Map model name (e.g. `my-custom-model`) to target URL (`https://api.example.com/v1/messages`) and optional API key.
 3. Requests for `my-custom-model` stream directly to the target URL with SSE flushing and injected `x-api-key`.
 
-Every gateway path bounds the wait for upstream response headers at 5 minutes, the same bound `-upstream-timeout` sets for Cloud Code. An upstream that accepts the connection and then stays silent returns `502` instead of holding the request open until the client disconnects. Open streams are not capped, and a non-streaming completion has 5 minutes to produce its first byte.
+Every gateway path bounds the wait for upstream response headers at 5 minutes. That bound is a fixed constant, not `-upstream-timeout`, which applies to Cloud Code only. An upstream that accepts the connection and then stays silent returns `502` instead of holding the request open until the client disconnects. Open streams are not capped, and a non-streaming completion has 5 minutes to produce its first byte.
 
 ---
 
