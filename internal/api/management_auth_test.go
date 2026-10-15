@@ -268,13 +268,24 @@ var publicByDesign = map[string]string{
 	"/health": "monitoring probe; counts only",
 }
 
-// fragments are not routes. The dispatcher matches them as a suffix of an
-// /api/ path, so the source scan below sees them; they are named here instead of
-// weakening the scan.
+// fragments are not routes. The dispatcher matches them as the second argument
+// of a HasSuffix/TrimSuffix call against an /api/ path, so the source scan below
+// sees them. They are excused only while that stays true: if a literal is ever
+// compared as a whole path, it is a route and the scan checks it. A real
+// non-/api/ route named /refresh therefore cannot hide behind this list.
 var fragments = map[string]string{
 	"/refresh": "suffix of /api/accounts/{email}/refresh",
 	"/toggle":  "suffix of /api/accounts/{email}/toggle",
 	"/stop":    "suffix of /api/cache-bump/{id}/stop",
+}
+
+// isFragmentOnly reports whether path appears in body only as a suffix argument
+// and never as a whole-path comparison.
+func isFragmentOnly(body, path string) bool {
+	quoted := regexp.QuoteMeta(path)
+	wholePath := regexp.MustCompile(`(?:path\s*==|case)\s+"` + quoted + `"`)
+	suffixArg := regexp.MustCompile(`Suffix\([^\n]*,\s*"` + quoted + `"`)
+	return !wholePath.MatchString(body) && suffixArg.MatchString(body)
 }
 
 // TestEveryNonAPIDispatchRouteIsOriginChecked reads the dispatcher itself, so a
@@ -303,7 +314,7 @@ func TestEveryNonAPIDispatchRouteIsOriginChecked(t *testing.T) {
 			continue
 		}
 		seen++
-		if _, ok := fragments[p]; ok {
+		if _, ok := fragments[p]; ok && isFragmentOnly(body, p) {
 			continue
 		}
 		if _, ok := publicByDesign[p]; ok {
