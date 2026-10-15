@@ -117,7 +117,7 @@ func TestAccountsImportCapsArrayLength(t *testing.T) {
 		}
 	})
 
-	t.Run("at the cap is applied and persisted once", func(t *testing.T) {
+	t.Run("at the cap is applied and the file carries every account", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/accounts/import", strings.NewReader(importBody(maxImportedAccounts)))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -149,8 +149,9 @@ func TestAccountsImportCapsArrayLength(t *testing.T) {
 			t.Errorf("expected the pool to hold %d accounts, got %d", maxImportedAccounts+1, n)
 		}
 
-		// The whole import is one disk write, so the file must carry every
-		// account, not just the last one.
+		// This checks the result, not the number of writes: a save after every
+		// item ends with the same complete file, so it would pass too. How many
+		// times the pool is written is a cost, not a behaviour a client can see.
 		path := filepath.Join(os.Getenv("ANTIGRAVITY_CONFIG_DIR"), "accounts.json")
 		raw, err := os.ReadFile(path)
 		if err != nil {
