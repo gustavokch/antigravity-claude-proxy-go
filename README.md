@@ -253,7 +253,10 @@ Additional environment controls:
   "customEndpoints": {
     "my-custom-model": {
       "url": "https://api.example.com/v1/messages",
-      "apiKey": "sk-example-key"
+      "apiKey": "sk-example-key",
+      "displayName": "My Custom Model",
+      "contextLength": 262144,
+      "maxOutputTokens": 65536
     }
   },
   "claudeCode": {
@@ -660,6 +663,18 @@ Route non-Google models to external providers or local mock endpoints without pa
 1. Configure endpoint in Web UI (Settings -> Models -> Custom Endpoints) or `config.json`.
 2. Map model name (e.g. `my-custom-model`) to target URL (`https://api.example.com/v1/messages`) and optional API key.
 3. Requests for `my-custom-model` stream directly to the target URL with SSE flushing and injected `x-api-key`.
+
+Every endpoint with a non-empty `url` also appears in `GET /v1/models` with
+`owned_by: "custom"` — the same condition that routes requests to it. Optional
+`displayName`, `contextLength` and `maxOutputTokens` fields control what the
+entry advertises; unset fields fall back to the discovery defaults (200,000
+context / 32,768 output). These fields are discovery-only: the forward path
+never reads them, and no `max_tokens` is derived or injected. A saved
+`maxOutputTokens` at or above `contextLength` is rejected with 400, because a
+client that trusts the advertised cap would otherwise get a 400 from the
+provider.
+Advertised entries carry `supports_thinking: true`; the proxy does not probe
+the endpoint for it.
 
 ---
 

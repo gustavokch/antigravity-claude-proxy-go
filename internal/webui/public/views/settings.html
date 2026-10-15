@@ -2392,6 +2392,37 @@
                                 </div>
                             </div>
 
+                            <!-- Advertised limits (discovery only; the forward path ignores them) -->
+                            <div class="form-control">
+                                <label class="label pt-0 pb-1">
+                                    <span class="label-text text-gray-300 font-semibold text-xs" x-text="$store.global.t('endpointDisplayName') || 'Display Name (Optional)'">Display Name (Optional)</span>
+                                </label>
+                                <input type="text" x-model="endpointModal.displayName"
+                                    aria-label="Model display name"
+                                    class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full text-xs focus:border-neon-cyan"
+                                    placeholder="Shown in /v1/models" />
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div class="form-control">
+                                    <label class="label pt-0 pb-1">
+                                        <span class="label-text text-gray-300 font-semibold text-xs" x-text="$store.global.t('endpointContextLength') || 'Context Length (Optional)'">Context Length (Optional)</span>
+                                    </label>
+                                    <input type="number" min="1" step="1" x-model="endpointModal.contextLength"
+                                        aria-label="Context length"
+                                        class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-cyan"
+                                        placeholder="e.g. 262144" />
+                                </div>
+                                <div class="form-control">
+                                    <label class="label pt-0 pb-1">
+                                        <span class="label-text text-gray-300 font-semibold text-xs" x-text="$store.global.t('endpointMaxOutputTokens') || 'Max Output Tokens (Optional)'">Max Output Tokens (Optional)</span>
+                                    </label>
+                                    <input type="number" min="1" step="1" x-model="endpointModal.maxOutputTokens"
+                                        aria-label="Max output tokens"
+                                        class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-cyan"
+                                        placeholder="must be below context" />
+                                </div>
+                            </div>
+
                             <!-- API Key / Auth Token -->
                             <div class="form-control" x-data="{ showKey: false }">
                                 <label class="label pt-0 pb-1 flex justify-between">

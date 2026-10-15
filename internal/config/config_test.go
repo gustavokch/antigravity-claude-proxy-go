@@ -179,6 +179,93 @@ func TestCustomEndpointsConfig(t *testing.T) {
 	}
 }
 
+// TestCustomEndpointsDiscoveryFieldsSurviveRoundTrip pins that the three
+// advertised-limit fields are not secrets: they survive Save, a reload from
+// disk, and a save-back of the redacted GetPublicConfig output (the Web UI
+// round-trip). If the merge or redaction code dropped them, a Web UI save
+// would silently erase the operator's values.
+func TestCustomEndpointsDiscoveryFieldsSurviveRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	updates := map[string]any{
+		"customEndpoints": map[string]any{
+			"my-custom-model": map[string]any{
+				"url":             "http://localhost:8080/mock",
+				"displayName":     "My Custom Model",
+				"contextLength":   262144,
+				"maxOutputTokens": 65536,
+			},
+		},
+	}
+
+	saved, err := Save(updates)
+	if err != nil {
+		t.Fatalf("Save error: %v", err)
+	}
+	ep, ok := saved.CustomEndpoints["my-custom-model"]
+	if !ok {
+		t.Fatalf("expected custom endpoint for my-custom-model")
+	}
+	if ep.DisplayName != "My Custom Model" {
+		t.Errorf("DisplayName = %q, want the configured name", ep.DisplayName)
+	}
+	if ep.ContextLen != 262144 {
+		t.Errorf("ContextLen = %d, want 262144", ep.ContextLen)
+	}
+	if ep.MaxOutputTokens != 65536 {
+		t.Errorf("MaxOutputTokens = %d, want 65536", ep.MaxOutputTokens)
+	}
+
+	// Reload from disk: the fields must decode back into the struct.
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	ep2, ok := reloaded.CustomEndpoints["my-custom-model"]
+	if !ok {
+		t.Fatalf("expected custom endpoint after reload")
+	}
+	if ep2.DisplayName != "My Custom Model" || ep2.ContextLen != 262144 || ep2.MaxOutputTokens != 65536 {
+		t.Errorf("reloaded fields = %q/%d/%d, want My Custom Model/262144/65536",
+			ep2.DisplayName, ep2.ContextLen, ep2.MaxOutputTokens)
+	}
+
+	// The public view keeps them (they are not secrets)...
+	pub := GetPublicConfig()
+	ceMap, ok := pub["customEndpoints"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected customEndpoints map in GetPublicConfig")
+	}
+	modelMap, ok := ceMap["my-custom-model"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected my-custom-model map in public config")
+	}
+	if modelMap["displayName"] != "My Custom Model" {
+		t.Errorf("public displayName = %v, want the configured name", modelMap["displayName"])
+	}
+	if modelMap["contextLength"] != float64(262144) {
+		t.Errorf("public contextLength = %v, want 262144", modelMap["contextLength"])
+	}
+	if modelMap["maxOutputTokens"] != float64(65536) {
+		t.Errorf("public maxOutputTokens = %v, want 65536", modelMap["maxOutputTokens"])
+	}
+
+	// ...and a save-back of that public view (as the Web UI does) preserves them.
+	saved2, err := Save(pub)
+	if err != nil {
+		t.Fatalf("Save error on public config: %v", err)
+	}
+	ep3, ok := saved2.CustomEndpoints["my-custom-model"]
+	if !ok {
+		t.Fatalf("expected custom endpoint after public config save")
+	}
+	if ep3.DisplayName != "My Custom Model" || ep3.ContextLen != 262144 || ep3.MaxOutputTokens != 65536 {
+		t.Errorf("after save-back fields = %q/%d/%d, want My Custom Model/262144/65536",
+			ep3.DisplayName, ep3.ContextLen, ep3.MaxOutputTokens)
+	}
+}
+
 func TestGetConfigDirEnvOverrides(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", customDir)

@@ -75,32 +75,41 @@ window.ModelConfigUtils.deleteModelConfig = async function(modelId) {
 
 /**
  * Save custom endpoints map to server
+ *
+ * Throws on failure instead of swallowing it: both callers (saveEndpoint,
+ * deleteEndpoint) show the error themselves, and a swallowed failure made
+ * saveEndpoint report success and close the modal on a rejected save. The
+ * thrown message is the server's reason, which names the offending field.
  * @param {object} customEndpoints - Full customEndpoints map
  * @returns {Promise<void>}
  */
 window.ModelConfigUtils.saveCustomEndpoints = async function(customEndpoints) {
-    return window.ErrorHandler.safeAsync(async () => {
-        const store = Alpine.store('global');
+    const store = Alpine.store('global');
 
-        const { response, newPassword } = await window.utils.request('/api/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ customEndpoints })
-        }, store.webuiPassword);
+    const { response, newPassword } = await window.utils.request('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customEndpoints })
+    }, store.webuiPassword);
 
-        if (newPassword) {
-            store.webuiPassword = newPassword;
+    if (newPassword) {
+        store.webuiPassword = newPassword;
+    }
+
+    if (!response.ok) {
+        let reason = '';
+        try {
+            reason = (await response.json()).error || '';
+        } catch (_) {
+            // Non-JSON error body: fall back to the generic message.
         }
+        throw new Error(reason || store.t('failedToSaveEndpoint') || 'Failed to save custom endpoint');
+    }
 
-        if (!response.ok) {
-            throw new Error(store.t('failedToSaveEndpoint') || 'Failed to save custom endpoint');
-        }
-
-        const data = await response.json();
-        if (data.config && data.config.customEndpoints) {
-            Alpine.store('data').customEndpoints = data.config.customEndpoints;
-        } else {
-            Alpine.store('data').customEndpoints = customEndpoints;
-        }
-    }, Alpine.store('global').t('failedToSaveEndpoint') || 'Failed to save custom endpoint');
+    const data = await response.json();
+    if (data.config && data.config.customEndpoints) {
+        Alpine.store('data').customEndpoints = data.config.customEndpoints;
+    } else {
+        Alpine.store('data').customEndpoints = customEndpoints;
+    }
 };

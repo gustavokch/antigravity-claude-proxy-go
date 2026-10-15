@@ -294,6 +294,94 @@ func TestConfigPost_RejectsControlCharsInEndpointIdentity(t *testing.T) {
 	}
 }
 
+// TestConfigPost_RejectsBadCustomEndpointLimits pins the save-time check that
+// keeps /v1/models honest: the advertised output cap must be an integer below
+// the context window, or a client that trusts the advertised cap gets a 400
+// from the provider.
+func TestConfigPost_RejectsBadCustomEndpointLimits(t *testing.T) {
+	cases := []struct {
+		name  string
+		model string // the entry the error must name
+		field string // the field the error must name
+		body  string
+	}{
+		{"negative contextLength", "m", "contextLength",
+			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":-1}}}`},
+		{"non-numeric contextLength", "m", "contextLength",
+			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":"big"}}}`},
+		{"non-integer maxOutputTokens", "m", "maxOutputTokens",
+			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","maxOutputTokens":1.5}}}`},
+		{"output cap at the context window", "m", "maxOutputTokens",
+			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":8192,"maxOutputTokens":8192}}}`},
+		{"output cap above the context window", "m", "maxOutputTokens",
+			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":8192,"maxOutputTokens":65536}}}`},
+		{"output cap above the default context window", "m", "maxOutputTokens",
+			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","maxOutputTokens":300000}}}`},
+		{"two invalid entries name the first in sorted order", "a-model", "contextLength",
+			`{"customEndpoints":{"z-model":{"url":"https://example.com/v1/messages","maxOutputTokens":-1},` +
+				`"a-model":{"url":"https://example.com/v1/messages","contextLength":-1}}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _, _ := newTestServerWithManager(t)
+			rec := doJSON(t, srv, http.MethodPost, "/api/config", tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			want := "customEndpoints." + tc.model + "." + tc.field
+			if !strings.Contains(rec.Body.String(), want) {
+				t.Errorf("error %q does not name %s", rec.Body.String(), want)
+			}
+			if _, present := config.Get().CustomEndpoints["m"]; present {
+				t.Error("the rejected endpoint was stored anyway")
+			}
+		})
+	}
+}
+
+// TestConfigPost_NamesTheBoundForOversizedCustomEndpointLimits: 99999999999
+// is a non-negative integer; what it fails is the bound. The message must
+// say which.
+func TestConfigPost_NamesTheBoundForOversizedCustomEndpointLimits(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	rec := doJSON(t, srv, http.MethodPost, "/api/config", `{"customEndpoints":{"m":{`+
+		`"url":"https://example.com/v1/messages","contextLength":99999999999}}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "2147483647") {
+		t.Errorf("error %q does not name the bound", rec.Body.String())
+	}
+}
+
+// The check must not reject the values the fields exist for.
+func TestConfigPost_AcceptsValidCustomEndpointLimits(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	rec := doJSON(t, srv, http.MethodPost, "/api/config", `{"customEndpoints":{"m":{`+
+		`"url":"https://example.com/v1/messages","contextLength":262144,"maxOutputTokens":65536}}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	ep, present := config.Get().CustomEndpoints["m"]
+	if !present {
+		t.Fatal("valid endpoint was not stored")
+	}
+	if ep.ContextLen != 262144 || ep.MaxOutputTokens != 65536 {
+		t.Errorf("stored limits = %d/%d, want 262144/65536", ep.ContextLen, ep.MaxOutputTokens)
+	}
+
+	// A cap below the default context window is valid even when the context
+	// length is unset: discovery pairs it with the default window.
+	rec2 := doJSON(t, srv, http.MethodPost, "/api/config", `{"customEndpoints":{"n":{`+
+		`"url":"https://example.com/v1/messages","maxOutputTokens":100000}}}`)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec2.Code, rec2.Body.String())
+	}
+	if ep, present := config.Get().CustomEndpoints["n"]; !present || ep.MaxOutputTokens != 100000 {
+		t.Errorf("stored = %+v, want maxOutputTokens 100000", ep)
+	}
+}
+
 // TestCustomEndpoint_NonAnthropicShapeKeepsClientHeaders pins the gate: an
 // endpoint that does not speak the Anthropic wire is not told a lie about its own
 // request format.
