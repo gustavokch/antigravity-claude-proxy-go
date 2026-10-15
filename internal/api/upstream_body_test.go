@@ -48,4 +48,16 @@ func TestCapUpstreamBody(t *testing.T) {
 			t.Errorf("no cap warning logged: %s", buf.String())
 		}
 	})
+	t.Run("a body that fails mid-read is a 502 and says read failed", func(t *testing.T) {
+		resp := newResp(`{"a":1}`)
+		resp.Body = io.NopCloser(&ccHalfReader{payload: `{"a":1}`, err: io.ErrUnexpectedEOF})
+		var log bytes.Buffer
+		_, ok := capUpstreamBody(resp, 64, ccCaptureLog(&log), "gateway", "zen")
+		if ok || resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("ok=%v status=%d", ok, resp.StatusCode)
+		}
+		if !strings.Contains(log.String(), "read failed") || strings.Contains(log.String(), "capped") {
+			t.Errorf("the log calls a short read a cap:\n%s", log.String())
+		}
+	})
 }

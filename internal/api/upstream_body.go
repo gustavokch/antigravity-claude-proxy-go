@@ -22,7 +22,13 @@ func capUpstreamBody(resp *http.Response, limit int64, logger *slog.Logger, attr
 		return body, true
 	}
 	if logger != nil {
-		logger.Warn("upstream response body capped", append(attrs, "limit", limit, "truncated", truncated, "err", err)...)
+		// Two causes, one outcome. Say which one reached, so the log does not
+		// call a short read a cap.
+		reason := "upstream response body capped"
+		if !truncated {
+			reason = "upstream response body read failed"
+		}
+		logger.Warn(reason, append(attrs, "limit", limit, "truncated", truncated, "err", err)...)
 	}
 	msg, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{
 		"type": "api_error", "message": "upstream response exceeded the proxy's body limit",
