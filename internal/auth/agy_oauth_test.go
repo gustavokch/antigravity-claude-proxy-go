@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"math/rand"
 	"net/http"
@@ -216,5 +217,38 @@ func TestManagerRefreshFallsBackToMatchingInstalledCredentials(t *testing.T) {
 	}
 	if response.AccessToken != "fresh" || attempts != 2 {
 		t.Fatalf("response=%#v attempts=%d", response, attempts)
+	}
+}
+
+// agyScanFixture is a ~22 MB stand-in for the agy executable: mostly bytes that
+// are not a client ID, with 200 client IDs spread through it. It gives the
+// benchmark the same signal as the real binary without depending on an installed
+// agy.
+func agyScanFixture() []byte {
+	var data []byte
+	for block := 0; block < 200; block++ {
+		data = append(data, bytes.Repeat([]byte("someOtherSymbolName_123 "), 5000)...)
+		data = append(data, fixtureClientID("123", "abcDEF_-9")...)
+	}
+	return data
+}
+
+func BenchmarkFindAgyClientIDs(b *testing.B) {
+	data := agyScanFixture()
+	b.SetBytes(int64(len(data)))
+	for b.Loop() {
+		if n := len(findAgyClientIDs(data)); n != 200 {
+			b.Fatalf("got %d matches, want 200", n)
+		}
+	}
+}
+
+func BenchmarkAgyClientIDRegexpFindAll(b *testing.B) {
+	data := agyScanFixture()
+	b.SetBytes(int64(len(data)))
+	for b.Loop() {
+		if n := len(agyClientIDPattern.FindAll(data, -1)); n != 200 {
+			b.Fatalf("got %d matches, want 200", n)
+		}
 	}
 }
