@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 
@@ -129,6 +130,62 @@ func validateIdentityField(section any, label string) error {
 		return fmt.Errorf("%s: %w", label, err)
 	}
 	return nil
+}
+
+// validateCustomEndpointLimits checks the advertised-limit fields of every
+// customEndpoints entry in a config update. /v1/models advertises these values
+// verbatim, and a client that trusts them sends max_output_tokens as
+// max_tokens: an output cap at or above the context window comes back as a 400
+// from the provider. Reject it here, where the operator sees which field it was.
+func validateCustomEndpointLimits(updates map[string]any) error {
+	endpoints, ok := updates["customEndpoints"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	for model, raw := range endpoints {
+		ep, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		label := "customEndpoints." + model
+		contextLen, err := optionalNonNegativeInt(ep, "contextLength", label)
+		if err != nil {
+			return err
+		}
+		maxOutput, err := optionalNonNegativeInt(ep, "maxOutputTokens", label)
+		if err != nil {
+			return err
+		}
+		if contextLen > 0 && maxOutput >= contextLen {
+			return fmt.Errorf("%s.maxOutputTokens: must be below contextLength (%d)", label, contextLen)
+		}
+	}
+	return nil
+}
+
+// optionalNonNegativeInt reads one optional integer field from a raw config
+// map. A missing or null field is unset (0). A present field must be an
+// integer, not negative, and small enough to survive the int conversion.
+func optionalNonNegativeInt(section map[string]any, field, label string) (int, error) {
+	raw, ok := section[field]
+	if !ok || raw == nil {
+		return 0, nil
+	}
+	switch v := raw.(type) {
+	case float64:
+		if v < 0 || v != math.Trunc(v) || v > math.MaxInt32 {
+			return 0, fmt.Errorf("%s.%s: must be a non-negative integer", label, field)
+		}
+		return int(v), nil
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil || n < 0 || n > math.MaxInt32 {
+			return 0, fmt.Errorf("%s.%s: must be a non-negative integer", label, field)
+		}
+		return int(n), nil
+	default:
+		return 0, fmt.Errorf("%s.%s: must be a non-negative integer", label, field)
+	}
 }
 
 // handleClaudeCodeConfigPost saves ClaudeCode gateway config.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"sort"
 	"strings"
 
 	"antigravity-go-proxy/internal/claudecode"
@@ -99,16 +100,14 @@ func gatewayOwnedModelIDs(cfg config.Config) map[string]bool {
 // gatewayModelAppenders appends one gateway's models to the /v1/models list.
 // Coverage is pinned by TestGatewayModelAppenders_CoverEveryKnownGateway:
 // every known gateway has an entry, so a future gateway cannot merge without
-// deciding what it advertises. custom contributes no entries (no discovery
-// helper for custom endpoints exists, and this change does not add one) and
-// cloudcode is the terminal path the catalog loop already covers; both are
-// no-ops.
+// deciding what it advertises. cloudcode is the terminal path the catalog loop
+// already covers, so it is a no-op.
 var gatewayModelAppenders = map[config.GatewayID]func(*Server, config.Config, *[]any, map[string]bool){
 	config.GatewayKimi:       appendKimiDiscovery,
 	config.GatewayZen:        appendZenDiscovery,
 	config.GatewayClaudeCode: appendClaudeCodeDiscovery,
 	config.GatewayOpenRouter: appendOpenRouterDiscovery,
-	config.GatewayCustom:     func(*Server, config.Config, *[]any, map[string]bool) {},
+	config.GatewayCustom:     appendCustomDiscovery,
 	config.GatewayCloudCode:  func(*Server, config.Config, *[]any, map[string]bool) {},
 }
 
@@ -405,5 +404,58 @@ func appendZenDiscovery(server *Server, cfg config.Config, models *[]any, seen m
 				seen[key] = true
 			}
 		}
+	}
+}
+
+// appendCustomDiscovery advertises every custom endpoint that has a url — the
+// same condition tryCustomEndpointGateway uses to route. The operator already
+// wrote the entry; no second opt-in flag. The limits are discovery-only: the
+// forward path stays byte-transparent (ADR-0001).
+func appendCustomDiscovery(server *Server, cfg config.Config, models *[]any, seen map[string]bool) {
+	// Map order is random; /v1/models output must be stable.
+	ids := make([]string, 0, len(cfg.CustomEndpoints))
+	for id := range cfg.CustomEndpoints {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		endpoint := cfg.CustomEndpoints[id]
+		if endpoint.URL == "" {
+			continue
+		}
+		// The first gateway in GatewayOrder wins an ID, as for every other
+		// gateway.
+		if seen[id] {
+			continue
+		}
+		desc := endpoint.DisplayName
+		if desc == "" {
+			desc = id
+		}
+		contextLen := endpoint.ContextLen
+		if contextLen <= 0 {
+			contextLen = defaultDiscoveryContextWindow
+		}
+		maxOutput := endpoint.MaxOutputTokens
+		if maxOutput <= 0 {
+			// Nothing states the output cap. Same fallback as the Kimi and
+			// OpenRouter branches: never advertise the context window itself.
+			maxOutput = contextLen
+			if maxOutput > defaultDiscoveryMaxOutputTokens {
+				maxOutput = defaultDiscoveryMaxOutputTokens
+			}
+		}
+		*models = append(*models, map[string]any{
+			"id":                id,
+			"object":            "model",
+			"created":           server.now().Unix(),
+			"owned_by":          "custom",
+			"description":       desc,
+			"display_name":      desc,
+			"context_window":    contextLen,
+			"max_output_tokens": maxOutput,
+			"supports_thinking": true,
+		})
+		seen[id] = true
 	}
 }

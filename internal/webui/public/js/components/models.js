@@ -1687,6 +1687,9 @@ window.Components.models = () => ({
             isEdit: false,
             modelId: '',
             url: '',
+            displayName: '',
+            contextLength: '',
+            maxOutputTokens: '',
             apiKey: '',
             hasApiKey: false,
             saving: false,
@@ -1704,6 +1707,9 @@ window.Components.models = () => ({
             isEdit: true,
             modelId: modelId,
             url: ep?.url || '',
+            displayName: ep?.displayName || '',
+            contextLength: ep?.contextLength ?? '',
+            maxOutputTokens: ep?.maxOutputTokens ?? '',
             apiKey: '',
             hasApiKey: !!ep?.hasApiKey,
             saving: false,
@@ -1724,7 +1730,7 @@ window.Components.models = () => ({
     },
 
     async saveEndpoint() {
-        const { modelId, url, apiKey, hasApiKey, isEdit } = this.endpointModal;
+        const { modelId, url, displayName, contextLength, maxOutputTokens, apiKey, hasApiKey, isEdit } = this.endpointModal;
         const store = Alpine.store('global');
         const dataStore = Alpine.store('data');
 
@@ -1748,6 +1754,20 @@ window.Components.models = () => ({
             const epData = {
                 url: cleanUrl
             };
+            const cleanDisplayName = (displayName || '').trim();
+            if (cleanDisplayName) {
+                epData.displayName = cleanDisplayName;
+            }
+            // Empty means unset: the server merge replaces the stored entry,
+            // so omitting the key clears it.
+            const contextLengthValue = Number.parseInt(contextLength, 10);
+            if (Number.isFinite(contextLengthValue) && contextLengthValue > 0) {
+                epData.contextLength = contextLengthValue;
+            }
+            const maxOutputValue = Number.parseInt(maxOutputTokens, 10);
+            if (Number.isFinite(maxOutputValue) && maxOutputValue > 0) {
+                epData.maxOutputTokens = maxOutputValue;
+            }
             if (apiKey && apiKey.trim()) {
                 epData.apiKey = apiKey.trim();
             } else if (hasApiKey && isEdit) {

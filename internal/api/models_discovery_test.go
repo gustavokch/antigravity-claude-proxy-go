@@ -862,3 +862,214 @@ func TestKimiModels_DocumentedModelLimits(t *testing.T) {
 		}
 	}
 }
+
+// discoveryModelsRequest runs one /v1/models request and returns the raw data
+// entries in response order.
+func discoveryModelsRequest(t *testing.T, server *Server) []map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	return resp.Data
+}
+
+func discoveryEntriesForID(models []map[string]any, id string) []map[string]any {
+	var found []map[string]any
+	for _, m := range models {
+		if m["id"] == id {
+			found = append(found, m)
+		}
+	}
+	return found
+}
+
+// TestCustomModels_AdvertiseConfiguredLimits pins that a custom endpoint with
+// all three discovery fields is listed with exactly those values. Clients that
+// build their model list from /v1/models (omp's sync-models, for example)
+// cannot select a custom-endpoint model unless it is advertised at all.
+func TestCustomModels_AdvertiseConfiguredLimits(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"qwen3.8-flash-next-iq3_s": {
+			URL:             "http://localhost:8080/v1/messages",
+			DisplayName:     "Qwen Flash Next",
+			ContextLen:      262144,
+			MaxOutputTokens: 65536,
+		},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	entries := discoveryEntriesForID(discoveryModelsRequest(t, server), "qwen3.8-flash-next-iq3_s")
+	if len(entries) != 1 {
+		t.Fatalf("entries for qwen3.8-flash-next-iq3_s = %d, want exactly 1", len(entries))
+	}
+	entry := entries[0]
+	if ownedBy, _ := entry["owned_by"].(string); ownedBy != "custom" {
+		t.Errorf("owned_by = %v, want custom", entry["owned_by"])
+	}
+	if name, _ := entry["display_name"].(string); name != "Qwen Flash Next" {
+		t.Errorf("display_name = %v, want the configured display name", entry["display_name"])
+	}
+	if desc, _ := entry["description"].(string); desc != "Qwen Flash Next" {
+		t.Errorf("description = %v, want the configured display name", entry["description"])
+	}
+	if cw, _ := entry["context_window"].(float64); cw != 262144 {
+		t.Errorf("context_window = %v, want 262144", entry["context_window"])
+	}
+	if mo, _ := entry["max_output_tokens"].(float64); mo != 65536 {
+		t.Errorf("max_output_tokens = %v, want 65536", entry["max_output_tokens"])
+	}
+}
+
+// TestCustomModels_EntryWithoutLimitsAdvertisesAnOutputBelowItsContext guards
+// the same fallback the Kimi and OpenRouter branches guard: an entry with no
+// limits must advertise the discovery defaults, never the context window as
+// the output cap.
+func TestCustomModels_EntryWithoutLimitsAdvertisesAnOutputBelowItsContext(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"bare-endpoint": {URL: "http://localhost:8080/v1/messages"},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	entries := discoveryEntriesForID(discoveryModelsRequest(t, server), "bare-endpoint")
+	if len(entries) != 1 {
+		t.Fatalf("entries for bare-endpoint = %d, want exactly 1", len(entries))
+	}
+	entry := entries[0]
+	contextWindow, _ := entry["context_window"].(float64)
+	maxOutput, _ := entry["max_output_tokens"].(float64)
+	if contextWindow != float64(defaultDiscoveryContextWindow) {
+		t.Errorf("context_window = %v, want the discovery default %d", contextWindow, defaultDiscoveryContextWindow)
+	}
+	if maxOutput >= contextWindow {
+		t.Errorf("max_output_tokens = %v is not below context_window = %v", maxOutput, contextWindow)
+	}
+	if maxOutput != float64(defaultDiscoveryMaxOutputTokens) {
+		t.Errorf("max_output_tokens = %v, want discovery default %d", maxOutput, defaultDiscoveryMaxOutputTokens)
+	}
+	// The ID doubles as the name when no displayName is configured.
+	if name, _ := entry["display_name"].(string); name != "bare-endpoint" {
+		t.Errorf("display_name = %v, want the ID", entry["display_name"])
+	}
+}
+
+// TestCustomModels_EntryWithoutURLIsNotAdvertised pins the advertise condition:
+// an entry with an empty url routes nowhere, so it must not appear.
+func TestCustomModels_EntryWithoutURLIsNotAdvertised(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"no-url-endpoint": {DisplayName: "Not Routed Anywhere"},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	if entries := discoveryEntriesForID(discoveryModelsRequest(t, server), "no-url-endpoint"); len(entries) != 0 {
+		t.Errorf("empty-url entry advertised %d times, want 0", len(entries))
+	}
+}
+
+// TestCustomModels_IDCollisionWithEarlierGatewayWins pins the shared seen
+// guard: when an earlier gateway in GatewayOrder already advertises an ID,
+// custom must not add a second entry for it.
+func TestCustomModels_IDCollisionWithEarlierGatewayWins(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.Kimi.Enabled = true
+	testCfg.Kimi.Allowlist = []config.KimiModelConfig{{ID: "shared-model", Enabled: true}}
+	testCfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"shared-model": {URL: "http://localhost:8080/v1/messages"},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	entries := discoveryEntriesForID(discoveryModelsRequest(t, server), "shared-model")
+	if len(entries) != 1 {
+		t.Fatalf("entries for shared-model = %d, want exactly 1", len(entries))
+	}
+	if ownedBy, _ := entries[0]["owned_by"].(string); ownedBy != "kimi" {
+		t.Errorf("owned_by = %v, want kimi (the earlier gateway wins)", entries[0]["owned_by"])
+	}
+}
+
+// TestCustomModels_IDCollisionWithCatalogIsAdvertisedByCustom pins the defect
+// where gatewayOwnedModelIDs marked every custom endpoint ID as owned while
+// the custom appender was a no-op: a custom endpoint reusing a Cloud Code
+// catalog ID was advertised by nobody. The catalog loop skips the ID, so
+// custom must advertise it.
+func TestCustomModels_IDCollisionWithCatalogIsAdvertisedByCustom(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	// gemini-2.5-pro is the model discoveryTestBackend's catalog publishes.
+	testCfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"gemini-2.5-pro": {URL: "http://localhost:8080/v1/messages"},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	entries := discoveryEntriesForID(discoveryModelsRequest(t, server), "gemini-2.5-pro")
+	if len(entries) != 1 {
+		t.Fatalf("entries for gemini-2.5-pro = %d, want exactly 1", len(entries))
+	}
+	if ownedBy, _ := entries[0]["owned_by"].(string); ownedBy != "custom" {
+		t.Errorf("owned_by = %v, want custom (the dispatcher routes the ID to the endpoint)", entries[0]["owned_by"])
+	}
+}
+
+// TestCustomModels_OutputOrderIsStable guards against map-iteration order
+// leaking into /v1/models: two calls must return the same sequence.
+func TestCustomModels_OutputOrderIsStable(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"zeta-model":  {URL: "http://localhost:8080/v1/messages"},
+		"alpha-model": {URL: "http://localhost:8080/v1/messages"},
+		"mid-model":   {URL: "http://localhost:8080/v1/messages"},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	first := customIDsInOrder(discoveryModelsRequest(t, server))
+	second := customIDsInOrder(discoveryModelsRequest(t, server))
+	if len(first) != 3 {
+		t.Fatalf("custom entries = %d, want 3", len(first))
+	}
+	if strings.Join(first, ",") != strings.Join(second, ",") {
+		t.Errorf("order changed between calls: %v vs %v", first, second)
+	}
+	want := []string{"alpha-model", "mid-model", "zeta-model"}
+	if strings.Join(first, ",") != strings.Join(want, ",") {
+		t.Errorf("order = %v, want sorted %v", first, want)
+	}
+}
+
+func customIDsInOrder(models []map[string]any) []string {
+	var ids []string
+	for _, m := range models {
+		if ownedBy, _ := m["owned_by"].(string); ownedBy == "custom" {
+			if id, _ := m["id"].(string); id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
