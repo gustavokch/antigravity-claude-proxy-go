@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,31 @@ func TestFindAgyClientIDsMatchesRegexpSemantics(t *testing.T) {
 				t.Fatalf("input %.60q: match %d = %.80q, want %.80q", input, i, got[i], want[i])
 			}
 		}
+	}
+}
+
+// TestAgyClientIDByteClassMatchesPattern derives the pattern's character class
+// from the live regexp and compares it with isAgyClientIDByte over every byte.
+func TestAgyClientIDByteClassMatchesPattern(t *testing.T) {
+	prefix := []byte("9-")
+	tail := []byte(".apps." + "googleusercontent.com")
+	for b := 0; b < 256; b++ {
+		candidate := append(append([]byte{}, prefix...), byte(b))
+		candidate = append(candidate, tail...)
+		inPattern := agyClientIDPattern.Match(candidate)
+		if inPattern != isAgyClientIDByte(byte(b)) {
+			t.Fatalf("byte %#02x: accepted by pattern %v, accepted by isAgyClientIDByte %v",
+				b, inPattern, isAgyClientIDByte(byte(b)))
+		}
+	}
+}
+
+// TestAgyClientIDSuffixIsPatternTail keeps the scan's anchor equal to the
+// regexp's literal tail.
+func TestAgyClientIDSuffixIsPatternTail(t *testing.T) {
+	tail := regexp.QuoteMeta(string(agyClientIDSuffix))
+	if !strings.HasSuffix(agyClientIDPattern.String(), tail) {
+		t.Fatalf("pattern %q does not end with the quoted suffix %q", agyClientIDPattern.String(), tail)
 	}
 }
 
