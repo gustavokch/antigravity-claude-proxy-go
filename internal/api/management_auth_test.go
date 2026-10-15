@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -361,5 +362,45 @@ func TestAccountLimitsOrigin(t *testing.T) {
 	}
 	if rec.Header().Get("Access-Control-Allow-Origin") == "*" {
 		t.Error("/account-limits advertises a wildcard origin")
+	}
+}
+
+// TestGateScopeIsTheManagementSurface pins what requiresWebUIPassword gates. The
+// gate is default-deny over the management surface only. handleManagement runs
+// for every request, so a gate with no scope answers /v1/*, the WebUI assets and
+// every unknown path with the management 401 once a password is set.
+func TestGateScopeIsTheManagementSurface(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	withWebUIPassword(t, srv, "s3cret")
+	srv.webUI = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "<!DOCTYPE html>login form")
+	})
+
+	const gateBody = "Unauthorized: Password required"
+	for _, tc := range []struct {
+		method, path string
+		wantStatus   int
+		wantGate     bool // answered by the management password gate
+	}{
+		// Not management: the gate never answers these.
+		{http.MethodPost, "/v1/messages/count_tokens", http.StatusNotImplemented, false},
+		{http.MethodGet, "/", http.StatusOK, false},
+		{http.MethodGet, "/index.html", http.StatusOK, false},
+		{http.MethodPost, "/no/such/path", http.StatusNotFound, false},
+		// Management: default-deny, including a path no handler serves.
+		{http.MethodGet, "/api/never-added", http.StatusUnauthorized, true},
+		{http.MethodGet, "/api/accounts", http.StatusUnauthorized, true},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader("{}"))
+		req.Header.Set("x-api-key", "test-api-key")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		if rec.Code != tc.wantStatus {
+			t.Errorf("%s %s = %d, want %d: %s", tc.method, tc.path, rec.Code, tc.wantStatus, strings.TrimSpace(rec.Body.String()))
+		}
+		if got := strings.Contains(rec.Body.String(), gateBody); got != tc.wantGate {
+			t.Errorf("%s %s answered by the password gate = %v, want %v", tc.method, tc.path, got, tc.wantGate)
+		}
 	}
 }

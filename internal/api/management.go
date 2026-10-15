@@ -54,13 +54,15 @@ func (server *Server) checkWebUIPassword(request *http.Request) bool {
 	return provided == password
 }
 
-// isManagementRoute reports whether serveHTTP applies the management Origin
-// check and body cap to path. It is not the set handleManagement serves: /health
-// and /api/event_logging/batch are served there and deliberately kept on the
-// public CORS path. Every other route the dispatch table serves outside /api/
-// must be named here, or it is answered with Access-Control-Allow-Origin: * and
-// no Origin check — which is how /refresh-token let a foreign page both trigger
-// a pool reload and read the result.
+// isManagementRoute reports whether path belongs to the management surface. It
+// is the one list behind three rules: the Origin check and the body cap in
+// serveHTTP, and the password gate in handleManagement. It is not the set
+// handleManagement dispatches: /health and /api/event_logging/batch are served
+// there and deliberately stay outside it, on the public CORS path. Every other
+// route the dispatchers serve outside /api/ must be named here, or it is answered
+// with Access-Control-Allow-Origin: *, no Origin check, no body cap and no
+// password, which is how /refresh-token let a foreign page both trigger a pool
+// reload and read the result.
 // TestEveryNonAPIDispatchRouteIsOriginChecked fails when a route is added
 // without being named here.
 func isManagementRoute(path string) bool {
@@ -74,15 +76,18 @@ func isManagementRoute(path string) bool {
 	return strings.HasPrefix(path, "/api/")
 }
 
-// requiresWebUIPassword is default-deny: every route handleManagement dispatches
-// is gated unless named public here. GET /api/config stays public so the login
-// form can read hasPassword before it has a credential; GET /api/auth/url starts
-// the OAuth flow before login; GET /health answers with counts only, which is
-// what a monitoring probe needs.
+// requiresWebUIPassword is default-deny over the management surface: a route
+// isManagementRoute names is gated unless it is named public here. Every other
+// path (/v1/*, /health, the WebUI assets) is not this gate's business, and
+// handleManagement sees them too, so the scope check has to live here. GET
+// /api/config stays public so the login form can read hasPassword before it has
+// a credential; GET /api/auth/url starts the OAuth flow before login; GET
+// /health answers with counts only, which is what a monitoring probe needs.
 func requiresWebUIPassword(path, method string) bool {
-	switch path {
-	case "/health":
+	if !isManagementRoute(path) {
 		return false
+	}
+	switch path {
 	case "/api/config", "/api/auth/url":
 		return method != http.MethodGet
 	}
@@ -98,11 +103,13 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	}
 
-	// WebUI Password protection. Default-deny: every route the dispatch table
-	// below serves is gated unless requiresWebUIPassword names it public. The
-	// earlier form gated only the /api/ prefix, which left the /refresh-token
-	// alias below serving a state-changing reload with no credential while its
-	// own twin /api/accounts/reload asked for one.
+	// WebUI Password protection. Default-deny over the management surface:
+	// requiresWebUIPassword gates every route isManagementRoute names unless it
+	// names the route public. The earlier form gated only the /api/ prefix, which
+	// left the /refresh-token alias below serving a state-changing reload with no
+	// credential while its own twin /api/accounts/reload asked for one. The scope
+	// matters the other way too: this function runs for every request, so a gate
+	// with no scope answers /v1/* and the WebUI assets with this 401.
 	if requiresWebUIPassword(path, method) && !server.checkWebUIPassword(request) {
 		writeJSON(writer, http.StatusUnauthorized, map[string]any{"status": "error", "error": "Unauthorized: Password required"})
 		return true
