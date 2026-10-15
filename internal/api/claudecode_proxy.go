@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -339,21 +340,29 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 
 // ccCopyStream forwards the upstream body, flushing per chunk so SSE events
 // reach the client as they arrive instead of at end of stream.
-func ccCopyStream(writer http.ResponseWriter, body io.Reader) {
+//
+// It returns the terminal error, nil for a clean EOF — the same split
+// openrouter.SSEInterceptor.TerminalErr draws. Without that return the copy is
+// the only party that knows a stream stopped early, and the operator sees a
+// short answer with nothing in the log to explain it.
+func ccCopyStream(writer http.ResponseWriter, body io.Reader) error {
 	flusher, hasFlusher := writer.(http.Flusher)
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
 			if _, werr := writer.Write(buf[:n]); werr != nil {
-				return
+				return werr
 			}
 			if hasFlusher {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
-			return
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
 		}
 	}
 }
@@ -490,7 +499,21 @@ func (server *Server) forwardToClaudeCode(
 		ccCopyResponseHeaders(writer.Header(), resp.Header, ccCfg.ForwardUnifiedHeadersEnabled())
 		writer.WriteHeader(resp.StatusCode)
 
-		ccCopyStream(writer, resp.Body)
+		if err := ccCopyStream(writer, resp.Body); err != nil {
+			// A stream that stops before message_stop looks like a short answer
+			// on the client side and like nothing at all here. A downstream
+			// cancel is the client walking away, which is routine; anything
+			// else is the upstream letting go, and that is the one worth a
+			// warning.
+			if server.logger != nil {
+				if request.Context().Err() != nil {
+					server.logger.Debug("claudecode stream cancelled by client", "account", acc.ID, "model", model, "err", err)
+				} else {
+					server.logger.Warn("claudecode stream ended before its terminal event",
+						"account", acc.ID, "model", model, "session", sessionKey, "err", err)
+				}
+			}
+		}
 
 		return
 	}
