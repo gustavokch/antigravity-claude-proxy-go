@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,47 @@ var (
 	agyClientIDPattern     = regexp.MustCompile(`[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com`)
 	agyClientSecretPattern = regexp.MustCompile(`GOCSPX-[A-Za-z0-9_-]{28}`)
 )
+
+var agyClientIDSuffix = []byte(".apps.googleusercontent.com")
+
+// findAgyClientIDs returns the same matches as agyClientIDPattern.FindAll but
+// without scanning every byte of a ~170 MB executable with the regexp. The
+// pattern has no literal prefix, so RE2 tries every offset (about 8 s). Every
+// match ends with a fixed suffix and ID characters exclude '.', so each suffix
+// occurrence can match only the run of ID characters directly before it. The
+// regexp runs on that run alone.
+func findAgyClientIDs(data []byte) [][]byte {
+	var matches [][]byte
+	pos := 0
+	for {
+		offset := bytes.Index(data[pos:], agyClientIDSuffix)
+		if offset < 0 {
+			return matches
+		}
+		suffixStart := pos + offset
+		end := suffixStart + len(agyClientIDSuffix)
+		runStart := suffixStart
+		// pos is the end of the last match (or one past the last rejected
+		// suffix), so the run never reaches back into bytes FindAll has already
+		// consumed. Without the bound it could re-enter the previous match's
+		// literal "com" tail; that is harmless today because "com" cannot start
+		// a [0-9]+-led match, but the bound keeps the argument local.
+		for runStart > pos && isAgyClientIDByte(data[runStart-1]) {
+			runStart--
+		}
+		location := agyClientIDPattern.FindIndex(data[runStart:end])
+		if location == nil {
+			pos = suffixStart + 1
+			continue
+		}
+		matches = append(matches, data[runStart+location[0]:runStart+location[1]])
+		pos = runStart + location[1]
+	}
+}
+
+func isAgyClientIDByte(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b == '_' || b == '-'
+}
 
 type oauthClientCredentials struct {
 	clientID     string
@@ -44,7 +86,7 @@ func agyOAuthCredentialCandidates() ([]oauthClientCredentials, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read agy executable %q: %w", path, err)
 	}
-	clientIDs := agyClientIDPattern.FindAll(contents, -1)
+	clientIDs := findAgyClientIDs(contents)
 	clientSecrets := agyClientSecretPattern.FindAll(contents, -1)
 	if len(clientIDs) == 0 || len(clientSecrets) == 0 {
 		return nil, fmt.Errorf("could not find OAuth refresh credentials in agy executable %q", path)

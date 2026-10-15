@@ -29,6 +29,12 @@ type EndpointConfig struct {
 	// a protocol that is not the Anthropic wire would be a lie about the request
 	// format, not just about the client.
 	Identity claudecode.IdentityConfig `json:"identity,omitempty"`
+	// The three fields below only control what /v1/models advertises for this
+	// endpoint. The forward path never reads them: forwardToCustomEndpoint stays
+	// byte-transparent (ADR-0001), and no max_tokens is derived or injected.
+	DisplayName     string `json:"displayName,omitempty"`
+	ContextLen      int    `json:"contextLength,omitempty"`
+	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
 }
 
 type OpenRouterModelConfig struct {

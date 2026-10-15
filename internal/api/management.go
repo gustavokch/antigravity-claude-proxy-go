@@ -1603,6 +1603,13 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 		return
 	}
 
+	// The advertised limits on custom endpoints flow straight into /v1/models,
+	// so the same save must refuse an output cap the provider would reject.
+	if err := validateCustomEndpointLimits(updates); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+
 	// No applyXConfig push for gateway order: config.Get() is read once per
 	// request (server.go), so a saved order takes effect on the next request
 	// with no restart. Ordering is hot by construction.

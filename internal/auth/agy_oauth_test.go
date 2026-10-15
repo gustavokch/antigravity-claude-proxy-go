@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -16,6 +19,136 @@ func fixtureClientID(prefix, label string) string {
 
 func fixtureClientSecret(character string) string {
 	return "GOC" + "SPX-" + strings.Repeat(character, 28)
+}
+
+func TestFindAgyClientIDsMatchesRegexpSemantics(t *testing.T) {
+	suffix := ".apps." + "googleusercontent.com"
+	inputs := []string{
+		"",
+		"no match here",
+		suffix,
+		"-" + suffix,
+		"1" + suffix,
+		"1-" + suffix,
+		"1-a" + suffix,
+		"x 123-abc_DEF-9" + suffix + " y",
+		"abc123-def" + suffix,
+		"abc-123-def" + suffix,
+		"a1-b2-c3" + suffix,
+		"123-abc" + suffix + "456-def" + suffix,
+		"123-abc" + suffix + suffix,
+		"123-abc" + suffix + "-" + suffix,
+		"123-abc.apps.googleusercontent.co 789-zzz" + suffix,
+		"123.456-abc" + suffix,
+		strings.Repeat("a", 5000) + "1-b" + suffix,
+		strings.Repeat("9", 5000) + "-b" + suffix,
+		strings.Repeat("9", 3) + strings.Repeat("-", 3) + "z" + suffix,
+	}
+	for _, input := range inputs {
+		want := agyClientIDPattern.FindAll([]byte(input), -1)
+		got := findAgyClientIDs([]byte(input))
+		if len(got) != len(want) {
+			t.Fatalf("input %.60q: got %d matches, want %d", input, len(got), len(want))
+		}
+		for i := range want {
+			if string(got[i]) != string(want[i]) {
+				t.Fatalf("input %.60q: match %d = %.80q, want %.80q", input, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+// TestFindAgyClientIDsRandomizedAgainstRegexp sweeps seeded random inputs
+// against FindAll. The interesting failures here are positional: where pos
+// lands after a failure, whether a run reaches back across a consumed match,
+// whether two suffix occurrences sit adjacent. A hand-picked list covers what
+// the author thought of; this sweep covers the neighbourhood.
+func TestFindAgyClientIDsRandomizedAgainstRegexp(t *testing.T) {
+	alphabets := [][]byte{
+		[]byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-."),
+		[]byte("0-_.a"),
+		[]byte(".apps.googleusercontent.com-0a_"),
+		[]byte("0-.com"),
+		[]byte("abc.apps.googleusercontent.com123-_"),
+	}
+	suffixes := [][]byte{
+		agyClientIDSuffix,
+		[]byte(".apps.googleusercontent.co"),
+		[]byte(".apps."),
+		[]byte(".com"),
+		[]byte("apps.googleusercontent.com"),
+	}
+	const digits, idChars = "0123456789", "aZ9_-"
+	var withMatch, withSeveral int
+	for seed := 0; seed < 20000; seed++ {
+		// Alphabet and suffix are indexed independently so all 25 pairs occur.
+		alphabet := alphabets[seed%len(alphabets)]
+		suffix := suffixes[(seed/len(alphabets))%len(suffixes)]
+		random := rand.New(rand.NewSource(int64(seed)))
+		var input []byte
+		for n := 1 + random.Intn(40); n > 0; n-- {
+			switch random.Intn(6) {
+			case 0:
+				input = append(input, suffix...)
+			case 1:
+				// An ID head, so matches are common rather than rare.
+				for k := 1 + random.Intn(3); k > 0; k-- {
+					input = append(input, digits[random.Intn(len(digits))])
+				}
+				input = append(input, '-')
+				for k := 1 + random.Intn(3); k > 0; k-- {
+					input = append(input, idChars[random.Intn(len(idChars))])
+				}
+			default:
+				input = append(input, alphabet[random.Intn(len(alphabet))])
+			}
+		}
+		want := agyClientIDPattern.FindAll(input, -1)
+		got := findAgyClientIDs(input)
+		if len(want) > 0 {
+			withMatch++
+		}
+		if len(want) > 1 {
+			withSeveral++
+		}
+		if len(got) != len(want) {
+			t.Fatalf("seed %d input %.80q: got %d matches, want %d", seed, input, len(got), len(want))
+		}
+		for i := range want {
+			if string(got[i]) != string(want[i]) {
+				t.Fatalf("seed %d input %.80q: match %d = %.80q, want %.80q", seed, input, i, got[i], want[i])
+			}
+		}
+	}
+	// Guard the generator: a sweep where matches are rare proves little.
+	if withMatch < 1000 || withSeveral < 500 {
+		t.Fatalf("generator too weak: %d inputs with a match, %d with several", withMatch, withSeveral)
+	}
+}
+
+// TestAgyClientIDByteClassMatchesPattern derives the pattern's character class
+// from the live regexp and compares it with isAgyClientIDByte over every byte.
+func TestAgyClientIDByteClassMatchesPattern(t *testing.T) {
+	prefix := []byte("9-")
+	tail := []byte(".apps." + "googleusercontent.com")
+	for b := 0; b < 256; b++ {
+		candidate := append(append([]byte{}, prefix...), byte(b))
+		candidate = append(candidate, tail...)
+		inPattern := agyClientIDPattern.Match(candidate)
+		if inPattern != isAgyClientIDByte(byte(b)) {
+			t.Fatalf("byte %#02x: accepted by pattern %v, accepted by isAgyClientIDByte %v",
+				b, inPattern, isAgyClientIDByte(byte(b)))
+		}
+	}
+}
+
+// TestAgyClientIDSuffixIsPatternTail keeps the scan's anchor equal to the
+// regexp's literal tail.
+func TestAgyClientIDSuffixIsPatternTail(t *testing.T) {
+	tail := regexp.QuoteMeta(string(agyClientIDSuffix))
+	if !strings.HasSuffix(agyClientIDPattern.String(), tail) {
+		t.Fatalf("pattern %q does not end with the quoted suffix %q", agyClientIDPattern.String(), tail)
+	}
 }
 
 func TestAgyOAuthCredentialsReadsInstalledConsumerPair(t *testing.T) {
@@ -84,5 +217,38 @@ func TestManagerRefreshFallsBackToMatchingInstalledCredentials(t *testing.T) {
 	}
 	if response.AccessToken != "fresh" || attempts != 2 {
 		t.Fatalf("response=%#v attempts=%d", response, attempts)
+	}
+}
+
+// agyScanFixture is a ~22 MB stand-in for the agy executable: mostly bytes that
+// are not a client ID, with 200 client IDs spread through it. It gives the
+// benchmark the same signal as the real binary without depending on an installed
+// agy.
+func agyScanFixture() []byte {
+	var data []byte
+	for block := 0; block < 200; block++ {
+		data = append(data, bytes.Repeat([]byte("someOtherSymbolName_123 "), 5000)...)
+		data = append(data, fixtureClientID("123", "abcDEF_-9")...)
+	}
+	return data
+}
+
+func BenchmarkFindAgyClientIDs(b *testing.B) {
+	data := agyScanFixture()
+	b.SetBytes(int64(len(data)))
+	for b.Loop() {
+		if n := len(findAgyClientIDs(data)); n != 200 {
+			b.Fatalf("got %d matches, want 200", n)
+		}
+	}
+}
+
+func BenchmarkAgyClientIDRegexpFindAll(b *testing.B) {
+	data := agyScanFixture()
+	b.SetBytes(int64(len(data)))
+	for b.Loop() {
+		if n := len(agyClientIDPattern.FindAll(data, -1)); n != 200 {
+			b.Fatalf("got %d matches, want 200", n)
+		}
 	}
 }
