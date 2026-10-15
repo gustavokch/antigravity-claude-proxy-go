@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,6 +54,74 @@ func TestFindAgyClientIDsMatchesRegexpSemantics(t *testing.T) {
 				t.Fatalf("input %.60q: match %d = %.80q, want %.80q", input, i, got[i], want[i])
 			}
 		}
+	}
+}
+
+// TestFindAgyClientIDsRandomizedAgainstRegexp sweeps seeded random inputs
+// against FindAll. The interesting failures here are positional: where pos
+// lands after a failure, whether a run reaches back across a consumed match,
+// whether two suffix occurrences sit adjacent. A hand-picked list covers what
+// the author thought of; this sweep covers the neighbourhood.
+func TestFindAgyClientIDsRandomizedAgainstRegexp(t *testing.T) {
+	alphabets := [][]byte{
+		[]byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-."),
+		[]byte("0-_.a"),
+		[]byte(".apps.googleusercontent.com-0a_"),
+		[]byte("0-.com"),
+		[]byte("abc.apps.googleusercontent.com123-_"),
+	}
+	suffixes := [][]byte{
+		agyClientIDSuffix,
+		[]byte(".apps.googleusercontent.co"),
+		[]byte(".apps."),
+		[]byte(".com"),
+		[]byte("apps.googleusercontent.com"),
+	}
+	const digits, idChars = "0123456789", "aZ9_-"
+	var withMatch, withSeveral int
+	for seed := 0; seed < 20000; seed++ {
+		// Alphabet and suffix are indexed independently so all 25 pairs occur.
+		alphabet := alphabets[seed%len(alphabets)]
+		suffix := suffixes[(seed/len(alphabets))%len(suffixes)]
+		random := rand.New(rand.NewSource(int64(seed)))
+		var input []byte
+		for n := 1 + random.Intn(40); n > 0; n-- {
+			switch random.Intn(6) {
+			case 0:
+				input = append(input, suffix...)
+			case 1:
+				// An ID head, so matches are common rather than rare.
+				for k := 1 + random.Intn(3); k > 0; k-- {
+					input = append(input, digits[random.Intn(len(digits))])
+				}
+				input = append(input, '-')
+				for k := 1 + random.Intn(3); k > 0; k-- {
+					input = append(input, idChars[random.Intn(len(idChars))])
+				}
+			default:
+				input = append(input, alphabet[random.Intn(len(alphabet))])
+			}
+		}
+		want := agyClientIDPattern.FindAll(input, -1)
+		got := findAgyClientIDs(input)
+		if len(want) > 0 {
+			withMatch++
+		}
+		if len(want) > 1 {
+			withSeveral++
+		}
+		if len(got) != len(want) {
+			t.Fatalf("seed %d input %.80q: got %d matches, want %d", seed, input, len(got), len(want))
+		}
+		for i := range want {
+			if string(got[i]) != string(want[i]) {
+				t.Fatalf("seed %d input %.80q: match %d = %.80q, want %.80q", seed, input, i, got[i], want[i])
+			}
+		}
+	}
+	// Guard the generator: a sweep where matches are rare proves little.
+	if withMatch < 1000 || withSeveral < 500 {
+		t.Fatalf("generator too weak: %d inputs with a match, %d with several", withMatch, withSeveral)
 	}
 }
 
