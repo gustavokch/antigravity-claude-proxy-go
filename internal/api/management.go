@@ -39,6 +39,38 @@ func (server *Server) checkWebUIPassword(request *http.Request) bool {
 	return provided == password
 }
 
+// isManagementRoute reports whether handleManagement serves path, and so whether
+// the request gets the management cross-origin treatment instead of the wildcard
+// CORS the public model API uses. It must name every route the dispatch table
+// serves outside the /api/ prefix: a route missing here is answered with
+// Access-Control-Allow-Origin: * and no Origin check, which is how /refresh-token
+// let a foreign page both trigger a pool reload and read the result.
+func isManagementRoute(path string) bool {
+	if path == "/api/event_logging/batch" {
+		return false // telemetry swallow: no state, no secret
+	}
+	switch path {
+	case "/account-limits", "/refresh-token":
+		return true
+	}
+	return strings.HasPrefix(path, "/api/")
+}
+
+// requiresWebUIPassword is default-deny: every route handleManagement dispatches
+// is gated unless named public here. GET /api/config stays public so the login
+// form can read hasPassword before it has a credential; GET /api/auth/url starts
+// the OAuth flow before login; GET /health answers with counts only, which is
+// what a monitoring probe needs.
+func requiresWebUIPassword(path, method string) bool {
+	switch path {
+	case "/health":
+		return false
+	case "/api/config", "/api/auth/url":
+		return method != http.MethodGet
+	}
+	return true
+}
+
 func (server *Server) handleManagement(writer http.ResponseWriter, request *http.Request, path string) bool {
 	method := request.Method
 
@@ -48,16 +80,12 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 		return true
 	}
 
-	// WebUI Password protection for protected routes
-	isPublicAuthRoute := path == "/api/auth/url"
-	isPublicConfigGet := path == "/api/config" && method == http.MethodGet
-	if strings.HasPrefix(path, "/api/") && !isPublicAuthRoute && !isPublicConfigGet {
-		if !server.checkWebUIPassword(request) {
-			writeJSON(writer, http.StatusUnauthorized, map[string]any{"status": "error", "error": "Unauthorized: Password required"})
-			return true
-		}
-	}
-	if path == "/account-limits" && !server.checkWebUIPassword(request) {
+	// WebUI Password protection. Default-deny: every route the dispatch table
+	// below serves is gated unless requiresWebUIPassword names it public. The
+	// earlier form gated only the /api/ prefix, which left the /refresh-token
+	// alias below serving a state-changing reload with no credential while its
+	// own twin /api/accounts/reload asked for one.
+	if requiresWebUIPassword(path, method) && !server.checkWebUIPassword(request) {
 		writeJSON(writer, http.StatusUnauthorized, map[string]any{"status": "error", "error": "Unauthorized: Password required"})
 		return true
 	}
@@ -266,13 +294,24 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	return false
 }
 
+// handleHealth answers a monitoring probe. It is one of the two routes served
+// with no credential, so it carries counts only. GetStatus also returns the
+// per-account list — emails, project IDs, subscription tier, quota windows and
+// last-used timestamps — and that belongs on the gated /api/accounts view, not
+// on an unauthenticated probe.
 func (server *Server) handleHealth(writer http.ResponseWriter, request *http.Request) {
 	if server.accountManager != nil {
 		status := server.accountManager.GetStatus()
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status":    "ok",
 			"timestamp": server.now().UTC().Format(time.RFC3339Nano),
-			"accounts":  status,
+			"accounts": map[string]any{
+				"total":       status["total"],
+				"available":   status["available"],
+				"rateLimited": status["rateLimited"],
+				"invalid":     status["invalid"],
+				"summary":     status["summary"],
+			},
 		})
 		return
 	}

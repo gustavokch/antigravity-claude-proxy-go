@@ -1089,21 +1089,9 @@ func Save(updates map[string]any) (Config, error) {
 									for ak, av := range aMap {
 										aCopy[ak] = av
 									}
-									hasToken, _ := aCopy["hasToken"].(bool)
-									token, _ := aCopy["token"].(string)
-									if hasToken && token == "" {
-										id, _ := aCopy["id"].(string)
-										for _, ea := range existingAccs {
-											if eaMap, ok := ea.(map[string]any); ok {
-												if existingID, ok := eaMap["id"].(string); ok && existingID == id {
-													if existingTok, ok := eaMap["token"].(string); ok && existingTok != "" {
-														aCopy["token"] = existingTok
-													}
-												}
-											}
-										}
-									}
+									restoreRedactedCreds(aCopy, existingAccs)
 									delete(aCopy, "hasToken")
+									delete(aCopy, "hasRefreshToken")
 									delete(aCopy, "maskedToken")
 									mergedAccs = append(mergedAccs, aCopy)
 								} else {
@@ -1167,6 +1155,60 @@ func maskToken(tok string) string {
 		return tok[:6] + "..." + tok[len(tok)-4:]
 	}
 	return "******"
+}
+
+// restoreRedactedCreds puts back the credential values GetPublicConfig replaced
+// with hasToken / hasRefreshToken markers, so a client that posts the public
+// view straight back does not erase them. An OAuth refresh token is not
+// re-derivable: dropping one means the account needs a fresh login.
+//
+// The persisted account is matched by id when both sides carry one, and by email
+// otherwise. The old id-only match failed two ways at once: an account written
+// without any id key has no id to match, and two accounts with empty ids would
+// each borrow the other's credential.
+func restoreRedactedCreds(posted map[string]any, existing []any) {
+	persisted := findPersistedAccount(posted, existing)
+	if persisted == nil {
+		return
+	}
+	for _, cred := range []struct{ marker, key string }{
+		{"hasToken", "token"},
+		{"hasRefreshToken", "refreshToken"},
+	} {
+		marked, _ := posted[cred.marker].(bool)
+		if !marked {
+			continue
+		}
+		if current, _ := posted[cred.key].(string); current != "" {
+			continue // an explicit value in the update wins
+		}
+		if value, _ := persisted[cred.key].(string); value != "" {
+			posted[cred.key] = value
+		}
+	}
+}
+
+func findPersistedAccount(posted map[string]any, existing []any) map[string]any {
+	postedID, _ := posted["id"].(string)
+	postedEmail, _ := posted["email"].(string)
+	for _, e := range existing {
+		eMap, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if postedID != "" {
+			if id, _ := eMap["id"].(string); id == postedID {
+				return eMap
+			}
+			continue
+		}
+		if postedEmail != "" {
+			if email, _ := eMap["email"].(string); email == postedEmail {
+				return eMap
+			}
+		}
+	}
+	return nil
 }
 
 // GetPublicConfig returns config with sensitive fields redacted or safe for UI.

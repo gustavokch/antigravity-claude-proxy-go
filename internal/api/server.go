@@ -392,7 +392,7 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	} else if strings.HasPrefix(path, "/anthropic/") {
 		path = strings.TrimPrefix(path, "/anthropic")
 	}
-	isManagement := (strings.HasPrefix(path, "/api/") && path != "/api/event_logging/batch") || path == "/account-limits"
+	isManagement := isManagementRoute(path)
 
 	if isManagement {
 		origin := request.Header.Get("Origin")
