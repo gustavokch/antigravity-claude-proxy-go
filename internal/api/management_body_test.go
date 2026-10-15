@@ -167,3 +167,49 @@ func TestAccountsImportCapsArrayLength(t *testing.T) {
 		}
 	})
 }
+
+// TestAccountsImportReportsAFailedSave: the import applies to the in-memory pool
+// and then writes the pool once. A failed write has to reach the client as an
+// error, because the WebUI shows only status, results and error. A 200 with a
+// side-channel field reads as a clean import, and the accounts are gone on the
+// next restart.
+func TestAccountsImportReportsAFailedSave(t *testing.T) {
+	srv, mgr, _ := newTestServerWithManager(t)
+
+	// MkdirAll on a path whose parent is a regular file fails, root included.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr.SetConfigPath(filepath.Join(blocker, "accounts.json"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/import",
+		strings.NewReader(`[{"email":"new@example.com","refresh_token":"tok-new"}]`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("body is not json: %v (%s)", err, rec.Body.String())
+	}
+	if res["status"] != "error" {
+		t.Errorf("status field = %v, want error", res["status"])
+	}
+	if msg, _ := res["error"].(string); !strings.Contains(msg, "could not be saved") {
+		t.Errorf("error = %q, want it to say the write failed", msg)
+	}
+
+	// The failure is persistence only: the pool still took the account.
+	found := false
+	for _, acc := range mgr.GetAllAccounts() {
+		if acc.Email == "new@example.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the account is missing from the in-memory pool")
+	}
+}

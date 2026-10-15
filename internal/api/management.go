@@ -1256,12 +1256,18 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 	// entire pool once per item.
 	if applied > 0 {
 		if err := server.accountManager.SaveToDisk(); err != nil {
-			// The pool is updated in memory and the import succeeded; only its
-			// persistence failed, so report it without failing the request.
+			// The pool is updated in memory; only its persistence failed. The
+			// WebUI shows status, results and error and nothing else, so a 200
+			// with a side-channel field reads as a clean import and the accounts
+			// are gone on the next restart. Answer as an error, and keep the
+			// results so a client can still see what the pool took.
 			if server.logger != nil {
 				server.logger.Warn("accounts import: save to disk failed", "error", err)
 			}
-			response["warning"] = "Import applied in memory but the config write failed: " + err.Error()
+			response["status"] = "error"
+			response["error"] = "Import applied in memory but could not be saved: " + err.Error()
+			writeJSON(writer, http.StatusInternalServerError, response)
+			return
 		}
 	}
 	response["message"] = fmt.Sprintf("Imported %d accounts", len(results["added"])+len(results["updated"]))

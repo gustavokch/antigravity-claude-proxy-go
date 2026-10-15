@@ -807,7 +807,7 @@ Management payloads are small, so they are capped: a management request body ove
 | `/api/accounts/reload` | `POST` | Reload accounts from disk |
 | `/refresh-token` | `POST` | Deprecated alias of `/api/accounts/reload`; kept for compatibility, and gated like its twin |
 | `/api/accounts/export` | `GET` | Export accounts payload |
-| `/api/accounts/import` | `POST` | Import accounts payload (at most 1000 per call) |
+| `/api/accounts/import` | `POST` | Import accounts payload (at most 1000 per call; answers `500` when the pool could not be written to disk) |
 | `/api/config` | `GET`/`POST` | Read (redacted) or save proxy runtime configuration |
 | `/api/config/password` | `POST` | Set or update Web UI protection password |
 | `/api/settings` | `GET` | Retrieve combined runtime configuration and active account pool stats |
