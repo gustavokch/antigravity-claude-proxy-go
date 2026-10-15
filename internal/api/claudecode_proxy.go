@@ -324,7 +324,7 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 		return
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
 	_ = resp.Body.Close()
 	if err != nil {
 		if server.logger != nil {

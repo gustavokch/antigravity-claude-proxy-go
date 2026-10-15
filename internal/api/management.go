@@ -26,6 +26,21 @@ import (
 	"antigravity-go-proxy/internal/zen"
 )
 
+// maxManagementRequestBody bounds the body of any request serveHTTP classifies
+// as management traffic. Every handler the dispatch table serves decodes a small
+// JSON payload: a config, a preset, one account, or an exported pool. The cap
+// sits far below maxRequestBody, the /v1/messages limit, because no management
+// payload is anywhere near that size; without it a single POST to the management
+// API could pin a worker as hard as a generation request can.
+const maxManagementRequestBody = 8 << 20
+
+// maxImportedAccounts bounds one POST /api/accounts/import. The body cap alone
+// would still admit millions of two-byte objects, and the pool has no ceiling:
+// every added account is walked on later /v1/messages selections, so an
+// oversized array is a permanent cost, not only a request-time one. 1000 is far
+// above any real pool.
+const maxImportedAccounts = 1000
+
 func (server *Server) checkWebUIPassword(request *http.Request) bool {
 	cfg := config.Get()
 	password := cfg.WebUIPassword
@@ -1136,11 +1151,22 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "accounts must be a non-empty array"})
 		return
 	}
+	if len(importList) > maxImportedAccounts {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{
+			"status": "error",
+			"error":  fmt.Sprintf("accounts array is too large: %d entries, maximum %d", len(importList), maxImportedAccounts),
+		})
+		return
+	}
 
 	results := map[string][]any{
 		"added":   {},
 		"updated": {},
 		"failed":  {},
+	}
+	response := map[string]any{
+		"status":  "ok",
+		"results": results,
 	}
 
 	existingMap := make(map[string]bool)
@@ -1148,6 +1174,7 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 		existingMap[acc.Email] = true
 	}
 
+	applied := 0
 	for _, item := range importList {
 		email, _ := item["email"].(string)
 		if email == "" {
@@ -1180,9 +1207,10 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 			Enabled:      true,
 		}
 		exists := existingMap[email]
-		if err := server.accountManager.AddOrUpdateAccount(acc); err != nil {
+		if err := server.accountManager.AddOrUpdateAccountNoSave(acc); err != nil {
 			results["failed"] = append(results["failed"], map[string]string{"email": email, "reason": err.Error()})
 		} else {
+			applied++
 			if exists {
 				results["updated"] = append(results["updated"], email)
 			} else {
@@ -1191,11 +1219,20 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 		}
 	}
 
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"results": results,
-		"message": fmt.Sprintf("Imported %d accounts", len(results["added"])+len(results["updated"])),
-	})
+	// One write for the whole import. AddOrUpdateAccount would serialize the
+	// entire pool once per item.
+	if applied > 0 {
+		if err := server.accountManager.SaveToDisk(); err != nil {
+			// The pool is updated in memory and the import succeeded; only its
+			// persistence failed, so report it without failing the request.
+			if server.logger != nil {
+				server.logger.Warn("accounts import: save to disk failed", "error", err)
+			}
+			response["warning"] = "Import applied in memory but the config write failed: " + err.Error()
+		}
+	}
+	response["message"] = fmt.Sprintf("Imported %d accounts", len(results["added"])+len(results["updated"]))
+	writeJSON(writer, http.StatusOK, response)
 }
 
 func (server *Server) handleConfigGet(writer http.ResponseWriter, request *http.Request) {

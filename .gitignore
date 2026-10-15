@@ -13,6 +13,10 @@ benchmark_results.txt
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
 
+# Local Go build cache, used when the default ~/Library/Caches/go-build is not
+# writable. Regenerable, never committed.
+/.gocache/
+
 # Local OAuth token files for the capture harness. Never committed.
 .claude-oat*
 

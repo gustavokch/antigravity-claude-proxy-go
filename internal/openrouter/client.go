@@ -163,7 +163,11 @@ func (c *Client) FetchAvailableModels(ctx context.Context, apiKey, baseURL strin
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// Bound the read so a hostile or broken upstream cannot exhaust memory. The
+	// model catalog is a few megabytes today; 16MiB leaves room for it to grow.
+	// A truncated body fails the JSON decode below, which is the right outcome.
+	const maxModelsBody = 16 << 20
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsBody))
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}

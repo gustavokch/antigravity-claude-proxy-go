@@ -8,7 +8,16 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
+	"antigravity-go-proxy/internal/transport"
 )
+
+// upstreamTransport is the one transport every Kimi forward shares, so
+// keep-alive pools survive across requests. Without it the ReverseProxy uses
+// http.DefaultTransport, which puts no bound on time to response headers: a
+// gateway that accepts the connection and then stays silent holds the request,
+// its goroutine, and its connection open until the client disconnects.
+var upstreamTransport = transport.Upstream()
 
 // ForwardMessages transparently forwards an /v1/messages request to a Kimi
 // gateway. It rewrites Authorization, preserves the Anthropic version/beta
@@ -50,6 +59,7 @@ func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, 
 
 	proxy := &httputil.ReverseProxy{
 		FlushInterval:  -1,
+		Transport:      upstreamTransport,
 		ModifyResponse: modify,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme

@@ -9,8 +9,11 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	utls "github.com/refraction-networking/utls"
+
+	"antigravity-go-proxy/internal/transport"
 )
 
 // The Zen free-tier gate discriminates on the TLS handshake: the genuine
@@ -120,11 +123,10 @@ func TLSClient() *http.Client {
 // or nil when the disguise is off or the captured hello cannot be
 // fingerprinted — callers pass the result straight to http.Client/ReverseProxy,
 // which fall back to the default transport on nil. One transport is cached
-// per configuration so keep-alive pools survive across requests; it is a
-// clone of http.DefaultTransport (proxy from the environment, 30s dial
-// timeout, 10s TLS handshake timeout, 90s idle timeout) with DialTLSContext
-// pointed at the captured hello. The shared default transport itself is
-// never mutated.
+// per configuration so keep-alive pools survive across requests; it is
+// transport.Upstream() (a clone of http.DefaultTransport with a bound on time to
+// response headers) with DialTLSContext pointed at the captured hello. The shared
+// default transport itself is never mutated.
 func Transport() *http.Transport {
 	tlsMu.Lock()
 	defer tlsMu.Unlock()
@@ -141,10 +143,7 @@ func transportLocked() *http.Transport {
 		return nil
 	}
 	if tlsTransport == nil {
-		tr := &http.Transport{Proxy: http.ProxyFromEnvironment}
-		if base, ok := http.DefaultTransport.(*http.Transport); ok {
-			tr = base.Clone()
-		}
+		tr := transport.Upstream()
 		tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialOpencodeTLS(ctx, network, addr, spec)
 		}
@@ -164,6 +163,18 @@ type spoofedConn struct {
 
 func (c *spoofedConn) ConnectionState() tls.ConnectionState { return c.state }
 
+// dialTimeout and handshakeTimeout bound the two local steps of the utls dial.
+// A zero net.Dialer Timeout waits for the OS, and with DialTLSContext set
+// net/http does not apply its own TLSHandshakeTimeout, so the utls handshake
+// would otherwise run on the caller's context — which for a streamed request has
+// no deadline at all. Both values match what http.DefaultTransport uses for its
+// dialer and handshake. They are local timers: the ClientHello bytes, and so the
+// Bun fingerprint the disguise exists to reproduce, are unaffected.
+const (
+	dialTimeout      = 30 * time.Second
+	handshakeTimeout = 10 * time.Second
+)
+
 // dialOpencodeTLS dials TCP, wraps the connection in a utls client speaking
 // the captured Bun ClientHello, and completes the handshake before returning.
 func dialOpencodeTLS(ctx context.Context, network, addr string, spec *utls.ClientHelloSpec) (net.Conn, error) {
@@ -171,7 +182,8 @@ func dialOpencodeTLS(ctx context.Context, network, addr string, spec *utls.Clien
 	if err != nil {
 		return nil, fmt.Errorf("zen tls: split %q: %w", addr, err)
 	}
-	raw, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+	dialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
+	raw, err := dialer.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +195,9 @@ func dialOpencodeTLS(ctx context.Context, network, addr string, spec *utls.Clien
 	// The capture carries the original target's SNI; re-point it at the
 	// host actually being dialed so certificate verification matches.
 	uconn.SetSNI(host)
-	if err := uconn.HandshakeContext(ctx); err != nil {
+	hsCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+	if err := uconn.HandshakeContext(hsCtx); err != nil {
 		_ = uconn.Close()
 		return nil, fmt.Errorf("zen tls: utls handshake: %w", err)
 	}

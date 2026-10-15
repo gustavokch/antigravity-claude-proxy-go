@@ -48,13 +48,29 @@ import (
 	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
+	"antigravity-go-proxy/internal/transport"
 	"antigravity-go-proxy/internal/zen"
 )
 
 const (
 	maxRequestBody = 50 << 20
 	maxMappingHops = 5
+	// maxUpstreamBody bounds what the usage-instrumentation reads pull an
+	// upstream body into memory. 64 MiB is the cap internal/cloudcode already
+	// puts on a Cloud Code response body, and a non-streaming completion that
+	// large does not occur; the read exists only to find the usage fields. The
+	// gzip leg is capped at the same value, because a small compressed body can
+	// expand far past its own size.
+	maxUpstreamBody = 64 << 20
 )
+
+// customEndpointTransport serves every custom-endpoint forward. The
+// ReverseProxy would otherwise use http.DefaultTransport, which has no bound on
+// time to response headers: an endpoint that accepts the connection and then
+// stays silent holds the request open until the client disconnects. The clone
+// changes that one field, so the ClientHello toward the custom endpoint is
+// unchanged.
+var customEndpointTransport = transport.Upstream()
 
 var jsonBufferPool = sync.Pool{
 	New: func() any {
@@ -395,6 +411,17 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 	isManagement := isManagementRoute(path)
 
 	if isManagement {
+		// Cap the body once for every management route instead of at each of the
+		// decoders in the dispatch table. A known ContentLength gets an explicit
+		// 413; a chunked body is cut off by MaxBytesReader and reaches its handler
+		// as a decode error, i.e. the 400 that handler already returns for a body
+		// it cannot parse.
+		request.Body = http.MaxBytesReader(writer, request.Body, maxManagementRequestBody)
+		if request.ContentLength > maxManagementRequestBody {
+			writeJSON(writer, http.StatusRequestEntityTooLarge, map[string]any{"status": "error", "error": "Request body too large"})
+			return
+		}
+
 		origin := request.Header.Get("Origin")
 		if origin != "" {
 			if !isAllowedManagementOrigin(origin, request.Host) {
@@ -1312,6 +1339,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	// HTTP/2, which lowercases everything on the wire.
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
+		Transport:     customEndpointTransport,
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode < 400 && isMessagesRequest {
 				server.maybeRecordCacheBump(cachebump.RouteCustom, request, reqBody, customSessionKey, model, "", model, minMaxTokensFloor)
@@ -1599,7 +1627,7 @@ func (server *Server) kimiInstrumentResponse(resp *http.Response, model, session
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
 		return
 	}
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
 	_ = resp.Body.Close()
 	if err != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
@@ -1608,7 +1636,7 @@ func (server *Server) kimiInstrumentResponse(resp *http.Response, model, session
 	payloadBytes := respBytes
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
-			if decompressed, err := io.ReadAll(gz); err == nil {
+			if decompressed, err := io.ReadAll(io.LimitReader(gz, maxUpstreamBody)); err == nil {
 				payloadBytes = decompressed
 			}
 			_ = gz.Close()
@@ -1735,7 +1763,7 @@ func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionI
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
 		return
 	}
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
 	_ = resp.Body.Close()
 	if err != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(respBytes))
@@ -1744,7 +1772,7 @@ func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionI
 	payloadBytes := respBytes
 	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 		if gz, err := gzip.NewReader(bytes.NewReader(respBytes)); err == nil {
-			if decompressed, err := io.ReadAll(gz); err == nil {
+			if decompressed, err := io.ReadAll(io.LimitReader(gz, maxUpstreamBody)); err == nil {
 				payloadBytes = decompressed
 			}
 			_ = gz.Close()
@@ -2341,7 +2369,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return
 			}
 			// Buffer full body before writing — failover impossible after first byte.
-			bodyBytes, readErr := io.ReadAll(resp.Body)
+			bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
 			_ = resp.Body.Close()
 			headersCutoff.Stop()
 			cancel()
@@ -2392,7 +2420,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 
 		// Non-2xx: buffer body, classify, decide next.
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
 		_ = resp.Body.Close()
 		headersCutoff.Stop()
 		cancel()
@@ -2521,6 +2549,10 @@ var openRouterSharedClient = &http.Client{
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		// Same bound as the other upstream paths: a silent OpenRouter stops
+		// holding this request open. Streams are not capped, only the wait for
+		// response headers.
+		ResponseHeaderTimeout: transport.ResponseHeaderTimeout,
 	},
 }
 

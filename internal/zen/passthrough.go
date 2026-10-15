@@ -8,7 +8,16 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
+	"antigravity-go-proxy/internal/transport"
 )
+
+// upstreamTransport is the plain (non-disguised) transport shared by every Zen
+// forward. It exists so this path never falls back to http.DefaultTransport,
+// which puts no bound on time to response headers: a gateway that accepts the
+// connection and then stays silent holds the request, its goroutine, and its
+// connection open until the client disconnects.
+var upstreamTransport = transport.Upstream()
 
 // defaultAnthropicVersion is sent when the client did not supply one.
 const defaultAnthropicVersion = "2023-06-01"
@@ -126,11 +135,13 @@ func forwardZenPath(w http.ResponseWriter, r *http.Request, baseURL, apiKey stri
 	}
 
 	// utls Bun handshake when the TLS disguise is on, on the one shared
-	// transport so keep-alive pools survive across requests; unset keeps
-	// the ReverseProxy default transport (a typed-nil *http.Transport
-	// would panic in RoundTrip).
+	// transport so keep-alive pools survive across requests; otherwise the
+	// shared plain transport (a typed-nil *http.Transport would panic in
+	// RoundTrip).
 	if tr := Transport(); tr != nil {
 		proxy.Transport = tr
+	} else {
+		proxy.Transport = upstreamTransport
 	}
 
 	proxy.ServeHTTP(w, r)

@@ -403,7 +403,7 @@ func responsesUsage(u map[string]any) map[string]any {
 // aggregated message (for a non-streaming one), and any other body into JSON.
 func translateResponsesResponse(resp *http.Response, model string, clientStream bool, toolNames map[string]string, injected map[string]bool) *http.Response {
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		_ = resp.Body.Close()
 		return rebody(resp, "application/json", chatErrorToAnthropic(resp.StatusCode, raw, model))
 	}
@@ -440,7 +440,7 @@ func translateResponsesResponse(resp *http.Response, model string, clientStream 
 		out, _ := json.Marshal(ResponsesResponseToAnthropic(aggregated, model, toolNames, injected))
 		return rebody(resp, "application/json", out)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamBody))
 	_ = resp.Body.Close()
 	if err != nil {
 		return failResponse(resp, "Zen response read error: "+err.Error())

@@ -1595,6 +1595,21 @@ func (manager *Manager) RemoveAccount(email string) error {
 }
 
 func (manager *Manager) AddOrUpdateAccount(account *Account) error {
+	if err := manager.addOrUpdateAccount(account); err != nil {
+		return err
+	}
+	return manager.SaveToDisk()
+}
+
+// AddOrUpdateAccountNoSave upserts an account and leaves the pool unsaved. A
+// caller that upserts many accounts in one request calls this in a loop and
+// SaveToDisk once: AddOrUpdateAccount writes the whole pool after every item, so
+// an N-item import costs N full serializations.
+func (manager *Manager) AddOrUpdateAccountNoSave(account *Account) error {
+	return manager.addOrUpdateAccount(account)
+}
+
+func (manager *Manager) addOrUpdateAccount(account *Account) error {
 	if account == nil || account.Email == "" {
 		return errors.New("invalid account data: email is required")
 	}
@@ -1629,7 +1644,7 @@ func (manager *Manager) AddOrUpdateAccount(account *Account) error {
 		manager.accounts = append(manager.accounts, account)
 	}
 	manager.mu.Unlock()
-	return manager.SaveToDisk()
+	return nil
 }
 
 func (manager *Manager) UpdateThresholds(email string, quotaThreshold *float64, modelThreshold map[string]float64) error {
