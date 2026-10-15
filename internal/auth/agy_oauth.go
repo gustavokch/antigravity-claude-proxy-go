@@ -36,6 +36,11 @@ func findAgyClientIDs(data []byte) [][]byte {
 		suffixStart := pos + offset
 		end := suffixStart + len(agyClientIDSuffix)
 		runStart := suffixStart
+		// pos is the end of the last match (or one past the last rejected
+		// suffix), so the run never reaches back into bytes FindAll has already
+		// consumed. Without the bound it could re-enter the previous match's
+		// literal "com" tail; that is harmless today because "com" cannot start
+		// a [0-9]+-led match, but the bound keeps the argument local.
 		for runStart > pos && isAgyClientIDByte(data[runStart-1]) {
 			runStart--
 		}
