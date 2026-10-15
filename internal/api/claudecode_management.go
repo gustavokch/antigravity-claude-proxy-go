@@ -156,8 +156,15 @@ func validateCustomEndpointLimits(updates map[string]any) error {
 		if err != nil {
 			return err
 		}
-		if contextLen > 0 && maxOutput >= contextLen {
-			return fmt.Errorf("%s.maxOutputTokens: must be below contextLength (%d)", label, contextLen)
+		// Compare against the window discovery will advertise, not just the saved
+		// one: an unset contextLength falls back to the discovery default, and a
+		// cap above that is the same dishonesty.
+		effective := contextLen
+		if effective <= 0 {
+			effective = defaultDiscoveryContextWindow
+		}
+		if maxOutput >= effective {
+			return fmt.Errorf("%s.maxOutputTokens: must be below the context window (%d)", label, effective)
 		}
 	}
 	return nil

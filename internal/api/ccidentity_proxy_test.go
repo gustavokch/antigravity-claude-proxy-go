@@ -314,6 +314,8 @@ func TestConfigPost_RejectsBadCustomEndpointLimits(t *testing.T) {
 			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":8192,"maxOutputTokens":8192}}}`},
 		{"output cap above the context window", "maxOutputTokens",
 			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":8192,"maxOutputTokens":65536}}}`},
+		{"output cap above the default context window", "maxOutputTokens",
+			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","maxOutputTokens":300000}}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -346,6 +348,17 @@ func TestConfigPost_AcceptsValidCustomEndpointLimits(t *testing.T) {
 	}
 	if ep.ContextLen != 262144 || ep.MaxOutputTokens != 65536 {
 		t.Errorf("stored limits = %d/%d, want 262144/65536", ep.ContextLen, ep.MaxOutputTokens)
+	}
+
+	// A cap below the default context window is valid even when the context
+	// length is unset: discovery pairs it with the default window.
+	rec2 := doJSON(t, srv, http.MethodPost, "/api/config", `{"customEndpoints":{"n":{`+
+		`"url":"https://example.com/v1/messages","maxOutputTokens":100000}}}`)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec2.Code, rec2.Body.String())
+	}
+	if ep, present := config.Get().CustomEndpoints["n"]; !present || ep.MaxOutputTokens != 100000 {
+		t.Errorf("stored = %+v, want maxOutputTokens 100000", ep)
 	}
 }
 
