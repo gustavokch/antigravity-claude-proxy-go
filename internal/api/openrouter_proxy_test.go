@@ -317,6 +317,27 @@ func TestOpenRouterForwarding_CleanStreamIsNotLogged(t *testing.T) {
 	}
 }
 
+// TestOpenRouterForwarding_GracefulEarlyCloseIsLogged is the same gap on the
+// OpenRouter gateway, whose SSEInterceptor.TerminalErr is nil at io.EOF by
+// design: a stream closed gracefully before message_stop leaves no read error.
+func TestOpenRouterForwarding_GracefulEarlyCloseIsLogged(t *testing.T) {
+	rec, logBuf := openRouterStreamTest(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"))
+	}, "sess-or-early-1")
+
+	if !strings.Contains(rec.Body.String(), "message_start") {
+		t.Fatalf("the partial stream was not forwarded, got %q", rec.Body.String())
+	}
+	logged := logBuf.String()
+	for _, want := range []string{"stream ended before its terminal event", `"gateway":"openrouter"`, "sess-or-early-1"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("log missing %q:\n%s", want, logged)
+		}
+	}
+}
+
 func TestMergedModelsEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)

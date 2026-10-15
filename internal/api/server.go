@@ -2776,9 +2776,13 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 	})
 	defer interceptor.Close()
 
+	// The interceptor reports a read error and treats io.EOF as no fault, so a
+	// graceful close ahead of message_stop would pass for a finished stream. The
+	// watcher is what tells the two apart.
+	watch := &terminalWatcher{r: interceptor}
 	buf := make([]byte, 4096)
 	for {
-		n, err := interceptor.Read(buf)
+		n, err := watch.Read(buf)
 		if n > 0 {
 			if _, werr := writer.Write(buf[:n]); werr != nil {
 				// The upstream body is intact; the client let go. The
@@ -2792,13 +2796,13 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 			}
 		}
 		if err != nil {
-			// TerminalErr already treats a clean EOF as no fault, so a stream
-			// that ended on its own stays quiet.
+			// breakReason keeps the interceptor's read error, and adds the case it
+			// cannot see: a clean EOF before any terminal event.
 			attrs := []any{"gateway", "openrouter", "model", model, "session", sessionID}
 			if provider != "" {
 				attrs = append(attrs, "provider", provider)
 			}
-			server.logStreamBreak(resp.Request, interceptor.TerminalErr(), attrs...)
+			server.logStreamBreak(resp.Request, watch.breakReason(interceptor.TerminalErr()), attrs...)
 			return
 		}
 	}

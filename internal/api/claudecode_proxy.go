@@ -495,8 +495,22 @@ func (server *Server) forwardToClaudeCode(
 		ccCopyResponseHeaders(writer.Header(), resp.Header, ccCfg.ForwardUnifiedHeadersEnabled())
 		writer.WriteHeader(resp.StatusCode)
 
-		if err := ccCopyStream(writer, resp.Body); err != nil {
-			server.logStreamBreak(request, err,
+		// A stream that ends with no read error is not necessarily a finished
+		// one: a graceful close ahead of message_stop reads as io.EOF. Watch the
+		// event stream for its terminal marker; a JSON body or an error status
+		// has none to look for.
+		var body io.Reader = resp.Body
+		var watch *terminalWatcher
+		if resp.StatusCode < 400 && ccIsSSEResponse(resp.Header) {
+			watch = &terminalWatcher{r: resp.Body}
+			body = watch
+		}
+		copyErr := ccCopyStream(writer, body)
+		if watch != nil {
+			copyErr = watch.breakReason(copyErr)
+		}
+		if copyErr != nil {
+			server.logStreamBreak(request, copyErr,
 				"gateway", "claudecode", "account", acc.ID, "model", model, "session", sessionKey)
 		}
 
