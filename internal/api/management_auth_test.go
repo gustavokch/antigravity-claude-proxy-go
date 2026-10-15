@@ -240,3 +240,22 @@ func TestPublicConfigStillRedactsCredentials(t *testing.T) {
 		}
 	}
 }
+
+// TestManagementPreflightAllowsThePasswordHeader: the gate reads
+// x-webui-password, so the preflight must name it, or a cross-origin browser
+// cannot reach a gated route at all.
+func TestManagementPreflightAllowsThePasswordHeader(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	req := httptest.NewRequest(http.MethodOptions, "/api/accounts", nil)
+	req.Header.Set("Origin", "http://localhost:8091")
+	req.Host = "127.0.0.1:8091"
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("preflight = %d, want 204", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "x-webui-password") {
+		t.Errorf("x-webui-password not allowed: %q", rec.Header().Get("Access-Control-Allow-Headers"))
+	}
+}
