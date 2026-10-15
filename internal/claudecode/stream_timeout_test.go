@@ -36,7 +36,9 @@ func TestNewClientLeavesOpenStreamsUncapped(t *testing.T) {
 // TestOpenStreamSurvivesTheHeaderBound shows that the bound stops at the headers:
 // an upstream that flushes its headers at once and then keeps writing is read to
 // completion. The bound is shortened here so the test is fast; the shipped value
-// is the same field.
+// is the same field, on a transport this test builds for itself. The package
+// transport is shared, so mutating it would shorten the bound for every other
+// test in the package that runs alongside this one.
 func TestOpenStreamSurvivesTheHeaderBound(t *testing.T) {
 	const events = 20
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,13 +54,9 @@ func TestOpenStreamSurvivesTheHeaderBound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, nil)
-	tr, ok := client.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected an *http.Transport, got %T", client.httpClient.Transport)
-	}
+	tr := transport.Upstream()
 	tr.ResponseHeaderTimeout = 50 * time.Millisecond
-	defer func() { tr.ResponseHeaderTimeout = transport.ResponseHeaderTimeout }()
+	client := NewClient(srv.URL, &http.Client{Transport: tr})
 
 	resp, err := client.SendMessage(context.Background(), MessageRequest{
 		Token: "sk-ant-oat-test",
