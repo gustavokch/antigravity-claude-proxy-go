@@ -323,22 +323,22 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 }
 
 // handleHealth answers a monitoring probe. It is one of the two routes served
-// with no credential, so it carries counts only. GetStatus also returns the
-// per-account list — emails, project IDs, subscription tier, quota windows and
-// last-used timestamps — and that belongs on the gated /api/accounts view, not
-// on an unauthenticated probe.
+// with no credential, so it carries counts only, and it reads them with Counts:
+// GetStatus also builds the per-account list — emails, project IDs, subscription
+// tier, quota windows and last-used timestamps — under the pool's write lock, and
+// that list belongs on the gated /api/accounts view, not on a public probe.
 func (server *Server) handleHealth(writer http.ResponseWriter, request *http.Request) {
 	if server.accountManager != nil {
-		status := server.accountManager.GetStatus()
+		counts := server.accountManager.Counts()
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status":    "ok",
 			"timestamp": server.now().UTC().Format(time.RFC3339Nano),
 			"accounts": map[string]any{
-				"total":       status["total"],
-				"available":   status["available"],
-				"rateLimited": status["rateLimited"],
-				"invalid":     status["invalid"],
-				"summary":     status["summary"],
+				"total":       counts.Total,
+				"available":   counts.Available,
+				"rateLimited": counts.RateLimited,
+				"invalid":     counts.Invalid,
+				"summary":     counts.Summary(),
 			},
 		})
 		return

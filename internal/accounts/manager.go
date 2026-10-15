@@ -1875,35 +1875,60 @@ func (manager *Manager) Reload(path string) error {
 	return nil
 }
 
+// StatusCounts is the pool's headline numbers without the per-account detail.
+type StatusCounts struct {
+	Total       int
+	Available   int
+	RateLimited int
+	Invalid     int
+}
+
+// Summary renders the counts as the one-line string GetStatus reports.
+func (c StatusCounts) Summary() string {
+	return fmt.Sprintf("%d total, %d available, %d rate-limited, %d invalid",
+		c.Total, c.Available, c.RateLimited, c.Invalid)
+}
+
+// countsLocked tallies the pool; callers hold manager.mu. A rate limit whose
+// reset time has passed does not count, so no expiry sweep has to run first.
+func (manager *Manager) countsLocked(now int64) StatusCounts {
+	counts := StatusCounts{Total: len(manager.accounts)}
+	for _, acc := range manager.accounts {
+		if acc.Enabled && !acc.IsInvalid {
+			counts.Available++
+		}
+		if acc.IsInvalid {
+			counts.Invalid++
+		}
+		for _, rl := range acc.ModelRateLimits {
+			if rl != nil && rl.IsRateLimited && rl.ResetTimeMS > now {
+				counts.RateLimited++
+				break
+			}
+		}
+	}
+	return counts
+}
+
+// Counts returns the pool's headline numbers under the read lock and builds no
+// per-account list. GetStatus takes the write lock and builds the list on every
+// call, which is the wrong cost for an unauthenticated probe.
+func (manager *Manager) Counts() StatusCounts {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.countsLocked(manager.now().UnixMilli())
+}
+
 func (manager *Manager) GetStatus() map[string]any {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.clearExpiredLocked()
 
 	now := manager.now().UnixMilli()
-	availableCount := 0
-	invalidCount := 0
-	rateLimitedCount := 0
+	counts := manager.countsLocked(now)
 
 	accountList := make([]map[string]any, 0, len(manager.accounts))
 	for _, acc := range manager.accounts {
-		if acc.Enabled && !acc.IsInvalid {
-			availableCount++
-		}
-		if acc.IsInvalid {
-			invalidCount++
-		}
-		isRateLimited := false
-		for _, rl := range acc.ModelRateLimits {
-			if rl != nil && rl.IsRateLimited && rl.ResetTimeMS > now {
-				isRateLimited = true
-				break
-			}
-		}
-		if isRateLimited {
-			rateLimitedCount++
-		}
-
 		limits := make(map[string]any)
 		for mID, q := range acc.Quota.Models {
 			remStr := "N/A"
@@ -1937,15 +1962,12 @@ func (manager *Manager) GetStatus() map[string]any {
 		accountList = append(accountList, item)
 	}
 
-	summary := fmt.Sprintf("%d total, %d available, %d rate-limited, %d invalid",
-		len(manager.accounts), availableCount, rateLimitedCount, invalidCount)
-
 	return map[string]any{
-		"total":       len(manager.accounts),
-		"available":   availableCount,
-		"rateLimited": rateLimitedCount,
-		"invalid":     invalidCount,
-		"summary":     summary,
+		"total":       counts.Total,
+		"available":   counts.Available,
+		"rateLimited": counts.RateLimited,
+		"invalid":     counts.Invalid,
+		"summary":     counts.Summary(),
 		"accounts":    accountList,
 	}
 }
