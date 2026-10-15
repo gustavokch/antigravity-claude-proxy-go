@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 
 	"antigravity-go-proxy/internal/claudecode"
@@ -142,7 +143,13 @@ func validateCustomEndpointLimits(updates map[string]any) error {
 	if !ok {
 		return nil
 	}
-	for model, raw := range endpoints {
+	models := make([]string, 0, len(endpoints))
+	for model := range endpoints {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		raw := endpoints[model]
 		ep, ok := raw.(map[string]any)
 		if !ok {
 			continue

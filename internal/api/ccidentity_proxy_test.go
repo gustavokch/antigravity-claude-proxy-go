@@ -301,21 +301,25 @@ func TestConfigPost_RejectsControlCharsInEndpointIdentity(t *testing.T) {
 func TestConfigPost_RejectsBadCustomEndpointLimits(t *testing.T) {
 	cases := []struct {
 		name  string
+		model string // the entry the error must name
 		field string // the field the error must name
 		body  string
 	}{
-		{"negative contextLength", "contextLength",
+		{"negative contextLength", "m", "contextLength",
 			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":-1}}}`},
-		{"non-numeric contextLength", "contextLength",
+		{"non-numeric contextLength", "m", "contextLength",
 			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":"big"}}}`},
-		{"non-integer maxOutputTokens", "maxOutputTokens",
+		{"non-integer maxOutputTokens", "m", "maxOutputTokens",
 			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","maxOutputTokens":1.5}}}`},
-		{"output cap at the context window", "maxOutputTokens",
+		{"output cap at the context window", "m", "maxOutputTokens",
 			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":8192,"maxOutputTokens":8192}}}`},
-		{"output cap above the context window", "maxOutputTokens",
+		{"output cap above the context window", "m", "maxOutputTokens",
 			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","contextLength":8192,"maxOutputTokens":65536}}}`},
-		{"output cap above the default context window", "maxOutputTokens",
+		{"output cap above the default context window", "m", "maxOutputTokens",
 			`{"customEndpoints":{"m":{"url":"https://example.com/v1/messages","maxOutputTokens":300000}}}`},
+		{"two invalid entries name the first in sorted order", "a-model", "contextLength",
+			`{"customEndpoints":{"z-model":{"url":"https://example.com/v1/messages","maxOutputTokens":-1},` +
+				`"a-model":{"url":"https://example.com/v1/messages","contextLength":-1}}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -324,8 +328,9 @@ func TestConfigPost_RejectsBadCustomEndpointLimits(t *testing.T) {
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), "customEndpoints.m."+tc.field) {
-				t.Errorf("error %q does not name customEndpoints.m.%s", rec.Body.String(), tc.field)
+			want := "customEndpoints." + tc.model + "." + tc.field
+			if !strings.Contains(rec.Body.String(), want) {
+				t.Errorf("error %q does not name %s", rec.Body.String(), want)
 			}
 			if _, present := config.Get().CustomEndpoints["m"]; present {
 				t.Error("the rejected endpoint was stored anyway")
