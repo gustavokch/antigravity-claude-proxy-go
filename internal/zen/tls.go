@@ -98,15 +98,16 @@ func GetTLSConfig() ZenTLSConfig {
 	return tlsCfg
 }
 
-// TLSClient returns the shared client for zen-bound requests:
-// http.DefaultClient while the TLS disguise is off, a utls-backed client
-// once it is enabled. The returned client is stable per configuration and
+// TLSClient returns the shared client for zen-bound requests: the shared plain
+// client while the TLS disguise is off, a utls-backed client once it is enabled.
+// Neither leg is http.DefaultClient, whose transport puts no bound on the wait
+// for response headers. The returned client is stable per configuration and
 // carries no timeout — streaming callers own their deadlines.
 func TLSClient() *http.Client {
 	tlsMu.Lock()
 	defer tlsMu.Unlock()
 	if !tlsCfg.Enabled {
-		return http.DefaultClient
+		return plainClient
 	}
 	if tlsClient == nil {
 		if transport := transportLocked(); transport != nil {
@@ -114,7 +115,8 @@ func TLSClient() *http.Client {
 		}
 	}
 	if tlsClient == nil {
-		return http.DefaultClient
+		// no captured hello to fingerprint: still bounded
+		return plainClient
 	}
 	return tlsClient
 }

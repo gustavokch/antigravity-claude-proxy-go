@@ -19,6 +19,10 @@ import (
 // connection open until the client disconnects.
 var upstreamTransport = transport.Upstream()
 
+// plainClient is the client for every Zen request while the disguise is off.
+// One client, one pool; no total Timeout, so open streams stay open.
+var plainClient = &http.Client{Transport: upstreamTransport}
+
 // defaultAnthropicVersion is sent when the client did not supply one.
 const defaultAnthropicVersion = "2023-06-01"
 

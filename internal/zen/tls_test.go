@@ -17,6 +17,8 @@ import (
 	"time"
 
 	utls "github.com/refraction-networking/utls"
+
+	"antigravity-go-proxy/internal/transport"
 )
 
 // spyTransport records whether the client carrying it served a request.
@@ -106,8 +108,8 @@ func TestTLSClientOffByDefault(t *testing.T) {
 	SetTLSConfig(ZenTLSConfig{})
 	t.Cleanup(func() { SetTLSConfig(ZenTLSConfig{}) })
 
-	if TLSClient() != http.DefaultClient {
-		t.Error("disabled TLSClient should be http.DefaultClient")
+	if TLSClient() != plainClient {
+		t.Error("disabled TLSClient should be the shared plain client")
 	}
 	if Transport() != nil {
 		t.Error("disabled Transport should be nil")
@@ -115,6 +117,29 @@ func TestTLSClientOffByDefault(t *testing.T) {
 	SetTLSConfig(ZenTLSConfig{Enabled: true})
 	if TLSClient() == http.DefaultClient {
 		t.Error("enabled TLSClient should not be http.DefaultClient")
+	}
+}
+
+// TestTLSClientIsAlwaysBounded: the wire path must not fall back to
+// http.DefaultClient, which puts no bound on the wait for response headers.
+// The plain transport is the one the passthrough already uses.
+func TestTLSClientIsAlwaysBounded(t *testing.T) {
+	SetTLSConfig(ZenTLSConfig{})
+	t.Cleanup(func() { SetTLSConfig(ZenTLSConfig{}) })
+
+	c := TLSClient()
+	if c == http.DefaultClient {
+		t.Fatal("disabled-disguise TLSClient is http.DefaultClient: no bound on the wait for headers")
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", c.Transport)
+	}
+	if tr.ResponseHeaderTimeout != transport.ResponseHeaderTimeout {
+		t.Errorf("ResponseHeaderTimeout = %v, want %v", tr.ResponseHeaderTimeout, transport.ResponseHeaderTimeout)
+	}
+	if c.Timeout != 0 {
+		t.Errorf("Timeout = %v: a total timeout would cut open streams", c.Timeout)
 	}
 }
 
