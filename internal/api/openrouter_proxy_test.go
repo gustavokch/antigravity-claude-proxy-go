@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,6 +207,113 @@ func TestOpenRouterForwarding_SSE(t *testing.T) {
 	bodyStr := rec.Body.String()
 	if !strings.Contains(bodyStr, "message_start") || !strings.Contains(bodyStr, "streaming text") {
 		t.Errorf("expected SSE chunks in response, got %s", bodyStr)
+	}
+}
+
+// openRouterStreamTest drives the OpenRouter gateway against a stub upstream and
+// returns what the client received plus everything the server logged.
+func openRouterStreamTest(t *testing.T, upstream http.HandlerFunc, sessionID string) (*httptest.ResponseRecorder, *bytes.Buffer) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+
+	mockOR := httptest.NewServer(upstream)
+	t.Cleanup(mockOR.Close)
+
+	if _, err := config.Save(map[string]any{
+		"openrouter": map[string]any{
+			"enabled": true,
+			"apiKey":  "sk-or-v1-secret-123",
+			"baseUrl": mockOR.URL,
+			"allowlist": []map[string]any{
+				{"id": "anthropic/claude-3.7-sonnet", "enabled": true},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("config save error: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	server, err := New(Options{
+		APIKey:  "test-proxy-key",
+		Backend: &mockCloudCodeBackend{},
+		Builder: proxyformat.NewBuilder(),
+		Now:     time.Now,
+		Logger:  slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	reqPayload := `{"model":"anthropic/claude-3.7-sonnet","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "test-proxy-key")
+	req.Header.Set("x-session-id", sessionID)
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	return rec, &logBuf
+}
+
+// TestOpenRouterForwarding_StreamBreakIsLogged covers the copy loop's blind
+// spot. The upstream flushes a real SSE body and then drops the socket without
+// the terminating chunk, so the body read ends at ErrUnexpectedEOF. The client
+// gets a short answer either way; the log is the only place the break appears.
+func TestOpenRouterForwarding_StreamBreakIsLogged(t *testing.T) {
+	rec, logBuf := openRouterStreamTest(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("upstream ResponseWriter is not a Flusher")
+			return
+		}
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_break\"}}\n\n"))
+		flusher.Flush()
+		// Close the socket under the response instead of finishing it: no
+		// terminating chunk reaches the client.
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}
+	}, "sess-or-break-1")
+
+	if !strings.Contains(rec.Body.String(), "message_start") {
+		t.Fatalf("partial stream was not forwarded to the client, got %q", rec.Body.String())
+	}
+
+	logged := logBuf.String()
+	t.Logf("emitted: %s", strings.TrimSpace(logged))
+	if !strings.Contains(logged, "stream ended before its terminal event") {
+		t.Fatalf("no stream-break warning emitted; log:\n%s", logged)
+	}
+	if !strings.Contains(logged, `"gateway":"openrouter"`) {
+		t.Errorf("stream-break warning missing the gateway; log:\n%s", logged)
+	}
+	if !strings.Contains(logged, "sess-or-break-1") {
+		t.Errorf("stream-break warning missing the session id; log:\n%s", logged)
+	}
+}
+
+// TestOpenRouterForwarding_CleanStreamIsNotLogged keeps the new line honest. A
+// stream that ends on its own is the normal case and must stay silent, or every
+// request writes a warning nobody asked for.
+func TestOpenRouterForwarding_CleanStreamIsNotLogged(t *testing.T) {
+	rec, logBuf := openRouterStreamTest(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}, "sess-or-clean-1")
+
+	if !strings.Contains(rec.Body.String(), "message_stop") {
+		t.Fatalf("stream was not forwarded intact, got %q", rec.Body.String())
+	}
+	if logged := logBuf.String(); strings.Contains(logged, "stream ended before its terminal event") {
+		t.Errorf("a clean stream logged a break; log:\n%s", logged)
 	}
 }
 

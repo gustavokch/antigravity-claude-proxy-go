@@ -103,8 +103,11 @@ func TestClaudeCodeStreamBreakIsLogged(t *testing.T) {
 
 	logged := buf.String()
 	t.Logf("emitted: %s", strings.TrimSpace(logged))
-	if !strings.Contains(logged, "claudecode stream ended before its terminal event") {
+	if !strings.Contains(logged, "stream ended before its terminal event") {
 		t.Fatalf("no stream-break warning emitted; log:\n%s", logged)
+	}
+	if !strings.Contains(logged, `"gateway":"claudecode"`) {
+		t.Errorf("stream-break warning missing the gateway; log:\n%s", logged)
 	}
 	if !strings.Contains(logged, "sess-break-1") {
 		t.Errorf("stream-break warning missing the session id; log:\n%s", logged)

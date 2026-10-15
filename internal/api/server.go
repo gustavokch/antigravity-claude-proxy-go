@@ -2694,6 +2694,26 @@ func truncate(s string, n int) string {
 	return s[:cut] + "…"
 }
 
+// logStreamBreak reports a stream that stopped before its end. Every gateway
+// copy ends the same silent way, so the client sees a short answer and the
+// operator sees nothing; this is the one place that decides how loud that is.
+// A downstream cancel is the client walking away, which is routine and logs at
+// Debug. Anything else is the upstream letting go, and that is a Warn. attrs
+// carries the caller's identity: gateway, provider or account, model, session.
+func (server *Server) logStreamBreak(request *http.Request, err error, attrs ...any) {
+	if server.logger == nil || err == nil {
+		return
+	}
+	fields := make([]any, 0, len(attrs)+2)
+	fields = append(fields, attrs...)
+	fields = append(fields, "err", err)
+	if request != nil && request.Context().Err() != nil {
+		server.logger.Debug("stream cancelled by client", fields...)
+		return
+	}
+	server.logger.Warn("stream ended before its terminal event", fields...)
+}
+
 // proxyStreamResponse streams a successful response to the client while
 // capturing usage and the served provider via SSE. It owns cancel: the attempt
 // context lives until the stream ends (headers already arrived within budget).
@@ -2731,12 +2751,25 @@ func (server *Server) proxyStreamResponse(writer http.ResponseWriter, resp *http
 	for {
 		n, err := interceptor.Read(buf)
 		if n > 0 {
-			_, _ = writer.Write(buf[:n])
+			if _, werr := writer.Write(buf[:n]); werr != nil {
+				// The upstream body is intact; the client let go. The
+				// interceptor never sees this one.
+				server.logStreamBreak(resp.Request, werr,
+					"gateway", "openrouter", "model", model, "session", sessionID)
+				return
+			}
 			if hasFlusher {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
+			// TerminalErr already treats a clean EOF as no fault, so a stream
+			// that ended on its own stays quiet.
+			attrs := []any{"gateway", "openrouter", "model", model, "session", sessionID}
+			if provider != "" {
+				attrs = append(attrs, "provider", provider)
+			}
+			server.logStreamBreak(resp.Request, interceptor.TerminalErr(), attrs...)
 			return
 		}
 	}

@@ -500,19 +500,8 @@ func (server *Server) forwardToClaudeCode(
 		writer.WriteHeader(resp.StatusCode)
 
 		if err := ccCopyStream(writer, resp.Body); err != nil {
-			// A stream that stops before message_stop looks like a short answer
-			// on the client side and like nothing at all here. A downstream
-			// cancel is the client walking away, which is routine; anything
-			// else is the upstream letting go, and that is the one worth a
-			// warning.
-			if server.logger != nil {
-				if request.Context().Err() != nil {
-					server.logger.Debug("claudecode stream cancelled by client", "account", acc.ID, "model", model, "err", err)
-				} else {
-					server.logger.Warn("claudecode stream ended before its terminal event",
-						"account", acc.ID, "model", model, "session", sessionKey, "err", err)
-				}
-			}
+			server.logStreamBreak(request, err,
+				"gateway", "claudecode", "account", acc.ID, "model", model, "session", sessionKey)
 		}
 
 		return
