@@ -673,6 +673,8 @@ never reads them, and no `max_tokens` is derived or injected. A saved
 `maxOutputTokens` at or above `contextLength` is rejected with 400, because a
 client that trusts the advertised cap would otherwise get a 400 from the
 provider.
+Advertised entries carry `supports_thinking: true`; the proxy does not probe
+the endpoint for it.
 
 ---
 
