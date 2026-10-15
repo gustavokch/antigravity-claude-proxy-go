@@ -9,9 +9,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"antigravity-go-proxy/internal/ccidentity"
+	"antigravity-go-proxy/internal/transport"
 )
 
 const (
@@ -303,12 +303,20 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// ccTransport is shared by every default Claude Code client. Management routes
+// build a Client per request, and transport.Upstream hands out a fresh pool on
+// each call, so the clone is cached here once.
+var ccTransport = transport.Upstream()
+
 // NewClient creates a new Anthropic Claude Code client.
 func NewClient(baseURL string, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = &http.Client{
-			Timeout: 5 * time.Minute, // Allow long streaming sessions
-		}
+		// No total Client.Timeout: it covers the full body read and cuts a long
+		// SSE stream mid-generation, leaving the client with a stream that ends
+		// without message_stop. The bound belongs at the response headers, which
+		// is what transport.Upstream sets; cancellation comes from the request
+		// context. Same shape as internal/cloudcode and the OpenRouter gateway.
+		httpClient = &http.Client{Transport: ccTransport}
 	}
 	return &Client{
 		baseURL:    NormalizeBaseURL(baseURL),
