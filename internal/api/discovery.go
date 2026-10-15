@@ -445,6 +445,13 @@ func appendCustomDiscovery(server *Server, cfg config.Config, models *[]any, see
 				maxOutput = defaultDiscoveryMaxOutputTokens
 			}
 		}
+		// /v1/models must never advertise a cap the endpoint cannot honor: a
+		// client that trusts it sends a max_tokens the provider rejects. The
+		// save-time check refuses this through the API; a hand-edited config.json
+		// reaches here unchecked, so the promise is kept here too.
+		if maxOutput >= contextLen {
+			maxOutput = contextLen - 1
+		}
 		*models = append(*models, map[string]any{
 			"id":                id,
 			"object":            "model",

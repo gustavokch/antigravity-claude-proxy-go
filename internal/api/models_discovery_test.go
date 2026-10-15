@@ -968,6 +968,53 @@ func TestCustomModels_EntryWithoutLimitsAdvertisesAnOutputBelowItsContext(t *tes
 	}
 }
 
+// TestCustomModels_SmallContextFallbackStaysBelowTheContext pins the case the
+// default-case test cannot see: a configured context below the discovery
+// default must not make the fallback advertise the context window itself as
+// the output cap.
+func TestCustomModels_SmallContextFallbackStaysBelowTheContext(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"small-context": {URL: "http://localhost:8080/v1/messages", ContextLen: 8192},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	entries := discoveryEntriesForID(discoveryModelsRequest(t, server), "small-context")
+	if len(entries) != 1 {
+		t.Fatalf("entries for small-context = %d, want exactly 1", len(entries))
+	}
+	maxOutput, _ := entries[0]["max_output_tokens"].(float64)
+	if maxOutput >= 8192 {
+		t.Errorf("max_output_tokens = %v, want below the 8192 context window", maxOutput)
+	}
+}
+
+// TestCustomModels_HandEditedCapAboveContextIsClamped covers the config.json
+// path, which never passes through the save-time check: a configured cap at
+// or above the context window is clamped, not advertised as is.
+func TestCustomModels_HandEditedCapAboveContextIsClamped(t *testing.T) {
+	origCfg := config.Get()
+	t.Cleanup(func() { config.SetForTest(origCfg) })
+	testCfg := origCfg
+	testCfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"overset": {URL: "http://localhost:8080/v1/messages", ContextLen: 8192, MaxOutputTokens: 65536},
+	}
+	config.SetForTest(testCfg)
+
+	server := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	entries := discoveryEntriesForID(discoveryModelsRequest(t, server), "overset")
+	if len(entries) != 1 {
+		t.Fatalf("entries for overset = %d, want exactly 1", len(entries))
+	}
+	maxOutput, _ := entries[0]["max_output_tokens"].(float64)
+	if maxOutput >= 8192 {
+		t.Errorf("max_output_tokens = %v, want clamped below the 8192 context window", maxOutput)
+	}
+}
+
 // TestCustomModels_EntryWithoutURLIsNotAdvertised pins the advertise condition:
 // an entry with an empty url routes nowhere, so it must not appear.
 func TestCustomModels_EntryWithoutURLIsNotAdvertised(t *testing.T) {
