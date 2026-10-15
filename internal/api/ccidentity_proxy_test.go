@@ -339,6 +339,21 @@ func TestConfigPost_RejectsBadCustomEndpointLimits(t *testing.T) {
 	}
 }
 
+// TestConfigPost_NamesTheBoundForOversizedCustomEndpointLimits: 99999999999
+// is a non-negative integer; what it fails is the bound. The message must
+// say which.
+func TestConfigPost_NamesTheBoundForOversizedCustomEndpointLimits(t *testing.T) {
+	srv, _, _ := newTestServerWithManager(t)
+	rec := doJSON(t, srv, http.MethodPost, "/api/config", `{"customEndpoints":{"m":{`+
+		`"url":"https://example.com/v1/messages","contextLength":99999999999}}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "2147483647") {
+		t.Errorf("error %q does not name the bound", rec.Body.String())
+	}
+}
+
 // The check must not reject the values the fields exist for.
 func TestConfigPost_AcceptsValidCustomEndpointLimits(t *testing.T) {
 	srv, _, _ := newTestServerWithManager(t)

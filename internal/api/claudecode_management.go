@@ -188,13 +188,13 @@ func optionalNonNegativeInt(section map[string]any, field, label string) (int, e
 	switch v := raw.(type) {
 	case float64:
 		if v < 0 || v != math.Trunc(v) || v > math.MaxInt32 {
-			return 0, fmt.Errorf("%s.%s: must be a non-negative integer", label, field)
+			return 0, fmt.Errorf("%s.%s: must be a non-negative integer at or below %d", label, field, int64(math.MaxInt32))
 		}
 		return int(v), nil
 	case json.Number:
 		n, err := v.Int64()
 		if err != nil || n < 0 || n > math.MaxInt32 {
-			return 0, fmt.Errorf("%s.%s: must be a non-negative integer", label, field)
+			return 0, fmt.Errorf("%s.%s: must be a non-negative integer at or below %d", label, field, int64(math.MaxInt32))
 		}
 		return int(n), nil
 	default:
