@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCapUpstreamBody(t *testing.T) {
@@ -60,4 +61,52 @@ func TestCapUpstreamBody(t *testing.T) {
 			t.Errorf("the log calls a short read a cap:\n%s", log.String())
 		}
 	})
+}
+
+// TestInstrumentedUpstreamBodyFailureIsNotAShort200 pins the invariant where it
+// is delivered, not only in the helper: a gateway that cannot read an upstream
+// unary body to the end must answer 502, and the response the gateway then
+// writes must carry the envelope with a Content-Length that matches it. The body
+// fails mid-read instead of passing the 64 MiB cap, so the test needs neither an
+// oversized payload nor a mutable cap.
+func TestInstrumentedUpstreamBodyFailureIsNotAShort200(t *testing.T) {
+	newResp := func() *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}, "Content-Length": {"7"}},
+			Body:       io.NopCloser(&ccHalfReader{payload: `{"a":1}`, err: io.ErrUnexpectedEOF}),
+		}
+	}
+	cases := []struct {
+		name    string
+		gateway string
+		run     func(*Server, *http.Response)
+	}{
+		{"zen", "zen", func(s *Server, r *http.Response) { s.zenInstrumentResponse(r, "m", "s", time.Now()) }},
+		{"kimi", "kimi", func(s *Server, r *http.Response) { s.kimiInstrumentResponse(r, "m", "s", time.Now()) }},
+		{"claudecode", "claudecode", func(s *Server, r *http.Response) { s.ccInstrumentResponse(r, ccAttempt{accountID: "acc1"}) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var log bytes.Buffer
+			s := &Server{logger: ccCaptureLog(&log)}
+			resp := newResp()
+			tc.run(s, resp)
+
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502: a truncated body must not reach the client as a 200", resp.StatusCode)
+			}
+			got, _ := io.ReadAll(resp.Body)
+			if !strings.Contains(string(got), "api_error") {
+				t.Errorf("body = %q, want an api_error envelope", got)
+			}
+			if resp.Header.Get("Content-Length") != strconv.Itoa(len(got)) || resp.ContentLength != int64(len(got)) {
+				t.Errorf("Content-Length %q / %d disagrees with body length %d",
+					resp.Header.Get("Content-Length"), resp.ContentLength, len(got))
+			}
+			if !strings.Contains(log.String(), `"gateway":"`+tc.gateway+`"`) || !strings.Contains(log.String(), "read failed") {
+				t.Errorf("log does not name the gateway and the cause:\n%s", log.String())
+			}
+		})
+	}
 }
