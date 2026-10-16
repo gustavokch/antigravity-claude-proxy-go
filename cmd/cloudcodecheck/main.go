@@ -17,6 +17,7 @@ func main() {
 	project := flag.String("project", "", "optional Cloud Code project ID")
 	timeout := flag.Duration("timeout", 30*time.Second, "request timeout")
 	details := flag.Bool("details", false, "print the successful response JSON for inspection")
+	endpoint := flag.String("endpoint", "", "optional Cloud Code endpoint override")
 	flag.Parse()
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -28,13 +29,25 @@ func main() {
 	client := cloudcode.New(cloudcode.Options{AccessToken: credentials.AccessToken, Timeout: *timeout})
 
 	var response cloudcode.Response
-	switch *operation {
-	case "models":
-		response, err = client.FetchAvailableModels(ctx, *project)
-	case "load":
-		response, err = client.LoadCodeAssist(ctx, *project)
-	default:
-		log.Fatalf("unknown operation %q", *operation)
+	if *endpoint != "" {
+		path := cloudcode.PathFetchAvailableModels
+		if *operation == "load" {
+			path = cloudcode.PathLoadCodeAssist
+		}
+		req := map[string]string{}
+		if *project != "" {
+			req["project"] = *project
+		}
+		response, err = client.DoJSON(ctx, []string{*endpoint}, path, req, cloudcode.RequestOptions{})
+	} else {
+		switch *operation {
+		case "models":
+			response, err = client.FetchAvailableModels(ctx, *project)
+		case "load":
+			response, err = client.LoadCodeAssist(ctx, *project)
+		default:
+			log.Fatalf("unknown operation %q", *operation)
+		}
 	}
 	if err != nil {
 		log.Fatal(err)

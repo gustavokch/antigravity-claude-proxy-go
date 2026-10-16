@@ -682,3 +682,41 @@ func TestIntValue_JsonNumber(t *testing.T) {
 		t.Fatalf("intValue(json.Number) = %d, want 4096", got)
 	}
 }
+func TestGemini4ArgonFormatConversion(t *testing.T) {
+	t.Parallel()
+
+	if family := GetModelFamily("gemini-4-argon"); family != FamilyGemini {
+		t.Errorf("GetModelFamily(gemini-4-argon) = %v, want %v", family, FamilyGemini)
+	}
+	if !IsThinkingModel("gemini-4-argon") {
+		t.Errorf("IsThinkingModel(gemini-4-argon) = false, want true")
+	}
+
+	request := map[string]any{
+		"model":      "gemini-4-argon-high",
+		"max_tokens": 4096,
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello argon"},
+		},
+	}
+	options := ModelOptions{
+		SupportsThinking: true,
+		ThinkingLevel:    "HIGH",
+		MaxOutputTokens:  65536,
+	}
+	got := ConvertAnthropicToGoogleWithModel(request, NewSignatureCache(), options)
+	genConfig := asMap(got["generationConfig"])
+	if genConfig == nil {
+		t.Fatal("expected generationConfig")
+	}
+	thinkingConfig := asMap(genConfig["thinkingConfig"])
+	if thinkingConfig == nil {
+		t.Fatal("expected thinkingConfig in generationConfig")
+	}
+	if thinkingConfig["includeThoughts"] != true {
+		t.Errorf("expected includeThoughts=true, got %v", thinkingConfig["includeThoughts"])
+	}
+	if thinkingConfig["thinkingLevel"] != "HIGH" {
+		t.Errorf("expected thinkingLevel=HIGH, got %v", thinkingConfig["thinkingLevel"])
+	}
+}
