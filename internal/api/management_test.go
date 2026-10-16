@@ -310,6 +310,58 @@ func TestManagement_HealthAndLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("GET /account-limits returns NA for synthesized Argon without quota", func(t *testing.T) {
+		catalog, err := modelcatalog.Parse([]byte(`{
+			"defaultAgentModelId":"gemini-3.8-flash-high",
+			"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low"]}]}],
+			"models":{
+				"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"maxTokens":1048576,"maxOutputTokens":65536},
+				"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"maxTokens":1048576,"maxOutputTokens":65536},
+				"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true,"maxTokens":1048576,"maxOutputTokens":65536}
+			}
+		}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.backend = &cachedCatalogStub{catalog: catalog}
+		req := httptest.NewRequest(http.MethodGet, "/account-limits", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var res struct {
+			Models   []string `json:"models"`
+			Accounts []struct {
+				Limits map[string]struct {
+					Remaining         string   `json:"remaining"`
+					RemainingFraction *float64 `json:"remainingFraction"`
+					ResetTime         string   `json:"resetTime"`
+				} `json:"limits"`
+			} `json:"accounts"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Accounts) == 0 {
+			t.Fatal("expected at least 1 account")
+		}
+		limits := res.Accounts[0].Limits
+		for _, model := range []string{"gemini-4-argon", "gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low"} {
+			l, ok := limits[model]
+			if !ok {
+				t.Fatalf("expected limit entry for %q, got: %v", model, limits)
+			}
+			if l.RemainingFraction != nil {
+				t.Errorf("expected nil RemainingFraction for %q, got %v", model, *l.RemainingFraction)
+			}
+			if l.Remaining != "N/A" {
+				t.Errorf("expected 'N/A' for %q, got %q", model, l.Remaining)
+			}
+		}
+	})
+
 	t.Run("GET /account-limits table", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/account-limits?format=table", nil)
 		rec := httptest.NewRecorder()

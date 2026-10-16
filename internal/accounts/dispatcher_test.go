@@ -296,6 +296,48 @@ func TestUpdateAccountQuotaPopulatesGemini38FlashFamily(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("synthesized Argon is recorded in account quota with nil fraction", func(t *testing.T) {
+		manager, err := New(Options{Accounts: []*Account{{Email: "argon@example.com", Enabled: true}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatcher, err := NewDispatcher(DispatcherOptions{
+			Manager:   manager,
+			Resolver:  stubResolver{},
+			NewClient: func(string) CloudClient { return nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		body := []byte(`{
+			"defaultAgentModelId":"gemini-3.8-flash-high",
+			"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low"]}]}],
+			"models":{
+				"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.8,"resetTime":"2026-10-16T12:00:00Z"}},
+				"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.8,"resetTime":"2026-10-16T12:00:00Z"}},
+				"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.8,"resetTime":"2026-10-16T12:00:00Z"}}
+			}
+		}`)
+
+		acc := manager.GetAllAccounts()[0]
+		dispatcher.updateAccountQuota(acc, body)
+
+		updated := manager.GetAllAccounts()[0]
+		for _, tier := range []string{"gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low"} {
+			q, ok := updated.Quota.Models[tier]
+			if !ok {
+				t.Fatalf("expected quota entry for %q, got map: %v", tier, updated.Quota.Models)
+			}
+			if q.RemainingFraction != nil {
+				t.Errorf("expected nil fraction for %q, got %v", tier, *q.RemainingFraction)
+			}
+			if q.ResetTime != "" {
+				t.Errorf("expected empty reset time for %q, got %q", tier, q.ResetTime)
+			}
+		}
+	})
 }
 
 func TestUpdateAccountQuota_FallbackNilFractionStaysUnknown(t *testing.T) {

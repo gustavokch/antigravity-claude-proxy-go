@@ -745,6 +745,28 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 			}
 
 			if !exists {
+				if catalog != nil {
+					if resolved, err := catalog.Resolve(modelId); err == nil {
+						for _, candidate := range accounts.ModelKeyCandidates(resolved.ID) {
+							if mq, ok := acc.Quota.Models[candidate]; ok {
+								q = mq
+								exists = true
+								break
+							}
+						}
+						if !exists {
+							for _, selectable := range catalog.Selectable() {
+								if strings.EqualFold(selectable.ID, resolved.ID) {
+									exists = true
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+
+			if !exists {
 				limits[modelId] = nil
 				continue
 			}

@@ -1040,11 +1040,9 @@ func (dispatcher *Dispatcher) updateAccountQuota(account *Account, body []byte) 
 
 	modelsQuota := make(map[string]ModelQuota)
 	for _, m := range catalog.Selectable() {
-		if m.QuotaRemainingFraction != nil || m.QuotaResetTime != "" {
-			modelsQuota[m.ID] = ModelQuota{
-				RemainingFraction: m.QuotaRemainingFraction,
-				ResetTime:         m.QuotaResetTime,
-			}
+		modelsQuota[m.ID] = ModelQuota{
+			RemainingFraction: m.QuotaRemainingFraction,
+			ResetTime:         m.QuotaResetTime,
 		}
 	}
 	quota := Quota{
