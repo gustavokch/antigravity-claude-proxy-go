@@ -412,3 +412,26 @@ func TestFindHTTPError(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadCodeAssistAt_UsesGivenEndpointAndLoadRequestSchema(t *testing.T) {
+	var gotPath string
+	var gotBody LoadCodeAssistRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotPath = request.URL.Path
+		_ = json.NewDecoder(request.Body).Decode(&gotBody)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
+	// Default provisioning endpoints must NOT be used.
+	client.provisioningEndpoints = []string{"http://127.0.0.1:1"}
+	if _, err := client.LoadCodeAssistAt(context.Background(), []string{server.URL}, "proj-1"); err != nil {
+		t.Fatalf("LoadCodeAssistAt error: %v", err)
+	}
+	if gotPath != PathLoadCodeAssist {
+		t.Errorf("path = %q, want %q", gotPath, PathLoadCodeAssist)
+	}
+	if gotBody.Mode != 1 || gotBody.Metadata.DuetProject != "proj-1" {
+		t.Errorf("body = %+v, want Mode=1 and DuetProject=proj-1", gotBody)
+	}
+}

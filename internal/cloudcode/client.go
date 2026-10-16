@@ -264,8 +264,13 @@ func Metadata(projectID string) ClientMetadata {
 }
 
 func (c *Client) LoadCodeAssist(ctx context.Context, projectID string) (Response, error) {
+	return c.LoadCodeAssistAt(ctx, c.provisioningEndpoints, projectID)
+}
+
+// LoadCodeAssistAt is LoadCodeAssist against an explicit endpoint list.
+func (c *Client) LoadCodeAssistAt(ctx context.Context, endpoints []string, projectID string) (Response, error) {
 	request := LoadCodeAssistRequest{Metadata: Metadata(projectID), Mode: 1}
-	return c.DoJSON(ctx, c.provisioningEndpoints, PathLoadCodeAssist, request, RequestOptions{})
+	return c.DoJSON(ctx, endpoints, PathLoadCodeAssist, request, RequestOptions{})
 }
 
 func (c *Client) OnboardUser(ctx context.Context, tierID, projectID string) (Response, error) {
@@ -274,11 +279,16 @@ func (c *Client) OnboardUser(ctx context.Context, tierID, projectID string) (Res
 }
 
 func (c *Client) FetchAvailableModels(ctx context.Context, projectID string) (Response, error) {
+	return c.FetchAvailableModelsAt(ctx, c.contentEndpoints, projectID)
+}
+
+// FetchAvailableModelsAt is FetchAvailableModels against an explicit endpoint list.
+func (c *Client) FetchAvailableModelsAt(ctx context.Context, endpoints []string, projectID string) (Response, error) {
 	request := map[string]string{}
 	if projectID != "" {
 		request["project"] = projectID
 	}
-	return c.DoJSON(ctx, c.contentEndpoints, PathFetchAvailableModels, request, RequestOptions{})
+	return c.DoJSON(ctx, endpoints, PathFetchAvailableModels, request, RequestOptions{})
 }
 
 // RetrieveUserQuotaSummary fetches the live per-bucket quota summary

@@ -1039,3 +1039,223 @@ func TestCatalog_MergeUnionsDisjointModels(t *testing.T) {
 		t.Fatalf("expected updated display name, got err=%v m=%+v", err, m)
 	}
 }
+
+func TestGemini4ArgonFamily(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low"
+		]}]}],
+		"models":{
+			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.8,"resetTime":"2026-10-16T12:00:00Z"}},
+			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.8,"resetTime":"2026-10-16T12:00:00Z"}},
+			"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.8,"resetTime":"2026-10-16T12:00:00Z"}}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// 1. Order check: Argon tiers are prepended at the front (Medium, High, Low)
+	selectable := catalog.Selectable()
+	if len(selectable) < 3 {
+		t.Fatalf("expected at least 3 selectable models, got %d", len(selectable))
+	}
+	expectedOrder := []string{"gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low"}
+	for i, wantID := range expectedOrder {
+		if selectable[i].ID != wantID {
+			t.Errorf("selectable[%d].ID = %q, want %q", i, selectable[i].ID, wantID)
+		}
+		if selectable[i].MaxTokens != 1048576 {
+			t.Errorf("selectable[%d].MaxTokens = %d, want 1048576", i, selectable[i].MaxTokens)
+		}
+		if selectable[i].MaxOutputTokens != 65536 {
+			t.Errorf("selectable[%d].MaxOutputTokens = %d, want 65536", i, selectable[i].MaxOutputTokens)
+		}
+		if !selectable[i].SupportsThinking {
+			t.Errorf("selectable[%d].SupportsThinking = false, want true", i)
+		}
+	}
+
+	// 2. DefaultID follows the upstream defaultAgentModelId, not the synthesized Argon.
+	if def := catalog.DefaultID(); def != "gemini-3.8-flash-high" {
+		t.Errorf("DefaultID() = %q, want upstream default gemini-3.8-flash-high", def)
+	}
+
+	// 3. Bare model gemini-4-argon resolves to Medium
+	mBase, err := catalog.Resolve("gemini-4-argon")
+	if err != nil {
+		t.Fatalf("Resolve(gemini-4-argon) error: %v", err)
+	}
+	if mBase.ID != "gemini-4-argon-medium" || mBase.ThinkingLevel != "MEDIUM" {
+		t.Errorf("Resolve(gemini-4-argon) = %+v, want ID=gemini-4-argon-medium level=MEDIUM", mBase)
+	}
+
+	// 4. Specific tier resolutions
+	mHigh, err := catalog.Resolve("gemini-4-argon-high")
+	if err != nil || mHigh.ID != "gemini-4-argon-high" || mHigh.ThinkingLevel != "HIGH" {
+		t.Errorf("Resolve(gemini-4-argon-high) = %+v, err=%v", mHigh, err)
+	}
+	mLow, err := catalog.Resolve("gemini-4-argon-low")
+	if err != nil || mLow.ID != "gemini-4-argon-low" || mLow.ThinkingLevel != "LOW" {
+		t.Errorf("Resolve(gemini-4-argon-low) = %+v, err=%v", mLow, err)
+	}
+
+	// 5. [1m] suffix stripping
+	mSuffixed, err := catalog.Resolve("gemini-4-argon[1m]")
+	if err != nil || mSuffixed.ID != "gemini-4-argon-medium" {
+		t.Errorf("Resolve(gemini-4-argon[1m]) = %+v, err=%v", mSuffixed, err)
+	}
+
+	// 6. ResolveWithRequest reasoning effort routing
+	reqHigh, err := catalog.ResolveWithRequest("gemini-4-argon", map[string]any{"reasoning_effort": "high"})
+	if err != nil || reqHigh.ID != "gemini-4-argon-high" {
+		t.Errorf("effort high failed: %+v, err=%v", reqHigh, err)
+	}
+	reqLow, err := catalog.ResolveWithRequest("gemini-4-argon", map[string]any{"reasoning_effort": "low"})
+	if err != nil || reqLow.ID != "gemini-4-argon-low" {
+		t.Errorf("effort low failed: %+v, err=%v", reqLow, err)
+	}
+
+	// 7. Disabled thinking clamps to low
+	reqDisabled, err := catalog.ResolveWithRequest("gemini-4-argon", map[string]any{"thinking": map[string]any{"type": "disabled"}})
+	if err != nil || reqDisabled.ID != "gemini-4-argon-low" || reqDisabled.ThinkingLevel != "LOW" || !reqDisabled.SupportsThinking {
+		t.Errorf("disabled thinking failed: %+v, err=%v", reqDisabled, err)
+	}
+
+	// 8. CleanModelIDAndName collapsing
+	for _, id := range []string{"gemini-4-argon", "gemini-4-argon-high", "gemini-4-argon-medium", "gemini-4-argon-low", "gemini-4-argon-high[1m]"} {
+		cleanID, cleanName := CleanModelIDAndName(id, id)
+		if cleanID != "gemini-4-argon" || cleanName != "Gemini 4 Argon" {
+			t.Errorf("CleanModelIDAndName(%q) = (%q, %q), want (gemini-4-argon, Gemini 4 Argon)", id, cleanID, cleanName)
+		}
+	}
+}
+
+func TestGemini4ArgonDisabledUpstreamNotResurrected(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-medium",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-4-argon-medium","gemini-3.8-flash-medium"
+		]}]}],
+		"models":{
+			"gemini-4-argon-medium":{"displayName":"Gemini 4 Argon (Medium)","disabled":true,"supportsThinking":true,"thinkingLevel":2,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// 1. Upstream disabled gemini-4-argon-medium must not be resurrected by fallback
+	if _, err := catalog.Resolve("gemini-4-argon-medium"); err == nil {
+		t.Errorf("Resolve(gemini-4-argon-medium) succeeded, want failure for disabled upstream model")
+	}
+
+	// 2. DefaultID must skip disabled gemini-4-argon-medium and return defaultAgentModelId
+	if def := catalog.DefaultID(); def != "gemini-3.8-flash-medium" {
+		t.Errorf("DefaultID() = %q, want gemini-3.8-flash-medium", def)
+	}
+
+}
+
+func TestGemini4ArgonDefaultFollowsUpstream(t *testing.T) {
+	t.Parallel()
+	body := func(defaultID string) []byte {
+		return []byte(`{
+			"defaultAgentModelId":"` + defaultID + `",
+			"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-medium"]}]}],
+			"models":{"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"maxTokens":1048576,"maxOutputTokens":65536}}
+		}`)
+	}
+	cases := []struct{ name, upstreamDefault, want string }{
+		{"upstream default wins over synthesized Argon", "gemini-3.8-flash-medium", "gemini-3.8-flash-medium"},
+		{"absent upstream default uses first selectable", "", "gemini-4-argon-medium"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, err := Parse(body(tc.upstreamDefault))
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			if got := catalog.DefaultID(); got != tc.want {
+				t.Errorf("DefaultID() = %q, want %q", got, tc.want)
+			}
+			resolved, err := catalog.Resolve("")
+			if err != nil || resolved.ID != tc.want {
+				t.Errorf("Resolve(\"\") = %+v, err=%v, want ID %q", resolved, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGemini4ArgonSynthesizedDoesNotInheritFlashFields(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high"]}]}],
+		"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","description":"flash blurb","recommended":true,"supportsThinking":true,"supportsAdaptiveThinking":true,"thinkingBudget":16000,"minThinkingBudget":1024,"maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.25,"resetTime":"2026-10-16T12:00:00Z"}}}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	m, err := catalog.Resolve("gemini-4-argon-high")
+	if err != nil {
+		t.Fatalf("Resolve error: %v", err)
+	}
+	if m.UpstreamID != "gemini-4-argon-high" || m.ThinkingLevel != "HIGH" || !m.SupportsThinking {
+		t.Errorf("identity wrong: %+v", m)
+	}
+	if m.Description != "" || m.Recommended || m.SupportsAdaptiveThinking {
+		t.Errorf("inherited Flash metadata: %+v", m)
+	}
+	if m.ThinkingBudget != 0 || m.MinThinkingBudget != 0 {
+		t.Errorf("level route carries a budget: budget=%d min=%d", m.ThinkingBudget, m.MinThinkingBudget)
+	}
+	if m.QuotaRemainingFraction != nil || m.QuotaResetTime != "" {
+		t.Errorf("inherited Flash quota: frac=%v reset=%q", m.QuotaRemainingFraction, m.QuotaResetTime)
+	}
+}
+
+func TestGemini4ArgonTieredUpstream(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-4-argon-tiered",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-4-argon-tiered"
+		]}]}],
+		"models":{
+			"gemini-4-argon-tiered":{"displayName":"Gemini 4 Argon (Tiered)","supportsThinking":true,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	for _, tier := range []struct {
+		id, level string
+	}{
+		{"gemini-4-argon-medium", "MEDIUM"},
+		{"gemini-4-argon-high", "HIGH"},
+		{"gemini-4-argon-low", "LOW"},
+	} {
+		m, err := catalog.Resolve(tier.id)
+		if err != nil {
+			t.Fatalf("Resolve(%q) err: %v", tier.id, err)
+		}
+		if m.UpstreamID != "gemini-4-argon-tiered" {
+			t.Errorf("m.UpstreamID = %q, want gemini-4-argon-tiered", m.UpstreamID)
+		}
+		if m.ThinkingLevel != tier.level {
+			t.Errorf("m.ThinkingLevel = %q, want %q", m.ThinkingLevel, tier.level)
+		}
+		if m.MaxTokens != 1048576 {
+			t.Errorf("m.MaxTokens = %d, want 1048576", m.MaxTokens)
+		}
+		if m.MaxOutputTokens != 65536 {
+			t.Errorf("m.MaxOutputTokens = %d, want 65536", m.MaxOutputTokens)
+		}
+	}
+}

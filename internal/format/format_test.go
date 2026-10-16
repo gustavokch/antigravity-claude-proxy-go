@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/cloudcode"
+	"antigravity-go-proxy/internal/modelcatalog"
 )
 
 func TestRequestConversionMatchesParityFixture(t *testing.T) {
@@ -680,5 +681,49 @@ func TestIntValue_JsonNumber(t *testing.T) {
 	num := json.Number("4096")
 	if got := intValue(num, 0); got != 4096 {
 		t.Fatalf("intValue(json.Number) = %d, want 4096", got)
+	}
+}
+
+func TestGemini4ArgonRouteSendsThinkingLevelOnly(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := modelcatalog.Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high"]}]}],
+		"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536}}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	model, err := catalog.Resolve("gemini-4-argon-high")
+	if err != nil {
+		t.Fatalf("Resolve error: %v", err)
+	}
+	if family := GetModelFamily(model.ID); family != FamilyGemini {
+		t.Fatalf("GetModelFamily(%s) = %v, want %v", model.ID, family, FamilyGemini)
+	}
+
+	request := map[string]any{
+		"model":      model.ID,
+		"max_tokens": 4096,
+		"messages":   []any{map[string]any{"role": "user", "content": "hello argon"}},
+	}
+	got := ConvertAnthropicToGoogleWithModel(request, NewSignatureCache(), ModelOptions{
+		SupportsThinking: model.SupportsThinking, ThinkingBudget: model.ThinkingBudget,
+		MinThinkingBudget: model.MinThinkingBudget, MaxOutputTokens: model.MaxOutputTokens,
+		ThinkingLevel: model.ThinkingLevel,
+	})
+	thinkingConfig := asMap(asMap(got["generationConfig"])["thinkingConfig"])
+	if thinkingConfig == nil {
+		t.Fatal("expected thinkingConfig in generationConfig")
+	}
+	if thinkingConfig["includeThoughts"] != true {
+		t.Errorf("includeThoughts = %v, want true", thinkingConfig["includeThoughts"])
+	}
+	if thinkingConfig["thinkingLevel"] != "HIGH" {
+		t.Errorf("thinkingLevel = %v, want HIGH", thinkingConfig["thinkingLevel"])
+	}
+	if _, hasBudget := thinkingConfig["thinkingBudget"]; hasBudget {
+		t.Errorf("level route also sent thinkingBudget: %v", thinkingConfig)
 	}
 }

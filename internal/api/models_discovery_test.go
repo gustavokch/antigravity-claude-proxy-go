@@ -380,6 +380,54 @@ func TestModels_AdvertiseTheOutputLimitTheConverterSends(t *testing.T) {
 	}
 }
 
+func TestGemini4ArgonDiscovery(t *testing.T) {
+	server := &Server{
+		backend: &geminiDiscoveryTestBackend{},
+		logger:  slog.Default(),
+		now:     time.Now,
+	}
+
+	rec := httptest.NewRecorder()
+	server.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("returned status %d, expected 200", rec.Code)
+	}
+
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	var argonModel map[string]any
+	for _, m := range resp.Data {
+		if id, _ := m["id"].(string); id == "gemini-4-argon" {
+			argonModel = m
+			break
+		}
+	}
+
+	if argonModel == nil {
+		t.Fatalf("gemini-4-argon not found in /v1/models data: %v", resp.Data)
+	}
+	if dn, _ := argonModel["display_name"].(string); dn != "Gemini 4 Argon" {
+		t.Errorf("display_name = %q, want %q", dn, "Gemini 4 Argon")
+	}
+	if ob, _ := argonModel["owned_by"].(string); ob != "google" {
+		t.Errorf("owned_by = %q, want %q", ob, "google")
+	}
+	if cw, _ := argonModel["context_window"].(float64); cw != 1048576 {
+		t.Errorf("context_window = %v, want 1048576", cw)
+	}
+	if mo, _ := argonModel["max_output_tokens"].(float64); mo != 65536 {
+		t.Errorf("max_output_tokens = %v, want 65536", mo)
+	}
+	if st, _ := argonModel["supports_thinking"].(bool); !st {
+		t.Errorf("supports_thinking = %v, want true", st)
+	}
+}
+
 // withOpenRouterCatalog swaps the package-global OpenRouter catalog cache for
 // the duration of one test and restores the previous contents afterwards.
 //
