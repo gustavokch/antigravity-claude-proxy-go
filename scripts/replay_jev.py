@@ -20,6 +20,8 @@ Usage:
     python3 scripts/corpus_to_laya.py ~/.config/antigravity-proxy/corpus/classifier-*.jsonl -o /tmp/train.jsonl
     python3 scripts/replay_jev.py /tmp/train.jsonl
     python3 scripts/replay_jev.py /tmp/train.jsonl --floor 0.8 --fail-on-missed
+    # the policy the built-in Stage 1 route applies (config.DefaultJevBackend):
+    python3 scripts/replay_jev.py /tmp/train.jsonl --escalate C --escalate D --floor 0.5 --fail-on-missed
 
 The key comes from zen.apiKey in the proxy's config.json (in
 $ANTIGRAVITY_CONFIG_DIR or $CONFIG_DIR when either is set, else
@@ -151,7 +153,7 @@ def stands(answer, floor, escalate=ESCALATE):
     return answer.label not in escalate and not (floor > 0 and answer.confidence < floor)
 
 
-def summarize(results, floors=FLOORS, oversize=0):
+def summarize(results, floors=FLOORS, oversize=0, escalate=ESCALATE):
     """results: dicts with teacher, label, confidence, action, one per row sent.
 
     oversize counts the rows the proxy would hand to the teacher unsent.
@@ -163,7 +165,7 @@ def summarize(results, floors=FLOORS, oversize=0):
     agree = sum(matrix[label][label] for label in LABELS)
     sweep = []
     for floor in floors:
-        standing = [r for r in results if stands(Answer(r["label"], r["confidence"], 0), floor)]
+        standing = [r for r in results if stands(Answer(r["label"], r["confidence"], 0), floor, escalate)]
         missed = [r for r in standing if r["teacher"] == REFUSAL]
         sweep.append({
             "floor": floor,
@@ -217,11 +219,13 @@ def main(argv=None):
     parser.add_argument("--model", default=MODEL, help="model to request (default: %(default)s)")
     parser.add_argument("--state-chars", type=int, default=STATE_CHARS, help="layaStateChars of the backend; a longer action goes to the teacher unsent (default: %(default)s)")
     parser.add_argument("--floor", type=float, default=0.0, help="layaMinConfidence to judge --fail-on-missed at (default: %(default)s)")
+    parser.add_argument("--escalate", action="append", choices=LABELS, help="a label the backend hands to the teacher; repeat per label (default: D, the layaEscalateLabels default). The built-in variant route uses C and D with --floor 0.5")
     parser.add_argument("--limit", type=int, default=0, help="replay only the first N rows (0 = all)")
     parser.add_argument("--delay", type=float, default=0.1, help="seconds between calls (default: %(default)s)")
     parser.add_argument("--timeout", type=float, default=30, help="per-call timeout seconds (default: %(default)s)")
     parser.add_argument("--fail-on-missed", action="store_true", help="exit 2 if a teacher refusal stands at --floor or any call failed")
     args = parser.parse_args(argv)
+    escalate = tuple(args.escalate) if args.escalate else ESCALATE
 
     key = resolve_key()
     if not key:
@@ -258,9 +262,9 @@ def main(argv=None):
         })
         time.sleep(args.delay)
 
-    summary = summarize(results, oversize=len(oversize))
+    summary = summarize(results, oversize=len(oversize), escalate=escalate)
     print(format_report(summary, errors, latencies))
-    at_floor = summarize(results, floors=(args.floor,))["sweep"][0]["missed"]
+    at_floor = summarize(results, floors=(args.floor,), escalate=escalate)["sweep"][0]["missed"]
     for result in at_floor[:10]:
         print(f"MISSED at floor {args.floor}: teacher {REFUSAL}, jev {result['label']} ({result['confidence']:.2f}): {result['action'][:120]!r}")
     if args.fail_on_missed:

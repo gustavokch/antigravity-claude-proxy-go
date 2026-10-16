@@ -17,6 +17,7 @@ from pathlib import Path
 
 import corpus_to_laya
 import replay_jev
+import replay_jev_block
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_GO = REPO_ROOT / "internal" / "config" / "config.go"
@@ -90,3 +91,25 @@ def test_replay_defaults_follow_the_go_defaults():
     assert replay_jev.QUESTION == go_const("DefaultLayaQuestionName")
     assert replay_jev.STATE_CHARS == go_const("DefaultLayaStateChars")
     assert replay_jev.ESCALATE == go_escalate_labels()
+
+def go_float_const(name):
+    """A float constant out of config.go."""
+    source = CONFIG_GO.read_text(encoding="utf-8")
+    match = re.search(rf"\b{name}\s*=\s*(\d+\.\d+)", source)
+    assert match, f"{name} not found in config.go"
+    return float(match.group(1))
+
+def go_jev_block_criteria():
+    """defaultJevBlockCriteria out of config.go as an {option: text} dict."""
+    source = CONFIG_GO.read_text(encoding="utf-8")
+    block = re.search(r"var defaultJevBlockCriteria = map\[string\]string\{(.*?)\n\}", source, re.S)
+    assert block, "defaultJevBlockCriteria map not found in config.go"
+    return dict(re.findall(r'"(true|false)":\s*"([^"]+)"', block.group(1)))
+
+def test_replay_block_defaults_follow_the_go_defaults():
+    """replay_jev_block.py must ask what the built-in block route asks; a
+    drifted question or threshold would measure a request the proxy never makes."""
+    assert replay_jev_block.QUESTION == go_const("DefaultJevBlockQuestionName")
+    assert replay_jev_block.INSTRUCTIONS == go_const("DefaultJevBlockInstructions")
+    assert replay_jev_block.THRESHOLD == go_float_const("DefaultJevBlockThreshold")
+    assert replay_jev_block.CRITERIA == go_jev_block_criteria()
