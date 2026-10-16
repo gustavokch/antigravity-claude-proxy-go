@@ -4356,6 +4356,12 @@
             <!-- Tab 5: Security Monitor (Classifier) Configuration -->
             <div x-show="$store.global.settingsTab === 'classifier'" x-data="classifierConfig"
                 class="space-y-6 animate-fade-in pb-10">
+                <style>
+                    .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+                    @media (min-width: 768px) {
+                        .md\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+                    }
+                </style>
 
                 <!-- Header & Master Toggle Card -->
                 <div class="card bg-space-900/30 border border-neon-cyan/40 p-6 space-y-5">
