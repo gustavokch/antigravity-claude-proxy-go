@@ -139,6 +139,9 @@ var classifierKeys = []string{
 	"classifierLayaEscalateNone", "classifierLayaEscalateCustom",
 	"classifierLayaEscalateOff", "classifierLayaEscalateHint",
 	"classifierLayaMinConfidence", "classifierLayaMinConfidenceHint",
+	"classifierVariantBackend", "classifierVariantBackendDefault",
+	"classifierVariantBackendOff", "classifierVariantBackendHint",
+	"classifierJevBlockThreshold", "classifierJevBlockThresholdHint",
 }
 
 // claudeCodeIdentityKeys are the i18n keys referenced by the Claude Code

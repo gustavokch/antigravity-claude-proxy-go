@@ -4507,7 +4507,7 @@
                                     </div>
                                     <span class="font-mono text-[10px] text-gray-500">stage1-severity</span>
                                 </div>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                                     <div class="form-control">
                                         <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierMaxTokens')">Max Tokens</label>
                                         <input type="number" min="0"
@@ -4521,6 +4521,18 @@
                                             x-model="config.variants['stage1-severity'].cannedVerdict"
                                             class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
                                             placeholder="<severity>0</severity> (Leave blank to use default)">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierVariantBackend')">Answer from backend</label>
+                                        <select class="select select-sm select-bordered bg-space-800 border-space-border text-white text-xs w-full"
+                                            @change="config.variants['stage1-severity'].targetBackend = $event.target.value">
+                                            <option value="" :selected="!config.variants['stage1-severity'].targetBackend" x-text="$store.global.t('classifierVariantBackendDefault')"></option>
+                                            <option value="off" :selected="config.variants['stage1-severity'].targetBackend === 'off'" x-text="$store.global.t('classifierVariantBackendOff')"></option>
+                                            <template x-for="name in backendNames" :key="name">
+                                                <option :value="name" :selected="config.variants['stage1-severity'].targetBackend === name" x-text="name"></option>
+                                            </template>
+                                        </select>
+                                        <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierVariantBackendHint')"></span>
                                     </div>
                                 </div>
                             </div>
@@ -4568,7 +4580,7 @@
                                     </div>
                                     <span class="font-mono text-[10px] text-gray-500">block-prefilter</span>
                                 </div>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                                     <div class="form-control">
                                         <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierTargetModel')">Target Model</label>
                                         <input type="text"
@@ -4581,7 +4593,19 @@
                                         <input type="text"
                                             x-model="config.variants['block-prefilter'].cannedVerdict"
                                             class="input input-sm input-bordered bg-space-800 border-space-border text-white font-mono text-xs w-full focus:border-neon-cyan"
-                                            placeholder="e.g. <block>false</block> (No default; blank disables stubbing)">
+                                            placeholder="e.g. <block>no</block> (No default; blank disables stubbing)">
+                                    </div>
+                                    <div class="form-control">
+                                        <label class="label pt-0 pb-1 text-xs text-gray-400 font-semibold" x-text="$store.global.t('classifierVariantBackend')">Answer from backend</label>
+                                        <select class="select select-sm select-bordered bg-space-800 border-space-border text-white text-xs w-full"
+                                            @change="config.variants['block-prefilter'].targetBackend = $event.target.value">
+                                            <option value="" :selected="!config.variants['block-prefilter'].targetBackend" x-text="$store.global.t('classifierVariantBackendDefault')"></option>
+                                            <option value="off" :selected="config.variants['block-prefilter'].targetBackend === 'off'" x-text="$store.global.t('classifierVariantBackendOff')"></option>
+                                            <template x-for="name in backendNames" :key="name">
+                                                <option :value="name" :selected="config.variants['block-prefilter'].targetBackend === name" x-text="name"></option>
+                                            </template>
+                                        </select>
+                                        <span class="text-[10px] text-gray-500 mt-1" x-text="$store.global.t('classifierVariantBackendHint')"></span>
                                     </div>
                                 </div>
                             </div>
@@ -4706,6 +4730,15 @@
                                                     x-model.number="config.backends[key].layaMinConfidence">
                                             </label>
                                             <p class="text-xs text-gray-500 leading-relaxed" x-text="$store.global.t(config.backends[key].format === 'jev' ? 'classifierJevMinConfidenceHint' : 'classifierLayaMinConfidenceHint')"></p>
+                                        </div>
+                                        <div class="space-y-1" x-show="config.backends[key].format === 'jev'">
+                                            <label class="text-xs text-gray-400 block">
+                                                <span x-text="$store.global.t('classifierJevBlockThreshold')"></span>
+                                                <input type="number" min="0" max="1" step="0.05" placeholder="0.10"
+                                                    class="input input-xs w-full bg-space-800"
+                                                    x-model.number="config.backends[key].jevBlockThreshold">
+                                            </label>
+                                            <p class="text-xs text-gray-500 leading-relaxed" x-text="$store.global.t('classifierJevBlockThresholdHint')"></p>
                                         </div>
                                     </div>
                                 </div>

@@ -17,9 +17,9 @@ window.Components.classifierConfig = () => ({
         defaultVerdict: '<severity>0</severity>',
         defaultThinking: 'Routine action, no policy match.',
         variants: {
-            'stage1-severity': { maxTokens: 64, cannedVerdict: '' },
+            'stage1-severity': { maxTokens: 64, cannedVerdict: '', targetBackend: '' },
             'stage2-severity': { maxTokens: 8192, thinkingText: '', cannedVerdict: '' },
-            'block-prefilter': { targetModel: '', cannedVerdict: '' }
+            'block-prefilter': { targetModel: '', cannedVerdict: '', targetBackend: '' }
         },
         rules: [],
         backends: {},
