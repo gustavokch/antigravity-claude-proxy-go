@@ -24,13 +24,10 @@ earlier ground-truth analysis):
   claude-sonnet-5-5-medium   Claude Sonnet 5.5 (Medium)
   claude-sonnet-5-5-high     Claude Sonnet 5.5 (High)
   gpt-oss-120b-medium        GPT-OSS 120B (Medium)
+
 Supersedes the 2026-09-03 capture (agy 1.1.25, Claude 4.6 era models).
 
 Important routing facts (2026-10-11):
-- Gemini 4 Argon family added (gemini-4-argon-medium, gemini-4-argon-high, gemini-4-argon-low):
-  agy 1.3.3 defaults to Gemini 4 Argon (Medium). Context window is 1,048,576 tokens;
-  max output tokens is 65,536 tokens. Upstream thinkingLevel: 1 (Low), 2 (Medium), 3 (High).
-
 - Upstream `FetchAvailableModels` now defaults to Claude 5.5 tiers:
   `claude-opus-5-5-{low,medium,high}` and `claude-sonnet-5-5-{low,medium,high}`.
   Claude 5.5 models support 1,000,000 max context tokens and 128,000 max output tokens.
@@ -47,3 +44,7 @@ Important routing facts (2026-10-11):
   account's own routing aliases before superseded routes are consulted.
 - `gpt-oss-120b-medium` carries deprecation notice: scheduled for removal on
   November 2, 2026.
+- (2026-10-16) Gemini 4 Argon family added (gemini-4-argon-medium, gemini-4-argon-high, gemini-4-argon-low):
+  agy 1.3.3 defaults to Gemini 4 Argon (Medium). Context window is 1,048,576 tokens;
+  max output tokens is 65,536 tokens. Upstream thinkingLevel: 1 (Low), 2 (Medium), 3 (High).
+  FetchAvailableModels does not list Argon; the proxy synthesizes the tiers from Gemini 3.8 Flash (see applyGemini4Argon).

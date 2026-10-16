@@ -379,6 +379,7 @@ func TestModels_AdvertiseTheOutputLimitTheConverterSends(t *testing.T) {
 		}
 	}
 }
+
 func TestGemini4ArgonDiscovery(t *testing.T) {
 	server := &Server{
 		backend: &geminiDiscoveryTestBackend{},
