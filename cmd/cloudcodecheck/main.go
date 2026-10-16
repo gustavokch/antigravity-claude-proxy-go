@@ -29,25 +29,26 @@ func main() {
 	client := cloudcode.New(cloudcode.Options{AccessToken: credentials.AccessToken, Timeout: *timeout})
 
 	var response cloudcode.Response
-	if *endpoint != "" {
-		path := cloudcode.PathFetchAvailableModels
-		if *operation == "load" {
-			path = cloudcode.PathLoadCodeAssist
-		}
-		req := map[string]string{}
-		if *project != "" {
-			req["project"] = *project
-		}
-		response, err = client.DoJSON(ctx, []string{*endpoint}, path, req, cloudcode.RequestOptions{})
-	} else {
-		switch *operation {
-		case "models":
+	switch *operation {
+	case "models":
+		if *endpoint != "" {
+			req := map[string]string{}
+			if *project != "" {
+				req["project"] = *project
+			}
+			response, err = client.DoJSON(ctx, []string{*endpoint}, cloudcode.PathFetchAvailableModels, req, cloudcode.RequestOptions{})
+		} else {
 			response, err = client.FetchAvailableModels(ctx, *project)
-		case "load":
-			response, err = client.LoadCodeAssist(ctx, *project)
-		default:
-			log.Fatalf("unknown operation %q", *operation)
 		}
+	case "load":
+		if *endpoint != "" {
+			req := cloudcode.LoadCodeAssistRequest{Metadata: cloudcode.Metadata(*project), Mode: 1}
+			response, err = client.DoJSON(ctx, []string{*endpoint}, cloudcode.PathLoadCodeAssist, req, cloudcode.RequestOptions{})
+		} else {
+			response, err = client.LoadCodeAssist(ctx, *project)
+		}
+	default:
+		log.Fatalf("unknown operation %q", *operation)
 	}
 	if err != nil {
 		log.Fatal(err)
