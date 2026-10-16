@@ -503,3 +503,31 @@ func TestConfigSaveRejectsAnUnknownBackendFormat(t *testing.T) {
 		t.Fatalf("status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestConfigSaveValidatesVariantTargetBackend(t *testing.T) {
+	const backends = `"backends":{"mine":{"name":"mine","url":"https://opencode.ai/zen/v1/systemone","format":"jev"}}`
+	cases := []struct {
+		name     string
+		blob     string
+		wantCode int
+		want     string
+	}{
+		{name: "a configured backend", blob: `{` + backends + `,"variants":{"stage1-severity":{"targetBackend":"mine"}}}`, wantCode: http.StatusOK},
+		{name: "off needs no backend", blob: `{"variants":{"block-prefilter":{"targetBackend":"off"}}}`, wantCode: http.StatusOK},
+		{name: "an unknown backend", blob: `{` + backends + `,"variants":{"stage1-severity":{"targetBackend":"ghost"}}}`, wantCode: http.StatusBadRequest, want: "ghost"},
+		{name: "stage 2 cannot route", blob: `{` + backends + `,"variants":{"stage2-severity":{"targetBackend":"mine"}}}`, wantCode: http.StatusBadRequest, want: "stage2-severity"},
+		{name: "a threshold above 1", blob: `{"backends":{"mine":{"name":"mine","url":"https://opencode.ai/zen/v1/systemone","format":"jev","jevBlockThreshold":1.5}}}`, wantCode: http.StatusBadRequest, want: "jevBlockThreshold"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			srv, _, _ := newTestServerWithManager(t)
+			recorder := postConfigRules(t, srv, testCase.blob)
+			if recorder.Code != testCase.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", recorder.Code, testCase.wantCode, recorder.Body.String())
+			}
+			if testCase.want != "" && !strings.Contains(recorder.Body.String(), testCase.want) {
+				t.Errorf("body = %s, want it to name %q", recorder.Body.String(), testCase.want)
+			}
+		})
+	}
+}

@@ -1467,6 +1467,18 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 				writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier variant %q temperature must be between 0.0 and 2.0", variantKey)})
 				return
 			}
+			if name := variant.TargetBackend; name != "" {
+				// Stage 2 needs user intent and <thinking>, which no typed-decision
+				// backend produces, so a value there would silently do nothing.
+				if variantKey != "stage1-severity" && variantKey != "block-prefilter" {
+					writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier variant %q cannot set targetBackend: only stage1-severity and block-prefilter route to a backend", variantKey)})
+					return
+				}
+				if _, exists := classifierReq.Backends[name]; name != config.VariantBackendOff && !exists {
+					writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": fmt.Sprintf("classifier variant %q targets unknown backend %q", variantKey, name)})
+					return
+				}
+			}
 		}
 
 		capture := classifierReq.Capture
