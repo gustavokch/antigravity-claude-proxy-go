@@ -489,6 +489,8 @@ that match a captured classifier fingerprint (see
 never stubbed or fast-failed by this flag, regardless of capacity. Every stub
 and fast-fail is logged at warning level with the detected variant and model.
 
+**Hosted Jev for Stage 1 and block-prefilter.** With `classifier.enabled`, `zen.enabled` and a Zen key, Stage 1 and block-prefilter classifier calls are answered by Zen's `jev-1.13-free` before any model or account is consulted. Jev answers a Stage 1 call as an allow, or a block-prefilter call as `<block>no</block>`, when it is confident the action is routine. Anything it declines goes to the teacher. Each graded action is sent to Zen and on to TypeSafe; set `classifier.variants.<kind>.targetBackend` to `"off"` to stop that. See `docs/classifier-rules.md`, Default routing.
+
 ---
 
 ## OpenRouter Gateway & Model Discovery

@@ -94,9 +94,7 @@ handling. No guess is ever returned.
 - Non-200 response.
 - Response has no answer for the configured question name.
 - Answer label not present in the severity map.
-- Request kind is `block-prefilter` or `none`: the adapter answers Stage 1 and
-  Stage 2 severity requests only, because the block-prefilter response format
-  has never been captured and must not be guessed.
+- Request kind is `block-prefilter` or `none`: a Laya backend answers Stage 1 severity requests only. Its checkpoints score near chance on typed decisions and are not offered the block verdict. A `jev` backend answers block-prefilter; see `docs/classifier-rules.md`.
 
 ## Verifying a deployment
 
@@ -151,8 +149,7 @@ real run. A backend that overrides `layaQuestionName`, `layaInstructions`, or
 
 ## Current limits
 
-- **Stage 1 and Stage 2 severity requests only.** Block-prefilter and
-  non-classifier requests fall through.
+- **Stage 1 severity requests only.** Stage 2, block-prefilter and non-classifier requests fall through.
 - **No blocking by default.** The verdict is a locally computed, plausible
   allow until a fine-tuned checkpoint and a measured agreement rate exist.
 - **Action-only state.** Context and conversation history are not sent;

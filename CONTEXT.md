@@ -146,6 +146,10 @@ _Avoid_: Filter, classifier hook, security policy.
 A named external destination endpoint (`anthropic`, `openai`, `laya` or `jev` wire format) to which matched classifier requests are rerouted with format translation and optional synthetic streaming.
 _Avoid_: Fallback host, reroute target, classifier upstream.
 
+**Variant Backend**:
+The backend a classifier variant (`stage1-severity` or `block-prefilter`) is answered from before `targetModel`, a canned verdict or the teacher is consulted. Unset means the built-in Zen Jev backend; `off` disables it; a name selects a configured Target Backend. `stage2-severity` has none.
+_Avoid_: Default rule, variant rule, classifier route.
+
 **Audit Event**:
 A recorded decision entry (`rerouted`, `stubbed`, `passthrough`, or `error`) emitted by the classifier subsystem with a monotonic sequence identifier for live UI feed consumption.
 _Avoid_: Classifier log, monitor trace, interception metric.

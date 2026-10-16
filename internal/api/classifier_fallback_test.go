@@ -549,7 +549,7 @@ func TestClassifierBlockPrefilterCustomVerdict(t *testing.T) {
 	cfg.Classifier.Action = config.ActionFallbackOnExhaustion
 	cfg.Classifier.Variants = map[string]config.ClassifierVariantConfig{
 		"block-prefilter": {
-			CannedVerdict: "<block>false</block>",
+			CannedVerdict: "<block>no</block>",
 		},
 	}
 	config.SetForTest(cfg)
@@ -570,8 +570,8 @@ func TestClassifierBlockPrefilterCustomVerdict(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &stub); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if len(stub.Content) != 1 || stub.Content[0].Text != "<block>false</block>" {
-		t.Fatalf("stub content = %+v, want <block>false</block>", stub.Content)
+	if len(stub.Content) != 1 || stub.Content[0].Text != "<block>no</block>" {
+		t.Fatalf("stub content = %+v, want <block>no</block>", stub.Content)
 	}
 }
 

@@ -280,7 +280,7 @@ func TestBuildStubCustomTemplates(t *testing.T) {
 	}
 
 	// Custom template on BlockPrefilter enables stubbing
-	data, err = BuildStub(KindBlockPrefilter, "custom-model", "<block>false</block>", "")
+	data, err = BuildStub(KindBlockPrefilter, "custom-model", "<block>no</block>", "")
 	if err != nil {
 		t.Fatalf("unexpected error for block-prefilter with custom verdict: %v", err)
 	}

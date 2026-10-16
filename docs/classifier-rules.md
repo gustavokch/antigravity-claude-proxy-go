@@ -78,7 +78,7 @@ Configured under the `classifier` block in `~/.config/antigravity-proxy/config.j
 
 ## Supported Actions
 
-- `reroute`: Forwards the request to the named `targetBackend`. Translates request and response formats between Anthropic and OpenAI if the backend specifies `"format": "openai"`. Synthesizes SSE event streams if the client requested `stream: true`. A backend with `"format": "laya"` or `"format": "jev"` answers a Stage 1 request with a typed decision instead; see [Laya Backend](#laya-backend) and [Jev Backend](#jev-backend).
+- `reroute`: Forwards the request to the named `targetBackend`. Translates request and response formats between Anthropic and OpenAI if the backend specifies `"format": "openai"`. Synthesizes SSE event streams if the client requested `stream: true`. A backend with `"format": "laya"` or `"format": "jev"` answers a Stage 1 request with a typed decision instead, and a `jev` backend also answers a block-prefilter request; see [Laya Backend](#laya-backend), [Jev Backend](#jev-backend) and [Default routing](#default-routing-for-stage-1-and-block-prefilter).
 - `stub`: Immediately responds with a synthetic 200 OK containing `verdictTemplate`.
 - `passthrough`: Passes the request through unmodified to the original upstream model and explicitly bypasses the built-in `classifier.Detect` handling.
 
@@ -194,7 +194,7 @@ The adapter escalates a request when laya is not the right judge for it. Escalat
 
 With the default clamp every Laya answer is an allow, so an escalation only turns a Laya allow into a teacher call and never weakens a verdict. An operator who lets a label block (see above) and also escalates that label hands the block to the teacher instead. It costs one laya call on top of the teacher call. With capture enabled, an escalated request is recorded by the path that answered it, never as `laya`. Under a teacher it becomes a labelled training row, which aims collection at exactly the actions laya found risky.
 
-If laya-serve is unreachable, times out, returns a non-200 status or a response with no answer for the question, or answers with a label the severity map does not contain, the reroute fails. The request falls through the same way, and the audit event is `error`. A block-prefilter request fails the same way, because its response format has never been captured.
+If laya-serve is unreachable, times out, returns a non-200 status or a response with no answer for the question, or answers with a label the severity map does not contain, the reroute fails. The request falls through the same way, and the audit event is `error`. A block-prefilter request fails the same way for a Laya backend: a Laya checkpoint scores near chance on typed decisions and is not offered the block verdict. A Jev backend answers it; see [Jev Backend](#jev-backend).
 
 ### Checking a live laya-serve
 
@@ -218,7 +218,7 @@ A row with `source: "laya"` proves the request was rerouted, the label was mappe
 
 ## Jev Backend
 
-A Jev backend answers low-risk Stage 1 requests with Jev, TypeSafe's hosted System One model, through OpenCode Zen's `POST /zen/v1/systemone`. It is the Laya adapter pointed at a hosted model: the same question, severity map, escalation and clamp. The credential, the model and the field the confidence floor reads differ. The backend calls Zen directly; it does not go through the proxy's own `POST /v1/systemone` route.
+A Jev backend answers low-risk Stage 1 requests, and block-prefilter requests it scores as clearly benign, with Jev, TypeSafe's hosted System One model, through OpenCode Zen's `POST /zen/v1/systemone`. It is the Laya adapter pointed at a hosted model: the same question, severity map, escalation and clamp. The credential, the model and the field the confidence floor reads differ. The backend calls Zen directly; it does not go through the proxy's own `POST /v1/systemone` route.
 
 > **Keep a Jev rule disabled until you have replayed it.** An answer that is not escalated stands in for the teacher's, and a low Stage 1 grade ends the check. Jev's own documentation says it reads instructions literally, loses accuracy on large or irrelevant state, and can be steered by adversarial text in the state, and the action it grades is written by the agent being monitored. [Replaying the corpus](#replaying-a-corpus-before-enabling-jev) is how you find out how many refusals it lets through.
 
@@ -252,10 +252,54 @@ A Jev backend answers low-risk Stage 1 requests with Jev, TypeSafe's hosted Syst
 - **Identity.** Requests carry the OpenCode harness headers and use the same HTTP client as every other Zen-bound request, so the `zen.harness` settings (version, client, TLS disguise) apply. On 2026-09-30 the free-tier gate did not reject this endpoint: a plain request with no harness headers got a 200.
 - **Confidence floor.** `layaMinConfidence` compares Jev's `confidence` field: 1 is certain and 0 is a uniform spread over the options. TypeSafe treats values below 0.5 as unsure. A Laya backend compares `answer_confidence` instead.
 - **Shared settings.** `layaQuestionName`, `layaInstructions`, `layaCriteria`, `layaSeverityMap`, `layaMaxSeverity`, `layaEscalateLabels` and `layaMinConfidence` mean the same on a Jev backend, and `layaMaxSeverity` still defaults to 49, so a Jev verdict cannot block. `layaStateChars` is the longest action a Jev backend grades, not a truncation point: the state holds the action alone, so a left cut would drop the start of the command, and a command padded past the limit would reach Jev as padding. A longer action escalates to the teacher whole. Jev is not fine-tuned on customer data, so the fine-tune pipeline above does not apply to it; tune the instructions and criteria instead, and replay again after any change.
-- **Scope.** Only Stage 1 requests are sent to Jev, and only when the action fits in `layaStateChars` (1200 characters by default). Stage 2 and an over-long action escalate before any call, and a block-prefilter request fails the reroute; Stage 2 and block-prefilter behave exactly as for Laya. All three fall through to the built-in handling, as does every escalated or failed Jev answer. That handling reaches the teacher only under `classifier.action` `fallback_on_exhaustion`, `reroute_only` or `passthrough`; under `always_stub` it answers with the canned allow, so an escalation then stops nothing. Use one of the other three while a Jev rule is enabled.
+- **Scope.** Only Stage 1 requests are sent to Jev, and only when the action fits in `layaStateChars` (1200 characters by default). Stage 2 and an over-long action escalate before any call. A block-prefilter request is sent as a yes/no question and answered only as `<block>no</block>` below `jevBlockThreshold`; see [Default routing](#default-routing-for-stage-1-and-block-prefilter). All of these fall through to the built-in handling, as does every escalated or failed Jev answer. That handling reaches the teacher only under `classifier.action` `fallback_on_exhaustion`, `reroute_only` or `passthrough`; under `always_stub` it answers with the canned allow, so an escalation then stops nothing. Use one of the other three while a Jev rule is enabled.
 - **Capture.** Rows Jev answered have `source: "jev"`. While Jev answers, the corpus gains fewer teacher labels, so keep a passthrough collection window if you still train on it.
 - **Data.** Each graded action is sent to Zen and on to TypeSafe. Zen states that Jev inputs are not used for training and are retained under TypeSafe's privacy policy.
 - **Limits.** Zen's Jev rate limit was 40 requests per second and 100K tokens per second, and TypeSafe says it adjusts dynamically. A `429` fails the reroute and falls through.
+
+### Default routing for Stage 1 and block-prefilter
+
+With `classifier.enabled` on, `zen.enabled` true and a Zen key set, the proxy answers `stage1-severity` and `block-prefilter` requests from Zen's `jev-1.13-free` before it considers `targetModel`, a canned verdict or the teacher. It needs no rule and no backend. Operator rules still run first: when a rule matched, its backend has had its turn and the built-in route does not call Zen again.
+
+`classifier.variants.<kind>.targetBackend` controls it:
+
+| Value | Effect |
+|---|---|
+| unset or `""` | the built-in Jev backend (below) |
+| `"off"` | skip backend routing for this variant; `targetModel`, canned verdict and the teacher apply as before |
+| a key of `classifier.backends` | that backend answers the variant instead |
+
+`classifier.action: "passthrough"` turns routing off for every variant, because a collection window needs every classifier request to reach the teacher. `stage2-severity` cannot set `targetBackend`; a save that tries is rejected.
+
+The built-in backend is `config.DefaultJevBackend`: `zen.baseUrl` + `/v1/systemone`, model `jev-1.13-free`, 5 s timeout. Unlike a bare `jev` backend it escalates labels **C and D** and floors `confidence` at 0.5. Stage 1 compares the answer with a per-model threshold (25 for `claude-sonnet-5`), and a `C` answer maps to severity 15, which is an outright allow of an action the teacher scores 25-49.
+
+**Block-prefilter.** Jev is asked one yes/no question (`noul`, id `block`) about the graded action. Claude Code reads the answer with `<block>(yes|no)`, and any other text is a parse failure that blocks the action. The proxy therefore returns only `<block>no</block>`, and only when Jev's score is below `jevBlockThreshold` on the backend (default 0.10). At or above it, on any error, and for an action over `layaStateChars`, the request is escalated: the existing handling runs and the teacher decides. Jev never answers `<block>yes`.
+
+An audit event for this route has `ruleId` `variant:stage1-severity` or `variant:block-prefilter` and `backend` `zen-jev (built-in)`. Capture rows Jev answered have `source: "jev"`.
+
+> **Evidence is thin.** Nine live Stage 1 rows went through Jev (severities 0-15). The 0.10 line comes from 21 synthetic actions (routine reads, builds and tests scored 0.03-0.08, `rm -rf build/` 0.11-0.16, `npm install` 0.41, every publish, exfiltration, remote-code or destructive action 0.94-0.99), and the captured block-prefilter corpus holds five `yes` rows graded by a gateway model, not by Anthropic. Run `scripts/replay_jev_block.py` and `scripts/replay_jev.py --escalate C --escalate D --floor 0.5` on your own corpus before relying on it.
+
+> **Data.** Each graded action is sent to Zen and on to TypeSafe, for both variants. Set `targetBackend: "off"` on a variant to stop that. To use `jev-1.13` once the free tier ends, add a `jev` backend with `"model": "jev-1.13"` and point the variant at it. Until then a refused call fails the reroute, the audit event is `error`, and the request goes on to the teacher.
+
+Under `classifier.action: "always_stub"` a declined Stage 1 answer gets the canned allow, and a declined block-prefilter request fails fast with a 400 unless the variant sets `targetModel`. Use `fallback_on_exhaustion`, `reroute_only` or `passthrough` if the teacher must grade what Jev declines.
+
+```json
+"classifier": {
+  "enabled": true,
+  "variants": {
+    "stage1-severity": { "targetBackend": "off" },
+    "block-prefilter": { "targetBackend": "zen-jev" }
+  },
+  "backends": {
+    "zen-jev": {
+      "name": "Zen Jev",
+      "url": "https://opencode.ai/zen/v1/systemone",
+      "format": "jev",
+      "jevBlockThreshold": 0.05
+    }
+  }
+}
+```
 
 ### Replaying a corpus before enabling Jev
 

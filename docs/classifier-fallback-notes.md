@@ -113,6 +113,18 @@ exhaustion, fail fast otherwise) survives; the mechanism changes.
   that actually hang during quota exhaustion of the user's own account — Variant C's
   fixed small model may have independent capacity).
 
+## Block pre-filter response format (confirmed 2026-10-15, Claude Code 2.1.274)
+
+The "Unconfirmed" and "do not guess" notes under Variant C are superseded. The parser is in the installed bundle (`~/.local/share/claude/versions/2.1.274`, function `Xit`):
+
+- It reads `<block>(yes|no)\b(<\/block>)?`, case-insensitive, after removing `<thinking>` spans. A reply that names both `yes` and `no` is a parse failure.
+- `no` is "Allowed by fast classifier". `yes` is "Blocked by fast classifier" and goes on to Stage 2. A parse failure **blocks** (`shouldBlock: true`).
+- `<block>false</block>` and `<block>true</block>` are parse failures. The WebUI placeholder that suggested `<block>false</block>` was wrong.
+- A full block reply is `<block>yes</block><category>Exact BLOCK Rule Name</category><reason>[Exact BLOCK Rule Name] one short sentence</reason>`. An allow carries no category or reason.
+- In block mode Claude Code sends `stop_sequences: ["</block>"]` and `max_tokens` 64 (256 in "fast" mode).
+
+The proxy writes only `<block>no</block>`, and only from the Jev route (`docs/classifier-rules.md`, Default routing).
+
 ## Session context block
 
 A third, small `system[2]` block (~200-300 chars) is present on all variants:
