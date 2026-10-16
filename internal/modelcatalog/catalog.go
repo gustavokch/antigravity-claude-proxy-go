@@ -244,21 +244,10 @@ func (catalog *Catalog) DefaultID() string {
 	if catalog == nil {
 		return ""
 	}
-	if model, exists := catalog.byID["gemini-4-argon-medium"]; exists && !model.Disabled {
+	if model, exists := catalog.byID[strings.ToLower(catalog.defaultID)]; exists {
 		return model.ID
 	}
-	if model, exists := catalog.byID[strings.ToLower(catalog.defaultID)]; exists && !model.Disabled {
-		return model.ID
-	}
-	for _, model := range catalog.selectable {
-		if !model.Disabled {
-			return model.ID
-		}
-	}
-	if len(catalog.selectable) > 0 {
-		return catalog.selectable[0].ID
-	}
-	return ""
+	return catalog.selectable[0].ID
 }
 
 func (catalog *Catalog) Selectable() []Model {

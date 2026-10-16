@@ -1039,6 +1039,7 @@ func TestCatalog_MergeUnionsDisjointModels(t *testing.T) {
 		t.Fatalf("expected updated display name, got err=%v m=%+v", err, m)
 	}
 }
+
 func TestGemini4ArgonFamily(t *testing.T) {
 	t.Parallel()
 	catalog, err := Parse([]byte(`{
@@ -1077,9 +1078,9 @@ func TestGemini4ArgonFamily(t *testing.T) {
 		}
 	}
 
-	// 2. DefaultID returns gemini-4-argon-medium (agy default)
-	if def := catalog.DefaultID(); def != "gemini-4-argon-medium" {
-		t.Errorf("DefaultID() = %q, want gemini-4-argon-medium", def)
+	// 2. DefaultID follows the upstream defaultAgentModelId, not the synthesized Argon.
+	if def := catalog.DefaultID(); def != "gemini-3.8-flash-high" {
+		t.Errorf("DefaultID() = %q, want upstream default gemini-3.8-flash-high", def)
 	}
 
 	// 3. Bare model gemini-4-argon resolves to Medium
@@ -1132,7 +1133,7 @@ func TestGemini4ArgonFamily(t *testing.T) {
 	}
 }
 
-func TestGemini4ArgonDisabledDefaultFallback(t *testing.T) {
+func TestGemini4ArgonDisabledUpstreamNotResurrected(t *testing.T) {
 	t.Parallel()
 	catalog, err := Parse([]byte(`{
 		"defaultAgentModelId":"gemini-3.8-flash-medium",
@@ -1158,10 +1159,35 @@ func TestGemini4ArgonDisabledDefaultFallback(t *testing.T) {
 		t.Errorf("DefaultID() = %q, want gemini-3.8-flash-medium", def)
 	}
 
-	// 3. Even if gemini-4-argon-medium is manually inserted into byID as disabled, DefaultID must skip it
-	catalog.byID["gemini-4-argon-medium"] = Model{ID: "gemini-4-argon-medium", Disabled: true}
-	if def := catalog.DefaultID(); def != "gemini-3.8-flash-medium" {
-		t.Errorf("DefaultID() with disabled byID model = %q, want gemini-3.8-flash-medium", def)
+}
+
+func TestGemini4ArgonDefaultFollowsUpstream(t *testing.T) {
+	t.Parallel()
+	body := func(defaultID string) []byte {
+		return []byte(`{
+			"defaultAgentModelId":"` + defaultID + `",
+			"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-medium"]}]}],
+			"models":{"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"maxTokens":1048576,"maxOutputTokens":65536}}
+		}`)
+	}
+	cases := []struct{ name, upstreamDefault, want string }{
+		{"upstream default wins over synthesized Argon", "gemini-3.8-flash-medium", "gemini-3.8-flash-medium"},
+		{"absent upstream default uses first selectable", "", "gemini-4-argon-medium"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog, err := Parse(body(tc.upstreamDefault))
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			if got := catalog.DefaultID(); got != tc.want {
+				t.Errorf("DefaultID() = %q, want %q", got, tc.want)
+			}
+			resolved, err := catalog.Resolve("")
+			if err != nil || resolved.ID != tc.want {
+				t.Errorf("Resolve(\"\") = %+v, err=%v, want ID %q", resolved, err, tc.want)
+			}
+		})
 	}
 }
 
