@@ -1191,6 +1191,34 @@ func TestGemini4ArgonDefaultFollowsUpstream(t *testing.T) {
 	}
 }
 
+func TestGemini4ArgonSynthesizedDoesNotInheritFlashFields(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high"]}]}],
+		"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","description":"flash blurb","recommended":true,"supportsThinking":true,"supportsAdaptiveThinking":true,"thinkingBudget":16000,"minThinkingBudget":1024,"maxTokens":1048576,"maxOutputTokens":65536,"quotaInfo":{"remainingFraction":0.25,"resetTime":"2026-10-16T12:00:00Z"}}}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	m, err := catalog.Resolve("gemini-4-argon-high")
+	if err != nil {
+		t.Fatalf("Resolve error: %v", err)
+	}
+	if m.UpstreamID != "gemini-4-argon-high" || m.ThinkingLevel != "HIGH" || !m.SupportsThinking {
+		t.Errorf("identity wrong: %+v", m)
+	}
+	if m.Description != "" || m.Recommended || m.SupportsAdaptiveThinking {
+		t.Errorf("inherited Flash metadata: %+v", m)
+	}
+	if m.ThinkingBudget != 0 || m.MinThinkingBudget != 0 {
+		t.Errorf("level route carries a budget: budget=%d min=%d", m.ThinkingBudget, m.MinThinkingBudget)
+	}
+	if m.QuotaRemainingFraction != nil || m.QuotaResetTime != "" {
+		t.Errorf("inherited Flash quota: frac=%v reset=%q", m.QuotaRemainingFraction, m.QuotaResetTime)
+	}
+}
+
 func TestGemini4ArgonTieredUpstream(t *testing.T) {
 	t.Parallel()
 	catalog, err := Parse([]byte(`{

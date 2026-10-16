@@ -798,16 +798,23 @@ func applyGemini4Argon(catalog *Catalog, models map[string]modelDetails) {
 			model.UpstreamID = variant.id
 			model.ThinkingLevel = variant.level
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
-			// Upstream FetchAvailableModels does not yet list Gemini 4 Argon,
-			// but agy 1.3.3 embeds it locally and daily accepts it. Reuse
-			// the fallback model's quota pointers while setting Argon's
-			// native limits and verbatim UpstreamID.
+			// Upstream FetchAvailableModels does not list Gemini 4 Argon, but
+			// agy 1.3.3 embeds it and daily accepts it. Borrow only the
+			// fallback's shape; Argon is its own throttle bucket and a level
+			// route, so Flash quota, budget, and metadata must not carry over.
 			model = base
 			model.UpstreamID = variant.id
 			model.ThinkingLevel = variant.level
 			model.SupportsThinking = true
 			model.MaxTokens = 1048576
 			model.MaxOutputTokens = 65536
+			model.Description = ""
+			model.Recommended = false
+			model.SupportsAdaptiveThinking = false
+			model.ThinkingBudget = 0
+			model.MinThinkingBudget = 0
+			model.QuotaRemainingFraction = nil
+			model.QuotaResetTime = ""
 		} else {
 			continue
 		}
