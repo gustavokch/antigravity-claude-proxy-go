@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/cloudcode"
+	"antigravity-go-proxy/internal/modelcatalog"
 )
 
 func TestRequestConversionMatchesParityFixture(t *testing.T) {
@@ -682,41 +683,47 @@ func TestIntValue_JsonNumber(t *testing.T) {
 		t.Fatalf("intValue(json.Number) = %d, want 4096", got)
 	}
 }
-func TestGemini4ArgonFormatConversion(t *testing.T) {
+
+func TestGemini4ArgonRouteSendsThinkingLevelOnly(t *testing.T) {
 	t.Parallel()
 
-	if family := GetModelFamily("gemini-4-argon"); family != FamilyGemini {
-		t.Errorf("GetModelFamily(gemini-4-argon) = %v, want %v", family, FamilyGemini)
+	catalog, err := modelcatalog.Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-high",
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high"]}]}],
+		"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","supportsThinking":true,"thinkingBudget":16000,"maxTokens":1048576,"maxOutputTokens":65536}}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
 	}
-	if !IsThinkingModel("gemini-4-argon") {
-		t.Errorf("IsThinkingModel(gemini-4-argon) = false, want true")
+	model, err := catalog.Resolve("gemini-4-argon-high")
+	if err != nil {
+		t.Fatalf("Resolve error: %v", err)
+	}
+	if family := GetModelFamily(model.ID); family != FamilyGemini {
+		t.Fatalf("GetModelFamily(%s) = %v, want %v", model.ID, family, FamilyGemini)
 	}
 
 	request := map[string]any{
-		"model":      "gemini-4-argon-high",
+		"model":      model.ID,
 		"max_tokens": 4096,
-		"messages": []any{
-			map[string]any{"role": "user", "content": "hello argon"},
-		},
+		"messages":   []any{map[string]any{"role": "user", "content": "hello argon"}},
 	}
-	options := ModelOptions{
-		SupportsThinking: true,
-		ThinkingLevel:    "HIGH",
-		MaxOutputTokens:  65536,
-	}
-	got := ConvertAnthropicToGoogleWithModel(request, NewSignatureCache(), options)
-	genConfig := asMap(got["generationConfig"])
-	if genConfig == nil {
-		t.Fatal("expected generationConfig")
-	}
-	thinkingConfig := asMap(genConfig["thinkingConfig"])
+	got := ConvertAnthropicToGoogleWithModel(request, NewSignatureCache(), ModelOptions{
+		SupportsThinking: model.SupportsThinking, ThinkingBudget: model.ThinkingBudget,
+		MinThinkingBudget: model.MinThinkingBudget, MaxOutputTokens: model.MaxOutputTokens,
+		ThinkingLevel: model.ThinkingLevel,
+	})
+	thinkingConfig := asMap(asMap(got["generationConfig"])["thinkingConfig"])
 	if thinkingConfig == nil {
 		t.Fatal("expected thinkingConfig in generationConfig")
 	}
 	if thinkingConfig["includeThoughts"] != true {
-		t.Errorf("expected includeThoughts=true, got %v", thinkingConfig["includeThoughts"])
+		t.Errorf("includeThoughts = %v, want true", thinkingConfig["includeThoughts"])
 	}
 	if thinkingConfig["thinkingLevel"] != "HIGH" {
-		t.Errorf("expected thinkingLevel=HIGH, got %v", thinkingConfig["thinkingLevel"])
+		t.Errorf("thinkingLevel = %v, want HIGH", thinkingConfig["thinkingLevel"])
+	}
+	if _, hasBudget := thinkingConfig["thinkingBudget"]; hasBudget {
+		t.Errorf("level route also sent thinkingBudget: %v", thinkingConfig)
 	}
 }
