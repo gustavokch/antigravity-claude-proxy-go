@@ -244,13 +244,21 @@ func (catalog *Catalog) DefaultID() string {
 	if catalog == nil {
 		return ""
 	}
-	if model, exists := catalog.byID["gemini-4-argon-medium"]; exists {
+	if model, exists := catalog.byID["gemini-4-argon-medium"]; exists && !model.Disabled {
 		return model.ID
 	}
-	if model, exists := catalog.byID[strings.ToLower(catalog.defaultID)]; exists {
+	if model, exists := catalog.byID[strings.ToLower(catalog.defaultID)]; exists && !model.Disabled {
 		return model.ID
 	}
-	return catalog.selectable[0].ID
+	for _, model := range catalog.selectable {
+		if !model.Disabled {
+			return model.ID
+		}
+	}
+	if len(catalog.selectable) > 0 {
+		return catalog.selectable[0].ID
+	}
+	return ""
 }
 
 func (catalog *Catalog) Selectable() []Model {
@@ -785,6 +793,9 @@ func applyGemini4Argon(catalog *Catalog, models map[string]modelDetails) {
 
 	var prepend []Model
 	for _, variant := range variants {
+		if details, exists := models[variant.id]; exists && details.Disabled {
+			continue
+		}
 		var model Model
 		if _, ok := catalog.byID[variant.id]; ok {
 			// Upstream publishes this tier directly; keep it verbatim.
@@ -811,6 +822,13 @@ func applyGemini4Argon(catalog *Catalog, models map[string]modelDetails) {
 		} else {
 			continue
 		}
+		if model.MaxTokens == 0 {
+			model.MaxTokens = 1048576
+		}
+		if model.MaxOutputTokens == 0 {
+			model.MaxOutputTokens = 65536
+		}
+		model.SupportsThinking = true
 		model.ID = variant.id
 		model.DisplayName = variant.displayName
 		catalog.byID[variant.id] = model

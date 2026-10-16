@@ -1131,3 +1131,77 @@ func TestGemini4ArgonFamily(t *testing.T) {
 		}
 	}
 }
+
+func TestGemini4ArgonDisabledDefaultFallback(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-3.8-flash-medium",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-4-argon-medium","gemini-3.8-flash-medium"
+		]}]}],
+		"models":{
+			"gemini-4-argon-medium":{"displayName":"Gemini 4 Argon (Medium)","disabled":true,"supportsThinking":true,"thinkingLevel":2,"maxTokens":1048576,"maxOutputTokens":65536},
+			"gemini-3.8-flash-medium":{"displayName":"Gemini 3.8 Flash (Medium)","supportsThinking":true,"thinkingBudget":8000,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	// 1. Upstream disabled gemini-4-argon-medium must not be resurrected by fallback
+	if _, err := catalog.Resolve("gemini-4-argon-medium"); err == nil {
+		t.Errorf("Resolve(gemini-4-argon-medium) succeeded, want failure for disabled upstream model")
+	}
+
+	// 2. DefaultID must skip disabled gemini-4-argon-medium and return defaultAgentModelId
+	if def := catalog.DefaultID(); def != "gemini-3.8-flash-medium" {
+		t.Errorf("DefaultID() = %q, want gemini-3.8-flash-medium", def)
+	}
+
+	// 3. Even if gemini-4-argon-medium is manually inserted into byID as disabled, DefaultID must skip it
+	catalog.byID["gemini-4-argon-medium"] = Model{ID: "gemini-4-argon-medium", Disabled: true}
+	if def := catalog.DefaultID(); def != "gemini-3.8-flash-medium" {
+		t.Errorf("DefaultID() with disabled byID model = %q, want gemini-3.8-flash-medium", def)
+	}
+}
+
+func TestGemini4ArgonTieredUpstream(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"defaultAgentModelId":"gemini-4-argon-tiered",
+		"agentModelSorts":[{"displayName":"Recommended","groups":[{"modelIds":[
+			"gemini-4-argon-tiered"
+		]}]}],
+		"models":{
+			"gemini-4-argon-tiered":{"displayName":"Gemini 4 Argon (Tiered)","supportsThinking":true,"maxTokens":1048576,"maxOutputTokens":65536}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	for _, tier := range []struct {
+		id, level string
+	}{
+		{"gemini-4-argon-medium", "MEDIUM"},
+		{"gemini-4-argon-high", "HIGH"},
+		{"gemini-4-argon-low", "LOW"},
+	} {
+		m, err := catalog.Resolve(tier.id)
+		if err != nil {
+			t.Fatalf("Resolve(%q) err: %v", tier.id, err)
+		}
+		if m.UpstreamID != "gemini-4-argon-tiered" {
+			t.Errorf("m.UpstreamID = %q, want gemini-4-argon-tiered", m.UpstreamID)
+		}
+		if m.ThinkingLevel != tier.level {
+			t.Errorf("m.ThinkingLevel = %q, want %q", m.ThinkingLevel, tier.level)
+		}
+		if m.MaxTokens != 1048576 {
+			t.Errorf("m.MaxTokens = %d, want 1048576", m.MaxTokens)
+		}
+		if m.MaxOutputTokens != 65536 {
+			t.Errorf("m.MaxOutputTokens = %d, want 65536", m.MaxOutputTokens)
+		}
+	}
+}
