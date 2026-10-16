@@ -954,8 +954,10 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	// including a reroute whose backend failed — falls through to the
 	// built-in Detect path below, so today's behavior is the default.
 	skipClassifierDetect := false
+	ruleHandled := false
 	if cfg.Classifier.Enabled && len(cfg.Classifier.Rules) > 0 && server.classifierMatcher != nil {
 		if rule, backend, matched := server.classifierMatcher.Match(rawBody); matched {
+			ruleHandled = true
 			var ruleKind classifier.Kind
 			if rule.Action == config.RuleActionReroute {
 				ruleKind, _ = detectClassifier()
@@ -1015,6 +1017,15 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 				if variant.ThinkingText != "" {
 					thinkingTmpl = variant.ThinkingText
 				}
+			}
+
+			// A variant's backend (Zen Jev unless configured otherwise) answers
+			// first, unless an operator rule already handled this request: that
+			// rule's backend has had its turn and a second call would only add
+			// latency. When the variant backend declines or fails, the checks
+			// below run exactly as they did before it existed.
+			if !ruleHandled && server.answerFromVariantBackend(writer, request, cfg, kind, rawBody, model, captureRef) {
+				return
 			}
 
 			if effectiveAction == config.ActionAlwaysStub {
