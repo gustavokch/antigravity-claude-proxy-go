@@ -1690,6 +1690,8 @@ window.Components.models = () => ({
             displayName: '',
             contextLength: '',
             maxOutputTokens: '',
+            discoverModels: false,
+            modelsUrl: '',
             apiKey: '',
             hasApiKey: false,
             saving: false,
@@ -1710,6 +1712,8 @@ window.Components.models = () => ({
             displayName: ep?.displayName || '',
             contextLength: ep?.contextLength ?? '',
             maxOutputTokens: ep?.maxOutputTokens ?? '',
+            discoverModels: !!ep?.discoverModels,
+            modelsUrl: ep?.modelsUrl || '',
             apiKey: '',
             hasApiKey: !!ep?.hasApiKey,
             saving: false,
@@ -1730,7 +1734,7 @@ window.Components.models = () => ({
     },
 
     async saveEndpoint() {
-        const { modelId, url, displayName, contextLength, maxOutputTokens, apiKey, hasApiKey, isEdit } = this.endpointModal;
+        const { modelId, url, displayName, contextLength, maxOutputTokens, discoverModels, modelsUrl, apiKey, hasApiKey, isEdit } = this.endpointModal;
         const store = Alpine.store('global');
         const dataStore = Alpine.store('data');
 
@@ -1767,6 +1771,13 @@ window.Components.models = () => ({
             const maxOutputValue = Number.parseInt(maxOutputTokens, 10);
             if (Number.isFinite(maxOutputValue) && maxOutputValue > 0) {
                 epData.maxOutputTokens = maxOutputValue;
+            }
+            if (discoverModels) {
+                epData.discoverModels = true;
+            }
+            const cleanModelsUrl = (modelsUrl || '').trim();
+            if (cleanModelsUrl) {
+                epData.modelsUrl = cleanModelsUrl;
             }
             if (apiKey && apiKey.trim()) {
                 epData.apiKey = apiKey.trim();

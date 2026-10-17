@@ -455,6 +455,8 @@ window.translations.pt = {
     apiKey: "Chave de API / Token (Opcional)",
     endpointDisplayName: "Nome de Exibição (Opcional)",
     endpointContextLength: "Comprimento de Contexto (Opcional)",
+    endpointDiscoverModels: "Descobrir modelos deste endpoint",
+    endpointDiscoverModelsDesc: "Busca a lista de modelos do endpoint e roteia cada modelo listado para ele, permitindo alternar entre eles.",
     endpointMaxOutputTokens: "Máximo de Tokens de Saída (Opcional)",
     keyConfigured: "Chave Configurada",
     noKey: "Sem Chave",

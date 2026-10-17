@@ -676,6 +676,32 @@ provider.
 Advertised entries carry `supports_thinking: true`; the proxy does not probe
 the endpoint for it.
 
+### Model catalog discovery
+
+Set `"discoverModels": true` on an endpoint (Web UI: the "Discover models from
+this endpoint" toggle) and the proxy fetches the endpoint's own model list,
+`GET <base>/v1/models`, with the endpoint's API key. The base is the endpoint
+`url` with a trailing `/v1/messages`, `/v1/chat/completions`, `/messages` or
+`/v1` removed; `modelsUrl` overrides it with an absolute http(s) URL. Both
+OpenAI-style and Anthropic-style lists work; Anthropic pagination is followed.
+
+Every listed model routes to that endpoint and appears in `GET /v1/models`
+(`owned_by: "custom"`, with `display_name`, `context_length` /
+`max_input_tokens` and `max_output_tokens` / `max_tokens` when the endpoint
+states them). A client switches models by naming another listed ID; the request
+body is still forwarded untouched. Details:
+
+- The catalog is fetched at startup and refreshed every 5 minutes. The first
+  request after startup or after a config change waits for a cold fetch
+  (5 s bound); stale catalogs are refreshed in the background only.
+- A failed refresh keeps the previous models and records the error. Changing
+  `url`, `apiKey` or `modelsUrl` discards the old catalog.
+- An entry keyed by a model ID wins over any catalog that lists it. When two
+  catalogs list the same ID, the endpoint whose name sorts first wins.
+- `POST /api/custom-endpoints/refresh` refetches every catalog now.
+  `GET /account-limits` reports each catalog under `customEndpointCatalogs`
+  (`models`, `fetchedAt`, `error`).
+
 ---
 
 ## Cache Bump (Prompt Cache Keep-Warm)

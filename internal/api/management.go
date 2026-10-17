@@ -126,6 +126,10 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	case path == "/account-limits" && method == http.MethodGet:
 		server.handleAccountLimits(writer, request)
 		return true
+	case path == "/api/custom-endpoints/refresh" && method == http.MethodPost:
+		server.refreshEndpointCatalogs(request.Context(), true)
+		writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "catalogs": server.endpointCatalogStatus(config.Get())})
+		return true
 	case path == "/api/accounts" && method == http.MethodGet:
 		server.handleAccountsList(writer, request)
 		return true
@@ -961,19 +965,20 @@ func (server *Server) handleAccountLimits(writer http.ResponseWriter, request *h
 
 	publicCfg := config.GetPublicConfig()
 	res := map[string]any{
-		"status":               "ok",
-		"timestamp":            server.now().UTC().Format(time.RFC3339Nano),
-		"totalAccounts":        len(result),
-		"models":               sortedModels,
-		"modelContext":         modelContext,
-		"modelConfig":          modelMapping,
-		"customEndpoints":      publicCfg["customEndpoints"],
-		"openrouter":           publicCfg["openrouter"],
-		"kimi":                 publicCfg["kimi"],
-		"zen":                  publicCfg["zen"],
-		"claudecode":           publicCfg["claudecode"],
-		"globalQuotaThreshold": cfg.GlobalQuotaThreshold,
-		"accounts":             result,
+		"status":                 "ok",
+		"timestamp":              server.now().UTC().Format(time.RFC3339Nano),
+		"totalAccounts":          len(result),
+		"models":                 sortedModels,
+		"modelContext":           modelContext,
+		"modelConfig":            modelMapping,
+		"customEndpoints":        publicCfg["customEndpoints"],
+		"customEndpointCatalogs": server.endpointCatalogStatus(cfg),
+		"openrouter":             publicCfg["openrouter"],
+		"kimi":                   publicCfg["kimi"],
+		"zen":                    publicCfg["zen"],
+		"claudecode":             publicCfg["claudecode"],
+		"globalQuotaThreshold":   cfg.GlobalQuotaThreshold,
+		"accounts":               result,
 	}
 	if includeHistory && server.tracker != nil {
 		res["history"] = server.tracker.GetHistory()

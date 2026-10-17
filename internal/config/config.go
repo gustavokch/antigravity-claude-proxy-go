@@ -35,6 +35,15 @@ type EndpointConfig struct {
 	DisplayName     string `json:"displayName,omitempty"`
 	ContextLen      int    `json:"contextLength,omitempty"`
 	MaxOutputTokens int    `json:"maxOutputTokens,omitempty"`
+	// DiscoverModels makes the proxy fetch the endpoint's own model catalog
+	// (GET <base>/v1/models) and route every model it lists to this endpoint,
+	// in addition to the model that keys this entry. The request body is still
+	// forwarded untouched, so a client switches models by naming another
+	// catalog ID.
+	DiscoverModels bool `json:"discoverModels,omitempty"`
+	// ModelsURL overrides the catalog URL derived from URL. It must be an
+	// absolute http(s) URL.
+	ModelsURL string `json:"modelsUrl,omitempty"`
 }
 
 type OpenRouterModelConfig struct {

@@ -2423,6 +2423,22 @@
                                 </div>
                             </div>
 
+                            <!-- Model catalog: route every model the endpoint lists here -->
+                            <div class="form-control">
+                                <label class="label cursor-pointer justify-start gap-3 pt-0 pb-1">
+                                    <input type="checkbox" class="toggle toggle-sm toggle-info" x-model="endpointModal.discoverModels"
+                                        aria-label="Discover models from endpoint" />
+                                    <span class="label-text text-gray-300 font-semibold text-xs" x-text="$store.global.t('endpointDiscoverModels') || 'Discover models from this endpoint'">Discover models from this endpoint</span>
+                                </label>
+                                <p class="text-[10px] text-gray-400" x-text="$store.global.t('endpointDiscoverModelsDesc') || 'Fetch the endpoint model list and route every listed model here, so clients can switch between them.'">
+                                    Fetch the endpoint model list and route every listed model here, so clients can switch between them.
+                                </p>
+                                <input type="text" x-show="endpointModal.discoverModels" x-model="endpointModal.modelsUrl"
+                                    aria-label="Models catalog URL"
+                                    class="input input-sm input-bordered bg-space-800 border-space-border text-white w-full font-mono text-xs focus:border-neon-cyan mt-2"
+                                    placeholder="Catalog URL (optional, default: base URL + /v1/models)" />
+                            </div>
+
                             <!-- API Key / Auth Token -->
                             <div class="form-control" x-data="{ showKey: false }">
                                 <label class="label pt-0 pb-1 flex justify-between">

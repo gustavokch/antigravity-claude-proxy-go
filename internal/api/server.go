@@ -148,6 +148,11 @@ type Server struct {
 	classifierAudit    *classifier.Recorder
 	classifierCorpus   atomic.Pointer[corpus.Recorder]
 
+	// endpointCats holds the fetched model catalogs of custom endpoints that set
+	// discoverModels. Lazily built: tests construct a bare Server.
+	endpointCatalogsOnce sync.Once
+	endpointCats         *endpointCatalogs
+
 	// strictManagementHost is Options.StrictManagementHost.
 	strictManagementHost bool
 
@@ -607,8 +612,17 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	selectable := catalog.PublicModels()
 	models := make([]any, 0, len(selectable))
 	seen := make(map[string]bool)
+	// A discovering endpoint's catalog must exist before ownership is computed,
+	// or the first listing after startup would advertise its models as Cloud
+	// Code's. Only cold catalogs are fetched; the worker keeps the rest fresh.
 	cfg := config.Get()
+	server.warmEndpointCatalogs(request.Context(), cfg)
 	owned := gatewayOwnedModelIDs(cfg)
+	for _, name := range discoveringEndpoints(cfg) {
+		for _, model := range server.catalogModels(name, cfg.CustomEndpoints[name]) {
+			owned[model.ID] = true
+		}
+	}
 
 	for _, details := range selectable {
 		// A colliding ID is advertised by the gateway that wins it, never

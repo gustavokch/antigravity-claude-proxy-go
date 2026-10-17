@@ -38,7 +38,7 @@ func (server *Server) chatCompletions(writer http.ResponseWriter, request *http.
 	model := server.resolveModelMapping(requestModel)
 
 	cfg := config.Get()
-	if endpoint, exists := cfg.CustomEndpoints[model]; exists && endpoint.URL != "" {
+	if endpoint, exists := server.resolveCustomEndpoint(request.Context(), cfg, model); exists {
 		if !isAnthropicEndpoint(endpoint.URL) {
 			forwardBody := body
 			if model != requestModel {
