@@ -322,3 +322,29 @@ func TestValidateCatalogFields(t *testing.T) {
 		}
 	}
 }
+
+// net/http strips Authorization on a cross-host redirect but forwards
+// x-api-key, so a followed redirect would hand the endpoint key to whatever
+// host the endpoint names. The catalog fetch must not follow redirects at all.
+func TestFetchEndpointModels_DoesNotFollowRedirects(t *testing.T) {
+	var sinkKey atomic.Value
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sinkKey.Store(r.Header.Get("x-api-key"))
+		_, _ = io.WriteString(w, openAIStyleCatalog)
+	}))
+	t.Cleanup(sink.Close)
+	// Another host name for the same listener: the redirect is cross-host.
+	target := strings.Replace(sink.URL, "127.0.0.1", "localhost", 1) + "/v1/models"
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+
+	_, err := fetchEndpointModels(context.Background(), config.EndpointConfig{URL: source.URL, APIKey: "ep-secret"})
+	if got, _ := sinkKey.Load().(string); got != "" {
+		t.Fatalf("redirect target received x-api-key %q", got)
+	}
+	if err == nil {
+		t.Error("a redirect was accepted as a catalog")
+	}
+}

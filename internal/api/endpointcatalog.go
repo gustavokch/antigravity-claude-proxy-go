@@ -368,7 +368,15 @@ func fetchEndpointModels(ctx context.Context, endpoint config.EndpointConfig) ([
 		return nil, err
 	}
 	anthropic := isAnthropicEndpoint(endpoint.URL)
-	client := &http.Client{Transport: customEndpointTransport}
+	client := &http.Client{
+		Transport: customEndpointTransport,
+		// Never follow a redirect: net/http strips Authorization on a
+		// cross-host hop but forwards x-api-key, so following one hands the
+		// endpoint key to whatever host the endpoint names. The forward path
+		// (ReverseProxy) does not follow redirects either; a 3xx fails the
+		// fetch through the status check below.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 
 	var models []discoveredModel
 	seen := make(map[string]bool)
