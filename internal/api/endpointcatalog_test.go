@@ -348,3 +348,94 @@ func TestFetchEndpointModels_DoesNotFollowRedirects(t *testing.T) {
 		t.Error("a redirect was accepted as a catalog")
 	}
 }
+
+// After the first fetch fails, the request path stops fetching: a dead
+// endpoint must not add a fetch timeout to unrelated requests every retry
+// window. The worker owns retries.
+func TestEndpointCatalog_FailedFirstFetchLeavesRetriesToWorker(t *testing.T) {
+	_, upstream, _ := newCatalogEndpointServer(t, map[string]any{})
+	upstream.mu.Lock()
+	upstream.status = http.StatusServiceUnavailable
+	upstream.mu.Unlock()
+	var clock atomic.Value
+	clock.Store(time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC))
+	advance := func() { clock.Store(clock.Load().(time.Time).Add(endpointCatalogRetry + time.Second)) }
+	server := &Server{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:    func() time.Time { return clock.Load().(time.Time) },
+	}
+	cfg := config.Get()
+	ctx := context.Background()
+
+	if _, ok := server.resolveCustomEndpoint(ctx, cfg, "beta"); ok {
+		t.Fatal("beta resolved from a failing catalog")
+	}
+	if n := upstream.listHits.Load(); n != 1 {
+		t.Fatalf("first request made %d catalog fetches, want 1 (the first fetch)", n)
+	}
+
+	advance()
+	server.resolveCustomEndpoint(ctx, cfg, "unrelated-model")
+	if n := upstream.listHits.Load(); n != 1 {
+		t.Fatalf("request path refetched a failed catalog (%d fetches); only the worker may retry", n)
+	}
+
+	upstream.setCatalog(openAIStyleCatalog)
+	server.refreshEndpointCatalogs(ctx, false)
+	if n := upstream.listHits.Load(); n != 2 {
+		t.Fatalf("worker pass made %d total fetches, want 2", n)
+	}
+	if _, ok := server.resolveCustomEndpoint(ctx, cfg, "beta"); !ok {
+		t.Fatal("beta not routed after the worker recovered the catalog")
+	}
+}
+
+// Requests that arrive while the first fetch is in flight join it and route
+// once it lands; they do not start fetches of their own. This is what the
+// first-request wait exists for, and Task 2 must not lose it.
+func TestEndpointCatalog_RequestsJoinTheFirstFetch(t *testing.T) {
+	withConfigDir(t)
+	var hits atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		<-release
+		_, _ = io.WriteString(w, openAIStyleCatalog)
+	}))
+	t.Cleanup(ts.Close)
+	// Registered after ts.Close, so it runs first: Close waits for handlers.
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	if _, err := config.Save(map[string]any{"customEndpoints": map[string]any{
+		"alpha": map[string]any{"url": ts.URL, "discoverModels": true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
+	cfg := config.Get()
+
+	results := make([]bool, 8)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, results[i] = server.resolveCustomEndpoint(context.Background(), cfg, "beta")
+		}()
+	}
+	for hits.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // let the other callers reach the in-flight wait
+	releaseOnce.Do(func() { close(release) })
+	wg.Wait()
+
+	for i, ok := range results {
+		if !ok {
+			t.Errorf("caller %d did not route beta after the shared fetch", i)
+		}
+	}
+	if n := hits.Load(); n != 1 {
+		t.Errorf("catalog fetched %d times, want 1 shared fetch", n)
+	}
+}

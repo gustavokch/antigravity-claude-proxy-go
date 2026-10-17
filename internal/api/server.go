@@ -614,7 +614,7 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	seen := make(map[string]bool)
 	// A discovering endpoint's catalog must exist before ownership is computed,
 	// or the first listing after startup would advertise its models as Cloud
-	// Code's. Only cold catalogs are fetched; the worker keeps the rest fresh.
+	// Code's. Only a first fetch is awaited; the worker retries and refreshes.
 	cfg := config.Get()
 	server.warmEndpointCatalogs(request.Context(), cfg)
 	owned := gatewayOwnedModelIDs(cfg)

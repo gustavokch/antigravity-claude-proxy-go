@@ -142,11 +142,13 @@ func (server *Server) lookupCustomEndpoint(cfg config.Config, model string) (con
 	return config.EndpointConfig{}, false
 }
 
-// resolveCustomEndpoint is lookupCustomEndpoint plus a cold-start fetch: when
-// the model is unknown and some opted-in endpoint has never returned a catalog,
-// that fetch runs first so the first request after startup or after adding an
-// endpoint still routes. A stale catalog is never refetched here; the worker
-// owns that, so a request for an unrelated model never waits on a slow endpoint.
+// resolveCustomEndpoint is lookupCustomEndpoint plus the first fetch: when the
+// model is unknown and some opted-in endpoint has not finished a fetch attempt
+// for its current source, the request waits for that attempt, so the first
+// request after startup or after an endpoint change still routes. After a
+// failed attempt, or for a stale catalog, nothing is fetched here; the worker
+// owns retries, so a request for an unrelated model never waits on a slow or
+// dead endpoint more than once.
 func (server *Server) resolveCustomEndpoint(ctx context.Context, cfg config.Config, model string) (config.EndpointConfig, bool) {
 	if endpoint, ok := server.lookupCustomEndpoint(cfg, model); ok {
 		return endpoint, true
@@ -157,15 +159,16 @@ func (server *Server) resolveCustomEndpoint(ctx context.Context, cfg config.Conf
 	return server.lookupCustomEndpoint(cfg, model)
 }
 
-// warmEndpointCatalogs fetches, concurrently, every opted-in catalog that has
-// never succeeded and is due. It reports whether any fetch ran.
+// warmEndpointCatalogs runs, or joins, the first fetch of every opted-in
+// catalog whose first attempt has not finished. It reports whether any fetch
+// completed while it waited.
 func (server *Server) warmEndpointCatalogs(ctx context.Context, cfg config.Config) bool {
 	var wg sync.WaitGroup
 	var ran bool
 	var ranMu sync.Mutex
 	for _, name := range discoveringEndpoints(cfg) {
 		endpoint := cfg.CustomEndpoints[name]
-		if !server.catalogCold(name, endpoint) {
+		if !server.awaitsFirstFetch(name, endpoint) {
 			continue
 		}
 		wg.Add(1)
@@ -182,14 +185,20 @@ func (server *Server) warmEndpointCatalogs(ctx context.Context, cfg config.Confi
 	return ran
 }
 
-// catalogCold reports whether the endpoint has no successful catalog for its
-// current source.
-func (server *Server) catalogCold(name string, endpoint config.EndpointConfig) bool {
+// awaitsFirstFetch reports whether no fetch attempt for the endpoint's current
+// source has finished: none started, or the first one is still in flight. Only
+// then does the request path wait on a fetch. Once an attempt has finished,
+// successful or not, retries belong to the worker, so a dead endpoint costs
+// unrelated requests nothing.
+func (server *Server) awaitsFirstFetch(name string, endpoint config.EndpointConfig) bool {
 	cats := server.endpointCatalogs()
 	cats.mu.Lock()
 	defer cats.mu.Unlock()
 	entry := cats.byName[name]
-	return entry == nil || entry.source != sourceOf(endpoint) || entry.fetchedAt.IsZero()
+	if entry == nil || entry.source != sourceOf(endpoint) {
+		return true
+	}
+	return entry.fetchedAt.IsZero() && entry.lastErr == ""
 }
 
 // refreshEndpointCatalog fetches one endpoint's catalog and stores it. Without
