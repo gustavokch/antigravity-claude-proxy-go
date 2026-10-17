@@ -432,11 +432,17 @@ func appendCustomDiscovery(server *Server, cfg config.Config, models *[]any, see
 		*models = append(*models, customModelEntry(server, id, endpoint.DisplayName, endpoint.ContextLen, endpoint.MaxOutputTokens))
 		seen[id] = true
 	}
-	// Discovered models come after every explicit entry, matching
-	// lookupCustomEndpoint: an entry keyed by the ID wins over any catalog.
-	for _, name := range discoveringEndpoints(cfg) {
+	// Discovered models come after every explicit entry and skip IDs another
+	// gateway owns, matching lookupCustomEndpoint: an entry keyed by the ID
+	// wins over any catalog, and a catalog never claims a gateway's ID.
+	names := discoveringEndpoints(cfg)
+	if len(names) == 0 {
+		return
+	}
+	owned := gatewayOwnedModelIDs(cfg)
+	for _, name := range names {
 		for _, model := range server.catalogModels(name, cfg.CustomEndpoints[name]) {
-			if seen[model.ID] {
+			if seen[model.ID] || owned[model.ID] {
 				continue
 			}
 			*models = append(*models, customModelEntry(server, model.ID, model.DisplayName, model.ContextLen, model.MaxOutputTokens))

@@ -439,3 +439,51 @@ func TestEndpointCatalog_RequestsJoinTheFirstFetch(t *testing.T) {
 		t.Errorf("catalog fetched %d times, want 1 shared fetch", n)
 	}
 }
+
+// A catalog that lists an ID another gateway's allowlist names must not take
+// it, on any entry point. gatewayOrder puts custom first so that /v1/messages
+// and /v1/models would hand the ID to the catalog without the rule;
+// /v1/chat/completions takes the custom shortcut regardless of order.
+func TestEndpointCatalog_NeverClaimsAnotherGatewaysModel(t *testing.T) {
+	server, upstream, _ := newCatalogEndpointServer(t, map[string]any{})
+	if _, err := config.Save(map[string]any{
+		"kimi": map[string]any{
+			"enabled":   true,
+			"baseUrl":   "http://127.0.0.1:1",
+			"allowlist": []any{map[string]any{"id": "beta", "enabled": true}},
+		},
+		"gatewayOrder": map[string]any{"order": []any{"custom", "kimi"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Get()
+
+	if _, ok := server.resolveCustomEndpoint(context.Background(), cfg, "beta"); ok {
+		t.Error("catalog claimed beta, which the Kimi allowlist owns")
+	}
+	if _, ok := server.resolveCustomEndpoint(context.Background(), cfg, "gamma"); !ok {
+		t.Fatal("gamma, owned by no gateway, did not resolve through the catalog")
+	}
+
+	for _, model := range []string{"gamma", "beta"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+			`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", "local-key")
+		server.Handler().ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if got := strings.Join(upstream.forwardedModels(), ","); got != "gamma" {
+		t.Errorf("custom endpoint received chat/completions models %q, want only gamma", got)
+	}
+
+	discovery := &Server{backend: &discoveryTestBackend{}, logger: slog.Default(), now: time.Now}
+	models := discoveryModelsRequest(t, discovery)
+	for _, entry := range discoveryEntriesForID(models, "beta") {
+		if entry["owned_by"] == "custom" {
+			t.Errorf("/v1/models advertises beta as custom: %v", entry)
+		}
+	}
+	if entries := discoveryEntriesForID(models, "gamma"); len(entries) != 1 || entries[0]["owned_by"] != "custom" {
+		t.Errorf("gamma entries = %v, want one custom entry", entries)
+	}
+}

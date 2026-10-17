@@ -125,7 +125,8 @@ func (server *Server) catalogHas(name string, endpoint config.EndpointConfig, mo
 
 // lookupCustomEndpoint resolves a model to its custom endpoint from config and
 // the cached catalogs only; it never touches the network. An entry keyed by the
-// model wins over any catalog, then catalogs are consulted in name order.
+// model wins over any catalog; then catalogs are consulted in name order, and a
+// catalog never claims an ID another gateway's allowlist owns.
 func (server *Server) lookupCustomEndpoint(cfg config.Config, model string) (config.EndpointConfig, bool) {
 	if endpoint, ok := cfg.CustomEndpoints[model]; ok && endpoint.URL != "" {
 		return endpoint, true
@@ -136,6 +137,14 @@ func (server *Server) lookupCustomEndpoint(cfg config.Config, model string) (con
 	for _, name := range discoveringEndpoints(cfg) {
 		endpoint := cfg.CustomEndpoints[name]
 		if server.catalogHas(name, endpoint, model) {
+			// A catalog never claims an ID another gateway's allowlist names.
+			// /v1/chat/completions resolves custom endpoints ahead of gateway
+			// order, so without this an implicit listing would take the ID
+			// from the gateway that /v1/messages and /v1/models give it. The
+			// owned set is built only on a catalog hit.
+			if gatewayOwnedModelIDs(cfg)[model] {
+				return config.EndpointConfig{}, false
+			}
 			return endpoint, true
 		}
 	}
