@@ -345,8 +345,9 @@ func (server *Server) endpointCatalogStatus(cfg config.Config) map[string]any {
 }
 
 // endpointModelsURL is where an endpoint publishes its catalog: ModelsURL when
-// set, else <base>/v1/models with the base derived by stripping the request
-// path the endpoint URL ends in. Query parameters of the endpoint URL (an
+// set; else, for an OpenAI-compatible URL ending in /chat/completions, the
+// sibling /models; else <base>/v1/models with a trailing /v1/messages,
+// /messages or /v1 stripped. Query parameters of the endpoint URL (an
 // api-version, say) are kept.
 func endpointModelsURL(endpoint config.EndpointConfig) (*url.URL, error) {
 	if endpoint.ModelsURL != "" {
@@ -364,13 +365,21 @@ func endpointModelsURL(endpoint config.EndpointConfig) (*url.URL, error) {
 		return nil, err
 	}
 	path := strings.TrimRight(parsed.Path, "/")
-	for _, suffix := range []string{"/v1/messages", "/v1/chat/completions", "/chat/completions", "/messages", "/v1"} {
-		if strings.HasSuffix(path, suffix) {
-			path = strings.TrimSuffix(path, suffix)
-			break
+	if base, ok := strings.CutSuffix(path, "/chat/completions"); ok {
+		// OpenAI-compatible APIs publish the list beside chat/completions:
+		// …/v1/chat/completions → …/v1/models,
+		// …/v1beta/openai/chat/completions → …/v1beta/openai/models.
+		path = base + "/models"
+	} else {
+		for _, suffix := range []string{"/v1/messages", "/messages", "/v1"} {
+			if trimmed, ok := strings.CutSuffix(path, suffix); ok {
+				path = trimmed
+				break
+			}
 		}
+		path += "/v1/models"
 	}
-	parsed.Path = path + "/v1/models"
+	parsed.Path = path
 	parsed.RawPath = ""
 	parsed.Fragment = ""
 	return parsed, nil

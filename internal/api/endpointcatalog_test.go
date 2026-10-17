@@ -236,6 +236,8 @@ func TestEndpointModelsURL(t *testing.T) {
 		{"bare host", config.EndpointConfig{URL: "http://h:8080"}, "http://h:8080/v1/models"},
 		{"messages path", config.EndpointConfig{URL: "http://h/v1/messages"}, "http://h/v1/models"},
 		{"chat completions", config.EndpointConfig{URL: "http://h/v1/chat/completions"}, "http://h/v1/models"},
+		{"openai-compatible base", config.EndpointConfig{URL: "http://h/v1beta/openai/chat/completions"}, "http://h/v1beta/openai/models"},
+		{"root chat completions", config.EndpointConfig{URL: "http://h/chat/completions"}, "http://h/models"},
 		{"v1 base", config.EndpointConfig{URL: "http://h/api/v1"}, "http://h/api/v1/models"},
 		{"query kept", config.EndpointConfig{URL: "http://h?api-version=1"}, "http://h/v1/models?api-version=1"},
 		{"override", config.EndpointConfig{URL: "http://h", ModelsURL: "https://c/list"}, "https://c/list"},
