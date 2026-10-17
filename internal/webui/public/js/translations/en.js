@@ -528,6 +528,8 @@ window.translations.en = {
     apiKey: "API Key / Token (Optional)",
     endpointDisplayName: "Display Name (Optional)",
     endpointContextLength: "Context Length (Optional)",
+    endpointDiscoverModels: "Discover models from this endpoint",
+    endpointDiscoverModelsDesc: "Fetch the endpoint model list and route every listed model here, so clients can switch between them.",
     endpointMaxOutputTokens: "Max Output Tokens (Optional)",
     keyConfigured: "Key Configured",
     noKey: "No Key",

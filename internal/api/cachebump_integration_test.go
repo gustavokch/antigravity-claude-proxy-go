@@ -309,6 +309,57 @@ func TestCacheBump_CustomEndpointRecordsAndBumps(t *testing.T) {
 	}
 }
 
+// A model routed through an endpoint's catalog has no config entry of its own;
+// the replay must find the endpoint through the catalog, or every bump for a
+// catalog-routed session fails as ErrAccountUnavailable.
+func TestCacheBump_CatalogRoutedModelBumps(t *testing.T) {
+	upstream := &cacheBumpUpstream{
+		status:   http.StatusOK,
+		respBody: `{"id":"m1","type":"message","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":800,"cache_creation_input_tokens":0}}`,
+	}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	catalogTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"id":"listed-model"}]}`)
+	}))
+	defer catalogTS.Close()
+
+	cfg := cacheBumpTestConfig(t, ts.URL)
+	cfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"custom-model": {
+			URL: ts.URL + "/v1/messages", APIKey: "ep-key",
+			DiscoverModels: true, ModelsURL: catalogTS.URL + "/v1/models",
+		},
+	}
+	cfg.CacheBump.Routes.CustomEndpoints = true
+	persistTestConfig(t, cfg)
+	resetCCPoolForTest()
+
+	srv, store, sched := newCacheBumpServer(t)
+	endpoint := config.Get().CustomEndpoints["custom-model"]
+	srv.refreshEndpointCatalog(context.Background(), "custom-model", endpoint, true)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(cacheBumpTurnBody))
+	req.Header.Set("x-session-id", "sess-catalog")
+	w := httptest.NewRecorder()
+	srv.forwardToCustomEndpoint(w, req, endpoint, "listed-model", []byte(cacheBumpTurnBody))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	rec, ok := store.Get(cachebump.RecordKey(cachebump.RouteCustom, "sess-catalog"))
+	if !ok || rec.EndpointID != "listed-model" {
+		t.Fatalf("record = %+v (found %v), want EndpointID listed-model", rec, ok)
+	}
+
+	future := time.Now().Add(10 * time.Minute)
+	sched.Now = func() time.Time { return future }
+	sched.Tick(context.Background())
+
+	if upstream.lenRequests() != 2 {
+		t.Fatalf("expected the bump to reach the catalog endpoint, got %d upstream requests", upstream.lenRequests())
+	}
+}
+
 func TestCacheBump_CustomEndpointHourMarkerWithoutBetaIsFiveMinutes(t *testing.T) {
 	upstream := &cacheBumpUpstream{
 		status:   http.StatusOK,

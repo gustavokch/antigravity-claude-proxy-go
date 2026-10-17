@@ -147,8 +147,8 @@ func (server *Server) tryOpenRouterGateway(g *gatewayRequest) bool {
 }
 
 func (server *Server) tryCustomEndpointGateway(g *gatewayRequest) bool {
-	endpoint, exists := g.cfg.CustomEndpoints[g.model]
-	if !exists || endpoint.URL == "" {
+	endpoint, exists := server.resolveCustomEndpoint(g.request.Context(), g.cfg, g.model)
+	if !exists {
 		return false
 	}
 	reqBody, err := json.Marshal(g.body)

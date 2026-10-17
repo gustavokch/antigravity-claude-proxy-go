@@ -298,6 +298,7 @@ func runServer(args []string) {
 	handler.StartClaudeCodeBackgroundWorker(bgCtx)
 	handler.StartCacheBumpScheduler(bgCtx)
 	handler.StartClaudeCodeUsage(bgCtx)
+	handler.StartEndpointCatalogWorker(bgCtx)
 	go func() {
 		if _, err := dispatcher.FetchAvailableModels(bgCtx); err != nil {
 			slogger.Warn("startup catalog fetch failed", "error", err)

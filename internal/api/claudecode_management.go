@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -155,6 +156,9 @@ func validateCustomEndpointLimits(updates map[string]any) error {
 			continue
 		}
 		label := "customEndpoints." + model
+		if err := validateCatalogFields(ep, label); err != nil {
+			return err
+		}
 		contextLen, err := optionalNonNegativeInt(ep, "contextLength", label)
 		if err != nil {
 			return err
@@ -173,6 +177,33 @@ func validateCustomEndpointLimits(updates map[string]any) error {
 		if maxOutput >= effective {
 			return fmt.Errorf("%s.maxOutputTokens: must be below the context window (%d)", label, effective)
 		}
+	}
+	return nil
+}
+
+// validateCatalogFields checks the model-catalog fields of one customEndpoints
+// entry: discoverModels must be a boolean, and modelsUrl an absolute http(s)
+// URL. A bad modelsUrl would otherwise save fine and fail on every refresh.
+func validateCatalogFields(ep map[string]any, label string) error {
+	if raw, ok := ep["discoverModels"]; ok && raw != nil {
+		if _, isBool := raw.(bool); !isBool {
+			return fmt.Errorf("%s.discoverModels: must be a boolean", label)
+		}
+	}
+	raw, ok := ep["modelsUrl"]
+	if !ok || raw == nil {
+		return nil
+	}
+	text, isString := raw.(string)
+	if !isString {
+		return fmt.Errorf("%s.modelsUrl: must be a string", label)
+	}
+	if text == "" {
+		return nil
+	}
+	parsed, err := url.Parse(text)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("%s.modelsUrl: must be an absolute http(s) URL", label)
 	}
 	return nil
 }

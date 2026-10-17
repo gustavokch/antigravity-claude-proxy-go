@@ -408,9 +408,10 @@ func appendZenDiscovery(server *Server, cfg config.Config, models *[]any, seen m
 }
 
 // appendCustomDiscovery advertises every custom endpoint that has a url — the
-// same condition tryCustomEndpointGateway uses to route. The operator already
-// wrote the entry; no second opt-in flag. The limits are discovery-only: the
-// forward path stays byte-transparent (ADR-0001).
+// same condition tryCustomEndpointGateway uses to route — and, for endpoints
+// that set discoverModels, every model their fetched catalog lists. The
+// operator already wrote the entry; no second opt-in flag. The limits are
+// discovery-only: the forward path stays byte-transparent (ADR-0001).
 func appendCustomDiscovery(server *Server, cfg config.Config, models *[]any, seen map[string]bool) {
 	// Map order is random; /v1/models output must be stable.
 	ids := make([]string, 0, len(cfg.CustomEndpoints))
@@ -428,41 +429,62 @@ func appendCustomDiscovery(server *Server, cfg config.Config, models *[]any, see
 		if seen[id] {
 			continue
 		}
-		desc := endpoint.DisplayName
-		if desc == "" {
-			desc = id
-		}
-		contextLen := endpoint.ContextLen
-		if contextLen <= 0 {
-			contextLen = defaultDiscoveryContextWindow
-		}
-		maxOutput := endpoint.MaxOutputTokens
-		if maxOutput <= 0 {
-			// Nothing states the output cap. Same fallback as the Kimi and
-			// OpenRouter branches: never advertise the context window itself.
-			maxOutput = contextLen
-			if maxOutput > defaultDiscoveryMaxOutputTokens {
-				maxOutput = defaultDiscoveryMaxOutputTokens
-			}
-		}
-		// /v1/models must never advertise a cap the endpoint cannot honor: a
-		// client that trusts it sends a max_tokens the provider rejects. The
-		// save-time check refuses this through the API; a hand-edited config.json
-		// reaches here unchecked, so the promise is kept here too.
-		if maxOutput >= contextLen {
-			maxOutput = contextLen - 1
-		}
-		*models = append(*models, map[string]any{
-			"id":                id,
-			"object":            "model",
-			"created":           server.now().Unix(),
-			"owned_by":          "custom",
-			"description":       desc,
-			"display_name":      desc,
-			"context_window":    contextLen,
-			"max_output_tokens": maxOutput,
-			"supports_thinking": true,
-		})
+		*models = append(*models, customModelEntry(server, id, endpoint.DisplayName, endpoint.ContextLen, endpoint.MaxOutputTokens))
 		seen[id] = true
+	}
+	// Discovered models come after every explicit entry and skip IDs another
+	// gateway owns, matching lookupCustomEndpoint: an entry keyed by the ID
+	// wins over any catalog, and a catalog never claims a gateway's ID.
+	names := discoveringEndpoints(cfg)
+	if len(names) == 0 {
+		return
+	}
+	owned := gatewayOwnedModelIDs(cfg)
+	for _, name := range names {
+		for _, model := range server.catalogModels(name, cfg.CustomEndpoints[name]) {
+			if seen[model.ID] || owned[model.ID] {
+				continue
+			}
+			*models = append(*models, customModelEntry(server, model.ID, model.DisplayName, model.ContextLen, model.MaxOutputTokens))
+			seen[model.ID] = true
+		}
+	}
+}
+
+// customModelEntry builds one /v1/models entry for a custom-endpoint model.
+// Unset limits fall back to the discovery defaults.
+func customModelEntry(server *Server, id, displayName string, contextLen, maxOutput int) map[string]any {
+	desc := displayName
+	if desc == "" {
+		desc = id
+	}
+	if contextLen <= 0 {
+		contextLen = defaultDiscoveryContextWindow
+	}
+	if maxOutput <= 0 {
+		// Nothing states the output cap. Same fallback as the Kimi and
+		// OpenRouter branches: never advertise the context window itself.
+		maxOutput = contextLen
+		if maxOutput > defaultDiscoveryMaxOutputTokens {
+			maxOutput = defaultDiscoveryMaxOutputTokens
+		}
+	}
+	// /v1/models must never advertise a cap the endpoint cannot honor: a
+	// client that trusts it sends a max_tokens the provider rejects. The
+	// save-time check refuses this through the API; a hand-edited config.json
+	// or a catalog reaches here unchecked, so the promise is kept here too.
+	if maxOutput >= contextLen {
+		maxOutput = contextLen - 1
+	}
+	return map[string]any{
+		"id":                id,
+		"object":            "model",
+		"created":           server.now().Unix(),
+		"owned_by":          "custom",
+		"description":       desc,
+		"display_name":      desc,
+		"context_window":    contextLen,
+		"max_output_tokens": maxOutput,
+		"supports_thinking": true,
 	}
 }

@@ -295,8 +295,8 @@ func (server *Server) sendZenBump(ctx context.Context, rec cachebump.Record) (ca
 
 // sendCustomBump replays a bump against the recorded custom endpoint.
 func (server *Server) sendCustomBump(ctx context.Context, rec cachebump.Record) (cachebump.BumpResult, error) {
-	endpoint, ok := config.Get().CustomEndpoints[rec.EndpointID]
-	if !ok || endpoint.URL == "" {
+	endpoint, ok := server.lookupCustomEndpoint(config.Get(), rec.EndpointID)
+	if !ok {
 		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
 	}
 	target := endpoint.URL
