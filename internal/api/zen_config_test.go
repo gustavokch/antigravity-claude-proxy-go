@@ -123,6 +123,34 @@ func TestServer_HandleConfigGet_ZenKeySourceEnv(t *testing.T) {
 	}
 }
 
+// With no key in the config file and no OPENCODE_API_KEY, the route
+// diagram must see Zen as keyless.
+func TestServer_HandleConfigGet_ZenKeySourceNone(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "")
+	server, _, _ := newTestServerWithManager(t)
+	t.Cleanup(func() { config.SetForTest(config.DefaultConfig()) })
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Config struct {
+			Zen map[string]any `json:"zen"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Config.Zen["keySource"] != "none" {
+		t.Errorf("zen.keySource = %v, want none", body.Config.Zen["keySource"])
+	}
+	if body.Config.Zen["hasApiKey"] == true {
+		t.Error("zen.hasApiKey = true with no key in config or env")
+	}
+}
+
 func TestServer_HandleZenConfigSave_RoundTripHonoredOnNextForward(t *testing.T) {
 	t.Setenv("OPENCODE_API_KEY", "")
 

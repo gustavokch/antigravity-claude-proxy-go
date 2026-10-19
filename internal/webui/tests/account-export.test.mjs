@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import { loadComponent, okResponse, pendingTick } from './kimi-poll-race.harness.mjs';
 
 const MODAL = 'export_accounts_modal';
+const VIEWS = { views: ['accounts.html'] };
 
 async function openDoesNotFetch() {
-    const { component: c, requests, dialog } = loadComponent('account-manager.js', 'accountManager');
+    const { component: c, requests, dialog } = loadComponent('account-manager.js', 'accountManager', VIEWS);
     c.exportAccounts();
     await pendingTick();
     assert.equal(requests.length, 0, 'opening the dialog must not request the export');
@@ -15,7 +16,7 @@ async function openDoesNotFetch() {
 
 async function failedExportClosesAndReports() {
     const { component: c, requests, toasts, dialog, closedDialogs } =
-        loadComponent('account-manager.js', 'accountManager');
+        loadComponent('account-manager.js', 'accountManager', VIEWS);
     c.exportAccounts();
     const done = c.executeExport();
     assert.equal(c.exporting, true, 'busy while the request runs');
@@ -33,7 +34,7 @@ async function failedExportClosesAndReports() {
 
 async function confirmedExportDownloads() {
     const { component: c, requests, toasts, dialog, downloads } =
-        loadComponent('account-manager.js', 'accountManager');
+        loadComponent('account-manager.js', 'accountManager', VIEWS);
     c.exportAccounts();
     const done = c.executeExport();
     requests[0].resolve({ response: okResponse([{ email: 'a@x' }, { email: 'b@x' }]) });

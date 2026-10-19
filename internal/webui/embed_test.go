@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -160,8 +161,11 @@ func TestHandler(t *testing.T) {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		index := rec.Body.String()
-		if strings.Contains(index, "cdn.jsdelivr.net") || strings.Contains(index, "unpkg.com") {
-			t.Errorf("index.html must not load scripts from a CDN")
+		// Any absolute or protocol-relative script/stylesheet URL is a
+		// third-party request at load; links (<a href>) are not loaded.
+		external := regexp.MustCompile(`(?i)<(?:script|link)\b[^>]*\b(?:src|href)\s*=\s*["'](?:https?:|//)`)
+		if loc := external.FindStringIndex(index); loc != nil {
+			t.Errorf("index.html loads a third-party resource: %s", index[loc[0]:loc[1]])
 		}
 
 		vendored := map[string]string{

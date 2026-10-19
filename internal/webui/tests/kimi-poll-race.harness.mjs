@@ -3,8 +3,13 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const COMPONENTS = new URL('../public/js/components/', import.meta.url);
+const VIEWS = new URL('../public/views/', import.meta.url);
 
-export function loadComponent(file, exportName, { manualTimers = false, data = {} } = {}) {
+export function loadComponent(file, exportName, { manualTimers = false, data = {}, views = null } = {}) {
+    // With views, getElementById finds only ids those templates declare, as
+    // the browser would; without, any id gets a fake dialog.
+    const declared = views && new Set(views.flatMap((v) =>
+        [...fs.readFileSync(new URL(v, VIEWS), 'utf8').matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])));
     const requests = [];               // { url, options, resolve, reject }
     const toasts = [];
     const closedDialogs = [];
@@ -38,7 +43,7 @@ export function loadComponent(file, exportName, { manualTimers = false, data = {
         clearTimeout: () => {},
         Alpine: { store: (name) => (name === 'global' ? store : name === 'data' ? data : {}) },
         document: {
-            getElementById: dialog,
+            getElementById: (id) => (declared && !declared.has(id) ? null : dialog(id)),
             querySelectorAll: () => [],
             createElement: () => ({ click() { downloads.push({ href: this.href, download: this.download }); } }),
             body: { appendChild() {}, removeChild() {} },
