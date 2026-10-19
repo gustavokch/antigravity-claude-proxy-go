@@ -64,12 +64,14 @@ document.addEventListener('alpine:init', () => {
 
         init() {
             // Lever keys: 1-5 pull the view levers, unless the operator is
-            // typing or a dialog holds focus.
+            // typing or a modal holds focus: an open <dialog>, or a visible
+            // aria-modal confirm such as the dashboard's clear-stats prompt.
             window.addEventListener('keydown', (e) => {
                 if (e.metaKey || e.ctrlKey || e.altKey) return;
                 const el = e.target;
                 if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
                 if (document.querySelector('dialog[open]')) return;
+                if ([...document.querySelectorAll('[aria-modal="true"]')].some((m) => m.checkVisibility())) return;
                 const i = Number(e.key) - 1;
                 if (Number.isInteger(i) && i >= 0 && i < this.views.length) {
                     Alpine.store('global').activeTab = this.views[i];
