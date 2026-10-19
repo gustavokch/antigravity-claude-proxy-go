@@ -136,16 +136,28 @@ type wireEntry struct {
 
 var wireSet map[string]wireEntry
 
+// wireLists is the registration table init() keys into wireSet. The drift
+// tests walk the same table, so a new list is checked as soon as it routes.
+var wireLists = []struct {
+	name string
+	ids  []string
+	wire Wire
+}{
+	{"AnthropicWireIDs", AnthropicWireIDs, WireAnthropic},
+	{"ChatWireIDs", ChatWireIDs, WireChat},
+	{"ResponsesWireIDs", ResponsesWireIDs, WireResponses},
+}
+
 func init() {
-	wireSet = make(map[string]wireEntry, len(AnthropicWireIDs)+len(ChatWireIDs)+len(ResponsesWireIDs))
-	for _, id := range AnthropicWireIDs {
-		wireSet[strings.ToLower(id)] = wireEntry{id, WireAnthropic}
+	size := 0
+	for _, list := range wireLists {
+		size += len(list.ids)
 	}
-	for _, id := range ChatWireIDs {
-		wireSet[strings.ToLower(id)] = wireEntry{id, WireChat}
-	}
-	for _, id := range ResponsesWireIDs {
-		wireSet[strings.ToLower(id)] = wireEntry{id, WireResponses}
+	wireSet = make(map[string]wireEntry, size)
+	for _, list := range wireLists {
+		for _, id := range list.ids {
+			wireSet[strings.ToLower(id)] = wireEntry{id, list.wire}
+		}
 	}
 }
 

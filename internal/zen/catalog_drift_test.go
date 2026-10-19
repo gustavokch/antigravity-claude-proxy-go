@@ -40,7 +40,7 @@ func loadCatalogSnapshot(t *testing.T) catalogSnapshot {
 
 const (
 	reasonGoogleWire    = "docs endpoint table serves it on /inference/google/v1beta, a wire the proxy does not speak"
-	reasonSystemoneWire = "docs endpoint table serves it on /inference/systemone, a wire the proxy does not speak"
+	reasonSystemoneWire = "docs endpoint table serves it on /inference/systemone, a typed-decision protocol the Messages router cannot carry; it reaches Zen through the proxy's POST /v1/systemone passthrough"
 	reasonUndocumented  = "in /zen/v1/models but absent from the docs endpoint table (2026-10-18): its wire is unverified, so it stays fail-closed"
 )
 
@@ -61,16 +61,6 @@ var unforwardableCatalogIDs = map[string]string{
 	"jev-1.13":               reasonSystemoneWire,
 	"jev-1.13-free":          reasonSystemoneWire,
 	"test":                   reasonUndocumented,
-}
-
-// wireLists names the three lists init() keys into wireSet.
-var wireLists = []struct {
-	name string
-	ids  []string
-}{
-	{"AnthropicWireIDs", AnthropicWireIDs},
-	{"ChatWireIDs", ChatWireIDs},
-	{"ResponsesWireIDs", ResponsesWireIDs},
 }
 
 // catalogDrift diffs the wire lists against a catalog id list: the catalog ids
