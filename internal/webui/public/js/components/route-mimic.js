@@ -37,11 +37,15 @@ window.Components.routeMimic = () => ({
         return this.t('gateway' + id.charAt(0).toUpperCase() + id.slice(1));
     },
 
+    // Same rule as the Accounts view (accountManager.accountStatus): every
+    // quota pool at 0% blocks the account, one exhausted pool is caution.
     accountAspect(acc) {
         if (!acc.enabled || acc.status === 'disabled') return 'off';
-        if (acc.status === 'ok') return 'clear';
         if (acc.status === 'invalid' || acc.isInvalid) return 'danger';
-        return 'caution'; // rate_limited, cooldown
+        const exhausted = window.QuotaView.exhaustion(acc.quota && acc.quota.pools);
+        if (exhausted === 'all') return 'danger';
+        if (acc.status === 'ok' && exhausted === 'none') return 'clear';
+        return 'caution'; // rate_limited, cooldown, partly exhausted
     },
 
     accountGroup(provider) {

@@ -72,6 +72,15 @@ window.QuotaView = (() => {
         return Number.isFinite(until) && until > now;
     }
 
+    // How exhausted a raw quota.pools object is, from its known percents:
+    // 'all' when every known pool is at 0%, 'some' when at least one is,
+    // 'none' otherwise (including no known pools).
+    function exhaustion(pools) {
+        const pcts = sortedPools(pools).map(poolPercent).filter(isNum);
+        if (pcts.length > 0 && pcts.every(p => p <= 0)) return 'all';
+        return pcts.some(p => p <= 0) ? 'some' : 'none';
+    }
+
     // Signal Box level for a remaining percent. 'off' when unknown, 'danger'
     // when exhausted (the circuit fills red), 'caution' under 20%, else 'clear'.
     function remainingLevel(percent) {
@@ -250,7 +259,7 @@ window.QuotaView = (() => {
     }
 
     return {
-        splitPoolId, poolPercent, sortedPools, poolFamilyLabel, inCooldown,
+        splitPoolId, poolPercent, sortedPools, poolFamilyLabel, inCooldown, exhaustion,
         remainingLevel, usedLevel, toneClass, usedTextClass,
         burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
         reportRows, reportPeriod, usageURL, historySince, escapeHTML, poolLabel, poolSourceLabel,
@@ -659,14 +668,14 @@ window.Components.accountManager = () => ({
             const key = acc.status === 'banned' ? 'accStatusBanned' : 'accStatusInvalid';
             return { lamp: 'danger', tone: 't-danger', key, blocked: true };
         }
-        const pcts = this.accountPools(acc).map(p => p.percent).filter(p => typeof p === 'number');
-        if (pcts.length > 0 && pcts.every(p => p <= 0)) {
+        const exhausted = window.QuotaView.exhaustion(acc.quota && acc.quota.pools);
+        if (exhausted === 'all') {
             return { lamp: 'danger', tone: 't-danger', key: 'accStatusExhausted', blocked: true };
         }
         if (acc.status === 'rate_limited') {
             return { lamp: 'caution', tone: 't-caution', key: 'accStatusRateLimited', blocked: false };
         }
-        if (pcts.some(p => p <= 0)) {
+        if (exhausted === 'some') {
             return { lamp: 'caution', tone: 't-caution', key: 'accStatusPartlyExhausted', blocked: false };
         }
         if (acc.status === 'ok') {
