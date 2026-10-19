@@ -2338,8 +2338,13 @@ pre.codeblock {
   max-height: min(26rem, 70vh);
   overflow-y: auto;
 }
+.dash-popover-start { left: 0; }
 .dash-popover-end { right: 0; }
-.dash-popover-start { left: 0; width: min(16rem, calc(100vw - 2rem)); }
+.dash-popover-sm { width: min(16rem, calc(100vw - 2rem)); }
+/* Phones: trigger buttons wrap to the left edge, so every popover opens rightward. */
+@media (max-width: 640px) {
+  .dash-popover-end { right: auto; left: 0; }
+}
 .dash-popover-head {
   padding: var(--sb-s2) var(--sb-s2) var(--sb-s2) var(--sb-s3);
   border-bottom: 1px solid var(--sb-rule);

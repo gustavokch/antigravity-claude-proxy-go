@@ -240,7 +240,7 @@
                                 <span x-text="$store.global.t('filter') + ' (' + getSelectedCount() + ')'">Filter (0/0)</span>
                             </button>
 
-                            <div class="menu dash-popover dash-popover-end" x-show="showModelFilter" x-cloak
+                            <div class="menu dash-popover dash-popover-start" x-show="showModelFilter" x-cloak
                                 x-transition.opacity.duration.100ms @click.outside="showModelFilter = false">
                                 <div class="split dash-popover-head">
                                     <span class="label"
@@ -352,7 +352,7 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                         </svg>
                     </button>
-                    <div class="menu dash-popover dash-popover-start" role="menu" x-show="showClearMenu" x-cloak
+                    <div class="menu dash-popover dash-popover-end dash-popover-sm" role="menu" x-show="showClearMenu" x-cloak
                         x-transition.opacity.duration.100ms @click.outside="showClearMenu = false">
                         <button type="button" role="menuitem" class="btn btn-ghost btn-sm dash-menu-item"
                             @click="requestClearAll(false)" x-text="$store.global.t('clearScopeAll')">All usage data</button>
