@@ -254,6 +254,7 @@ window.Components.accountManager = () => ({
     accountTab: 'google', // 'google' | 'claudecode'
     searchQuery: '',
     deleteTarget: '',
+    exporting: false,
     refreshing: false,
     deleting: false,
     reloading: false,
@@ -999,10 +1000,19 @@ window.Components.accountManager = () => ({
     },
 
     /**
-     * Export accounts to JSON file
+     * Open the export confirmation. The export holds refresh tokens, so
+     * nothing is fetched until the user confirms.
      */
-    async exportAccounts() {
+    exportAccounts() {
+        document.getElementById('export_accounts_modal').showModal();
+    },
+
+    /**
+     * Fetch the accounts export and download it as JSON.
+     */
+    async executeExport() {
         const store = Alpine.store('global');
+        this.exporting = true;
         try {
             const { response, newPassword } = await window.utils.request(
                 '/api/accounts/export',
@@ -1012,24 +1022,25 @@ window.Components.accountManager = () => ({
             if (newPassword) store.webuiPassword = newPassword;
 
             const data = await response.json();
-            // API returns plain array directly
-            if (Array.isArray(data)) {
-                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `antigravity-accounts-${new Date().toISOString().split('T')[0]}.json`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-
-                store.showToast(store.t('exportSuccess', { count: data.length }), 'success');
-            } else if (data.error) {
-                throw new Error(data.error);
+            if (!Array.isArray(data)) {
+                throw new Error(data.error || `HTTP ${response.status}`);
             }
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `antigravity-accounts-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            store.showToast(store.t('exportSuccess', { count: data.length }), 'success');
         } catch (e) {
             store.showToast(store.t('exportFailed') + ': ' + e.message, 'error');
+        } finally {
+            this.exporting = false;
+            document.getElementById('export_accounts_modal').close();
         }
     },
 

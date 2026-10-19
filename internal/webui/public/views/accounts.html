@@ -662,6 +662,43 @@
         </form>
     </dialog>
 
+    <!-- Export: the file holds refresh tokens, so confirm first -->
+    <dialog id="export_accounts_modal" class="modal">
+        <div class="modal-box max-w-md w-full">
+            <div class="modal-head">
+                <span x-text="$store.global.t('accExportTitle')">Export accounts</span>
+                <form method="dialog">
+                    <button class="btn btn-ghost btn-sm btn-icon" :aria-label="$store.global.t('close')">
+                        <svg class="acc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </form>
+            </div>
+            <div class="modal-body stack">
+                <div class="notice notice-caution">
+                    <span class="lamp lamp-caution" aria-hidden="true"></span>
+                    <div>
+                        <p x-text="$store.global.t('accExportWarning')">The file contains each account's refresh token in plain text.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-action">
+                <button type="button" class="btn" onclick="document.getElementById('export_accounts_modal').close()" x-text="$store.global.t('cancel')">Cancel</button>
+                <button type="button" class="btn btn-primary"
+                        @click="executeExport()"
+                        :disabled="exporting"
+                        :aria-busy="exporting">
+                    <span class="spinner" x-show="exporting" aria-hidden="true"></span>
+                    <span x-text="$store.global.t('accExportConfirm')">Export file</span>
+                </button>
+            </div>
+        </div>
+        <form method="dialog" class="modal-backdrop">
+            <button x-text="$store.global.t('close')">close</button>
+        </form>
+    </dialog>
+
     <!-- Quota distribution -->
     <dialog id="quota_modal" class="modal">
         <div class="modal-box max-w-2xl w-full">
