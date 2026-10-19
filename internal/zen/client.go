@@ -47,7 +47,6 @@ var AnthropicWireIDs = []string{
 	"claude-sonnet-5",
 	"claude-sonnet-4-6",
 	"claude-sonnet-4-5",
-	"claude-sonnet-4",
 	"claude-haiku-4-5",
 	"qwen3.8-flash",
 	"qwen3.6-plus",
@@ -64,7 +63,6 @@ var ChatWireIDs = []string{
 	"deepseek-v4.1-flash",
 	"deepseek-v4-pro",
 	"deepseek-v4-flash",
-	"deepseek-v4-flash-vision-exp",
 	"minimax-m3",
 	"minimax-m2.7",
 	"minimax-m2.5",
@@ -80,9 +78,11 @@ var ChatWireIDs = []string{
 	"big-pickle",
 	"space-bunny-free",
 	"mimo-v2.6-flash-free",
-	"mimo-v2.5-free",
-	"ling-3.0-flash-fin-free",
-	"nemotron-3-ultra-free",
+	"nemotron-3.5-super-vl-free",
+	"beam-free",
+	"longcat-2.5-preview-free",
+	"deepseek-v4.1-flash-free",
+	"glm-5.3-flash-free",
 	"nemotron-3.5-lightning-free",
 }
 
@@ -124,7 +124,6 @@ var ResponsesWireIDs = []string{
 	"grok-build-0.1",
 	"muse-spark-1.3",
 	"muse-spark-1.2",
-	"muse-spark-1.3-contributor-free",
 }
 
 type wireEntry struct {

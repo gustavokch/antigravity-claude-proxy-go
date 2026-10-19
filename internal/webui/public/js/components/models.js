@@ -996,7 +996,7 @@ window.Components.models = () => ({
                 id: m.id,
                 displayName: m.id,
                 usable: true,
-                selected: true
+                selected: false
             }));
             const unusable = (data.other || []).map(m => ({
                 id: m.id,
