@@ -201,6 +201,8 @@ window.Components.gatewayOrder = () => ({
                 if (section.byModel && typeof section.byModel === 'object') this.byModel = section.byModel;
             }
             Alpine.store('global').showToast(Alpine.store('global').t('gatewayOrderSaved') || 'Gateway precedence saved', 'success');
+            // The shell's route diagram reads gateway state from /api/config.
+            Alpine.store('data').performHealthCheck();
         } catch (err) {
             Alpine.store('global').showToast(err.message, 'error');
         } finally {
