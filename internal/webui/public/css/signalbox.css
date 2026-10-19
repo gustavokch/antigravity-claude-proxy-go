@@ -2513,6 +2513,12 @@ pre.codeblock {
     padding: var(--sb-s3);
     border-bottom: 1px solid var(--sb-rule);
   }
+  .mdl-table tbody tr.is-blocked {
+    background: color-mix(in srgb, var(--sb-danger-wash) 70%, transparent);
+  }
+  .mdl-table tbody tr.is-blocked > td {
+    background: none;
+  }
   .mdl-table tbody td {
     display: block;
     min-width: 0;
