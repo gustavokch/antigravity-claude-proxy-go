@@ -92,7 +92,7 @@
                     @click="$store.settings.toggle('showHiddenModels'); $store.data.computeQuotaRows()"
                     x-text="$store.global.t('showHidden')">Show Hidden Models</button>
 
-            <button type="button" class="btn btn-sm mdl-toggle" x-show="!$store.settings.compact"
+            <button type="button" class="btn btn-sm mdl-toggle mdl-toggle-accounts" x-show="!$store.settings.compact"
                     :aria-pressed="$store.settings.showAllAccounts ? 'true' : 'false'"
                     @click="$store.settings.toggle('showAllAccounts')"
                     x-text="$store.global.t('showAllAccountRows')">Show all accounts</button>
@@ -195,7 +195,7 @@
                            :style="'--fill:' + (row.avgQuota ?? 0) + '%'"
                            role="meter" aria-valuemin="0" aria-valuemax="100"
                            :aria-valuenow="row.avgQuota"
-                           :aria-label="row.modelId + ' ' + (row.avgQuota ?? 'N/A') + '%'"></div>
+                           :aria-label="row.modelId + ' ' + (row.avgQuota == null ? 'N/A' : row.avgQuota + '%')"></div>
                       <template x-for="(q, qIdx) in row.quotaInfo.filter(q => q.thresholdPct > 0 || isDragging(q, row))" :key="q.fullEmail + '-threshold'">
                         <div class="mdl-mark"
                              :class="{ 'is-dragging': isDragging(q, row) }"
@@ -248,7 +248,7 @@
                                 :style="'--fill:' + (q.pct ?? 0) + '%'"
                                 role="meter" aria-valuemin="0" aria-valuemax="100"
                                 :aria-valuenow="q.pct"
-                                :aria-label="(q.name || Redact.email(q.email)) + ' ' + (q.pct ?? 'N/A') + '%'"></span>
+                                :aria-label="(q.name || Redact.email(q.email)) + ' ' + (q.pct == null ? 'N/A' : q.pct + '%')"></span>
                           <span class="tnum mdl-acc-pct"
                                 x-text="(q.pct === null || q.pct === undefined) ? 'N/A' : q.pct + '%'"></span>
                           <span class="tnum t-2 mdl-acc-reset" x-show="q.resetTime"

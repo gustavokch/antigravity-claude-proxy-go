@@ -333,6 +333,19 @@ function balanceLevels() {
     assert.equal(qv.balanceLevel('n/a'), 'off');
 }
 
+// The server sends quotaThreshold: null for an account without its own
+// floor; the global floor then applies.
+function thresholdFloor() {
+    const data = { globalQuotaThreshold: 0.1 };
+    const { component: c } = loadComponent('account-manager.js', 'accountManager', { data });
+    assert.equal(c.effectiveThresholdFraction({ quotaThreshold: null }), 0.1);
+    assert.equal(c.getEffectiveThreshold({ quotaThreshold: null }), '10% (accGlobal)');
+    assert.equal(c.effectiveThresholdFraction({ quotaThreshold: 0.25 }), 0.25);
+    assert.equal(c.getEffectiveThreshold({ quotaThreshold: 0.25 }), '25%');
+    data.globalQuotaThreshold = 0;
+    assert.equal(c.effectiveThresholdFraction({ quotaThreshold: null }), null, 'no floor, no mark');
+}
+
 const cases = [
     ['pools order 5h before weekly, grouped by family', poolOrder],
     ['pools tolerate missing and null fields', poolTolerance],
@@ -350,6 +363,7 @@ const cases = [
     ['one account aspect rule for every view', accountAspects],
     ['header counts use the readiness rule', summariesCountReadyAccounts],
     ['OpenRouter balance level thresholds', balanceLevels],
+    ['a null account threshold falls back to the global floor', thresholdFloor],
 ];
 
 for (const [name, fn] of cases) {

@@ -830,7 +830,7 @@ window.Components.accountManager = () => ({
         this.thresholdDialog = {
             email: account.email,
             // Convert from fraction (0-1) to percentage (0-99) for display
-            quotaThreshold: account.quotaThreshold !== undefined ? Math.round(account.quotaThreshold * 100) : null,
+            quotaThreshold: account.quotaThreshold != null ? Math.round(account.quotaThreshold * 100) : null,
             modelQuotaThresholds: Object.fromEntries(
                 Object.entries(account.modelQuotaThresholds || {}).map(([k, v]) => [k, Math.round(v * 100)])
             ),
@@ -925,9 +925,17 @@ window.Components.accountManager = () => ({
         return allModels.filter(m => !configured.includes(m));
     },
 
+    // The quota floor that applies to an account, as a fraction: its own,
+    // else the global one; null when neither is set.
+    effectiveThresholdFraction(account) {
+        if (account.quotaThreshold != null) return account.quotaThreshold;
+        const global = Alpine.store('data').globalQuotaThreshold;
+        return global > 0 ? global : null;
+    },
+
     getEffectiveThreshold(account) {
         // Return display string for effective threshold
-        if (account.quotaThreshold !== undefined) {
+        if (account.quotaThreshold != null) {
             return Math.round(account.quotaThreshold * 100) + '%';
         }
         // If no per-account threshold, show global value

@@ -218,8 +218,8 @@
                                                          role="progressbar" aria-valuemin="0" aria-valuemax="100"
                                                          :aria-valuenow="quota.percent"
                                                          :aria-label="quota.model + ': ' + $store.global.t('poolRemaining', { pct: quota.percent + '%' })">
-                                                        <span class="track-mark" x-show="acc.quotaThreshold !== undefined"
-                                                              :style="`left:${(acc.quotaThreshold || 0) * 100}%`"></span>
+                                                        <span class="track-mark" x-show="effectiveThresholdFraction(acc) !== null"
+                                                              :style="`left:${effectiveThresholdFraction(acc) * 100}%`"></span>
                                                     </div>
                                                     <div class="acc-pool-foot" x-show="quota.resetTime">
                                                         <span class="t-caution tnum"
@@ -232,7 +232,7 @@
                                             </template>
                                             <!-- Quota pools (shared renderer; values are escaped there) -->
                                             <div x-html="renderPools(acc.quota && acc.quota.pools, true)"></div>
-                                            <p class="t-caution mono t-xs" x-show="acc.quotaThreshold !== undefined"
+                                            <p class="t-caution mono t-xs" x-show="effectiveThresholdFraction(acc) !== null"
                                                x-text="$store.global.t('accMinShort') + ': ' + getEffectiveThreshold(acc)"></p>
                                         </div>
                                         <button type="button" class="btn btn-ghost btn-sm btn-icon acc-quota-open"
@@ -622,10 +622,10 @@
     </section>
 
     <!-- Delete confirmation -->
-    <dialog id="delete_account_modal" class="modal">
+    <dialog id="delete_account_modal" class="modal" aria-labelledby="acc-delete-title">
         <div class="modal-box max-w-md w-full">
             <div class="modal-head">
-                <span x-text="$store.global.t('accDeleteTitle')">Delete account</span>
+                <h3 id="acc-delete-title" x-text="$store.global.t('accDeleteTitle')">Delete account</h3>
                 <form method="dialog">
                     <button class="btn btn-ghost btn-sm btn-icon" :aria-label="$store.global.t('close')">
                         <svg class="acc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
@@ -663,10 +663,10 @@
     </dialog>
 
     <!-- Export: the file holds refresh tokens, so confirm first -->
-    <dialog id="export_accounts_modal" class="modal">
+    <dialog id="export_accounts_modal" class="modal" aria-labelledby="acc-export-title">
         <div class="modal-box max-w-md w-full">
             <div class="modal-head">
-                <span x-text="$store.global.t('accExportTitle')">Export accounts</span>
+                <h3 id="acc-export-title" x-text="$store.global.t('accExportTitle')">Export accounts</h3>
                 <form method="dialog">
                     <button class="btn btn-ghost btn-sm btn-icon" :aria-label="$store.global.t('close')">
                         <svg class="acc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
@@ -700,10 +700,10 @@
     </dialog>
 
     <!-- Quota distribution -->
-    <dialog id="quota_modal" class="modal">
+    <dialog id="quota_modal" class="modal" aria-labelledby="acc-quota-title">
         <div class="modal-box max-w-2xl w-full">
             <div class="modal-head">
-                <span x-text="$store.global.t('quotaDistribution')">Quota Distribution</span>
+                <h3 id="acc-quota-title" x-text="$store.global.t('quotaDistribution')">Quota Distribution</h3>
                 <form method="dialog">
                     <button class="btn btn-ghost btn-sm btn-icon" :aria-label="$store.global.t('close')">
                         <svg class="acc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
@@ -928,10 +928,10 @@
     </dialog>
 
     <!-- Account settings: minimum quota and per-model overrides -->
-    <dialog id="threshold_modal" class="modal">
+    <dialog id="threshold_modal" class="modal" aria-labelledby="acc-threshold-title">
         <div class="modal-box max-w-md w-full">
             <div class="modal-head">
-                <span x-text="$store.global.t('accSettings')">Account Settings</span>
+                <h3 id="acc-threshold-title" x-text="$store.global.t('accSettings')">Account Settings</h3>
                 <form method="dialog">
                     <button class="btn btn-ghost btn-sm btn-icon" :aria-label="$store.global.t('close')">
                         <svg class="acc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">

@@ -2557,6 +2557,8 @@ pre.codeblock {
   .mdl-table :where(th, td).mdl-second {
     display: none;
   }
+  /* The Distribution column is hidden here, so its toggle would do nothing. */
+  .mdl-toggle-accounts { display: none; }
   .mdl-table .mdl-model,
   .mdl-table .mdl-quota,
   .mdl-table tbody td[colspan] {
@@ -3498,7 +3500,8 @@ pre.codeblock {
 }
 
 /* Dialogs */
-.modal-head .setm-modal-title {
+.modal-head .setm-modal-title,
+.modal-head > h3 {
   margin: 0;
   min-width: 0;
   font: inherit;
