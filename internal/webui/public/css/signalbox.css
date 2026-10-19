@@ -1742,6 +1742,7 @@ input[type="radio"].radio:checked {
 /* ---- Tables ------------------------------------------------------------- */
 
 .table-wrap {
+  position: relative;
   width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -2484,12 +2485,50 @@ pre.codeblock {
   width: 34%;
 }
 @media (max-width: 767px) {
-  .mdl-model,
-  .mdl-quota {
+  /* Phones: each model row is a block. Model and quota take full lines;
+     status and actions share the last line. The header stays as a
+     wrapping row of sort buttons. */
+  .mdl-table,
+  .mdl-table thead,
+  .mdl-table tbody {
+    display: block;
+  }
+  .mdl-table thead tr {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sb-s2) var(--sb-s3);
+    padding: var(--sb-s2) var(--sb-s3);
+    border-bottom: 1px solid var(--sb-rule);
+  }
+  .mdl-table thead th {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+  .mdl-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sb-s2) var(--sb-s3);
+    padding: var(--sb-s3);
+    border-bottom: 1px solid var(--sb-rule);
+  }
+  .mdl-table tbody td {
+    display: block;
     min-width: 0;
     width: auto;
+    padding: 0;
+    border: 0;
   }
-  .mdl-model-id {
+  .mdl-table :where(th, td).mdl-second {
+    display: none;
+  }
+  .mdl-table .mdl-model,
+  .mdl-table .mdl-quota,
+  .mdl-table tbody td[colspan] {
+    grid-column: 1 / -1;
+  }
+  .mdl-table .mdl-model-id {
     flex-wrap: wrap;
     overflow-wrap: anywhere;
   }
