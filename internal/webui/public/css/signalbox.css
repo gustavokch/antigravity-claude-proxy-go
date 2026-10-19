@@ -2483,9 +2483,16 @@ pre.codeblock {
   min-width: 14rem;
   width: 34%;
 }
-@media (max-width: 720px) {
-  .mdl-model { min-width: 8rem; }
-  .mdl-quota { min-width: 8rem; width: auto; }
+@media (max-width: 767px) {
+  .mdl-model,
+  .mdl-quota {
+    min-width: 0;
+    width: auto;
+  }
+  .mdl-model-id {
+    flex-wrap: wrap;
+    overflow-wrap: anywhere;
+  }
 }
 .mdl-quota-line {
   display: flex;
