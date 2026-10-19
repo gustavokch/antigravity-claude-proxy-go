@@ -537,19 +537,19 @@ Anthropic-wire subset — Claude models and Qwen Anthropic variants:
 `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5-5`, `claude-opus-5`,
 `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-opus-4-5`,
 `claude-sonnet-5-5`, `claude-sonnet-5`, `claude-sonnet-4-6`,
-`claude-sonnet-4-5`, `claude-haiku-4-5`,
+`claude-sonnet-4-5`, `claude-haiku-4-5`, `claude-haiku-5-5`,
 `qwen3.8-flash`, `qwen3.6-plus`, `qwen3.5-plus`.
 
 Chat-Completions-wire subset (`zen.ChatWireIDs`) — DeepSeek, MiniMax, GLM,
-Kimi, Big Pickle, and the `*-free` models:
+Kimi, Qwen Max, Mistral, Big Pickle, and the `*-free` models:
 
 `deepseek-v4.1-flash`, `deepseek-v4-pro`, `deepseek-v4-flash`,
 `minimax-m3`, `minimax-m2.7`, `minimax-m2.5`,
 `glm-5.3-flash`, `glm-5.3`, `glm-5.2`, `glm-5.1`, `glm-5`, `kimi-k3`,
-`kimi-k2.7-code`, `kimi-k2.6`, `kimi-k2.5`, `big-pickle`, `space-bunny-free`,
-`mimo-v2.6-flash-free`, `nemotron-3.5-lightning-free`,
-`nemotron-3.5-super-vl-free`, `beam-free`, `longcat-2.5-preview-free`,
-`deepseek-v4.1-flash-free`, `glm-5.3-flash-free`.
+`kimi-k2.7-code`, `kimi-k2.6`, `kimi-k2.5`, `qwen3.8-max`, `mistral-large-4`,
+`big-pickle`, `space-bunny-free`, `mimo-v2.6-flash-free`,
+`nemotron-3.5-lightning-free`, `nemotron-3.5-super-vl-free`, `beam-free`,
+`longcat-2.5-preview-free`, `deepseek-v4.1-flash-free`, `glm-5.3-flash-free`.
 
 Responses-wire subset (`zen.ResponsesWireIDs`) — GPT, Grok, and Muse models
 served by OpenCode's `/zen/v1/responses` endpoint:

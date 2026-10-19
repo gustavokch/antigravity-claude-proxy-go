@@ -20,7 +20,7 @@ type catalogSnapshot struct {
 
 // catalogSnapshotPath is the one place the snapshot file is named. Refreshing
 // the catalog by renaming the file means changing this line and nothing else.
-const catalogSnapshotPath = "testdata/catalog-2026-09-30.json"
+const catalogSnapshotPath = "testdata/catalog-2026-10-18.json"
 
 func loadCatalogSnapshot(t *testing.T) catalogSnapshot {
 	t.Helper()
@@ -38,50 +38,120 @@ func loadCatalogSnapshot(t *testing.T) catalogSnapshot {
 	return snap
 }
 
-// wireDrift diffs AnthropicWireIDs against a catalog id list: the claude-* ids
-// IsAnthropicWire rejects, and the AnthropicWireIDs entries absent from the
-// catalog, both sorted. It is the single implementation behind the snapshot
-// tests here and the zen_live test, so the two cannot disagree about what
-// drift means.
-func wireDrift(catalog []string) (unclaimed, stale []string) {
+const (
+	reasonGoogleWire    = "docs endpoint table serves it on /inference/google/v1beta, a wire the proxy does not speak"
+	reasonSystemoneWire = "docs endpoint table serves it on /inference/systemone, a wire the proxy does not speak"
+	reasonUndocumented  = "in /zen/v1/models but absent from the docs endpoint table (2026-10-18): its wire is unverified, so it stays fail-closed"
+)
+
+// unforwardableCatalogIDs are catalog ids the proxy deliberately leaves on
+// WireNone, each with the reason. A catalog id that is neither routed by
+// WireFor nor listed here fails the drift test, so a new upstream id is a
+// reviewable decision instead of an "Unsupported wire" badge nobody chose.
+var unforwardableCatalogIDs = map[string]string{
+	"claude-opus-5-5-backup": reasonUndocumented,
+	"gemini-3-flash":         reasonGoogleWire,
+	"gemini-3.1-pro":         reasonGoogleWire,
+	"gemini-3.5-flash":       reasonGoogleWire,
+	"gemini-3.5-flash-lite":  reasonGoogleWire,
+	"gemini-3.6-flash":       reasonGoogleWire,
+	"gemini-3.7-flash":       reasonGoogleWire,
+	"gemini-3.8-flash":       reasonGoogleWire,
+	"gemini-4-argon":         reasonGoogleWire,
+	"jev-1.13":               reasonSystemoneWire,
+	"jev-1.13-free":          reasonSystemoneWire,
+	"test":                   reasonUndocumented,
+}
+
+// wireLists names the three lists init() keys into wireSet.
+var wireLists = []struct {
+	name string
+	ids  []string
+}{
+	{"AnthropicWireIDs", AnthropicWireIDs},
+	{"ChatWireIDs", ChatWireIDs},
+	{"ResponsesWireIDs", ResponsesWireIDs},
+}
+
+// catalogDrift diffs the wire lists against a catalog id list: the catalog ids
+// WireFor leaves on WireNone that unforwardableCatalogIDs does not acknowledge,
+// and the wire-list entries absent from the catalog, both sorted. It is the
+// single implementation behind the snapshot tests here and the zen_live test,
+// so the two cannot disagree about what drift means.
+func catalogDrift(catalog []string) (unrouted, stale []string) {
 	live := make(map[string]bool, len(catalog))
 	for _, id := range catalog {
 		live[id] = true
-		if strings.HasPrefix(id, "claude-") && !IsAnthropicWire(id) {
-			unclaimed = append(unclaimed, id)
+		if _, wire := WireFor(id); wire != WireNone {
+			continue
+		}
+		if _, acknowledged := unforwardableCatalogIDs[id]; acknowledged {
+			continue
+		}
+		unrouted = append(unrouted, id)
+	}
+	for _, list := range wireLists {
+		for _, id := range list.ids {
+			if !live[id] {
+				stale = append(stale, id)
+			}
 		}
 	}
-	for _, id := range AnthropicWireIDs {
-		if !live[id] {
-			stale = append(stale, id)
-		}
-	}
-	sort.Strings(unclaimed)
+	sort.Strings(unrouted)
 	sort.Strings(stale)
-	return unclaimed, stale
+	return unrouted, stale
 }
 
-// TestAnthropicWireIDsCoverLiveClaudeModels is the regression guard for the
-// bug class: a live claude-* id that AnthropicWireIDs does not claim is
-// reported by the proxy as forwardable-looking but resolves to WireNone, so
-// the request falls through to a gateway that cannot speak the Anthropic wire.
-func TestAnthropicWireIDsCoverLiveClaudeModels(t *testing.T) {
-	snap := loadCatalogSnapshot(t)
-	unclaimed, _ := wireDrift(snap.IDs)
-	if len(unclaimed) > 0 {
-		t.Errorf("live claude-* ids not in AnthropicWireIDs: %v\n"+
-			"they will fall through to a gateway that cannot speak the Anthropic wire; "+
-			"add them to AnthropicWireIDs and refresh the snapshot", unclaimed)
+// TestCatalogIDsAreRouted is the regression guard for the bug class: a live id
+// in no wire list resolves to WireNone, discovery marks it "Unsupported wire",
+// and an allowlisted request for it falls through to a gateway that was never
+// asked for that model.
+func TestCatalogIDsAreRouted(t *testing.T) {
+	unrouted, _ := catalogDrift(loadCatalogSnapshot(t).IDs)
+	if len(unrouted) > 0 {
+		t.Errorf("catalog ids on WireNone: %v\n"+
+			"add each to the wire list the docs endpoint table names, "+
+			"or to unforwardableCatalogIDs with the reason", unrouted)
 	}
 }
 
-// TestAnthropicWireIDsHaveNoStaleEntries keeps the list honest in the other
-// direction: an id Zen no longer serves should not keep claiming the wire.
-func TestAnthropicWireIDsHaveNoStaleEntries(t *testing.T) {
-	snap := loadCatalogSnapshot(t)
-	_, stale := wireDrift(snap.IDs)
+// TestWireIDListsHaveNoStaleEntries keeps the lists honest in the other
+// direction: an id Zen no longer serves should not keep claiming a wire.
+func TestWireIDListsHaveNoStaleEntries(t *testing.T) {
+	_, stale := catalogDrift(loadCatalogSnapshot(t).IDs)
 	if len(stale) > 0 {
-		t.Errorf("AnthropicWireIDs entries not in the catalog snapshot: %v\n"+
+		t.Errorf("wire-list entries not in the catalog snapshot: %v\n"+
 			"either the id was retired upstream or the snapshot is stale", stale)
+	}
+}
+
+// An exemption that outlives its reason hides the drift it was written for.
+func TestUnforwardableExemptionsStayHonest(t *testing.T) {
+	live := map[string]bool{}
+	for _, id := range loadCatalogSnapshot(t).IDs {
+		live[id] = true
+	}
+	for id := range unforwardableCatalogIDs {
+		if !live[id] {
+			t.Errorf("exempt id %q is no longer in the catalog snapshot; drop the exemption", id)
+		}
+		if _, wire := WireFor(id); wire != WireNone {
+			t.Errorf("exempt id %q is now routed (wire %v); drop the exemption", id, wire)
+		}
+	}
+}
+
+// init() keys all three lists into one map, so an id listed twice silently
+// takes the wire of whichever list is registered last.
+func TestWireIDListsAreDisjoint(t *testing.T) {
+	owner := map[string]string{}
+	for _, list := range wireLists {
+		for _, id := range list.ids {
+			key := strings.ToLower(id)
+			if prev, dup := owner[key]; dup {
+				t.Errorf("id %q is in both %s and %s; init() keeps only the last writer", id, prev, list.name)
+			}
+			owner[key] = list.name
+		}
 	}
 }

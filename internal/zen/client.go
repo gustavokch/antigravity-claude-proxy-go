@@ -48,6 +48,7 @@ var AnthropicWireIDs = []string{
 	"claude-sonnet-4-6",
 	"claude-sonnet-4-5",
 	"claude-haiku-4-5",
+	"claude-haiku-5-5",
 	"qwen3.8-flash",
 	"qwen3.6-plus",
 	"qwen3.5-plus",
@@ -55,7 +56,7 @@ var AnthropicWireIDs = []string{
 
 // ChatWireIDs is the static allowlist of Zen catalog ids that speak the
 // OpenAI /v1/chat/completions wire format (docs endpoint table, cross-checked
-// against the live catalog 2026-09-24). Requests to these ids are translated
+// against the live catalog 2026-10-18). Requests to these ids are translated
 // Anthropic→Chat Completions and the response back. Everything not in any of
 // the three lists (gemini-* → Gemini-native; jev-* → /v1/systemone) is not
 // forwardable.
@@ -83,13 +84,15 @@ var ChatWireIDs = []string{
 	"longcat-2.5-preview-free",
 	"deepseek-v4.1-flash-free",
 	"glm-5.3-flash-free",
+	"qwen3.8-max",
+	"mistral-large-4",
 	"nemotron-3.5-lightning-free",
 }
 
 // ResponsesWireIDs is the static allowlist of Zen catalog ids that speak the
 // OpenAI /v1/responses wire format (docs endpoint table, cross-checked against
-// the live catalog 2026-09-30 by catalog_responses_drift_test.go, which also
-// records the one gpt-/grok-/muse- catalog id left unclaimed on purpose).
+// the live catalog 2026-10-18 by catalog_drift_test.go, which also records
+// every catalog id left unrouted on purpose).
 // Requests to these ids are translated Anthropic↔Responses by
 // internal/zen/responseswire.go. Everything not in any list (gemini-* →
 // Gemini-native; jev-* → /v1/systemone) is not forwardable.
