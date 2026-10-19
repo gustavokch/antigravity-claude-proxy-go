@@ -92,6 +92,37 @@ func TestServer_HandleZenConfigGet_KeySourceEnv(t *testing.T) {
 	}
 }
 
+// The WebUI route diagram reads Zen's credential state from /api/config, so
+// that payload must count the OPENCODE_API_KEY fallback the way routing does.
+func TestServer_HandleConfigGet_ZenKeySourceEnv(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "sk-zen-env-only")
+	server, _, _ := newTestServerWithManager(t)
+	t.Cleanup(func() { config.SetForTest(config.DefaultConfig()) })
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-zen-env-only") {
+		t.Fatalf("/api/config must never echo the env key")
+	}
+	var body struct {
+		Config struct {
+			Zen map[string]any `json:"zen"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Config.Zen["keySource"] != "env" {
+		t.Errorf("zen.keySource = %v, want env", body.Config.Zen["keySource"])
+	}
+	if body.Config.Zen["hasApiKey"] != true {
+		t.Errorf("zen.hasApiKey = %v, want true (env fallback)", body.Config.Zen["hasApiKey"])
+	}
+}
+
 func TestServer_HandleZenConfigSave_RoundTripHonoredOnNextForward(t *testing.T) {
 	t.Setenv("OPENCODE_API_KEY", "")
 

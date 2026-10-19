@@ -1306,6 +1306,9 @@ func (server *Server) handleAccountsImport(writer http.ResponseWriter, request *
 
 func (server *Server) handleConfigGet(writer http.ResponseWriter, request *http.Request) {
 	publicCfg := config.GetPublicConfig()
+	if zenMap, ok := publicCfg["zen"].(map[string]any); ok {
+		applyZenKeySource(zenMap, config.Get().Zen)
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"config":  publicCfg,
@@ -2421,6 +2424,17 @@ func zenKeySource(cfg config.ZenConfig) string {
 	return "none"
 }
 
+// applyZenKeySource marks a public zen config map with the key source and
+// sets hasApiKey for an env-only key, so every WebUI reader sees the same
+// credential state that routing (zenAPIKey) uses.
+func applyZenKeySource(zenMap map[string]any, cfg config.ZenConfig) {
+	source := zenKeySource(cfg)
+	zenMap["keySource"] = source
+	if source != "none" {
+		zenMap["hasApiKey"] = true
+	}
+}
+
 func (server *Server) handleZenConfigGet(writer http.ResponseWriter, request *http.Request) {
 	pub := config.GetPublicConfig()
 	zenMap, _ := pub["zen"].(map[string]any)
@@ -2433,11 +2447,7 @@ func (server *Server) handleZenConfigGet(writer http.ResponseWriter, request *ht
 		}
 	}
 	cfg := config.Get()
-	source := zenKeySource(cfg.Zen)
-	zenMap["keySource"] = source
-	if source != "none" {
-		zenMap["hasApiKey"] = true
-	}
+	applyZenKeySource(zenMap, cfg.Zen)
 	activeCount := 0
 	if cfg.Zen.Enabled {
 		for _, m := range cfg.Zen.Allowlist {
@@ -2470,11 +2480,7 @@ func (server *Server) handleZenConfigSave(writer http.ResponseWriter, request *h
 	pub := config.GetPublicConfig()
 	zenMap, _ := pub["zen"].(map[string]any)
 	if zenMap != nil {
-		source := zenKeySource(saved.Zen)
-		zenMap["keySource"] = source
-		if source != "none" {
-			zenMap["hasApiKey"] = true
-		}
+		applyZenKeySource(zenMap, saved.Zen)
 	}
 	// Re-arm the one-shot keyless warning so a later misconfiguration warns
 	// again instead of staying silent for the process lifetime.
