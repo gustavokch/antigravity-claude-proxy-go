@@ -448,9 +448,9 @@
                                 <td class="acc-status-cell">
                                     <div class="acc-status">
                                         <div class="acc-status-head">
-                                            <span class="lamp" :class="'lamp-' + ccStatus(acc).lamp" aria-hidden="true"></span>
-                                            <span class="t-strong" :class="ccStatus(acc).tone"
-                                                  x-text="$store.global.t(ccStatus(acc).key)"></span>
+                                            <span class="lamp" :class="'lamp-' + accountStatus(acc).lamp" aria-hidden="true"></span>
+                                            <span class="t-strong" :class="accountStatus(acc).tone"
+                                                  x-text="$store.global.t(accountStatus(acc).key)"></span>
                                         </div>
                                         <p class="acc-reason t-caution"
                                            x-show="window.QuotaView.inCooldown(acc.cooldownUntil)"

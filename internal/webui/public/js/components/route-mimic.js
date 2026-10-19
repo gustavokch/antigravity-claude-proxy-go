@@ -37,26 +37,16 @@ window.Components.routeMimic = () => ({
         return this.t('gateway' + id.charAt(0).toUpperCase() + id.slice(1));
     },
 
-    // Same rule as the Accounts view (accountManager.accountStatus): every
-    // quota pool at 0% blocks the account, one exhausted pool is caution.
-    accountAspect(acc) {
-        if (!acc.enabled || acc.status === 'disabled') return 'off';
-        if (acc.status === 'invalid' || acc.isInvalid) return 'danger';
-        const exhausted = window.QuotaView.exhaustion(acc.quota && acc.quota.pools);
-        if (exhausted === 'all') return 'danger';
-        if (acc.status === 'ok' && exhausted === 'none') return 'clear';
-        return 'caution'; // rate_limited, cooldown, partly exhausted
-    },
-
+    // Lamps use QuotaView.accountAspect, the rule the Accounts view uses.
+    // The node is clear only when every enabled account is ready and clear.
     accountGroup(provider) {
         const rows = this.realAccounts().filter((a) => (a.provider || 'google') === provider);
-        const lamps = rows.map((a) => ({
-            key: a.id || a.email,
-            aspect: this.accountAspect(a),
-            title: a.email || a.name || a.id,
-        }));
+        const lamps = rows.map((a) => {
+            const st = window.QuotaView.accountAspect(a);
+            return { key: a.id || a.email, aspect: st.lamp, ready: st.ready, title: a.email || a.name || a.id };
+        });
         const enabled = lamps.filter((l) => l.aspect !== 'off');
-        const ready = enabled.filter((l) => l.aspect === 'clear');
+        const ready = enabled.filter((l) => l.ready);
         let aspect = 'clear';
         let reason;
         if (enabled.length === 0) {
@@ -66,7 +56,7 @@ window.Components.routeMimic = () => ({
             aspect = 'danger';
             reason = this.t('routeNoAccountReady');
         } else {
-            if (ready.length < enabled.length) aspect = 'caution';
+            if (enabled.some((l) => l.aspect !== 'clear')) aspect = 'caution';
             reason = this.t('routeAccountsReady', { ready: ready.length, total: enabled.length });
         }
         return { aspect, reason, lamps };

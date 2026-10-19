@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const COMPONENTS = new URL('../public/js/components/', import.meta.url);
 
-export function loadComponent(file, exportName, { manualTimers = false } = {}) {
+export function loadComponent(file, exportName, { manualTimers = false, data = {} } = {}) {
     const requests = [];               // { url, options, resolve, reject }
     const toasts = [];
     const closedDialogs = [];
@@ -36,7 +36,7 @@ export function loadComponent(file, exportName, { manualTimers = false } = {}) {
             return 0;
         },
         clearTimeout: () => {},
-        Alpine: { store: (name) => (name === 'global' ? store : {}) },
+        Alpine: { store: (name) => (name === 'global' ? store : name === 'data' ? data : {}) },
         document: {
             getElementById: dialog,
             querySelectorAll: () => [],
@@ -58,7 +58,7 @@ export function loadComponent(file, exportName, { manualTimers = false } = {}) {
     vm.runInContext(fs.readFileSync(url, 'utf8'), sandbox, { filename: url.pathname });
     const flushTimers = () => timers.splice(0).forEach((fn) => fn());
     return { component: sandbox.window.Components[exportName](),
-             requests, toasts, closedDialogs, downloads, store, dialog, flushTimers };
+             requests, toasts, closedDialogs, downloads, store, data, dialog, flushTimers };
 }
 
 export const okResponse = (data) => ({

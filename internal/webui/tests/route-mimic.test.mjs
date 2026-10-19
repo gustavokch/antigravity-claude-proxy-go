@@ -43,7 +43,27 @@ function partlyExhaustedAccountIsCaution() {
     });
     const cc = c.gatewayState('cloudcode');
     assert.deepEqual(cc.lamps.map((l) => l.aspect), ['caution', 'clear']);
-    assert.equal(cc.aspect, 'caution', 'one of two accounts ready');
+    assert.equal(cc.aspect, 'caution', 'both serve; one is partly exhausted');
+}
+
+function partlyExhaustedAccountStillServes() {
+    const c = loadMimic({ accounts: [
+        { email: 'a@x', provider: 'google', enabled: true, status: 'ok', quota: pools(0, 0.8) },
+    ] });
+    const cc = c.gatewayState('cloudcode');
+    assert.equal(cc.lamps[0].aspect, 'caution');
+    assert.equal(cc.aspect, 'caution', 'Cloud Code still serves the model with quota left');
+    assert.equal(cc.reason, 'routeAccountsReady');
+}
+
+function exhaustedClaudeCodeAccountIsNotReady() {
+    const c = loadMimic({
+        accounts: [{ id: 'c1', email: 'c@x', provider: 'claudecode', enabled: true, status: 'rate_limited', quota: pools(0, 0) }],
+        gateways: { claudecode: { enabled: true } },
+    });
+    const st = c.gatewayState('claudecode');
+    assert.equal(st.lamps[0].aspect, 'danger');
+    assert.equal(st.reason, 'routeNoAccountReady');
 }
 
 function signalsOpenTheMatchingAccountsTab() {
@@ -61,6 +81,8 @@ function signalsOpenTheMatchingAccountsTab() {
 const cases = [
     ['an account with every pool exhausted is not ready', exhaustedAccountIsNotReady],
     ['an account with one pool exhausted is caution', partlyExhaustedAccountIsCaution],
+    ['a partly exhausted account still serves', partlyExhaustedAccountStillServes],
+    ['an exhausted Claude Code account is not ready', exhaustedClaudeCodeAccountIsNotReady],
     ['gateway signals open the matching accounts tab', signalsOpenTheMatchingAccountsTab],
 ];
 for (const [name, fn] of cases) {

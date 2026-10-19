@@ -72,13 +72,46 @@ window.QuotaView = (() => {
         return Number.isFinite(until) && until > now;
     }
 
-    // How exhausted a raw quota.pools object is, from its known percents:
-    // 'all' when every known pool is at 0%, 'some' when at least one is,
-    // 'none' otherwise (including no known pools).
-    function exhaustion(pools) {
-        const pcts = sortedPools(pools).map(poolPercent).filter(isNum);
-        if (pcts.length > 0 && pcts.every(p => p <= 0)) return 'all';
-        return pcts.some(p => p <= 0) ? 'some' : 'none';
+    // Known remaining percents from per-model limits ({ model: { remainingFraction } | null }).
+    function limitPercents(limits) {
+        return Object.values(limits || {}).map(poolPercent).filter(isNum);
+    }
+
+    // One account's aspect for every view (Accounts rows and header, route
+    // diagram). blocked: no model can be served. ready: at least one model
+    // can be served now. Limits are read only for a plain ok account: the
+    // server zeroes every Claude limit of a CC account in cooldown or rate
+    // limited, which is a wait, not an exhausted quota.
+    function accountAspect(acc, now = Date.now()) {
+        const a = acc || {};
+        if (a.enabled === false || a.status === 'disabled') {
+            return { lamp: 'off', key: 'accStatusDisabled', blocked: false, ready: false };
+        }
+        if (a.status === 'invalid' || a.status === 'banned' || a.isInvalid) {
+            const key = a.status === 'banned' ? 'accStatusBanned' : 'accStatusInvalid';
+            return { lamp: 'danger', key, blocked: true, ready: false };
+        }
+        const pools = sortedPools(a.quota && a.quota.pools).map(poolPercent).filter(isNum);
+        if (pools.length > 0 && pools.every((p) => p <= 0)) {
+            return { lamp: 'danger', key: 'accStatusExhausted', blocked: true, ready: false };
+        }
+        if (a.status === 'cooldown' || inCooldown(a.cooldownUntil, now)) {
+            return { lamp: 'caution', key: 'cooldown', blocked: false, ready: false };
+        }
+        if (a.status === 'rate_limited') {
+            return { lamp: 'caution', key: 'accStatusRateLimited', blocked: false, ready: false };
+        }
+        if (a.status !== 'ok' && a.status !== 'healthy') {
+            return { lamp: 'caution', key: 'accStatusUnknown', blocked: false, ready: false };
+        }
+        const pcts = pools.length > 0 ? pools : limitPercents(a.limits);
+        if (pcts.length > 0 && pcts.every((p) => p <= 0)) {
+            return { lamp: 'danger', key: 'accStatusExhausted', blocked: true, ready: false };
+        }
+        if (pcts.some((p) => p <= 0)) {
+            return { lamp: 'caution', key: 'accStatusPartlyExhausted', blocked: false, ready: true };
+        }
+        return { lamp: 'clear', key: 'accStatusReady', blocked: false, ready: true };
     }
 
     // Signal Box level for a remaining percent. 'off' when unknown, 'danger'
@@ -259,7 +292,7 @@ window.QuotaView = (() => {
     }
 
     return {
-        splitPoolId, poolPercent, sortedPools, poolFamilyLabel, inCooldown, exhaustion,
+        splitPoolId, poolPercent, sortedPools, poolFamilyLabel, inCooldown, accountAspect,
         remainingLevel, usedLevel, toneClass, usedTextClass,
         burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
         reportRows, reportPeriod, usageURL, historySince, escapeHTML, poolLabel, poolSourceLabel,
@@ -336,17 +369,16 @@ window.Components.accountManager = () => ({
         return (Alpine.store('data').accounts || []).filter(acc => acc.provider === 'claudecode');
     },
 
-    // Enabled Google accounts and how many are ready (clear aspect: status ok
-    // and at least one quota window with quota left).
+    // Enabled Google accounts and how many can serve a model now.
     get googleSummary() {
         const enabled = this.googleAccounts.filter(acc => acc.enabled !== false);
-        return { enabled: enabled.length, ready: enabled.filter(acc => this.accountStatus(acc).lamp === 'clear').length };
+        return { enabled: enabled.length, ready: enabled.filter(acc => this.accountStatus(acc).ready).length };
     },
 
-    // Enabled Claude Code accounts and how many are not in cooldown.
+    // Enabled Claude Code accounts and how many can serve a model now.
     get ccSummary() {
         const enabled = this.allCCAccounts.filter(acc => acc.enabled !== false);
-        return { enabled: enabled.length, ready: enabled.filter(acc => !window.QuotaView.inCooldown(acc.cooldownUntil)).length };
+        return { enabled: enabled.length, ready: enabled.filter(acc => this.accountStatus(acc).ready).length };
     },
 
 
@@ -660,42 +692,11 @@ window.Components.accountManager = () => ({
         return typeof f === 'number' && Number.isFinite(f) ? Math.round(f * 100) : null;
     },
 
-    // Lamp, text tone and label key for a Google account row. Invalid and
-    // banned accounts, and accounts with every quota window at 0%, are
-    // blocked (danger); rate limits and partly exhausted windows are caution.
+    // Lamp, text tone, label key, blocked and ready for a Google or Claude
+    // Code row. The rule lives in QuotaView.accountAspect.
     accountStatus(acc) {
-        if (acc.enabled === false || acc.status === 'disabled') {
-            return { lamp: 'off', tone: 't-3', key: 'accStatusDisabled', blocked: false };
-        }
-        if (acc.status === 'invalid' || acc.status === 'banned') {
-            const key = acc.status === 'banned' ? 'accStatusBanned' : 'accStatusInvalid';
-            return { lamp: 'danger', tone: 't-danger', key, blocked: true };
-        }
-        const exhausted = window.QuotaView.exhaustion(acc.quota && acc.quota.pools);
-        if (exhausted === 'all') {
-            return { lamp: 'danger', tone: 't-danger', key: 'accStatusExhausted', blocked: true };
-        }
-        if (acc.status === 'rate_limited') {
-            return { lamp: 'caution', tone: 't-caution', key: 'accStatusRateLimited', blocked: false };
-        }
-        if (exhausted === 'some') {
-            return { lamp: 'caution', tone: 't-caution', key: 'accStatusPartlyExhausted', blocked: false };
-        }
-        if (acc.status === 'ok') {
-            return { lamp: 'clear', tone: 't-2', key: 'accStatusOk', blocked: false };
-        }
-        return { lamp: 'caution', tone: 't-caution', key: 'accStatusUnknown', blocked: false };
-    },
-
-    // Lamp, text tone and label key for a Claude Code account row.
-    ccStatus(acc) {
-        if (acc.enabled === false) {
-            return { lamp: 'off', tone: 't-3', key: 'accStatusDisabled' };
-        }
-        if (window.QuotaView.inCooldown(acc.cooldownUntil)) {
-            return { lamp: 'caution', tone: 't-caution', key: 'cooldown' };
-        }
-        return { lamp: 'clear', tone: 't-2', key: 'accStatusReady' };
+        const aspect = window.QuotaView.accountAspect(acc);
+        return { ...aspect, tone: window.QuotaView.toneClass(aspect.lamp) };
     },
 
     usageWindows(usage) {

@@ -18,6 +18,8 @@ function loadQuotaView() {
 const qv = loadQuotaView();
 // Values from the vm realm, copied so deepEqual compares structure only.
 const local = (v) => JSON.parse(JSON.stringify(v));
+const poolsOf = (...f) => ({ pools: Object.fromEntries(f.map((v, i) => [`gemini-${i}`, { remainingFraction: v }])) });
+const limitsOf = (...f) => Object.fromEntries(f.map((v, i) => [`model-${i}`, v === null ? null : { remainingFraction: v }]));
 
 function poolOrder() {
     const google = {
@@ -272,12 +274,53 @@ function cooldown() {
     assert.equal(qv.inCooldown('not a time', now), false);
 
     const { component: c } = loadComponent('account-manager.js', 'accountManager');
-    const never = { id: 'a', enabled: true, cooldownUntil: '0001-01-01T00:00:00Z' };
-    const cooling = { id: 'b', enabled: true, cooldownUntil: new Date(Date.now() + 60_000).toISOString() };
-    assert.equal(c.ccStatus(never).key, 'accStatusReady');
-    assert.equal(c.ccStatus(cooling).key, 'cooldown');
+    const never = { id: 'a', enabled: true, status: 'healthy', cooldownUntil: '0001-01-01T00:00:00Z' };
+    const cooling = { id: 'b', enabled: true, status: 'healthy', cooldownUntil: new Date(Date.now() + 60_000).toISOString() };
+    assert.equal(c.accountStatus(never).key, 'accStatusReady');
+    assert.equal(c.accountStatus(cooling).key, 'cooldown');
     c.ccAccounts = [never, cooling];
     assert.deepEqual(local(c.ccSummary), { enabled: 2, ready: 1 });
+}
+
+// One rule for every view. blocked: no model can be served. ready: at least
+// one model can be served now (a partly exhausted account is ready).
+function accountAspects() {
+    const now = Date.parse('2026-10-19T12:00:00Z');
+    const cases = [
+        ['disabled', { enabled: false, status: 'ok' }, 'off', 'accStatusDisabled', false, false],
+        ['invalid', { enabled: true, status: 'invalid' }, 'danger', 'accStatusInvalid', true, false],
+        ['every pool at 0%', { enabled: true, status: 'ok', quota: poolsOf(0, 0) }, 'danger', 'accStatusExhausted', true, false],
+        ['one pool at 0%', { enabled: true, status: 'ok', quota: poolsOf(0, 0.8) }, 'caution', 'accStatusPartlyExhausted', false, true],
+        ['no pools, every known limit at 0%', { enabled: true, status: 'ok', limits: limitsOf(0, 0, null) }, 'danger', 'accStatusExhausted', true, false],
+        ['no pools, one limit at 0%', { enabled: true, status: 'ok', limits: limitsOf(0, 0.5) }, 'caution', 'accStatusPartlyExhausted', false, true],
+        ['rate limited; server zeroed its limits', { enabled: true, status: 'rate_limited', quota: poolsOf(0.5), limits: limitsOf(0, 0) }, 'caution', 'accStatusRateLimited', false, false],
+        ['rate limited with every pool at 0%', { enabled: true, status: 'rate_limited', quota: poolsOf(0, 0) }, 'danger', 'accStatusExhausted', true, false],
+        ['cooldown; server zeroed its limits', { enabled: true, status: 'cooldown', limits: limitsOf(0) }, 'caution', 'cooldown', false, false],
+        ['snapshot cooldown still ahead', { enabled: true, status: 'ok', cooldownUntil: '2026-10-19T12:05:00Z' }, 'caution', 'cooldown', false, false],
+        ['healthy snapshot, Go zero cooldown', { enabled: true, status: 'healthy', cooldownUntil: '0001-01-01T00:00:00Z' }, 'clear', 'accStatusReady', false, true],
+        ['ok with quota left', { enabled: true, status: 'ok', quota: poolsOf(0.4, 0.9) }, 'clear', 'accStatusReady', false, true],
+        ['unknown status', { enabled: true, status: 'weird' }, 'caution', 'accStatusUnknown', false, false],
+    ];
+    for (const [name, acc, lamp, key, blocked, ready] of cases) {
+        assert.deepEqual(local(qv.accountAspect(acc, now)), { lamp, key, blocked, ready }, name);
+    }
+}
+
+// Header counts use the same rule on both tabs.
+function summariesCountReadyAccounts() {
+    const data = { accounts: [
+        { id: 'g1', email: 'g1', provider: 'google', enabled: true, status: 'ok', quota: poolsOf(0, 0.8) },
+        { id: 'g2', email: 'g2', provider: 'google', enabled: true, status: 'ok', quota: poolsOf(0, 0) },
+        { id: 'c1', email: 'c1', provider: 'claudecode', enabled: true, status: 'rate_limited', quota: poolsOf(0.5) },
+        { id: 'c2', email: 'c2', provider: 'claudecode', enabled: true, status: 'ok', quota: poolsOf(0.5) },
+        { id: 'c3', email: 'c3', provider: 'claudecode', enabled: true, status: 'rate_limited', quota: poolsOf(0, 0) },
+    ] };
+    const { component: c } = loadComponent('account-manager.js', 'accountManager', { data });
+    assert.deepEqual(local(c.googleSummary), { enabled: 2, ready: 1 }, 'partly exhausted g1 is ready');
+    assert.deepEqual(local(c.ccSummary), { enabled: 3, ready: 1 }, 'rate-limited c1 and exhausted c3 are not ready');
+    assert.equal(c.accountStatus(data.accounts[2]).key, 'accStatusRateLimited');
+    assert.equal(c.accountStatus(data.accounts[4]).lamp, 'danger');
+    assert.equal(c.accountStatus(data.accounts[4]).tone, 't-danger');
 }
 
 const cases = [
@@ -294,6 +337,8 @@ const cases = [
     ['switching reports while one is loading loads both', historySwitchWhileLoading],
     ['usage tracking disabled is shown and not cached', historyDisabled],
     ['zero or past Claude Code cooldown time is no cooldown', cooldown],
+    ['one account aspect rule for every view', accountAspects],
+    ['header counts use the readiness rule', summariesCountReadyAccounts],
 ];
 
 for (const [name, fn] of cases) {
