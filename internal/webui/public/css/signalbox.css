@@ -2707,6 +2707,55 @@ pre.codeblock {
   }
 }
 
+/* Phones: each account row is a block. Enable and name share the first
+   line; quota, status and operations each take a full line below. The
+   header hides because every cell labels itself (lamp + word, named
+   progressbars, named buttons). */
+@media (max-width: 767px) {
+  .acc-table,
+  .acc-table tbody {
+    display: block;
+  }
+  .acc-table thead {
+    display: none;
+  }
+  .acc-table tbody tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--sb-s2) var(--sb-s3);
+    padding: var(--sb-s3);
+    border-bottom: 1px solid var(--sb-rule);
+  }
+  .acc-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .acc-table tbody td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+  }
+  .acc-table tbody td.acc-second {
+    display: none;
+  }
+  .acc-table .acc-enable {
+    width: auto;
+  }
+  .acc-table .acc-quota-cell,
+  .acc-table .acc-status-cell,
+  .acc-table .acc-ops-cell,
+  .acc-table .acc-empty-cell {
+    grid-column: 1 / -1;
+  }
+  .acc-table .acc-ops {
+    justify-content: flex-start;
+  }
+  .acc-table .acc-email {
+    max-width: 100%;
+  }
+}
+
 .acc-email {
   display: inline-block;
   max-width: 34ch;

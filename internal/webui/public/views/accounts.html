@@ -183,7 +183,7 @@
                                            @change="toggleAccount(acc.email, $el.checked)">
                                 </td>
 
-                                <td>
+                                <td class="acc-name-cell">
                                     <span class="mono acc-email"
                                           :title="Redact.email(acc.email)"
                                           x-text="formatEmail(Redact.email(acc.email))"></span>
@@ -246,7 +246,7 @@
                                 </td>
 
                                 <!-- Status: lamp and word; the reason and verify link stay visible -->
-                                <td>
+                                <td class="acc-status-cell">
                                     <div class="acc-status">
                                         <div class="acc-status-head">
                                             <span class="lamp" :class="'lamp-' + accountStatus(acc).lamp" aria-hidden="true"></span>
@@ -264,7 +264,7 @@
                                 </td>
 
                                 <!-- Operations: labelled; delete stays apart from refresh -->
-                                <td>
+                                <td class="acc-ops-cell">
                                     <div class="acc-ops">
                                         <button type="button" class="btn btn-sm"
                                                 x-show="acc.status === 'invalid'"
@@ -374,7 +374,7 @@
                                            @change="toggleCCAccount(acc)">
                                 </td>
 
-                                <td>
+                                <td class="acc-name-cell">
                                     <div class="t-strong" x-text="acc.name || acc.id"></div>
                                     <div class="mono t-3 acc-id" x-text="'(' + acc.id + ')'"></div>
                                 </td>
@@ -445,7 +445,7 @@
                                 </td>
 
                                 <!-- Status: cooldown or ready, with the time left in cooldown -->
-                                <td>
+                                <td class="acc-status-cell">
                                     <div class="acc-status">
                                         <div class="acc-status-head">
                                             <span class="lamp" :class="'lamp-' + ccStatus(acc).lamp" aria-hidden="true"></span>
@@ -459,7 +459,7 @@
                                 </td>
 
                                 <!-- Operations: test, then delete apart -->
-                                <td>
+                                <td class="acc-ops-cell">
                                     <div class="acc-ops">
                                         <button type="button" class="btn btn-sm"
                                                 @click="testCCAccount(acc)"
