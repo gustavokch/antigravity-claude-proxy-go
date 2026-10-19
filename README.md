@@ -5,14 +5,14 @@
 1. **Translation Route**: Mirrors the official `agy` CLI upstream—native Go HTTPS transport, Cloud Code REST/SSE endpoints (`v1internal:streamGenerateContent`), exact client identity headers, and identical TLS ClientHello fingerprints with multi-account quota rotation.
 2. **Transparent Forwarding**: Direct reverse-proxy path bypassing translation for configured models, streaming unmodified Anthropic requests and SSE events to **OpenRouter's Anthropic Skin** (`/api/v1/messages`) or user-configured **Custom Endpoints**.
 
-The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an embedded flat dark **Web UI dashboard**, multi-account pool management with Google OAuth 2.0 PKCE, real-time log streaming, unified model discovery, and server-side model mapping.
+The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an embedded **Web UI console**, multi-account pool management with Google OAuth 2.0 PKCE, real-time log streaming, unified model discovery, and server-side model mapping.
 
 ---
 
 ## Key Features
 
 - **Exact `agy` Transport & Fingerprint Matching**: Matches the JA4 fingerprint (`t13d131100_f57a46bbacb6_f50d94e863eb`), cipher suite order, ALPN state, and header behavior of the official `agy` CLI.
-- **Embedded Web UI Dashboard**: Manage accounts, monitor rate limits, inspect request volume history, stream live logs via SSE, configure server/Claude CLI presets, manage model mappings, discover OpenRouter models, and manage Claude Code OAuth credentials.
+- **Embedded Web UI Console**: A route diagram in the top bar shows the request path (client → proxy → each gateway in precedence order) with a lamp per gateway and account: clear, caution, blocked, or off, with the reason on hover or focus. Views are switched with keys `1`–`5`. Manage accounts, monitor quota and rate limits, inspect request volume history, stream live logs via SSE, configure server/Claude CLI presets, manage model mappings, discover OpenRouter models, and manage Claude Code OAuth credentials. Day and night themes (Settings → Interface, or follow the OS).
 - **Multi-Account Pool & Selection Strategies**:
   - Auto-discovers local `agy` login credentials at `~/.gemini/antigravity-cli/antigravity-oauth-token`.
   - Built-in Google OAuth 2.0 PKCE sign-in flow for adding accounts (`antigravity-proxy accounts add` or Web UI).

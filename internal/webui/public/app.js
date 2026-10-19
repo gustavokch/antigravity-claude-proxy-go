@@ -14,6 +14,7 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('claudeConfig', window.Components.claudeConfig);
     Alpine.data('logsViewer', window.Components.logsViewer);
     Alpine.data('addAccountModal', window.Components.addAccountModal);
+    Alpine.data('routeMimic', window.Components.routeMimic);
 
     // View Loader Directive
     Alpine.directive('load-view', (el, { expression }, { evaluate }) => {
@@ -42,10 +43,11 @@ document.addEventListener('alpine:init', () => {
             })
             .catch(err => {
                 console.error('Failed to load view:', viewName, err);
-                el.innerHTML = `<div class="p-4 border border-red-500/50 bg-red-500/10 rounded-lg text-red-400 font-mono text-sm">
-                    Error loading view: ${viewName}<br>
-                    <span class="text-xs opacity-75">${err.message}</span>
-                </div>`;
+                el.innerHTML = `<div class="view"><div class="notice notice-danger" role="alert">
+                    <span class="lamp lamp-danger" aria-hidden="true"></span>
+                    <div><div class="notice-title">Error loading view: ${viewName}</div>
+                    <p>${err.message}. Reload the page; if it persists, check the proxy log.</p></div>
+                </div></div>`;
             });
     });
 
@@ -58,47 +60,27 @@ document.addEventListener('alpine:init', () => {
             return Alpine.store('data')?.loading || false;
         },
 
-        sidebarOpen: window.innerWidth >= 1024,
-        toggleSidebar() {
-            this.sidebarOpen = !this.sidebarOpen;
-        },
+        views: ['dashboard', 'models', 'accounts', 'logs', 'settings'],
 
         init() {
-            // Handle responsive sidebar transitions
-            let lastWidth = window.innerWidth;
-            let resizeTimeout = null;
-            
-            window.addEventListener('resize', () => {
-                if (resizeTimeout) clearTimeout(resizeTimeout);
-                
-                resizeTimeout = setTimeout(() => {
-                    const currentWidth = window.innerWidth;
-                    const lgBreakpoint = 1024;
-                    
-                    // Desktop -> Mobile: Auto-close sidebar to prevent overlay blocking screen
-                    if (lastWidth >= lgBreakpoint && currentWidth < lgBreakpoint) {
-                        this.sidebarOpen = false;
-                    }
-                    
-                    // Mobile -> Desktop: Auto-open sidebar (restore standard desktop layout)
-                    if (lastWidth < lgBreakpoint && currentWidth >= lgBreakpoint) {
-                        this.sidebarOpen = true;
-                    }
-                    
-                    lastWidth = currentWidth;
-                }, 150);
+            // Lever keys: 1-5 pull the view levers, unless the operator is
+            // typing or a modal holds focus: an open <dialog> or a
+            // class-opened .modal-open one, or a visible aria-modal confirm
+            // such as the dashboard's clear-stats prompt.
+            window.addEventListener('keydown', (e) => {
+                if (e.metaKey || e.ctrlKey || e.altKey) return;
+                const el = e.target;
+                if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+                if (document.querySelector('dialog[open], .modal-open')) return;
+                if ([...document.querySelectorAll('[aria-modal="true"]')].some((m) => m.checkVisibility())) return;
+                const i = Number(e.key) - 1;
+                if (Number.isInteger(i) && i >= 0 && i < this.views.length) {
+                    Alpine.store('global').activeTab = this.views[i];
+                }
             });
 
-            // Theme setup
-            document.documentElement.setAttribute('data-theme', 'black');
-            document.documentElement.classList.add('dark');
-
-            // Chart Defaults
-            if (typeof Chart !== 'undefined') {
-                Chart.defaults.color = window.utils.getThemeColor('--color-text-dim');
-                Chart.defaults.borderColor = window.utils.getThemeColor('--color-space-border');
-                Chart.defaults.font.family = '"JetBrains Mono", monospace';
-            }
+            this.applyChartDefaults();
+            document.addEventListener('sb-theme-changed', () => this.applyChartDefaults());
 
             // Start Data Polling
             this.startAutoRefresh();
@@ -106,6 +88,15 @@ document.addEventListener('alpine:init', () => {
 
             // Initial Fetch
             Alpine.store('data').fetchData();
+        },
+
+        // Chart.js reads colors once per chart; dashboard charts rebuild on
+        // sb-theme-changed and pick these defaults up.
+        applyChartDefaults() {
+            if (typeof Chart === 'undefined') return;
+            Chart.defaults.color = window.utils.getThemeColor('--sb-chart-tick');
+            Chart.defaults.borderColor = window.utils.getThemeColor('--sb-chart-grid');
+            Chart.defaults.font.family = '"Barlow", system-ui, sans-serif';
         },
 
         refreshTimer: null,

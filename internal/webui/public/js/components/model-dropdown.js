@@ -4,20 +4,18 @@
  * Registers itself to window.Components for Alpine.js to consume.
  *
  * Usage (inside x-data="claudeConfig"):
- *   x-data="window.Components.modelDropdown('ANTHROPIC_MODEL', 'primaryModel', 'cyan')"
+ *   x-data="window.Components.modelDropdown('ANTHROPIC_MODEL', 'primaryModel')"
  *
  * @param {string} field - config.env key (e.g. 'ANTHROPIC_MODEL')
  * @param {string} labelKey - i18n key for the label
- * @param {string} accentColor - 'cyan' or 'purple' (maps to Tailwind border classes)
  *
  * Requires parent scope to provide: config, selectModel()
  */
 window.Components = window.Components || {};
 
-window.Components.modelDropdown = (field, labelKey, accentColor) => ({
+window.Components.modelDropdown = (field, labelKey) => ({
     field,
     labelKey,
-    accentColor,
 
     open: false,
     searchTerm: '',
@@ -104,12 +102,6 @@ window.Components.modelDropdown = (field, labelKey, accentColor) => ({
             }
         }
         return items;
-    },
-
-    get focusBorderClass() {
-        return this.accentColor === 'purple'
-            ? 'focus:!border-blue-500'
-            : 'focus:!border-sky-500';
     },
 
     openDropdown() {

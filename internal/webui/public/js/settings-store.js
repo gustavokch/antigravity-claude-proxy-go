@@ -18,9 +18,32 @@ document.addEventListener('alpine:init', () => {
         healthInspector: true,
         healthInspectorOpen: false,
         port: 8080, // Display only
+        theme: 'system', // 'day' | 'night' | 'system'
 
         init() {
             this.loadSettings();
+            this.applyTheme();
+            window.matchMedia('(prefers-color-scheme: dark)')
+                .addEventListener('change', () => this.applyTheme());
+        },
+
+        // Resolves the theme preference onto <html data-sb-theme>. The same
+        // resolution runs inline in index.html <head> to avoid a flash.
+        applyTheme() {
+            const night = this.theme === 'night' ||
+                (this.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            const next = night ? 'night' : 'day';
+            if (document.documentElement.dataset.sbTheme !== next) {
+                document.documentElement.dataset.sbTheme = next;
+                document.dispatchEvent(new CustomEvent('sb-theme-changed', { detail: { theme: next } }));
+            }
+        },
+
+        setTheme(value) {
+            if (!['day', 'night', 'system'].includes(value)) return;
+            this.theme = value;
+            this.applyTheme();
+            this.saveSettings(true);
         },
 
         // Call this method when toggling settings in the UI
@@ -57,7 +80,8 @@ document.addEventListener('alpine:init', () => {
                 debugLogging: this.debugLogging,
                 logExport: this.logExport,
                 healthInspector: this.healthInspector,
-                healthInspectorOpen: this.healthInspectorOpen
+                healthInspectorOpen: this.healthInspectorOpen,
+                theme: this.theme
             };
             localStorage.setItem('antigravity_settings', JSON.stringify(toSave));
 

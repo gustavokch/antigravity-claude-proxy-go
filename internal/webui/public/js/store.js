@@ -76,6 +76,7 @@ document.addEventListener('alpine:init', () => {
         version: '1.0.0',
         activeTab: 'dashboard',
         settingsTab: 'ui',
+        accountsTab: 'google', // Accounts view tab: 'google' | 'claudecode'
         webuiPassword: localStorage.getItem('antigravity_webui_password') || '',
 
         // i18n

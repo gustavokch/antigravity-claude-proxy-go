@@ -1,478 +1,369 @@
-<div x-data="models" class="view-container">
-    <!-- Compact Header -->
-    <div class="flex items-center justify-between gap-4 mb-6">
-        <!-- Title with inline subtitle -->
-        <div class="flex flex-wrap items-center gap-4">
-            <h1 class="text-2xl font-bold text-white tracking-tight" x-text="$store.global.t('models')">
-                Models
-            </h1>
-            <div class="flex items-center h-6 px-3 rounded-full bg-space-850 border border-space-border/60">
-                <span class="text-[10px] font-mono text-gray-400 uppercase tracking-wider"
-                      x-text="$store.global.t('modelsPageDesc')">
-                    Real-time quota and status for all available models.
-                </span>
-            </div>
-        </div>
+<div x-data="models" class="view">
+  <div class="view-head">
+    <div>
+      <h1 class="view-title" x-text="$store.global.t('models')">Models</h1>
+      <p class="view-sub" x-text="$store.global.t('modelsDecisionDesc')">Quota left per model across accounts, and when each one resets.</p>
+    </div>
+  </div>
 
-        <!-- Search Bar -->
-        <div class="relative w-72 h-9">
-            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <svg class="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+  <div x-data="(() => {
+    const t = (key) => Alpine.store('global').t(key);
+    const LIMITED = ['rate_limited', 'cooldown', 'invalid'];
+    const UNUSABLE = ['rate_limited', 'cooldown', 'invalid', 'disabled'];
+    const hasPct = (pct) => pct !== null && pct !== undefined;
+    const unusable = (q) => q.pct === 0 || UNUSABLE.includes(q.status);
+    const blocked = (row) => row.quotaInfo.every(unusable);
+    const pctLevel = (pct) => !hasPct(pct) ? 'off' : (pct <= 0 ? 'danger' : (pct < 20 ? 'caution' : 'clear'));
+    const rowStatus = (row) => {
+      if (blocked(row)) return { level: 'danger', word: t('modelUnavailable') };
+      if (!hasPct(row.avgQuota)) return { level: 'off', word: t('modelQuotaUnknown') };
+      if (row.avgQuota < 20) return { level: 'caution', word: t('modelQuotaLow') };
+      if (row.quotaInfo.some((q) => LIMITED.includes(q.status))) return { level: 'caution', word: t('modelPartlyLimited') };
+      return { level: 'clear', word: t('modelQuotaAvailable') };
+    };
+    const accStatus = (q) => {
+      if (q.status === 'disabled') return { level: 'off', word: t('disabledStatus') };
+      if (q.status === 'rate_limited') return { level: 'danger', word: t('rateLimitedStatus') };
+      if (q.status === 'invalid') return { level: 'danger', word: t('invalidStatus') };
+      if (q.status === 'cooldown') return { level: 'caution', word: t('cooldownStatus') };
+      if (q.pct === 0) return { level: 'danger', word: t('exhaustedStatus') };
+      if (hasPct(q.pct) && q.pct < 20) return { level: 'caution', word: t('modelQuotaLow') };
+      return { level: 'clear', word: t('readyStatus') };
+    };
+    const sortState = (col) => {
+      const f = Alpine.store('data').filters;
+      return f.sortCol === col ? (f.sortAsc ? 'ascending' : 'descending') : 'none';
+    };
+    const sortPath = (col) => {
+      const f = Alpine.store('data').filters;
+      if (f.sortCol !== col) return 'M8 9l4-4 4 4m0 6l-4 4-4-4';
+      return f.sortAsc ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7';
+    };
+    return { blocked, pctLevel, rowStatus, accStatus, sortState, sortPath };
+  })()">
+    <section class="section">
+      <div class="mdl-decision">
+        <p class="figure" x-text="$store.data.quotaRows.filter((r) => !blocked(r)).length">0</p>
+        <p class="t-2 mdl-decision-text" x-text="$store.global.t('modelsWithQuotaNow', { count: $store.data.quotaRows.length })">of 0 models have quota available now</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="cluster">
+            <select class="select select-sm mdl-account"
+                    :aria-label="$store.global.t('filterAccount')"
+                    x-model="$store.data.filters.account" @change="$store.data.computeQuotaRows()">
+              <option value="all" x-text="$store.global.t('allAccounts')">All Accounts</option>
+
+              <optgroup :label="$store.global.t('googleCloudCode') || 'Google Cloud Code'"
+                        x-show="$store.data.accounts.some(a => (a.provider || 'google') === 'google')">
+                <template x-for="acc in $store.data.accounts.filter(a => (a.provider || 'google') === 'google')" :key="acc.id || acc.email">
+                  <option :value="acc.email || acc.id" x-text="'[Google] ' + (acc.email ? Redact.email(acc.email).split('@')[0] : acc.name)"></option>
+                </template>
+              </optgroup>
+
+              <optgroup :label="$store.global.t('claudeCode') || 'Claude Code'"
+                        x-show="$store.data.accounts.some(a => a.provider === 'claudecode')">
+                <template x-for="acc in $store.data.accounts.filter(a => a.provider === 'claudecode')" :key="acc.id || acc.email">
+                  <option :value="acc.id || acc.email" x-text="'[Claude] ' + (acc.name || (acc.email ? Redact.email(acc.email) : acc.id)) + (acc.type ? ' (' + acc.type + ')' : '')"></option>
+                </template>
+              </optgroup>
+            </select>
+
+            <div class="seg" role="group" :aria-label="$store.global.t('filterByFamily')">
+              <button type="button"
+                      :aria-pressed="$store.data.filters.family === 'all' ? 'true' : 'false'"
+                      @click="$store.data.filters.family = 'all'; $store.data.computeQuotaRows()"
+                      x-text="$store.global.t('allCaps')">ALL</button>
+              <button type="button"
+                      :aria-pressed="$store.data.filters.family === 'claude' ? 'true' : 'false'"
+                      @click="$store.data.filters.family = 'claude'; $store.data.computeQuotaRows()"
+                      x-text="$store.global.t('claudeCaps')">CLAUDE</button>
+              <button type="button"
+                      :aria-pressed="$store.data.filters.family === 'gemini' ? 'true' : 'false'"
+                      @click="$store.data.filters.family = 'gemini'; $store.data.computeQuotaRows()"
+                      x-text="$store.global.t('geminiCaps')">GEMINI</button>
+            </div>
+          </div>
+
+          <div class="cluster">
+            <button type="button" class="btn btn-sm mdl-toggle"
+                    :aria-pressed="$store.settings.showHiddenModels ? 'true' : 'false'"
+                    @click="$store.settings.toggle('showHiddenModels'); $store.data.computeQuotaRows()"
+                    x-text="$store.global.t('showHidden')">Show Hidden Models</button>
+
+            <button type="button" class="btn btn-sm mdl-toggle mdl-toggle-accounts" x-show="!$store.settings.compact"
+                    :aria-pressed="$store.settings.showAllAccounts ? 'true' : 'false'"
+                    @click="$store.settings.toggle('showAllAccounts')"
+                    x-text="$store.global.t('showAllAccountRows')">Show all accounts</button>
+
+            <div class="mdl-search">
+              <label class="sb-search">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
-            </div>
-            <input type="text"
-                :placeholder="$store.global.t('searchPlaceholder')"
-                :aria-label="$store.global.t('searchPlaceholder')"
-                class="input-search-sm pr-10"
-                x-model.debounce="$store.data.filters.search"
-                @input="$store.data.computeQuotaRows()">
-            <button x-show="$store.data.filters.search"
-                    x-transition:enter="transition ease-out duration-100"
-                    x-transition:enter-start="opacity-0 scale-75"
-                    x-transition:enter-end="opacity-100 scale-100"
-                    @click="$store.data.filters.search = ''; $store.data.computeQuotaRows()"
-                    class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-500 hover:text-white transition-colors">
-                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                <input type="text"
+                       class="input input-sm"
+                       :placeholder="$store.global.t('searchPlaceholder')"
+                       :aria-label="$store.global.t('searchPlaceholder')"
+                       x-model.debounce="$store.data.filters.search"
+                       @input="$store.data.computeQuotaRows()">
+              </label>
+              <button type="button" class="btn btn-ghost btn-xs btn-icon mdl-search-clear"
+                      x-show="$store.data.filters.search"
+                      :aria-label="$store.global.t('clearSearch')"
+                      @click="$store.data.filters.search = ''; $store.data.computeQuotaRows()">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
-            </button>
+              </button>
+            </div>
+          </div>
         </div>
-    </div>
 
-    <!-- Controls -->
-    <div class="view-card !p-4 flex flex-col lg:flex-row items-center justify-between gap-4">
-        <div class="flex flex-col md:flex-row items-center gap-4 w-full lg:w-auto flex-wrap">
-            <!-- Custom Select -->
-            <div class="relative w-full md:w-72 h-9">
-                <select
-                    class="w-full h-full bg-space-800 border border-space-border text-gray-300 rounded pl-4 pr-10 focus:outline-none focus:border-blue-500 transition-all truncate text-xs cursor-pointer"
-                    style="appearance: none; -webkit-appearance: none; -moz-appearance: none; background-image: none;"
-                    x-model="$store.data.filters.account" @change="$store.data.computeQuotaRows()">
-                    <option value="all" x-text="$store.global.t('allAccounts')">All Accounts</option>
-
-                    <!-- Google Cloud Code Accounts Group -->
-                    <optgroup :label="$store.global.t('googleCloudCode') || 'Google Cloud Code'"
-                              x-show="$store.data.accounts.some(a => (a.provider || 'google') === 'google')">
-                        <template x-for="acc in $store.data.accounts.filter(a => (a.provider || 'google') === 'google')" :key="acc.id || acc.email">
-                            <option :value="acc.email || acc.id" x-text="'[Google] ' + (acc.email ? Redact.email(acc.email).split('@')[0] : acc.name)"></option>
-                        </template>
-                    </optgroup>
-
-                    <!-- Claude Code Accounts Group -->
-                    <optgroup :label="$store.global.t('claudeCode') || 'Claude Code'"
-                              x-show="$store.data.accounts.some(a => a.provider === 'claudecode')">
-                        <template x-for="acc in $store.data.accounts.filter(a => a.provider === 'claudecode')" :key="acc.id || acc.email">
-                            <option :value="acc.id || acc.email" x-text="'[Claude] ' + (acc.name || (acc.email ? Redact.email(acc.email) : acc.id)) + (acc.type ? ' (' + acc.type + ')' : '')"></option>
-                        </template>
-                    </optgroup>
-                </select>
-                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-gray-500">
-                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                    </svg>
-                </div>
-            </div>
-
-            <!-- Filter Buttons -->
-            <div class="join h-9 w-full md:w-auto overflow-x-auto">
-                <button
-                    class="join-item btn btn-xs h-full flex-1 md:flex-none px-6 border-space-border bg-space-800 transition-colors font-medium text-[10px] tracking-wide"
-                    :class="$store.data.filters.family === 'all'
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'text-gray-400 hover:text-white hover:bg-space-700'"
-                    @click="$store.data.filters.family = 'all'; $store.data.computeQuotaRows()"
-                    x-text="$store.global.t('allCaps')">ALL</button>
-                <button
-                    class="join-item btn btn-xs h-full flex-1 md:flex-none px-6 border-space-border bg-space-800 transition-colors font-medium text-[10px] tracking-wide"
-                    :class="$store.data.filters.family === 'claude'
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'text-gray-400 hover:text-white hover:bg-space-700'"
-                    @click="$store.data.filters.family = 'claude'; $store.data.computeQuotaRows()"
-                    x-text="$store.global.t('claudeCaps')">CLAUDE</button>
-                <button
-                    class="join-item btn btn-xs h-full flex-1 md:flex-none px-6 border-space-border bg-space-800 transition-colors font-medium text-[10px] tracking-wide"
-                    :class="$store.data.filters.family === 'gemini'
-                        ? 'bg-emerald-600 text-white border-emerald-600'
-                        : 'text-gray-400 hover:text-white hover:bg-space-700'"
-                    @click="$store.data.filters.family = 'gemini'; $store.data.computeQuotaRows()"
-                    x-text="$store.global.t('geminiCaps')">GEMINI</button>
-            </div>
-
-            <!-- Show Hidden Toggle -->
-            <button
-                class="btn h-9 px-4 ml-2 border border-space-border bg-space-800 hover:bg-space-700 hover:text-white transition-colors gap-2 min-h-0"
-                :class="$store.settings.showHiddenModels ? 'text-blue-400 border-blue-500/50 bg-space-900' : 'text-zinc-400'"
-                @click="$store.settings.toggle('showHiddenModels'); $store.data.computeQuotaRows()"
-                :title="$store.settings.showHiddenModels ? $store.global.t('hideHidden') : $store.global.t('showHidden')">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                </svg>
-                <span class="text-[10px] font-medium uppercase tracking-wide" x-text="$store.settings.showHiddenModels ? $store.global.t('hiddenOn') : $store.global.t('hiddenOff')"></span>
-            </button>
-
-            <!-- Show All Accounts Toggle (only in detail mode) -->
-            <button x-show="!$store.settings.compact"
-                class="btn h-9 px-4 ml-2 border border-space-border/50 bg-space-800 hover:bg-space-700 hover:border-space-border hover:text-white transition-all gap-2 min-h-0"
-                :class="$store.settings.showAllAccounts ? 'text-blue-300 border-blue-500/50 bg-blue-950/40' : 'text-zinc-400'"
-                @click="$store.settings.toggle('showAllAccounts')"
-                :title="$store.settings.showAllAccounts ? 'Cap account rows' : 'Show all account rows'">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                <span class="text-[10px] font-medium uppercase tracking-wide" x-text="$store.settings.showAllAccounts ? 'All' : 'Capped'"></span>
-            </button>
-        </div>
-    </div>
-
-    <!-- Main Table Card -->
-    <div class="view-card !p-0">
-        <div class="overflow-x-auto min-h-[400px]">
-            <table class="standard-table"
-                :class="{'table-xs': $store.settings.compact, 'table-sm': !$store.settings.compact}">
+        <div class="table-wrap">
+          <table class="sb-table mdl-table" :class="$store.settings.compact ? 'sb-table-dense' : ''" :aria-label="$store.global.t('models')">
             <thead>
-                <tr>
-                    <th class="w-14 !pl-4 whitespace-nowrap cursor-pointer hover:text-white transition-colors select-none group"
-                        @click="$store.data.setSort('avgQuota')">
-                        <div class="flex items-center justify-center">
-                            <span x-text="$store.global.t('stat')">Stat</span>
-                        </div>
-                    </th>
-                    <th class="whitespace-nowrap cursor-pointer hover:text-white transition-colors select-none group"
-                        @click="$store.data.setSort('modelId')">
-                        <div class="flex items-center gap-1">
-                            <span x-text="$store.global.t('modelIdentity')">Model Identity</span>
-                            <svg class="w-3 h-3 transition-colors"
-                                :class="$store.data.filters.sortCol === 'modelId' ? 'text-blue-400' : 'text-gray-700 opacity-0 group-hover:opacity-100'"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    :d="$store.data.filters.sortCol === 'modelId' ? ($store.data.filters.sortAsc ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7') : 'M8 9l4-4 4 4m0 6l-4 4-4-4'" />
-                            </svg>
-                        </div>
-                    </th>
-                    <th class="min-w-[12rem] whitespace-nowrap cursor-pointer hover:text-white transition-colors select-none group"
-                        @click="$store.data.setSort('avgQuota')">
-                        <div class="flex items-center gap-1">
-                            <span x-text="$store.global.t('globalQuota')">Global Quota</span>
-                            <svg class="w-3 h-3 transition-colors"
-                                :class="$store.data.filters.sortCol === 'avgQuota' ? 'text-blue-400' : 'text-gray-700 opacity-0 group-hover:opacity-100'"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    :d="$store.data.filters.sortCol === 'avgQuota' ? ($store.data.filters.sortAsc ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7') : 'M8 9l4-4 4 4m0 6l-4 4-4-4'" />
-                            </svg>
-                        </div>
-                    </th>
-                    <th x-show="!$store.settings.compact"
-                        class="min-w-[8rem] whitespace-nowrap cursor-pointer hover:text-white transition-colors select-none group"
-                        @click="$store.data.setSort('minResetTime')">
-                        <div class="flex items-center gap-1">
-                            <span x-text="$store.global.t('nextReset')">Next Reset</span>
-                            <svg class="w-3 h-3 transition-colors"
-                                :class="$store.data.filters.sortCol === 'minResetTime' ? 'text-blue-400' : 'text-gray-700 opacity-0 group-hover:opacity-100'"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    :d="$store.data.filters.sortCol === 'minResetTime' ? ($store.data.filters.sortAsc ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7') : 'M8 9l4-4 4 4m0 6l-4 4-4-4'" />
-                            </svg>
-                        </div>
-                    </th>
-                    <th x-show="!$store.settings.compact"
-                        class="whitespace-nowrap cursor-pointer hover:text-white transition-colors select-none group"
-                        @click="$store.data.setSort('activeCount')">
-                        <div class="flex items-center gap-1 justify-start">
-                            <span x-text="$store.global.t('distribution')">Account Distribution</span>
-                            <svg class="w-3 h-3 transition-colors"
-                                :class="$store.data.filters.sortCol === 'activeCount' ? 'text-blue-400' : 'text-gray-700 opacity-0 group-hover:opacity-100'"
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    :d="$store.data.filters.sortCol === 'activeCount' ? ($store.data.filters.sortAsc ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7') : 'M8 9l4-4 4 4m0 6l-4 4-4-4'" />
-                            </svg>
-                        </div>
-                    </th>
-                    <th class="w-20 !pr-4 text-right whitespace-nowrap" x-text="$store.global.t('actions')">Actions
-                    </th>
-                </tr>
+              <tr>
+                <th scope="col" :aria-sort="sortState('modelId')">
+                  <button type="button" class="mdl-sort" @click="$store.data.setSort('modelId')">
+                    <span x-text="$store.global.t('modelIdentity')">Model Identity</span>
+                    <svg class="mdl-sort-ico" :class="$store.data.filters.sortCol === 'modelId' ? 'mdl-sorted' : ''"
+                         fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="sortPath('modelId')" />
+                    </svg>
+                  </button>
+                </th>
+                <th scope="col" :aria-sort="sortState('avgQuota')">
+                  <button type="button" class="mdl-sort" @click="$store.data.setSort('avgQuota')">
+                    <span x-text="$store.global.t('globalQuota')">Global Quota</span>
+                    <svg class="mdl-sort-ico" :class="$store.data.filters.sortCol === 'avgQuota' ? 'mdl-sorted' : ''"
+                         fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="sortPath('avgQuota')" />
+                    </svg>
+                  </button>
+                </th>
+                <th scope="col" class="mdl-second" x-show="!$store.settings.compact" :aria-sort="sortState('minResetTime')">
+                  <button type="button" class="mdl-sort" @click="$store.data.setSort('minResetTime')">
+                    <span x-text="$store.global.t('nextReset')">Next Reset</span>
+                    <svg class="mdl-sort-ico" :class="$store.data.filters.sortCol === 'minResetTime' ? 'mdl-sorted' : ''"
+                         fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="sortPath('minResetTime')" />
+                    </svg>
+                  </button>
+                </th>
+                <th scope="col" class="mdl-second" :aria-sort="sortState('activeCount')">
+                  <button type="button" class="mdl-sort" @click="$store.data.setSort('activeCount')">
+                    <span x-text="$store.global.t('distribution')">Account Distribution</span>
+                    <svg class="mdl-sort-ico" :class="$store.data.filters.sortCol === 'activeCount' ? 'mdl-sorted' : ''"
+                         fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="sortPath('activeCount')" />
+                    </svg>
+                  </button>
+                </th>
+                <th scope="col" x-text="$store.global.t('modelStatus')">Status</th>
+                <th scope="col" class="text-right" x-text="$store.global.t('actions')">Actions</th>
+              </tr>
             </thead>
-            <tbody class="text-sm">
-                <template x-for="row in $store.data.quotaRows" :key="row.modelId">
-                    <tr class="group transition-all duration-300" :class="row.hidden ? 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0 bg-space-900/50' : ''">
-                        <td class="!pl-4">
-                            <div class="w-2 h-2 rounded-full transition-all duration-300"
-                                :class="row.avgQuota === null || row.avgQuota === undefined ? 'bg-zinc-500' : (row.avgQuota > 0 ? 'bg-emerald-400' : 'bg-red-400')">
-                            </div>
-                        </td>
-                        <td>
-                            <div class="font-bold text-gray-200 group-hover:text-white transition-colors"
-                                :class="$store.settings.compact ? 'text-xs' : ''"
-                                x-text="row.modelId"></div>
-                            <div class="text-[10px] font-mono text-gray-500 uppercase"
-                                x-show="!$store.settings.compact"
-                                x-text="$store.global.t('family' + row.family.charAt(0).toUpperCase() + row.family.slice(1))">
-                            </div>
-                        </td>
-                        <td>
-                            <div class="flex flex-col pr-4"
-                                 :class="$store.settings.compact ? 'gap-0.5' : 'gap-1'">
-                                <div class="flex justify-between text-xs font-mono">
-                                    <span class="flex items-center gap-1.5">
-                                        <span x-text="row.avgQuota === null || row.avgQuota === undefined ? 'N/A' : row.avgQuota + '%'"
-                                            :class="(row.avgQuota === null || row.avgQuota === undefined) ? 'text-gray-500' : (row.avgQuota > 0 ? 'text-white' : 'text-red-500')"></span>
-                                        <!-- Threshold indicator (inline) -->
-                                        <span x-show="row.effectiveThresholdPct > 0"
-                                              class="text-[10px] text-gray-500"
-                                              x-text="row.hasVariedThresholds && row.quotaInfo.some(q => q.thresholdPct > 0)
-                                                  ? '· min ' + Math.min(...row.quotaInfo.map(q => q.thresholdPct).filter(t => t > 0)) + '–' + row.effectiveThresholdPct + '%'
-                                                  : '· min ' + row.effectiveThresholdPct + '%'"></span>
-                                        <!-- Inline reset time (compact only) -->
-                                        <span x-show="$store.settings.compact && row.resetIn && row.resetIn !== '-'"
-                                              class="text-[10px]"
-                                              :class="row.resetIn.indexOf('h') === -1 ? 'text-blue-400' : 'text-gray-500'"
-                                              x-text="'· ' + row.resetIn"></span>
-                                    </span>
-                                    <span class="flex items-center gap-2">
-                                        <!-- Compact: inline account squares -->
-                                        <span x-show="$store.settings.compact && row.quotaInfo && row.quotaInfo.length > 0"
-                                              class="inline-flex gap-0.5 items-center">
-                                            <template x-for="q in row.quotaInfo.slice(0, 8)" :key="q.fullEmail + '-sq'">
-                                                <span class="w-1.5 h-1.5 rounded-sm inline-block"
-                                                      :class="(q.pct === null || q.pct === undefined) ? 'bg-zinc-500/60' : (q.pct > 50 ? 'bg-emerald-500/80' : (q.pct > 0 ? 'bg-amber-500/80' : 'bg-red-900/60'))"></span>
-                                            </template>
-                                            <span x-show="row.quotaInfo.length > 8"
-                                                  class="text-[8px] text-gray-600 leading-none"
-                                                  x-text="'+' + (row.quotaInfo.length - 8)"></span>
-                                        </span>
-                                        <!-- Available/Total Accounts Indicator -->
-                                        <span class="text-gray-500 text-[10px]"
-                                              x-text="row.quotaInfo.filter(q => q.pct === null || q.pct === undefined || q.pct > 0).length + '/' + row.quotaInfo.length"></span>
-                                    </span>
-                                </div>
-                                <div class="relative">
-                                    <progress class="progress w-full bg-space-800"
-                                        :class="[
-                                            $store.settings.compact ? 'h-1' : 'h-1.5',
-                                            (row.avgQuota === null || row.avgQuota === undefined) ? 'progress-gradient-unknown' : (row.avgQuota > 50 ? 'progress-gradient-success' : (row.avgQuota > 0 ? 'progress-gradient-warning' : 'progress-gradient-error'))
-                                        ]"
-                                        :value="row.avgQuota ?? 0" max="100"></progress>
-                                    <!-- Per-account draggable quota threshold markers -->
-                                    <template x-for="(q, qIdx) in row.quotaInfo.filter(q => q.thresholdPct > 0 || isDragging(q, row))" :key="q.fullEmail + '-threshold'">
-                                        <div class="absolute -top-1 -bottom-1 group/marker"
-                                             :class="isDragging(q, row) ? 'cursor-grabbing z-30' : 'cursor-grab'"
-                                             :style="'left: calc(' + getMarkerPct(q, row) + '% - 4px); width: 9px; transform: translateX(' + (isDragging(q, row) ? '0px' : getMarkerOffset(q, row, qIdx)) + ');'"
-                                             :title="Redact.email(q.email) + ' min: ' + getMarkerPct(q, row) + '%'"
-                                             @mousedown.prevent="startDrag($event, q, row)"
-                                             @touchstart.prevent="startDrag($event, q, row)">
-                                            <!-- Visible marker line -->
-                                            <div class="absolute top-1 bottom-1 left-1 w-[3px] rounded-full"
-                                                 :class="isDragging(q, row) ? 'scale-y-150 brightness-150' : 'transition-all group-hover/marker:scale-y-150 group-hover/marker:brightness-125'"
-                                                 :style="'background-color: ' + getThresholdColor(qIdx).bg + '; box-shadow: 0 0 ' + (isDragging(q, row) ? '10px' : '6px') + ' ' + getThresholdColor(qIdx).shadow"></div>
-                                            <!-- Tooltip popup (visible on hover or during drag) -->
-                                            <div class="absolute -top-8 left-1/2 -translate-x-1/2 items-center gap-1.5
-                                                         whitespace-nowrap text-xs font-mono font-semibold px-2.5 py-1 rounded-md bg-space-900 border border-space-border shadow-xl shadow-black/40 z-20"
-                                                 :class="isDragging(q, row) ? 'flex' : 'hidden group-hover/marker:flex'"
-                                                 :style="'color: ' + getThresholdColor(qIdx).bg + '; border-color: ' + getThresholdColor(qIdx).bg + '40'">
-                                                <span class="w-2 h-2 rounded-full flex-shrink-0" :style="'background-color: ' + getThresholdColor(qIdx).bg"></span>
-                                                <span x-text="Redact.email(q.email)"></span>
-                                                <span class="text-gray-500">min</span>
-                                                <span x-text="getMarkerPct(q, row) + '%'"></span>
-                                            </div>
-                                        </div>
-                                    </template>
-                                </div>
-                                <!-- Per-account breakdown (non-compact only) -->
-                                <div x-show="!$store.settings.compact && row.quotaInfo && row.quotaInfo.length > 1"
-                                     class="flex flex-col gap-1 mt-1 pt-1 border-t border-space-border/30">
-                                    <template x-for="q in getVisibleAccounts(row)" :key="(q.id || q.fullEmail) + '-detail'">
-                                        <div class="flex items-center gap-2 py-0.5 text-xs">
-                                            <!-- Provider Badge -->
-                                            <span class="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider flex-shrink-0"
-                                                  :class="q.provider === 'claudecode' ? 'bg-purple-950/70 text-purple-300 border border-purple-800/60' : 'bg-blue-950/70 text-blue-300 border border-blue-800/60'"
-                                                  x-text="q.provider === 'claudecode' ? 'Claude' : 'Google'"></span>
+            <tbody>
+              <template x-for="row in $store.data.quotaRows" :key="row.modelId">
+                <tr :class="{ 'is-blocked': blocked(row), 'is-off': row.hidden }">
+                  <td class="mdl-model">
+                    <div class="cluster mdl-model-id">
+                      <span class="mono t-strong t-break" x-text="row.modelId"></span>
+                      <span class="tag tag-ink" x-show="row.pinned" x-text="$store.global.t('pinned')">Pinned</span>
+                    </div>
+                    <span class="label" x-show="!$store.settings.compact"
+                          x-text="$store.global.t('family' + row.family.charAt(0).toUpperCase() + row.family.slice(1))"></span>
+                  </td>
 
-                                            <!-- Account Name / Email -->
-                                            <span class="text-[10px] font-mono text-gray-300 w-28 truncate text-left flex-shrink-0"
-                                                  :title="q.name ? q.name + ' (' + Redact.email(q.fullEmail) + ')' : Redact.email(q.fullEmail)"
-                                                  x-text="q.name || Redact.email(q.email)"></span>
-
-                                            <!-- Live Status Pill -->
-                                            <span class="px-1.5 py-0.2 rounded text-[9px] font-mono flex-shrink-0"
-                                                  :class="{
-                                                      'bg-emerald-950/60 text-emerald-400 border border-emerald-800/50': q.status === 'ok' || q.status === 'healthy',
-                                                      'bg-amber-950/60 text-amber-400 border border-amber-800/50': q.status === 'cooldown',
-                                                      'bg-red-950/60 text-red-400 border border-red-800/50': q.status === 'rate_limited',
-                                                      'bg-red-950/60 text-red-400 border border-red-800/50': q.status === 'invalid',
-                                                      'bg-zinc-900 text-zinc-500 border border-zinc-700/50': q.status === 'disabled'
-                                                  }"
-                                                  x-text="q.status === 'ok' || q.status === 'healthy' ? ($store.global.t('readyStatus') || 'Ready') : (q.status === 'cooldown' ? ($store.global.t('cooldownStatus') || 'Cooldown') : (q.status === 'rate_limited' ? ($store.global.t('rateLimitedStatus') || 'Rate Limited') : (q.status === 'invalid' ? ($store.global.t('invalidStatus') || 'Invalid') : ($store.global.t('disabledStatus') || 'Disabled'))))"></span>
-
-                                            <!-- Progress Bar -->
-                                            <div class="flex-1 h-1.5 rounded-full bg-space-800 overflow-hidden">
-                                                <div class="h-full rounded-full transition-all duration-500"
-                                                     :class="q.status === 'cooldown' ? 'bg-amber-500' : ((q.pct === null || q.pct === undefined) ? 'bg-zinc-500/70' : (q.pct > 50 ? 'bg-emerald-500/70' : (q.pct > 0 ? 'bg-amber-500/70' : 'bg-red-500/50')))"
-                                                     :style="'width: ' + (q.pct ?? 0) + '%'"></div>
-                                            </div>
-
-                                            <!-- Quota / Remaining -->
-                                            <span class="text-[10px] font-mono w-10 text-right flex-shrink-0"
-                                                  :class="(q.pct === null || q.pct === undefined) ? 'text-gray-500' : (q.pct > 0 ? 'text-gray-400' : 'text-red-500/70')"
-                                                  x-text="(q.pct === null || q.pct === undefined) ? 'N/A' : q.pct + '%'"></span>
-
-                                            <!-- Reset Countdown -->
-                                            <span x-show="q.resetTime"
-                                                  class="text-[9px] font-mono text-gray-500 w-14 text-right flex-shrink-0 truncate"
-                                                  :title="'Resets at: ' + q.resetTime"
-                                                  x-text="window.utils.formatTimeUntil(q.resetTime)"></span>
-                                        </div>
-                                    </template>
-                                    <!-- "+N more" expand button -->
-                                    <button x-show="getHiddenCount(row) > 0"
-                                            @click="toggleExpanded(row.modelId)"
-                                            class="text-[10px] font-mono text-blue-400/80 hover:text-blue-400 transition-colors text-left pl-[88px] py-0.5 cursor-pointer"
-                                            x-text="'+' + getHiddenCount(row) + ' more'"></button>
-                                    <!-- "Show less" collapse button -->
-                                    <button x-show="isExpanded(row.modelId) && !$store.settings.showAllAccounts && row.quotaInfo.length > window.AppConstants.LIMITS.ACCOUNT_BREAKDOWN_LIMIT"
-                                            @click="toggleExpanded(row.modelId)"
-                                            class="text-[10px] font-mono text-gray-500 hover:text-gray-300 transition-colors text-left pl-[88px] py-0.5 cursor-pointer">Show less</button>
-                                </div>
-                            </div>
-                        </td>
-                        <td x-show="!$store.settings.compact" class="font-mono text-xs">
-                            <div class="tooltip tooltip-left"
-                                 :data-tip="row.quotaInfo && row.quotaInfo.length > 0 ? row.quotaInfo.filter(q => q.resetTime).map(q => (q.name || Redact.email(q.email)) + ': ' + q.resetTime).join('\n') : 'No reset data'">
-                                <span x-text="row.resetIn"
-                                    :class="(row.resetIn && row.resetIn.indexOf('h') === -1 && row.resetIn !== '-') ? 'text-blue-400 font-bold' : 'text-gray-400'"></span>
-                            </div>
-                        </td>
-                        <td x-show="!$store.settings.compact">
-                            <div class="flex items-center justify-start gap-3">
-                                <div class="text-[10px] font-mono text-gray-500 hidden xl:block text-left leading-tight opacity-70">
-                                    <div
-                                        x-text="$store.global.t('activeCount', {count: row.quotaInfo?.filter(q => q.pct === null || q.pct === undefined || q.pct > 0).length || 0})">
-                                    </div>
-                                </div>
-                                <!-- Account Status Indicators -->
-                                <div class="flex flex-wrap gap-1 justify-start max-w-[200px]" x-data="{ maxVisible: 12 }">
-                                    <template x-if="!row.quotaInfo || row.quotaInfo.length === 0">
-                                        <div class="text-[10px] text-gray-600 italic" x-text="$store.global.t('noData')">No data</div>
-                                    </template>
-                                    <template x-if="row.quotaInfo && row.quotaInfo.length > 0">
-                                        <div class="flex flex-wrap gap-1 justify-start">
-                                            <!-- Visible accounts (limited to maxVisible) -->
-                                            <template x-for="(q, idx) in row.quotaInfo.slice(0, maxVisible)" :key="q.id || q.fullEmail">
-                                                <div class="tooltip tooltip-left"
-                                                     :data-tip="`${q.provider === 'claudecode' ? '[Claude Code] ' : '[Google] '}${q.name || Redact.email(q.fullEmail)} (${(q.pct === null || q.pct === undefined) ? 'N/A' : q.pct + '%'}) · ${(q.status || 'ok').toUpperCase()}` + (q.priority ? ` · P${q.priority}` : '') + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')">
-                                                    <div class="w-2.5 h-2.5 rounded-[2px] transition-all hover:scale-125 cursor-help"
-                                                        :class="[
-                                                            q.status === 'disabled' ? 'bg-zinc-700 opacity-40' :
-                                                            q.status === 'cooldown' ? 'bg-amber-500 opacity-90 animate-pulse' :
-                                                            q.status === 'rate_limited' ? 'bg-red-600 opacity-80' :
-                                                            ((q.pct === null || q.pct === undefined) ? 'bg-zinc-500 opacity-70' :
-                                                            (q.pct > 50 ? 'bg-emerald-500 opacity-80' : (q.pct > 0 ? 'bg-amber-500 opacity-80' : 'bg-red-900 opacity-50')))
-                                                        ]">
-                                                    </div>
-                                                </div>
-                                            </template>
-                                            <!-- Overflow indicator -->
-                                            <template x-if="row.quotaInfo.length > maxVisible">
-                                                <div class="tooltip tooltip-left"
-                                                     :data-tip="row.quotaInfo.slice(maxVisible).map(q => `${q.provider === 'claudecode' ? '[Claude Code] ' : '[Google] '}${q.name || Redact.email(q.fullEmail)} (${(q.pct === null || q.pct === undefined) ? 'N/A' : q.pct + '%'})` + (q.thresholdPct > 0 ? ` · min: ${q.thresholdPct}%` : '')).join('\n')">
-                                                    <div class="w-2.5 h-2.5 rounded-[2px] bg-gray-700/50 border border-gray-600 flex items-center justify-center cursor-help hover:bg-gray-600/70 transition-colors">
-                                                        <span class="text-[6px] text-gray-400 font-bold leading-none"
-                                                              x-text="`+${row.quotaInfo.length - maxVisible}`"></span>
-                                                    </div>
-                                                </div>
-                                            </template>
-                                        </div>
-                                    </template>
-                                </div>
-                            </div>
-                        </td>
-                        <td class="text-right !pr-4">
-                            <div
-                                class="flex items-center justify-end gap-1 opacity-50 group-hover:opacity-100 transition-opacity">
-                                <!-- Pin Toggle -->
-                                <button class="btn btn-xs btn-circle transition-colors"
-                                    :class="row.pinned ? 'bg-blue-500/15 text-blue-300 border-blue-500/40 hover:bg-blue-500/25' : 'btn-ghost text-zinc-400 hover:text-white'"
-                                    @click="await updateModelConfig(row.modelId, { pinned: !row.pinned })"
-                                    @keydown.enter="await updateModelConfig(row.modelId, { pinned: !row.pinned })"
-                                    @keydown.space.prevent="await updateModelConfig(row.modelId, { pinned: !row.pinned })"
-                                    :title="$store.global.t('pinToTop')"
-                                    :aria-label="row.pinned ? 'Unpin model ' + row.modelId : 'Pin model ' + row.modelId + ' to top'"
-                                    :aria-pressed="row.pinned ? 'true' : 'false'"
-                                    tabindex="0">
-                                    <svg x-show="row.pinned" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5"
-                                        viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                        <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v14l-5-2.5L5 18V4z" />
-                                    </svg>
-                                    <svg x-show="!row.pinned" xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-                                    </svg>
-                                </button>
-                                <!-- Hide Toggle -->
-                                <button class="btn btn-xs btn-circle transition-colors"
-                                    :class="row.hidden ? 'bg-space-900 text-red-400 border border-red-500/50 hover:bg-space-800' : 'btn-ghost text-zinc-400 hover:text-white'"
-                                    @click="await updateModelConfig(row.modelId, { hidden: !row.hidden })"
-                                    @keydown.enter="await updateModelConfig(row.modelId, { hidden: !row.hidden })"
-                                    @keydown.space.prevent="await updateModelConfig(row.modelId, { hidden: !row.hidden })"
-                                    :title="$store.global.t('toggleVisibility')"
-                                    :aria-label="row.hidden ? 'Show model ' + row.modelId : 'Hide model ' + row.modelId"
-                                    :aria-pressed="row.hidden ? 'true' : 'false'"
-                                    tabindex="0">
-                                    <svg x-show="!row.hidden" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                    </svg>
-                                    <svg x-show="row.hidden" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4"
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                            d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                                    </svg>
-                                </button>
-                            </div>
-                        </td>
-                    </tr>
-                </template>
-                <!-- Loading -->
-                <tr x-show="$store.data.loading && !$store.data.quotaRows.length">
-                    <td :colspan="$store.settings.compact ? 4 : 6" class="h-64 text-center">
-                        <div class="flex flex-col items-center justify-center gap-3">
-                            <span class="loading loading-bars loading-md text-neon-purple"></span>
-                            <span class="text-xs font-mono text-gray-600 animate-pulse"
-                                x-text="$store.global.t('establishingUplink')">ESTABLISHING
-                                UPLINK...</span>
+                  <td class="mdl-quota">
+                    <div class="mdl-quota-line">
+                      <span class="t-strong tnum" x-text="row.avgQuota === null || row.avgQuota === undefined ? 'N/A' : row.avgQuota + '%'">0%</span>
+                      <span class="mdl-min tnum" x-show="row.effectiveThresholdPct > 0"
+                            x-text="$store.global.t('minShort') + ' ' + (row.hasVariedThresholds && row.quotaInfo.some(q => q.thresholdPct > 0)
+                                ? Math.min(...row.quotaInfo.map(q => q.thresholdPct).filter(p => p > 0)) + '–' + row.effectiveThresholdPct
+                                : row.effectiveThresholdPct) + '%'"></span>
+                      <span class="mdl-min" x-show="$store.settings.compact && row.resetIn && row.resetIn !== '-'"
+                            x-text="'· ' + row.resetIn"></span>
+                    </div>
+                    <div class="mdl-track-wrap">
+                      <div class="track track-lg"
+                           :data-level="pctLevel(row.avgQuota)"
+                           :data-empty="row.avgQuota === 0"
+                           :style="'--fill:' + (row.avgQuota ?? 0) + '%'"
+                           role="meter" aria-valuemin="0" aria-valuemax="100"
+                           :aria-valuenow="row.avgQuota"
+                           :aria-label="row.modelId + ' ' + (row.avgQuota == null ? 'N/A' : row.avgQuota + '%')"></div>
+                      <template x-for="(q, qIdx) in row.quotaInfo.filter(q => q.thresholdPct > 0 || isDragging(q, row))" :key="q.fullEmail + '-threshold'">
+                        <div class="mdl-mark"
+                             :class="{ 'is-dragging': isDragging(q, row) }"
+                             :style="'left: ' + getMarkerPct(q, row) + '%; transform: translateX(' + (isDragging(q, row) ? '0px' : getMarkerOffset(q, row, qIdx)) + ');'"
+                             @mousedown.prevent="startDrag($event, q, row)"
+                             @touchstart.prevent="startDrag($event, q, row)">
+                          <span class="track-mark"></span>
+                          <span class="mdl-mark-tip" :class="{ 'mdl-show': isDragging(q, row) }">
+                            <span class="mono" x-text="Redact.email(q.email)"></span>
+                            <span x-text="$store.global.t('minShort') + ' ' + getMarkerPct(q, row) + '%'"></span>
+                          </span>
                         </div>
-                    </td>
+                      </template>
+                    </div>
+                  </td>
+
+                  <td class="mdl-reset mdl-second" x-show="!$store.settings.compact">
+                    <span class="mdl-reset-time tnum" :class="row.resetIn === '-' ? 't-3' : 't-ink'"
+                          x-text="row.resetIn"
+                          :title="row.quotaInfo.filter(q => q.resetTime).map(q => (q.name || Redact.email(q.email)) + ': ' + q.resetTime).join('\n') || $store.global.t('noResetData')"></span>
+                  </td>
+
+                  <td class="mdl-accounts mdl-second">
+                    <div class="cluster">
+                      <span class="t-3 t-xs tnum" :title="$store.global.t('activeCount', { count: row.activeCount })"
+                            x-text="row.activeCount + '/' + row.quotaInfo.length"></span>
+                      <span class="mdl-squares" x-show="$store.settings.compact">
+                        <template x-for="q in row.quotaInfo.slice(0, 8)" :key="q.fullEmail + '-sq'">
+                          <span class="lamp mdl-sq"
+                                :class="'lamp-' + accStatus(q).level"
+                                role="img"
+                                :aria-label="(q.name || Redact.email(q.fullEmail)) + ' · ' + accStatus(q).word"
+                                :title="(q.name || Redact.email(q.fullEmail)) + ' · ' + accStatus(q).word"></span>
+                        </template>
+                        <span class="t-3 t-xs" x-show="row.quotaInfo.length > 8" x-text="'+' + (row.quotaInfo.length - 8)"></span>
+                      </span>
+                    </div>
+
+                    <ol class="mdl-acc-list" x-show="!$store.settings.compact">
+                      <template x-for="q in getVisibleAccounts(row)" :key="(q.id || q.fullEmail) + '-detail'">
+                        <li class="mdl-acc">
+                          <span class="plate plate-outline mdl-acc-plate"
+                                x-text="q.provider === 'claudecode' ? 'Claude' : 'Google'"></span>
+                          <span class="mono t-trunc mdl-acc-name"
+                                :title="q.name ? q.name + ' (' + Redact.email(q.fullEmail) + ')' : Redact.email(q.fullEmail)"
+                                x-text="q.name || Redact.email(q.email)"></span>
+                          <span class="track track-sm mdl-acc-track"
+                                :data-level="pctLevel(q.pct)"
+                                :data-empty="q.pct === 0"
+                                :style="'--fill:' + (q.pct ?? 0) + '%'"
+                                role="meter" aria-valuemin="0" aria-valuemax="100"
+                                :aria-valuenow="q.pct"
+                                :aria-label="(q.name || Redact.email(q.email)) + ' ' + (q.pct == null ? 'N/A' : q.pct + '%')"></span>
+                          <span class="tnum mdl-acc-pct"
+                                x-text="(q.pct === null || q.pct === undefined) ? 'N/A' : q.pct + '%'"></span>
+                          <span class="tnum t-2 mdl-acc-reset" x-show="q.resetTime"
+                                :title="'Resets at: ' + q.resetTime"
+                                x-text="window.utils.formatTimeUntil(q.resetTime)"></span>
+                          <span class="mdl-acc-status">
+                            <span class="lamp"
+                                  :class="'lamp-' + accStatus(q).level"
+                                  role="img"
+                                  :aria-label="accStatus(q).word"
+                                  :title="accStatus(q).word"></span>
+                            <span class="t-sm" :class="accStatus(q).level === 'danger' ? 't-danger' : (accStatus(q).level === 'caution' ? 't-caution' : 't-2')"
+                                  x-show="accStatus(q).level !== 'clear'"
+                                  x-text="accStatus(q).word"></span>
+                          </span>
+                        </li>
+                      </template>
+                    </ol>
+                    <div class="mdl-acc-foot" x-show="!$store.settings.compact">
+                      <button type="button" class="btn btn-ghost btn-xs"
+                              x-show="getHiddenCount(row) > 0"
+                              @click="toggleExpanded(row.modelId)"
+                              x-text="$store.global.t('moreAccounts', { count: getHiddenCount(row) })">+N more</button>
+                      <button type="button" class="btn btn-ghost btn-xs"
+                              x-show="isExpanded(row.modelId) && !$store.settings.showAllAccounts && row.quotaInfo.length > window.AppConstants.LIMITS.ACCOUNT_BREAKDOWN_LIMIT"
+                              @click="toggleExpanded(row.modelId)"
+                              x-text="$store.global.t('showLess')">Show less</button>
+                    </div>
+                  </td>
+
+                  <td class="mdl-stat">
+                    <span class="mdl-stat-cell">
+                      <span class="lamp lamp-lg" :class="'lamp-' + rowStatus(row).level" role="img"
+                            :aria-label="rowStatus(row).word"></span>
+                      <span :class="rowStatus(row).level === 'danger' ? 't-danger t-strong' : (rowStatus(row).level === 'caution' ? 't-caution t-strong' : 't-2')"
+                            x-text="rowStatus(row).word">Available</span>
+                    </span>
+                  </td>
+
+                  <td class="mdl-actions">
+                    <div class="mdl-actions-cell">
+                      <button type="button" class="btn btn-sm btn-icon" :class="row.pinned ? 'btn-primary' : 'btn-ghost'"
+                              :title="row.pinned ? $store.global.t('unpinModel') : $store.global.t('pinToTop')"
+                              :aria-label="(row.pinned ? $store.global.t('unpinModel') : $store.global.t('pinToTop')) + ' ' + row.modelId"
+                              @click="await updateModelConfig(row.modelId, { pinned: !row.pinned })">
+                        <svg class="mdl-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                        </svg>
+                        <span class="sr-only" x-text="row.pinned ? $store.global.t('unpinModel') : $store.global.t('pinToTop')">Pin to top</span>
+                      </button>
+                      <button type="button" class="btn btn-sm btn-icon btn-ghost"
+                              :title="row.hidden ? $store.global.t('showModel') : $store.global.t('hideModel')"
+                              :aria-label="(row.hidden ? $store.global.t('showModel') : $store.global.t('hideModel')) + ' ' + row.modelId"
+                              @click="await updateModelConfig(row.modelId, { hidden: !row.hidden })">
+                        <svg class="mdl-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true" x-show="!row.hidden">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                        <svg class="mdl-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true" x-show="row.hidden">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                        </svg>
+                        <span class="sr-only" x-text="row.hidden ? $store.global.t('showModel') : $store.global.t('hideModel')">Hide</span>
+                      </button>
+                    </div>
+                  </td>
                 </tr>
-                <!-- Empty State -->
-                <tr x-show="!$store.data.initialLoad && $store.data.quotaRows.length === 0">
-                    <td :colspan="$store.settings.compact ? 4 : 6" class="py-16 text-center">
-                        <div class="flex flex-col items-center gap-4 max-w-lg mx-auto">
-                            <svg class="w-20 h-20 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
-                                      d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                            </svg>
-                            <h3 class="text-xl font-semibold text-gray-400" x-text="$store.global.t('noSignal')">
-                                NO SIGNAL DETECTED
-                            </h3>
-                            <p class="text-sm text-gray-600 max-w-md leading-relaxed">
-                                No model data available. Add accounts to see available models and quota information.
-                            </p>
-                            <button class="btn bg-neon-purple hover:bg-purple-600 border-none text-white btn-sm gap-2 shadow-lg shadow-neon-purple/20"
-                                @click="$store.global.activeTab = 'accounts'">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                                </svg>
-                                <span x-text="$store.global.t('goToAccounts')">Go to Accounts</span>
-                            </button>
-                        </div>
-                    </td>
-                </tr>
+              </template>
+
+              <tr x-show="$store.data.loading && !$store.data.quotaRows.length">
+                <td :colspan="$store.settings.compact ? 5 : 6">
+                  <div class="empty">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span class="label" x-text="$store.global.t('establishingUplink')">ESTABLISHING UPLINK...</span>
+                  </div>
+                </td>
+              </tr>
+
+              <tr x-show="!$store.data.initialLoad && $store.data.quotaRows.length === 0 && $store.data.models.length === 0">
+                <td :colspan="$store.settings.compact ? 5 : 6">
+                  <div class="empty">
+                    <p class="empty-title" x-text="$store.global.t('noSignal')">NO SIGNAL DETECTED</p>
+                    <p class="empty-desc" x-text="$store.global.t('modelsEmptyDesc')">No model data yet. Add an account to see its models and quota.</p>
+                    <div class="empty-actions">
+                      <button type="button" class="btn btn-primary btn-sm" @click="$store.global.activeTab = 'accounts'">
+                        <svg class="mdl-ico" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                        </svg>
+                        <span x-text="$store.global.t('goToAccounts')">Go to Accounts</span>
+                      </button>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+
+              <tr x-show="!$store.data.initialLoad && $store.data.quotaRows.length === 0 && $store.data.models.length > 0">
+                <td :colspan="$store.settings.compact ? 5 : 6">
+                  <div class="empty">
+                    <p class="empty-title" x-text="$store.global.t('modelsNoMatch')">No models match</p>
+                    <p class="empty-desc" x-text="$store.global.t('modelsNoMatchDesc')">Nothing matches these filters. Clear them, or show hidden models.</p>
+                    <div class="empty-actions">
+                      <button type="button" class="btn btn-sm"
+                              @click="$store.data.filters.search = ''; $store.data.filters.family = 'all'; $store.data.filters.account = 'all'; $store.data.computeQuotaRows()"
+                              x-text="$store.global.t('clearFilters')">Clear filters</button>
+                    </div>
+                  </div>
+                </td>
+              </tr>
             </tbody>
-        </table>
-    </div>
-</div>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
 </div>

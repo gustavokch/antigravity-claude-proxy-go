@@ -7,9 +7,10 @@ window.Components = window.Components || {};
 
 window.Components.dashboard = () => ({
     // Core state
-    stats: { total: 0, active: 0, limited: 0, overallHealth: 0, hasTrendData: false },
+    stats: { total: 0, active: 0, limited: 0, invalid: 0, overallHealth: 0, hasTrendData: false },
     hasFilteredTrendData: true,
-    charts: { quotaDistribution: null, usageTrend: null },
+    charts: { usageTrend: null },
+    familyQuota: [],
     usageStats: { total: 0, today: 0, thisHour: 0 },
     historyData: {},
     modelPerformance: { rows: [], overall: { avgLatencyFormatted: '-', tps: '0.0', cacheHitRate: '0.0' } },
@@ -51,6 +52,17 @@ window.Components.dashboard = () => ({
         // Load saved preferences from localStorage
         window.DashboardFilters.loadPreferences(this);
 
+        // Chart colours are CSS tokens read at build time: rebuild on theme change.
+        // The listener removes itself once this view leaves the document.
+        const onThemeChanged = () => {
+            if (!this.$el.isConnected) {
+                document.removeEventListener('sb-theme-changed', onThemeChanged);
+                return;
+            }
+            window.DashboardCharts.updateTrendChart(this);
+        };
+        document.addEventListener('sb-theme-changed', onThemeChanged);
+
         // Check Claude config status on init
         this.checkClaudeConfigStatus();
 
@@ -59,7 +71,7 @@ window.Components.dashboard = () => ({
             if (val === 'dashboard' && oldVal !== undefined) {
                 this.$nextTick(() => {
                     this.updateStats();
-                    this.updateCharts();
+                    this.updateQuotaSummary();
                     this.updateTrendChart();
                     this.checkClaudeConfigStatus();
                 });
@@ -71,11 +83,11 @@ window.Components.dashboard = () => ({
             if (this.$store.global.activeTab === 'dashboard') {
                 this.updateStats();
                 // Debounce chart updates to prevent rapid flickering
-                if (this._debouncedUpdateCharts) {
-                    this._debouncedUpdateCharts();
+                if (this._debouncedUpdateQuota) {
+                    this._debouncedUpdateQuota();
                 } else {
-                    this._debouncedUpdateCharts = window.utils.debounce(() => this.updateCharts(), 100);
-                    this._debouncedUpdateCharts();
+                    this._debouncedUpdateQuota = window.utils.debounce(() => this.updateQuotaSummary(), 100);
+                    this._debouncedUpdateQuota();
                 }
             }
         });
@@ -99,7 +111,7 @@ window.Components.dashboard = () => ({
         if (this.$store.global.activeTab === 'dashboard') {
             this.$nextTick(() => {
                 this.updateStats();
-                this.updateCharts();
+                this.updateQuotaSummary();
 
                 // Optimization: Only process history if it hasn't been processed yet
                 // The usageHistory watcher above will handle updates if data changes
@@ -185,8 +197,8 @@ window.Components.dashboard = () => ({
     },
 
     // Delegation methods for charts
-    updateCharts() {
-        window.DashboardCharts.updateCharts(this);
+    updateQuotaSummary() {
+        window.DashboardCharts.updateQuotaSummary(this);
     },
 
     updateTrendChart() {
@@ -233,19 +245,6 @@ window.Components.dashboard = () => ({
         return '—';
     },
 
-    openrouterBalanceClass() {
-        const credits = this.$store.data.openrouterCredits;
-        if (!credits) return 'text-white';
-        if (credits.status === 'error') return 'text-zinc-500';
-        if (credits.requiresManagementKey) return 'text-amber-400';
-        if (credits.hasApiKey === false) return 'text-zinc-400';
-        if (credits.credits) {
-            if (credits.credits.balance < 1) return 'text-rose-400';
-            if (credits.credits.balance < 5) return 'text-amber-400';
-        }
-        return 'text-white';
-    },
-
     openrouterBalanceDesc() {
         const credits = this.$store.data.openrouterCredits;
         if (credits && credits.credits) {
@@ -261,11 +260,42 @@ window.Components.dashboard = () => ({
         return '';
     },
 
-    // Refresh stays available whenever an API key may be configured, so users
-    // can retry after an upstream failure or add a management key.
-    openrouterCreditsAvailable() {
+    // Trouble notice for the OpenRouter balance; null when quiet
+    // (not configured, or a healthy balance).
+    openrouterNotice() {
+        if (!this.$store.data.openrouter?.enabled) return null;
         const credits = this.$store.data.openrouterCredits;
-        return !!(credits && credits.hasApiKey !== false);
+        if (!credits || this.$store.data.openrouterCreditsLoading) return null;
+        const t = (key, params) => this.$store.global.t(key, params);
+        if (credits.status === 'error') {
+            return { level: 'caution', title: t('dashOpenRouterError'), desc: t('dashOpenRouterErrorDesc') };
+        }
+        if (credits.requiresManagementKey) {
+            return { level: 'caution', title: t('dashOpenRouterKey'), desc: t('dashOpenRouterKeyDesc') };
+        }
+        if (credits.credits) {
+            const level = window.QuotaView.balanceLevel(credits.credits.balance);
+            if (level === 'danger' || level === 'caution') {
+                const key = level === 'danger' ? 'dashOpenRouterEmpty' : 'dashOpenRouterLow';
+                return { level, title: t(key, { balance: this.openrouterBalanceText() }), desc: this.openrouterBalanceDesc() };
+            }
+        }
+        return null;
+    },
+
+    headroomSavedText() {
+        const s = this.$store.data.headroomStats;
+        if (!(s?.bytesBefore && s?.bytesAfter)) return '0 B';
+        const saved = s.bytesBefore - s.bytesAfter;
+        if (saved > 1024 * 1024) return (saved / (1024 * 1024)).toFixed(2) + ' MB';
+        if (saved > 1024) return (saved / 1024).toFixed(1) + ' KB';
+        return saved + ' B';
+    },
+
+    headroomRatioText() {
+        const s = this.$store.data.headroomStats;
+        if (!(s?.bytesBefore > 0)) return '0.0%';
+        return ((1 - s.bytesAfter / s.bytesBefore) * 100).toFixed(1) + '%';
     },
 
     toggleFamily(family) {
@@ -292,12 +322,30 @@ window.Components.dashboard = () => ({
         window.DashboardFilters.deselectAll(this);
     },
 
-    getFamilyColor(family) {
-        return window.DashboardFilters.getFamilyColor(family);
-    },
-
     getFamilyDashStyle(family) {
         return window.DashboardFilters.getFamilyDashStyle(family);
+    },
+
+    familyName(family) {
+        return this.$store.global.t('family' + family.charAt(0).toUpperCase() + family.slice(1));
+    },
+
+    familyResetText(fq) {
+        if (!fq.resetAt) return this.$store.global.t('quotaResetUnknown');
+        return this.$store.global.t('quotaNextReset', { time: window.utils.formatTimeUntil(fq.resetAt) });
+    },
+
+    openFamilyModels(family) {
+        this.$store.global.activeTab = 'models';
+        this.$nextTick(() => {
+            this.$store.data.filters.family = family;
+            this.$store.data.computeQuotaRows();
+        });
+    },
+
+    openOpenRouterSettings() {
+        this.$store.global.activeTab = 'settings';
+        this.$store.global.settingsTab = 'models';
     },
 
     getModelColor(family, modelIndex) {

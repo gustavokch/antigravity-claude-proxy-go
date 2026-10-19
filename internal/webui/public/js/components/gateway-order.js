@@ -7,6 +7,22 @@
  */
 window.Components = window.Components || {};
 
+// The effective global precedence, computed the way
+// config.GatewayOrderConfig.Effective("") computes it: listed IDs (trimmed,
+// lowercased, known, first occurrence wins), then every other known ID in
+// default order. Settings and the route diagram both draw this list.
+window.GatewayOrder = {
+    effective(order, known) {
+        const ids = known || [];
+        const out = [];
+        for (const raw of order || []) {
+            const id = String(raw).trim().toLowerCase();
+            if (ids.includes(id) && !out.includes(id)) out.push(id);
+        }
+        return [...out, ...ids.filter((id) => !out.includes(id))];
+    },
+};
+
 window.Components.gatewayOrder = () => ({
     loading: false,
     saving: false,
@@ -38,13 +54,11 @@ window.Components.gatewayOrder = () => ({
     // Omitted providers render muted: they are tried after the listed ones,
     // not disabled.
     effectiveOrder() {
-        const listed = (this.order || []).filter((id) => this.knownProviders.includes(id));
-        const rest = (this.knownProviders || []).filter((id) => !listed.includes(id));
-        return [...listed, ...rest];
+        return window.GatewayOrder.effective(this.order, this.knownProviders);
     },
 
     isListed(id) {
-        return (this.order || []).includes(id);
+        return (this.order || []).some((raw) => String(raw).trim().toLowerCase() === id);
     },
 
     overrideNames() {
@@ -187,6 +201,8 @@ window.Components.gatewayOrder = () => ({
                 if (section.byModel && typeof section.byModel === 'object') this.byModel = section.byModel;
             }
             Alpine.store('global').showToast(Alpine.store('global').t('gatewayOrderSaved') || 'Gateway precedence saved', 'success');
+            // The shell's route diagram reads gateway state from /api/config.
+            Alpine.store('data').performHealthCheck();
         } catch (err) {
             Alpine.store('global').showToast(err.message, 'error');
         } finally {

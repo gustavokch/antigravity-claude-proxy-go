@@ -35,22 +35,6 @@ function ccIdentityFrom(source, transform) {
 }
 
 window.Components.models = () => ({
-    // Color palette for per-account threshold markers
-    thresholdColors: [
-        { bg: '#eab308', shadow: 'rgba(234,179,8,0.5)' },    // yellow
-        { bg: '#06b6d4', shadow: 'rgba(6,182,212,0.5)' },     // cyan
-        { bg: '#a855f7', shadow: 'rgba(168,85,247,0.5)' },    // purple
-        { bg: '#22c55e', shadow: 'rgba(34,197,94,0.5)' },     // green
-        { bg: '#ef4444', shadow: 'rgba(239,68,68,0.5)' },     // red
-        { bg: '#f97316', shadow: 'rgba(249,115,22,0.5)' },    // orange
-        { bg: '#ec4899', shadow: 'rgba(236,72,153,0.5)' },    // pink
-        { bg: '#8b5cf6', shadow: 'rgba(139,92,246,0.5)' },    // violet
-    ],
-
-    getThresholdColor(index) {
-        return this.thresholdColors[index % this.thresholdColors.length];
-    },
-
     // Drag state for threshold markers
     dragging: {
         active: false,
@@ -640,6 +624,8 @@ window.Components.models = () => ({
                 Alpine.store('data').openrouter = this.openRouterConfig;
             }
             store.showToast(store.t('openRouterSavedSuccess') || 'OpenRouter settings saved', 'success');
+            // The shell's route diagram reads gateway state from /api/config.
+            Alpine.store('data').performHealthCheck();
         } catch (e) {
             this.openRouterError = e.message || 'Failed to save OpenRouter settings';
             store.showToast(this.openRouterError, 'error');
@@ -705,6 +691,7 @@ window.Components.models = () => ({
                 Alpine.store('data').kimi = this.kimiConfig;
             }
             store.showToast(store.t('kimiSavedSuccess') || 'Kimi settings saved', 'success');
+            Alpine.store('data').performHealthCheck();
         } catch (e) {
             this.kimiError = e.message || 'Failed to save Kimi settings';
             store.showToast(this.kimiError, 'error');
@@ -777,6 +764,7 @@ window.Components.models = () => ({
                     if (dialog && dialog.open) dialog.close();
                     store.showToast(store.t('kimiOAuthSuccess') || 'Kimi Code login complete', 'success');
                     await this.fetchKimiConfig();
+                    Alpine.store('data').performHealthCheck();
                     return;
                 }
                 if (['expired', 'denied', 'cancelled', 'error'].includes(data.status)) {
@@ -834,6 +822,7 @@ window.Components.models = () => ({
                 throw new Error(errData.error || `HTTP ${response.status}`);
             }
             await this.fetchKimiConfig();
+            Alpine.store('data').performHealthCheck();
         } catch (e) {
             store.showToast(e.message || 'Failed to log out of Kimi Code', 'error');
         }
@@ -970,6 +959,7 @@ window.Components.models = () => ({
                 Alpine.store('data').zen = this.zenConfig;
             }
             store.showToast(store.t('zenSavedSuccess') || 'Zen settings saved', 'success');
+            Alpine.store('data').performHealthCheck();
         } catch (e) {
             this.zenError = e.message || 'Failed to save Zen settings';
             store.showToast(this.zenError, 'error');
@@ -1401,6 +1391,7 @@ window.Components.models = () => ({
                 throw new Error(err.error || `HTTP ${response.status}`);
             }
             this.ccSuccess = 'Saved';
+            Alpine.store('data').performHealthCheck();
             setTimeout(() => { this.ccSuccess = ''; }, 3000);
         } catch (e) {
             this.ccError = e.message || 'Failed to save';
@@ -1465,7 +1456,7 @@ window.Components.models = () => ({
             const data = await response.json();
             const store = Alpine.store('global');
             if (data.valid) {
-                store.showToast('Account valid ✓', 'success');
+                store.showToast('Account valid', 'success');
             } else {
                 store.showToast('Account invalid: ' + (data.error || 'unknown'), 'error');
             }
@@ -1794,6 +1785,7 @@ window.Components.models = () => ({
 
             await window.ModelConfigUtils.saveCustomEndpoints(currentEndpoints);
             store.showToast(store.t('endpointSavedSuccess') || `Endpoint for ${cleanModelId} saved`, 'success');
+            Alpine.store('data').performHealthCheck();
             this.closeEndpointModal();
         } catch (e) {
             this.endpointModal.error = e.message || 'Failed to save endpoint';
@@ -1816,6 +1808,7 @@ window.Components.models = () => ({
 
             await window.ModelConfigUtils.saveCustomEndpoints(currentEndpoints);
             store.showToast(store.t('endpointDeletedSuccess') || `Endpoint for ${modelId} removed`, 'success');
+            Alpine.store('data').performHealthCheck();
         } catch (e) {
             store.showToast((store.t('failedToDeleteEndpoint') || 'Failed to delete endpoint') + ': ' + e.message, 'error');
         }

@@ -29,9 +29,7 @@ window.DashboardFilters.getInitialState = function() {
         displayMode: 'model',
         selectedFamilies: [],
         selectedModels: {},
-        showModelFilter: false,
-        showTimeRangeDropdown: false,
-        showDisplayModeDropdown: false
+        showModelFilter: false
     };
 };
 
@@ -78,7 +76,6 @@ window.DashboardFilters.savePreferences = function(component) {
  */
 window.DashboardFilters.setDisplayMode = function(component, mode) {
     component.displayMode = mode;
-    component.showDisplayModeDropdown = false;
     window.DashboardFilters.savePreferences(component);
     // updateTrendChart uses debounce internally, call directly
     component.updateTrendChart();
@@ -91,7 +88,6 @@ window.DashboardFilters.setDisplayMode = function(component, mode) {
  */
 window.DashboardFilters.setTimeRange = function(component, range) {
     component.timeRange = range;
-    component.showTimeRangeDropdown = false;
     window.DashboardFilters.savePreferences(component);
     component.updateTrendChart();
 };
@@ -236,25 +232,15 @@ window.DashboardFilters.deselectAll = function(component) {
 };
 
 /**
- * Get color for a family
- * @param {string} family - Family name
- * @returns {string} Color value
- */
-window.DashboardFilters.getFamilyColor = function(family) {
-    const FAMILY_COLORS = window.DashboardConstants?.FAMILY_COLORS || {};
-    return FAMILY_COLORS[family] || FAMILY_COLORS.other;
-};
-
-/**
  * Get color for a model (with index for variation within family)
  * @param {string} family - Family name
  * @param {number} modelIndex - Index of model within family
  * @returns {string} Color value
  */
 window.DashboardFilters.getModelColor = function(family, modelIndex) {
-    const MODEL_COLORS = window.DashboardConstants?.MODEL_COLORS || [];
-    const baseIndex = family === 'claude' ? 0 : (family === 'gemini' ? 4 : 8);
-    return MODEL_COLORS[(baseIndex + modelIndex) % MODEL_COLORS.length];
+    const seriesColor = window.DashboardConstants.seriesColor;
+    const baseIndex = family === 'claude' ? 0 : (family === 'gemini' ? 4 : 6);
+    return seriesColor(baseIndex + modelIndex);
 };
 
 /**

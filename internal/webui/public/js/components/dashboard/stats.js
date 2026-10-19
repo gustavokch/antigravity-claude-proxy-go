@@ -75,6 +75,7 @@ window.DashboardStats.updateStats = function(component) {
     component.stats.total = enabledAccounts.length;
     component.stats.active = active;
     component.stats.limited = limited;
+    component.stats.invalid = enabledAccounts.filter(acc => acc.status === 'invalid').length;
 
     // Calculate model usage for rate limit details
     let totalLimitedModels = 0;

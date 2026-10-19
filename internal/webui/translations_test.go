@@ -105,6 +105,12 @@ var quotaStatusKeys = []string{
 	"invalidStatus",
 }
 
+// accountExportKeys are the i18n keys for the credential export confirmation
+// dialog in views/accounts.html. Every locale must define them.
+var accountExportKeys = []string{
+	"accExportTitle", "accExportWarning", "accExportConfirm",
+}
+
 // classifierKeys are the i18n keys referenced by the Security Monitor (Classifier)
 // panel in views/settings.html. Every locale must define them.
 var classifierKeys = []string{
@@ -276,6 +282,18 @@ func TestTranslations_QuotaStatusKeys(t *testing.T) {
 	for _, locale := range locales {
 		src := loadLocale(t, locale)
 		for _, key := range quotaStatusKeys {
+			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
+			if !re.MatchString(src) {
+				t.Errorf("locale %s missing key %q", locale, key)
+			}
+		}
+	}
+}
+
+func TestTranslations_AccountExportKeys(t *testing.T) {
+	for _, locale := range locales {
+		src := loadLocale(t, locale)
+		for _, key := range accountExportKeys {
 			re := regexp.MustCompile(`(?m)^\s+` + key + `\s*:`)
 			if !re.MatchString(src) {
 				t.Errorf("locale %s missing key %q", locale, key)

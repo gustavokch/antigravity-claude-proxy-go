@@ -3,6 +3,7 @@ package webui
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -152,6 +153,38 @@ func TestHandler(t *testing.T) {
 		}
 		if !strings.Contains(rec.Body.String(), "<!DOCTYPE html>") {
 			t.Errorf("expected fallback to index.html")
+		}
+	})
+
+	t.Run("libraries are vendored, not loaded from a CDN", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		index := rec.Body.String()
+		// Any absolute or protocol-relative script/stylesheet URL is a
+		// third-party request at load; links (<a href>) are not loaded.
+		external := regexp.MustCompile(`(?i)<(?:script|link)\b[^>]*\b(?:src|href)\s*=\s*["'](?:https?:|//)`)
+		if loc := external.FindStringIndex(index); loc != nil {
+			t.Errorf("index.html loads a third-party resource: %s", index[loc[0]:loc[1]])
+		}
+
+		vendored := map[string]string{
+			"/js/vendor/chart-4.5.1.umd.min.js": "window.Chart",
+			"/js/vendor/alpine-3.17.4.min.js":   "Alpine",
+		}
+		for p, marker := range vendored {
+			if !strings.Contains(index, `src="`+strings.TrimPrefix(p, "/")+`"`) {
+				t.Errorf("index.html must reference %s", p)
+			}
+			req := httptest.NewRequest(http.MethodGet, p, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			body := rec.Body.String()
+			// The SPA fallback answers 200 with index.html for a missing file,
+			// so check the body, not only the status.
+			if rec.Code != http.StatusOK || strings.Contains(body, "<!DOCTYPE html>") || !strings.Contains(body, marker) {
+				t.Errorf("%s is not served as the vendored library", p)
+			}
 		}
 	})
 }
