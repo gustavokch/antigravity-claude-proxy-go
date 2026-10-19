@@ -537,12 +537,6 @@ document.addEventListener('alpine:init', () => {
             return 'other';
         },
 
-        // Family dots are neutral ink: families are told apart by text and
-        // plates, never by hue.
-        getModelColorClass() {
-            return 'model-dot';
-        },
-
         /**
          * Get quota data without filters applied (for Dashboard global charts)
          * Returns array of { modelId, family, quotaInfo: [{pct}] }

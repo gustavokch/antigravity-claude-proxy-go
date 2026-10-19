@@ -42,11 +42,12 @@ model.
 
 ## Operating Context
 
-- Served by the Go binary from `internal/webui/public` via `embed.FS`; local
-  port 8091 by default; optional `webuiPassword` gate.
+- Served by the Go binary from `internal/webui/public` via `embed.FS`; listens
+  on `127.0.0.1:8080` by default (`-listen` / `ANTIGRAVITY_PROXY_LISTEN`);
+  optional `webuiPassword` gate.
 - Alpine.js views (`views/*.html`) loaded into a shell (`index.html`);
-  components in `js/components/`; locales `en` and `pt` with a parity test
-  (`translations_test.go`).
+  components in `js/components/`; locales `en` and `pt`, with per-feature key
+  tests in `translations_test.go`.
 - Chart.js draws dashboard charts.
 - Used on a desktop monitor during long coding sessions; must also work on a
   narrow window or phone for a quick check.

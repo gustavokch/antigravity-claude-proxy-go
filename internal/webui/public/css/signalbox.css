@@ -2215,16 +2215,6 @@ pre.codeblock {
 .dash-chev.is-flipped { transform: rotate(180deg); }
 
 .dash-quota { margin-top: var(--sb-s4); }
-/* Family dot in lists: neutral ink, never a family hue (see getModelColorClass). */
-.model-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--sb-ink-3);
-  flex: none;
-}
-
 /* Live readouts in the page head. */
 .dash-live { row-gap: var(--sb-s2); }
 
