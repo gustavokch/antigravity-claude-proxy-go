@@ -9,6 +9,7 @@ export function loadComponent(file, exportName, { manualTimers = false } = {}) {
     const toasts = [];
     const closedDialogs = [];
     const timers = [];
+    const downloads = [];              // { href, download } per clicked <a download>
     const dialogs = new Map();
     const store = { webuiPassword: 'pw', t: (k) => k,
         showToast: (msg, kind) => toasts.push({ msg, kind }) };
@@ -36,7 +37,14 @@ export function loadComponent(file, exportName, { manualTimers = false } = {}) {
         },
         clearTimeout: () => {},
         Alpine: { store: (name) => (name === 'global' ? store : {}) },
-        document: { getElementById: dialog, querySelectorAll: () => [] },
+        document: {
+            getElementById: dialog,
+            querySelectorAll: () => [],
+            createElement: () => ({ click() { downloads.push({ href: this.href, download: this.download }); } }),
+            body: { appendChild() {}, removeChild() {} },
+        },
+        Blob,
+        URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
     };
     sandbox.window = {
         Components: {},
@@ -50,7 +58,7 @@ export function loadComponent(file, exportName, { manualTimers = false } = {}) {
     vm.runInContext(fs.readFileSync(url, 'utf8'), sandbox, { filename: url.pathname });
     const flushTimers = () => timers.splice(0).forEach((fn) => fn());
     return { component: sandbox.window.Components[exportName](),
-             requests, toasts, closedDialogs, store, dialog, flushTimers };
+             requests, toasts, closedDialogs, downloads, store, dialog, flushTimers };
 }
 
 export const okResponse = (data) => ({
