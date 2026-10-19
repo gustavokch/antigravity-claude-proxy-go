@@ -6,16 +6,57 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 function loadMimic(data) {
-    const sandbox = { console, window: { Components: {} } };
+    const sandbox = { console, window: { Components: {} }, document: { addEventListener() {} } };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
-    for (const file of ['account-manager.js', 'route-mimic.js']) {
+    for (const file of ['account-manager.js', 'gateway-order.js', 'route-mimic.js']) {
         const url = new URL(`../public/js/components/${file}`, import.meta.url);
         vm.runInContext(fs.readFileSync(url, 'utf8'), sandbox, { filename: url.pathname });
     }
     const c = sandbox.window.Components.routeMimic();
     c.$store = { data, global: { t: (k) => k, activeTab: 'dashboard', settingsTab: 'ui', accountsTab: 'google' } };
     return c;
+}
+
+const local = (v) => JSON.parse(JSON.stringify(v));
+const KNOWN = ['kimi', 'zen', 'claudecode', 'openrouter', 'custom', 'cloudcode'];
+
+function gatewayStates() {
+    const base = { accounts: [], gateways: {
+        order: [], known: KNOWN,
+        kimi: { enabled: true, hasApiKey: false, oauth: true },
+        zen: { enabled: true, hasApiKey: false },
+        openrouter: { enabled: true, hasApiKey: true },
+        claudecode: { enabled: false },
+        customCount: 2,
+    } };
+    const cases = [
+        ['kimi: an OAuth login is a credential', {}, 'kimi', 'clear', 'routeReady'],
+        ['kimi: no key and no login', { gateways: { kimi: { enabled: true, hasApiKey: false, oauth: false } } }, 'kimi', 'danger', 'routeNoKeyOrLogin'],
+        ['zen: no key', {}, 'zen', 'danger', 'routeNoKey'],
+        ['zen: disabled', { gateways: { zen: { enabled: false } } }, 'zen', 'off', 'routeDisabled'],
+        ['openrouter: balance unreadable', { openrouterCredits: { status: 'error' } }, 'openrouter', 'caution', 'routeCreditsError'],
+        ['openrouter: under $1', { openrouterCredits: { credits: { balance: 0.5 } } }, 'openrouter', 'danger', 'routeBalanceLow'],
+        ['openrouter: under $5', { openrouterCredits: { credits: { balance: 4 } } }, 'openrouter', 'caution', 'routeBalanceLow'],
+        ['openrouter: healthy balance', { openrouterCredits: { credits: { balance: 20 } } }, 'openrouter', 'clear', 'routeReady'],
+        ['claude code: disabled', {}, 'claudecode', 'off', 'routeDisabled'],
+        ['custom: endpoints', {}, 'custom', 'clear', 'routeEndpoints'],
+        ['custom: none', { gateways: { customCount: 0 } }, 'custom', 'off', 'routeNoEndpoints'],
+    ];
+    for (const [name, patch, id, aspect, reason] of cases) {
+        const data = { ...base, ...patch, gateways: { ...base.gateways, ...(patch.gateways || {}) } };
+        const st = loadMimic(data).gatewayState(id);
+        assert.equal(st.aspect, aspect, name);
+        assert.equal(st.reason, reason, name);
+    }
+}
+
+// Same result as config.GatewayOrderConfig.Effective("") for the global order.
+function effectiveOrderMatchesTheServer() {
+    const order = (o) => local(loadMimic({ accounts: [], gateways: { order: o, known: KNOWN } }).effectiveOrder());
+    assert.deepEqual(order([' OpenRouter', 'kimi']), ['openrouter', 'kimi', 'zen', 'claudecode', 'custom', 'cloudcode']);
+    assert.deepEqual(order(['openrouter', 'openrouter', 'bogus']), ['openrouter', 'kimi', 'zen', 'claudecode', 'custom', 'cloudcode']);
+    assert.deepEqual(order([]), KNOWN);
 }
 
 const pools = (...fractions) => ({
@@ -84,6 +125,8 @@ const cases = [
     ['a partly exhausted account still serves', partlyExhaustedAccountStillServes],
     ['an exhausted Claude Code account is not ready', exhaustedClaudeCodeAccountIsNotReady],
     ['gateway signals open the matching accounts tab', signalsOpenTheMatchingAccountsTab],
+    ['gateway aspects and reasons', gatewayStates],
+    ['effective order matches the server', effectiveOrderMatchesTheServer],
 ];
 for (const [name, fn] of cases) {
     await fn();

@@ -274,13 +274,10 @@ window.Components.dashboard = () => ({
             return { level: 'caution', title: t('dashOpenRouterKey'), desc: t('dashOpenRouterKeyDesc') };
         }
         if (credits.credits) {
-            const balance = this.openrouterBalanceText();
-            const desc = this.openrouterBalanceDesc();
-            if (credits.credits.balance < 1) {
-                return { level: 'danger', title: t('dashOpenRouterEmpty', { balance }), desc };
-            }
-            if (credits.credits.balance < 5) {
-                return { level: 'caution', title: t('dashOpenRouterLow', { balance }), desc };
+            const level = window.QuotaView.balanceLevel(credits.credits.balance);
+            if (level === 'danger' || level === 'caution') {
+                const key = level === 'danger' ? 'dashOpenRouterEmpty' : 'dashOpenRouterLow';
+                return { level, title: t(key, { balance: this.openrouterBalanceText() }), desc: this.openrouterBalanceDesc() };
             }
         }
         return null;

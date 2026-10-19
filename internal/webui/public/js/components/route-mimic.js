@@ -25,11 +25,7 @@ window.Components.routeMimic = () => ({
 
     effectiveOrder() {
         const g = this.$store.data.gateways;
-        if (!g) return [];
-        const known = g.known || [];
-        const listed = (g.order || []).filter((id) => known.includes(id));
-        const rest = known.filter((id) => !listed.includes(id));
-        return [...listed, ...rest];
+        return g ? window.GatewayOrder.effective(g.order, g.known) : [];
     },
 
     label(id) {
@@ -87,10 +83,11 @@ window.Components.routeMimic = () => ({
                     return { aspect: 'caution', reason: this.t('routeCreditsError'), lamps: [{ key: 'k', aspect: 'caution' }] };
                 }
                 if (credits && credits.credits) {
-                    const bal = Number(credits.credits.balance);
-                    const text = this.t('routeBalanceLow', { balance: '$' + bal.toFixed(2) });
-                    if (bal < 1) return { aspect: 'danger', reason: text, lamps: [{ key: 'k', aspect: 'danger' }] };
-                    if (bal < 5) return { aspect: 'caution', reason: text, lamps: [{ key: 'k', aspect: 'caution' }] };
+                    const level = window.QuotaView.balanceLevel(credits.credits.balance);
+                    if (level === 'danger' || level === 'caution') {
+                        const text = this.t('routeBalanceLow', { balance: '$' + Number(credits.credits.balance).toFixed(2) });
+                        return { aspect: level, reason: text, lamps: [{ key: 'k', aspect: level }] };
+                    }
                 }
                 return base;
             }

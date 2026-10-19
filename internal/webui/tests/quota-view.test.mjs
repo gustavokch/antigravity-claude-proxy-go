@@ -323,6 +323,16 @@ function summariesCountReadyAccounts() {
     assert.equal(c.accountStatus(data.accounts[4]).tone, 't-danger');
 }
 
+function balanceLevels() {
+    assert.equal(qv.balanceLevel(0.99), 'danger');
+    assert.equal(qv.balanceLevel(1), 'caution');
+    assert.equal(qv.balanceLevel(4.99), 'caution');
+    assert.equal(qv.balanceLevel(5), 'clear');
+    assert.equal(qv.balanceLevel('12.5'), 'clear');
+    assert.equal(qv.balanceLevel(null), 'off');
+    assert.equal(qv.balanceLevel('n/a'), 'off');
+}
+
 const cases = [
     ['pools order 5h before weekly, grouped by family', poolOrder],
     ['pools tolerate missing and null fields', poolTolerance],
@@ -339,6 +349,7 @@ const cases = [
     ['zero or past Claude Code cooldown time is no cooldown', cooldown],
     ['one account aspect rule for every view', accountAspects],
     ['header counts use the readiness rule', summariesCountReadyAccounts],
+    ['OpenRouter balance level thresholds', balanceLevels],
 ];
 
 for (const [name, fn] of cases) {

@@ -123,6 +123,16 @@ window.QuotaView = (() => {
         return 'clear';
     }
 
+    // Signal Box level for an OpenRouter balance in USD: under $1 danger,
+    // under $5 caution, else clear; 'off' when unknown.
+    function balanceLevel(balance) {
+        const usd = Number(balance);
+        if (balance === null || balance === undefined || !Number.isFinite(usd)) return 'off';
+        if (usd < 1) return 'danger';
+        if (usd < 5) return 'caution';
+        return 'clear';
+    }
+
     // Signal Box level for a used fraction: above 80% used is danger, above
     // 50% is caution.
     function usedLevel(fraction) {
@@ -293,7 +303,7 @@ window.QuotaView = (() => {
 
     return {
         splitPoolId, poolPercent, sortedPools, poolFamilyLabel, inCooldown, accountAspect,
-        remainingLevel, usedLevel, toneClass, usedTextClass,
+        remainingLevel, balanceLevel, usedLevel, toneClass, usedTextClass,
         burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
         reportRows, reportPeriod, usageURL, historySince, escapeHTML, poolLabel, poolSourceLabel,
         renderPoolBars,
