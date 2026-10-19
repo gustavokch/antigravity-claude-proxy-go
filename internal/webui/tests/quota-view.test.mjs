@@ -65,19 +65,21 @@ function poolPercent() {
     assert.equal(qv.poolPercent({}), null);
     assert.equal(qv.poolPercent(null), null);
 
-    assert.equal(qv.remainingBarClass(null), 'bg-gray-600');
-    assert.equal(qv.remainingBarClass(80), 'bg-emerald-500');
-    assert.equal(qv.remainingBarClass(50), 'bg-yellow-500');
-    assert.equal(qv.remainingBarClass(20), 'bg-red-500');
+    // Track circuit aspect for % left: exhausted is danger, under 20% caution.
+    assert.equal(qv.remainingLevel(null), 'off');
+    assert.equal(qv.remainingLevel(0), 'danger');
+    assert.equal(qv.remainingLevel(10), 'caution');
+    assert.equal(qv.remainingLevel(20), 'clear');
+    assert.equal(qv.remainingLevel(80), 'clear');
 }
 
 function usedColours() {
-    assert.equal(qv.usedBarClass(0.81), 'bg-red-500');
-    assert.equal(qv.usedBarClass(0.8), 'bg-yellow-500');
-    assert.equal(qv.usedBarClass(0.51), 'bg-yellow-500');
-    assert.equal(qv.usedBarClass(0.5), 'bg-emerald-500');
-    assert.equal(qv.usedBarClass(null), 'bg-gray-600');
-    assert.equal(qv.usedTextClass(0.94), 'text-red-400');
+    assert.equal(qv.usedLevel(0.81), 'danger');
+    assert.equal(qv.usedLevel(0.8), 'caution');
+    assert.equal(qv.usedLevel(0.51), 'caution');
+    assert.equal(qv.usedLevel(0.5), 'clear');
+    assert.equal(qv.usedLevel(null), 'off');
+    assert.equal(qv.usedTextClass(0.94), 't-danger');
 }
 
 function burnLevels() {

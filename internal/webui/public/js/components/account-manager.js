@@ -64,28 +64,34 @@ window.QuotaView = (() => {
         return FAMILY_LABEL[family] || family;
     }
 
-    // Bar colour for a remaining percent (null means unknown).
-    function remainingBarClass(percent) {
-        if (percent === null || percent === undefined) return 'bg-gray-600';
-        if (percent > 50) return 'bg-emerald-500';
-        if (percent > 20) return 'bg-yellow-500';
-        return 'bg-red-500';
+    // Signal Box level for a remaining percent. 'off' when unknown, 'danger'
+    // when exhausted (the circuit fills red), 'caution' under 20%, else 'clear'.
+    function remainingLevel(percent) {
+        if (!isNum(percent)) return 'off';
+        if (percent <= 0) return 'danger';
+        if (percent < 20) return 'caution';
+        return 'clear';
     }
 
-    // Bar and text colour for a used fraction, on the same bands as the
-    // pools read from the other side: above 80% used red, above 50% yellow.
-    function usedBarClass(fraction) {
-        if (!isNum(fraction)) return 'bg-gray-600';
-        if (fraction > 0.8) return 'bg-red-500';
-        if (fraction > 0.5) return 'bg-yellow-500';
-        return 'bg-emerald-500';
+    // Signal Box level for a used fraction: above 80% used is danger, above
+    // 50% is caution.
+    function usedLevel(fraction) {
+        if (!isNum(fraction)) return 'off';
+        if (fraction > 0.8) return 'danger';
+        if (fraction > 0.5) return 'caution';
+        return 'clear';
+    }
+
+    // Text tone class for a level.
+    function toneClass(level) {
+        if (level === 'danger') return 't-danger';
+        if (level === 'caution') return 't-caution';
+        if (level === 'off') return 't-3';
+        return 't-2';
     }
 
     function usedTextClass(fraction) {
-        if (!isNum(fraction)) return 'text-gray-500';
-        if (fraction > 0.8) return 'text-red-400';
-        if (fraction > 0.5) return 'text-yellow-400';
-        return 'text-gray-300';
+        return toneClass(usedLevel(fraction));
     }
 
     // Burn level from tokensPerMinuteForIndicator: above 1000 HIGH, above
@@ -198,51 +204,46 @@ window.QuotaView = (() => {
         const rows = sortedPools(pools);
         if (rows.length === 0) return '';
         const items = rows.map((p) => {
+            const level = remainingLevel(p.percent);
+            const tone = toneClass(level);
             const pct = p.percent === null ? 'N/A' : t('poolRemaining', { pct: p.percent + '%' });
             const label = poolLabel(p, t);
             const aria = `role="progressbar" aria-valuemin="0" aria-valuemax="100"`
                 + (p.percent === null ? '' : ` aria-valuenow="${p.percent}"`)
                 + ` aria-label="${escapeHTML(label + ': ' + pct)}"`;
+            const trackSize = compact ? 'track-sm' : 'track-lg';
+            const track = `<div class="track ${trackSize}" data-level="${level}"`
+                + ` data-empty="${p.percent !== null && p.percent <= 0}" style="--fill:${p.percent ?? 0}%" ${aria}></div>`;
             const reset = p.resetTime
                 ? (compact ? timeUntil(p.resetTime) : t('resetsIn', { time: timeUntil(p.resetTime) }))
                 : '';
             const badge = p.source
-                ? `<span class="px-1 rounded border border-space-border text-gray-400 uppercase" data-pool-source="${escapeHTML(p.source)}">${escapeHTML(poolSourceLabel(p.source, t))}</span>`
+                ? `<span class="tag" data-pool-source="${escapeHTML(p.source)}">${escapeHTML(poolSourceLabel(p.source, t))}</span>`
                 : '';
-            const pctClass = p.percent === null ? 'text-gray-500' : 'text-gray-300';
+            const resetHtml = reset ? `<span class="t-caution tnum">${escapeHTML(reset)}</span>` : '';
             if (compact) {
-                return `<div class="leading-tight" data-pool-id="${escapeHTML(p.id)}">`
-                    + `<div class="flex items-center justify-between gap-1 text-[10px] font-mono text-gray-500">`
-                    + `<span class="truncate">${escapeHTML(label)}</span>`
-                    + `<span class="${pctClass}" style="white-space:nowrap">${escapeHTML(pct)}</span></div>`
-                    + `<div class="w-full bg-gray-700 rounded-full overflow-hidden" style="height:4px" ${aria}>`
-                    + `<div class="h-full rounded-full ${remainingBarClass(p.percent)}" style="width:${p.percent ?? 0}%"></div></div>`
-                    + ((reset || badge)
-                        ? `<div class="flex items-center justify-between gap-1 text-[10px] font-mono text-gray-500" style="font-size:9px">`
-                          + `<span class="text-yellow-500/80">${escapeHTML(reset)}</span>${badge}</div>`
-                        : '')
+                return `<div class="acc-pool" data-pool-id="${escapeHTML(p.id)}">`
+                    + `<div class="acc-pool-head"><span class="acc-pool-name">${escapeHTML(label)}</span>`
+                    + `<span class="acc-pool-pct ${tone}">${escapeHTML(pct)}</span></div>`
+                    + track
+                    + ((reset || badge) ? `<div class="acc-pool-foot">${resetHtml}${badge}</div>` : '')
                     + `</div>`;
             }
-            return `<div class="p-3 bg-space-800/50 border border-space-border/30 rounded-lg" data-pool-id="${escapeHTML(p.id)}">`
-                + `<div class="flex justify-between items-center mb-2">`
-                + `<span class="text-sm font-semibold text-gray-200">${escapeHTML(label)}</span>`
-                + `<div class="flex items-center gap-2 text-[10px] font-mono">${badge}`
-                + `<span class="text-xs font-mono ${pctClass}">${escapeHTML(pct)}</span></div></div>`
-                + `<div class="w-full bg-gray-700 rounded-full h-2.5 mb-2 overflow-hidden" ${aria}>`
-                + `<div class="h-full rounded-full transition-all duration-500 ${remainingBarClass(p.percent)}" style="width:${p.percent ?? 0}%"></div></div>`
-                + `<div class="flex justify-between items-center">`
-                + `<span class="text-[10px] text-gray-500 font-mono">${escapeHTML(p.id)}</span>`
-                + (reset ? `<span class="text-[10px] text-yellow-500/80 font-mono italic">${escapeHTML(reset)}</span>` : '')
-                + `</div></div>`;
+            return `<div class="acc-pool acc-pool-wide" data-pool-id="${escapeHTML(p.id)}">`
+                + `<div class="acc-pool-head"><span class="t-strong">${escapeHTML(label)}</span>`
+                + `<span class="acc-meta">${badge}<span class="acc-pool-pct ${tone}">${escapeHTML(pct)}</span></span></div>`
+                + track
+                + `<div class="acc-pool-foot"><span class="mono t-3">${escapeHTML(p.id)}</span>${resetHtml}</div>`
+                + `</div>`;
         });
         return compact
-            ? `<div class="mt-1.5 space-y-1" style="min-width:11rem" data-pool-bars>${items.join('')}</div>`
-            : `<div class="grid grid-cols-1 gap-3" data-pool-bars>${items.join('')}</div>`;
+            ? `<div class="acc-pools" data-pool-bars>${items.join('')}</div>`
+            : `<div class="rows" data-pool-bars>${items.join('')}</div>`;
     }
 
     return {
-        splitPoolId, poolPercent, sortedPools, poolFamilyLabel, remainingBarClass,
-        usedBarClass, usedTextClass,
+        splitPoolId, poolPercent, sortedPools, poolFamilyLabel,
+        remainingLevel, usedLevel, toneClass, usedTextClass,
         burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
         reportRows, reportPeriod, usageURL, historySince, escapeHTML, poolLabel, poolSourceLabel,
         renderPoolBars,
@@ -254,7 +255,6 @@ window.Components.accountManager = () => ({
     searchQuery: '',
     deleteTarget: '',
     refreshing: false,
-    toggling: false,
     deleting: false,
     reloading: false,
     selectedAccountEmail: '',
@@ -315,6 +315,20 @@ window.Components.accountManager = () => ({
         return (Alpine.store('data').accounts || []).filter(acc => acc.provider === 'claudecode');
     },
 
+    // Enabled Google accounts and how many are ready (clear aspect: status ok
+    // and at least one quota window with quota left).
+    get googleSummary() {
+        const enabled = this.googleAccounts.filter(acc => acc.enabled !== false);
+        return { enabled: enabled.length, ready: enabled.filter(acc => this.accountStatus(acc).lamp === 'clear').length };
+    },
+
+    // Enabled Claude Code accounts and how many are not in cooldown.
+    get ccSummary() {
+        const enabled = this.allCCAccounts.filter(acc => acc.enabled !== false);
+        return { enabled: enabled.length, ready: enabled.filter(acc => !acc.cooldownUntil).length };
+    },
+
+
     get filteredAccounts() {
         const accounts = this.googleAccounts;
         if (!this.searchQuery || this.searchQuery.trim() === '') {
@@ -329,7 +343,8 @@ window.Components.accountManager = () => ({
         });
     },
 
-    get filteredCCAccounts() {
+    // Every Claude Code account: the endpoint snapshots merged with the store.
+    get allCCAccounts() {
         const storeAccounts = this.claudeStoreAccounts;
         const byId = new Map();
         (this.ccAccounts || []).forEach(acc => {
@@ -344,6 +359,11 @@ window.Components.accountManager = () => ({
             const storeAcc = storeAccounts.find(a => (a.id || a.email) === id);
             merged.push(storeAcc ? { ...snapshot, ...storeAcc } : snapshot);
         });
+        return merged;
+    },
+
+    get filteredCCAccounts() {
+        const merged = this.allCCAccounts;
         if (!this.searchQuery || this.searchQuery.trim() === '') {
             return merged;
         }
@@ -603,13 +623,58 @@ window.Components.accountManager = () => ({
         return pct === null ? 'N/A' : Alpine.store('global').t('ccUsed', { pct: pct + '%' });
     },
 
-    // Colour classes for an ok/warning/exceeds level.
-    levelBg(level) {
-        return level === 'exceeds' ? 'bg-red-500' : (level === 'warning' ? 'bg-yellow-500' : 'bg-emerald-500');
+    // Signal Box level for an ok/warning/exceeds projection.
+    levelLevel(level) {
+        return level === 'exceeds' ? 'danger' : (level === 'warning' ? 'caution' : 'clear');
     },
 
+    // Text tone class for an ok/warning/exceeds projection.
     levelText(level) {
-        return level === 'exceeds' ? 'text-red-400' : (level === 'warning' ? 'text-yellow-400' : 'text-gray-300');
+        return level === 'exceeds' ? 't-danger' : (level === 'warning' ? 't-caution' : 't-2');
+    },
+
+    // One per-model limit as a whole percent left, or null when unknown.
+    limitPercent(limit) {
+        const f = limit ? limit.remainingFraction : null;
+        return typeof f === 'number' && Number.isFinite(f) ? Math.round(f * 100) : null;
+    },
+
+    // Lamp, text tone and label key for a Google account row. Invalid and
+    // banned accounts, and accounts with every quota window at 0%, are
+    // blocked (danger); rate limits and partly exhausted windows are caution.
+    accountStatus(acc) {
+        if (acc.enabled === false || acc.status === 'disabled') {
+            return { lamp: 'off', tone: 't-3', key: 'accStatusDisabled', blocked: false };
+        }
+        if (acc.status === 'invalid' || acc.status === 'banned') {
+            const key = acc.status === 'banned' ? 'accStatusBanned' : 'accStatusInvalid';
+            return { lamp: 'danger', tone: 't-danger', key, blocked: true };
+        }
+        const pcts = this.accountPools(acc).map(p => p.percent).filter(p => typeof p === 'number');
+        if (pcts.length > 0 && pcts.every(p => p <= 0)) {
+            return { lamp: 'danger', tone: 't-danger', key: 'accStatusExhausted', blocked: true };
+        }
+        if (acc.status === 'rate_limited') {
+            return { lamp: 'caution', tone: 't-caution', key: 'accStatusRateLimited', blocked: false };
+        }
+        if (pcts.some(p => p <= 0)) {
+            return { lamp: 'caution', tone: 't-caution', key: 'accStatusPartlyExhausted', blocked: false };
+        }
+        if (acc.status === 'ok') {
+            return { lamp: 'clear', tone: 't-2', key: 'accStatusOk', blocked: false };
+        }
+        return { lamp: 'caution', tone: 't-caution', key: 'accStatusUnknown', blocked: false };
+    },
+
+    // Lamp, text tone and label key for a Claude Code account row.
+    ccStatus(acc) {
+        if (acc.enabled === false) {
+            return { lamp: 'off', tone: 't-3', key: 'accStatusDisabled' };
+        }
+        if (acc.cooldownUntil) {
+            return { lamp: 'caution', tone: 't-caution', key: 'cooldown' };
+        }
+        return { lamp: 'clear', tone: 't-2', key: 'accStatusReady' };
     },
 
     usageWindows(usage) {
@@ -836,9 +901,9 @@ window.Components.accountManager = () => ({
         // If no per-account threshold, show global value
         const globalThreshold = Alpine.store('data').globalQuotaThreshold;
         if (globalThreshold > 0) {
-            return Math.round(globalThreshold * 100) + '% (global)';
+            return Math.round(globalThreshold * 100) + '% (' + Alpine.store('global').t('accGlobal') + ')';
         }
-        return 'Global';
+        return Alpine.store('global').t('accGlobal');
     },
 
     /**
@@ -898,7 +963,8 @@ window.Components.accountManager = () => ({
         
         return {
             percent: Math.round(val * 100),
-            model: bestModel
+            model: bestModel,
+            resetTime: (limits[bestModel] && limits[bestModel].resetTime) || null
         };
     },
 

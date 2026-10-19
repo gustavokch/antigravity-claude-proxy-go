@@ -1,0 +1,817 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-18T00:00:00Z",
+  "title": "Design System: Signal Box",
+  "extensions": {
+    "colorMeta": {
+      "ground": {
+        "role": "neutral",
+        "displayName": "Enamel Ground",
+        "canonical": "oklch(91.6% 0.0108 112.4)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0108 112.4)",
+          "oklch(26.4% 0.0108 112.4)",
+          "oklch(37.9% 0.0108 112.4)",
+          "oklch(49.3% 0.0108 112.4)",
+          "oklch(60.7% 0.0108 112.4)",
+          "oklch(72.1% 0.0108 112.4)",
+          "oklch(83.6% 0.0108 112.4)",
+          "oklch(95.0% 0.0108 112.4)"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Working Panel",
+        "canonical": "oklch(95.6% 0.0093 106.6)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0093 106.6)",
+          "oklch(26.4% 0.0093 106.6)",
+          "oklch(37.9% 0.0093 106.6)",
+          "oklch(49.3% 0.0093 106.6)",
+          "oklch(60.7% 0.0093 106.6)",
+          "oklch(72.1% 0.0093 106.6)",
+          "oklch(83.6% 0.0093 106.6)",
+          "oklch(95.0% 0.0093 106.6)"
+        ]
+      },
+      "sunk": {
+        "role": "neutral",
+        "displayName": "Sunk Enamel",
+        "canonical": "oklch(87.6% 0.0122 111.8)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0122 111.8)",
+          "oklch(26.4% 0.0122 111.8)",
+          "oklch(37.9% 0.0122 111.8)",
+          "oklch(49.3% 0.0122 111.8)",
+          "oklch(60.7% 0.0122 111.8)",
+          "oklch(72.1% 0.0122 111.8)",
+          "oklch(83.6% 0.0122 111.8)",
+          "oklch(95.0% 0.0122 111.8)"
+        ]
+      },
+      "sunk-2": {
+        "role": "neutral",
+        "displayName": "Pressed Enamel",
+        "canonical": "oklch(84.2% 0.0137 111.3)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0137 111.3)",
+          "oklch(26.4% 0.0137 111.3)",
+          "oklch(37.9% 0.0137 111.3)",
+          "oklch(49.3% 0.0137 111.3)",
+          "oklch(60.7% 0.0137 111.3)",
+          "oklch(72.1% 0.0137 111.3)",
+          "oklch(83.6% 0.0137 111.3)",
+          "oklch(95.0% 0.0137 111.3)"
+        ]
+      },
+      "ink": {
+        "role": "primary",
+        "displayName": "Engraved Ink",
+        "canonical": "oklch(22.4% 0.0059 121.9)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0059 121.9)",
+          "oklch(26.4% 0.0059 121.9)",
+          "oklch(37.9% 0.0059 121.9)",
+          "oklch(49.3% 0.0059 121.9)",
+          "oklch(60.7% 0.0059 121.9)",
+          "oklch(72.1% 0.0059 121.9)",
+          "oklch(83.6% 0.0059 121.9)",
+          "oklch(95.0% 0.0059 121.9)"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Secondary Ink",
+        "canonical": "oklch(37.1% 0.0120 120.0)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0120 120.0)",
+          "oklch(26.4% 0.0120 120.0)",
+          "oklch(37.9% 0.0120 120.0)",
+          "oklch(49.3% 0.0120 120.0)",
+          "oklch(60.7% 0.0120 120.0)",
+          "oklch(72.1% 0.0120 120.0)",
+          "oklch(83.6% 0.0120 120.0)",
+          "oklch(95.0% 0.0120 120.0)"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Label Ink",
+        "canonical": "oklch(47.0% 0.0144 117.1)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0144 117.1)",
+          "oklch(26.4% 0.0144 117.1)",
+          "oklch(37.9% 0.0144 117.1)",
+          "oklch(49.3% 0.0144 117.1)",
+          "oklch(60.7% 0.0144 117.1)",
+          "oklch(72.1% 0.0144 117.1)",
+          "oklch(83.6% 0.0144 117.1)",
+          "oklch(95.0% 0.0144 117.1)"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Hairline Grey",
+        "canonical": "oklch(76.9% 0.0140 111.4)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0140 111.4)",
+          "oklch(26.4% 0.0140 111.4)",
+          "oklch(37.9% 0.0140 111.4)",
+          "oklch(49.3% 0.0140 111.4)",
+          "oklch(60.7% 0.0140 111.4)",
+          "oklch(72.1% 0.0140 111.4)",
+          "oklch(83.6% 0.0140 111.4)",
+          "oklch(95.0% 0.0140 111.4)"
+        ]
+      },
+      "rule-strong": {
+        "role": "neutral",
+        "displayName": "Control Grey",
+        "canonical": "oklch(64.5% 0.0147 116.0)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0147 116.0)",
+          "oklch(26.4% 0.0147 116.0)",
+          "oklch(37.9% 0.0147 116.0)",
+          "oklch(49.3% 0.0147 116.0)",
+          "oklch(60.7% 0.0147 116.0)",
+          "oklch(72.1% 0.0147 116.0)",
+          "oklch(83.6% 0.0147 116.0)",
+          "oklch(95.0% 0.0147 116.0)"
+        ]
+      },
+      "plate": {
+        "role": "neutral",
+        "displayName": "Traffolyte Plate",
+        "canonical": "oklch(22.4% 0.0059 121.9)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0059 121.9)",
+          "oklch(26.4% 0.0059 121.9)",
+          "oklch(37.9% 0.0059 121.9)",
+          "oklch(49.3% 0.0059 121.9)",
+          "oklch(60.7% 0.0059 121.9)",
+          "oklch(72.1% 0.0059 121.9)",
+          "oklch(83.6% 0.0059 121.9)",
+          "oklch(95.0% 0.0059 121.9)"
+        ]
+      },
+      "plate-ink": {
+        "role": "neutral",
+        "displayName": "Plate Lettering",
+        "canonical": "oklch(95.6% 0.0093 106.6)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0093 106.6)",
+          "oklch(26.4% 0.0093 106.6)",
+          "oklch(37.9% 0.0093 106.6)",
+          "oklch(49.3% 0.0093 106.6)",
+          "oklch(60.7% 0.0093 106.6)",
+          "oklch(72.1% 0.0093 106.6)",
+          "oklch(83.6% 0.0093 106.6)",
+          "oklch(95.0% 0.0093 106.6)"
+        ]
+      },
+      "track": {
+        "role": "neutral",
+        "displayName": "Track Bar Ink",
+        "canonical": "oklch(22.4% 0.0059 121.9)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0059 121.9)",
+          "oklch(26.4% 0.0059 121.9)",
+          "oklch(37.9% 0.0059 121.9)",
+          "oklch(49.3% 0.0059 121.9)",
+          "oklch(60.7% 0.0059 121.9)",
+          "oklch(72.1% 0.0059 121.9)",
+          "oklch(83.6% 0.0059 121.9)",
+          "oklch(95.0% 0.0059 121.9)"
+        ]
+      },
+      "track-empty": {
+        "role": "neutral",
+        "displayName": "Unlit Track Cell",
+        "canonical": "oklch(35.0% 0.0086 116.0)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0086 116.0)",
+          "oklch(26.4% 0.0086 116.0)",
+          "oklch(37.9% 0.0086 116.0)",
+          "oklch(49.3% 0.0086 116.0)",
+          "oklch(60.7% 0.0086 116.0)",
+          "oklch(72.1% 0.0086 116.0)",
+          "oklch(83.6% 0.0086 116.0)",
+          "oklch(95.0% 0.0086 116.0)"
+        ]
+      },
+      "lamp-clear": {
+        "role": "state",
+        "displayName": "Clear Lamp White",
+        "canonical": "oklch(97.0% 0.0344 98.1)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0304 98.1)",
+          "oklch(26.4% 0.0344 98.1)",
+          "oklch(37.9% 0.0344 98.1)",
+          "oklch(49.3% 0.0344 98.1)",
+          "oklch(60.7% 0.0344 98.1)",
+          "oklch(72.1% 0.0344 98.1)",
+          "oklch(83.6% 0.0344 98.1)",
+          "oklch(95.0% 0.0344 98.1)"
+        ]
+      },
+      "lamp-caution": {
+        "role": "state",
+        "displayName": "Caution Lamp Yellow",
+        "canonical": "oklch(76.1% 0.1566 77.1)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0306 77.1)",
+          "oklch(26.4% 0.0546 77.1)",
+          "oklch(37.9% 0.0786 77.1)",
+          "oklch(49.3% 0.1026 77.1)",
+          "oklch(60.7% 0.1266 77.1)",
+          "oklch(72.1% 0.1506 77.1)",
+          "oklch(83.6% 0.1486 77.1)",
+          "oklch(95.0% 0.0416 77.1)"
+        ]
+      },
+      "lamp-danger": {
+        "role": "state",
+        "displayName": "Danger Lamp Red",
+        "canonical": "oklch(56.8% 0.1934 31.8)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0564 31.8)",
+          "oklch(26.4% 0.1004 31.8)",
+          "oklch(37.9% 0.1444 31.8)",
+          "oklch(49.3% 0.1874 31.8)",
+          "oklch(60.7% 0.1934 31.8)",
+          "oklch(72.1% 0.1734 31.8)",
+          "oklch(83.6% 0.0914 31.8)",
+          "oklch(95.0% 0.0244 31.8)"
+        ]
+      },
+      "lamp-ok": {
+        "role": "state",
+        "displayName": "Completed Lamp Green",
+        "canonical": "oklch(56.4% 0.1277 150.5)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0407 150.5)",
+          "oklch(26.4% 0.0717 150.5)",
+          "oklch(37.9% 0.1027 150.5)",
+          "oklch(49.3% 0.1277 150.5)",
+          "oklch(60.7% 0.1277 150.5)",
+          "oklch(72.1% 0.1277 150.5)",
+          "oklch(83.6% 0.1277 150.5)",
+          "oklch(95.0% 0.0827 150.5)"
+        ]
+      },
+      "lamp-off": {
+        "role": "state",
+        "displayName": "Off Lamp Grey",
+        "canonical": "oklch(54.4% 0.0139 117.0)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0139 117.0)",
+          "oklch(26.4% 0.0139 117.0)",
+          "oklch(37.9% 0.0139 117.0)",
+          "oklch(49.3% 0.0139 117.0)",
+          "oklch(60.7% 0.0139 117.0)",
+          "oklch(72.1% 0.0139 117.0)",
+          "oklch(83.6% 0.0139 117.0)",
+          "oklch(95.0% 0.0139 117.0)"
+        ]
+      },
+      "lamp-housing": {
+        "role": "neutral",
+        "displayName": "Lamp Housing",
+        "canonical": "oklch(22.4% 0.0059 121.9)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0059 121.9)",
+          "oklch(26.4% 0.0059 121.9)",
+          "oklch(37.9% 0.0059 121.9)",
+          "oklch(49.3% 0.0059 121.9)",
+          "oklch(60.7% 0.0059 121.9)",
+          "oklch(72.1% 0.0059 121.9)",
+          "oklch(83.6% 0.0059 121.9)",
+          "oklch(95.0% 0.0059 121.9)"
+        ]
+      },
+      "lamp-unlit": {
+        "role": "state",
+        "displayName": "Unlit Glass",
+        "canonical": "oklch(45.2% 0.0130 118.3)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0130 118.3)",
+          "oklch(26.4% 0.0130 118.3)",
+          "oklch(37.9% 0.0130 118.3)",
+          "oklch(49.3% 0.0130 118.3)",
+          "oklch(60.7% 0.0130 118.3)",
+          "oklch(72.1% 0.0130 118.3)",
+          "oklch(83.6% 0.0130 118.3)",
+          "oklch(95.0% 0.0130 118.3)"
+        ]
+      },
+      "danger": {
+        "role": "state",
+        "displayName": "Danger Text Red",
+        "canonical": "oklch(49.9% 0.1729 30.6)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0589 30.6)",
+          "oklch(26.4% 0.1039 30.6)",
+          "oklch(37.9% 0.1489 30.6)",
+          "oklch(49.3% 0.1729 30.6)",
+          "oklch(60.7% 0.1729 30.6)",
+          "oklch(72.1% 0.1729 30.6)",
+          "oklch(83.6% 0.0909 30.6)",
+          "oklch(95.0% 0.0249 30.6)"
+        ]
+      },
+      "danger-fill": {
+        "role": "state",
+        "displayName": "Danger Fill Red",
+        "canonical": "oklch(53.9% 0.1866 31.1)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0576 31.1)",
+          "oklch(26.4% 0.1016 31.1)",
+          "oklch(37.9% 0.1466 31.1)",
+          "oklch(49.3% 0.1866 31.1)",
+          "oklch(60.7% 0.1866 31.1)",
+          "oklch(72.1% 0.1736 31.1)",
+          "oklch(83.6% 0.0906 31.1)",
+          "oklch(95.0% 0.0246 31.1)"
+        ]
+      },
+      "danger-wash": {
+        "role": "state",
+        "displayName": "Danger Wash",
+        "canonical": "oklch(90.5% 0.0305 35.5)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0305 35.5)",
+          "oklch(26.4% 0.0305 35.5)",
+          "oklch(37.9% 0.0305 35.5)",
+          "oklch(49.3% 0.0305 35.5)",
+          "oklch(60.7% 0.0305 35.5)",
+          "oklch(72.1% 0.0305 35.5)",
+          "oklch(83.6% 0.0305 35.5)",
+          "oklch(95.0% 0.0245 35.5)"
+        ]
+      },
+      "caution": {
+        "role": "state",
+        "displayName": "Caution Text Amber",
+        "canonical": "oklch(47.1% 0.0987 76.3)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0307 76.3)",
+          "oklch(26.4% 0.0547 76.3)",
+          "oklch(37.9% 0.0787 76.3)",
+          "oklch(49.3% 0.0987 76.3)",
+          "oklch(60.7% 0.0987 76.3)",
+          "oklch(72.1% 0.0987 76.3)",
+          "oklch(83.6% 0.0987 76.3)",
+          "oklch(95.0% 0.0417 76.3)"
+        ]
+      },
+      "caution-wash": {
+        "role": "state",
+        "displayName": "Caution Wash",
+        "canonical": "oklch(92.6% 0.0532 90.6)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0302 90.6)",
+          "oklch(26.4% 0.0532 90.6)",
+          "oklch(37.9% 0.0532 90.6)",
+          "oklch(49.3% 0.0532 90.6)",
+          "oklch(60.7% 0.0532 90.6)",
+          "oklch(72.1% 0.0532 90.6)",
+          "oklch(83.6% 0.0532 90.6)",
+          "oklch(95.0% 0.0532 90.6)"
+        ]
+      },
+      "ok": {
+        "role": "state",
+        "displayName": "Completed Text Green",
+        "canonical": "oklch(46.2% 0.1004 150.8)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0404 150.8)",
+          "oklch(26.4% 0.0714 150.8)",
+          "oklch(37.9% 0.1004 150.8)",
+          "oklch(49.3% 0.1004 150.8)",
+          "oklch(60.7% 0.1004 150.8)",
+          "oklch(72.1% 0.1004 150.8)",
+          "oklch(83.6% 0.1004 150.8)",
+          "oklch(95.0% 0.0824 150.8)"
+        ]
+      },
+      "ok-wash": {
+        "role": "state",
+        "displayName": "Completed Wash",
+        "canonical": "oklch(91.8% 0.0292 153.3)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0292 153.3)",
+          "oklch(26.4% 0.0292 153.3)",
+          "oklch(37.9% 0.0292 153.3)",
+          "oklch(49.3% 0.0292 153.3)",
+          "oklch(60.7% 0.0292 153.3)",
+          "oklch(72.1% 0.0292 153.3)",
+          "oklch(83.6% 0.0292 153.3)",
+          "oklch(95.0% 0.0292 153.3)"
+        ]
+      },
+      "focus": {
+        "role": "focus",
+        "displayName": "Focus Amber",
+        "canonical": "oklch(76.1% 0.1566 77.1)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0306 77.1)",
+          "oklch(26.4% 0.0546 77.1)",
+          "oklch(37.9% 0.0786 77.1)",
+          "oklch(49.3% 0.1026 77.1)",
+          "oklch(60.7% 0.1266 77.1)",
+          "oklch(72.1% 0.1506 77.1)",
+          "oklch(83.6% 0.1486 77.1)",
+          "oklch(95.0% 0.0416 77.1)"
+        ]
+      },
+      "selection": {
+        "role": "neutral",
+        "displayName": "Selection Yellow",
+        "canonical": "oklch(86.5% 0.1255 90.3)",
+        "tonalRamp": [
+          "oklch(15.0% 0.0305 90.3)",
+          "oklch(26.4% 0.0535 90.3)",
+          "oklch(37.9% 0.0765 90.3)",
+          "oklch(49.3% 0.1005 90.3)",
+          "oklch(60.7% 0.1235 90.3)",
+          "oklch(72.1% 0.1255 90.3)",
+          "oklch(83.6% 0.1255 90.3)",
+          "oklch(95.0% 0.0635 90.3)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Figure",
+        "purpose": "The one deciding number per view, 44px (36px under 720px). Barlow Semi Condensed 700, tabular."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "View titles. Plate face 22px 700."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section titles and empty-state titles. Plate face 18px 700."
+      },
+      "subtitle": {
+        "displayName": "Subtitle",
+        "purpose": "Panel titles. Plate face 15px 700."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Sentences and row descriptions, 15px Barlow 400, max 72ch on paragraphs."
+      },
+      "body-sm": {
+        "displayName": "Body Small",
+        "purpose": "Tables, field text, view subtitles, section descriptions, notices. 13px."
+      },
+      "button": {
+        "displayName": "Button",
+        "purpose": "Button and tab labels, 13px Barlow 600."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Column headers, field keys, readout keys. Uppercase, 0.03em tracking, Label Ink."
+      },
+      "plate": {
+        "displayName": "Plate",
+        "purpose": "Traffolyte plate capitals: provider and source names, lever numbers. Uppercase, 0.04em tracking."
+      },
+      "tag": {
+        "displayName": "Tag",
+        "purpose": "Status tags, sentence case, 12px Barlow Semi Condensed 600."
+      },
+      "mono": {
+        "displayName": "Data Mono",
+        "purpose": "IDs, emails, URLs, keys, log lines, JSON only. IBM Plex Mono at 0.92em of parent."
+      }
+    },
+    "shadows": [
+      {
+        "name": "floating-layer",
+        "value": "0 18px 48px -12px rgba(27,28,25,0.35), 0 2px 6px rgba(27,28,25,0.12)",
+        "nightValue": "0 18px 48px -12px rgba(0,0,0,0.7), 0 2px 6px rgba(0,0,0,0.5)",
+        "purpose": "Modal boxes, menus, toasts and the route readout only. Resting surfaces carry no shadow."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Default easing for lamp, track and state transitions (--sb-ease)."
+      },
+      {
+        "name": "state-fast",
+        "value": "160ms",
+        "purpose": "Lamp colour, button, lever and route-node state changes (--sb-fast)."
+      },
+      {
+        "name": "track-fill",
+        "value": "400ms",
+        "purpose": "Track circuit fill (clip-path) when quota changes."
+      },
+      {
+        "name": "toast-enter",
+        "value": "200ms ease-out",
+        "purpose": "Toast appearance."
+      },
+      {
+        "name": "toast-leave",
+        "value": "150ms ease-in",
+        "purpose": "Toast dismissal."
+      },
+      {
+        "name": "skeleton-pulse",
+        "value": "1.4s ease-in-out infinite",
+        "purpose": "First-load skeleton blocks only (loading state)."
+      },
+      {
+        "name": "spin",
+        "value": "0.8s linear infinite",
+        "purpose": "Inline spinner while a request is in flight. Stops under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "settings-wide",
+        "value": "720px",
+        "direction": "min-width",
+        "purpose": "Settings controls take fixed widths; settings grid goes two columns."
+      },
+      {
+        "name": "table-columns",
+        "value": "768px",
+        "direction": "min-width",
+        "purpose": "Secondary table columns appear."
+      },
+      {
+        "name": "log-stack",
+        "value": "520px",
+        "direction": "max-width",
+        "purpose": "Log timestamp column stacks."
+      },
+      {
+        "name": "modal-full",
+        "value": "640px",
+        "direction": "max-width",
+        "purpose": "Modals take viewport width less 16px; dashboard quota row two columns; trend chart 180px."
+      },
+      {
+        "name": "grid-stack",
+        "value": "900px",
+        "direction": "max-width",
+        "purpose": "grid-2 and grid-3 collapse to one column."
+      },
+      {
+        "name": "shell-stack",
+        "value": "720px",
+        "direction": "max-width",
+        "purpose": "Frame removed; five-lever bottom bar; top bar 56px; toasts clear the bar."
+      },
+      {
+        "name": "rail-collapse",
+        "value": "1100px",
+        "direction": "max-width",
+        "purpose": "Lever frame becomes a 72px rail with numbers only."
+      }
+    ],
+    "nightTheme": {
+      "ground": "#151613",
+      "panel": "#1d1e1a",
+      "sunk": "#10110e",
+      "sunk-2": "#282924",
+      "ink": "#ecebe2",
+      "ink-2": "#c9c8bc",
+      "ink-3": "#a2a195",
+      "rule": "#363731",
+      "rule-strong": "#57584f",
+      "plate": "#ecebe2",
+      "plate-ink": "#151613",
+      "track": "#050505",
+      "track-empty": "#2c2d28",
+      "lamp-clear": "#fff3c9",
+      "lamp-caution": "#f2b630",
+      "lamp-danger": "#ff5a3c",
+      "lamp-ok": "#5fbf7d",
+      "lamp-off": "#4a4b44",
+      "lamp-housing": "#4a4b44",
+      "lamp-unlit": "#151613",
+      "danger": "#ff7a5c",
+      "danger-fill": "#d23a22",
+      "danger-wash": "#3a1d16",
+      "caution": "#f2b630",
+      "caution-wash": "#33290f",
+      "ok": "#6cc487",
+      "ok-wash": "#16301f",
+      "focus": "#f2b630",
+      "selection": "#6b5312",
+      "chart-1": "#ecebe2",
+      "chart-2": "#9a998d",
+      "chart-3": "#c9c8bc",
+      "chart-4": "#74746a",
+      "chart-5": "#dddccf",
+      "chart-6": "#b0afa3",
+      "chart-7": "#5e5f57",
+      "chart-8": "#85857a",
+      "chart-grid": "#2e2f2a",
+      "chart-tick": "#a2a195",
+      "scrim": "rgba(0, 0, 0, 0.6)"
+    },
+    "trackLevels": [
+      {
+        "name": "remaining-quota",
+        "rule": "danger at 0%, caution below 20%, else clear",
+        "used_by": "dashboard family circuits, models, accounts pools"
+      },
+      {
+        "name": "used-utilisation",
+        "rule": "danger above 80%, caution above 50%, else clear",
+        "used_by": "accounts reset windows"
+      },
+      {
+        "name": "health-score",
+        "rule": "clear above 70, caution above 50, else danger",
+        "used_by": "accounts health inspector (separate metric)"
+      }
+    ],
+    "focus": {
+      "name": "focus-ring",
+      "day": "0 0 0 4px #1b1c19 with 2px #e8a20f outline, 2px offset",
+      "night": "0 0 0 4px #10110e with 2px #f2b630 outline, 2px offset"
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one filled action of a view, panel or dialog.",
+      "html": "<button class=\"ds-btn ds-btn-primary\" type=\"button\">Apply</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border:1.5px solid var(--sb-ink,#1b1c19);border-radius:var(--sb-radius,2px);background:var(--sb-panel,#f1f1ea);color:var(--sb-ink,#1b1c19);font:600 13px/1 Barlow,system-ui,sans-serif;letter-spacing:.01em;cursor:pointer;transition:background-color 160ms cubic-bezier(.16,1,.3,1),color 160ms cubic-bezier(.16,1,.3,1),border-color 160ms cubic-bezier(.16,1,.3,1);}.ds-btn:focus-visible{outline:2px solid var(--sb-focus,#e8a20f);outline-offset:2px;box-shadow:0 0 0 4px var(--sb-ink,#1b1c19);}.ds-btn-primary{background:var(--sb-ink,#1b1c19);border-color:var(--sb-ink,#1b1c19);color:var(--sb-ground,#e3e4dc);}.ds-btn-primary:hover{background:var(--sb-ink-2,#3f413a);border-color:var(--sb-ink-2,#3f413a);}"
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "Secondary action: outlined ink plate on panel enamel.",
+      "html": "<button class=\"ds-btn\" type=\"button\">Refresh</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border:1.5px solid var(--sb-ink,#1b1c19);border-radius:var(--sb-radius,2px);background:var(--sb-panel,#f1f1ea);color:var(--sb-ink,#1b1c19);font:600 13px/1 Barlow,system-ui,sans-serif;letter-spacing:.01em;cursor:pointer;transition:background-color 160ms cubic-bezier(.16,1,.3,1),color 160ms cubic-bezier(.16,1,.3,1),border-color 160ms cubic-bezier(.16,1,.3,1);}.ds-btn:focus-visible{outline:2px solid var(--sb-focus,#e8a20f);outline-offset:2px;box-shadow:0 0 0 4px var(--sb-ink,#1b1c19);}.ds-btn:hover{background:var(--sb-sunk,#d6d7ce);border-color:var(--sb-ink,#1b1c19);}.ds-btn:active{background:var(--sb-sunk-2,#cbccc2);}"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Confirms a destructive action only.",
+      "html": "<button class=\"ds-btn ds-btn-danger\" type=\"button\">Delete account</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border:1.5px solid var(--sb-ink,#1b1c19);border-radius:var(--sb-radius,2px);background:var(--sb-panel,#f1f1ea);color:var(--sb-ink,#1b1c19);font:600 13px/1 Barlow,system-ui,sans-serif;letter-spacing:.01em;cursor:pointer;transition:background-color 160ms cubic-bezier(.16,1,.3,1),color 160ms cubic-bezier(.16,1,.3,1),border-color 160ms cubic-bezier(.16,1,.3,1);}.ds-btn:focus-visible{outline:2px solid var(--sb-focus,#e8a20f);outline-offset:2px;box-shadow:0 0 0 4px var(--sb-ink,#1b1c19);}.ds-btn-danger{background:var(--sb-danger-fill,#c3301c);border-color:var(--sb-danger-fill,#c3301c);color:#fff;}.ds-btn-danger:hover{background:var(--sb-danger,#b02a1a);border-color:var(--sb-danger,#b02a1a);}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Tertiary or icon action in toolbars and rows.",
+      "html": "<button class=\"ds-btn ds-btn-ghost\" type=\"button\" aria-label=\"Close\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" aria-hidden=\"true\"><path stroke-linecap=\"round\" d=\"M6 18L18 6M6 6l12 12\"/></svg></button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border:1.5px solid var(--sb-ink,#1b1c19);border-radius:var(--sb-radius,2px);background:var(--sb-panel,#f1f1ea);color:var(--sb-ink,#1b1c19);font:600 13px/1 Barlow,system-ui,sans-serif;letter-spacing:.01em;cursor:pointer;transition:background-color 160ms cubic-bezier(.16,1,.3,1),color 160ms cubic-bezier(.16,1,.3,1),border-color 160ms cubic-bezier(.16,1,.3,1);}.ds-btn:focus-visible{outline:2px solid var(--sb-focus,#e8a20f);outline-offset:2px;box-shadow:0 0 0 4px var(--sb-ink,#1b1c19);}.ds-btn-ghost{background:transparent;border-color:transparent;color:var(--sb-ink-2,#3f413a);}.ds-btn-ghost:hover{background:var(--sb-sunk,#d6d7ce);border-color:transparent;color:var(--sb-ink,#1b1c19);}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Text field with a label above and a 1px control-grey border.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">Callback URL</span><input class=\"ds-input\" type=\"text\" placeholder=\"http://localhost:8080\"></label>",
+      "css": ".ds-field{display:flex;flex-direction:column;gap:6px;}.ds-field-label{font:600 13px/1.2 Barlow,system-ui,sans-serif;color:var(--sb-ink,#1b1c19);}.ds-input{box-sizing:border-box;height:36px;padding:0 10px;border:1px solid var(--sb-rule-strong,#8d8f85);border-radius:var(--sb-radius,2px);background:var(--sb-panel,#f1f1ea);color:var(--sb-ink,#1b1c19);font:400 15px/1.3 Barlow,system-ui,sans-serif;transition:border-color 160ms cubic-bezier(.16,1,.3,1);}.ds-input::placeholder{color:var(--sb-ink-3,#52544b);opacity:1;}.ds-input:hover{border-color:var(--sb-ink-3,#52544b);}.ds-input:focus{outline:2px solid var(--sb-focus,#e8a20f);outline-offset:0;border-color:var(--sb-ink,#1b1c19);}"
+    },
+    {
+      "name": "Tag",
+      "kind": "chip",
+      "refersTo": "tag-danger",
+      "description": "Status word beside a lamp or count. Caution and danger variants shown.",
+      "html": "<span class=\"ds-tag ds-tag-danger\">Blocked</span> <span class=\"ds-tag ds-tag-caution\">Cooldown</span>",
+      "css": ".ds-tag{display:inline-flex;align-items:center;gap:5px;min-height:20px;padding:1px 6px;border:1px solid var(--sb-rule-strong,#8d8f85);border-radius:var(--sb-radius,2px);color:var(--sb-ink-2,#3f413a);font:600 12px/1.2 \"Barlow Semi Condensed\",Barlow,sans-serif;letter-spacing:.02em;white-space:nowrap;}.ds-tag-danger{color:var(--sb-danger,#b02a1a);border-color:currentColor;background:var(--sb-danger-wash,#f3d9d2);}.ds-tag-caution{color:var(--sb-caution,#7a5200);border-color:currentColor;background:var(--sb-caution-wash,#f4e6bf);}"
+    },
+    {
+      "name": "Plate",
+      "kind": "custom",
+      "refersTo": "plate",
+      "description": "Engraved traffolyte label for a provider, source or lever number.",
+      "html": "<span class=\"ds-plate\">Google</span> <span class=\"ds-plate ds-plate-outline\">Kimi</span>",
+      "css": ".ds-plate{display:inline-flex;align-items:center;padding:3px 7px 2px;background:var(--sb-plate,#1b1c19);color:var(--sb-plate-ink,#f1f1ea);font:700 12px/1.15 \"Barlow Semi Condensed\",Barlow,sans-serif;letter-spacing:.04em;text-transform:uppercase;border-radius:var(--sb-radius,2px);white-space:nowrap;}.ds-plate-outline{background:transparent;color:var(--sb-ink,#1b1c19);box-shadow:inset 0 0 0 1px var(--sb-ink,#1b1c19);}"
+    },
+    {
+      "name": "Track Circuit",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Quota on one fixed 0 to 100% scale. Pair with the percentage and reset time as text.",
+      "html": "<div class=\"ds-track\" data-level=\"caution\" style=\"--fill:42%\" role=\"meter\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"42\" aria-label=\"Claude 42%\"></div>",
+      "css": ".ds-track{--fill:0%;--cell:var(--sb-lamp-clear,#fbf6dc);position:relative;display:block;width:100%;min-width:48px;height:8px;box-sizing:content-box;background:var(--sb-track-empty,#3a3b36);border:1.5px solid var(--sb-track,#1b1c19);border-radius:1px;overflow:hidden;}.ds-track::before{content:\"\";position:absolute;inset:0;background:var(--cell);clip-path:inset(0 calc(100% - var(--fill)) 0 0);transition:clip-path 400ms cubic-bezier(.16,1,.3,1),background-color 160ms cubic-bezier(.16,1,.3,1);}.ds-track::after{content:\"\";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(to right,transparent 0,transparent calc(5% - 1.5px),var(--sb-track,#1b1c19) calc(5% - 1.5px),var(--sb-track,#1b1c19) 5%);}.ds-track[data-level=\"caution\"]{--cell:var(--sb-lamp-caution,#e8a20f);}.ds-track[data-level=\"danger\"]{--cell:var(--sb-lamp-danger,#d0371f);}.ds-track[data-level=\"danger\"][data-empty=\"true\"]{background:var(--sb-lamp-danger,#d0371f);}"
+    },
+    {
+      "name": "Lever",
+      "kind": "nav",
+      "refersTo": null,
+      "description": "Numbered navigation lever. The pulled lever is the current view.",
+      "html": "<button type=\"button\" class=\"ds-lever\" aria-current=\"page\"><span class=\"ds-lever-handle\" aria-hidden=\"true\"></span><span class=\"ds-lever-no\">1</span><span class=\"ds-lever-label\">Dashboard</span></button>",
+      "css": ".ds-lever{position:relative;display:flex;align-items:center;gap:12px;width:100%;min-height:44px;padding:0 16px;border:0;background:transparent;color:var(--sb-ink-2,#3f413a);font:600 15px/1.2 Barlow,system-ui,sans-serif;text-align:left;cursor:pointer;transition:background-color 160ms cubic-bezier(.16,1,.3,1),color 160ms cubic-bezier(.16,1,.3,1);}.ds-lever:hover{background:var(--sb-sunk-2,#cbccc2);color:var(--sb-ink,#1b1c19);}.ds-lever:focus-visible{outline:2px solid var(--sb-focus,#e8a20f);outline-offset:2px;}.ds-lever-handle{position:relative;flex:none;width:10px;height:24px;}.ds-lever-handle::before{content:\"\";position:absolute;left:3.5px;bottom:2px;width:3px;height:18px;background:var(--sb-ink-3,#52544b);border-radius:1px 1px 0 0;transform-origin:50% 100%;transform:rotate(-22deg);transition:transform 160ms cubic-bezier(.16,1,.3,1);}.ds-lever-handle::after{content:\"\";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--sb-ink-3,#52544b);}.ds-lever[aria-current=\"page\"] .ds-lever-handle::before,.ds-lever[aria-current=\"page\"] .ds-lever-handle::after{background:var(--sb-ink,#1b1c19);}.ds-lever[aria-current=\"page\"] .ds-lever-handle::before{transform:rotate(22deg);}.ds-lever-no{display:inline-flex;align-items:center;justify-content:center;width:24px;height:22px;border-radius:var(--sb-radius,2px);box-shadow:inset 0 0 0 1px var(--sb-ink-3,#52544b);color:var(--sb-ink-2,#3f413a);font:700 13px/1 \"Barlow Semi Condensed\",Barlow,sans-serif;}.ds-lever[aria-current=\"page\"]{background:var(--sb-panel,#f1f1ea);color:var(--sb-ink,#1b1c19);}.ds-lever[aria-current=\"page\"] .ds-lever-no{background:var(--sb-plate,#1b1c19);color:var(--sb-plate-ink,#f1f1ea);box-shadow:none;}"
+    },
+    {
+      "name": "Route Node",
+      "kind": "nav",
+      "refersTo": null,
+      "description": "One gateway on the route mimic: plate number, label and account lamps. Aspect comes from data.",
+      "html": "<button type=\"button\" class=\"ds-node\" data-state=\"clear\" aria-label=\"2 · Gateway. 1 of 2 accounts ready\"><span class=\"ds-node-no\">2</span><span class=\"ds-node-label\">Gateway</span><span class=\"ds-node-lamps\"><span class=\"ds-lamp ds-lamp-clear\"></span><span class=\"ds-lamp ds-lamp-off\"></span></span></button>",
+      "css": ".ds-node{position:relative;display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 9px 0 4px;border:1.5px solid var(--sb-ink,#1b1c19);border-radius:var(--sb-radius,2px);background:var(--sb-panel,#f1f1ea);color:var(--sb-ink,#1b1c19);font:700 13px/1 \"Barlow Semi Condensed\",Barlow,sans-serif;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;cursor:pointer;transition:background-color 160ms cubic-bezier(.16,1,.3,1),border-color 160ms cubic-bezier(.16,1,.3,1);}.ds-node:hover{background:var(--sb-sunk,#d6d7ce);}.ds-node:focus-visible{outline:2px solid var(--sb-focus,#e8a20f);outline-offset:2px;}.ds-node-no{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 3px;background:var(--sb-plate,#1b1c19);color:var(--sb-plate-ink,#f1f1ea);border-radius:1px;}.ds-node-lamps{display:inline-flex;align-items:center;gap:4px;padding:3px 4px;background:var(--sb-track,#1b1c19);border-radius:1px;}.ds-lamp{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--lamp,#3a3b36);}.ds-lamp-clear{--lamp:var(--sb-lamp-clear,#fbf6dc);}.ds-lamp-off{--lamp:var(--sb-track-empty,#3a3b36);}.ds-node[data-state=\"off\"]{border-style:dashed;border-color:var(--sb-rule-strong,#8d8f85);color:var(--sb-ink-3,#52544b);background:transparent;}.ds-node[data-state=\"danger\"]{border-color:var(--sb-lamp-danger,#d0371f);box-shadow:inset 0 0 0 1px var(--sb-lamp-danger,#d0371f);}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lit Signal Box",
+    "overview": "The console is a railway signal box that runs a local proxy. The request route is drawn as a lit track diagram across the top bar: client, then proxy, then each gateway in precedence order, with account lamps on each gateway. Views are numbered levers in a frame on the left. Labels are engraved traffolyte plates. The metaphor does work: an exhausted quota is a track occupied in red, a blocked gateway is a danger lamp, and a healthy console reads as unlit enamel with a few clear lamps.\n\nThe surfaces are enamel. Day is a pale grey-green box; night is a near-black box. Nothing floats, nothing glows, nothing is glass. Depth comes from 1px hairlines, 1.5px ink borders and tonal steps between ground, panel and sunk enamel, not from shadow. Density is operator-grade: each view has one deciding figure at poster size (44px), everything else sits at reading size, and tables use tabular figures so columns of quota can be compared at a glance.\n\nConfirmed rejections: the dark sidebar with stat cards, provider hues (purple Claude, blue Google, cyan Kimi), gradients, glow or blur on surfaces, and rounded-lg/xl/full corners. Motion is short and rare: lamps and track fills change in 160 to 400 ms, and nothing loops except loading indicators.",
+    "keyCharacteristics": [
+      "Flat enamel surfaces with a 2px radius; no shadow at rest.",
+      "Colour is a lamp: clear, caution, danger, off. Green only marks a completed action.",
+      "Traffolyte plates (Barlow Semi Condensed, capitals) name providers, sources and view levers.",
+      "Track circuits show quota on one fixed 0 to 100% scale; an exhausted pool fills its whole circuit red.",
+      "A route mimic in the top bar shows the request path and the reason each signal shows its aspect.",
+      "Two boxes, one token set: day and night resolve from `data-sb-theme` on `<html>`."
+    ],
+    "rules": [
+      {
+        "name": "The Settle Rule",
+        "body": "Lamps and track fills change in 160 to 400 ms with the shared ease curve. Nothing loops except an in-flight spinner and the first-load skeleton.",
+        "section": "overview"
+      },
+      {
+        "name": "The Lamp-Only Colour Rule",
+        "body": "Hue appears only as a lamp or a state wash that names a real state. Everything else is ink on enamel. Providers, families and brands are told apart by plates and text, never by colour.",
+        "section": "colors"
+      },
+      {
+        "name": "The Green-Means-Done Rule",
+        "body": "Green (`lamp-ok`, `ok`, `ok-wash`) marks a completed action such as a saved setting or a passed test. Healthy is clear white, not green.",
+        "section": "colors"
+      },
+      {
+        "name": "The Deciding Figure Rule",
+        "body": "Each view has exactly one `.figure`. Everything else is reading size.",
+        "section": "typography"
+      },
+      {
+        "name": "The Plate Is For Names Rule",
+        "body": "Plate capitals name a provider, a source, a stable short code, a lever, or a state word in a tag. Plates are not for sentences and are not for every label.",
+        "section": "typography"
+      },
+      {
+        "name": "The Mono Is Data Rule",
+        "body": "IBM Plex Mono is for values the operator copies or compares. It is never used for prose or for field labels, except code-like names such as environment variables.",
+        "section": "typography"
+      },
+      {
+        "name": "The Frozen Utility Rule",
+        "body": "`css/style.css` is a frozen Tailwind/DaisyUI build with no config. Markup may use only its layout utilities (display, flex, grid, gap, padding, margin, width, height, overflow, hidden, and the responsive variants that exist in that file). Every colour, type and component rule is hand-written in `css/signalbox.css` against `var(--sb-*)`. A class missing from `style.css` does nothing, so check it exists before using it. The legacy colour and component rules in `style.css` (`btn-action-*`, `standard-table`, `status-pill-*`, `bg-space-*`, `text-neon-*`) are not to be used in markup.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "body": "Surfaces carry no shadow at rest. Lift is a hairline or an ink border. A shadow appears only on a layer above the page.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Device Gradient Rule",
+        "body": "Surfaces, buttons and text never use gradients. Gradients are allowed only to draw a device: a lamp's lit lens (radial), the 5% graduation marks on a track (repeating linear), the dotted off-segment in the route, and the two chevrons of a select.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Calm-At-Rest Rule",
+        "body": "A healthy row is plain ink. Trouble gets a lamp, a tag and a wash, and where the view supports sorting it sorts first.",
+        "section": "components"
+      },
+      {
+        "name": "The Lamp Beside Words Rule",
+        "body": "A lamp always sits next to text that names the state. Colour is never the only carrier of meaning.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do route every colour through a token: `var(--sb-*)`. Known literals that remain: `#fff` on Danger Fill (buttons and `plate-danger`), `#b22d18` for the night danger-button hover, and `#1b1c19` on the caution plate.",
+      "Do pair each lamp or tag with the word that names its state.",
+      "Do give each view one `.figure` at 44px and keep everything else at reading size.",
+      "Do keep healthy rows plain ink; reserve `tr.is-blocked`, danger tags and danger lamps for trouble.",
+      "Do express every quota as a `.track` on the fixed 0 to 100% scale, with its percentage and reset time as text.",
+      "Do use a 2px radius, 1px hairlines for dividers, 1.5px ink borders for controls, and dashed borders for disabled.",
+      "Do keep motion between 160ms and 400ms, and respect `prefers-reduced-motion` (already global).",
+      "Do wrap any table that can overflow in `.table-wrap`.",
+      "Do draw icons from the outline SVG set: 24px viewBox, 2px stroke, `currentColor`.",
+      "Do check that a layout class exists in `style.css` before using it; put all other styling in `signalbox.css`."
+    ],
+    "donts": [
+      "Don't add a gradient, glow, blur or decorative shadow to a surface. Gradients are for lamp lenses, track graduations, the route's off-segment and the select chevrons only.",
+      "Don't colour a family, provider or brand. Use a plate and text.",
+      "Don't use green for a healthy state. Green marks a completed action only.",
+      "Don't nest a `.panel` inside a `.panel`.",
+      "Don't set prose or field labels in mono. Mono is for IDs, emails, URLs, keys, log lines and JSON.",
+      "Don't use Tailwind colour classes, DaisyUI colour modifiers, `rounded-lg`, `rounded-xl`, `rounded-full`, `shadow-*`, `backdrop-blur`, or any `bg-space-*`, `text-neon-*`, `text-gray-*` or `text-white` class in markup or in JS strings that build classes.",
+      "Don't add a hue to tell chart series apart. Use the ink ramp and dash patterns.",
+      "Don't put Label Ink text on Pressed Enamel in the day box (4.2:1).",
+      "Don't hand-write a colour or type value in a view. If a value is missing, add a token to `css/signalbox.css` in both boxes."
+    ]
+  }
+}

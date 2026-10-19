@@ -19,6 +19,7 @@ document.addEventListener('alpine:init', () => {
         kimi: {}, // Kimi Code gateway configuration
         zen: {}, // OpenCode Zen gateway configuration
         headroomStats: {}, // Headroom compression & shaping metrics
+        gateways: null, // Gateway precedence + enable state for the route mimic (from /api/config)
         quotaRows: [], // Filtered view
         usageHistory: {}, // Usage statistics history (from /account-limits?includeHistory=true)
         globalQuotaThreshold: 0, // Global minimum quota threshold (fraction 0-0.99)
@@ -283,6 +284,7 @@ document.addEventListener('alpine:init', () => {
                         const data = await response.json();
                         if (data.config) {
                             this.devMode = !!data.config.devMode;
+                            this.gateways = this.extractGateways(data.config);
                         }
                     } catch (e) { /* ignore parse errors */ }
                 } else {
@@ -292,6 +294,24 @@ document.addEventListener('alpine:init', () => {
                 console.error('Health check error:', error);
                 this.connectionStatus = 'disconnected';
             }
+        },
+
+        // Gateway facts the shell's route diagram needs. Secrets never reach
+        // this payload: /api/config redacts keys to hasApiKey flags.
+        extractGateways(cfg) {
+            const pick = (g) => ({
+                enabled: !!(g && g.enabled),
+                hasApiKey: !!(g && g.hasApiKey),
+            });
+            return {
+                order: (cfg.gatewayOrder && cfg.gatewayOrder.order) || [],
+                known: cfg.knownProviders || [],
+                kimi: { ...pick(cfg.kimi), oauth: !!(cfg.kimi && cfg.kimi.oauth) },
+                zen: pick(cfg.zen),
+                openrouter: pick(cfg.openrouter),
+                claudecode: { enabled: !!(cfg.claudecode && cfg.claudecode.enabled) },
+                customCount: Object.keys(cfg.customEndpoints || {}).length,
+            };
         },
 
         startHealthCheck() {
@@ -517,24 +537,10 @@ document.addEventListener('alpine:init', () => {
             return 'other';
         },
 
-        getModelColorClass(modelId) {
-            const family = this.getModelFamily(modelId);
-            switch (family) {
-                case 'claude':
-                    return 'bg-blue-400';
-                case 'gemini':
-                    return 'bg-emerald-400';
-                case 'forwarded':
-                    return 'bg-sky-400';
-                case 'openrouter':
-                    return 'bg-indigo-400';
-                case 'kimi':
-                    return 'bg-cyan-400';
-                case 'zen':
-                    return 'bg-teal-400';
-                default:
-                    return 'bg-zinc-600';
-            }
+        // Family dots are neutral ink: families are told apart by text and
+        // plates, never by hue.
+        getModelColorClass() {
+            return 'model-dot';
         },
 
         /**

@@ -1,11 +1,21 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="antigravity" class="dark">
+<html lang="en">
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Antigravity Console</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
+
+    <!-- Theme resolves before first paint (same rule as settings-store applyTheme). -->
+    <script>
+        (function () {
+            var pref = 'system';
+            try { pref = (JSON.parse(localStorage.getItem('antigravity_settings') || '{}').theme) || 'system'; } catch (e) { }
+            var night = pref === 'night' || (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            document.documentElement.dataset.sbTheme = night ? 'night' : 'day';
+        })();
+    </script>
 
     <!-- Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -14,528 +24,393 @@
     <!-- Alpine.js must be deferred so stores register their listeners first -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 
-    <!-- Compiled Tailwind CSS (includes DaisyUI) -->
+    <!-- Layout utilities (frozen Tailwind build) -->
     <link rel="stylesheet" href="css/style.css">
-    <!-- Blueprint theme overrides (palette, fonts, chrome; fonts self-hosted under fonts/) -->
-    <link rel="stylesheet" href="css/blueprint.css">
+    <!-- Signal Box design system: every colour, type, and component rule -->
+    <link rel="stylesheet" href="css/signalbox.css">
 </head>
 
-<body
-    class="bg-zinc-950 text-white font-sans antialiased min-h-screen overflow-hidden selection:bg-blue-600 selection:text-white"
-    x-cloak x-data="app" x-init="if(window.UILogger) window.UILogger.debug('App initialized')">
+<body x-cloak x-data="app">
+<!--
+SIGNAL BOX — direction contract
+THESIS: The console is a railway signal box. The request route is a lit track diagram; views are numbered levers; labels are engraved plates. Refuses the dark sidebar + stat-card dev dashboard.
+OWN-WORLD: Enamel panel ground (day) and night box; ink track bars; lamps carry all colour: white = clear, yellow = caution, red = blocked/exhausted, unlit = off, green only for a completed action. Traffolyte plates in Barlow Semi Condensed; Barlow body; IBM Plex Mono for data and logs. Flat, 2px radius, no shadow except dialogs.
+FIRST VIEWPORT: Shell-wide mimic: client → proxy → gateways in precedence order, account lamps per gateway, reason on hover/focus. Dashboard opens on quota track circuits, trouble first.
+SIGNATURE: Pull a signal to open its accounts or settings; keys 1–5 pull view levers.
+MOTION: Lamps and tracks change in 160–400 ms; nothing loops except an in-flight spinner.
+-->
 
-    <!-- Toast Notification -->
-    <div class="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
-        <template x-if="$store.global.toast">
-            <div x-transition:enter="transition ease-out duration-200"
-                x-transition:enter-start="opacity-0 translate-y-2 scale-95"
-                x-transition:enter-end="opacity-100 translate-y-0 scale-100"
-                x-transition:leave="transition ease-in duration-150"
-                x-transition:leave-start="opacity-100 translate-y-0 scale-100"
-                x-transition:leave-end="opacity-0 translate-y-2 scale-95"
-                class="alert border pointer-events-auto min-w-[300px] shadow-lg" :class="{
-                    'alert-info border-sky-500/30 bg-space-900 text-sky-400': $store.global.toast.type === 'info',
-                    'alert-success border-emerald-500/30 bg-space-900 text-emerald-400': $store.global.toast.type === 'success',
-                    'alert-error border-red-500/30 bg-space-900 text-red-400': $store.global.toast.type === 'error',
-                    'alert-warning border-amber-500/30 bg-space-900 text-amber-400': $store.global.toast.type === 'warning'
-                 }">
-                <div class="flex items-center gap-3">
-                    <!-- Icons based on type -->
-                    <template x-if="$store.global.toast.type === 'info'">
-                        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                    </template>
-                    <template x-if="$store.global.toast.type === 'success'">
-                        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                    </template>
-                    <template x-if="$store.global.toast.type === 'error'">
-                        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                    </template>
-                    <template x-if="$store.global.toast.type === 'warning'">
-                        <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                        </svg>
-                    </template>
-                    <span x-text="$store.global.toast.message" class="font-mono text-xs tracking-wide"></span>
+    <div class="sb-shell">
+
+        <!-- Top bar: brand plate, route mimic, actions -->
+        <header class="sb-top">
+            <div class="sb-brand">
+                <img src="favicon.svg" width="28" height="28" alt="">
+                <div class="sb-brand-text min-w-0">
+                    <div class="sb-brand-name">Antigravity</div>
+                    <div class="sb-brand-sub tnum" x-text="'Claude proxy · v' + $store.global.version">Claude proxy</div>
                 </div>
+            </div>
+
+            <nav class="mimic" x-data="routeMimic" :aria-label="t('routeDiagram')">
+                <ol class="mimic-route">
+                    <li class="mimic-stop">
+                        <span class="mimic-node mimic-node-end" x-text="t('routeClient')">Client</span>
+                    </li>
+                    <li class="mimic-stop">
+                        <span class="mimic-seg" aria-hidden="true"></span>
+                        <span class="mimic-node" role="status" tabindex="0" :data-state="proxyAspect()"
+                            :aria-label="t('routeProxy') + '. ' + proxyReason()"
+                            @mouseenter="show($event, t('routeProxy'), [proxyReason()])" @mouseleave="hide()"
+                            @focus="show($event, t('routeProxy'), [proxyReason()])" @blur="hide()">
+                            <span class="mimic-lamps"><span class="lamp" :class="'lamp-' + proxyAspect()"></span></span>
+                            <span class="mimic-label" x-text="t('routeProxy')">Proxy</span>
+                        </span>
+                    </li>
+                    <template x-for="node in nodes()" :key="node.id">
+                        <li class="mimic-stop">
+                            <span class="mimic-seg" aria-hidden="true" :data-state="node.aspect === 'off' ? 'off' : 'on'"></span>
+                            <button type="button" class="mimic-node" :data-state="node.aspect"
+                                :aria-label="nodeAria(node)" @click="open(node.id)"
+                                @mouseenter="show($event, node.no + ' · ' + node.label, [t('routePrecedence', { n: node.no, total: node.total }), node.reason])"
+                                @mouseleave="hide()"
+                                @focus="show($event, node.no + ' · ' + node.label, [t('routePrecedence', { n: node.no, total: node.total }), node.reason])"
+                                @blur="hide()">
+                                <span class="mimic-no" x-text="node.no"></span>
+                                <span class="mimic-label" x-text="node.label"></span>
+                                <span class="mimic-lamps" x-show="node.lamps.length">
+                                    <template x-for="lamp in node.lamps" :key="lamp.key">
+                                        <span class="lamp" :class="'lamp-' + lamp.aspect"></span>
+                                    </template>
+                                </span>
+                                <span class="mimic-more tnum" x-show="node.more > 0" x-text="'+' + node.more"></span>
+                            </button>
+                        </li>
+                    </template>
+                </ol>
+
+                <div class="mimic-readout" x-show="readout" x-cloak role="tooltip"
+                    :style="readout ? `left:${readout.x}px; top:${readout.y}px` : ''">
+                    <div class="mimic-readout-title" x-text="readout && readout.title"></div>
+                    <template x-for="line in (readout ? readout.lines : [])" :key="line">
+                        <div x-text="line"></div>
+                    </template>
+                </div>
+            </nav>
+
+            <div class="sb-top-actions">
+                <button type="button" class="btn btn-ghost btn-sm btn-icon"
+                    @click="$store.settings.setTheme(document.documentElement.dataset.sbTheme === 'night' ? 'day' : 'night')"
+                    :aria-label="$store.global.t('themeLabel')" :title="$store.global.t('themeLabel')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0-1.414-1.414M7.05 7.05 5.636 5.636M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z" />
+                    </svg>
+                </button>
+                <button type="button" class="btn btn-sm btn-icon" @click="fetchData" :disabled="loading"
+                    :aria-busy="loading ? 'true' : 'false'" :title="$store.global.t('refreshData')"
+                    :aria-label="$store.global.t('refreshData')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"
+                        :class="{ 'animate-spin': loading }">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Lever frame -->
+        <nav class="sb-frame" aria-label="Views">
+            <div class="sb-frame-group">
+                <template x-for="(lv, i) in [
+                        { id: 'dashboard', key: 'dashboard' },
+                        { id: 'models', key: 'models' },
+                        { id: 'accounts', key: 'accounts' }
+                    ]" :key="lv.id">
+                    <button type="button" class="lever" @click="$store.global.activeTab = lv.id"
+                        :aria-current="$store.global.activeTab === lv.id ? 'page' : null"
+                        :title="$store.global.t(lv.key) + ' (' + (i + 1) + ')'">
+                        <span class="lever-handle" aria-hidden="true"></span>
+                        <span class="lever-no" x-text="i + 1"></span>
+                        <span class="lever-label" x-text="$store.global.t(lv.key)"></span>
+                    </button>
+                </template>
+            </div>
+            <div class="sb-frame-group">
+                <template x-for="(lv, i) in [
+                        { id: 'logs', key: 'logs' },
+                        { id: 'settings', key: 'settings' }
+                    ]" :key="lv.id">
+                    <button type="button" class="lever" @click="$store.global.activeTab = lv.id"
+                        :aria-current="$store.global.activeTab === lv.id ? 'page' : null"
+                        :title="$store.global.t(lv.key) + ' (' + (i + 4) + ')'">
+                        <span class="lever-handle" aria-hidden="true"></span>
+                        <span class="lever-no" x-text="i + 4"></span>
+                        <span class="lever-label" x-text="$store.global.t(lv.key)"></span>
+                    </button>
+                </template>
+            </div>
+
+            <div class="sb-frame-foot">
+                <span class="sb-frame-foot-text" x-text="$store.global.t('leverHint')">Press 1–5 to switch views</span>
+                <a href="https://github.com/badri-s2001/antigravity-claude-proxy" target="_blank" rel="noopener noreferrer"
+                    class="cluster" :aria-label="$store.global.t('github')">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
+                    </svg>
+                    <span class="sb-frame-foot-text" x-text="$store.global.t('github')">GitHub</span>
+                </a>
+            </div>
+        </nav>
+
+        <!-- Views -->
+        <main class="sb-main" id="main">
+            <div x-show="$store.global.activeTab === 'dashboard'" x-load-view="'dashboard'" class="w-full"></div>
+            <div x-show="$store.global.activeTab === 'models'" x-load-view="'models'" class="w-full"></div>
+            <div x-show="$store.global.activeTab === 'logs'" x-load-view="'logs'" class="w-full h-full"></div>
+            <div x-show="$store.global.activeTab === 'accounts'" x-load-view="'accounts'" class="w-full"></div>
+            <div x-show="$store.global.activeTab === 'settings'" x-load-view="'settings'" class="w-full"></div>
+        </main>
+
+        <!-- Lever bar for narrow screens -->
+        <nav class="sb-frame-mobile" aria-label="Views">
+            <template x-for="(id, i) in ['dashboard', 'models', 'accounts', 'logs', 'settings']" :key="id">
+                <button type="button" class="lever" @click="$store.global.activeTab = id"
+                    :aria-current="$store.global.activeTab === id ? 'page' : null">
+                    <span class="lever-no" x-text="i + 1"></span>
+                    <span class="lever-label" x-text="$store.global.t(id)"></span>
+                </button>
+            </template>
+        </nav>
+    </div>
+
+    <!-- Toasts -->
+    <div class="sb-toasts" role="status" aria-live="polite">
+        <template x-if="$store.global.toast">
+            <div class="sb-toast" x-transition:enter="transition ease-out duration-200"
+                x-transition:enter-start="opacity-0 translate-y-2" x-transition:enter-end="opacity-100 translate-y-0"
+                x-transition:leave="transition ease-in duration-150" x-transition:leave-start="opacity-100"
+                x-transition:leave-end="opacity-0">
+                <span class="lamp" :class="{
+                        'lamp-ok': $store.global.toast.type === 'success',
+                        'lamp-danger': $store.global.toast.type === 'error',
+                        'lamp-caution': $store.global.toast.type === 'warning',
+                        'lamp-clear': $store.global.toast.type === 'info'
+                    }"></span>
+                <span x-text="$store.global.toast.message"></span>
             </div>
         </template>
     </div>
 
-    <!-- Navbar -->
-    <div
-        class="h-14 border-b border-space-border flex items-center px-4 lg:px-6 justify-between bg-space-900 z-50 relative">
-        <div class="flex items-center gap-3">
-            <!-- Mobile Menu Button -->
-            <button @click="toggleSidebar()" class="text-gray-400 hover:text-white focus:outline-none p-1 transition-colors">
-                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-            </button>
-
-            <div
-                class="w-7 h-7 rounded bg-blue-600 border border-blue-400/30 flex items-center justify-center text-white font-mono font-bold text-xs tracking-tight">
-                APG</div>
-            <div class="flex flex-col">
-                <span class="text-sm font-bold tracking-wide uppercase text-white font-mono"
-                    x-text="$store.global.t('systemName')">antigravity-claude-proxy-go</span>
-                <div class="flex items-center gap-1.5">
-                    <span class="text-[10px] text-gray-500 font-mono tracking-wide"
-                        x-text="$store.global.t('systemDesc')">GO PROXY FOR CLAUDE & GEMINI</span>
-                    <span class="text-gray-700">•</span>
-                    <span class="text-[10px] text-gray-400 font-mono tracking-wide"
-                        x-text="'v' + $store.global.version">v1.0.0</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="flex items-center gap-3">
-            <!-- Connection Pill -->
-            <div class="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono border transition-colors duration-150"
-                :class="connectionStatus === 'connected'
-                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                    : (connectionStatus === 'connecting' ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-red-500/10 border-red-500/30 text-red-400')">
-                <div class="w-1.5 h-1.5 rounded-full"
-                    :class="connectionStatus === 'connected' ? 'bg-emerald-400' : (connectionStatus === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-red-400')">
-                </div>
-                <span
-                    x-text="connectionStatus === 'connected' ? $store.global.t('online') : (connectionStatus === 'disconnected' ? $store.global.t('offline') : $store.global.t('connecting'))"></span>
+    <!-- Add Account dialog -->
+    <dialog id="add_account_modal" class="modal" x-data="addAccountModal" @close="resetState()">
+        <div class="modal-box max-w-lg w-full">
+            <div class="modal-head">
+                <span x-text="$store.global.t('addAccount')">Add New Account</span>
+                <form method="dialog">
+                    <button type="submit" class="btn btn-ghost btn-sm btn-icon" :aria-label="$store.global.t('close')">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </form>
             </div>
 
-            <div class="h-4 w-px bg-space-border"></div>
-
-            <!-- Refresh Button -->
-            <button type="button" class="btn btn-ghost btn-xs btn-square text-gray-400 hover:text-white hover:bg-space-800"
-                @click="fetchData" :disabled="loading" :title="$store.global.t('refreshData')" aria-label="Refresh data">
-                <svg class="w-4 h-4" :class="{'animate-spin': loading}" fill="none" stroke="currentColor"
-                    viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-            </button>
-        </div>
-    </div>
-
-    <!-- Layout -->
-    <div class="flex h-[calc(100vh-56px)] relative">
-
-        <!-- Mobile Sidebar Overlay -->
-        <div x-show="sidebarOpen" 
-             x-transition:enter="transition-opacity ease-linear duration-300"
-             x-transition:enter-start="opacity-0"
-             x-transition:enter-end="opacity-100"
-             x-transition:leave="transition-opacity ease-linear duration-300"
-             x-transition:leave-start="opacity-100"
-             x-transition:leave-end="opacity-0"
-             @click="sidebarOpen = false"
-             class="fixed inset-0 bg-black/50 z-40 lg:hidden"
-             style="display: none;"></div>
-
-        <!-- Sidebar -->
-        <div class="fixed top-14 bottom-0 left-0 z-40 bg-space-900 border-r border-space-border transition-all duration-300 shadow-2xl overflow-hidden lg:static lg:h-auto lg:shadow-none lg:flex-shrink-0"
-             :class="{
-                 'translate-x-0': sidebarOpen,
-                 '-translate-x-full': !sidebarOpen,
-                 'w-64': sidebarOpen,
-                 'lg:translate-x-0': sidebarOpen,
-                 'lg:w-64': sidebarOpen,
-                 'sidebar-collapsed': !sidebarOpen
-             }">
-             
-            <!-- Inner Sidebar Content (Fixed Width to prevent squashing) -->
-            <div class="w-64 flex flex-col h-full pt-6 pb-4 flex-shrink-0">
-                <!-- Mobile Menu Header -->
-                <div class="flex items-center justify-between px-4 mb-6 lg:hidden">
-                    <span class="text-sm font-bold text-white" x-text="$store.global.t('menu')">Menu</span>
-                    <button @click="sidebarOpen = false" class="text-gray-400 hover:text-white">
-                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                </div>
-
-                <!-- Desktop Header (Main) -->
-                <div class="px-4 mb-2 text-xs font-bold text-gray-600 uppercase tracking-widest hidden lg:block"
-                    x-text="$store.global.t('main')">Main</div>
-                
-                <nav class="flex flex-col gap-1">
-                    <button
-                        class="nav-item flex items-center gap-3 px-6 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5"
-                        :class="{'active': $store.global.activeTab === 'dashboard'}"
-                        @click="$store.global.activeTab = 'dashboard'">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-                        </svg>
-                        <span x-text="$store.global.t('dashboard')">Dashboard</span>
-                    </button>
-                    <button
-                        class="nav-item flex items-center gap-3 px-6 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5"
-                        :class="{'active': $store.global.activeTab === 'models'}"
-                        @click="$store.global.activeTab = 'models'">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                        </svg>
-                        <span x-text="$store.global.t('models')">Models</span>
-                    </button>
-                    <button
-                        class="nav-item flex items-center gap-3 px-6 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5"
-                        :class="{'active': $store.global.activeTab === 'accounts'}"
-                        @click="$store.global.activeTab = 'accounts'">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-                        </svg>
-                        <span x-text="$store.global.t('accounts')">Accounts</span>
-                    </button>
-                </nav>
-
-                <div class="px-4 mt-8 mb-2 text-xs font-bold text-gray-600 uppercase tracking-widest"
-                    x-text="$store.global.t('system')">System</div>
-                <nav class="flex flex-col gap-1">
-                    <button
-                        class="nav-item flex items-center gap-3 px-6 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5"
-                        :class="{'active': $store.global.activeTab === 'logs'}" @click="$store.global.activeTab = 'logs'">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                        </svg>
-                        <span x-text="$store.global.t('logs')">Logs</span>
-                    </button>
-                    <button
-                        class="nav-item flex items-center gap-3 px-6 py-3 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5"
-                        :class="{'active': $store.global.activeTab === 'settings'}"
-                        @click="$store.global.activeTab = 'settings'">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                        <span x-text="$store.global.t('settings')">Settings</span>
-                    </button>
-                </nav>
-
-                <!-- Footer Info -->
-                <div class="mt-auto px-6 text-xs text-gray-400 font-mono">
-                    <div class="flex justify-center">
-                        <a href="https://github.com/badri-s2001/antigravity-claude-proxy" target="_blank" rel="noopener noreferrer"
-                            class="flex items-center gap-1.5 hover:text-white transition-colors">
-                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                            </svg>
-                            <span x-text="$store.global.t('github')">GitHub</span>
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Main Content -->
-        <div class="flex-1 overflow-auto bg-space-950 relative custom-scrollbar">
-
-            <!-- Views Container -->
-            <!-- Dashboard -->
-            <div x-show="$store.global.activeTab === 'dashboard'" x-load-view="'dashboard'"
-                x-transition:enter="fade-enter-active" x-transition:enter-start="fade-enter-from"
-                class="w-full"></div>
-
-            <!-- Models -->
-            <div x-show="$store.global.activeTab === 'models'" x-load-view="'models'"
-                x-transition:enter="fade-enter-active" x-transition:enter-start="fade-enter-from"
-                class="w-full"></div>
-
-            <!-- Logs -->
-            <div x-show="$store.global.activeTab === 'logs'" x-load-view="'logs'" x-transition:enter="fade-enter-active"
-                x-transition:enter-start="fade-enter-from" class="w-full h-full"></div>
-
-            <!-- Accounts -->
-            <div x-show="$store.global.activeTab === 'accounts'" x-load-view="'accounts'"
-                x-transition:enter="fade-enter-active" x-transition:enter-start="fade-enter-from"
-                class="w-full"></div>
-
-            <!-- Settings -->
-            <div x-show="$store.global.activeTab === 'settings'" x-load-view="'settings'"
-                x-transition:enter="fade-enter-active" x-transition:enter-start="fade-enter-from"
-                class="w-full"></div>
-        </div>
-    </div>
-
-    <!-- Add Account Modal -->
-    <dialog id="add_account_modal" class="modal backdrop-blur-sm" x-data="addAccountModal" @close="resetState()">
-        <div class="modal-box max-w-lg w-full bg-space-900 border border-space-border text-gray-300 shadow-xl p-6">
-            <h3 class="font-bold text-lg text-white mb-4" x-text="$store.global.t('addAccount')">Add New Account</h3>
-
-            <!-- Provider Selection Tabs -->
-            <div class="flex border-b border-space-border mb-4">
-                <button type="button" class="px-4 py-2 text-sm font-medium transition-colors border-b-2"
-                        :class="provider === 'google' ? 'text-sky-400 border-sky-400' : 'text-gray-400 border-transparent hover:text-gray-200'"
-                        @click="setProvider('google')">
+            <div class="sb-tabs px-3" role="tablist">
+                <button type="button" class="sb-tab" role="tab" :aria-selected="provider === 'google'"
+                    @click="setProvider('google')">
                     <span x-text="$store.global.t('providerGoogle') || 'Google (Antigravity)'">Google (Antigravity)</span>
                 </button>
-                <button type="button" class="px-4 py-2 text-sm font-medium transition-colors border-b-2"
-                        :class="provider === 'claudecode' ? 'text-amber-400 border-amber-400' : 'text-gray-400 border-transparent hover:text-gray-200'"
-                        @click="setProvider('claudecode')">
+                <button type="button" class="sb-tab" role="tab" :aria-selected="provider === 'claudecode'"
+                    @click="setProvider('claudecode')">
                     <span x-text="$store.global.t('providerClaudeCode') || 'Claude Code (Claude.ai)'">Claude Code (Claude.ai)</span>
                 </button>
-                <button type="button" class="px-4 py-2 text-sm font-medium transition-colors border-b-2"
-                        :class="provider === 'kimi' ? 'text-cyan-400 border-cyan-400' : 'text-gray-400 border-transparent hover:text-gray-200'"
-                        @click="setProvider('kimi')">
+                <button type="button" class="sb-tab" role="tab" :aria-selected="provider === 'kimi'"
+                    @click="setProvider('kimi')">
                     <span x-text="$store.global.t('providerKimiCode') || 'Kimi Code'">Kimi Code</span>
                 </button>
             </div>
 
-            <!-- Google Account Flow -->
-            <div class="flex flex-col gap-4" x-show="provider === 'google'">
-                <p class="text-sm text-gray-400 leading-relaxed" x-text="$store.global.t('connectGoogleDesc')">Connect a Google
-                    Workspace account to increase your API quota limit.
-                    The account will be used to proxy Claude requests via Antigravity.</p>
+            <div class="modal-body">
+                <!-- Google -->
+                <div class="stack" x-show="provider === 'google'" role="tabpanel">
+                    <p class="t-2 t-sm" x-text="$store.global.t('connectGoogleDesc')">Connect a Google Workspace
+                        account to increase your API quota limit.</p>
 
-                <button class="btn bg-blue-600 hover:bg-blue-700 text-white border-none flex items-center justify-center gap-3 h-11" @click="addAccountWeb">
-                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-                        <path
-                            d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z">
-                        </path>
-                        <path
-                            d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z">
-                        </path>
-                        <path
-                            d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z">
-                        </path>
-                        <path
-                            d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z">
-                        </path>
-                    </svg>
-                    <span x-text="$store.global.t('connectGoogle')">Connect Google Account</span>
-                </button>
+                    <button type="button" class="btn btn-primary btn-lg btn-block" @click="addAccountWeb">
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                        </svg>
+                        <span x-text="$store.global.t('connectGoogle')">Connect Google Account</span>
+                    </button>
 
-                <div class="text-center mt-2">
-                    <p class="text-xs text-gray-500 mb-2" x-text="$store.global.t('or')">OR</p>
-
-                    <!-- Manual Mode (collapsible) -->
-                    <details class="group mb-2" @toggle="initManualAuth($event)">
-                        <summary class="text-xs text-gray-400 hover:text-sky-400 cursor-pointer transition-colors inline-flex items-center gap-1">
-                            <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                            </svg>
-                            <span x-text="$store.global.t('manualMode')">Manual Mode</span>
-                        </summary>
-                        <div class="mt-3 p-3 bg-space-950 rounded border border-space-border text-xs">
+                    <details class="disclosure" @toggle="initManualAuth($event)">
+                        <summary><span x-text="$store.global.t('manualMode')">Manual Mode</span></summary>
+                        <div class="disclosure-body stack-sm">
                             <template x-if="authUrl">
-                                <div>
-                                    <div class="flex items-center gap-2 mb-2">
-                                        <input type="text" readonly :value="authUrl"
-                                               class="input input-xs input-bordered flex-1 bg-space-800 text-gray-300 font-mono">
-                                        <button class="btn btn-xs btn-ghost text-sky-400 hover:bg-space-800" @click="copyLink" :title="$store.global.t('linkCopied')">
-                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                <div class="stack-sm">
+                                    <div class="sb-input-group gap-2">
+                                        <input type="text" readonly :value="authUrl" class="input input-sm mono grow"
+                                            aria-label="Authorization URL">
+                                        <button type="button" class="btn btn-sm btn-icon" @click="copyLink"
+                                            :title="$store.global.t('linkCopied')" :aria-label="$store.global.t('linkCopied')">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                                             </svg>
                                         </button>
                                     </div>
-                                    <div class="flex items-center gap-2">
+                                    <div class="sb-input-group gap-2">
                                         <input type="text" x-model="callbackInput"
-                                               :placeholder="$store.global.t('pasteCallbackPlaceholder')"
-                                               class="input input-xs input-bordered flex-1 bg-space-800 text-gray-300 font-mono">
-                                        <button class="btn btn-xs bg-emerald-600 hover:bg-emerald-700 text-white border-none"
-                                                @click="completeManualAuth"
-                                                :disabled="!callbackInput || submitting"
-                                                :class="{ 'loading': submitting }">
+                                            :placeholder="$store.global.t('pasteCallbackPlaceholder')"
+                                            :aria-label="$store.global.t('pasteCallbackPlaceholder')"
+                                            class="input input-sm mono grow">
+                                        <button type="button" class="btn btn-primary btn-sm" @click="completeManualAuth"
+                                            :disabled="!callbackInput || submitting" :aria-busy="submitting ? 'true' : 'false'">
+                                            <span class="spinner" x-show="submitting"></span>
                                             <span x-text="$store.global.t('completeAuth')">OK</span>
                                         </button>
                                     </div>
                                 </div>
                             </template>
                             <template x-if="!authUrl">
-                                <div class="text-gray-500">Loading...</div>
+                                <div class="t-3 t-sm cluster"><span class="spinner"></span><span>Loading authorization URL…</span></div>
                             </template>
                         </div>
                     </details>
 
-                    <!-- CLI Command -->
-                    <details class="group">
-                        <summary class="text-xs text-gray-400 hover:text-sky-400 cursor-pointer transition-colors inline-flex items-center gap-1">
-                            <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                            </svg>
-                            <span x-text="$store.global.t('useCliCommand')">Use CLI Command</span>
-                        </summary>
-                        <div class="mt-3 p-3 bg-space-950 rounded border border-space-border font-mono text-xs text-gray-300">
-                            <div class="flex items-center gap-2">
-                                <span class="text-gray-500">$</span>
-                                <code>antigravity-proxy accounts add</code>
-                            </div>
+                    <details class="disclosure">
+                        <summary><span x-text="$store.global.t('useCliCommand')">Use CLI Command</span></summary>
+                        <div class="disclosure-body">
+                            <pre class="codeblock">antigravity-proxy accounts add</pre>
                         </div>
                     </details>
                 </div>
-            </div>
 
-            <!-- Claude Code Account Flow -->
-            <div class="flex flex-col gap-4" x-show="provider === 'claudecode'">
-                <p class="text-sm text-gray-400 leading-relaxed" x-text="$store.global.t('connectClaudeCodeDesc') || 'Connect your Claude.ai account using Claude Code OAuth PKCE flow. The account will be used to proxy Claude requests via Claude Code Gateway.'">Connect your Claude.ai account using Claude Code OAuth PKCE flow. The account will be used to proxy Claude requests via Claude Code Gateway.</p>
+                <!-- Claude Code -->
+                <div class="stack" x-show="provider === 'claudecode'" role="tabpanel">
+                    <p class="t-2 t-sm"
+                        x-text="$store.global.t('connectClaudeCodeDesc') || 'Connect your Claude.ai account using Claude Code OAuth PKCE flow. The account will be used to proxy Claude requests via Claude Code Gateway.'">
+                        Connect your Claude.ai account using Claude Code OAuth PKCE flow.</p>
 
-                <button class="btn bg-amber-600 hover:bg-amber-700 text-white border-none flex items-center justify-center gap-3 h-11" @click="addClaudeCodeAccountWeb('loopback')">
-                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    <span x-text="$store.global.t('connectClaudeCode') || 'Connect Claude Code Account'">Connect Claude Code Account</span>
-                </button>
+                    <button type="button" class="btn btn-primary btn-lg btn-block" @click="addClaudeCodeAccountWeb('loopback')">
+                        <span x-text="$store.global.t('connectClaudeCode') || 'Connect Claude Code Account'">Connect Claude Code Account</span>
+                    </button>
 
-                <div class="text-center mt-2">
-                    <p class="text-xs text-gray-500 mb-2" x-text="$store.global.t('or')">OR</p>
-
-                    <!-- Manual Mode (collapsible) -->
-                    <details class="group mb-2" @toggle="initClaudeCodeManualAuth($event)">
-                        <summary class="text-xs text-gray-400 hover:text-amber-400 cursor-pointer transition-colors inline-flex items-center gap-1">
-                            <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                            </svg>
-                            <span x-text="$store.global.t('manualMode')">Manual Mode</span>
-                        </summary>
-                        <div class="mt-3 p-3 bg-space-950 rounded border border-space-border text-xs">
+                    <details class="disclosure" @toggle="initClaudeCodeManualAuth($event)">
+                        <summary><span x-text="$store.global.t('manualMode')">Manual Mode</span></summary>
+                        <div class="disclosure-body stack-sm">
                             <template x-if="claudeCodeAuthUrl">
-                                <div>
-                                    <p class="text-gray-400 mb-2 text-left">1. Open the authorization URL and approve in browser:</p>
-                                    <div class="flex items-center gap-2 mb-3">
-                                        <input type="text" readonly :value="claudeCodeAuthUrl"
-                                               class="input input-xs input-bordered flex-1 bg-space-800 text-gray-300 font-mono">
-                                        <button class="btn btn-xs btn-ghost text-amber-400 hover:bg-space-800" @click="copyClaudeCodeLink" :title="$store.global.t('linkCopied')">
-                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                <div class="stack-sm">
+                                    <p class="t-2 t-sm">1. Open the authorization URL and approve in browser:</p>
+                                    <div class="sb-input-group gap-2">
+                                        <input type="text" readonly :value="claudeCodeAuthUrl" class="input input-sm mono grow"
+                                            aria-label="Authorization URL">
+                                        <button type="button" class="btn btn-sm btn-icon" @click="copyClaudeCodeLink"
+                                            :title="$store.global.t('linkCopied')" :aria-label="$store.global.t('linkCopied')">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                                             </svg>
                                         </button>
                                     </div>
-                                    <p class="text-gray-400 mb-2 text-left">2. Paste authorization code from callback page:</p>
-                                    <div class="flex items-center gap-2">
+                                    <p class="t-2 t-sm">2. Paste authorization code from callback page:</p>
+                                    <div class="sb-input-group gap-2">
                                         <input type="text" x-model="claudeCodeCallbackInput"
-                                               placeholder="Paste code (e.g. code#state or code string)"
-                                               class="input input-xs input-bordered flex-1 bg-space-800 text-gray-300 font-mono">
-                                        <button class="btn btn-xs bg-emerald-600 hover:bg-emerald-700 text-white border-none"
-                                                @click="completeClaudeCodeManualAuth"
-                                                :disabled="!claudeCodeCallbackInput || claudeCodeSubmitting"
-                                                :class="{ 'loading': claudeCodeSubmitting }">
+                                            placeholder="code#state or code" aria-label="Authorization code"
+                                            class="input input-sm mono grow">
+                                        <button type="button" class="btn btn-primary btn-sm" @click="completeClaudeCodeManualAuth"
+                                            :disabled="!claudeCodeCallbackInput || claudeCodeSubmitting"
+                                            :aria-busy="claudeCodeSubmitting ? 'true' : 'false'">
+                                            <span class="spinner" x-show="claudeCodeSubmitting"></span>
                                             <span x-text="$store.global.t('completeAuth')">OK</span>
                                         </button>
                                     </div>
                                 </div>
                             </template>
                             <template x-if="!claudeCodeAuthUrl">
-                                <div class="text-gray-500">Loading authorization URL...</div>
+                                <div class="t-3 t-sm cluster"><span class="spinner"></span><span>Loading authorization URL…</span></div>
                             </template>
                         </div>
                     </details>
 
-                    <!-- CLI Command -->
-                    <details class="group">
-                        <summary class="text-xs text-gray-400 hover:text-amber-400 cursor-pointer transition-colors inline-flex items-center gap-1">
-                            <svg class="w-3 h-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                            </svg>
-                            <span x-text="$store.global.t('useCliCommand')">Use CLI Command</span>
-                        </summary>
-                        <div class="mt-3 p-3 bg-space-950 rounded border border-space-border font-mono text-xs text-gray-300">
-                            <div class="flex items-center gap-2">
-                                <span class="text-gray-500">$</span>
-                                <code>claude login</code>
-                            </div>
+                    <details class="disclosure">
+                        <summary><span x-text="$store.global.t('useCliCommand')">Use CLI Command</span></summary>
+                        <div class="disclosure-body">
+                            <pre class="codeblock">claude login</pre>
                         </div>
                     </details>
                 </div>
-            </div>
 
-            <!-- Kimi Code Device-Flow Login -->
-            <div class="flex flex-col gap-4" x-show="provider === 'kimi'">
-                <p class="text-sm text-gray-400 leading-relaxed" x-text="$store.global.t('connectKimiCodeDesc') || 'Sign in with your Kimi Code account (kimi.ai) using device authorization. The login is global and applies to all Kimi Code gateway requests.'">Sign in with your Kimi Code account (kimi.ai) using device authorization. The login is global and applies to all Kimi Code gateway requests.</p>
+                <!-- Kimi Code device flow -->
+                <div class="stack" x-show="provider === 'kimi'" role="tabpanel">
+                    <p class="t-2 t-sm"
+                        x-text="$store.global.t('connectKimiCodeDesc') || 'Sign in with your Kimi Code account (kimi.ai) using device authorization. The login is global and applies to all Kimi Code gateway requests.'">
+                        Sign in with your Kimi Code account using device authorization.</p>
 
-                <!-- Already-logged-in hint (credential is global, managed on Settings) -->
-                <template x-if="$store.data.kimi && $store.data.kimi.oauth">
-                    <p class="text-xs text-gray-300">
-                        <span class="text-gray-500" x-text="$store.global.t('kimiOAuthLoggedInAs') || 'Logged in as'">Logged in as</span>
-                        <span class="font-mono text-cyan-300" x-text="$store.data.kimi.oauth.email || $store.data.kimi.oauth.nickname || $store.data.kimi.oauth.userId"></span>
-                        <span class="text-gray-500" x-show="$store.data.kimi.oauth.expiresAt" x-text="'· ' + $store.data.kimi.oauth.expiresAt"></span>
-                    </p>
-                </template>
+                    <template x-if="$store.data.kimi && $store.data.kimi.oauth">
+                        <p class="t-sm">
+                            <span class="t-3" x-text="$store.global.t('kimiOAuthLoggedInAs') || 'Logged in as'">Logged in as</span>
+                            <span class="mono" x-text="$store.data.kimi.oauth.email || $store.data.kimi.oauth.nickname || $store.data.kimi.oauth.userId"></span>
+                            <span class="t-3" x-show="$store.data.kimi.oauth.expiresAt" x-text="'· ' + $store.data.kimi.oauth.expiresAt"></span>
+                        </p>
+                    </template>
 
-                <button class="btn bg-cyan-600 hover:bg-cyan-500 text-white border-none flex items-center justify-center gap-3 h-11"
-                        @click="startKimiLogin()"
-                        :disabled="kimiStarting || kimiOAuth.status === 'pending'"
-                        :class="{ 'loading': kimiStarting }">
-                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 7a3 3 0 11-6 0 3 3 0 016 0zM6 21v-1a4 4 0 014-4h4a4 4 0 014 4v1" />
-                    </svg>
-                    <span x-text="$store.global.t('kimiOAuthLogin') || 'Login with Kimi Code'">Login with Kimi Code</span>
-                </button>
+                    <button type="button" class="btn btn-primary btn-lg btn-block" @click="startKimiLogin()"
+                        :disabled="kimiStarting || kimiOAuth.status === 'pending'" :aria-busy="kimiStarting ? 'true' : 'false'">
+                        <span class="spinner" x-show="kimiStarting"></span>
+                        <span x-text="$store.global.t('kimiOAuthLogin') || 'Login with Kimi Code'">Login with Kimi Code</span>
+                    </button>
 
-                <!-- Pending device authorization -->
-                <template x-if="kimiOAuth.status === 'pending'">
-                    <div class="p-3 bg-space-950 rounded border border-space-border text-xs">
-                        <p class="text-gray-400 mb-2" x-text="$store.global.t('kimiOAuthEnterCode') || 'Open the link and confirm this code:'">Open the link and confirm this code:</p>
-                        <div class="text-center my-3">
-                            <div class="font-mono text-2xl tracking-widest text-white" x-text="kimiOAuth.userCode"></div>
-                            <a class="link link-primary break-all" :href="kimiOAuth.verificationUri" target="_blank" rel="noopener" x-text="kimiOAuth.verificationUri"></a>
+                    <template x-if="kimiOAuth.status === 'pending'">
+                        <div class="panel panel-body stack-sm">
+                            <p class="t-2 t-sm" x-text="$store.global.t('kimiOAuthEnterCode') || 'Open the link and confirm this code:'">Open the link and confirm this code:</p>
+                            <div class="figure-md mono" x-text="kimiOAuth.userCode"></div>
+                            <a class="t-break t-sm" :href="kimiOAuth.verificationUri" target="_blank" rel="noopener" x-text="kimiOAuth.verificationUri"></a>
+                            <div class="cluster t-3 t-sm">
+                                <span class="spinner"></span>
+                                <span x-text="$store.global.t('kimiOAuthWaiting') || 'Waiting for authorization…'">Waiting for authorization…</span>
+                            </div>
                         </div>
-                        <div class="flex items-center justify-center gap-2 text-gray-400">
-                            <span class="loading loading-spinner loading-xs"></span>
-                            <span x-text="$store.global.t('kimiOAuthWaiting') || 'Waiting for authorization…'">Waiting for authorization…</span>
-                        </div>
+                    </template>
+
+                    <div class="notice notice-danger" x-show="kimiOAuth.error" role="alert">
+                        <span class="lamp lamp-danger"></span><span class="mono t-sm" x-text="kimiOAuth.error"></span>
                     </div>
-                </template>
-
-                <p class="text-xs text-rose-400 font-mono" x-show="kimiOAuth.error" x-text="kimiOAuth.error"></p>
+                </div>
             </div>
 
-            <div class="modal-action mt-6">
+            <div class="modal-action">
                 <form method="dialog">
-                    <button type="submit" class="btn btn-ghost text-gray-400 hover:text-white hover:bg-space-800" x-text="$store.global.t('close')">Close</button>
+                    <button type="submit" class="btn" x-text="$store.global.t('close')">Close</button>
                 </form>
             </div>
         </div>
         <form method="dialog" class="modal-backdrop">
-            <button type="button" @click="resetState()" x-text="$store.global.t('close')">close</button>
+            <button type="button" @click="resetState()" tabindex="-1" x-text="$store.global.t('close')">close</button>
         </form>
     </dialog>
 
-    <!-- OAuth Progress Modal -->
+    <!-- OAuth progress dialog -->
     <dialog id="oauth_progress_modal" class="modal" :class="{ 'modal-open': $store.global.oauthProgress.active }">
-        <div class="modal-box bg-space-900 border border-space-border shadow-xl">
-            <h3 class="font-bold text-lg text-white flex items-center gap-2">
-                <svg class="w-5 h-5 text-blue-500 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                <span x-text="$store.global.t('oauthWaiting')">Waiting for OAuth...</span>
-            </h3>
-            <p class="py-4 text-gray-400 text-sm" x-text="$store.global.t('oauthWaitingDesc')">
-                Please complete authentication in the popup window.
-            </p>
-
-            <!-- Progress Bar -->
-            <div class="w-full bg-space-800 rounded h-1.5 mb-4 overflow-hidden">
-                <div class="bg-blue-600 h-1.5 rounded transition-all duration-300"
-                     :style="`width: ${($store.global.oauthProgress.current / $store.global.oauthProgress.max) * 100}%`">
+        <div class="modal-box max-w-md">
+            <div class="modal-head">
+                <span class="cluster"><span class="spinner"></span><span x-text="$store.global.t('oauthWaiting')">Waiting for OAuth...</span></span>
+            </div>
+            <div class="modal-body stack">
+                <p class="t-2 t-sm" x-text="$store.global.t('oauthWaitingDesc')">Please complete authentication in the popup window.</p>
+                <div class="track track-lg" data-level="clear" role="progressbar" aria-valuemin="0"
+                    :aria-valuemax="$store.global.oauthProgress.max" :aria-valuenow="$store.global.oauthProgress.current"
+                    :style="`--fill: ${($store.global.oauthProgress.current / $store.global.oauthProgress.max) * 100}%`"></div>
+                <div class="split t-xs t-3 tnum">
+                    <span x-text="`${$store.global.oauthProgress.current} / ${$store.global.oauthProgress.max}s`"></span>
+                    <span x-text="`${Math.round(($store.global.oauthProgress.current / $store.global.oauthProgress.max) * 100)}%`"></span>
                 </div>
             </div>
-
-            <!-- Progress Text -->
-            <div class="flex justify-between text-xs text-gray-500 font-mono mb-4">
-                <span x-text="`${$store.global.oauthProgress.current} / ${$store.global.oauthProgress.max}s`"></span>
-                <span x-text="`${Math.round(($store.global.oauthProgress.current / $store.global.oauthProgress.max) * 100)}%`"></span>
-            </div>
-
             <div class="modal-action">
-                <button class="btn btn-sm btn-ghost text-gray-400 hover:text-white"
-                        @click="$store.global.oauthProgress.cancel && $store.global.oauthProgress.cancel()"
-                        x-text="$store.global.t('cancelOAuth')">
-                    Cancel
-                </button>
+                <button type="button" class="btn"
+                    @click="$store.global.oauthProgress.cancel && $store.global.oauthProgress.cancel()"
+                    x-text="$store.global.t('cancelOAuth')">Cancel</button>
             </div>
         </div>
     </dialog>
@@ -543,7 +418,7 @@
     <!-- Scripts - Loading Order Matters! -->
     <!-- 1. Config & Utils (global helpers) -->
     <script src="js/config/constants.js"></script>
-    <script src="js/utils/ui-logger.js"></script><!-- Issue #183: Conditional logging utility -->
+    <script src="js/utils/ui-logger.js"></script>
     <script src="js/utils.js"></script>
     <script src="js/utils/error-handler.js"></script>
     <script src="js/utils/account-actions.js"></script>
@@ -558,7 +433,6 @@
     <script src="js/data-store.js"></script>
     <script src="js/settings-store.js"></script>
     <!-- 3. Components (register to window.Components) -->
-    <!-- Dashboard modules (load before main dashboard) -->
     <script src="js/components/dashboard/stats.js"></script>
     <script src="js/components/dashboard/charts.js"></script>
     <script src="js/components/dashboard/filters.js"></script>
@@ -574,6 +448,7 @@
     <script src="js/components/gateway-order.js"></script>
     <script src="js/components/cloud-sessions.js"></script>
     <script src="js/components/add-account-modal.js"></script>
+    <script src="js/components/route-mimic.js"></script>
     <!-- 4. App (registers Alpine components from window.Components) -->
     <script src="app.js"></script>
 </body>

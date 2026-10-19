@@ -23,27 +23,25 @@ window.DashboardCharts = window.DashboardCharts || {};
 // Helper to get CSS variable values (alias to window.utils.getThemeColor)
 const getThemeColor = (name) => window.utils.getThemeColor(name);
 
-// Color palette for different families and models
-const FAMILY_COLORS = {
-  get claude() {
-    return getThemeColor("--color-neon-purple");
-  },
-  get gemini() {
-    return getThemeColor("--color-neon-green");
-  },
-  get other() {
-    return getThemeColor("--color-neon-cyan");
-  },
-};
+// Chart series come from the Signal Box palette (--sb-chart-1..8). They are
+// read at each rebuild so a theme change picks up the new values.
+const SERIES_COUNT = 8;
+const seriesColor = (index) =>
+  getThemeColor(`--sb-chart-${(index % SERIES_COUNT) + 1}`);
 
-const MODEL_COLORS = Array.from({ length: 16 }, (_, i) =>
-  getThemeColor(`--color-chart-${i + 1}`)
-);
+// Chart chrome (grid, ticks, tooltip) from the same theme, read per rebuild.
+const chartTheme = () => ({
+  panel: getThemeColor("--sb-panel"),
+  ink: getThemeColor("--sb-ink"),
+  ink2: getThemeColor("--sb-ink-2"),
+  grid: getThemeColor("--sb-chart-grid"),
+  tick: getThemeColor("--sb-chart-tick"),
+  font: "Barlow, system-ui, sans-serif",
+});
 
-// Blueprint discipline: one trace hue on the trend chart; families are
-// split by dash pattern (solid = claude, dashed = gemini, dotted = other),
-// never by color.
-const TRACE_COLOR = () => getThemeColor("--color-neon-green") || "#5ec8d8";
+// One trace ink on the trend chart; families are split by dash pattern
+// (solid = claude, dashed = gemini, dotted = other), never by colour.
+const TRACE_COLOR = () => seriesColor(0);
 const FAMILY_DASH = {
   claude: [],
   gemini: [6, 4],
@@ -51,27 +49,10 @@ const FAMILY_DASH = {
 };
 
 // Export constants for filter module
-window.DashboardConstants = { FAMILY_COLORS, MODEL_COLORS, FAMILY_DASH, TRACE_COLOR };
+window.DashboardConstants = { seriesColor, TRACE_COLOR, FAMILY_DASH };
 
 // Module-level lock to prevent concurrent chart updates (fixes race condition)
 let _trendChartUpdateLock = false;
-
-/**
- * Convert hex color to rgba
- * @param {string} hex - Hex color string
- * @param {number} alpha - Alpha value (0-1)
- * @returns {string} rgba color string
- */
-window.DashboardCharts.hexToRgba = function (hex, alpha) {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (result) {
-    return `rgba(${parseInt(result[1], 16)}, ${parseInt(
-      result[2],
-      16
-    )}, ${parseInt(result[3], 16)}, ${alpha})`;
-  }
-  return hex;
-};
 
 /**
  * Check if canvas is ready for Chart creation
@@ -91,242 +72,98 @@ function isCanvasReady(canvas) {
 }
 
 /**
- * Create a Chart.js dataset with gradient fill
+ * Create a Chart.js line dataset. Flat strokes: no fill, no gradient.
  * @param {string} label - Dataset label
  * @param {Array} data - Data points
- * @param {string} color - Line color
- * @param {HTMLCanvasElement} canvas - Canvas element
+ * @param {string} color - Series colour (a --sb-chart-* value)
  * @param {Array} [dash] - borderDash pattern (empty = solid)
  * @returns {object} Chart.js dataset configuration
  */
-window.DashboardCharts.createDataset = function (label, data, color, canvas, dash) {
-  let gradient;
-
-  try {
-    // Safely create gradient with fallback
-    if (canvas && canvas.getContext) {
-      const ctx = canvas.getContext("2d");
-      if (ctx && ctx.createLinearGradient) {
-        gradient = ctx.createLinearGradient(0, 0, 0, 200);
-        gradient.addColorStop(0, window.DashboardCharts.hexToRgba(color, 0.12));
-        gradient.addColorStop(
-          0.6,
-          window.DashboardCharts.hexToRgba(color, 0.05)
-        );
-        gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
-      }
-    }
-  } catch (e) {
-    if (window.UILogger) window.UILogger.debug("Gradient fallback:", e.message);
-    gradient = null;
-  }
-
-  // Fallback to solid color if gradient creation failed
-  const backgroundColor =
-    gradient || window.DashboardCharts.hexToRgba(color, 0.08);
-
+window.DashboardCharts.createDataset = function (label, data, color, dash) {
   return {
     label,
     data,
     borderColor: color,
-    backgroundColor: backgroundColor,
+    backgroundColor: color,
     borderWidth: 1.5,
     borderDash: dash || [],
     tension: 0.35,
-    fill: true,
-    pointRadius: 2.5,
-    pointHoverRadius: 6,
+    fill: false,
+    pointRadius: 2,
+    pointHoverRadius: 5,
     pointBackgroundColor: color,
-    pointBorderColor: "rgba(14, 27, 42, 0.9)",
-    pointBorderWidth: 1.5,
+    pointBorderColor: chartTheme().panel,
+    pointBorderWidth: 1,
   };
 };
 
 /**
- * Update quota distribution donut chart
+ * Recompute the pool-wide quota figure and the per-family quota tracks.
+ * No canvas involved. Sets component.stats.overallHealth and
+ * component.familyQuota (families with reported quota only, lowest first).
  * @param {object} component - Dashboard component instance
  */
-window.DashboardCharts.updateCharts = function (component) {
-  const canvas = document.getElementById("quotaChart");
-
-  // Safety checks
-  if (!canvas) {
-    console.debug("quotaChart canvas not found");
-    return;
-  }
-
-  // FORCE DESTROY: Check for existing chart on the canvas element property
-  // This handles cases where Component state is lost but DOM persists
-  if (canvas._chartInstance) {
-    console.debug("Destroying existing quota chart from canvas property");
-    try {
-        canvas._chartInstance.destroy();
-    } catch(e) { if (window.UILogger) window.UILogger.debug(e); }
-    canvas._chartInstance = null;
-  }
-  
-  // Also check component state as backup
-  if (component.charts.quotaDistribution) {
-     try {
-         component.charts.quotaDistribution.destroy();
-     } catch(e) { }
-     component.charts.quotaDistribution = null;
-  }
-  
-  // Also try Chart.js registry
-  if (typeof Chart !== "undefined" && Chart.getChart) {
-      const regChart = Chart.getChart(canvas);
-      if (regChart) {
-          try { regChart.destroy(); } catch(e) {}
-      }
-  }
-
-  if (typeof Chart === "undefined") {
-    if (window.UILogger) window.UILogger.warn("Chart.js not loaded");
-    return;
-  }
-  if (!isCanvasReady(canvas)) {
-    if (window.UILogger) window.UILogger.debug("quotaChart canvas not ready, skipping update");
-    return;
-  }
-
-  // Use UNFILTERED data for global health chart
+window.DashboardCharts.updateQuotaSummary = function (component) {
+  // Use UNFILTERED data for global health
   const rows = Alpine.store("data").getUnfilteredQuotaData();
-  if (!rows || rows.length === 0) return;
+  if (!rows || rows.length === 0) {
+    component.stats.overallHealth = 0;
+    component.familyQuota = [];
+    return;
+  }
 
-  const healthByFamily = {};
+  const accounts = Alpine.store("data").accounts || [];
+  const byFamily = {};
   let totalHealthSum = 0;
   let totalModelCount = 0;
 
   rows.forEach((row) => {
-    const family = row.family || "unknown";
-    if (!healthByFamily[family]) {
-      healthByFamily[family] = { total: 0, weighted: 0 };
-    }
-
-    // Calculate average health from quotaInfo (each entry has { pct }).
-    // Null pct = unknown quota: excluded from the average so unknowns
-    // never drag health down with a false 0%.
     const quotaInfo = row.quotaInfo || [];
-    let avgHealth = 0;
-
+    // Null pct = unknown quota: excluded from averages so unknowns never
+    // drag health down with a false 0%.
     const known = quotaInfo.filter((q) => q && q.pct !== null && q.pct !== undefined);
-    if (known.length > 0) {
-      avgHealth = known.reduce((sum, q) => sum + q.pct, 0) / known.length;
-    } else if (quotaInfo.length > 0) {
-      return; // all-unknown row: exclude from health aggregates entirely
-    }
-    // If quotaInfo is empty, avgHealth remains 0 (depleted/unknown)
+    if (quotaInfo.length > 0 && known.length === 0) return; // all-unknown row
 
-    healthByFamily[family].total++;
-    healthByFamily[family].weighted += avgHealth;
+    // No account reports this model (empty quotaInfo): counts as 0%.
+    const avgHealth = known.length > 0
+      ? known.reduce((sum, q) => sum + q.pct, 0) / known.length
+      : 0;
     totalHealthSum += avgHealth;
     totalModelCount++;
+
+    if (known.length === 0) return;
+    const family = row.family || "unknown";
+    if (!byFamily[family]) {
+      byFamily[family] = { sum: 0, n: 0, resetAt: null };
+    }
+    const agg = byFamily[family];
+    agg.sum += avgHealth;
+    agg.n++;
+
+    // Next reset: earliest resetTime among this model's windows that are not full.
+    accounts.forEach((acc) => {
+      if (acc.enabled === false) return;
+      const limit = acc.limits?.[row.modelId];
+      if (!limit || !limit.resetTime) return;
+      if (limit.remainingFraction === null || limit.remainingFraction === undefined) return;
+      if (limit.remainingFraction >= 1) return;
+      if (!agg.resetAt || new Date(limit.resetTime) < new Date(agg.resetAt)) {
+        agg.resetAt = limit.resetTime;
+      }
+    });
   });
 
-  // Update overall health for dashboard display
   component.stats.overallHealth = totalModelCount > 0
     ? Math.round(totalHealthSum / totalModelCount)
     : 0;
 
-  // Quota gauge segments: active quota uses the trace hue per family
-  // (claude/gemini distinguishable), depleted quota fades the same hue out.
-  const familyColors = {
-    claude: TRACE_COLOR(),
-    gemini: getThemeColor("--color-neon-purple") || "#8fb8dc",
-    unknown: getThemeColor("--color-text-tertiary") || "#9fb4c9",
-  };
-
-  const data = [];
-  const colors = [];
-  const labels = [];
-
-  const totalFamilies = Object.keys(healthByFamily).length;
-  const segmentSize = 100 / totalFamilies;
-
-  Object.entries(healthByFamily).forEach(([family, { total, weighted }]) => {
-    const health = weighted / total;
-    const activeVal = (health / 100) * segmentSize;
-    const inactiveVal = segmentSize - activeVal;
-
-    const familyColor = familyColors[family] || familyColors["unknown"];
-
-    // Get translation keys
-    const store = Alpine.store("global");
-    const familyKey =
-      "family" + family.charAt(0).toUpperCase() + family.slice(1);
-    const familyName = store.t(familyKey);
-
-    // Labels using translations if possible
-    const activeLabel =
-      family === "claude"
-        ? store.t("claudeActive")
-        : family === "gemini"
-        ? store.t("geminiActive")
-        : `${familyName} ${store.t("activeSuffix")}`;
-
-    const depletedLabel =
-      family === "claude"
-        ? store.t("claudeEmpty")
-        : family === "gemini"
-        ? store.t("geminiEmpty")
-        : `${familyName} ${store.t("depleted")}`;
-
-    // Active segment
-    data.push(activeVal);
-    colors.push(familyColor);
-    labels.push(activeLabel);
-
-    // Inactive segment
-    data.push(inactiveVal);
-    // Depleted quota fades the family hue almost into the sheet ground.
-    colors.push(window.DashboardCharts.hexToRgba(familyColor, 0.25));
-    labels.push(depletedLabel);
-  });
-
-  // Create Chart
-  try {
-    const newChart = new Chart(canvas, {
-       // ... config
-       type: "doughnut",
-       data: {
-         labels: labels,
-         datasets: [
-           {
-             data: data,
-             backgroundColor: colors,
-             borderColor: getThemeColor("--color-space-950"),
-             borderWidth: 0,
-             hoverOffset: 0,
-             borderRadius: 0,
-           },
-         ],
-       },
-       options: {
-         responsive: true,
-         maintainAspectRatio: false,
-         cutout: "85%",
-         rotation: -90,
-         circumference: 360,
-         plugins: {
-           legend: { display: false },
-           tooltip: { enabled: false },
-           title: { display: false },
-         },
-         animation: {
-           // Disable animation for quota chart to prevent "double refresh" visual glitch
-           duration: 0
-         },
-       },
-    });
-    
-    // SAVE INSTANCE TO CANVAS AND COMPONENT
-    canvas._chartInstance = newChart;
-    component.charts.quotaDistribution = newChart;
-    
-  } catch (e) {
-    console.error("Failed to create quota chart:", e);
-  }
+  component.familyQuota = Object.entries(byFamily)
+    .map(([family, agg]) => ({
+      family,
+      pct: Math.round(agg.sum / agg.n),
+      resetAt: agg.resetAt,
+    }))
+    .sort((a, b) => a.pct - b.pct);
 };
 
 /**
@@ -488,7 +325,6 @@ window.DashboardCharts.updateTrendChart = function (component) {
           label,
           dataByFamily[family],
           TRACE_COLOR(),
-          canvas,
           FAMILY_DASH[family] || FAMILY_DASH.other
         )
       );
@@ -530,13 +366,14 @@ window.DashboardCharts.updateTrendChart = function (component) {
             model,
             dataByModel[key],
             color,
-            canvas
+            FAMILY_DASH[family] || FAMILY_DASH.other
           )
         );
       });
     });
   }
 
+  const theme = chartTheme();
   try {
     const newChart = new Chart(canvas, {
       type: "line",
@@ -554,14 +391,16 @@ window.DashboardCharts.updateTrendChart = function (component) {
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor:
-              getThemeColor("--color-space-950") || "rgba(24, 24, 27, 0.9)",
-            titleColor: getThemeColor("--color-text-main"),
-            bodyColor: getThemeColor("--color-text-bright"),
-            borderColor: getThemeColor("--color-space-border"),
+            backgroundColor: theme.panel,
+            titleColor: theme.ink,
+            bodyColor: theme.ink2,
+            borderColor: theme.ink,
             borderWidth: 1,
+            cornerRadius: 0,
             padding: 10,
             displayColors: true,
+            titleFont: { family: theme.font, size: 11, weight: "600" },
+            bodyFont: { family: theme.font, size: 11 },
             callbacks: {
               label: function (context) {
                 return context.dataset.label + ": " + context.parsed.y;
@@ -574,22 +413,17 @@ window.DashboardCharts.updateTrendChart = function (component) {
             display: true,
             grid: { display: false },
             ticks: {
-              color: getThemeColor("--color-text-muted"),
-              font: { size: 10 },
+              color: theme.tick,
+              font: { family: theme.font, size: 10 },
             },
           },
           y: {
             display: true,
             beginAtZero: true,
-            grid: {
-              display: true,
-              color:
-                getThemeColor("--color-space-border") + "1a" ||
-                "rgba(255,255,255,0.05)",
-            },
+            grid: { display: true, color: theme.grid },
             ticks: {
-              color: getThemeColor("--color-text-muted"),
-              font: { size: 10 },
+              color: theme.tick,
+              font: { family: theme.font, size: 10 },
             },
           },
         },

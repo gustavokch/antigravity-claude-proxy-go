@@ -53,12 +53,12 @@ window.Components.classifierAuditFeed = () => ({
     },
     statusClass(status) {
         switch (status) {
-            case 'rerouted': return 'text-green-400 border-green-400/40 bg-green-400/10';
-            case 'stubbed': return 'text-yellow-400 border-yellow-400/40 bg-yellow-400/10';
+            case 'rerouted': return 'tag-ok';
+            case 'stubbed': return 'tag-caution';
             // A deliberate hand-off to the teacher, not a failure.
-            case 'escalated': return 'text-blue-400 border-blue-500/20 bg-blue-500/10';
-            case 'error': return 'text-red-400 border-red-400/40 bg-red-400/10';
-            default: return 'text-gray-400 border-gray-400/40 bg-gray-400/10';
+            case 'escalated': return 'tag-muted';
+            case 'error': return 'tag-danger';
+            default: return 'tag-muted';
         }
     }
 });
