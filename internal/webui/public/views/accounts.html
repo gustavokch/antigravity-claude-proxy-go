@@ -453,8 +453,8 @@
                                                   x-text="$store.global.t(ccStatus(acc).key)"></span>
                                         </div>
                                         <p class="acc-reason t-caution"
-                                           x-show="acc.cooldownUntil"
-                                           x-text="$store.global.t('accCooldownIn', { time: acc.cooldownUntil ? window.utils.formatTimeUntil(acc.cooldownUntil) : '' })"></p>
+                                           x-show="window.QuotaView.inCooldown(acc.cooldownUntil)"
+                                           x-text="$store.global.t('accCooldownIn', { time: window.QuotaView.inCooldown(acc.cooldownUntil) ? window.utils.formatTimeUntil(acc.cooldownUntil) : '' })"></p>
                                     </div>
                                 </td>
 

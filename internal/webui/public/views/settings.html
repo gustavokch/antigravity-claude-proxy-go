@@ -1461,8 +1461,8 @@
                                                     </td>
                                                     <td class="mono t-2" x-text="acc.maskedToken || (acc.hasToken ? '••••••••' : '—')"></td>
                                                     <td>
-                                                        <span class="tag tag-caution" x-show="acc.cooldownUntil" x-text="$store.global.t('ccHealthCooldown') || 'cooldown'">cooldown</span>
-                                                        <span class="tag tag-ok" x-show="!acc.cooldownUntil" x-text="$store.global.t('ccHealthOk') || 'ok'">ok</span>
+                                                        <span class="tag tag-caution" x-show="window.QuotaView.inCooldown(acc.cooldownUntil)" x-text="$store.global.t('ccHealthCooldown') || 'cooldown'">cooldown</span>
+                                                        <span class="tag tag-ok" x-show="!window.QuotaView.inCooldown(acc.cooldownUntil)" x-text="$store.global.t('ccHealthOk') || 'ok'">ok</span>
                                                     </td>
                                                     <td class="setm-col-actions">
                                                         <div class="setm-actions">

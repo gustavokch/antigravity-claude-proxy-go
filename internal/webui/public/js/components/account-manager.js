@@ -64,6 +64,14 @@ window.QuotaView = (() => {
         return FAMILY_LABEL[family] || family;
     }
 
+    // True only while a cooldown time lies ahead. The pool serialises a Go
+    // zero time ("0001-01-01T00:00:00Z") for an account that never cooled
+    // down, and keeps an expired time after the cooldown ends.
+    function inCooldown(cooldownUntil, now = Date.now()) {
+        const until = Date.parse(cooldownUntil);
+        return Number.isFinite(until) && until > now;
+    }
+
     // Signal Box level for a remaining percent. 'off' when unknown, 'danger'
     // when exhausted (the circuit fills red), 'caution' under 20%, else 'clear'.
     function remainingLevel(percent) {
@@ -242,7 +250,7 @@ window.QuotaView = (() => {
     }
 
     return {
-        splitPoolId, poolPercent, sortedPools, poolFamilyLabel,
+        splitPoolId, poolPercent, sortedPools, poolFamilyLabel, inCooldown,
         remainingLevel, usedLevel, toneClass, usedTextClass,
         burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
         reportRows, reportPeriod, usageURL, historySince, escapeHTML, poolLabel, poolSourceLabel,
@@ -326,7 +334,7 @@ window.Components.accountManager = () => ({
     // Enabled Claude Code accounts and how many are not in cooldown.
     get ccSummary() {
         const enabled = this.allCCAccounts.filter(acc => acc.enabled !== false);
-        return { enabled: enabled.length, ready: enabled.filter(acc => !acc.cooldownUntil).length };
+        return { enabled: enabled.length, ready: enabled.filter(acc => !window.QuotaView.inCooldown(acc.cooldownUntil)).length };
     },
 
 
@@ -672,7 +680,7 @@ window.Components.accountManager = () => ({
         if (acc.enabled === false) {
             return { lamp: 'off', tone: 't-3', key: 'accStatusDisabled' };
         }
-        if (acc.cooldownUntil) {
+        if (window.QuotaView.inCooldown(acc.cooldownUntil)) {
             return { lamp: 'caution', tone: 't-caution', key: 'cooldown' };
         }
         return { lamp: 'clear', tone: 't-2', key: 'accStatusReady' };

@@ -261,6 +261,25 @@ async function historyDisabled() {
     assert.equal(c.historyRows('acct-1').length, 1);
 }
 
+// The pool serialises a Go zero time.Time ("0001-01-01T00:00:00Z") for an
+// account that never cooled down; only a future time is a cooldown.
+function cooldown() {
+    const now = Date.parse('2026-10-19T12:00:00Z');
+    assert.equal(qv.inCooldown('0001-01-01T00:00:00Z', now), false);
+    assert.equal(qv.inCooldown('2026-10-19T11:59:00Z', now), false, 'expired');
+    assert.equal(qv.inCooldown('2026-10-19T12:05:00Z', now), true);
+    assert.equal(qv.inCooldown(undefined, now), false);
+    assert.equal(qv.inCooldown('not a time', now), false);
+
+    const { component: c } = loadComponent('account-manager.js', 'accountManager');
+    const never = { id: 'a', enabled: true, cooldownUntil: '0001-01-01T00:00:00Z' };
+    const cooling = { id: 'b', enabled: true, cooldownUntil: new Date(Date.now() + 60_000).toISOString() };
+    assert.equal(c.ccStatus(never).key, 'accStatusReady');
+    assert.equal(c.ccStatus(cooling).key, 'cooldown');
+    c.ccAccounts = [never, cooling];
+    assert.deepEqual(local(c.ccSummary), { enabled: 2, ready: 1 });
+}
+
 const cases = [
     ['pools order 5h before weekly, grouped by family', poolOrder],
     ['pools tolerate missing and null fields', poolTolerance],
@@ -274,6 +293,7 @@ const cases = [
     ['usage history loads lazily per report', historyLoading],
     ['switching reports while one is loading loads both', historySwitchWhileLoading],
     ['usage tracking disabled is shown and not cached', historyDisabled],
+    ['zero or past Claude Code cooldown time is no cooldown', cooldown],
 ];
 
 for (const [name, fn] of cases) {
