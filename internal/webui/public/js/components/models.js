@@ -980,7 +980,7 @@ window.Components.models = () => ({
                 id: m.id,
                 displayName: m.id,
                 usable: true,
-                selected: true
+                selected: false
             }));
             const unusable = (data.other || []).map(m => ({
                 id: m.id,
@@ -1005,6 +1005,11 @@ window.Components.models = () => ({
 
     importZenDiscovered() {
         const picked = this.zenDiscovered.filter(m => m.selected && m.usable);
+        const dialog = document.getElementById('zen_discover_modal');
+        if (picked.length === 0) {
+            if (dialog) dialog.close();
+            return;
+        }
         const imported = new Set(picked.map(p => p.id));
         this.zenUnverified = (this.zenUnverified || []).filter(v => !imported.has(v));
         const existing = new Set(this.zenConfig.allowlist.map(m => m.id));
@@ -1023,7 +1028,6 @@ window.Components.models = () => ({
             }
         });
         this.saveZenConfig();
-        const dialog = document.getElementById('zen_discover_modal');
         if (dialog) dialog.close();
     },
 
