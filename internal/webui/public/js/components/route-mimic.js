@@ -158,6 +158,7 @@ window.Components.routeMimic = () => ({
     open(id) {
         const global = this.$store.global;
         if (id === 'cloudcode' || id === 'claudecode') {
+            global.accountsTab = id === 'claudecode' ? 'claudecode' : 'google';
             global.activeTab = 'accounts';
             return;
         }

@@ -268,7 +268,10 @@ window.QuotaView = (() => {
 })();
 
 window.Components.accountManager = () => ({
-    accountTab: 'google', // 'google' | 'claudecode'
+    // The tab lives in the global store so the route diagram can open the
+    // Claude Code tab directly.
+    get accountTab() { return Alpine.store('global').accountsTab; }, // 'google' | 'claudecode'
+    set accountTab(tab) { Alpine.store('global').accountsTab = tab; },
     searchQuery: '',
     deleteTarget: '',
     exporting: false,

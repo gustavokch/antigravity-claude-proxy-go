@@ -46,9 +46,22 @@ function partlyExhaustedAccountIsCaution() {
     assert.equal(cc.aspect, 'caution', 'one of two accounts ready');
 }
 
+function signalsOpenTheMatchingAccountsTab() {
+    const c = loadMimic({ accounts: [] });
+    c.open('claudecode');
+    assert.equal(c.$store.global.activeTab, 'accounts');
+    assert.equal(c.$store.global.accountsTab, 'claudecode');
+    c.open('cloudcode');
+    assert.equal(c.$store.global.accountsTab, 'google');
+    c.open('zen');
+    assert.equal(c.$store.global.activeTab, 'settings');
+    assert.equal(c.$store.global.settingsTab, 'models');
+}
+
 const cases = [
     ['an account with every pool exhausted is not ready', exhaustedAccountIsNotReady],
     ['an account with one pool exhausted is caution', partlyExhaustedAccountIsCaution],
+    ['gateway signals open the matching accounts tab', signalsOpenTheMatchingAccountsTab],
 ];
 for (const [name, fn] of cases) {
     await fn();
