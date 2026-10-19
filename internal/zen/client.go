@@ -47,8 +47,8 @@ var AnthropicWireIDs = []string{
 	"claude-sonnet-5",
 	"claude-sonnet-4-6",
 	"claude-sonnet-4-5",
-	"claude-sonnet-4",
 	"claude-haiku-4-5",
+	"claude-haiku-5-5",
 	"qwen3.8-flash",
 	"qwen3.6-plus",
 	"qwen3.5-plus",
@@ -56,7 +56,7 @@ var AnthropicWireIDs = []string{
 
 // ChatWireIDs is the static allowlist of Zen catalog ids that speak the
 // OpenAI /v1/chat/completions wire format (docs endpoint table, cross-checked
-// against the live catalog 2026-09-24). Requests to these ids are translated
+// against the live catalog 2026-10-18). Requests to these ids are translated
 // Anthropic→Chat Completions and the response back. Everything not in any of
 // the three lists (gemini-* → Gemini-native; jev-* → /v1/systemone) is not
 // forwardable.
@@ -64,7 +64,6 @@ var ChatWireIDs = []string{
 	"deepseek-v4.1-flash",
 	"deepseek-v4-pro",
 	"deepseek-v4-flash",
-	"deepseek-v4-flash-vision-exp",
 	"minimax-m3",
 	"minimax-m2.7",
 	"minimax-m2.5",
@@ -80,16 +79,20 @@ var ChatWireIDs = []string{
 	"big-pickle",
 	"space-bunny-free",
 	"mimo-v2.6-flash-free",
-	"mimo-v2.5-free",
-	"ling-3.0-flash-fin-free",
-	"nemotron-3-ultra-free",
+	"nemotron-3.5-super-vl-free",
+	"beam-free",
+	"longcat-2.5-preview-free",
+	"deepseek-v4.1-flash-free",
+	"glm-5.3-flash-free",
+	"qwen3.8-max",
+	"mistral-large-4",
 	"nemotron-3.5-lightning-free",
 }
 
 // ResponsesWireIDs is the static allowlist of Zen catalog ids that speak the
 // OpenAI /v1/responses wire format (docs endpoint table, cross-checked against
-// the live catalog 2026-09-30 by catalog_responses_drift_test.go, which also
-// records the one gpt-/grok-/muse- catalog id left unclaimed on purpose).
+// the live catalog 2026-10-18 by catalog_drift_test.go, which also records
+// every catalog id left unrouted on purpose).
 // Requests to these ids are translated Anthropic↔Responses by
 // internal/zen/responseswire.go. Everything not in any list (gemini-* →
 // Gemini-native; jev-* → /v1/systemone) is not forwardable.
@@ -124,7 +127,6 @@ var ResponsesWireIDs = []string{
 	"grok-build-0.1",
 	"muse-spark-1.3",
 	"muse-spark-1.2",
-	"muse-spark-1.3-contributor-free",
 }
 
 type wireEntry struct {
@@ -134,16 +136,28 @@ type wireEntry struct {
 
 var wireSet map[string]wireEntry
 
+// wireLists is the registration table init() keys into wireSet. The drift
+// tests walk the same table, so a new list is checked as soon as it routes.
+var wireLists = []struct {
+	name string
+	ids  []string
+	wire Wire
+}{
+	{"AnthropicWireIDs", AnthropicWireIDs, WireAnthropic},
+	{"ChatWireIDs", ChatWireIDs, WireChat},
+	{"ResponsesWireIDs", ResponsesWireIDs, WireResponses},
+}
+
 func init() {
-	wireSet = make(map[string]wireEntry, len(AnthropicWireIDs)+len(ChatWireIDs)+len(ResponsesWireIDs))
-	for _, id := range AnthropicWireIDs {
-		wireSet[strings.ToLower(id)] = wireEntry{id, WireAnthropic}
+	size := 0
+	for _, list := range wireLists {
+		size += len(list.ids)
 	}
-	for _, id := range ChatWireIDs {
-		wireSet[strings.ToLower(id)] = wireEntry{id, WireChat}
-	}
-	for _, id := range ResponsesWireIDs {
-		wireSet[strings.ToLower(id)] = wireEntry{id, WireResponses}
+	wireSet = make(map[string]wireEntry, size)
+	for _, list := range wireLists {
+		for _, id := range list.ids {
+			wireSet[strings.ToLower(id)] = wireEntry{id, list.wire}
+		}
 	}
 }
 

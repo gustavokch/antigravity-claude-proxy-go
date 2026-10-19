@@ -1359,7 +1359,7 @@ func TestZenHarnessEnabledAbsentIsNil(t *testing.T) {
 }
 
 // The default model must match the id Zen's catalog publishes
-// (internal/zen/testdata/catalog-2026-09-30.json carries it). An unset model
+// (internal/zen/testdata/catalog-2026-10-18.json carries it). An unset model
 // on a jev backend has to name a Jev model, not laya-serve's "english"
 // checkpoint, which Zen would reject.
 func TestLayaSettingsDefaultModelFollowsFormat(t *testing.T) {

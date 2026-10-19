@@ -296,6 +296,10 @@ window.Components.dashboard = () => ({
         return window.DashboardFilters.getFamilyColor(family);
     },
 
+    getFamilyDashStyle(family) {
+        return window.DashboardFilters.getFamilyDashStyle(family);
+    },
+
     getModelColor(family, modelIndex) {
         return window.DashboardFilters.getModelColor(family, modelIndex);
     },
