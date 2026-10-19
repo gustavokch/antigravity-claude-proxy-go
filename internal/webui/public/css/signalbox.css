@@ -1137,6 +1137,7 @@ samp,
 .btn:focus-visible {
   outline: 2px solid var(--sb-focus);
   outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--sb-ink);
 }
 .btn svg {
   width: 16px;
@@ -1609,6 +1610,11 @@ samp,
 .sb-switch:focus-visible {
   outline: 2px solid var(--sb-focus);
   outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--sb-ink) !important;
+}
+:root[data-sb-theme="night"] .toggle:focus-visible,
+:root[data-sb-theme="night"] .sb-switch:focus-visible {
+  box-shadow: 0 0 0 4px var(--sb-sunk) !important;
 }
 .toggle-sm,
 .toggle-xs {
