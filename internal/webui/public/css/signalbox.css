@@ -2498,12 +2498,15 @@ pre.codeblock {
     flex-wrap: wrap;
     gap: var(--sb-s2) var(--sb-s3);
     padding: var(--sb-s2) var(--sb-s3);
-    border-bottom: 1px solid var(--sb-rule);
+    border-bottom: 1.5px solid var(--sb-ink);
   }
   .mdl-table thead th {
     display: block;
     padding: 0;
     border: 0;
+  }
+  .mdl-table thead th:not([aria-sort]) {
+    display: none;
   }
   .mdl-table tbody tr {
     display: grid;

@@ -999,7 +999,7 @@ window.translations.en = {
     accDeleteTitle: "Delete account",
     accDeleteWarning: "This action cannot be undone. All configuration and historical records will be permanently deleted.",
     accExportTitle: "Export accounts",
-    accExportWarning: "The file contains each account's refresh token in plain text. Anyone with the file can use these accounts. Store it like a password and delete it after import.",
+    accExportWarning: "The file contains each account's refresh token or API key in plain text. Anyone with the file can use these accounts. Store it like a password and delete it after import.",
     accExportConfirm: "Export file",
     accThresholdHelp: "Set a minimum quota level for this account. When the account's quota falls below this threshold, the proxy will switch to another account with more quota remaining.",
     accMinQuota: "Minimum Quota",

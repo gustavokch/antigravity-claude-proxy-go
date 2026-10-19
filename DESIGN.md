@@ -298,7 +298,7 @@ Spacing scale (`--sb-s1` to `--sb-s7`): 4, 8, 12, 16, 24, 32, 48px. Button heigh
 - At or below 640px: modals take the viewport width less 16px; `.view-full` padding 16px by 12px; the dashboard quota row becomes two columns; the trend chart is 180px tall.
 - At or below 520px: log lines stack the timestamp into a 4.75rem column.
 - Column visibility: secondary table columns (`.acc-second`, `.mdl-second`, `.setm-md-up`, `.set-cloud-wide`) show only at 768px and up. Settings controls take fixed widths at 720px and up (range 240px, select 220px) and the settings grid goes to two columns.
-- Tables always sit inside `.table-wrap`, which scrolls sideways. Table headers stick to the top of the scroll area.
+- Below 768px the Accounts tables (`.acc-table`) hide their header and stack each row (toggle and name on line one; quota, status and actions on full lines). The Models table (`.mdl-table`) stacks rows (model and quota on full lines; status and actions share the last line) and shows its header as a wrapping row of sort buttons, with the inert Status and Actions headers hidden. Other tables scroll sideways inside `.table-wrap`, the containing block for `sr-only` labels. Headers stick to the top of the scroll area.
 
 Grid helpers in `signalbox.css`: `.stack` (16px), `.stack-sm` (8px), `.stack-lg` (32px), `.cluster` (wrapping row, 8px), `.cluster-lg` (16px), `.split`, `.grid-2`, `.grid-3`, `.grid-auto` (minimum column 260px), `.rule`, `.grow`.
 
@@ -428,7 +428,7 @@ Each component below is a short character line followed by its shape, colour ass
 ### Tables
 - **Shape:** `.table-wrap` (horizontal scroll) around `.sb-table` (13px, tabular numerals). Headers are Label style with a 1.5px Engraved Ink underline and sticky top. Rows are divided by Hairline. Hover tints the row with Sunk Enamel at 55%.
 - **Numeric cells:** `.num` is right aligned with tabular numerals.
-- **Row states:** `tr.is-blocked` washes the cells with Danger Wash at 70%. `tr.is-off` sets Label Ink text and dims its track to 55% opacity.
+- **Row states:** `tr.is-blocked` washes the cells with Danger Wash at 70%. On phones, where rows stack, the wash sits on the row, not the cells. `tr.is-off` sets Label Ink text and dims its track to 55% opacity.
 - **Columns:** the columns shown are the ones the operator's decision needs. Secondary columns hide below 768px.
 
 ### Dialogs

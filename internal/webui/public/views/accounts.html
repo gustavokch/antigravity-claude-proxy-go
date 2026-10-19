@@ -183,7 +183,7 @@
                                            @change="toggleAccount(acc.email, $el.checked)">
                                 </td>
 
-                                <td class="acc-name-cell">
+                                <td>
                                     <span class="mono acc-email"
                                           :title="Redact.email(acc.email)"
                                           x-text="formatEmail(Redact.email(acc.email))"></span>
@@ -374,7 +374,7 @@
                                            @change="toggleCCAccount(acc)">
                                 </td>
 
-                                <td class="acc-name-cell">
+                                <td>
                                     <div class="t-strong" x-text="acc.name || acc.id"></div>
                                     <div class="mono t-3 acc-id" x-text="'(' + acc.id + ')'"></div>
                                 </td>
@@ -679,7 +679,7 @@
                 <div class="notice notice-caution">
                     <span class="lamp lamp-caution" aria-hidden="true"></span>
                     <div>
-                        <p x-text="$store.global.t('accExportWarning')">The file contains each account's refresh token in plain text.</p>
+                        <p x-text="$store.global.t('accExportWarning')">The file contains each account's refresh token or API key in plain text. Anyone with the file can use these accounts. Store it like a password and delete it after import.</p>
                     </div>
                 </div>
             </div>

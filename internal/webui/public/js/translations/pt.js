@@ -942,7 +942,7 @@ window.translations.pt = {
     accDeleteTitle: "Excluir conta",
     accDeleteWarning: "Esta ação não pode ser desfeita. Toda a configuração e os registros históricos serão excluídos permanentemente.",
     accExportTitle: "Exportar contas",
-    accExportWarning: "O arquivo contém o token de atualização de cada conta em texto simples. Qualquer pessoa com o arquivo pode usar essas contas. Guarde-o como uma senha e exclua-o após a importação.",
+    accExportWarning: "O arquivo contém o token de atualização ou a chave de API de cada conta em texto simples. Qualquer pessoa com o arquivo pode usar essas contas. Guarde-o como uma senha e exclua-o após a importação.",
     accExportConfirm: "Exportar arquivo",
     accThresholdHelp: "Defina um nível mínimo de quota para esta conta. Quando a quota da conta cair abaixo deste limite, o proxy passará para outra conta com mais quota disponível.",
     accMinQuota: "Quota mínima",
