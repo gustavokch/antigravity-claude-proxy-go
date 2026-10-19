@@ -2730,6 +2730,12 @@ pre.codeblock {
   .acc-table tbody tr:last-child {
     border-bottom: 0;
   }
+  .acc-table tbody tr.is-blocked {
+    background: color-mix(in srgb, var(--sb-danger-wash) 70%, transparent);
+  }
+  .acc-table tbody tr.is-blocked > td {
+    background: none;
+  }
   .acc-table tbody td {
     display: block;
     min-width: 0;
