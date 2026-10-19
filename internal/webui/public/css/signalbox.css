@@ -2142,9 +2142,20 @@ pre.codeblock {
 @media (max-width: 1100px) {
   :root { --sb-frame-w: 72px; }
   .sb-brand-text,
-  .lever-label,
   .lever-handle,
   .sb-frame-foot-text { display: none; }
+  /* The view name stays the lever's accessible name; only its box goes. */
+  .sb-frame .lever-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
   .sb-brand { justify-content: center; padding: 0; }
   .lever { justify-content: center; padding: 0; }
   .lever-lamp { position: absolute; top: 8px; right: 12px; }
