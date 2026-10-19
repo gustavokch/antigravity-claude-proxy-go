@@ -2370,7 +2370,9 @@ pre.codeblock {
 .dash-check > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .dash-check-nested { padding-left: var(--sb-s5); }
 
-/* Clear-stats confirm: the shared .modal is a scrim, not a positioned box. */
+/* Clear-stats confirm: a positioned scrim of its own. It must not carry
+   daisyUI .modal, which stays opacity:0 / pointer-events:none without
+   [open] or .modal-open. */
 .dash-confirm {
   position: fixed;
   inset: 0;
@@ -2378,6 +2380,7 @@ pre.codeblock {
   display: grid;
   place-items: center;
   padding: var(--sb-s4);
+  background: var(--sb-scrim);
 }
 .dash-confirm .modal-box { width: min(32rem, 100%); }
 

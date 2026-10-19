@@ -456,7 +456,7 @@
 
     <!-- Clear stats confirm dialog -->
     <div x-cloak x-show="clearConfirm.open" x-transition.opacity.duration.150ms
-        class="modal dash-confirm" @keydown.escape.window="cancelClear()">
+        class="dash-confirm" @keydown.escape.window="cancelClear()">
         <div class="modal-box" role="alertdialog" aria-modal="true" :aria-label="clearConfirm.title"
             @keydown.tab.prevent="
                 const btns = Array.from($el.querySelectorAll('button'));
