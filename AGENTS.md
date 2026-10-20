@@ -43,8 +43,9 @@ Code through it, and never hand-build a hello: recapture the real client's.
   (agy 1.2.10 parity; thought signatures are tied to the issuing host, so there
   is no cross-host fallback); metadata and provisioning go to
   `cloudcode-pa.googleapis.com` and then daily.
-- Local port: the binary defaults to **8080** (`127.0.0.1:8080`; `make install`
-  restarts `~/.local/bin/antigravity-proxy --port 8080`). The Linux systemd unit
+- Local port: the binary defaults to **8080** (`127.0.0.1:8080`). `make install`
+  restarts a running `~/.local/bin/antigravity-proxy` with the flags it was
+  started with, so its port does not change. The Linux systemd unit
   `antigravity-go-proxy.service` sets **8091** via `ANTIGRAVITY_PROXY_LISTEN`.
   Before a live check, find the live port:
   `for p in 8080 8091; do curl -s -o /dev/null -w "$p %{http_code}\n" 127.0.0.1:$p/health; done`.
