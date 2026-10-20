@@ -42,7 +42,7 @@ func TestBindAllowed(t *testing.T) {
 		hasPassword bool
 		want        bool
 	}{
-		{"127.0.0.1:8091", false, true}, // the documented default
+		{defaultListen, false, true}, // the default listen address
 		{"localhost:8091", false, true},
 		{"[::1]:8091", false, true},
 		{":8091", false, false}, // every interface, no credential
