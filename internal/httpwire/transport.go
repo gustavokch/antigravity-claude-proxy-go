@@ -526,6 +526,14 @@ func (b *respBody) setCloser(fn func()) {
 // end, which is the only case where the connection is safe to reuse.
 func (b *respBody) finish(complete bool) {
 	b.once.Do(func() {
+		if !complete {
+			// The rest of the body may never come. Closing src would read it out
+			// to keep the connection, under the lock a blocked Read holds, so the
+			// connection goes first: a blocked Read fails, and the drain ends at
+			// once.
+			b.stop()
+			_ = b.c.Close()
+		}
 		b.mu.Lock()
 		closeDec := b.closeDec
 		b.mu.Unlock()
@@ -547,6 +555,11 @@ func (b *respBody) finish(complete bool) {
 		_ = b.c.Close()
 	})
 }
+
+// zstdMaxWindow is the largest window a zstd response may ask the decoder to
+// hold. RFC 9659 caps the HTTP content coding at 8 MiB; the library's own limit
+// is 512 MiB, which a few bytes of frame header could make it allocate.
+const zstdMaxWindow = 8 << 20
 
 // decoder wraps src for the response's Content-Encoding and edits the response to
 // say so, as net/http does when it decompresses. An encoding it does not know is
@@ -572,7 +585,7 @@ func (b *respBody) decoder(resp *http.Response) io.Reader {
 		open = func(r io.Reader) (io.Reader, func(), error) { return brotli.NewReader(r), nil, nil }
 	case "zstd":
 		open = func(r io.Reader) (io.Reader, func(), error) {
-			z, err := zstd.NewReader(r, zstd.WithDecoderConcurrency(1))
+			z, err := zstd.NewReader(r, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(zstdMaxWindow))
 			if err != nil {
 				return nil, nil, err
 			}

@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1051,5 +1052,117 @@ func TestIdleTLSConnectionWithUnreadTicketsIsKept(t *testing.T) {
 	}
 	if got := sessions.puts.Load(); got == 0 {
 		t.Error("the check never read the connection, so it could not have noticed anything")
+	}
+}
+
+// stallFor is how long stalledStream stays quiet, well beyond what any test here
+// waits for.
+const stallFor = 2 * time.Second
+
+// stalledStream serves one chunk of a chunked body, stays quiet for stallFor, and
+// then ends the body, like an upstream that stopped mid-stream. It returns the
+// base URL.
+func stalledStream(t *testing.T) string {
+	t.Helper()
+	return scripted(t, func(_ int, c net.Conn) {
+		_, _ = readRequest(bufio.NewReader(c))
+		_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n"))
+		time.Sleep(stallFor)
+		_, _ = c.Write([]byte("0\r\n\r\n"))
+	})
+}
+
+// A caller that stops reading (a size cap, a watchdog) closes the body without
+// cancelling the request. net/http's own body would read the rest of the stream
+// first to keep the connection, and Close would wait for an upstream that has
+// stopped talking.
+func TestCloseBeforeTheEndDoesNotWaitForTheStream(t *testing.T) {
+	base := stalledStream(t)
+	tr := &Transport{Stack: fetchLike()}
+	resp, err := (&http.Client{Transport: tr}).Get(base + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make([]byte, 5)
+	if _, err := io.ReadFull(resp.Body, first); err != nil || string(first) != "hello" {
+		t.Fatalf("first chunk = %q, %v", first, err)
+	}
+
+	start := time.Now()
+	_ = resp.Body.Close()
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Errorf("Close took %v on a stalled stream", elapsed)
+	}
+	tr.mu.Lock()
+	idle := len(tr.idle)
+	tr.mu.Unlock()
+	if idle != 0 {
+		t.Error("a half-read connection went back to the pool")
+	}
+}
+
+// Close from another goroutine is how a watchdog ends a read that has stopped
+// making progress.
+func TestConcurrentCloseUnblocksARead(t *testing.T) {
+	base := stalledStream(t)
+	resp, err := (&http.Client{Transport: &Transport{Stack: fetchLike()}}).Get(base + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make([]byte, 5)
+	if _, err := io.ReadFull(resp.Body, first); err != nil {
+		t.Fatal(err)
+	}
+
+	read := make(chan error, 1)
+	go func() { _, err := resp.Body.Read(make([]byte, 1)); read <- err }()
+	time.Sleep(50 * time.Millisecond) // the read is blocked on the stalled stream
+
+	closed := make(chan struct{})
+	go func() { _ = resp.Body.Close(); close(closed) }()
+	select {
+	case err := <-read:
+		if err == nil {
+			t.Error("the blocked read returned data after Close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not unblock the read")
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close itself never returned")
+	}
+}
+
+// A zstd frame says how much window the decoder must hold, and the library's
+// default ceiling is 512 MiB, so a handful of bytes from a misbehaving endpoint
+// could take that much memory per stream. RFC 9659 caps the window of the HTTP
+// coding at 8 MiB.
+func TestZstdWindowIsBounded(t *testing.T) {
+	// magic, frame header (window descriptor follows), window descriptor for 2^29
+	// bytes, one raw block of one byte: "a".
+	frame := []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 19 << 3, 0x09, 0x00, 0x00, 'a'}
+	s := newServer(t, func(int, string) []byte {
+		return append([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Encoding: zstd\r\nContent-Length: %d\r\n\r\n", len(frame))), frame...)
+	})
+	tr := &Transport{Stack: fetchLike()}
+	req, _ := http.NewRequest(http.MethodGet, s.url("/"), nil)
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	runtime.ReadMemStats(&after)
+
+	if err == nil {
+		t.Errorf("a frame declaring a 512 MiB window decoded to %q", body)
+	}
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > 16<<20 {
+		t.Errorf("decoding the frame allocated %d MiB", grown>>20)
 	}
 }
