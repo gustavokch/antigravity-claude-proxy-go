@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -138,6 +139,7 @@ func (server *Server) tryClaudeCodeGateway(g *gatewayRequest) bool {
 // without HTML escaping.
 func claudeCodeGatewayBody(g *gatewayRequest, model string, derivedLimit int) ([]byte, error) {
 	maxTokens, setMaxTokens := maxTokensValue(g.body, 0, derivedLimit)
+	setDisplay := thinkingNeedsDisplay(g.body)
 	if !g.mutated {
 		quotedModel, err := ccidentity.MarshalJS(model)
 		if err != nil {
@@ -147,14 +149,72 @@ func claudeCodeGatewayBody(g *gatewayRequest, model string, derivedLimit int) ([
 		if setMaxTokens {
 			members = append(members, ccidentity.ObjectMember{Name: "max_tokens", Value: strconv.AppendInt(nil, int64(maxTokens), 10)})
 		}
+		if setDisplay {
+			thinking, err := rawThinking(g.rawBody)
+			if err != nil {
+				return nil, err
+			}
+			members = append(members, ccidentity.ObjectMember{Name: "thinking", Value: withSummarizedDisplay(thinking)})
+		}
 		return ccidentity.SetObjectMembers(g.rawBody, members...)
 	}
 	body := g.body
-	if setMaxTokens {
+	if setMaxTokens || setDisplay {
 		body = maps.Clone(g.body)
+	}
+	if setMaxTokens {
 		body["max_tokens"] = maxTokens
 	}
+	if setDisplay {
+		thinking := maps.Clone(g.body["thinking"].(map[string]any))
+		thinking["display"] = displaySummarized
+		body["thinking"] = thinking
+	}
 	return ccidentity.MarshalJS(body)
+}
+
+// displaySummarized is the thinking.display value Claude Code always sends.
+const displaySummarized = "summarized"
+
+// thinkingNeedsDisplay reports whether the request turns thinking on and names
+// no display. Newer Claude models read a missing display as "omitted", which
+// returns thinking_delta events with empty text, so the gateway names the value
+// Claude Code itself sends. An explicit display, and a disabled thinking
+// object, are left as the client wrote them.
+func thinkingNeedsDisplay(body map[string]any) bool {
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, named := thinking["display"]; named {
+		return false
+	}
+	return thinking["type"] != "disabled"
+}
+
+// rawThinking returns the client's own bytes of the top-level thinking object.
+func rawThinking(rawBody []byte) ([]byte, error) {
+	var top struct {
+		Thinking json.RawMessage `json:"thinking"`
+	}
+	if err := json.Unmarshal(rawBody, &top); err != nil {
+		return nil, err
+	}
+	return top.Thinking, nil
+}
+
+// withSummarizedDisplay returns the JSON object raw with display "summarized"
+// added as its last member. raw must be an object, so its final byte is '}'.
+// Every other byte is kept.
+func withSummarizedDisplay(raw []byte) []byte {
+	head := raw[:len(raw)-1]
+	out := make([]byte, 0, len(raw)+len(`,"display":"summarized"`))
+	out = append(out, head...)
+	if len(bytes.TrimSpace(head[1:])) > 0 {
+		out = append(out, ',')
+	}
+	out = append(out, `"display":"`+displaySummarized+`"}`...)
+	return out
 }
 
 func (server *Server) tryOpenRouterGateway(g *gatewayRequest) bool {

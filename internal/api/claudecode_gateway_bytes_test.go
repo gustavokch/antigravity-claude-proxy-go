@@ -1,9 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -206,5 +208,52 @@ func TestClaudeCodeGatewayMutatedBodyIsNotHTMLEscaped(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Newer Claude models treat a missing thinking.display as "omitted": every
+// thinking_delta then carries no text, only estimated_tokens. Claude Code
+// itself always names a display, so a request that turns thinking on without
+// one gets "summarized", written after the client's own members. A display
+// the client chose, and a request without thinking on, reach the upstream as
+// sent.
+func TestClaudeCodeGatewayDefaultsThinkingDisplayToSummarized(t *testing.T) {
+	cases := []struct {
+		name, thinking, want string
+	}{
+		{"adaptive without display", `{"type":"adaptive"}`, `{"type":"adaptive","display":"summarized"}`},
+		{"enabled without display", `{"type":"enabled","budget_tokens":2048}`, `{"type":"enabled","budget_tokens":2048,"display":"summarized"}`},
+		{"an explicit omitted is kept", `{"type":"adaptive","display":"omitted"}`, `{"type":"adaptive","display":"omitted"}`},
+		{"disabled is left alone", `{"type":"disabled"}`, `{"type":"disabled"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := `{"model":"` + gatewayBytesClientModel + `","max_tokens":1024,"thinking":` + tc.thinking + `,` + gatewayBytesMessages + `}`
+			want := `{"model":"` + gatewayBytesMatchedModel + `","max_tokens":1024,"thinking":` + tc.want + `,` + gatewayBytesMessages + `}`
+			if got := sendToGateway(t, gatewayBytesAPIKeyToken, nil, client); got != want {
+				t.Errorf("client bytes path:\n got: %s\nwant: %s", got, want)
+			}
+			// An OAuth account is normalised; its thinking value stays the
+			// client's own bytes, compacted.
+			if got := sendToGateway(t, gatewayBytesOAuthToken, nil, client); !strings.Contains(got, `"thinking":`+tc.want) {
+				t.Errorf("oauth path: thinking is not %s: %s", tc.want, got)
+			}
+
+			mapping := map[string]any{"mapped-by-proxy": gatewayBytesClientModel}
+			mutated := `{"model":"mapped-by-proxy","max_tokens":1024,"thinking":` + tc.thinking + `,` + gatewayBytesMessages + `}`
+			var sent struct{ Thinking map[string]any }
+			if err := json.Unmarshal([]byte(sendToGateway(t, gatewayBytesAPIKeyToken, mapping, mutated)), &sent); err != nil {
+				t.Fatal(err)
+			}
+			var wantThinking map[string]any
+			_ = json.Unmarshal([]byte(tc.want), &wantThinking)
+			if !reflect.DeepEqual(sent.Thinking, wantThinking) {
+				t.Errorf("mutated body path: thinking = %v, want %v", sent.Thinking, wantThinking)
+			}
+		})
+	}
+
+	if got := sendToGateway(t, gatewayBytesAPIKeyToken, nil, `{"model":"`+gatewayBytesClientModel+`","max_tokens":1024,`+gatewayBytesMessages+`}`); strings.Contains(got, "thinking") {
+		t.Errorf("a request without thinking gained one: %s", got)
 	}
 }
