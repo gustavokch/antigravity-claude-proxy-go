@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/cachebump"
+	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
@@ -218,7 +219,7 @@ func (server *Server) sendClaudeCodeBump(ctx context.Context, rec cachebump.Reco
 	identity, normalize := config.Get().ClaudeCode.Identity.WireIdentity(acc.AccountUUID, rec.SessionID)
 	var replyScope string
 	if normalize {
-		replyScope = ccReplyScope(acc.ID, rec.SessionID)
+		replyScope = ccReplyScope(acc.ID, rec.SessionID, ccidentity.TurnOf(rec.Body))
 	}
 	resp, err := client.SendMessage(ctx, claudecode.MessageRequest{
 		Token:         acc.Token,

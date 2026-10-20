@@ -70,6 +70,21 @@ func followUp(reply string) []byte {
 		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01A","content":"a.go"}]}]}`)
 }
 
+// firstRequest is the request streamedReply answers; followUp continues it.
+var firstRequest = []byte(`{"messages":[{"role":"user","content":"list the files"}]}`)
+
+// scopeOf is the scope a caller computes for the request with this body.
+func scopeOf(upstream, session string, body []byte) string {
+	return ReplyScope(upstream, session, TurnOf(body))
+}
+
+// prevOf is what a caller asks the log for the request with this body: the id
+// of the request that produced the reply its latest assistant message echoes.
+func prevOf(log *ReplyLog, upstream, session string, body []byte) string {
+	turn := TurnOf(body)
+	return log.PrevRequestID(ReplyScope(upstream, session, turn), turn)
+}
+
 // readThrough reads a reply through Watch one byte at a time, so every event is
 // split across reads, and returns the bytes the caller received.
 func readThrough(t *testing.T, log *ReplyLog, scope, requestID, stream string) string {
@@ -87,7 +102,7 @@ func readThrough(t *testing.T, log *ReplyLog, scope, requestID, stream string) s
 // call to go by.
 func TestReplyLog_FollowUpNamesTheStreamedReplyItEchoes(t *testing.T) {
 	log := NewReplyLog()
-	scope := ReplyScope("claudecode:acc", "session-1")
+	scope := scopeOf("claudecode:acc", "session-1", firstRequest)
 	if got := readThrough(t, log, scope, "req_011Stream", streamedReply); got != streamedReply {
 		t.Fatal("Watch changed the bytes of the stream it watched")
 	}
@@ -99,26 +114,26 @@ func TestReplyLog_FollowUpNamesTheStreamedReplyItEchoes(t *testing.T) {
 		{"its text", `[` + echoedText + `]`},
 		{"its tool call", `[` + rewrittenText + `,` + echoedToolUse + `]`},
 	} {
-		turn := TurnOf(followUp(tc.reply))
-		if got := log.PrevRequestID(scope, turn); got != "req_011Stream" {
+		if got := prevOf(log, "claudecode:acc", "session-1", followUp(tc.reply)); got != "req_011Stream" {
 			t.Errorf("%s: PrevRequestID = %q, want req_011Stream", tc.name, got)
 		}
 	}
-	if got := log.PrevRequestID(scope, TurnOf(followUp(`[`+rewrittenText+`]`))); got != "" {
+	if got := prevOf(log, "claudecode:acc", "session-1", followUp(`[`+rewrittenText+`]`)); got != "" {
 		t.Errorf("a reply that shares no block with the stream was named %q", got)
 	}
 }
 
 func TestReplyLog_FollowUpNamesTheUnaryReplyItEchoes(t *testing.T) {
 	log := NewReplyLog()
-	scope := ReplyScope("endpoint:https://api.anthropic.com", "session-1")
-	log.RecordMessage(scope, "req_011Unary", []byte(`{"id":"msg_01","type":"message","role":"assistant",`+
+	const upstream = "endpoint:https://api.anthropic.com"
+	first := []byte(`{"messages":[{"role":"user","content":"how many files?"}]}`)
+	log.RecordMessage(scopeOf(upstream, "session-1", first), "req_011Unary", []byte(`{"id":"msg_01","type":"message","role":"assistant",`+
 		`"content":[{"type":"text","text":"Two files."}],"stop_reason":"end_turn"}`))
 
 	// A text-only reply, echoed with string content, then a new prompt.
 	body := []byte(`{"messages":[{"role":"user","content":"how many files?"},` +
 		`{"role":"assistant","content":"Two files."},{"role":"user","content":"and tests?"}]}`)
-	if got := log.PrevRequestID(scope, TurnOf(body)); got != "req_011Unary" {
+	if got := prevOf(log, upstream, "session-1", body); got != "req_011Unary" {
 		t.Errorf("PrevRequestID = %q, want req_011Unary", got)
 	}
 }
@@ -128,43 +143,77 @@ func TestReplyLog_FollowUpNamesTheUnaryReplyItEchoes(t *testing.T) {
 // this request, so nothing is named.
 func TestReplyLog_UnknownLatestReplyNamesNothing(t *testing.T) {
 	log := NewReplyLog()
-	scope := ReplyScope("claudecode:acc", "session-1")
-	readThrough(t, log, scope, "req_011Stream", streamedReply)
+	readThrough(t, log, scopeOf("claudecode:acc", "session-1", firstRequest), "req_011Stream", streamedReply)
 
 	body := []byte(`{"messages":[{"role":"user","content":"list the files"},` +
 		`{"role":"assistant","content":[` + echoedText + `,` + echoedToolUse + `]},` +
 		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01A","content":"a.go"}]},` +
 		`{"role":"assistant","content":[{"type":"text","text":"a reply the log never saw"}]},` +
 		`{"role":"user","content":"thanks"}]}`)
-	if got := log.PrevRequestID(scope, TurnOf(body)); got != "" {
+	if got := prevOf(log, "claudecode:acc", "session-1", body); got != "" {
 		t.Errorf("PrevRequestID = %q, want none: the latest reply is unknown", got)
 	}
-	if got := log.PrevRequestID(scope, TurnOf([]byte(`{"messages":[{"role":"user","content":"hi"}]}`))); got != "" {
+	if got := prevOf(log, "claudecode:acc", "session-1", firstRequest); got != "" {
 		t.Errorf("a conversation's first request named %q", got)
 	}
 }
 
 func TestReplyLog_ScopeSeparatesAccountsAndSessions(t *testing.T) {
 	log := NewReplyLog()
-	readThrough(t, log, ReplyScope("claudecode:acc-a", "session-1"), "req_011Stream", streamedReply)
-	turn := TurnOf(followUp(`[` + echoedToolUse + `]`))
+	readThrough(t, log, scopeOf("claudecode:acc-a", "session-1", firstRequest), "req_011Stream", streamedReply)
+	body := followUp(`[` + echoedToolUse + `]`)
 
-	if got := log.PrevRequestID(ReplyScope("claudecode:acc-b", "session-1"), turn); got != "" {
+	if got := prevOf(log, "claudecode:acc-a", "session-1", body); got != "req_011Stream" {
+		t.Fatalf("the account and session that recorded the reply got %q, want req_011Stream", got)
+	}
+	if got := prevOf(log, "claudecode:acc-b", "session-1", body); got != "" {
 		t.Errorf("account b was given account a's request id %q", got)
 	}
-	if got := log.PrevRequestID(ReplyScope("claudecode:acc-a", "session-2"), turn); got != "" {
+	if got := prevOf(log, "claudecode:acc-a", "session-2", body); got != "" {
 		t.Errorf("session 2 was given session 1's request id %q", got)
 	}
 	for _, key := range []string{"", "  "} {
-		if scope := ReplyScope("claudecode:acc-a", key); scope != "" {
+		if scope := scopeOf("claudecode:acc-a", key, firstRequest); scope != "" {
 			t.Errorf("ReplyScope with session key %q = %q; an unkeyed request has no conversation to link", key, scope)
+		}
+	}
+}
+
+// Claude Code keeps one session id for its main thread, its subagents and its
+// side queries, so the session alone cannot tell two conversations apart. Two of
+// them often end on the same words, such as "Done.", and each one's next request
+// has to name its own reply. A client that rewrites its first prompt (it
+// compacts or trims its history) names no request: a miss is all the log risks,
+// and it never names another conversation's request.
+func TestReplyLog_ConversationsOfOneSessionStayApart(t *testing.T) {
+	const upstream, session = "claudecode:acc", "session-1"
+	log := NewReplyLog()
+	reply := []byte(`{"content":[{"type":"text","text":"Done."}]}`)
+	opening := func(prompt string) []byte {
+		return []byte(`{"messages":[{"role":"user","content":"` + prompt + `"}]}`)
+	}
+	continued := func(prompt string) []byte {
+		return []byte(`{"messages":[{"role":"user","content":"` + prompt + `"},` +
+			`{"role":"assistant","content":[{"type":"text","text":"Done."}]},{"role":"user","content":"and then?"}]}`)
+	}
+
+	log.RecordMessage(scopeOf(upstream, session, opening("main task")), "req_main", reply)
+	log.RecordMessage(scopeOf(upstream, session, opening("subagent task")), "req_sub", reply)
+
+	for _, tc := range []struct{ name, prompt, want string }{
+		{"the main conversation", "main task", "req_main"},
+		{"the subagent", "subagent task", "req_sub"},
+		{"a conversation whose first prompt changed", "main task, trimmed", ""},
+	} {
+		if got := prevOf(log, upstream, session, continued(tc.prompt)); got != tc.want {
+			t.Errorf("%s: PrevRequestID = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }
 
 func TestReplyLog_DropsTheOldestKeyWhenFull(t *testing.T) {
 	log := newReplyLog(2)
-	scope := ReplyScope("claudecode:acc", "session-1")
+	scope := scopeOf("claudecode:acc", "session-1", firstRequest)
 	for _, reply := range []struct{ id, text string }{
 		{"req_1", "one"}, {"req_2", "two"}, {"req_3", "three"},
 	} {
@@ -172,7 +221,7 @@ func TestReplyLog_DropsTheOldestKeyWhenFull(t *testing.T) {
 	}
 
 	for text, want := range map[string]string{"one": "", "two": "req_2", "three": "req_3"} {
-		if got := log.PrevRequestID(scope, TurnOf(followUp(`"`+text+`"`))); got != want {
+		if got := prevOf(log, "claudecode:acc", "session-1", followUp(`"`+text+`"`)); got != want {
 			t.Errorf("reply %q: PrevRequestID = %q, want %q", text, got, want)
 		}
 	}
@@ -182,13 +231,13 @@ func TestReplyLog_DropsTheOldestKeyWhenFull(t *testing.T) {
 // the billing line, so a value outside the client's own guard is never kept.
 func TestReplyLog_RefusesRequestIDsTheClientWouldNotSend(t *testing.T) {
 	log := NewReplyLog()
-	scope := ReplyScope("claudecode:acc", "session-1")
+	scope := scopeOf("claudecode:acc", "session-1", firstRequest)
 	bad := "req_011; cc_turn_index=9"
 	readThrough(t, log, scope, bad, streamedReply)
 	log.RecordMessage(scope, bad, []byte(`{"content":[{"type":"text","text":"Two files."}]}`))
 
 	for _, reply := range []string{`[` + echoedToolUse + `]`, `"Two files."`} {
-		if got := log.PrevRequestID(scope, TurnOf(followUp(reply))); got != "" {
+		if got := prevOf(log, "claudecode:acc", "session-1", followUp(reply)); got != "" {
 			t.Errorf("reply %s: PrevRequestID = %q, want none", reply, got)
 		}
 	}

@@ -88,6 +88,11 @@ type Turn struct {
 	// firstPrompt is the first text the conversation's first prompt carries,
 	// which seeds the cc_version suffix; see versionSuffix.
 	firstPrompt string
+	// firstDigest identifies the conversation's first prompt message the way
+	// promptDigest identifies the latest one. It stays the same for every
+	// request of a conversation, so ReplyScope uses it to tell conversations
+	// apart. Empty when the body holds no prompt.
+	firstDigest string
 	// latestReply is the content of the latest assistant message, which
 	// ReplyLog.PrevRequestID looks up.
 	latestReply json.RawMessage

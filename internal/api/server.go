@@ -1365,7 +1365,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	var replyScope string
 	if normalize {
 		turn = ccidentity.TurnOf(reqBody)
-		replyScope = ccidentity.ReplyScope("endpoint:"+endpoint.URL, customSessionKey)
+		replyScope = ccidentity.ReplyScope("endpoint:"+endpoint.URL, customSessionKey, turn)
 		turn.PrevRequestID = server.ccReplies.PrevRequestID(replyScope, turn)
 		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, turn)
 		if err != nil {

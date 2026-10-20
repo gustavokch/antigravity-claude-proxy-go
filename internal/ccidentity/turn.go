@@ -41,8 +41,9 @@ const systemReminderPrefix = "<system-reminder>"
 // reports the parse failure itself.
 //
 // TurnOf also keeps the content of the latest assistant message, the reply a
-// ReplyLog maps to the request id sent as cc_prev_req, and the first text of the
-// first prompt, which the cc_version suffix hashes.
+// ReplyLog maps to the request id sent as cc_prev_req, the first text of the
+// first prompt, which the cc_version suffix hashes, and a digest of the whole
+// first prompt, which names the conversation to ReplyScope.
 func TurnOf(body []byte) Turn {
 	var parsed struct {
 		Messages []struct {
@@ -55,7 +56,7 @@ func TurnOf(body []byte) Turn {
 	}
 
 	prompts := 0
-	var latest, reply json.RawMessage
+	var latest, firstContent, reply json.RawMessage
 	var first string
 	for _, message := range parsed.Messages {
 		switch {
@@ -68,6 +69,7 @@ func TurnOf(body []byte) Turn {
 			}
 			if prompts == 0 {
 				first = text
+				firstContent = message.Content
 			}
 			prompts++
 			latest = message.Content
@@ -76,7 +78,12 @@ func TurnOf(body []byte) Turn {
 	if prompts == 0 {
 		return Turn{PromptNumber: 1, latestReply: reply}
 	}
-	return Turn{PromptNumber: prompts, promptDigest: digestPrompt(latest), firstPrompt: first, latestReply: reply}
+	turn := Turn{PromptNumber: prompts, promptDigest: digestPrompt(latest), firstPrompt: first, latestReply: reply}
+	turn.firstDigest = turn.promptDigest
+	if prompts > 1 {
+		turn.firstDigest = digestPrompt(firstContent)
+	}
+	return turn
 }
 
 // digestPrompt hashes a prompt message's content in a form that does not change

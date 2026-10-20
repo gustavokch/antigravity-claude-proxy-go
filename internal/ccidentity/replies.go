@@ -47,9 +47,11 @@ const (
 // each text block. When a later request's latest assistant message holds one of
 // those, the log knows the reply and the request that produced it.
 //
-// Keys are scoped by upstream credential and client session (see ReplyScope).
-// The credential keeps one account from being sent another account's request
-// id; the session keeps two conversations that say the same text apart.
+// Keys are scoped by upstream credential, client session and conversation (see
+// ReplyScope). The credential keeps one account from being sent another
+// account's request id. The conversation keeps a session's main thread,
+// subagents and side queries apart, which matters most when two of them end on
+// the same words and the text is all a client echoes.
 //
 // The log is bounded and drops its oldest key first. A reply it dropped or never
 // saw (the proxy restarted, another account served it) sends no cc_prev_req.
@@ -73,18 +75,29 @@ func newReplyLog(capacity int) *ReplyLog {
 	return &ReplyLog{ids: make(map[replyKey]string), capacity: capacity}
 }
 
-// ReplyScope names the space a reply's keys live in: one upstream credential and
-// one client session. upstream names the credential and must not collide across
-// kinds of upstream.
+// ReplyScope names the space a reply's keys live in: one upstream credential,
+// one client session and one conversation. upstream names the credential and
+// must not collide across kinds of upstream. turn is the Turn of the request
+// the keys belong to, whether that request produced the reply or echoes it:
+// both carry the conversation's first prompt.
 //
-// A request without a session key gets an empty scope, which records and finds
-// nothing. Such a request is sent under a fresh random session (NewSessionKey),
-// so it is the first request of its session, and that names no previous request.
-func ReplyScope(upstream, sessionKey string) string {
-	if strings.TrimSpace(sessionKey) == "" {
+// A session holds several conversations. Claude Code keeps one session id for
+// its main thread, its subagents and its side queries, and each of them sends
+// its own messages. The first prompt tells them apart, and a conversation keeps
+// its first prompt for as long as it lasts. A client that rewrites it (it
+// compacts or trims its history) moves into a new scope, so its next request
+// names no previous request: a miss, as after a restart, and never another
+// conversation's request.
+//
+// A request without a session key, or whose body holds no prompt, gets an empty
+// scope, which records and finds nothing. A request without a session key is
+// sent under a fresh random session (NewSessionKey), so it is the first request
+// of its session, and that names no previous request.
+func ReplyScope(upstream, sessionKey string, turn Turn) string {
+	if strings.TrimSpace(sessionKey) == "" || turn.firstDigest == "" {
 		return ""
 	}
-	return upstream + "\x00" + sessionKey
+	return upstream + "\x00" + sessionKey + "\x00" + turn.firstDigest
 }
 
 // PrevRequestID returns the upstream request id of the reply that the turn's

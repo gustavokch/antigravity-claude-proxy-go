@@ -260,9 +260,10 @@ type ccAttempt struct {
 
 // ccReplyScope is the ReplyLog scope of a normalized pooled request. It names
 // the account as well as the session, so a conversation that fails over never
-// sends one account a request id another account issued.
-func ccReplyScope(accountID, sessionKey string) string {
-	return ccidentity.ReplyScope("claudecode:"+accountID, sessionKey)
+// sends one account a request id another account issued, and the conversation
+// through turn, so a session's subagent never names the main thread's reply.
+func ccReplyScope(accountID, sessionKey string, turn ccidentity.Turn) string {
+	return ccidentity.ReplyScope("claudecode:"+accountID, sessionKey, turn)
 }
 
 // recordClaudeCodeMetrics is the single place a completed Claude Code call
@@ -423,7 +424,7 @@ func (server *Server) forwardToClaudeCode(
 		identity, normalize := ccCfg.Identity.WireIdentity(acc.AccountUUID, sessionKey)
 		var replyScope string
 		if normalize {
-			replyScope = ccReplyScope(acc.ID, sessionKey)
+			replyScope = ccReplyScope(acc.ID, sessionKey, ccidentity.TurnOf(reqBody))
 		}
 		resp, err := client.SendMessage(request.Context(), claudecode.MessageRequest{
 			Token:         acc.Token,
