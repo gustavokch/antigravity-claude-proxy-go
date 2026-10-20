@@ -7,13 +7,18 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -692,5 +697,359 @@ func TestExpectIsNeverSent(t *testing.T) {
 	send(t, tr, http.MethodPost, s.url("/v1/messages"), "{}", http.Header{"Expect": {"100-continue"}})
 	if raw := s.requests()[0]; strings.Contains(strings.ToLower(raw), "expect") {
 		t.Errorf("Expect reached the wire:\n%s", raw)
+	}
+}
+
+// scripted is a TCP server whose connections are handled by the test: handle
+// owns each connection (n counts them from 0) and the server closes it when
+// handle returns. It returns the base URL.
+func scripted(t *testing.T, handle func(n int, c net.Conn)) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for n := 0; ; n++ {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				handle(n, c)
+			}()
+		}
+	}()
+	return "http://" + ln.Addr().String()
+}
+
+// A request whose bytes were all written may have been processed. /v1/messages
+// is billed per request, so sending it again because the response was cut off
+// would charge the account twice; net/http never does it either.
+func TestWrittenPOSTIsNotSentAgain(t *testing.T) {
+	var posts atomic.Int32
+	base := scripted(t, func(_ int, c net.Conn) {
+		br := bufio.NewReader(c)
+		for {
+			raw, err := readRequest(br)
+			if err != nil {
+				return
+			}
+			if strings.HasPrefix(raw, "POST") && posts.Add(1) == 2 {
+				// The second POST is read in full and processed; then the
+				// connection dies in the middle of the response head.
+				_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nRequest-Id: req_1\r\n"))
+				return
+			}
+			_, _ = c.Write(ok("fine"))
+		}
+	})
+	tr := &Transport{Stack: fetchLike()}
+	send(t, tr, http.MethodPost, base+"/v1/messages", "{}", nil)
+
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/messages", strings.NewReader("{}"))
+	if resp, err := tr.RoundTrip(req); err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("a response cut off in its head produced status %d", resp.StatusCode)
+	}
+	if got := posts.Load(); got != 2 {
+		t.Errorf("the server received %d POSTs for 2 requests", got)
+	}
+}
+
+// On a reused connection that dies without a first response byte, only a method
+// that is safe to repeat goes out again, on a new connection. The server here
+// reads the request in full and hangs up, so for a POST the work may have been
+// done.
+func TestReplayFollowsTheMethod(t *testing.T) {
+	for _, tc := range []struct {
+		method   string
+		replayed bool
+	}{
+		{http.MethodGet, true}, {http.MethodHead, true}, {http.MethodOptions, true},
+		{http.MethodPost, false}, {http.MethodPut, false}, {http.MethodPatch, false}, {http.MethodDelete, false},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			var received atomic.Int32
+			base := scripted(t, func(n int, c net.Conn) {
+				br := bufio.NewReader(c)
+				for {
+					raw, err := readRequest(br)
+					if err != nil {
+						return
+					}
+					if received.Add(1) == 2 {
+						return // read in full, never answered
+					}
+					if strings.HasPrefix(raw, "HEAD") {
+						_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n"))
+						continue
+					}
+					_, _ = c.Write(ok("fine"))
+				}
+			})
+			tr := &Transport{Stack: fetchLike()}
+			get(t, tr, base+"/", nil) // leaves a connection idle
+
+			req, _ := http.NewRequest(tc.method, base+"/", strings.NewReader("{}"))
+			resp, err := tr.RoundTrip(req)
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+			if tc.replayed {
+				if err != nil {
+					t.Fatalf("%s was not sent again: %v", tc.method, err)
+				}
+				if got := received.Load(); got != 3 {
+					t.Errorf("the server received %d requests, want 3", got)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("%s was sent again and got status %d", tc.method, resp.StatusCode)
+			}
+			if got := received.Load(); got != 2 {
+				t.Errorf("the server received %d requests, want 2: the %s was sent again", got, tc.method)
+			}
+		})
+	}
+}
+
+// brittleConn is a connection whose writes fail as if the peer had gone, without
+// putting a byte on the wire.
+type brittleConn struct {
+	net.Conn
+	broken atomic.Bool
+}
+
+func (c *brittleConn) Write(p []byte) (int, error) {
+	if c.broken.Load() {
+		return 0, syscall.EPIPE
+	}
+	return c.Conn.Write(p)
+}
+
+// A request that never got onto the wire cannot have been processed, whatever
+// its method, so it is sent again on a new connection.
+func TestFailedWriteIsSentAgain(t *testing.T) {
+	var posts atomic.Int32
+	base := scripted(t, func(_ int, c net.Conn) {
+		br := bufio.NewReader(c)
+		for {
+			raw, err := readRequest(br)
+			if err != nil {
+				return
+			}
+			if strings.HasPrefix(raw, "POST") {
+				posts.Add(1)
+			}
+			_, _ = c.Write(ok("fine"))
+		}
+	})
+	var (
+		mu    sync.Mutex
+		dials []*brittleConn
+	)
+	tr := &Transport{Stack: fetchLike(), Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		raw, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		c := &brittleConn{Conn: raw}
+		mu.Lock()
+		dials = append(dials, c)
+		mu.Unlock()
+		return c, nil
+	}}
+	if _, body := send(t, tr, http.MethodPost, base+"/v1/messages", "{}", nil); body != "fine" {
+		t.Fatalf("first body = %q", body)
+	}
+	mu.Lock()
+	dials[0].broken.Store(true)
+	mu.Unlock()
+	if _, body := send(t, tr, http.MethodPost, base+"/v1/messages", "{}", nil); body != "fine" {
+		t.Fatalf("second body = %q", body)
+	}
+	if got := posts.Load(); got != 2 {
+		t.Errorf("the server received %d POSTs for 2 requests", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dials) != 2 {
+		t.Errorf("dialed %d connections, want the broken one replaced by one new connection", len(dials))
+	}
+}
+
+// Servers close idle connections after seconds (uvicorn and Node: 5 s) while the
+// pool keeps them far longer. When several are dead, the one retry must not take
+// another dead one from the pool.
+func TestEveryDeadIdleConnectionIsPassedOver(t *testing.T) {
+	var accepted atomic.Int32
+	base := scripted(t, func(_ int, c net.Conn) {
+		accepted.Add(1)
+		br := bufio.NewReader(c)
+		for {
+			if _, err := readRequest(br); err != nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond) // keeps the first two requests concurrent
+			_, _ = c.Write(ok("fine"))
+			_ = c.SetReadDeadline(time.Now().Add(100 * time.Millisecond)) // the keep-alive timeout
+		}
+	})
+	tr := &Transport{Stack: fetchLike()}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() { defer wg.Done(); get(t, tr, base+"/", nil) }()
+	}
+	wg.Wait()
+	if got := accepted.Load(); got != 2 {
+		t.Fatalf("setup: %d connections for 2 concurrent requests, want 2", got)
+	}
+
+	time.Sleep(400 * time.Millisecond) // both are closed by now
+	if body := get(t, tr, base+"/", nil); body != "fine" {
+		t.Errorf("body = %q", body)
+	}
+	if got := accepted.Load(); got != 3 {
+		t.Errorf("connections = %d, want a third one for the request after the idle period", got)
+	}
+}
+
+// Some servers answer an idle connection before closing it (HAProxy's 408).
+// Those bytes belong to no request, and must not be read as the answer to the
+// next one.
+func TestBytesOnAnIdleConnectionAreNotTheNextResponse(t *testing.T) {
+	var received atomic.Int32
+	base := scripted(t, func(n int, c net.Conn) {
+		br := bufio.NewReader(c)
+		for {
+			if _, err := readRequest(br); err != nil {
+				return
+			}
+			received.Add(1)
+			_, _ = c.Write(ok(fmt.Sprintf("conn %d", n)))
+			if n == 0 {
+				time.Sleep(50 * time.Millisecond)
+				_, _ = c.Write([]byte("HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
+				return
+			}
+		}
+	})
+	tr := &Transport{Stack: fetchLike()}
+	if _, body := send(t, tr, http.MethodPost, base+"/v1/messages", "{}", nil); body != "conn 0" {
+		t.Fatalf("first body = %q", body)
+	}
+	time.Sleep(250 * time.Millisecond)
+	resp, body := send(t, tr, http.MethodPost, base+"/v1/messages", "{}", nil)
+	if resp.StatusCode != http.StatusOK || body != "conn 1" {
+		t.Errorf("second response: status %d body %q, want 200 \"conn 1\" from a new connection", resp.StatusCode, body)
+	}
+	if got := received.Load(); got != 2 {
+		t.Errorf("the server received %d requests, want 2", got)
+	}
+}
+
+// The liveness check reads from the connection, and TLS keeps a connection that
+// returns a timeout, so a live idle TLS connection is reused, not replaced.
+func TestLiveIdleTLSConnectionIsReused(t *testing.T) {
+	var accepted atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "fine")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			accepted.Add(1)
+		}
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	tr := &Transport{Stack: fetchLike(), DialTLS: tlsDialer(server)}
+	t.Cleanup(tr.CloseIdleConnections)
+	for range 3 {
+		if body := get(t, tr, server.URL+"/", nil); body != "fine" {
+			t.Fatalf("body = %q", body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := accepted.Load(); got != 1 {
+		t.Errorf("3 sequential requests used %d TLS connections, want 1", got)
+	}
+}
+
+func tlsDialer(server *httptest.Server) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return (&tls.Dialer{Config: &tls.Config{RootCAs: pool}}).DialContext(ctx, network, addr)
+	}
+}
+
+// putAndTake puts c in tr's idle pool as the connection for key and takes it
+// back out, which is where the transport decides whether it is still usable.
+func putAndTake(tr *Transport, c net.Conn, key string) *conn {
+	tr.putIdle(&conn{Conn: c, br: bufio.NewReader(c), key: key})
+	return tr.takeIdle(key)
+}
+
+// recordingSessions notes the tickets a TLS client accepts.
+type recordingSessions struct {
+	tls.ClientSessionCache
+	puts atomic.Int32
+}
+
+func (r *recordingSessions) Put(key string, cs *tls.ClientSessionState) {
+	r.puts.Add(1)
+	r.ClientSessionCache.Put(key, cs)
+}
+
+// A TLS 1.3 server sends session tickets after the handshake, and a client only
+// takes them in when it reads. A connection that idles with tickets unread is
+// alive: reading them is the liveness check's job, not a reason to drop it.
+func TestIdleTLSConnectionWithUnreadTicketsIsKept(t *testing.T) {
+	certs := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(certs.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(certs.Certificate())
+
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: certs.TLS.Certificates, MinVersion: tls.VersionTLS13})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	handshaken := make(chan struct{})
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		if c.(*tls.Conn).Handshake() != nil {
+			return
+		}
+		close(handshaken)
+		_, _ = io.Copy(io.Discard, c) // idle until the client leaves
+	}()
+
+	sessions := &recordingSessions{ClientSessionCache: tls.NewLRUClientSessionCache(4)}
+	raw, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", ClientSessionCache: sessions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	<-handshaken
+	if got := sessions.puts.Load(); got != 0 {
+		t.Fatalf("setup: the client had taken %d tickets before reading anything", got)
+	}
+
+	tr := &Transport{Stack: fetchLike()}
+	if putAndTake(tr, raw, "k") == nil {
+		t.Fatal("a live TLS connection was dropped as dead")
+	}
+	if got := sessions.puts.Load(); got == 0 {
+		t.Error("the check never read the connection, so it could not have noticed anything")
 	}
 }

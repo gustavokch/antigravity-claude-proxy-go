@@ -10,10 +10,16 @@
 //
 // It is deliberately small: HTTP/1.1 only, no redirects (http.Client follows
 // them), no request streaming, no Expect: 100-continue. A request body is
-// buffered and written with the headers, so a request that fails on a connection
-// the server had closed can be sent again. Interim 1xx responses are read and
+// buffered and written with the headers. Interim 1xx responses are read and
 // dropped, as net/http does; a 101 is returned as it is and its connection is
 // not reused.
+//
+// A pooled connection is checked before it is reused, and one the server has
+// closed or written to is dropped. A request that still fails on a reused
+// connection is sent again once, on a new connection, only if it never got onto
+// the wire or its method is GET, HEAD or OPTIONS and the response had not begun.
+// A POST that was written in full is never sent again: the server may have
+// processed it.
 package httpwire
 
 import (
@@ -133,11 +139,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	key := req.URL.Scheme + "://" + addr
 	ctx := req.Context()
 	for attempt := 0; ; attempt++ {
-		c, reused, err := t.conn(ctx, req.URL.Scheme, addr, key)
+		c, reused, err := t.conn(ctx, req.URL.Scheme, addr, key, attempt > 0)
 		if err != nil {
 			return nil, err
 		}
-		resp, err := t.roundTrip(ctx, c, req, body)
+		resp, replayable, err := t.roundTrip(ctx, c, req, body)
 		if err == nil {
 			return resp, nil
 		}
@@ -145,11 +151,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// A reused connection may have been closed by the server while it idled.
-		// That surfaces as a failed write or a response that never started, and
-		// the request has not been processed, so it is sent once more on a new
-		// connection.
-		if reused && attempt == 0 && isStale(err) {
+		// A connection the server closed while it idled can look alive until the
+		// request is on it. The request goes out once more, on a new connection
+		// (never another idle one: those may be as stale), and only when that is
+		// safe: see roundTrip.
+		if reused && replayable && attempt == 0 {
 			continue
 		}
 		return nil, err
@@ -191,8 +197,10 @@ func canonicalAddr(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), port)
 }
 
-func (t *Transport) conn(ctx context.Context, scheme, addr, key string) (*conn, bool, error) {
-	if t.Stack.KeepAlive {
+// conn returns a connection for addr: an idle one that is still usable, unless
+// fresh asks for a new one, else a dialed one. reused says which.
+func (t *Transport) conn(ctx context.Context, scheme, addr, key string, fresh bool) (*conn, bool, error) {
+	if t.Stack.KeepAlive && !fresh {
 		if c := t.takeIdle(key); c != nil {
 			return c, true, nil
 		}
@@ -215,7 +223,46 @@ func (t *Transport) conn(ctx context.Context, scheme, addr, key string) (*conn, 
 	return &conn{Conn: raw, br: bufio.NewReader(raw), key: key}, false, nil
 }
 
+// idleProbe is how long the liveness check waits for a sign of life from an idle
+// connection. A connection the server closed answers at once (EOF, reset); only a
+// live one waits it out, once per request that reuses a connection. It is not
+// zero because an expired deadline makes Read return a timeout without looking at
+// the socket, which would pass every dead connection.
+const idleProbe = 5 * time.Millisecond
+
+// usable reports whether an idle connection can carry a request: the server has
+// not closed it and has sent nothing on it. Bytes on an idle connection answer no
+// request (HAProxy writes a 408 before it closes one), and left unread they would
+// be taken for the answer to the next. The read goes through TLS, which handles
+// post-handshake messages such as session tickets itself and returns a timeout
+// when nothing is left for the application.
+func (c *conn) usable() bool {
+	if c.br.Buffered() > 0 {
+		return false
+	}
+	_ = c.SetReadDeadline(time.Now().Add(idleProbe))
+	_, err := c.br.Peek(1)
+	_ = c.SetReadDeadline(time.Time{})
+	var timeout interface{ Timeout() bool }
+	return errors.As(err, &timeout) && timeout.Timeout()
+}
+
+// takeIdle removes and returns an idle connection for key that is still usable.
+// The checks run outside the lock: each waits on the network.
 func (t *Transport) takeIdle(key string) *conn {
+	for {
+		c := t.popIdle(key)
+		if c == nil {
+			return nil
+		}
+		if c.usable() {
+			return c
+		}
+		_ = c.Close()
+	}
+}
+
+func (t *Transport) popIdle(key string) *conn {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	list := t.idle[key]
@@ -283,28 +330,53 @@ func (t *Transport) CloseIdleConnections() {
 	}
 }
 
+// isStale reports whether err says the peer closed the connection.
 func isStale(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, net.ErrClosed)
 }
 
-func (t *Transport) roundTrip(ctx context.Context, c *conn, req *http.Request, body []byte) (*http.Response, error) {
+// isIdempotent reports whether a method is safe to repeat: the ones net/http
+// replays without being told the request is idempotent.
+func isIdempotent(method string) bool {
+	switch method {
+	case "", http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
+}
+
+// roundTrip sends req on c and reads the response head. When it fails, replayable
+// says whether the request may be sent again on a new connection if c was a reused
+// one that the server had already closed, as net/http decides it:
+//
+//   - a request that could not be written reached nobody;
+//   - a response that failed before its first byte says nothing about whether the
+//     request was processed, so only a method that is safe to repeat goes again;
+//   - a response that had started is an answer, a broken one: never again. A POST
+//     to /v1/messages that went out in full is billed once, and not twice because
+//     the connection broke on the way back.
+func (t *Transport) roundTrip(ctx context.Context, c *conn, req *http.Request, body []byte) (*http.Response, bool, error) {
 	// Cancelling the request closes the connection, which fails a blocked read
 	// or write and, for a response whose body is still streaming, ends the body.
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 
 	if err := t.write(c, req, body); err != nil {
 		stop()
-		return nil, err
+		return nil, isStale(err), err
 	}
 	if t.ResponseHeaderTimeout > 0 {
 		_ = c.SetReadDeadline(time.Now().Add(t.ResponseHeaderTimeout))
 	}
+	if _, err := c.br.Peek(1); err != nil {
+		stop()
+		return nil, isStale(err) && isIdempotent(req.Method), err
+	}
 	resp, err := readFinalResponse(c.br, req)
 	if err != nil {
 		stop()
-		return nil, err
+		return nil, false, err
 	}
 	_ = c.SetReadDeadline(time.Time{})
 
@@ -317,13 +389,13 @@ func (t *Transport) roundTrip(ctx context.Context, c *conn, req *http.Request, b
 		} else {
 			_ = c.Close()
 		}
-		return resp, nil
+		return resp, false, nil
 	}
 
 	b := &respBody{t: t, c: c, stop: stop, src: resp.Body, reusable: reusable}
 	b.dec = b.decoder(resp)
 	resp.Body = b
-	return resp, nil
+	return resp, false, nil
 }
 
 // readFinalResponse reads responses until one that is not interim. A server may

@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -237,5 +239,41 @@ func TestClaudeCodeStacksAreDistinct(t *testing.T) {
 	fetch, node := shapeOf(t, claudeCodeFetchHello), shapeOf(t, claudeCodeNodeHello)
 	if slices.Equal(fetch.ciphers, node.ciphers) && slices.Equal(fetch.extensions, node.extensions) {
 		t.Error("the fetch and node captures have the same shape; one was recorded twice")
+	}
+}
+
+// Before an idle connection is reused the transport reads from it, to learn
+// whether the server closed it. A utls connection has to come through that read
+// as alive, or every request after the first would dial and handshake again.
+func TestClaudeCodeMessagesReusesALiveReplayedConnection(t *testing.T) {
+	var accepted atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "fine")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			accepted.Add(1)
+		}
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+	tr := ClaudeCodeMessages()
+	tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+	t.Cleanup(tr.CloseIdleConnections)
+
+	for range 3 {
+		resp, err := (&http.Client{Transport: tr}).Post(server.URL+"/v1/messages", "application/json", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := accepted.Load(); got != 1 {
+		t.Errorf("3 sequential requests used %d connections, want the first reused", got)
 	}
 }
