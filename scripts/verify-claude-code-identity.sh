@@ -35,6 +35,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="${REPO_ROOT}/.reference/claude-code-headers-20261020.jsonl"
+# The JA4 and JA3 each of Claude Code's two TLS stacks presents, recorded from
+# the real client by scripts/mitm_header_dump.py. The header capture above has no
+# TLS data, so the handshake is checked against this file.
+TLS_REFERENCE="${REPO_ROOT}/.reference/claude-code-tls-20261020.json"
 
 MITM_PORT="${ANTIGRAVITY_CC_IDENTITY_MITM_PORT:-18081}"
 PROXY_PORT="${ANTIGRAVITY_CC_IDENTITY_PROXY_PORT:-18099}"
@@ -297,6 +301,17 @@ if ! REPO_ROOT="${REPO_ROOT}" python3 "${REPO_ROOT}/scripts/diff_claude_code_ide
   fail "the proxy's wire identity has drifted from the committed baseline"
 fi
 
+# The pooled request must also come out of the TLS stack the real client sends
+# messages with. The differ above reads headers and body, which never show it.
+if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" normalized \
+  --baseline "${BASELINE}" \
+  --observed "${OBSERVED_POOLED}" \
+  --tls-reference "${TLS_REFERENCE}"; then
+  KEEP_WORK_DIR=1
+  echo "Observed capture kept at ${OBSERVED_POOLED}" >&2
+  fail "the pooled gateway did not present the real client's TLS handshake"
+fi
+
 # The caller's system prompt must still be there, after the marker.
 #
 # This assertion lives here rather than in the differ because it is about what THIS
@@ -346,6 +361,7 @@ snapshot_phase "${OBSERVED_CUSTOM_KEYLESS}" "the keyless custom endpoint"
 if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" normalized \
   --baseline "${BASELINE}" \
   --observed "${OBSERVED_CUSTOM_KEYLESS}" \
+  --tls-reference "${TLS_REFERENCE}" \
   --expect-turn-index 2; then
   KEEP_WORK_DIR=1
   echo "Observed capture kept at ${OBSERVED_CUSTOM_KEYLESS}" >&2
@@ -424,6 +440,7 @@ snapshot_phase "${OBSERVED_DISCOVERY}" "the discovery requests"
 if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" discovery \
   --baseline "${BASELINE}" \
   --observed "${OBSERVED_DISCOVERY}" \
+  --tls-reference "${TLS_REFERENCE}" \
   --min-records 3; then
   KEEP_WORK_DIR=1
   echo "ERROR: the capture records claude-code/<version> on every GET it observed," >&2
@@ -435,6 +452,7 @@ if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" discovery \
 fi
 
 echo "Claude Code identity gate PASSED: the wire identity matches ${BASELINE##*/},"
+echo "messages and discovery requests present the TLS handshake of the real client's fetch and node stacks,"
 echo "cch and the cc_version suffix are the hashes the real client derives,"
 echo "the caller's system prompt survived alongside the billing marker,"
 echo "a keyed custom endpoint kept its credential and was not normalized,"

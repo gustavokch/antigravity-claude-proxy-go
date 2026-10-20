@@ -298,22 +298,28 @@ func EnrichModel(id, displayName, createdAt string) DiscoveredModel {
 }
 
 // Client handles HTTP transport to official Anthropic API endpoints.
+//
+// It holds two HTTP clients because the real client has two TLS stacks:
+// messages go out the way fetch sends them and the account, settings and model
+// GETs the way node:https does; see transport.ClaudeCodeMessages.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL         string
+	httpClient      *http.Client
+	discoveryClient *http.Client
 }
 
-// ccTransport is shared by every default Claude Code client. Management routes
-// build a Client per request, and transport.UpstreamHTTP1 hands out a fresh pool
-// on each call, so the clone is cached here once.
-//
-// HTTP/1.1 because the real client uses it for every request it sends,
-// discovery GETs included, and a transport that offers h2 gets h2 from
-// api.anthropic.com.
-var ccTransport = transport.UpstreamHTTP1()
+// ccTransport and ccDiscoveryTransport are shared by every default Claude Code
+// client. Management routes build a Client per request, and the transport
+// constructors hand out a fresh pool on each call, so each is built here once.
+var (
+	ccTransport          = transport.ClaudeCodeMessages()
+	ccDiscoveryTransport = transport.ClaudeCodeDiscovery()
+)
 
-// NewClient creates a new Anthropic Claude Code client.
+// NewClient creates a new Anthropic Claude Code client. A non-nil httpClient
+// carries every request, discovery included; nil builds the two default ones.
 func NewClient(baseURL string, httpClient *http.Client) *Client {
+	discoveryClient := httpClient
 	if httpClient == nil {
 		// No total Client.Timeout: it covers the full body read and cuts a long
 		// SSE stream mid-generation, leaving the client with a stream that ends
@@ -321,10 +327,12 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 		// is what transport.Upstream sets; cancellation comes from the request
 		// context. Same shape as internal/cloudcode and the OpenRouter gateway.
 		httpClient = &http.Client{Transport: ccTransport}
+		discoveryClient = &http.Client{Transport: ccDiscoveryTransport}
 	}
 	return &Client{
-		baseURL:    NormalizeBaseURL(baseURL),
-		httpClient: httpClient,
+		baseURL:         NormalizeBaseURL(baseURL),
+		httpClient:      httpClient,
+		discoveryClient: discoveryClient,
 	}
 }
 
@@ -469,7 +477,7 @@ func (c *Client) ValidateAccount(ctx context.Context, token string) error {
 	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, token)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.discoveryClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("network error during account validation: %w", err)
 	}
@@ -516,7 +524,7 @@ func (c *Client) FetchModels(ctx context.Context, token string, baseURL string) 
 	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, cleanToken)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.discoveryClient.Do(req)
 	if err != nil {
 		return DefaultClaudeCatalogue(), fmt.Errorf("upstream models request failed: %w", err)
 	}
@@ -582,7 +590,7 @@ func (c *Client) FetchRateLimits(ctx context.Context, token string) (RateLimits,
 	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, cleanToken)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.discoveryClient.Do(req)
 	if err != nil {
 		return RateLimits{}, fmt.Errorf("execute rate-limit probe: %w", err)
 	}

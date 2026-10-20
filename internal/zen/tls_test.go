@@ -16,8 +16,6 @@ import (
 	"testing"
 	"time"
 
-	utls "github.com/refraction-networking/utls"
-
 	"antigravity-go-proxy/internal/transport"
 )
 
@@ -49,57 +47,21 @@ func (s *spyTransport) wasUsed() bool {
 
 // TestBunSpecFromCapture: the embedded ClientHello must fingerprint cleanly
 // into a utls spec with the shape of the genuine capture (17 ciphers,
-// 13 extensions).
+// 13 extensions) and offer exactly http/1.1.
 func TestBunSpecFromCapture(t *testing.T) {
-	spec, err := bunHelloSpec()
+	hello, err := bunReplay()
 	if err != nil {
 		t.Fatalf("fingerprint captured hello: %v", err)
 	}
-	if spec == nil {
-		t.Fatal("nil spec")
-	}
+	spec := hello.Spec()
 	if len(spec.CipherSuites) != 17 {
 		t.Errorf("ciphers = %d, want 17", len(spec.CipherSuites))
 	}
 	if len(spec.Extensions) != 13 {
 		t.Errorf("extensions = %d, want 13", len(spec.Extensions))
 	}
-	if alpn := specALPN(spec); len(alpn) != 1 || alpn[0] != "http/1.1" {
-		t.Errorf("captured ALPN = %v, want [http/1.1]", alpn)
-	}
-	if err := validateSpecALPN(spec); err != nil {
-		t.Errorf("captured hello rejected: %v", err)
-	}
-}
-
-// TestValidateSpecALPN: the replayed hello must offer exactly http/1.1 —
-// JA4 counts ALPN protocols instead of naming them, so an h2 capture would
-// pass the fingerprint gate while the custom-dial path cannot serve HTTP/2.
-func TestValidateSpecALPN(t *testing.T) {
-	cases := []struct {
-		name    string
-		alpn    []string
-		wantErr bool
-	}{
-		{"http11 only", []string{"http/1.1"}, false},
-		{"h2 offered", []string{"h2", "http/1.1"}, true},
-		{"h2 only", []string{"h2"}, true},
-		{"absent", nil, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			spec := &utls.ClientHelloSpec{}
-			if tc.alpn != nil {
-				spec.Extensions = []utls.TLSExtension{&utls.ALPNExtension{AlpnProtocols: tc.alpn}}
-			}
-			err := validateSpecALPN(spec)
-			if tc.wantErr && err == nil {
-				t.Errorf("ALPN %v: want error, got nil", tc.alpn)
-			}
-			if !tc.wantErr && err != nil {
-				t.Errorf("ALPN %v: %v", tc.alpn, err)
-			}
-		})
+	if got := alpnOfHello(t, opencodeClientHello); got != "http/1.1" {
+		t.Errorf("captured ALPN = %q, want http/1.1", got)
 	}
 }
 
@@ -145,8 +107,8 @@ func TestTLSClientIsAlwaysBounded(t *testing.T) {
 
 // TestSharedTransportCached: one default-shaped utls transport per
 // configuration — consecutive calls return the same pointer, SetTLSConfig
-// invalidates it, and the clone keeps the default transport's proxy and
-// timeouts without ever mutating the shared default.
+// invalidates it, and the clone keeps the default transport's timeouts, with
+// the proxy moved into the dialer, without ever mutating the shared default.
 func TestSharedTransportCached(t *testing.T) {
 	SetTLSConfig(ZenTLSConfig{})
 	t.Cleanup(func() { SetTLSConfig(ZenTLSConfig{}) })
@@ -166,8 +128,8 @@ func TestSharedTransportCached(t *testing.T) {
 	if TLSClient().Transport != first {
 		t.Error("TLSClient should carry the shared transport")
 	}
-	if first.Proxy == nil {
-		t.Error("shared transport should keep ProxyFromEnvironment")
+	if first.Proxy != nil {
+		t.Error("the proxy belongs to the dialer: net/http would otherwise skip the captured hello behind HTTPS_PROXY")
 	}
 	if first.IdleConnTimeout == 0 {
 		t.Error("shared transport should keep the default IdleConnTimeout")
@@ -277,7 +239,7 @@ func TestUTLSHelloMatchesCaptureJA3(t *testing.T) {
 		// Never answer: the client handshake fails after the hello is out.
 	}()
 
-	spec, err := bunHelloSpec()
+	hello, err := bunReplay()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +251,7 @@ func TestUTLSHelloMatchesCaptureJA3(t *testing.T) {
 	}
 	// Dial via "localhost" (not the IP) so the SNI assertion is meaningful:
 	// utls strips IP literals from SNI.
-	_, _ = dialOpencodeTLS(ctx, "tcp", net.JoinHostPort("localhost", port), spec)
+	_, _ = hello.Dial(ctx, "tcp", net.JoinHostPort("localhost", port))
 
 	var sent []byte
 	select {

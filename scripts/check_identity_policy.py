@@ -164,7 +164,10 @@ def check_http_version(baseline: dict, observed: dict) -> list[str]:
 
 
 def check_normalized(
-    baseline: dict, observed: dict, expect_turn_index: int | None = None
+    baseline: dict,
+    observed: dict,
+    expect_turn_index: int | None = None,
+    tls_reference: dict | None = None,
 ) -> list[str]:
     """The observed request must present the captured identity.
 
@@ -176,6 +179,8 @@ def check_normalized(
     problems.extend(check_http_version(baseline, observed))
     problems.extend(compare_correlations(observed))
     problems.extend(compare_billing(observed))
+    if tls_reference is not None:
+        problems.extend(check_tls(tls_reference, observed, "fetch"))
 
     if expect_turn_index is not None:
         body = observed.get("request_body")
@@ -271,7 +276,10 @@ def check_passthrough(
 
 
 def check_discovery(
-    baseline_gets: list[dict], observed_gets: list[dict], min_records: int
+    baseline_gets: list[dict],
+    observed_gets: list[dict],
+    min_records: int,
+    tls_reference: dict | None = None,
 ) -> list[str]:
     """Every observed non-messages request must carry the captured User-Agent."""
     problems: list[str] = []
@@ -315,8 +323,50 @@ def check_discovery(
                 f"{record.get('method')} {record.get('path')} arrived as "
                 f"{record.get('http_version')!r}, want the captured {expected_version!r}"
             )
+        if tls_reference is not None:
+            problems.extend(check_tls(tls_reference, record, "node"))
 
     return problems
+
+
+def check_tls(reference: dict, observed: dict, stack: str) -> list[str]:
+    """The request must have been sent by the TLS stack the real client uses for it.
+
+    Claude Code has two: fetch for messages and node:https for the discovery
+    GETs. The reference (.reference/claude-code-tls-*.json) records the JA4 and
+    JA3 each one presents, as the first connection to a host (ja4, ja3) and as
+    every later, resumed one (ja4_resumed, ja3_resumed). Either form is the real
+    client; a JA4 from one form with the JA3 of the other is not. A record
+    without a fingerprint is a problem, not a pass: it means the capture was
+    taken without the current addon.
+    """
+    expected = (reference.get("stacks") or {}).get(stack)
+    if not isinstance(expected, dict):
+        return [f"the TLS reference has no {stack!r} stack to compare against"]
+    got = observed.get("tls")
+    what = f"{observed.get('method')} {observed.get('path')}"
+    if not isinstance(got, dict):
+        return [f"{what} carries no TLS fingerprint (record with the current scripts/mitm_header_dump.py)"]
+    forms = [(expected.get("ja4"), expected.get("ja3"))]
+    if expected.get("ja4_resumed") and expected.get("ja3_resumed"):
+        forms.append((expected["ja4_resumed"], expected["ja3_resumed"]))
+    if (got.get("ja4"), got.get("ja3")) in forms:
+        return []
+    problems = []
+    for field in ("ja4", "ja3"):
+        if got.get(field) not in {form[0 if field == "ja4" else 1] for form in forms}:
+            problems.append(
+                f"{what} {field} is {got.get(field)}, the real client's {stack} stack "
+                f"presents {expected.get(field)}"
+            )
+    return problems or [
+        f"{what} presents a JA4 and a JA3 from different forms of the {stack} stack's hello"
+    ]
+
+
+def load_tls_reference(path: str) -> dict:
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def evaluate(args) -> tuple[list[str], str]:
@@ -325,7 +375,9 @@ def evaluate(args) -> tuple[list[str], str]:
         baseline_gets = get_records(load_records(args.baseline))
         observed_gets = discovery_records(load_records(args.observed))
         return (
-            check_discovery(baseline_gets, observed_gets, args.min_records),
+            check_discovery(
+                baseline_gets, observed_gets, args.min_records, load_tls_reference(args.tls_reference)
+            ),
             f"{len(observed_gets)} discovery request(s)",
         )
 
@@ -340,7 +392,12 @@ def evaluate(args) -> tuple[list[str], str]:
     if not baseline_posts:
         raise ValueError(f"no POST /v1/messages record in {args.baseline}")
     if args.policy == "normalized":
-        return check_normalized(baseline_posts[0], observed, args.expect_turn_index), subject
+        return (
+            check_normalized(
+                baseline_posts[0], observed, args.expect_turn_index, load_tls_reference(args.tls_reference)
+            ),
+            subject,
+        )
     return (
         check_passthrough(
             observed, args.caller_user_agent, args.api_key_sha256, baseline_posts[0]
@@ -361,6 +418,7 @@ def main() -> int:
         type=int,
         help="the number of user prompts the observed request carried",
     )
+    p_norm.add_argument("--tls-reference", required=True)
 
     p_pass = sub.add_parser("passthrough")
     p_pass.add_argument("--baseline", required=True)
@@ -372,6 +430,7 @@ def main() -> int:
     p_disc.add_argument("--baseline", required=True)
     p_disc.add_argument("--observed", required=True)
     p_disc.add_argument("--min-records", type=int, default=1)
+    p_disc.add_argument("--tls-reference", required=True)
 
     args = parser.parse_args()
 

@@ -66,10 +66,10 @@ const (
 var customEndpointTransport = transport.Upstream()
 
 // customEndpointIdentityTransport carries the custom-endpoint requests that are
-// normalized to the captured Claude Code identity. The real client speaks
-// HTTP/1.1, so these leave with HTTP/1.1 and an http/1.1-only ALPN offer; see
-// transport.UpstreamHTTP1.
-var customEndpointIdentityTransport = transport.UpstreamHTTP1()
+// normalized to the captured Claude Code identity. The real client sends
+// messages over HTTP/1.1 with fetch's TLS handshake, and so do these; see
+// transport.ClaudeCodeMessages.
+var customEndpointIdentityTransport = transport.ClaudeCodeMessages()
 
 var jsonBufferPool = sync.Pool{
 	New: func() any {

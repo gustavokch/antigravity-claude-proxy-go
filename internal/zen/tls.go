@@ -1,18 +1,12 @@
 package zen
 
 import (
-	"context"
-	"crypto/tls"
 	_ "embed"
-	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"sync"
-	"time"
 
-	utls "github.com/refraction-networking/utls"
-
+	"antigravity-go-proxy/internal/tlsreplay"
 	"antigravity-go-proxy/internal/transport"
 )
 
@@ -36,49 +30,23 @@ var (
 	tlsClient    *http.Client
 	tlsTransport *http.Transport
 
-	specOnce sync.Once
-	bunSpec  *utls.ClientHelloSpec
-	specErr  error
+	helloOnce sync.Once
+	bunHello  *tlsreplay.Hello
+	helloErr  error
 )
 
-// bunHelloSpec fingerprints the captured Bun ClientHello once at first use.
-func bunHelloSpec() (*utls.ClientHelloSpec, error) {
-	specOnce.Do(func() {
-		fp := &utls.Fingerprinter{}
-		bunSpec, specErr = fp.RawClientHello(opencodeClientHello)
-		if specErr == nil && bunSpec != nil {
-			if alpnErr := validateSpecALPN(bunSpec); alpnErr != nil {
-				bunSpec, specErr = nil, alpnErr
-			}
-		}
-		if specErr != nil {
-			slog.Error("zen tls: captured opencode ClientHello cannot be fingerprinted; TLS disguise unavailable", "error", specErr)
+// bunReplay fingerprints the captured Bun ClientHello once at first use. The
+// replayed hello must offer exactly http/1.1: tlsreplay rejects any other ALPN
+// list, because an h2 capture would pass the JA4 gate while the custom-dial
+// path cannot serve HTTP/2.
+func bunReplay() (*tlsreplay.Hello, error) {
+	helloOnce.Do(func() {
+		bunHello, helloErr = tlsreplay.New(opencodeClientHello, []string{"http/1.1"})
+		if helloErr != nil {
+			slog.Error("zen tls: captured opencode ClientHello cannot be fingerprinted; TLS disguise unavailable", "error", helloErr)
 		}
 	})
-	return bunSpec, specErr
-}
-
-// specALPN returns the ALPN protocols the replayed hello will offer.
-func specALPN(spec *utls.ClientHelloSpec) []string {
-	for _, ext := range spec.Extensions {
-		if alpn, ok := ext.(*utls.ALPNExtension); ok {
-			return alpn.AlpnProtocols
-		}
-	}
-	return nil
-}
-
-// validateSpecALPN rejects a captured ClientHello whose ALPN list is not
-// exactly ["http/1.1"]. JA4 encodes the ALPN count, not the protocols, so a
-// regenerated capture advertising h2 would pass the fingerprint gate while
-// net/http's custom-dial path has no HTTP/2 handler — every request would
-// hang. A mismatch leaves the disguise unavailable instead of broken.
-func validateSpecALPN(spec *utls.ClientHelloSpec) error {
-	alpn := specALPN(spec)
-	if len(alpn) != 1 || alpn[0] != "http/1.1" {
-		return fmt.Errorf("captured ClientHello offers ALPN %v, want [http/1.1]", alpn)
-	}
-	return nil
+	return bunHello, helloErr
 }
 
 // SetTLSConfig replaces the live TLS disguise configuration. Safe for
@@ -140,76 +108,12 @@ func transportLocked() *http.Transport {
 	if !tlsCfg.Enabled {
 		return nil
 	}
-	spec, err := bunHelloSpec()
-	if err != nil || spec == nil {
+	hello, err := bunReplay()
+	if err != nil || hello == nil {
 		return nil
 	}
 	if tlsTransport == nil {
-		tr := transport.Upstream()
-		tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialOpencodeTLS(ctx, network, addr, spec)
-		}
-		tlsTransport = tr
+		tlsTransport = hello.Transport(transport.Upstream())
 	}
 	return tlsTransport
-}
-
-// spoofedConn exposes the utls handshake result to net/http as a
-// crypto/tls.ConnectionState (net/http type-asserts the dialed connection
-// for it; utls carries its own copy of the type). Only net.Conn methods are
-// promoted, so net/http does not try to re-run the handshake.
-type spoofedConn struct {
-	net.Conn
-	state tls.ConnectionState
-}
-
-func (c *spoofedConn) ConnectionState() tls.ConnectionState { return c.state }
-
-// dialTimeout and handshakeTimeout bound the two local steps of the utls dial.
-// A zero net.Dialer Timeout waits for the OS, and with DialTLSContext set
-// net/http does not apply its own TLSHandshakeTimeout, so the utls handshake
-// would otherwise run on the caller's context — which for a streamed request has
-// no deadline at all. Both values match what http.DefaultTransport uses for its
-// dialer and handshake. They are local timers: the ClientHello bytes, and so the
-// Bun fingerprint the disguise exists to reproduce, are unaffected.
-const (
-	dialTimeout      = 30 * time.Second
-	handshakeTimeout = 10 * time.Second
-)
-
-// dialOpencodeTLS dials TCP, wraps the connection in a utls client speaking
-// the captured Bun ClientHello, and completes the handshake before returning.
-func dialOpencodeTLS(ctx context.Context, network, addr string, spec *utls.ClientHelloSpec) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, fmt.Errorf("zen tls: split %q: %w", addr, err)
-	}
-	dialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
-	raw, err := dialer.DialContext(ctx, network, addr)
-	if err != nil {
-		return nil, err
-	}
-	uconn := utls.UClient(raw, &utls.Config{ServerName: host, MinVersion: tls.VersionTLS12}, utls.HelloCustom)
-	if err := uconn.ApplyPreset(spec); err != nil {
-		_ = raw.Close()
-		return nil, fmt.Errorf("zen tls: apply captured ClientHello: %w", err)
-	}
-	// The capture carries the original target's SNI; re-point it at the
-	// host actually being dialed so certificate verification matches.
-	uconn.SetSNI(host)
-	hsCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
-	defer cancel()
-	if err := uconn.HandshakeContext(hsCtx); err != nil {
-		_ = uconn.Close()
-		return nil, fmt.Errorf("zen tls: utls handshake: %w", err)
-	}
-	state := uconn.ConnectionState()
-	return &spoofedConn{Conn: uconn, state: tls.ConnectionState{
-		Version:            state.Version,
-		HandshakeComplete:  state.HandshakeComplete,
-		DidResume:          state.DidResume,
-		CipherSuite:        state.CipherSuite,
-		NegotiatedProtocol: state.NegotiatedProtocol,
-		ServerName:         state.ServerName,
-	}}, nil
 }

@@ -278,6 +278,73 @@ class DiscoveryTest(unittest.TestCase):
         self.assertTrue(any("http_version" in p for p in problems), problems)
 
 
+TLS_REFERENCE = {
+    "stacks": {
+        "fetch": {"ja4": "t13d1713h1_aaaaaaaaaaaa_bbbbbbbbbbbb", "ja3": "fetch-ja3"},
+        "node": {"ja4": "t13d181000_cccccccccccc_dddddddddddd", "ja3": "node-ja3"},
+    }
+}
+FETCH_TLS = {"ja4": "t13d1713h1_aaaaaaaaaaaa_bbbbbbbbbbbb", "ja3": "fetch-ja3", "alpn": ["http/1.1"]}
+NODE_TLS = {"ja4": "t13d181000_cccccccccccc_dddddddddddd", "ja3": "node-ja3", "alpn": []}
+
+
+class TlsStackTest(unittest.TestCase):
+    """Messages go out the fetch stack and discovery GETs out node:https.
+
+    Both stacks exist in the real client, so a request sent with the OTHER
+    one's handshake is as wrong as one sent with Go's own.
+    """
+
+    def test_a_message_from_the_fetch_stack_passes(self):
+        observed = observed_normalized(tls=FETCH_TLS)
+        self.assertEqual(
+            policy.check_normalized(baseline_post(), observed, tls_reference=TLS_REFERENCE), [])
+
+    def test_a_message_from_the_node_stack_is_rejected(self):
+        observed = observed_normalized(tls=NODE_TLS)
+        problems = policy.check_normalized(baseline_post(), observed, tls_reference=TLS_REFERENCE)
+        self.assertTrue(any("ja4 is t13d181000" in p for p in problems), problems)
+
+    def test_go_default_handshake_is_rejected(self):
+        go = {"ja4": "t13d1312h1_f57a46bbacb6_f50d94e863eb", "ja3": "03117a8ed39ef02427ebbc39f121275c"}
+        problems = policy.check_normalized(
+            baseline_post(), observed_normalized(tls=go), tls_reference=TLS_REFERENCE)
+        self.assertEqual(len([p for p in problems if "presents" in p]), 2, problems)
+
+    def test_a_matching_ja4_with_another_ja3_is_rejected(self):
+        tls = dict(FETCH_TLS, ja3="something-else")
+        problems = policy.check_normalized(
+            baseline_post(), observed_normalized(tls=tls), tls_reference=TLS_REFERENCE)
+        self.assertTrue(any("ja3 is something-else" in p for p in problems), problems)
+
+    def test_a_record_without_a_fingerprint_is_not_a_pass(self):
+        problems = policy.check_normalized(
+            baseline_post(), observed_normalized(), tls_reference=TLS_REFERENCE)
+        self.assertTrue(any("no TLS fingerprint" in p for p in problems), problems)
+
+    def test_a_reference_without_the_stack_is_not_a_pass(self):
+        problems = policy.check_tls({"stacks": {}}, {"tls": FETCH_TLS}, "fetch")
+        self.assertTrue(any("no 'fetch' stack" in p for p in problems), problems)
+
+    def test_the_resumed_hello_is_the_real_client_too(self):
+        fetch = dict(TLS_REFERENCE["stacks"]["fetch"],
+                     ja4_resumed="t13d1714h1_aaaaaaaaaaaa_cccccccccccc", ja3_resumed="fetch-ja3-resumed")
+        reference = {"stacks": {"fetch": fetch}}
+        resumed = {"ja4": "t13d1714h1_aaaaaaaaaaaa_cccccccccccc", "ja3": "fetch-ja3-resumed"}
+        self.assertEqual(policy.check_tls(reference, {"tls": resumed}, "fetch"), [])
+        mixed = {"ja4": "t13d1714h1_aaaaaaaaaaaa_cccccccccccc", "ja3": "fetch-ja3"}
+        problems = policy.check_tls(reference, {"tls": mixed}, "fetch")
+        self.assertTrue(any("different forms" in p for p in problems), problems)
+
+    def test_discovery_requires_the_node_stack(self):
+        good = observed_get(tls=NODE_TLS)
+        self.assertEqual(
+            policy.check_discovery([baseline_get()], [good], 1, tls_reference=TLS_REFERENCE), [])
+        bad = observed_get(tls=FETCH_TLS)
+        problems = policy.check_discovery([baseline_get()], [bad], 1, tls_reference=TLS_REFERENCE)
+        self.assertTrue(any("ja4 is t13d1713h1" in p for p in problems), problems)
+
+
 class RecordSelectionTest(unittest.TestCase):
     """A phase drives exactly one request, so it must assert on exactly one.
 

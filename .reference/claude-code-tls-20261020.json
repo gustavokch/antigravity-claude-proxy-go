@@ -1,0 +1,37 @@
+{
+  "client": "claude-code/2.1.304",
+  "captured": "2026-10-20",
+  "stacks": {
+    "node": {
+      "ja4": "t13d181000_5d04281c6031_25d8bb11352d",
+      "ja3": "5355e3851d76d069ab8a98fdb51cf1b4",
+      "alpn": [],
+      "requests": [
+        "GET /api/claude_cli/bootstrap",
+        "GET /api/claude_code/organizations/metrics_enabled",
+        "GET /api/claude_code/policy_limits",
+        "GET /api/claude_code/settings",
+        "GET /api/claude_code_penguin_mode",
+        "GET /mcp-registry/v0/servers",
+        "POST /api/event_logging/v2/batch"
+      ],
+      "ja4_resumed": "t13d181100_5d04281c6031_dc7e9eda0726",
+      "ja3_resumed": "f692ab6e3ffc6d9558b71841ac52ee67"
+    },
+    "fetch": {
+      "ja4": "t13d1713h1_5b57614c22b0_7f527383e249",
+      "ja3": "1523504b38f0fae0d881d4b6554aac1b",
+      "alpn": [
+        "http/1.1"
+      ],
+      "requests": [
+        "POST /api/eval/*",
+        "POST /api/event_logging/v2/batch",
+        "POST /v1/messages"
+      ],
+      "ja4_resumed": "t13d1714h1_5b57614c22b0_b505ce4c9bf3",
+      "ja3_resumed": "ae5f2d34331c18f27df379f7d4b72e35"
+    }
+  },
+  "note": "ja4/ja3 are the first connection to a host; *_resumed are every later one, where Bun adds pre_shared_key as the last extension. Recorded against a local TLS server that issues tickets (mitmproxy does not)."
+}

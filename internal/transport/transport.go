@@ -1,14 +1,17 @@
 // Package transport builds the outbound HTTP transports for the upstream paths
 // that carry no TLS fingerprint requirement of their own: custom endpoints,
-// Kimi, Zen, and Claude Code, which needs only HTTP/1.1 (UpstreamHTTP1). The
-// Cloud Code path builds its own transport in internal/cloudcode, where the
-// ClientHello is the product.
+// Kimi, Zen. Claude Code is the exception, and ClaudeCodeMessages and
+// ClaudeCodeDiscovery replay the handshakes of the real client's two TLS
+// stacks. The Cloud Code path builds its own transport in internal/cloudcode,
+// where the ClientHello is the product.
 package transport
 
 import (
-	"crypto/tls"
+	_ "embed"
 	"net/http"
 	"time"
+
+	"antigravity-go-proxy/internal/tlsreplay"
 )
 
 // ResponseHeaderTimeout bounds how long an upstream may take to send response
@@ -39,32 +42,59 @@ func Upstream() *http.Transport {
 	return &http.Transport{ResponseHeaderTimeout: ResponseHeaderTimeout}
 }
 
-// UpstreamHTTP1 returns Upstream with HTTP/2 switched off: the ClientHello
-// offers http/1.1 as its only ALPN protocol and every request goes out as
-// HTTP/1.1.
+// The two ClientHellos Claude Code 2.1.304 sends to api.anthropic.com, recorded
+// off the wire by a listener that read the first TLS record of each connection
+// (record header included). Claude Code runs on Bun, which has two TLS stacks:
 //
-// This is the one deliberate departure from the default ClientHello in this
-// package, and it is for the Claude Code wire identity. The real client reaches
-// api.anthropic.com over HTTP/1.1 — every record in
-// .reference/claude-code-headers-20261020*.jsonl says so, through an
+//   - fetch, ALPN http/1.1: POST /v1/messages, /api/eval/*, and part of
+//     /api/event_logging/v2/batch (JA4 t13d1713h1_5b57614c22b0_7f527383e249);
+//   - node:https via axios, no ALPN: every GET under /api/claude_code/*,
+//     /api/claude_cli/bootstrap, /mcp-registry/*, and the rest of the event
+//     batches (JA4 t13d181000_5d04281c6031_25d8bb11352d).
+//
+// The request-to-stack map comes from scripts/mitm_header_dump.py, which
+// records the JA4 of the hello that opened each connection. A new Claude Code
+// release that upgrades Bun changes these bytes; recapture them then.
+var (
+	//go:embed claude-code-fetch-clienthello.bin
+	claudeCodeFetchHello []byte
+	//go:embed claude-code-node-clienthello.bin
+	claudeCodeNodeHello []byte
+)
+
+// http1 is Upstream with HTTP/2 switched off, so every request goes out as
+// HTTP/1.1. The real client reaches api.anthropic.com over HTTP/1.1 — every
+// record in .reference/claude-code-headers-20261020*.jsonl says so, through an
 // interceptor that negotiates h2 with any client that offers it — and a default
-// Go transport offers h2 and gets it, which is a difference the server sees
-// without looking at a single header.
-//
-// Only ALPN and the HTTP version change. The cipher suites, curves and
-// extensions stay Go's own, so the TLS handshake still differs from the Claude
-// Code CLI's (see docs/claude-code-forward-proxy.md).
-func UpstreamHTTP1() *http.Transport {
+// Go transport offers h2 and gets it, which the server sees without looking at
+// a single header. Protocols is what decides: net/http reads it before
+// ForceAttemptHTTP2 and TLSNextProto.
+func http1() *http.Transport {
 	tr := Upstream()
-	// Protocols is what decides: net/http reads it before ForceAttemptHTTP2 and
-	// TLSNextProto, and with only HTTP1 set it never registers h2 or touches
-	// the TLS config. ForceAttemptHTTP2 is cleared as well so no reader of the
-	// field is misled.
 	tr.ForceAttemptHTTP2 = false
 	tr.Protocols = new(http.Protocols)
 	tr.Protocols.SetHTTP1(true)
-	// Offered explicitly: with h2 off Go would send no ALPN extension at all,
-	// and the real client sends http/1.1.
-	tr.TLSClientConfig = &tls.Config{NextProtos: []string{"http/1.1"}}
 	return tr
 }
+
+// ClaudeCodeMessages returns an HTTP/1.1 transport whose TLS handshake is the
+// one Claude Code's fetch stack sends, for POST /v1/messages. Every call
+// returns a transport with its own connection pool.
+func ClaudeCodeMessages() *http.Transport {
+	return fetchHello.Transport(http1())
+}
+
+// ClaudeCodeDiscovery is ClaudeCodeMessages for the requests the real client
+// makes through node:https: the account, settings and model GETs, and the OAuth
+// token calls (which are an inference: only api.anthropic.com was captured).
+func ClaudeCodeDiscovery() *http.Transport {
+	return nodeHello.Transport(http1())
+}
+
+// Each stack resumes TLS sessions, as Bun does: after the first connection to a
+// host the real client's hello carries pre_shared_key. The cache is per stack,
+// so the messages transports share tickets and the discovery ones share theirs.
+var (
+	fetchHello = tlsreplay.MustNew(claudeCodeFetchHello, []string{"http/1.1"}).WithResumption()
+	nodeHello  = tlsreplay.MustNew(claudeCodeNodeHello, nil).WithResumption()
+)

@@ -18,8 +18,8 @@ import (
 // gets h2. The server here supports both, so only a client built the way
 // NewClient builds its default one speaks HTTP/1.1 to it.
 //
-// The shipped transport is cloned and given a trust root for the test
-// certificate, and nothing else, so the protocol settings that run are the
+// The shipped transports are given a trust root for the test certificate, and
+// nothing else, so the protocol and handshake settings that run are the
 // shipped ones.
 func TestDefaultClientSpeaksHTTP11(t *testing.T) {
 	var (
@@ -46,17 +46,20 @@ func TestDefaultClientSpeaksHTTP11(t *testing.T) {
 	upstream.StartTLS()
 	t.Cleanup(upstream.Close)
 
-	shipped, ok := NewClient("https://api.anthropic.com", nil).httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("the default client's transport is %T, want *http.Transport", NewClient("https://api.anthropic.com", nil).httpClient.Transport)
-	}
-	trusting := shipped.Clone()
+	client := NewClient(upstream.URL, nil)
 	pool := x509.NewCertPool()
 	pool.AddCert(upstream.Certificate())
-	trusting.TLSClientConfig.RootCAs = pool
-	t.Cleanup(trusting.CloseIdleConnections)
-
-	client := NewClient(upstream.URL, &http.Client{Transport: trusting})
+	for _, c := range []*http.Client{client.httpClient, client.discoveryClient} {
+		shipped, ok := c.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("the default client's transport is %T, want *http.Transport", c.Transport)
+		}
+		shipped.TLSClientConfig = &tls.Config{RootCAs: pool}
+		t.Cleanup(func() {
+			shipped.TLSClientConfig = nil
+			shipped.CloseIdleConnections()
+		})
+	}
 
 	resp, err := client.SendMessage(context.Background(), MessageRequest{
 		Token:     "sk-ant-oat01-test-oauth-token",
@@ -81,9 +84,9 @@ func TestDefaultClientSpeaksHTTP11(t *testing.T) {
 			t.Errorf("%s arrived as HTTP/%d, want HTTP/1.1", request, major)
 		}
 	}
-	for _, alpn := range offered {
-		if len(alpn) != 1 || alpn[0] != "http/1.1" {
-			t.Errorf("ClientHello offered ALPN %v, want [http/1.1] as the real client does", alpn)
-		}
+	// One handshake per stack, messages first: fetch offers http/1.1 and
+	// node:https offers no ALPN at all.
+	if len(offered) != 2 || len(offered[0]) != 1 || offered[0][0] != "http/1.1" || len(offered[1]) != 0 {
+		t.Errorf("ClientHellos offered ALPN %v, want [[http/1.1] []] as the real client's two stacks do", offered)
 	}
 }

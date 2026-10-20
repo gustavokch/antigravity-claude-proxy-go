@@ -161,15 +161,16 @@ func TestCustomEndpoint_NormalizedRequestSpeaksHTTP11(t *testing.T) {
 	upstream.StartTLS()
 	t.Cleanup(upstream.Close)
 
-	// The test server's certificate is self-signed: trust it on a copy of the
-	// shipped transport, so everything else about that transport is what runs.
+	// The test server's certificate is self-signed: trust it on the shipped
+	// transport, so everything else about that transport is what runs. The
+	// replayed handshake reads its trust roots from the transport at dial time.
 	pool := x509.NewCertPool()
 	pool.AddCert(upstream.Certificate())
-	shipped := customEndpointIdentityTransport
-	trusting := shipped.Clone()
-	trusting.TLSClientConfig.RootCAs = pool
-	customEndpointIdentityTransport = trusting
-	t.Cleanup(func() { customEndpointIdentityTransport = shipped })
+	customEndpointIdentityTransport.TLSClientConfig = &tls.Config{RootCAs: pool}
+	t.Cleanup(func() {
+		customEndpointIdentityTransport.TLSClientConfig = nil
+		customEndpointIdentityTransport.CloseIdleConnections()
+	})
 
 	saveCustomEndpoint(t, upstream.URL+"/v1/messages", nil)
 	h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
