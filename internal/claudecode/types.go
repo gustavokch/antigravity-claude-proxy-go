@@ -239,6 +239,11 @@ func (c IdentityConfig) WireIdentity(accountUUID, sessionKey string) (ccidentity
 	if c.Disabled {
 		return ccidentity.Identity{}, false
 	}
+	// An unkeyed request still needs ONE seed, because ApplyHeaders and ApplyBody
+	// derive the session id and the prompt id separately and must agree on both.
+	if strings.TrimSpace(sessionKey) == "" {
+		sessionKey = ccidentity.NewSessionKey()
+	}
 	return ccidentity.Identity{
 		AccountUUID:             accountUUID,
 		SessionKey:              sessionKey,

@@ -22,13 +22,14 @@ BASELINE_HEADERS = [
     ["Accept", "application/json"],
     ["Authorization", {"redacted": True, "scheme": "Bearer", "len": 108}],
     ["Content-Type", "application/json"],
-    ["User-Agent", "claude-cli/2.1.280 (external, sdk-cli)"],
+    ["User-Agent", "claude-cli/2.1.304 (external, sdk-cli)"],
     ["X-Claude-Code-Session-Id", "<uuid>"],
     ["X-Stainless-OS", "Linux"],
     ["X-Stainless-Timeout", "600"],
     ["anthropic-beta", "claude-code-20250219,oauth-2025-04-20"],
     ["anthropic-version", "2023-06-01"],
     ["x-app", "cli"],
+    ["x-claude-code-prompt-id", "<uuid>"],
     ["x-client-request-id", "<uuid>"],
     ["Connection", "keep-alive"],
     ["Host", "api.anthropic.com"],
@@ -44,9 +45,10 @@ BASELINE_BODY = {
         "user_id": '{"device_id":"<hex>","account_uuid":"","session_id":"<uuid>"}'
     },
     "system_first_block": (
-        "x-anthropic-billing-header: cc_version=2.1.280.5c2; "
-        "cc_entrypoint=sdk-cli; cch=c5b4f; "
-        "cc_prompt_id=7cd5023f-9b41-4558-8901-c8f46878fbf1; cc_turn_origin=sdk;"
+        "x-anthropic-billing-header: cc_version=2.1.304.456; "
+        "cc_entrypoint=sdk-cli; cch=6cba6; "
+        "cc_prompt_id=929b9264-529c-4464-bc00-abb30f590a0d; cc_turn_origin=sdk; "
+        "cc_prompt_index=0; cc_turn_index=1;"
     ),
 }
 
@@ -84,9 +86,10 @@ def with_ids(session_id, prompt_id):
     ]
     body = json.loads(json.dumps(BASELINE_BODY))
     body["system_first_block"] = (
-        "x-anthropic-billing-header: cc_version=2.1.280.5c2; "
-        "cc_entrypoint=sdk-cli; cch=c5b4f; "
-        f"cc_prompt_id={prompt_id}; cc_turn_origin=sdk;"
+        "x-anthropic-billing-header: cc_version=2.1.304.456; "
+        "cc_entrypoint=sdk-cli; cch=6cba6; "
+        f"cc_prompt_id={prompt_id}; cc_turn_origin=sdk; "
+        "cc_prompt_index=0; cc_turn_index=1;"
     )
     return record(headers, body)
 
@@ -116,6 +119,35 @@ class CorrelationDriftTest(unittest.TestCase):
         # A capture recorded with redaction on carries <uuid> in both slots.
         # That is the redactor agreeing with itself, not a real collision.
         self.assertEqual(differ.compare_correlations(with_ids("<uuid>", "<uuid>")), [])
+
+    def test_prompt_id_header_differing_from_billing_prompt_id_is_drift(self):
+        # 2.1.304 sends x-claude-code-prompt-id and cc_prompt_id as one value in
+        # all 7 captured requests. Both are exempt from value comparison, so only
+        # this relation catches a proxy that mints them separately.
+        observed = with_ids(
+            "5c1c7cec-f043-4f01-a9f9-fe25fb98b338",
+            "7cd5023f-9b41-4558-8901-c8f46878fbf1",
+        )
+        observed["headers"] = [
+            ["x-claude-code-prompt-id", "929b9264-529c-4464-bc00-abb30f590a0d"]
+            if h[0] == "x-claude-code-prompt-id" else h
+            for h in observed["headers"]
+        ]
+        drifts = differ.compare_correlations(observed)
+        self.assertTrue(
+            any("x-claude-code-prompt-id" in d and "cc_prompt_id" in d for d in drifts),
+            f"a prompt-id header that disagrees with cc_prompt_id passed: {drifts}",
+        )
+
+    def test_matching_prompt_id_header_is_not_drift(self):
+        prompt_id = "7cd5023f-9b41-4558-8901-c8f46878fbf1"
+        observed = with_ids("5c1c7cec-f043-4f01-a9f9-fe25fb98b338", prompt_id)
+        observed["headers"] = [
+            ["x-claude-code-prompt-id", prompt_id]
+            if h[0] == "x-claude-code-prompt-id" else h
+            for h in observed["headers"]
+        ]
+        self.assertEqual(differ.compare_correlations(observed), [])
 
 
 class HeaderDriftTest(unittest.TestCase):
@@ -197,6 +229,22 @@ class HeaderDriftTest(unittest.TestCase):
         ]
         self.assertEqual(drift_of(record(headers, BASELINE_BODY)), [])
 
+    def test_prompt_id_header_value_may_differ(self):
+        # A fresh UUID per prompt, so two captures never agree on it.
+        headers = [
+            ["x-claude-code-prompt-id", "929b9264-529c-4464-bc00-abb30f590a0d"]
+            if h[0] == "x-claude-code-prompt-id" else h
+            for h in BASELINE_HEADERS
+        ]
+        self.assertEqual(
+            differ.compare_headers([baseline_record()], record(headers, BASELINE_BODY)), []
+        )
+
+    def test_dropped_prompt_id_header_is_drift(self):
+        headers = [h for h in BASELINE_HEADERS if h[0] != "x-claude-code-prompt-id"]
+        drifts = drift_of(record(headers, BASELINE_BODY))
+        self.assertTrue(any("missing header: x-claude-code-prompt-id" in d for d in drifts))
+
 
 class BodyDriftTest(unittest.TestCase):
     def test_forbidden_client_field_is_drift(self):
@@ -237,18 +285,33 @@ class BodyDriftTest(unittest.TestCase):
 
     def test_malformed_billing_header_is_drift(self):
         body = json.loads(json.dumps(BASELINE_BODY))
-        body["system_first_block"] = "x-anthropic-billing-header: cc_version=2.1.280;"
+        body["system_first_block"] = "x-anthropic-billing-header: cc_version=2.1.304;"
         drifts = drift_of(record(BASELINE_HEADERS, body))
         self.assertTrue(any("system[0]" in d for d in drifts))
 
     def test_billing_header_accepts_the_follow_up_turn_form(self):
+        # Captured form: a later prompt of one process, so cc_prev_req is present
+        # and cc_turn_index has moved past 1.
         body = json.loads(json.dumps(BASELINE_BODY))
         body["system_first_block"] = (
-            "x-anthropic-billing-header: cc_version=2.1.280.336; "
-            "cc_entrypoint=sdk-cli; cch=3ab87; cc_prev_req=req_011CfL3J5mtdJ5DhtF1opYTr; "
-            "cc_prompt_id=518a84e2-4c45-458c-a2f6-363b7ff7fa44; cc_turn_origin=sdk;"
+            "x-anthropic-billing-header: cc_version=2.1.304.39c; "
+            "cc_entrypoint=sdk-cli; cch=cf924; cc_prev_req=req_011CgDmASVwJ2VQSo1XGUySi; "
+            "cc_prompt_id=8cf9e663-2799-4162-8718-bd8ff7e88106; cc_turn_origin=sdk; "
+            "cc_prompt_index=0; cc_turn_index=2;"
         )
         self.assertEqual(drift_of(record(BASELINE_HEADERS, body)), [])
+
+    def test_billing_header_without_the_index_fields_is_drift(self):
+        # The 2.1.280 form. 2.1.304 appends cc_prompt_index and cc_turn_index to
+        # every request, so a header without them is the previous client.
+        body = json.loads(json.dumps(BASELINE_BODY))
+        body["system_first_block"] = (
+            "x-anthropic-billing-header: cc_version=2.1.304.456; "
+            "cc_entrypoint=sdk-cli; cch=6cba6; "
+            "cc_prompt_id=929b9264-529c-4464-bc00-abb30f590a0d; cc_turn_origin=sdk;"
+        )
+        drifts = drift_of(record(BASELINE_HEADERS, body))
+        self.assertTrue(any("system[0]" in d for d in drifts))
 
     def test_absent_body_fingerprint_is_drift(self):
         observed = baseline_record()

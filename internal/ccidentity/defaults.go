@@ -1,23 +1,23 @@
 package ccidentity
 
-// Values transcribed from .reference/claude-code-headers-20260923.txt, a live
-// capture of Claude Code 2.1.280's own traffic to api.anthropic.com. Each
+// Values transcribed from .reference/claude-code-headers-20261020.txt, a live
+// capture of Claude Code 2.1.304's own traffic to api.anthropic.com. Each
 // constant names the artifact it came from. Nothing here is inferred unless the
 // comment says so and says why.
 const (
 	// ClientVersion is the version literal in cc_version, minus the build suffix
-	// the capture shows varying per process (2.1.280.5c2 and 2.1.280.336 were
-	// both observed from one binary).
-	ClientVersion = "2.1.280"
+	// the capture shows varying per process (2.1.304.456, 2.1.304.d31 and
+	// 2.1.304.39c were each observed from one binary).
+	ClientVersion = "2.1.304"
 
 	// MessagesUserAgent is the User-Agent on POST /v1/messages. The capture
 	// records claude-cli/, lowercase, with a parenthesised mode.
-	MessagesUserAgent = "claude-cli/2.1.280 (external, sdk-cli)"
+	MessagesUserAgent = "claude-cli/2.1.304 (external, sdk-cli)"
 
 	// DiscoveryUserAgent is the User-Agent on GET /api/claude_code/*. It is a
 	// DIFFERENT family from the messages path: claude-code/ not claude-cli/, and
 	// no parenthesised mode. Two spellings, two families.
-	DiscoveryUserAgent = "claude-code/2.1.280"
+	DiscoveryUserAgent = "claude-code/2.1.304"
 
 	// EntrypointSDKCLI and EntrypointInteractive are the two cc_entrypoint values
 	// known to exist. The capture only ever produced sdk-cli (because every run
@@ -45,7 +45,8 @@ var Betas = []string{
 	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
-	"mid-conversation-system-2026-04-07",
+	"per-turn-control-2026-07-01",
+	"mid-conversation-tool-changes-2026-07-01",
 	"advanced-tool-use-2025-11-20",
 	"mid-conversation-system-clear-at-2026-08-21",
 	"effort-2025-11-24",
@@ -70,7 +71,7 @@ func staticHeaders(id Identity) []Header {
 		{"X-Stainless-Arch", "arm64"},
 		{"X-Stainless-Lang", "js"},
 		{"X-Stainless-OS", stainlessOS(id)},
-		{"X-Stainless-Package-Version", "0.112.1"},
+		{"X-Stainless-Package-Version", "0.128.0"},
 		{"X-Stainless-Retry-Count", "0"},
 		{"X-Stainless-Runtime", "node"},
 		{"X-Stainless-Runtime-Version", stainlessRuntimeVersion(id)},
@@ -87,7 +88,7 @@ func staticHeaders(id Identity) []Header {
 //
 // The construction is INFERRED, not captured: the sample shows the entrypoint
 // appears inside the parentheses, so substituting cli yields
-// "claude-cli/2.1.280 (external, cli)". No capture has confirmed that exact
+// "claude-cli/2.1.304 (external, cli)". No capture has confirmed that exact
 // string. It is used only when the operator explicitly sets a non-default
 // entrypoint, and it is the reason a cli capture is still wanted.
 func messagesUserAgent(id Identity) string {
@@ -174,11 +175,18 @@ func dynamicHeaders() []DynamicHeader {
 		{"x-client-request-id", func(_ Identity, _ Turn) string {
 			return newUUID()
 		}},
+		// New in 2.1.304: the same UUID as cc_prompt_id in the billing header, in
+		// all 7 captured messages requests (.reference/claude-code-headers-20261020*.jsonl).
+		// It must stay equal to promptUUID, which BillingHeader writes, or the two
+		// slots disagree in a way no real client produces.
+		{"x-claude-code-prompt-id", func(id Identity, _ Turn) string {
+			return promptUUID(id)
+		}},
 	}
 }
 
 // defaultProfile is the captured profile. Nothing in it varies per call:
-// dynamicHeaders holds two closures that take the identity as an argument
+// dynamicHeaders holds three closures that take the identity as an argument
 // rather than closing over one, and Omit, Path and Betas are constants. It is
 // therefore built once instead of on every request.
 //

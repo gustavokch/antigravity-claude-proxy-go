@@ -29,7 +29,7 @@ func testIdentity() Identity {
 }
 
 // capturedHeaders is the constant header set read out of
-// .reference/claude-code-headers-20260923.txt. It is duplicated here on purpose:
+// .reference/claude-code-headers-20261020.txt. It is duplicated here on purpose:
 // a test that reads the artifact at run time would pass even if both the
 // artifact and the implementation were changed together, and this test's job is
 // to fail when the implementation drifts from the recorded bytes.
@@ -39,7 +39,7 @@ var capturedHeaders = map[string]string{
 	"X-Stainless-Arch":                          "arm64",
 	"X-Stainless-Lang":                          "js",
 	"X-Stainless-OS":                            "Linux",
-	"X-Stainless-Package-Version":               "0.112.1",
+	"X-Stainless-Package-Version":               "0.128.0",
 	"X-Stainless-Retry-Count":                   "0",
 	"X-Stainless-Runtime":                       "node",
 	"X-Stainless-Runtime-Version":               "v26.3.0",
@@ -371,7 +371,7 @@ func TestApplyBodyEmptyBodyIsPassedThrough(t *testing.T) {
 	}
 }
 
-var billingRE = regexp.MustCompile(`^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=(sdk-cli|cli); cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=(sdk|cli);$`)
+var billingRE = regexp.MustCompile(`^x-anthropic-billing-header: cc_version=2\.1\.304\.[0-9a-f]{3}; cc_entrypoint=(sdk-cli|cli); cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=(sdk|cli); cc_prompt_index=0; cc_turn_index=1;$`)
 
 func TestBillingHeaderMatchesCapturedShape(t *testing.T) {
 	got := BillingHeader(testIdentity(), Turn{})
@@ -437,6 +437,31 @@ func TestBillingHeaderPromptIDDiffersFromSessionID(t *testing.T) {
 	}
 }
 
+// TestPromptIDHeaderEqualsTheBillingPromptID pins a relation 2.1.304 added:
+// x-claude-code-prompt-id carries the same UUID as cc_prompt_id in system[0].
+// All 7 captured messages requests agree. Each field is a valid UUID on its
+// own, so only a test that reads both can see them drift apart.
+func TestPromptIDHeaderEqualsTheBillingPromptID(t *testing.T) {
+	id := testIdentity()
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
+
+	header := hdrGet(h, "x-claude-code-prompt-id")
+	if !uuidRE.MatchString(header) {
+		t.Fatalf("x-claude-code-prompt-id = %q, want a UUID as captured", header)
+	}
+	match := promptIDRE.FindStringSubmatch(BillingHeader(id, Turn{}))
+	if match == nil {
+		t.Fatalf("billing header carries no cc_prompt_id: %q", BillingHeader(id, Turn{}))
+	}
+	if header != match[1] {
+		t.Errorf("x-claude-code-prompt-id = %s, cc_prompt_id = %s; the capture shows one value in both", header, match[1])
+	}
+	if header == hdrGet(h, "X-Claude-Code-Session-Id") {
+		t.Errorf("x-claude-code-prompt-id equals the session id (%s); the capture keeps them distinct", header)
+	}
+}
+
 func TestBillingHeaderCarriesPrevRequestIDOnFollowUpTurns(t *testing.T) {
 	got := BillingHeader(testIdentity(), Turn{PrevRequestID: "req_011CfL3J5mtdJ5DhtF1opYTr"})
 	if !strings.Contains(got, "cc_prev_req=req_011CfL3J5mtdJ5DhtF1opYTr; cc_prompt_id=") {
@@ -475,7 +500,7 @@ func TestUserAgentConstructionForOtherEntrypointsIsInferred(t *testing.T) {
 	// No capture confirms this string; the test pins the construction so a
 	// change is deliberate rather than accidental.
 	got := messagesUserAgent(Identity{Entrypoint: EntrypointInteractive})
-	if got != "claude-cli/2.1.280 (external, cli)" {
+	if got != "claude-cli/2.1.304 (external, cli)" {
 		t.Errorf("User-Agent = %q, want the constructed form", got)
 	}
 }
@@ -504,8 +529,8 @@ func TestDefaultProfilePinsTheCapturedPathAndBetas(t *testing.T) {
 	if p.Path != "/v1/messages?beta=true" {
 		t.Errorf("Path = %q, want the captured path with its query string", p.Path)
 	}
-	if len(p.Betas) != 13 {
-		t.Fatalf("Betas has %d entries, want the captured 13", len(p.Betas))
+	if len(p.Betas) != 14 {
+		t.Fatalf("Betas has %d entries, want the captured 14", len(p.Betas))
 	}
 	if p.Betas[0] != "claude-code-20250219" || p.Betas[1] != "oauth-2025-04-20" {
 		t.Errorf("first betas = %q, %q; the capture puts claude-code-20250219 first", p.Betas[0], p.Betas[1])

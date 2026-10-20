@@ -6,7 +6,7 @@ ADR-0001 states that custom endpoints are forwarded transparently, streaming "th
 
 Anthropic distinguishes first-party Claude Code traffic from third-party traffic by fingerprint, not only by credential. A request forwarded verbatim from a foreign harness (Cursor, an OpenAI shim, any SDK) advertises that harness through its headers and through body fields Claude Code never sends. Forwarding it unaltered to an Anthropic-shaped endpoint is what the fingerprint check is looking for.
 
-`internal/ccidentity` therefore rewrites the request to match `.reference/claude-code-headers-20260923*.jsonl`, the captured first-party traffic. `internal/api/server.go` calls `ccidentity.ApplyBody` on the custom-endpoint path — the exact path ADR-0001 and ADR-0003 §2 declare untouched. That is payload alteration on the main route, so it is recorded here rather than left as a silent override.
+`internal/ccidentity` therefore rewrites the request to match the captured first-party traffic, currently `.reference/claude-code-headers-20261020.jsonl` (Claude Code 2.1.304; the 2.1.280 captures `.reference/claude-code-headers-20260923*.jsonl` stay as history). `internal/api/server.go` calls `ccidentity.ApplyBody` on the custom-endpoint path — the exact path ADR-0001 and ADR-0003 §2 declare untouched. That is payload alteration on the main route, so it is recorded here rather than left as a silent override.
 
 ## Decision
 
@@ -32,4 +32,4 @@ ADR-0001 remains authoritative. Its payload-alteration guarantee is narrowed by 
 - Foreign harnesses reach Anthropic-shaped endpoints without advertising themselves, which is the feature's purpose.
 - ADR-0001's guarantee no longer holds unconditionally for `customEndpoints`. It holds for every endpoint outside the scope in §1, and for any endpoint with `identity.disabled`.
 - Six request fields are silently dropped in scope. A caller that depends on `temperature` reaching an Anthropic-shaped endpoint must disable normalization for it.
-- The capture is the specification. `scripts/diff_claude_code_identity.py` gates the produced request against the committed JSONL, so a drift from the captured shape is a test failure rather than a wire surprise.
+- The capture is the specification. `scripts/diff_claude_code_identity.py` gates the produced request against the committed JSONL, so a drift from the captured shape is a test failure rather than a wire surprise. The gate cannot see Claude Code itself change: a new client version needs a fresh capture and a new baseline, as 2.1.304 did (new beta list, new `x-claude-code-prompt-id` header, new billing-line fields).

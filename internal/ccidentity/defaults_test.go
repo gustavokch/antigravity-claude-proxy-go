@@ -15,7 +15,7 @@ func TestDefaultProfileIsBuiltOnce(t *testing.T) {
 	first, second := DefaultProfile(), DefaultProfile()
 
 	if len(first.Dynamic) == 0 {
-		t.Fatal("Dynamic is empty; the captured profile has two dynamic headers")
+		t.Fatal("Dynamic is empty; the captured profile has dynamic headers")
 	}
 	if &first.Dynamic[0] != &second.Dynamic[0] {
 		t.Error("Dynamic is reallocated on every call; the profile is a constant and should be built once")
@@ -42,19 +42,25 @@ func TestDefaultProfileFieldsAreIntact(t *testing.T) {
 	if len(p.Omit) != len(omittedHeaders) {
 		t.Errorf("Omit has %d entries, want %d", len(p.Omit), len(omittedHeaders))
 	}
-	if len(p.Dynamic) != 2 {
-		t.Fatalf("Dynamic has %d entries, want the captured 2", len(p.Dynamic))
+	dynamic := map[string]DynamicHeader{}
+	for _, header := range p.Dynamic {
+		dynamic[header.Name] = header
 	}
-	if p.Dynamic[0].Name != "X-Claude-Code-Session-Id" || p.Dynamic[1].Name != "x-client-request-id" {
-		t.Errorf("Dynamic names = %q, %q", p.Dynamic[0].Name, p.Dynamic[1].Name)
+	for _, name := range []string{"X-Claude-Code-Session-Id", "x-claude-code-prompt-id", "x-client-request-id"} {
+		if _, ok := dynamic[name]; !ok {
+			t.Fatalf("Dynamic has no %q; names present: %v", name, p.Dynamic)
+		}
 	}
-	// The dynamic values are still computed per request: the session header is
-	// derived from the identity and the request id is fresh each time.
+	// The dynamic values are still computed per request: the session and prompt
+	// headers are derived from the identity and the request id is fresh each time.
 	id := Identity{SessionKey: "session-a"}
-	if got := p.Dynamic[1].Value(id, Turn{}); got == p.Dynamic[1].Value(id, Turn{}) {
+	requestID := dynamic["x-client-request-id"]
+	if got := requestID.Value(id, Turn{}); got == requestID.Value(id, Turn{}) {
 		t.Error("x-client-request-id repeated; a shared profile must not freeze its values")
 	}
-	if p.Dynamic[0].Value(id, Turn{}) != p.Dynamic[0].Value(id, Turn{}) {
-		t.Error("X-Claude-Code-Session-Id is unstable for one identity")
+	for _, name := range []string{"X-Claude-Code-Session-Id", "x-claude-code-prompt-id"} {
+		if dynamic[name].Value(id, Turn{}) != dynamic[name].Value(id, Turn{}) {
+			t.Errorf("%s is unstable for one identity", name)
+		}
 	}
 }

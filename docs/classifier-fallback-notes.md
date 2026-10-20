@@ -227,3 +227,25 @@ cannot answer.
 Fingerprints recorded here are verbatim quotes from observed traffic; nothing in
 the artifact is inferred. Values that could not be confirmed are marked
 `unknown`.
+
+### When Claude Code ships a new version
+
+The drift gate (`scripts/verify-claude-code-identity.sh`) compares the proxy with
+a frozen capture, so it cannot see Claude Code change. A new client version needs
+a fresh capture, then a new baseline. Done for 2.1.304 on 2026-10-20:
+
+1. `npm view @anthropic-ai/claude-code dist-tags` — `stable` is the version.
+2. Build an image with that version on top of the existing one, without
+   touching `~/Git/claude-container/Containerfile`:
+   `printf 'FROM localhost/claude-box:mitm\nRUN npm install -g @anthropic-ai/claude-code@<version>\n' > /tmp/cc/Containerfile && podman build -t localhost/claude-box:mitm-<version> -f /tmp/cc/Containerfile /tmp/cc`
+3. `CLAUDE_CAPTURE_IMAGE=claude-box:mitm-<version> scripts/capture-claude-code-headers.sh oauth`
+4. `python3 scripts/diff_claude_code_identity.py --baseline <old>.jsonl --observed <new>.jsonl`
+   lists every drift. Each one is a change to make in `internal/ccidentity`.
+5. Write `.reference/claude-code-headers-<date>.txt`, point `BASELINE` in
+   `scripts/verify-claude-code-identity.sh` at the new JSONL, and run the gate.
+
+The 2.1.304 capture showed that one prompt per process hides per-prompt
+behaviour. `cc_prompt_id` and `cc_turn_index` only move between prompts. Pipe
+several prompts, spaced apart, into one process with
+`claude --print --verbose --input-format stream-json --output-format stream-json`
+and record that run next to the main capture (`...-multiprompt.jsonl`).

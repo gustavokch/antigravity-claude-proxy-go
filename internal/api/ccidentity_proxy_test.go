@@ -142,7 +142,7 @@ func TestCustomEndpoint_AnthropicShapedEndpointIsNormalized(t *testing.T) {
 		t.Errorf("x-claude-code-request-class = %q, want main", got.requestClass)
 	}
 	if got.beta != strings.Join(ccidentity.Betas, ",") {
-		t.Errorf("anthropic-beta = %q, want the captured 13-entry order", got.beta)
+		t.Errorf("anthropic-beta = %q, want the captured 14-entry order", got.beta)
 	}
 	if got.sawSessionID == "" || got.sawRequestID == "" {
 		t.Errorf("session id = %q, request id = %q; both must be set", got.sawSessionID, got.sawRequestID)
@@ -176,7 +176,7 @@ func TestCustomEndpoint_AnthropicShapedEndpointIsNormalized(t *testing.T) {
 	}
 	first, _ := system[0].(map[string]any)
 	text, _ := first["text"].(string)
-	if !strings.HasPrefix(text, "x-anthropic-billing-header: cc_version=2.1.280.") {
+	if !strings.HasPrefix(text, "x-anthropic-billing-header: cc_version=2.1.304.") {
 		t.Errorf("system[0] = %q, want the generated billing header", text)
 	}
 }
@@ -505,7 +505,7 @@ func TestCustomEndpoint_IdentityOverridesAreHonoured(t *testing.T) {
 	if got.stainlessOS != "macOS" {
 		t.Errorf("X-Stainless-OS = %q, want the configured override", got.stainlessOS)
 	}
-	if got.userAgent != "claude-cli/2.1.280 (external, cli)" {
+	if got.userAgent != "claude-cli/2.1.304 (external, cli)" {
 		t.Errorf("User-Agent = %q, want the constructed cli form", got.userAgent)
 	}
 }

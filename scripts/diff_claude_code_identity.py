@@ -27,6 +27,7 @@ DYNAMIC_VALUE = {
     "host",                    # mitmdump rewrites this
     "x-claude-code-session-id",  # stable per process, not across processes
     "x-client-request-id",     # fresh per request
+    "x-claude-code-prompt-id",  # a fresh UUID per user prompt; equals cc_prompt_id
 }
 
 # Headers HTTP/2 does not carry as ordinary fields. Exempt from the presence
@@ -71,7 +72,11 @@ BILLING_HEADER_RE = re.compile(
     r"cch=[0-9a-f]{5}; "
     r"(?:cc_prev_req=\S+; )?"
     r"cc_prompt_id=(?:<uuid>|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}); "
-    r"cc_turn_origin=[\w-]+;$"
+    r"cc_turn_origin=[\w-]+; "
+    # Appended by Claude Code 2.1.304 to every request; the 2.1.280 capture has
+    # neither field, and a header without them is the previous client.
+    r"cc_prompt_index=\d+; "
+    r"cc_turn_index=\d+;$"
 )
 
 
@@ -225,40 +230,54 @@ def compare_body(baseline: list[dict], observed: dict) -> list[str]:
 def compare_correlations(observed: dict) -> list[str]:
     """Drifts in the RELATION between two values, not in either value alone.
 
-    Both x-claude-code-session-id and cc_prompt_id are exempt from value
-    comparison — one is stable per process, the other per session, and neither
-    survives across captures. That leaves the pair unchecked, and a proxy can
-    satisfy every single-field rule here while deriving both from one seed.
+    x-claude-code-session-id, x-claude-code-prompt-id and cc_prompt_id are all
+    exempt from value comparison — none of them survives across captures. That
+    leaves the relations between them unchecked, and a proxy can satisfy every
+    single-field rule here while deriving two of them wrongly.
 
-    The captures rule that out. In all six POST /v1/messages requests, across two
-    independent OAuth accounts, the two are different UUIDs:
+    Two relations hold in every captured request:
 
-        5c1c7cec-… / 7cd5023f-…    ca6f5fe3-… / 9f414346-…
-        ccbbdab8-… / b0f9a831-…    2ca893cf-… / fc5d5bcf-…
+    - The session id and cc_prompt_id are different UUIDs. They differ in all
+      six 2.1.280 requests across two independent OAuth accounts, and in all
+      seven 2.1.304 requests:
+
+          5c1c7cec-… / 7cd5023f-…    ca6f5fe3-… / 9f414346-…
+          ccbbdab8-… / b0f9a831-…    2ca893cf-… / fc5d5bcf-…
+
+    - x-claude-code-prompt-id, new in 2.1.304, equals cc_prompt_id. It does in
+      all seven 2.1.304 requests.
 
     Redacted placeholders are skipped: a capture recorded with redaction on
     carries <uuid> in both slots, which is the redactor agreeing with itself.
     """
     drifts: list[str] = []
 
-    session_pair = header_map(observed).get("x-claude-code-session-id")
+    headers = header_map(observed)
+    session_pair = headers.get("x-claude-code-session-id")
     session_id = session_pair[1] if session_pair else None
+    prompt_header_pair = headers.get("x-claude-code-prompt-id")
+    prompt_header = prompt_header_pair[1] if prompt_header_pair else None
 
     billing = observed.get("request_body", {})
     billing = billing.get("system_first_block") if isinstance(billing, dict) else None
     match = re.search(r"cc_prompt_id=(\S+?);", billing or "")
     prompt_id = match.group(1) if match else None
 
-    if not isinstance(session_id, str) or not prompt_id:
-        return drifts
-    if session_id.startswith("<") or prompt_id.startswith("<"):
-        return drifts
+    def concrete(value) -> bool:
+        return isinstance(value, str) and bool(value) and not value.startswith("<")
 
-    if session_id == prompt_id:
+    if concrete(session_id) and concrete(prompt_id) and session_id == prompt_id:
         drifts.append(
             "x-claude-code-session-id and cc_prompt_id are the same value "
-            f"({session_id}); the capture shows them different in 6 of 6 requests "
+            f"({session_id}); the capture shows them different in every request "
             "across two accounts, so one seed for both is a tell"
+        )
+
+    if concrete(prompt_header) and concrete(prompt_id) and prompt_header != prompt_id:
+        drifts.append(
+            f"x-claude-code-prompt-id ({prompt_header}) and cc_prompt_id "
+            f"({prompt_id}) differ; the capture shows one value in both slots "
+            "in every 2.1.304 request"
         )
 
     return drifts

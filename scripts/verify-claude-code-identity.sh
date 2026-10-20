@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Boots the proxy behind mitmdump, drives four requests across the three paths
 # that carry a wire identity, and checks each against the committed capture at
-# .reference/claude-code-headers-20260923.jsonl:
+# .reference/claude-code-headers-20261020.jsonl:
 #
 #   pooled gateway, normalized      full header and body diff against the capture
 #   custom endpoint, no apiKey      must present the captured identity
@@ -33,7 +33,7 @@ set -euo pipefail
 # request is the whole subject of this test.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASELINE="${REPO_ROOT}/.reference/claude-code-headers-20260923.jsonl"
+BASELINE="${REPO_ROOT}/.reference/claude-code-headers-20261020.jsonl"
 
 MITM_PORT="${ANTIGRAVITY_CC_IDENTITY_MITM_PORT:-18081}"
 PROXY_PORT="${ANTIGRAVITY_CC_IDENTITY_PROXY_PORT:-18099}"
