@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -11,9 +12,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/config"
 )
 
 var (
@@ -282,11 +285,15 @@ func TestCustomEndpoint_FollowUpNamesThePreviousRequest(t *testing.T) {
 			postInSession(t, h.ServeHTTP, "session-1", fmt.Sprintf(firstPrompt, model))
 			postInSession(t, h.ServeHTTP, "session-1", fmt.Sprintf(toolFollowUp(1), model))
 			postInSession(t, h.ServeHTTP, "session-2", fmt.Sprintf(toolFollowUp(1), model))
-			postInSession(t, h.ServeHTTP, "", fmt.Sprintf(toolFollowUp(1), model))
+			// A client with no session cannot be told from any other: the pair below
+			// must not link, though upstream issued the reply it echoes (request 4)
+			// to the request just before it.
+			postInSession(t, h.ServeHTTP, "", fmt.Sprintf(firstPrompt, model))
+			postInSession(t, h.ServeHTTP, "", fmt.Sprintf(toolFollowUp(4), model))
 
-			want := []string{"", "req_up_1", "", ""}
+			want := []string{"", "req_up_1", "", "", ""}
 			got := upstream.prevSent()
-			for i, name := range []string{"first request", "follow-up", "another session", "a request with no session"} {
+			for i, name := range []string{"first request", "follow-up", "another session", "first request with no session", "its follow-up"} {
 				if i >= len(got) || got[i] != want[i] {
 					t.Errorf("%s: cc_prev_req = %q, want %q (all: %q)", name, at(got, i), want[i], got)
 				}
@@ -299,30 +306,20 @@ func TestForwardToClaudeCode_FollowUpNamesThePreviousRequest(t *testing.T) {
 	for _, stream := range []bool{true, false} {
 		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
 			upstream := newReplyUpstream(t, stream)
-			cfg := claudecode.Config{
-				Enabled:   true,
-				BaseURL:   upstream.URL,
-				Mode:      "pool",
-				Accounts:  []claudecode.AccountConfig{{ID: "acc1", Token: "sk-ant-oat01-test-token", Enabled: true}},
-				Allowlist: claudecode.DefaultAllowlist(),
-				Routing:   claudecode.DefaultRoutingConfig(),
-			}
-			ccPoolMu.Lock()
-			ccPoolInst = nil
-			ccHTTPClient = nil
-			ccPoolMu.Unlock()
-
-			srv := &Server{ccReplies: ccidentity.NewReplyLog()}
 			model := "claude-sonnet-5"
-			serve := func(w http.ResponseWriter, r *http.Request) {
-				body, _ := io.ReadAll(r.Body)
-				srv.forwardToClaudeCode(w, r, cfg, body, model)
-			}
+			_, serve := newCCForwarder(t, ccPoolConfig(upstream.URL,
+				claudecode.AccountConfig{ID: "acc1", Token: "sk-ant-oat01-test-token", Enabled: true}), model)
+
 			postInSession(t, serve, "session-1", fmt.Sprintf(firstPrompt, model))
 			postInSession(t, serve, "session-1", fmt.Sprintf(toolFollowUp(1), model))
 			postInSession(t, serve, "session-1", fmt.Sprintf(toolFollowUp(2), model))
+			// A client with no session cannot be told from any other, so the pair
+			// below must not link, though upstream issued the reply it echoes
+			// (request 4) to the request just before it.
+			postInSession(t, serve, "", fmt.Sprintf(firstPrompt, model))
+			postInSession(t, serve, "", fmt.Sprintf(toolFollowUp(4), model))
 
-			want := []string{"", "req_up_1", "req_up_2"}
+			want := []string{"", "req_up_1", "req_up_2", "", ""}
 			got := upstream.prevSent()
 			for i := range want {
 				if at(got, i) != want[i] {
@@ -385,6 +382,141 @@ func TestForwardToClaudeCode_OnlyNormalizedRepliesAreRecorded(t *testing.T) {
 					t.Errorf("the log names %q for the follow-up of a reply upstream issued as req_up_1, want %q", got, tc.want)
 				}
 			})
+		}
+	}
+}
+
+// A request that fails over to another account is sent no request id the first
+// account issued: the second account never saw that request, and naming it
+// would claim a continuity that account's records do not have. The first
+// account's own attempt names the previous request, which shows the log knew it.
+func TestForwardToClaudeCode_FailoverNamesNoRequestOfAnotherAccount(t *testing.T) {
+	type attempt struct {
+		token, prev string
+		status      int
+	}
+	var (
+		mu       sync.Mutex
+		attempts []attempt
+		first    string
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		prev := ""
+		if m := billingPrevRE.FindSubmatch(body); m != nil {
+			prev = string(m[1])
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		n := len(attempts) + 1
+		if n == 1 {
+			first = token
+		}
+		// The account that served the first request is out of quota for the second.
+		status := http.StatusOK
+		if n > 1 && token == first {
+			status = http.StatusTooManyRequests
+		}
+		attempts = append(attempts, attempt{token, prev, status})
+
+		w.Header().Set("Content-Type", "application/json")
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("request-id", fmt.Sprintf("req_up_%d", n))
+		_, _ = fmt.Fprintf(w, `{"type":"message","id":"msg_%d","role":"assistant","content":[{"type":"tool_use","id":"toolu_up_%d","name":"Bash","input":{}}]}`, n, n)
+	}))
+	t.Cleanup(upstream.Close)
+
+	model := "claude-sonnet-5"
+	_, serve := newCCForwarder(t, ccPoolConfig(upstream.URL,
+		claudecode.AccountConfig{ID: "acc-a", Token: "sk-ant-oat01-token-a", Enabled: true},
+		claudecode.AccountConfig{ID: "acc-b", Token: "sk-ant-oat01-token-b", Enabled: true},
+	), model)
+
+	postInSession(t, serve, "session-1", fmt.Sprintf(firstPrompt, model))
+	postInSession(t, serve, "session-1", fmt.Sprintf(toolFollowUp(1), model))
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(attempts) != 3 {
+		t.Fatalf("upstream served %d attempts, want 3 (first request, the 429, the failover): %+v", len(attempts), attempts)
+	}
+	if attempts[1].token != attempts[0].token || attempts[1].status != http.StatusTooManyRequests {
+		t.Fatalf("the second request must first go to the account that served the first and be refused: %+v", attempts)
+	}
+	if attempts[2].token == attempts[0].token {
+		t.Fatalf("the failover attempt went to the same account: %+v", attempts)
+	}
+	if attempts[1].prev != "req_up_1" {
+		t.Errorf("the first account's attempt sent cc_prev_req %q, want req_up_1", attempts[1].prev)
+	}
+	if attempts[2].prev != "" {
+		t.Errorf("the second account was sent cc_prev_req %q, a request the first account issued", attempts[2].prev)
+	}
+}
+
+// A cache bump replays a turn so the cache entry stays warm. It must look like
+// the turn it repeats, so it sends the cc_prev_req the original sent. The client
+// never sees the bump's reply, so no later request echoes it, and the log keeps
+// nothing of it.
+func TestSendClaudeCodeBump_ReplaysThePreviousRequestAndRecordsNothing(t *testing.T) {
+	upstream := newReplyUpstream(t, false)
+	cfg := cacheBumpTestConfig(t, upstream.URL)
+	cfg.ClaudeCode.Accounts = []claudecode.AccountConfig{
+		{ID: "acc-a", Token: "sk-ant-oat01-token-a", Priority: 1, Enabled: true},
+	}
+	persistTestConfig(t, cfg)
+	resetCCPoolForTest()
+	t.Cleanup(resetCCPoolForTest)
+
+	srv, _, sched := newCacheBumpServer(t)
+	srv.ccReplies = ccidentity.NewReplyLog()
+	model := "claude-sonnet-5"
+	serve := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		srv.forwardToClaudeCode(w, r, config.Get().ClaudeCode, body, model)
+	}
+
+	// The follow-up carries the cache breakpoint the bump exists to keep warm.
+	cachedFollowUp := `{"model":"%s","max_tokens":64000,` +
+		`"system":[{"type":"text","text":"sys prompt","cache_control":{"type":"ephemeral"}}],` +
+		`"messages":[{"role":"user","content":"list the files"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_up_1","name":"Bash","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_up_1","content":"a.go","cache_control":{"type":"ephemeral"}}]}]}`
+	postInSession(t, serve, "sess-bump", fmt.Sprintf(firstPrompt, model))
+	postInSession(t, serve, "sess-bump", fmt.Sprintf(cachedFollowUp, model))
+
+	future := time.Now().Add(10 * time.Minute)
+	sched.Now = func() time.Time { return future }
+	sched.Tick(context.Background())
+
+	// Request 1 and the follow-up are the client's; request 3 is the bump.
+	got := upstream.prevSent()
+	if len(got) != 3 {
+		t.Fatalf("upstream served %d requests, want 3 (first request, follow-up, bump): cc_prev_req %q", len(got), got)
+	}
+	if got[1] != "req_up_1" || got[2] != got[1] {
+		t.Errorf("cc_prev_req = %q; the bump must send the one its original sent (req_up_1)", got)
+	}
+
+	// The bump's reply is toolu_up_3. A request echoing it names nothing, while
+	// the follow-up's own reply (toolu_up_2) is known: the log works, and the
+	// bump left nothing in it.
+	for _, tc := range []struct{ name, tool, want string }{
+		{"the reply the client received", "toolu_up_2", "req_up_2"},
+		{"the reply of the bump", "toolu_up_3", ""},
+	} {
+		echo := []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":"list the files"},`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"%s","name":"Bash","input":{}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"%s","content":"a.go"}]}]}`, tc.tool, tc.tool))
+		turn := ccidentity.TurnOf(echo)
+		if got := srv.ccReplies.PrevRequestID(ccReplyScope("acc-a", "sess-bump", turn), turn); got != tc.want {
+			t.Errorf("%s: the log names %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }
