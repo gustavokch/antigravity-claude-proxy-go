@@ -33,6 +33,10 @@ import (
 
 var startPprof func(*slog.Logger)
 
+// defaultListen is the address the proxy binds, and the status and web
+// subcommands contact, when ANTIGRAVITY_PROXY_LISTEN and -listen are unset.
+const defaultListen = "127.0.0.1:8080"
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -54,14 +58,14 @@ func main() {
 			fmt.Printf("✅ Antigravity proxy restarted (PID: %d)\n", pid)
 			return
 		case "status":
-			listen := envOr("ANTIGRAVITY_PROXY_LISTEN", "127.0.0.1:8080")
+			listen := envOr("ANTIGRAVITY_PROXY_LISTEN", defaultListen)
 			if err := cmdStatus(listen); err != nil {
 				fmt.Fprintf(os.Stderr, "Error getting status: %v\n", err)
 				os.Exit(1)
 			}
 			return
 		case "web":
-			listen := envOr("ANTIGRAVITY_PROXY_LISTEN", "127.0.0.1:8080")
+			listen := envOr("ANTIGRAVITY_PROXY_LISTEN", defaultListen)
 			if err := cmdWeb(listen); err != nil {
 				fmt.Fprintf(os.Stderr, "Error opening web UI: %v\n", err)
 				os.Exit(1)
@@ -85,7 +89,7 @@ func main() {
 
 func runServer(args []string) {
 	fs := flag.NewFlagSet("antigravity-proxy", flag.ExitOnError)
-	listen := fs.String("listen", envOr("ANTIGRAVITY_PROXY_LISTEN", "127.0.0.1:8080"), "HTTP listen address")
+	listen := fs.String("listen", envOr("ANTIGRAVITY_PROXY_LISTEN", defaultListen), "HTTP listen address")
 	port := fs.Int("port", 0, "HTTP listen port (overrides port in -listen)")
 	apiKey := fs.String("api-key", envOr("ANTIGRAVITY_PROXY_API_KEY", os.Getenv("API_KEY")), "optional local API key")
 	projectID := fs.String("project", os.Getenv("AGY_PROJECT_ID"), "optional managed Cloud Code project ID")
