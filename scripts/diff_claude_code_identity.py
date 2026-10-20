@@ -35,16 +35,64 @@ DYNAMIC_VALUE = {
     "x-stainless-arch",
 }
 
-# The Stainless SDK's spellings (normalizePlatform and normalizeArch), keyed by
-# what Python reports for the same machine.
-STAINLESS_OS = {
-    "Darwin": "MacOS", "Linux": "Linux", "Windows": "Windows",
-    "FreeBSD": "FreeBSD", "OpenBSD": "OpenBSD",
+# The Stainless SDK's spellings of the machine, as internal/ccidentity/defaults.go
+# HostOS and HostArch produce them. The SDK reads Node's process.platform and
+# process.arch and runs them through normalizePlatform and normalizeArch
+# (anthropic-sdk-typescript, src/internal/detect-platform.ts); what Python
+# reports is first renamed to Node's name for the same system, then normalized.
+#
+# platform.system() lowercases to Node's name except for Windows, which Node
+# calls win32.
+NODE_PLATFORM = {"windows": "win32"}
+# platform.machine() is lowercased and then looked up here; the 32-bit ARM
+# spellings (armv6l, armv7l, armv8l) are handled in node_arch.
+NODE_ARCH = {
+    "x86_64": "x64", "amd64": "x64",
+    "aarch64": "arm64", "arm64": "arm64",
+    "i386": "ia32", "i486": "ia32", "i586": "ia32", "i686": "ia32", "x86": "ia32",
+    "ppc64le": "ppc64",
+    "loongarch64": "loong64",
 }
-STAINLESS_ARCH = {
-    "arm64": "arm64", "aarch64": "arm64", "x86_64": "x64", "amd64": "x64", "AMD64": "x64",
-    "i386": "x32", "i686": "x32", "x86": "x32",
-}
+
+
+def node_platform(system: str) -> str:
+    name = system.lower()
+    return NODE_PLATFORM.get(name, name)
+
+
+def node_arch(machine: str) -> str:
+    name = machine.lower()
+    if name == "arm" or re.fullmatch(r"armv\d+\w*", name):
+        return "arm"
+    return NODE_ARCH.get(name, name)
+
+
+def normalize_platform(platform_name: str) -> str:
+    """The SDK's normalizePlatform, rule for rule."""
+    platform_name = platform_name.lower()
+    if "ios" in platform_name:
+        return "iOS"
+    for node_name, spelling in (
+        ("android", "Android"), ("darwin", "MacOS"), ("win32", "Windows"),
+        ("freebsd", "FreeBSD"), ("openbsd", "OpenBSD"), ("linux", "Linux"),
+    ):
+        if platform_name == node_name:
+            return spelling
+    return "Other:" + platform_name if platform_name else "Unknown"
+
+
+def normalize_arch(arch: str) -> str:
+    """The SDK's normalizeArch, rule for rule."""
+    if arch == "x32":
+        return "x32"
+    if arch in ("x86_64", "x64"):
+        return "x64"
+    if arch == "arm":
+        return "arm"
+    if arch in ("aarch64", "arm64"):
+        return "arm64"
+    return "other:" + arch if arch else "unknown"
+
 
 # Headers HTTP/2 does not carry as ordinary fields. Exempt from the presence
 # check only when the two captures disagree on HTTP version, which is itself
@@ -187,10 +235,9 @@ def host_identity() -> tuple[str, str]:
     The gate drives the proxy on this machine, so these are the values its
     TCP/IP stack backs up.
     """
-    system, machine = platform.system(), platform.machine()
     return (
-        STAINLESS_OS.get(system, "Other:" + system.lower()),
-        STAINLESS_ARCH.get(machine, "Other:" + machine),
+        normalize_platform(node_platform(platform.system())),
+        normalize_arch(node_arch(platform.machine())),
     )
 
 

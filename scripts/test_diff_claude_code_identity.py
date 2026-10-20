@@ -272,15 +272,45 @@ class HeaderDriftTest(unittest.TestCase):
         self.assertEqual(differ.compare_host(record(headers, BASELINE_BODY), host=("MacOS", "arm64")), [])
 
     def test_host_identity_uses_the_stainless_spellings(self):
-        with mock.patch.object(differ.platform, "system", return_value="Darwin"), \
-                mock.patch.object(differ.platform, "machine", return_value="x86_64"):
-            self.assertEqual(differ.host_identity(), ("MacOS", "x64"))
-        with mock.patch.object(differ.platform, "system", return_value="Linux"), \
-                mock.patch.object(differ.platform, "machine", return_value="aarch64"):
-            self.assertEqual(differ.host_identity(), ("Linux", "arm64"))
-        with mock.patch.object(differ.platform, "system", return_value="Plan9"), \
-                mock.patch.object(differ.platform, "machine", return_value="riscv64"):
-            self.assertEqual(differ.host_identity(), ("Other:plan9", "Other:riscv64"))
+        # The same hosts as TestHostSpellingsMatchTheStainlessSDK in
+        # internal/ccidentity/defaults_test.go, under the names Python reports
+        # for them. Go's HostOS/HostArch and this host_identity() must agree on a
+        # machine, or the gate reports a drift that is not one. Both follow the
+        # Stainless SDK's normalizePlatform and normalizeArch applied to Node's
+        # process.platform and process.arch.
+        hosts = [
+            (("Darwin", "arm64"), ("MacOS", "arm64")),
+            (("Darwin", "x86_64"), ("MacOS", "x64")),
+            (("Linux", "x86_64"), ("Linux", "x64")),
+            (("Linux", "aarch64"), ("Linux", "arm64")),
+            (("Linux", "armv7l"), ("Linux", "arm")),
+            (("Linux", "armv6l"), ("Linux", "arm")),
+            (("Linux", "armv8l"), ("Linux", "arm")),
+            (("Linux", "i686"), ("Linux", "other:ia32")),
+            (("Linux", "i386"), ("Linux", "other:ia32")),
+            (("Linux", "ppc64le"), ("Linux", "other:ppc64")),
+            (("Linux", "ppc64"), ("Linux", "other:ppc64")),
+            (("Linux", "riscv64"), ("Linux", "other:riscv64")),
+            (("Linux", "s390x"), ("Linux", "other:s390x")),
+            (("Linux", "loongarch64"), ("Linux", "other:loong64")),
+            (("Windows", "AMD64"), ("Windows", "x64")),
+            (("Windows", "ARM64"), ("Windows", "arm64")),
+            (("Windows", "x86"), ("Windows", "other:ia32")),
+            (("FreeBSD", "amd64"), ("FreeBSD", "x64")),
+            (("OpenBSD", "amd64"), ("OpenBSD", "x64")),
+            (("NetBSD", "amd64"), ("Other:netbsd", "x64")),
+            (("SunOS", "sun4v"), ("Other:sunos", "other:sun4v")),
+            (("Android", "aarch64"), ("Android", "arm64")),
+            (("iOS", "arm64"), ("iOS", "arm64")),
+            (("Plan9", "riscv64"), ("Other:plan9", "other:riscv64")),
+            # platform.system() and platform.machine() answer "" when they cannot tell.
+            (("", ""), ("Unknown", "unknown")),
+        ]
+        for (system, machine), want in hosts:
+            with self.subTest(system=system, machine=machine):
+                with mock.patch.object(differ.platform, "system", return_value=system), \
+                        mock.patch.object(differ.platform, "machine", return_value=machine):
+                    self.assertEqual(differ.host_identity(), want)
 
     def test_conditional_tool_durations_header_is_exempt_when_absent(self):
         base = baseline_record()

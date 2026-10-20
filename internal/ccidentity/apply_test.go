@@ -100,26 +100,6 @@ func TestStainlessOSAndArchOverridesWin(t *testing.T) {
 	}
 }
 
-// The spellings are the Stainless SDK's (normalizePlatform and normalizeArch),
-// not Go's or Node's: Go says darwin and amd64, the header says MacOS and x64.
-func TestHostSpellingsMatchTheStainlessSDK(t *testing.T) {
-	for goos, want := range map[string]string{
-		"darwin": "MacOS", "linux": "Linux", "windows": "Windows", "freebsd": "FreeBSD",
-		"openbsd": "OpenBSD", "android": "Android", "plan9": "Other:plan9",
-	} {
-		if got := HostOS(goos); got != want {
-			t.Errorf("HostOS(%q) = %q, want %q", goos, got, want)
-		}
-	}
-	for goarch, want := range map[string]string{
-		"amd64": "x64", "arm64": "arm64", "386": "x32", "arm": "arm", "riscv64": "Other:riscv64",
-	} {
-		if got := HostArch(goarch); got != want {
-			t.Errorf("HostArch(%q) = %q, want %q", goarch, got, want)
-		}
-	}
-}
-
 func TestApplyHeadersPreservesCapturedNameCase(t *testing.T) {
 	h := http.Header{}
 	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})

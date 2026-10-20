@@ -1,6 +1,9 @@
 package ccidentity
 
-import "runtime"
+import (
+	"runtime"
+	"strings"
+)
 
 // Values transcribed from .reference/claude-code-headers-20261020.txt, a live
 // capture of Claude Code 2.1.304's own traffic to api.anthropic.com. Each
@@ -129,40 +132,103 @@ func stainlessArch(id Identity) string {
 	return HostArch(runtime.GOARCH)
 }
 
-// HostOS maps a Go GOOS to the value the Stainless SDK's normalizePlatform
-// reports for the same platform.
+// HostOS is the X-Stainless-OS value the SDK reports on a machine whose Go
+// GOOS is goos.
+//
+// The SDK never sees GOOS. It reads Node's process.platform, so GOOS is first
+// renamed to what Node calls the same system and the SDK's normalizePlatform
+// then runs over that name unchanged. Skipping the first step spells windows as
+// "Other:windows" and solaris as "Other:solaris", where the SDK says "Windows"
+// and "Other:sunos".
 func HostOS(goos string) string {
-	switch goos {
-	case "darwin":
-		return "MacOS"
-	case "linux":
-		return "Linux"
-	case "windows":
-		return "Windows"
-	case "freebsd":
-		return "FreeBSD"
-	case "openbsd":
-		return "OpenBSD"
-	case "android":
-		return "Android"
-	}
-	return "Other:" + goos
+	return normalizePlatform(nodePlatform(goos))
 }
 
-// HostArch maps a Go GOARCH to the value the Stainless SDK's normalizeArch
-// reports for the same architecture.
+// HostArch is the X-Stainless-Arch value the SDK reports on a machine whose Go
+// GOARCH is goarch: Node's process.arch name for it, run through the SDK's
+// normalizeArch. The 32-bit x86 that Go calls 386 is "ia32" to Node, which
+// normalizeArch does not recognize and spells "other:ia32"; Node never reports
+// "x32".
 func HostArch(goarch string) string {
+	return normalizeArch(nodeArch(goarch))
+}
+
+// nodePlatform is Node's process.platform for a Go GOOS. The systems Node
+// supports that Go also names are spelled the same in both.
+func nodePlatform(goos string) string {
+	switch goos {
+	case "windows":
+		return "win32"
+	case "solaris", "illumos":
+		return "sunos"
+	}
+	return goos
+}
+
+// nodeArch is Node's process.arch for a Go GOARCH. Node does not tell the byte
+// orders of ppc64 apart, and spells the little-endian MIPS ones with an "el".
+// arm, arm64, loong64, mips, mips64, ppc64, riscv64 and s390x are spelled the
+// same in both.
+func nodeArch(goarch string) string {
 	switch goarch {
 	case "amd64":
 		return "x64"
-	case "arm64":
-		return "arm64"
 	case "386":
+		return "ia32"
+	case "ppc64le":
+		return "ppc64"
+	case "mipsle":
+		return "mipsel"
+	case "mips64le":
+		return "mips64el"
+	}
+	return goarch
+}
+
+// normalizeArch is the Stainless SDK's function of the same name
+// (anthropic-sdk-typescript, src/internal/detect-platform.ts), ported rule for
+// rule. It is given the runtime's own architecture string, which on Node is
+// process.arch.
+func normalizeArch(arch string) string {
+	switch arch {
+	case "x32":
 		return "x32"
+	case "x86_64", "x64":
+		return "x64"
 	case "arm":
 		return "arm"
+	case "aarch64", "arm64":
+		return "arm64"
+	case "":
+		return "unknown"
 	}
-	return "Other:" + goarch
+	return "other:" + arch
+}
+
+// normalizePlatform is the Stainless SDK's function of the same name, ported
+// rule for rule. It is given the runtime's platform string, which on Node is
+// process.platform, and lowercases it before comparing.
+func normalizePlatform(platform string) string {
+	platform = strings.ToLower(platform)
+	switch {
+	case strings.Contains(platform, "ios"):
+		return "iOS"
+	case platform == "android":
+		return "Android"
+	case platform == "darwin":
+		return "MacOS"
+	case platform == "win32":
+		return "Windows"
+	case platform == "freebsd":
+		return "FreeBSD"
+	case platform == "openbsd":
+		return "OpenBSD"
+	case platform == "linux":
+		return "Linux"
+	case platform != "":
+		return "Other:" + platform
+	}
+	return "Unknown"
 }
 
 // stainlessRuntimeVersion is the captured runtime version, overridable for the

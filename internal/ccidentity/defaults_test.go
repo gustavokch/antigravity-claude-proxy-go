@@ -64,3 +64,77 @@ func TestDefaultProfileFieldsAreIntact(t *testing.T) {
 		}
 	}
 }
+
+// HostOS and HostArch answer what the Stainless SDK would put in the header on
+// that machine. The SDK reads Node's process.platform and process.arch and
+// normalizes them (detect-platform.ts, normalizePlatform and normalizeArch), so
+// each row is a Go name, Node's name for the same system, and the SDK's verdict.
+// scripts/test_diff_claude_code_identity.py holds the same hosts under the names
+// Python reports for them; the two tables have to agree, or the gate reports a
+// drift that is not one.
+func TestHostSpellingsMatchTheStainlessSDK(t *testing.T) {
+	for _, row := range []struct{ goos, want string }{
+		{"darwin", "MacOS"},
+		{"linux", "Linux"},
+		{"windows", "Windows"}, // Node: win32
+		{"freebsd", "FreeBSD"},
+		{"openbsd", "OpenBSD"},
+		{"android", "Android"},
+		{"ios", "iOS"},
+		{"netbsd", "Other:netbsd"},
+		{"aix", "Other:aix"},
+		{"solaris", "Other:sunos"}, // Node: sunos, for illumos too
+		{"illumos", "Other:sunos"},
+		{"dragonfly", "Other:dragonfly"},
+		{"plan9", "Other:plan9"},
+	} {
+		if got := HostOS(row.goos); got != row.want {
+			t.Errorf("HostOS(%q) = %q, want %q", row.goos, got, row.want)
+		}
+	}
+	for _, row := range []struct{ goarch, want string }{
+		{"amd64", "x64"},
+		{"arm64", "arm64"},
+		{"arm", "arm"},
+		{"386", "other:ia32"}, // Node never says x32; it says ia32
+		{"ppc64", "other:ppc64"},
+		{"ppc64le", "other:ppc64"}, // Node does not tell the byte orders apart
+		{"mips", "other:mips"},
+		{"mipsle", "other:mipsel"},
+		{"mips64le", "other:mips64el"},
+		{"loong64", "other:loong64"},
+		{"riscv64", "other:riscv64"},
+		{"s390x", "other:s390x"},
+		{"wasm", "other:wasm"},
+	} {
+		if got := HostArch(row.goarch); got != row.want {
+			t.Errorf("HostArch(%q) = %q, want %q", row.goarch, got, row.want)
+		}
+	}
+}
+
+// The two SDK functions are ported unchanged, including the spellings Node never
+// produces, so that a Deno or Bun runtime string and the SDK's own rules read
+// the same here as there.
+func TestSDKNormalizersFollowDetectPlatform(t *testing.T) {
+	for in, want := range map[string]string{
+		"x32": "x32", "x86_64": "x64", "x64": "x64", "arm": "arm",
+		"aarch64": "arm64", "arm64": "arm64", "ia32": "other:ia32", "": "unknown",
+		// normalizeArch does not lowercase: only the platform does.
+		"ARM64": "other:ARM64",
+	} {
+		if got := normalizeArch(in); got != want {
+			t.Errorf("normalizeArch(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{
+		"darwin": "MacOS", "DARWIN": "MacOS", "win32": "Windows", "linux": "Linux",
+		"freebsd": "FreeBSD", "openbsd": "OpenBSD", "android": "Android",
+		"ios": "iOS", "iOS": "iOS", "xios": "iOS",
+		"sunos": "Other:sunos", "SunOS": "Other:sunos", "": "Unknown",
+	} {
+		if got := normalizePlatform(in); got != want {
+			t.Errorf("normalizePlatform(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
