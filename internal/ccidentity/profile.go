@@ -53,7 +53,7 @@ type Identity struct {
 	// Entrypoint is the cc_entrypoint value, e.g. "sdk-cli" or "cli".
 	Entrypoint string
 	// TurnOrigin is the cc_turn_origin value. The capture recorded "sdk" for
-	// every --print request; the interactive value is unverified.
+	// every --print request; a typed interactive prompt is TurnOriginHuman.
 	TurnOrigin string
 	// UserAgent overrides the messages-path User-Agent. Empty uses the default.
 	UserAgent string
@@ -82,6 +82,9 @@ type Turn struct {
 	// promptDigest identifies the latest prompt message. It seeds cc_prompt_id
 	// beside the session key and PromptNumber; see TurnOf.
 	promptDigest string
+	// firstPrompt is the first text the conversation's first prompt carries,
+	// which seeds the cc_version suffix; see versionSuffix.
+	firstPrompt string
 	// latestReply is the content of the latest assistant message, which
 	// ReplyLog.PrevRequestID looks up.
 	latestReply json.RawMessage

@@ -7,7 +7,8 @@ set -euo pipefail
 # that carry a wire identity, and checks each against the committed capture at
 # .reference/claude-code-headers-20261020.jsonl:
 #
-#   pooled gateway, normalized      full header and body diff against the capture
+#   pooled gateway, normalized      full header and body diff against the capture,
+#                                   and cch/cc_version derived as the client does
 #   custom endpoint, no apiKey      must present the captured identity
 #   custom endpoint with an apiKey  must present the CALLER's identity and keep
 #                                   the key, because x-api-key is on the omit list
@@ -434,6 +435,7 @@ if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" discovery \
 fi
 
 echo "Claude Code identity gate PASSED: the wire identity matches ${BASELINE##*/},"
+echo "cch and the cc_version suffix are the hashes the real client derives,"
 echo "the caller's system prompt survived alongside the billing marker,"
 echo "a keyed custom endpoint kept its credential and was not normalized,"
 echo "and every discovery request carried the captured User-Agent."

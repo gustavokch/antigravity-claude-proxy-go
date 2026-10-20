@@ -33,7 +33,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from diff_claude_code_identity import compare_correlations, header_map  # noqa: E402
+from diff_claude_code_identity import compare_billing, compare_correlations, header_map  # noqa: E402
 
 
 def load_records(path: str) -> list[dict]:
@@ -175,6 +175,7 @@ def check_normalized(
     headers = header_map(observed)
     problems.extend(check_http_version(baseline, observed))
     problems.extend(compare_correlations(observed))
+    problems.extend(compare_billing(observed))
 
     if expect_turn_index is not None:
         body = observed.get("request_body")

@@ -41,7 +41,8 @@ const systemReminderPrefix = "<system-reminder>"
 // reports the parse failure itself.
 //
 // TurnOf also keeps the content of the latest assistant message, the reply a
-// ReplyLog maps to the request id sent as cc_prev_req.
+// ReplyLog maps to the request id sent as cc_prev_req, and the first text of the
+// first prompt, which the cc_version suffix hashes.
 func TurnOf(body []byte) Turn {
 	var parsed struct {
 		Messages []struct {
@@ -55,11 +56,19 @@ func TurnOf(body []byte) Turn {
 
 	prompts := 0
 	var latest, reply json.RawMessage
+	var first string
 	for _, message := range parsed.Messages {
 		switch {
 		case message.Role == "assistant":
 			reply = message.Content
-		case message.Role == "user" && carriesPrompt(message.Content):
+		case message.Role == "user":
+			text, isPrompt := promptOf(message.Content)
+			if !isPrompt {
+				continue
+			}
+			if prompts == 0 {
+				first = text
+			}
 			prompts++
 			latest = message.Content
 		}
@@ -68,45 +77,55 @@ func TurnOf(body []byte) Turn {
 		return Turn{PromptNumber: 1, latestReply: reply}
 	}
 	digest := sha256.Sum256(latest)
-	return Turn{PromptNumber: prompts, promptDigest: hex.EncodeToString(digest[:]), latestReply: reply}
+	return Turn{PromptNumber: prompts, promptDigest: hex.EncodeToString(digest[:]), firstPrompt: first, latestReply: reply}
 }
 
-// carriesPrompt reports whether a user message's content holds something a
-// person sent, as opposed to tool output or injected reminders.
-func carriesPrompt(content json.RawMessage) bool {
+// promptOf reports whether a user message's content holds something a person
+// sent, as opposed to tool output or injected reminders, and returns the first
+// text of it.
+//
+// The text is what the real client hashes into the cc_version suffix: the
+// first text block of its first user message that is not injected context. In
+// the request body that context arrives as <system-reminder> blocks in the same
+// message, so they are skipped. A string content is the text itself.
+func promptOf(content json.RawMessage) (text string, isPrompt bool) {
 	content = bytes.TrimSpace(content)
 	if len(content) == 0 {
-		return false
+		return "", false
 	}
 	switch content[0] {
 	case '"':
-		var text string
 		if json.Unmarshal(content, &text) != nil {
-			return false
+			return "", false
 		}
-		return isPromptText(text)
+		return text, isPromptText(text)
 	case '[':
 		var blocks []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		}
 		if json.Unmarshal(content, &blocks) != nil {
-			return false
+			return "", false
 		}
+		found := false
 		for _, block := range blocks {
 			switch block.Type {
 			case "tool_result":
 			case "text":
 				if isPromptText(block.Text) {
-					return true
+					if !found {
+						text = block.Text
+					}
+					found = true
 				}
 			default:
 				// An image or a document is something a person attached.
-				return true
+				isPrompt = true
 			}
 		}
+		return text, isPrompt || found
 	}
-	return false
+	return "", false
 }
 
 func isPromptText(text string) bool {

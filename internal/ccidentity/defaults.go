@@ -5,9 +5,8 @@ package ccidentity
 // constant names the artifact it came from. Nothing here is inferred unless the
 // comment says so and says why.
 const (
-	// ClientVersion is the version literal in cc_version, minus the build suffix
-	// the capture shows varying per process (2.1.304.456, 2.1.304.d31 and
-	// 2.1.304.39c were each observed from one binary).
+	// ClientVersion is the version literal in cc_version, minus the suffix that
+	// versionSuffix derives from the conversation's first prompt.
 	ClientVersion = "2.1.304"
 
 	// MessagesUserAgent is the User-Agent on POST /v1/messages. The capture
@@ -27,9 +26,12 @@ const (
 	EntrypointSDKCLI      = "sdk-cli"
 	EntrypointInteractive = "cli"
 
-	// TurnOriginSDK is the cc_turn_origin value observed alongside sdk-cli. The
-	// interactive value is unverified.
-	TurnOriginSDK = "sdk"
+	// TurnOriginSDK is the cc_turn_origin value observed alongside sdk-cli.
+	// TurnOriginHuman is the value the 2.1.304 binary gives a prompt a person
+	// typed into an interactive session (origin kind "human"); it is the only
+	// origin that advances cc_prompt_index.
+	TurnOriginSDK   = "sdk"
+	TurnOriginHuman = "human"
 
 	// MessagesPath includes the query string the capture shows. A request to
 	// /v1/messages without ?beta=true does not match the captured traffic.

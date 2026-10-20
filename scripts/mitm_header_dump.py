@@ -28,6 +28,11 @@ preserved). Everything the caller typed — prompts, file
 contents, tool output — stays out of the capture file by construction, not by
 review.
 
+A body that carries Claude Code's billing header also gets a "billing" entry:
+the cch and cc_version suffix it sent and the values scripts/cc_billing.py
+derives from the same bytes. Both are hashes, so no caller text is recorded,
+and a capture of the real client checks the derivation against that release.
+
 Output path comes from $MITM_DUMP_OUT (default /tmp/agy-headers-mitm.jsonl),
 appended, flushed per line.
 """
@@ -38,7 +43,12 @@ import hashlib
 import json
 import os
 import re
+import sys
 from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from cc_billing import billing_verdict  # noqa: E402
 
 try:  # mitmproxy is absent when the unit tests import this module
     import mitmproxy.http
@@ -252,6 +262,9 @@ def body_fingerprint(content: bytes) -> dict | None:
     generation = generation_config_fingerprint(body)
     if generation is not None:
         fingerprint["generation_config"] = generation
+    billing = billing_verdict(content)
+    if billing is not None:
+        fingerprint["billing"] = billing
     return fingerprint
 
 

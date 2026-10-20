@@ -380,22 +380,6 @@ func TestBillingHeaderMatchesCapturedShape(t *testing.T) {
 	}
 }
 
-func TestBillingHeaderCCHIsFreshPerRequest(t *testing.T) {
-	id := testIdentity()
-	first := BillingHeader(id, Turn{})
-	second := BillingHeader(id, Turn{})
-	if first == second {
-		t.Error("two requests produced identical billing headers; cch must be fresh")
-	}
-	// Everything except cch is stable within one session.
-	strip := func(s string) string {
-		return regexp.MustCompile(`cch=[0-9a-f]{5}`).ReplaceAllString(s, "cch=X")
-	}
-	if strip(first) != strip(second) {
-		t.Errorf("only cch should vary within a session:\n %q\n %q", first, second)
-	}
-}
-
 // promptIDRE pulls cc_prompt_id out of a billing header.
 var promptIDRE = regexp.MustCompile(`cc_prompt_id=([0-9a-f-]{36})`)
 
@@ -480,13 +464,27 @@ func TestBillingHeaderCarriesPrevRequestIDOnFollowUpTurns(t *testing.T) {
 func TestBillingHeaderEntrypointAndOriginFollowTheIdentity(t *testing.T) {
 	id := testIdentity()
 	id.Entrypoint = EntrypointInteractive
-	id.TurnOrigin = "cli"
+	id.TurnOrigin = TurnOriginHuman
 	got := BillingHeader(id, Turn{})
 	if !strings.Contains(got, "cc_entrypoint=cli;") {
 		t.Errorf("billing header = %q, want the configured entrypoint", got)
 	}
-	if !strings.Contains(got, "cc_turn_origin=cli;") {
+	if !strings.Contains(got, "cc_turn_origin=human;") {
 		t.Errorf("billing header = %q, want the configured turn origin", got)
+	}
+}
+
+// The binary adds 1 to cc_prompt_index only for a turn whose origin is human,
+// so a human identity counts prompts in both fields and any other origin keeps
+// the index at 0.
+func TestBillingHeaderPromptIndexCountsOnlyHumanTurns(t *testing.T) {
+	human := testIdentity()
+	human.TurnOrigin = TurnOriginHuman
+	if got := BillingHeader(human, Turn{PromptNumber: 3}); !strings.Contains(got, "cc_prompt_index=3; cc_turn_index=3;") {
+		t.Errorf("human billing header = %q, want prompt and turn index 3", got)
+	}
+	if got := BillingHeader(testIdentity(), Turn{PromptNumber: 3}); !strings.Contains(got, "cc_prompt_index=0; cc_turn_index=3;") {
+		t.Errorf("sdk billing header = %q, want prompt index 0 and turn index 3", got)
 	}
 }
 

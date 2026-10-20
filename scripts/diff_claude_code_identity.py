@@ -292,6 +292,40 @@ def compare_correlations(observed: dict) -> list[str]:
     return drifts
 
 
+def compare_billing(observed: dict) -> list[str]:
+    """Drifts between the billing header's hashed fields and the body.
+
+    Both values are derived by the real client from the request itself:
+
+    - cch is the hash of the body bytes as sent.
+    - The cc_version suffix is the hash of the first prompt's text.
+
+    The addon records each value next to the one scripts/cc_billing.py derives
+    from the same bytes, and the derivation reproduces every body captured from
+    Claude Code 2.1.304. A record without that verdict is a drift, not a pass:
+    it means the capture was taken with an older addon and nothing was checked.
+    """
+    verdict = observed.get("request_body", {})
+    verdict = verdict.get("billing") if isinstance(verdict, dict) else None
+    if not isinstance(verdict, dict):
+        return [
+            "the record carries no billing verdict, so cch and the cc_version "
+            "suffix are unchecked (record with the current scripts/mitm_header_dump.py)"
+        ]
+    drifts: list[str] = []
+    for field, what in (("cch", "the hash of the body as sent"),
+                        ("version_suffix", "the hash of the first prompt")):
+        sent, expected = verdict.get(field), verdict.get(field + "_expected")
+        if sent is None or expected is None:
+            drifts.append(f"billing {field} could not be located in the body")
+        elif sent != expected:
+            drifts.append(
+                f"billing {field} is {sent}, the real client sends {expected}: "
+                f"it must be {what}"
+            )
+    return drifts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", required=True)
@@ -317,6 +351,7 @@ def main() -> int:
     drifts.extend(compare_headers(baseline, observed))
     drifts.extend(compare_body(baseline, observed))
     drifts.extend(compare_correlations(observed))
+    drifts.extend(compare_billing(observed))
 
     if drifts:
         print(f"{len(drifts)} drift(s) against {args.baseline}:", file=sys.stderr)

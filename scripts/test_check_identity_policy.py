@@ -60,6 +60,14 @@ def observed_get(ua=DISCOVERY_UA, path="/v1/models", method="GET", **overrides):
     return record
 
 
+# A billing verdict whose sent values equal the derived ones, as the addon
+# records for a correctly normalized request.
+PASSING_BILLING = {
+    "cch": "12933", "cch_expected": "12933",
+    "version_suffix": "741", "version_suffix_expected": "741",
+}
+
+
 def observed_normalized(**overrides):
     record = {
         "method": "POST",
@@ -70,6 +78,7 @@ def observed_normalized(**overrides):
             ["x-claude-code-request-class", "main"],
             ["x-stainless-os", "Linux"],
         ],
+        "request_body": {"billing": PASSING_BILLING},
     }
     record.update(overrides)
     return record
@@ -147,7 +156,10 @@ class NormalizedTest(unittest.TestCase):
 
     def test_rejects_a_prompt_id_header_that_disagrees_with_the_billing_one(self):
         observed = observed_normalized(
-            request_body={"system_first_block": "x; cc_prompt_id=aaaaaaaa-0000-0000-0000-000000000000; cc_turn_index=1;"},
+            request_body={
+                "system_first_block": "x; cc_prompt_id=aaaaaaaa-0000-0000-0000-000000000000; cc_turn_index=1;",
+                "billing": PASSING_BILLING,
+            },
         )
         observed["headers"].append(["x-claude-code-prompt-id", "bbbbbbbb-0000-0000-0000-000000000000"])
         problems = policy.check_normalized(baseline_post(), observed)
@@ -155,7 +167,10 @@ class NormalizedTest(unittest.TestCase):
 
     def test_checks_the_turn_index_against_the_prompts_sent(self):
         observed = observed_normalized(
-            request_body={"system_first_block": "x; cc_prompt_id=aaaaaaaa-0000-0000-0000-000000000000; cc_turn_index=1;"},
+            request_body={
+                "system_first_block": "x; cc_prompt_id=aaaaaaaa-0000-0000-0000-000000000000; cc_turn_index=1;",
+                "billing": PASSING_BILLING,
+            },
         )
         self.assertEqual(policy.check_normalized(baseline_post(), observed, expect_turn_index=1), [])
         problems = policy.check_normalized(baseline_post(), observed, expect_turn_index=2)
@@ -164,6 +179,21 @@ class NormalizedTest(unittest.TestCase):
     def test_a_missing_turn_index_cannot_satisfy_an_expectation(self):
         problems = policy.check_normalized(baseline_post(), observed_normalized(), expect_turn_index=2)
         self.assertTrue(any("no cc_turn_index" in p for p in problems), problems)
+
+    def test_rejects_a_cch_that_is_not_the_hash_of_the_body(self):
+        # A random cch has the right shape and passes every format check; only
+        # the hash relation tells it from the real client's value.
+        billing = dict(PASSING_BILLING, cch="abcde")
+        problems = policy.check_normalized(
+            baseline_post(), observed_normalized(request_body={"billing": billing})
+        )
+        self.assertTrue(any("billing cch is abcde" in p for p in problems), problems)
+
+    def test_a_record_without_a_billing_verdict_is_not_a_pass(self):
+        problems = policy.check_normalized(
+            baseline_post(), observed_normalized(request_body={})
+        )
+        self.assertTrue(any("no billing verdict" in p for p in problems), problems)
 
 
 class PassthroughTest(unittest.TestCase):

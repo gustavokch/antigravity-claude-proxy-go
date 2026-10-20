@@ -1,12 +1,14 @@
 package ccidentity
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -16,16 +18,6 @@ import (
 // through: an unnormalised body is exactly the fingerprint this package exists
 // to remove, so silently forwarding it would be worse than refusing.
 var ErrNotAnObject = errors.New("ccidentity: request body is not a JSON object")
-
-// buildSuffix is the third component of cc_version, e.g. the "456" in
-// 2.1.304.456. The capture shows it differing BETWEEN processes and stable
-// within one, so it is generated once per process. Its derivation is unknown;
-// any stable 3-hex value reproduces the observed variation.
-var buildSuffix = func() string {
-	value := make([]byte, 2)
-	_, _ = rand.Read(value)
-	return hex.EncodeToString(value)[:3]
-}()
 
 // ApplyHeaders rewrites h into the captured Claude Code header set.
 //
@@ -86,30 +78,167 @@ const OAuthBetaKey = "anthropic-beta"
 // metadata.user_id becomes the captured stringified JSON object, system block 0
 // becomes a freshly generated billing header, and top-level fields Claude Code
 // does not send are removed.
+//
+// The output is written the way the real client writes it, because the cch in
+// the billing header is a hash of these exact bytes (see signCCH):
+//
+//   - Top-level keys follow bodyFieldOrder, the captured order, so "model" is
+//     the first key, as the hash's "first model field" rule assumes. Keys the
+//     capture does not show follow in the caller's order.
+//   - Values this function does not rewrite are the caller's own bytes,
+//     compacted, so nested key order and string escapes are not re-encoded.
+//   - Values it writes are encoded without HTML escaping, as JSON.stringify
+//     does: Go's default turns "<" into \u003c, which no JavaScript client sends.
 func ApplyBody(body []byte, p Profile, id Identity, turn Turn) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
 	}
-	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("ccidentity: parse request body: %w", err)
-	}
-	if parsed == nil {
-		return nil, ErrNotAnObject
-	}
-
-	parsed["metadata"] = metadataWithUserID(parsed["metadata"], p, id)
-	parsed["system"] = systemWithBillingHeader(parsed["system"], id, turn)
-
-	for _, name := range omittedBodyFields {
-		delete(parsed, name)
-	}
-
-	encoded, err := json.Marshal(parsed)
+	fields, err := objectFields(body)
 	if err != nil {
-		return nil, fmt.Errorf("ccidentity: re-encode request body: %w", err)
+		return nil, err
+	}
+	for _, name := range omittedBodyFields {
+		delete(fields.values, name)
+	}
+
+	var existingMetadata any
+	if raw, ok := fields.values["metadata"]; ok {
+		_ = json.Unmarshal(raw, &existingMetadata)
+	}
+	metadata, err := marshalJS(metadataWithUserID(existingMetadata, p, id))
+	if err != nil {
+		return nil, fmt.Errorf("ccidentity: encode metadata: %w", err)
+	}
+	fields.values["metadata"] = metadata
+
+	system, signed, err := systemWithBillingHeader(fields.values["system"], id, turn)
+	if err != nil {
+		return nil, err
+	}
+	fields.values["system"] = system
+
+	out := bytes.NewBuffer(make([]byte, 0, len(body)+512))
+	placeholderAt := -1
+	out.WriteByte('{')
+	write := func(key string) error {
+		value, ok := fields.values[key]
+		if !ok {
+			return nil
+		}
+		delete(fields.values, key)
+		if out.Len() > 1 {
+			out.WriteByte(',')
+		}
+		encodedKey, err := marshalJS(key)
+		if err != nil {
+			return err
+		}
+		out.Write(encodedKey)
+		out.WriteByte(':')
+		start := out.Len()
+		if err := json.Compact(out, value); err != nil {
+			return err
+		}
+		if key == "system" && signed {
+			// Block 0 is the billing header, so the first placeholder in
+			// the array is the one to sign.
+			if at := bytes.Index(out.Bytes()[start:], []byte(cchPlaceholder)); at >= 0 {
+				placeholderAt = start + at
+			}
+		}
+		return nil
+	}
+	for _, key := range bodyFieldOrder {
+		if err := write(key); err != nil {
+			return nil, fmt.Errorf("ccidentity: re-encode request body: %w", err)
+		}
+	}
+	for _, key := range fields.order {
+		if err := write(key); err != nil {
+			return nil, fmt.Errorf("ccidentity: re-encode request body: %w", err)
+		}
+	}
+	out.WriteByte('}')
+
+	encoded := out.Bytes()
+	if placeholderAt >= 0 {
+		signCCH(encoded, placeholderAt)
 	}
 	return encoded, nil
+}
+
+// bodyFieldOrder is the top-level key order of a captured Claude Code 2.1.304
+// /v1/messages body (testdata/claude-code-2.1.304-bodies.jsonl.gz).
+var bodyFieldOrder = []string{
+	"model",
+	"messages",
+	"system",
+	"tools",
+	"metadata",
+	"max_tokens",
+	"thinking",
+	"context_management",
+	"output_config",
+	"diagnostics",
+	"stream",
+}
+
+// bodyFields is a JSON object's top-level members, in the order they arrived.
+type bodyFields struct {
+	order  []string
+	values map[string]json.RawMessage
+}
+
+// objectFields splits body into its top-level members without decoding them.
+// A key that appears twice keeps its first position and its last value, as
+// encoding/json's own map decoding keeps the last value.
+func objectFields(body []byte) (bodyFields, error) {
+	parseError := func(err error) (bodyFields, error) {
+		return bodyFields{}, fmt.Errorf("ccidentity: parse request body: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	token, err := decoder.Token()
+	if err != nil {
+		return parseError(err)
+	}
+	if token != json.Delim('{') {
+		return bodyFields{}, ErrNotAnObject
+	}
+	fields := bodyFields{values: map[string]json.RawMessage{}}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return parseError(err)
+		}
+		key, _ := token.(string)
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return parseError(err)
+		}
+		if _, seen := fields.values[key]; !seen {
+			fields.order = append(fields.order, key)
+		}
+		fields.values[key] = value
+	}
+	if _, err := decoder.Token(); err != nil {
+		return parseError(err)
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return parseError(errors.New("data after the top-level object"))
+	}
+	return fields, nil
+}
+
+// marshalJS encodes v the way JSON.stringify does for the values this package
+// writes: no HTML escaping and no trailing newline.
+func marshalJS(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 // omittedBodyFields are top-level fields Claude Code does not send in the
@@ -269,32 +398,33 @@ func formatUUID(value [16]byte) string {
 		"-" + encoded[16:20] + "-" + encoded[20:32]
 }
 
-// BillingHeader generates the captured system-block-0 line.
+// BillingHeader generates the captured system-block-0 line, with cch still the
+// placeholder 00000. ApplyBody replaces it with the hash of the final body.
 //
 // Captured forms, verbatim from .reference/claude-code-headers-20261020.txt:
 //
 //	x-anthropic-billing-header: cc_version=2.1.304.456; cc_entrypoint=sdk-cli; cch=6cba6; cc_prompt_id=<uuid>; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;
 //	x-anthropic-billing-header: cc_version=2.1.304.d31; cc_entrypoint=sdk-cli; cch=bfd5f; cc_prev_req=req_011CgDkvRyJGtnMF7Y4UgAR7; cc_prompt_id=<uuid>; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;
 //
-// Three values are per-request or per-process rather than constant, which is why
-// this is generated instead of matched:
+// The values that change are derived the way the 2.1.304 binary derives them:
 //
-//   - cc_version carries a per-process build suffix.
-//   - cch differs on every request. Its derivation is unknown; a fresh 5-hex
-//     value reproduces the observed variation.
+//   - The cc_version suffix is a hash of the conversation's first prompt; see
+//     versionSuffix.
+//   - cch is a hash of the whole request body; see signCCH.
 //   - cc_prev_req names the request that produced the reply the latest
 //     assistant message echoes, so it is absent on a conversation's first
 //     request. ReplyLog supplies it; see there for how the client derives it.
 //     It is written only when it matches the client's own guard,
 //     requestIDPattern, because the value comes from an upstream response
 //     header and is spliced into this line.
-//
-// cc_prompt_index and cc_turn_index are new in 2.1.304. cc_prompt_index was 0 in
-// all 7 captured messages requests, so nothing shows what moves it and it is sent as 0.
-// cc_turn_index counts user prompts from 1: three prompts sent one at a time in
-// one process gave 1, 2, 3, and the tool follow-up of the third repeated 3
-// (.reference/claude-code-headers-20261020-multiprompt.jsonl). It is the turn's
-// PromptNumber, which TurnOf reads from the request body.
+//   - cc_turn_index counts user prompts from 1: three prompts sent one at a
+//     time in one process gave 1, 2, 3, and the tool follow-up of the third
+//     repeated 3 (.reference/claude-code-headers-20261020-multiprompt.jsonl).
+//     It is the turn's PromptNumber, which TurnOf reads from the request body.
+//   - cc_prompt_index counts the turns whose origin is "human" and stays 0
+//     otherwise: the binary adds 1 to it only for a human turn. Every turn of
+//     one identity has the same origin, so it is PromptNumber for a human
+//     origin and 0 for any other.
 func BillingHeader(id Identity, turn Turn) string {
 	version := id.ClientVersion
 	if version == "" {
@@ -308,19 +438,20 @@ func BillingHeader(id Identity, turn Turn) string {
 	if origin == "" {
 		origin = TurnOriginSDK
 	}
+	promptIndex := 0
+	if origin == TurnOriginHuman {
+		promptIndex = turn.promptNumber()
+	}
 
 	var b strings.Builder
 	b.WriteString("x-anthropic-billing-header: cc_version=")
 	b.WriteString(version)
 	b.WriteString(".")
-	b.WriteString(buildSuffix)
+	b.WriteString(versionSuffix(turn.firstPrompt, version))
 	b.WriteString("; cc_entrypoint=")
 	b.WriteString(entrypoint)
-	b.WriteString("; cch=")
-	// Five hex characters, as captured. randomHex reads whole bytes and returns
-	// two characters per byte, so three bytes is the smallest read that covers
-	// five; the sixth character is discarded rather than padded.
-	b.WriteString(randomHex(3)[:5])
+	b.WriteString("; ")
+	b.WriteString(cchPlaceholder)
 	b.WriteString("; ")
 	if requestIDPattern.MatchString(turn.PrevRequestID) {
 		b.WriteString("cc_prev_req=")
@@ -331,21 +462,23 @@ func BillingHeader(id Identity, turn Turn) string {
 	b.WriteString(promptUUID(id, turn))
 	b.WriteString("; cc_turn_origin=")
 	b.WriteString(origin)
-	b.WriteString("; cc_prompt_index=0; cc_turn_index=")
+	b.WriteString("; cc_prompt_index=")
+	b.WriteString(strconv.Itoa(promptIndex))
+	b.WriteString("; cc_turn_index=")
 	b.WriteString(strconv.Itoa(turn.promptNumber()))
 	b.WriteString(";")
 	return b.String()
 }
 
-// randomHex returns 2*n hex characters.
-func randomHex(bytes int) string {
-	value := make([]byte, bytes)
-	_, _ = rand.Read(value)
-	return hex.EncodeToString(value)
+// textBlock is a system text block in the captured key order.
+type textBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // systemWithBillingHeader puts the generated billing header at system block 0,
-// preserving the rest of the system prompt.
+// preserving the rest of the system prompt byte for byte. It reports whether
+// the header was placed, which is when the body's cch must be signed.
 //
 // A plain string system prompt is promoted to the block array the capture shows,
 // because that is the shape Claude Code sends and a string would be a
@@ -359,39 +492,56 @@ func randomHex(bytes int) string {
 // already a billing header is replaced instead, so a caller that really is
 // Claude Code does not end up sending two.
 //
-// A block whose type is not "text" is left alone: replacing it would destroy
-// content this package cannot reconstruct.
-func systemWithBillingHeader(existing any, id Identity, turn Turn) any {
-	header := BillingHeader(id, turn)
-	marker := map[string]any{"type": "text", "text": header}
-	switch system := existing.(type) {
-	case string:
-		return []any{marker, map[string]any{"type": "text", "text": system}}
-	case []any:
-		if len(system) == 0 {
-			return []any{marker}
+// A block 0 that is not an object, or whose type is not "text", leaves the
+// system prompt alone: replacing it would destroy content this package cannot
+// reconstruct.
+func systemWithBillingHeader(existing json.RawMessage, id Identity, turn Turn) (json.RawMessage, bool, error) {
+	marker, err := marshalJS(textBlock{Type: "text", Text: BillingHeader(id, turn)})
+	if err != nil {
+		return nil, false, fmt.Errorf("ccidentity: encode billing header: %w", err)
+	}
+	array := func(blocks ...[]byte) json.RawMessage {
+		return append(append([]byte{'['}, bytes.Join(blocks, []byte{','})...), ']')
+	}
+
+	existing = bytes.TrimSpace(existing)
+	if len(existing) == 0 {
+		// No system field at all: add the block array Claude Code sends rather
+		// than omitting the marker entirely.
+		return array(marker), true, nil
+	}
+	switch existing[0] {
+	case '"':
+		// The caller's own string bytes, so its escaping is kept.
+		promoted := append(append([]byte(`{"type":"text","text":`), existing...), '}')
+		return array(marker, promoted), true, nil
+	case '[':
+		var blocks []json.RawMessage
+		if err := json.Unmarshal(existing, &blocks); err != nil {
+			return nil, false, fmt.Errorf("ccidentity: parse system: %w", err)
 		}
-		first, ok := system[0].(map[string]any)
-		if !ok {
-			return system
+		if len(blocks) == 0 {
+			return array(marker), true, nil
+		}
+		var first map[string]any
+		if json.Unmarshal(blocks[0], &first) != nil || first == nil {
+			return existing, false, nil
 		}
 		kind, _ := first["type"].(string)
 		if kind != "" && kind != "text" {
-			return system
+			return existing, false, nil
 		}
 		if text, _ := first["text"].(string); strings.HasPrefix(text, billingHeaderPrefix) {
-			replaced := make([]any, len(system))
-			copy(replaced, system)
-			replaced[0] = marker
-			return replaced
+			blocks = blocks[1:]
 		}
-		prepended := make([]any, 0, len(system)+1)
-		prepended = append(prepended, marker)
-		return append(prepended, system...)
+		raw := make([][]byte, 0, len(blocks)+1)
+		raw = append(raw, marker)
+		for _, block := range blocks {
+			raw = append(raw, block)
+		}
+		return array(raw...), true, nil
 	default:
-		// No system field at all: add the block array Claude Code sends rather
-		// than omitting the marker entirely.
-		return []any{marker}
+		return array(marker), true, nil
 	}
 }
 
