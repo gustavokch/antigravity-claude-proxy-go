@@ -1376,7 +1376,7 @@
                                             x-text="ccIdentityIsCustom ? ($store.global.t('ccIdentityCustom') || 'CUSTOM') : ($store.global.t('ccIdentityDefault') || 'DEFAULT')">DEFAULT</span>
                                     </summary>
                                     <div class="disclosure-body stack">
-                                        <p class="field-help" x-text="$store.global.t('ccIdentityDesc') || 'Outbound requests are normalized to the captured Claude Code fingerprint by default. Leave every field blank to use the captured values.'">Outbound requests are normalized to the captured Claude Code fingerprint by default. Leave every field blank to use the captured values.</p>
+                                        <p class="field-help" x-text="$store.global.t('ccIdentityDesc') || 'Outbound requests are normalized to the captured Claude Code fingerprint by default. Leave every field blank to use the captured values; a blank Stainless OS or Stainless Arch uses the OS and architecture of the machine the proxy runs on.'">Outbound requests are normalized to the captured Claude Code fingerprint by default. Leave every field blank to use the captured values; a blank Stainless OS or Stainless Arch uses the OS and architecture of the machine the proxy runs on.</p>
                                         <label class="cluster">
                                             <input type="checkbox" class="checkbox"
                                                 x-model="ccConfig.identity.disabled"
@@ -1403,6 +1403,10 @@
                                             <div class="field">
                                                 <label class="field-label" for="setm-cc-id-os" x-text="$store.global.t('ccIdentityFieldStainlessOs') || 'Stainless OS'">Stainless OS</label>
                                                 <input id="setm-cc-id-os" type="text" class="input input-sm mono" x-model="ccConfig.identity.stainlessOs" placeholder="Linux">
+                                            </div>
+                                            <div class="field">
+                                                <label class="field-label" for="setm-cc-id-arch" x-text="$store.global.t('ccIdentityFieldStainlessArch') || 'Stainless Arch'">Stainless Arch</label>
+                                                <input id="setm-cc-id-arch" type="text" class="input input-sm mono" x-model="ccConfig.identity.stainlessArch" placeholder="arm64">
                                             </div>
                                             <div class="field">
                                                 <label class="field-label" for="setm-cc-id-runtime" x-text="$store.global.t('ccIdentityFieldStainlessRuntimeVersion') || 'Stainless Runtime Version'">Stainless Runtime Version</label>

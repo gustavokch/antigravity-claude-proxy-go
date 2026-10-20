@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/ccidentity"
+	"antigravity-go-proxy/internal/httpwire"
 )
 
 // TestDefaultClientSpeaksHTTP11 pins the wire fact the 2.1.304 capture records:
@@ -50,9 +51,9 @@ func TestDefaultClientSpeaksHTTP11(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(upstream.Certificate())
 	for _, c := range []*http.Client{client.httpClient, client.discoveryClient} {
-		shipped, ok := c.Transport.(*http.Transport)
+		shipped, ok := c.Transport.(*httpwire.Transport)
 		if !ok {
-			t.Fatalf("the default client's transport is %T, want *http.Transport", c.Transport)
+			t.Fatalf("the default client's transport is %T, want *httpwire.Transport", c.Transport)
 		}
 		shipped.TLSClientConfig = &tls.Config{RootCAs: pool}
 		t.Cleanup(func() {

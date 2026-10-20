@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"antigravity-go-proxy/internal/httpwire"
 	"antigravity-go-proxy/internal/transport"
 )
 
@@ -24,9 +25,9 @@ func TestNewClientLeavesOpenStreamsUncapped(t *testing.T) {
 	if client.httpClient.Timeout != 0 {
 		t.Errorf("http.Client.Timeout = %v, want 0: a total timeout covers the body read and cuts open streams", client.httpClient.Timeout)
 	}
-	tr, ok := client.httpClient.Transport.(*http.Transport)
+	tr, ok := client.httpClient.Transport.(*httpwire.Transport)
 	if !ok {
-		t.Fatalf("expected an *http.Transport so the header bound is reachable, got %T", client.httpClient.Transport)
+		t.Fatalf("expected an *httpwire.Transport so the header bound is reachable, got %T", client.httpClient.Transport)
 	}
 	if tr.ResponseHeaderTimeout != transport.ResponseHeaderTimeout {
 		t.Errorf("ResponseHeaderTimeout = %v, want %v: a silent upstream must still end", tr.ResponseHeaderTimeout, transport.ResponseHeaderTimeout)

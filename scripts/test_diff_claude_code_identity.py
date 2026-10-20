@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -207,16 +208,79 @@ class HeaderDriftTest(unittest.TestCase):
         drifts = drift_of(record(headers, BASELINE_BODY))
         self.assertTrue(any("x-harness-telemetry" in d for d in drifts))
 
-    def test_cleared_accept_encoding_is_exempt(self):
+    def test_a_different_accept_encoding_is_drift(self):
+        # The transport now writes the captured value and decodes br and zstd
+        # itself, so "gzip" is Go's default showing through.
         headers = [
             ["Accept-Encoding", "gzip"] if h[0] == "Accept-Encoding" else h
             for h in BASELINE_HEADERS
         ]
+        drifts = drift_of(record(headers, BASELINE_BODY))
+        self.assertTrue(any("Accept-Encoding" in d for d in drifts), drifts)
+
+    def test_an_absent_connection_header_is_drift(self):
+        headers = [h for h in BASELINE_HEADERS if h[0] != "Connection"]
+        drifts = drift_of(record(headers, BASELINE_BODY))
+        self.assertTrue(any("missing header: Connection" in d for d in drifts), drifts)
+
+    def test_identical_order_has_no_drift(self):
+        self.assertEqual(differ.compare_order(baseline_record(), baseline_record()), [])
+
+    def test_net_http_order_is_drift(self):
+        # net/http writes Host and User-Agent first, then the rest sorted, with
+        # Accept-Encoding and Connection among them: the same headers in a
+        # different order.
+        names = {h[0]: h for h in BASELINE_HEADERS}
+        go_order = ["Host", "User-Agent"] + sorted(
+            n for n in names if n not in ("Host", "User-Agent")
+        )
+        observed = record([names[n] for n in go_order], BASELINE_BODY)
+        drifts = differ.compare_order(baseline_record(), observed)
+        self.assertEqual(len(drifts), 1, drifts)
+        self.assertIn("header order differs", drifts[0])
+
+    def test_a_header_only_one_side_has_does_not_shift_the_order(self):
+        extra = record(BASELINE_HEADERS[:3] + [["x-harness", "1"]] + BASELINE_HEADERS[3:], BASELINE_BODY)
+        self.assertEqual(differ.compare_order(baseline_record(), extra), [])
+
+    def test_a_missing_tail_header_is_reported_not_crashed_on(self):
+        short = record(BASELINE_HEADERS[:-1], BASELINE_BODY)
+        self.assertEqual(differ.compare_order(baseline_record(), short), [])
+
+    def test_order_is_not_compared_across_http_versions(self):
+        h2 = record(list(reversed(BASELINE_HEADERS)), BASELINE_BODY, http_version="HTTP/2.0")
+        self.assertEqual(differ.compare_order(baseline_record(), h2), [])
+
+    def test_host_identity_is_checked_against_the_host_not_the_capture(self):
+        observed = record(BASELINE_HEADERS + [["X-Stainless-Arch", "arm64"]], BASELINE_BODY)
+        self.assertEqual(differ.compare_host(observed, host=("Linux", "arm64")), [])
+        drifts = differ.compare_host(observed, host=("MacOS", "x64"))
+        self.assertEqual(len(drifts), 2, drifts)
+        self.assertTrue(any("X-Stainless-OS" in d and "'MacOS'" in d for d in drifts), drifts)
+        self.assertTrue(any("X-Stainless-Arch" in d and "'x64'" in d for d in drifts), drifts)
+
+    def test_host_values_may_differ_from_the_capture_in_the_header_diff(self):
+        # The baseline's Linux/arm64 describe its container, so compare_headers
+        # must not insist on them; compare_host is what checks the machine.
+        headers = [
+            ["X-Stainless-OS", "MacOS"] if h[0] == "X-Stainless-OS" else h for h in BASELINE_HEADERS
+        ]
         self.assertEqual(drift_of(record(headers, BASELINE_BODY)), [])
 
-    def test_absent_connection_header_is_exempt(self):
-        headers = [h for h in BASELINE_HEADERS if h[0] != "Connection"]
-        self.assertEqual(drift_of(record(headers, BASELINE_BODY)), [])
+    def test_a_missing_stainless_header_is_left_to_the_header_diff(self):
+        headers = [h for h in BASELINE_HEADERS if h[0] != "X-Stainless-OS"]
+        self.assertEqual(differ.compare_host(record(headers, BASELINE_BODY), host=("MacOS", "arm64")), [])
+
+    def test_host_identity_uses_the_stainless_spellings(self):
+        with mock.patch.object(differ.platform, "system", return_value="Darwin"), \
+                mock.patch.object(differ.platform, "machine", return_value="x86_64"):
+            self.assertEqual(differ.host_identity(), ("MacOS", "x64"))
+        with mock.patch.object(differ.platform, "system", return_value="Linux"), \
+                mock.patch.object(differ.platform, "machine", return_value="aarch64"):
+            self.assertEqual(differ.host_identity(), ("Linux", "arm64"))
+        with mock.patch.object(differ.platform, "system", return_value="Plan9"), \
+                mock.patch.object(differ.platform, "machine", return_value="riscv64"):
+            self.assertEqual(differ.host_identity(), ("Other:plan9", "Other:riscv64"))
 
     def test_conditional_tool_durations_header_is_exempt_when_absent(self):
         base = baseline_record()

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"antigravity-go-proxy/internal/httpwire"
 )
 
 // h2Server is a TLS server that speaks both HTTP/2 and HTTP/1.1 and records what
@@ -46,20 +48,31 @@ func newH2Server(t *testing.T) *h2Server {
 	return s
 }
 
-// get issues one GET with tr, trusting the server's self-signed certificate, and
+func messagesRT() http.RoundTripper  { return ClaudeCodeMessages() }
+func discoveryRT() http.RoundTripper { return ClaudeCodeDiscovery() }
+
+// get issues one GET with rt, trusting the server's self-signed certificate, and
 // returns the HTTP major version the server saw and the ALPN list the client
-// offered. tr is changed only by adding that trust.
-func (s *h2Server) get(t *testing.T, tr *http.Transport) (protoMajor int, alpn []string) {
+// offered. rt is changed only by adding that trust.
+func (s *h2Server) get(t *testing.T, rt http.RoundTripper) (protoMajor int, alpn []string) {
 	t.Helper()
 	pool := x509.NewCertPool()
 	pool.AddCert(s.Certificate())
-	if tr.TLSClientConfig == nil {
-		tr.TLSClientConfig = &tls.Config{}
+	switch tr := rt.(type) {
+	case *http.Transport:
+		if tr.TLSClientConfig == nil {
+			tr.TLSClientConfig = &tls.Config{}
+		}
+		tr.TLSClientConfig.RootCAs = pool
+		t.Cleanup(tr.CloseIdleConnections)
+	case *httpwire.Transport:
+		tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+		t.Cleanup(tr.CloseIdleConnections)
+	default:
+		t.Fatalf("unexpected transport %T", rt)
 	}
-	tr.TLSClientConfig.RootCAs = pool
-	t.Cleanup(tr.CloseIdleConnections)
 
-	resp, err := (&http.Client{Transport: tr}).Get(s.URL)
+	resp, err := (&http.Client{Transport: rt}).Get(s.URL)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -82,12 +95,12 @@ func TestClaudeCodeTransportsDeclineH2(t *testing.T) {
 
 	for _, tc := range []struct {
 		name     string
-		build    func() *http.Transport
+		build    func() http.RoundTripper
 		wantALPN []string
 	}{
 		// fetch offers http/1.1; node:https offers nothing at all.
-		{"messages", ClaudeCodeMessages, []string{"http/1.1"}},
-		{"discovery", ClaudeCodeDiscovery, nil},
+		{"messages", messagesRT, []string{"http/1.1"}},
+		{"discovery", discoveryRT, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := newH2Server(t)
@@ -102,11 +115,10 @@ func TestClaudeCodeTransportsDeclineH2(t *testing.T) {
 	}
 }
 
-// The constructors build on Upstream, so the header bound must survive, every
-// call must own its pool, and the shared default transport must not pick up the
-// HTTP/1.1 restriction.
+// Every call must own its pool and keep the header bound, and building the
+// Claude Code transports must not leave the shared default transport restricted.
 func TestClaudeCodeTransportsKeepTheBoundAndLeaveTheDefaultAlone(t *testing.T) {
-	for name, build := range map[string]func() *http.Transport{
+	for name, build := range map[string]func() *httpwire.Transport{
 		"messages": ClaudeCodeMessages, "discovery": ClaudeCodeDiscovery,
 	} {
 		if tr := build(); tr.ResponseHeaderTimeout != ResponseHeaderTimeout {
@@ -153,7 +165,7 @@ func shapeOf(t *testing.T, record []byte) helloShape {
 
 // sniffHello returns the first TLS record a client sends to a listener that
 // never answers.
-func sniffHello(t *testing.T, tr *http.Transport) []byte {
+func sniffHello(t *testing.T, tr http.RoundTripper) []byte {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -197,11 +209,11 @@ func sniffHello(t *testing.T, tr *http.Transport) []byte {
 func TestClaudeCodeTransportsSendTheCapturedHello(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		build   func() *http.Transport
+		build   func() http.RoundTripper
 		capture []byte
 	}{
-		{"messages", ClaudeCodeMessages, claudeCodeFetchHello},
-		{"discovery", ClaudeCodeDiscovery, claudeCodeNodeHello},
+		{"messages", messagesRT, claudeCodeFetchHello},
+		{"discovery", discoveryRT, claudeCodeNodeHello},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := shapeOf(t, tc.capture)

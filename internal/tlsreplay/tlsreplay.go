@@ -130,10 +130,22 @@ func specALPN(spec *utls.ClientHelloSpec) []string {
 func (h *Hello) Transport(base *http.Transport) *http.Transport {
 	proxy := base.Proxy
 	base.Proxy = nil
-	base.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return h.dial(ctx, network, addr, proxy, base.TLSClientConfig)
-	}
+	base.DialTLSContext = h.DialFunc(proxy, func() *tls.Config { return base.TLSClientConfig })
 	return base
+}
+
+// DialFunc returns a dialer for clients that bring their own HTTP layer. proxy
+// selects the HTTP proxy for a target, nil for none; verify supplies the
+// certificate verification settings (RootCAs, InsecureSkipVerify) at dial time,
+// nil for the system roots.
+func (h *Hello) DialFunc(proxy func(*http.Request) (*url.URL, error), verify func() *tls.Config) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var config *tls.Config
+		if verify != nil {
+			config = verify()
+		}
+		return h.dial(ctx, network, addr, proxy, config)
+	}
 }
 
 // Dial opens a connection to addr and completes a handshake that presents the

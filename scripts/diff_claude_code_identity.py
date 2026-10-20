@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import re
 import sys
 
@@ -28,6 +29,21 @@ DYNAMIC_VALUE = {
     "x-claude-code-session-id",  # stable per process, not across processes
     "x-client-request-id",     # fresh per request
     "x-claude-code-prompt-id",  # a fresh UUID per user prompt; equals cc_prompt_id
+    # The OS and architecture of the machine the proxy runs on, not the
+    # capture's container. compare_host checks them against this host instead.
+    "x-stainless-os",
+    "x-stainless-arch",
+}
+
+# The Stainless SDK's spellings (normalizePlatform and normalizeArch), keyed by
+# what Python reports for the same machine.
+STAINLESS_OS = {
+    "Darwin": "MacOS", "Linux": "Linux", "Windows": "Windows",
+    "FreeBSD": "FreeBSD", "OpenBSD": "OpenBSD",
+}
+STAINLESS_ARCH = {
+    "arm64": "arm64", "aarch64": "arm64", "x86_64": "x64", "amd64": "x64", "AMD64": "x64",
+    "i386": "x32", "i686": "x32", "x86": "x32",
 }
 
 # Headers HTTP/2 does not carry as ordinary fields. Exempt from the presence
@@ -36,16 +52,6 @@ DYNAMIC_VALUE = {
 # pseudo-header, which mitmproxy does not list among the request headers.
 HTTP2_PSEUDO = {"host"}
 
-# Differences the implementation records as deliberate. See the "Deliberate
-# gaps" section of docs/superpowers/plans/2026-09-23-claude-code-identity-spoof.md.
-ALLOWED_DIFFERENCES = {
-    # Spoofing "gzip, deflate, br, zstd" would stop http.Transport decompressing
-    # transparently, and br/zstd are not in the Go stdlib. Cleared, not spoofed.
-    "accept-encoding",
-    # net/http owns connection reuse and does not emit this on HTTP/1.1
-    # keep-alive; it is illegal on HTTP/2.
-    "connection",
-}
 
 # Present in the baseline only under conditions a single synthetic request
 # cannot reproduce.
@@ -142,7 +148,7 @@ def compare_headers(baseline: list[dict], observed: dict) -> list[str]:
         )
 
     for key, (wire_name, value) in sorted(expected.items()):
-        if key in ALLOWED_DIFFERENCES or key in CONDITIONAL:
+        if key in CONDITIONAL:
             continue
         if key not in seen:
             if not same_version and key in HTTP2_PSEUDO:
@@ -166,13 +172,77 @@ def compare_headers(baseline: list[dict], observed: dict) -> list[str]:
             )
 
     for key, (observed_name, observed_value) in sorted(seen.items()):
-        if key in expected or key in ALLOWED_DIFFERENCES:
+        if key in expected:
             continue
         drifts.append(
             f"unexpected header not in the baseline: {observed_name}: {observed_value!r}"
         )
 
     return drifts
+
+
+def host_identity() -> tuple[str, str]:
+    """The Stainless OS and architecture of the machine this script runs on.
+
+    The gate drives the proxy on this machine, so these are the values its
+    TCP/IP stack backs up.
+    """
+    system, machine = platform.system(), platform.machine()
+    return (
+        STAINLESS_OS.get(system, "Other:" + system.lower()),
+        STAINLESS_ARCH.get(machine, "Other:" + machine),
+    )
+
+
+def compare_host(observed: dict, host: tuple[str, str] | None = None) -> list[str]:
+    """X-Stainless-OS and X-Stainless-Arch must be the machine's own.
+
+    The capture ran in a Linux container, so its values describe that container.
+    A proxy that sent them from another machine would claim an OS its network
+    stack contradicts: the SYN's TTL, window size and options say which OS sent
+    it, whatever the headers claim. The real client reports the machine it runs
+    on, so the proxy defaults to the same. A header the request does not carry is
+    reported by compare_headers, once, and is not repeated here.
+    """
+    want_os, want_arch = host or host_identity()
+    seen = header_map(observed)
+    drifts = []
+    for key, want in (("x-stainless-os", want_os), ("x-stainless-arch", want_arch)):
+        if key in seen and seen[key][1] != want:
+            drifts.append(
+                f"{seen[key][0]} is {seen[key][1]!r}, but this host is {want!r}: "
+                "the headers must describe the machine the proxy runs on"
+            )
+    return drifts
+
+
+def compare_order(baseline: dict, observed: dict) -> list[str]:
+    """The headers the two requests share must be written in the same order.
+
+    The order is part of the wire: the real client's fetch stack writes its own
+    headers bytewise-sorted and then Connection, Host, Accept-Encoding and
+    Content-Length, where net/http writes Host and User-Agent first and sorts
+    the rest. The comparison is over the headers both requests carry, so a
+    header only one of them has is reported by compare_headers, once, and does
+    not also shift the order. Over HTTP/2 field order is not on the wire the
+    same way, and the version difference is reported elsewhere.
+    """
+    if baseline.get("http_version") != observed.get("http_version"):
+        return []
+    base = [name.lower() for name, _ in baseline.get("headers", [])]
+    seen = [name.lower() for name, _ in observed.get("headers", [])]
+    shared = set(base) & set(seen)
+    base = [name for name in base if name in shared]
+    seen = [name for name in seen if name in shared]
+    if base == seen:
+        return []
+    at = next((i for i, (a, b) in enumerate(zip(base, seen)) if a != b), min(len(base), len(seen)))
+    want = base[at] if at < len(base) else None
+    got = seen[at] if at < len(seen) else None
+    return [
+        "header order differs from the baseline at position "
+        f"{at}: baseline writes {want!r} there, observed writes {got!r}"
+    ]
 
 
 def compare_body(baseline: list[dict], observed: dict) -> list[str]:
@@ -349,6 +419,8 @@ def main() -> int:
             f"observed {observed.get('path')!r}"
         )
     drifts.extend(compare_headers(baseline, observed))
+    drifts.extend(compare_order(baseline[0], observed))
+    drifts.extend(compare_host(observed))
     drifts.extend(compare_body(baseline, observed))
     drifts.extend(compare_correlations(observed))
     drifts.extend(compare_billing(observed))

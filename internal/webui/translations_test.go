@@ -155,7 +155,7 @@ var claudeCodeIdentityKeys = []string{
 	"ccIdentityDesc", "ccIdentityFieldDisabled", "ccIdentityFieldClientVersion",
 	"ccIdentityFieldEntrypoint", "ccIdentityFieldTurnOrigin",
 	"ccIdentityFieldUserAgent", "ccIdentityFieldStainlessOs",
-	"ccIdentityFieldStainlessRuntimeVersion",
+	"ccIdentityFieldStainlessArch", "ccIdentityFieldStainlessRuntimeVersion",
 }
 
 func loadLocale(t *testing.T, locale string) string {

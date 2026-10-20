@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -52,7 +53,11 @@ var capturedHeaders = map[string]string{
 
 func TestApplyHeadersSendsTheCapturedSet(t *testing.T) {
 	h := http.Header{}
-	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+	// The capture ran on a Linux arm64 container; the OS and arch default to the
+	// host, so the test names the capture's environment rather than assuming it.
+	id := testIdentity()
+	id.StainlessOS, id.StainlessArch = "Linux", "arm64"
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
 
 	for name, want := range capturedHeaders {
 		if got := hdrGet(h, name); got != want {
@@ -65,6 +70,53 @@ func TestApplyHeadersSendsTheCapturedSet(t *testing.T) {
 	wantBeta := strings.Join(Betas, ",")
 	if got := hdrGet(h, "anthropic-beta"); got != wantBeta {
 		t.Errorf("anthropic-beta = %q, want captured order %q", got, wantBeta)
+	}
+}
+
+// The OS and arch the proxy claims are those of the machine it runs on: the
+// TCP/IP fingerprint of the connection says which OS sent it, so a default that
+// claims another one is a contradiction no header can repair.
+func TestStainlessOSAndArchDefaultToTheHost(t *testing.T) {
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+	if got, want := hdrGet(h, "X-Stainless-OS"), HostOS(runtime.GOOS); got != want {
+		t.Errorf("X-Stainless-OS = %q, want the host's %q", got, want)
+	}
+	if got, want := hdrGet(h, "X-Stainless-Arch"), HostArch(runtime.GOARCH); got != want {
+		t.Errorf("X-Stainless-Arch = %q, want the host's %q", got, want)
+	}
+}
+
+func TestStainlessOSAndArchOverridesWin(t *testing.T) {
+	h := http.Header{}
+	id := testIdentity()
+	id.StainlessOS, id.StainlessArch = "Windows", "x64"
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
+	if got := hdrGet(h, "X-Stainless-OS"); got != "Windows" {
+		t.Errorf("X-Stainless-OS = %q, want the override", got)
+	}
+	if got := hdrGet(h, "X-Stainless-Arch"); got != "x64" {
+		t.Errorf("X-Stainless-Arch = %q, want the override", got)
+	}
+}
+
+// The spellings are the Stainless SDK's (normalizePlatform and normalizeArch),
+// not Go's or Node's: Go says darwin and amd64, the header says MacOS and x64.
+func TestHostSpellingsMatchTheStainlessSDK(t *testing.T) {
+	for goos, want := range map[string]string{
+		"darwin": "MacOS", "linux": "Linux", "windows": "Windows", "freebsd": "FreeBSD",
+		"openbsd": "OpenBSD", "android": "Android", "plan9": "Other:plan9",
+	} {
+		if got := HostOS(goos); got != want {
+			t.Errorf("HostOS(%q) = %q, want %q", goos, got, want)
+		}
+	}
+	for goarch, want := range map[string]string{
+		"amd64": "x64", "arm64": "arm64", "386": "x32", "arm": "arm", "riscv64": "Other:riscv64",
+	} {
+		if got := HostArch(goarch); got != want {
+			t.Errorf("HostArch(%q) = %q, want %q", goarch, got, want)
+		}
 	}
 }
 

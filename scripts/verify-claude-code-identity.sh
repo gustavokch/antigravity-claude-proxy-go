@@ -453,6 +453,8 @@ fi
 
 echo "Claude Code identity gate PASSED: the wire identity matches ${BASELINE##*/},"
 echo "messages and discovery requests present the TLS handshake of the real client's fetch and node stacks,"
+echo "write their headers in the real client's order with its Accept-Encoding and Connection,"
+echo "X-Stainless-OS and -Arch describe this host,"
 echo "cch and the cc_version suffix are the hashes the real client derives,"
 echo "the caller's system prompt survived alongside the billing marker,"
 echo "a keyed custom endpoint kept its credential and was not normalized,"

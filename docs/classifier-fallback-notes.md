@@ -262,5 +262,24 @@ clients send no request ids, so `ccidentity.ReplyLog` records each normalized
 reply's tool call ids, thinking signatures and text under its `request-id`
 response header, scoped by account (or endpoint) and session. A request whose
 latest assistant message matches a recorded reply sends that id. Unkeyed requests,
-and replies the log dropped or never saw, send none. Still unreproduced:
-`cc_prompt_index`, which was 0 in every capture.
+and replies the log dropped or never saw, send none.
+
+`cch` and the `cc_version` suffix are derived, not random: see ADR 0004 and
+`internal/ccidentity/cch.go`. The capture addon records the value each request
+sent next to the value `scripts/cc_billing.py` derives from the same bytes, so a
+new Claude Code release that changes the seed or the salt fails the gate's
+`compare_billing` on its own capture. `cc_prompt_index` counts prompts only for
+the `human` turn origin (the binary adds 1 to it only then) and stays 0 for
+`sdk`; the `human` value comes from reading the 2.1.304 binary, not from a
+capture.
+
+TLS: Claude Code has two TLS stacks, and a new release can change both hellos.
+Run the capture with `MITM_DUMP_HELLO_DIR=<dir>` and the addon saves one raw
+ClientHello per JA4 seen, and records which stack carried each request. Replace
+`internal/transport/claude-code-{fetch,node}-clienthello.bin` with the hellos
+that carry `/v1/messages` and the discovery GETs, and update
+`.reference/claude-code-tls-<date>.json`. The reference also holds the resumed
+form of each hello (the same hello with `pre_shared_key` last); mitmproxy does
+not issue session tickets, so record that form against a local TLS server that
+does (the container's Python `ssl` module is enough) and read the
+`pre_shared_key` extension (0x29) off the second connection.

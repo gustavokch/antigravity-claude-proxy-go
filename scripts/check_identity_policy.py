@@ -33,7 +33,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from diff_claude_code_identity import compare_billing, compare_correlations, header_map  # noqa: E402
+from diff_claude_code_identity import (  # noqa: E402
+    compare_billing,
+    compare_correlations,
+    compare_host,
+    compare_order,
+    header_map,
+)
 
 
 def load_records(path: str) -> list[dict]:
@@ -179,6 +185,8 @@ def check_normalized(
     problems.extend(check_http_version(baseline, observed))
     problems.extend(compare_correlations(observed))
     problems.extend(compare_billing(observed))
+    problems.extend(compare_order(baseline, observed))
+    problems.extend(compare_host(observed))
     if tls_reference is not None:
         problems.extend(check_tls(tls_reference, observed, "fetch"))
 
@@ -323,6 +331,21 @@ def check_discovery(
                 f"{record.get('method')} {record.get('path')} arrived as "
                 f"{record.get('http_version')!r}, want the captured {expected_version!r}"
             )
+        # The node stack's tail: the Accept-Encoding it advertises, closing the
+        # connection after each request, and writing its headers in the order
+        # the first captured GET shows (settings; policy_limits orders its own
+        # headers differently, which no single rule reproduces).
+        reference_headers = header_map(baseline_gets[0])
+        observed_headers = header_map(record)
+        for key in ("accept-encoding", "connection"):
+            want = reference_headers.get(key)
+            got = observed_headers.get(key)
+            if want is not None and (got is None or got[1] != want[1]):
+                problems.append(
+                    f"{record.get('method')} {record.get('path')} sent {key} "
+                    f"{got[1] if got else None!r}, want the captured {want[1]!r}"
+                )
+        problems.extend(compare_order(baseline_gets[0], record))
         if tls_reference is not None:
             problems.extend(check_tls(tls_reference, record, "node"))
 

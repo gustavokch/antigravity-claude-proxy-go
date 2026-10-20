@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -135,8 +136,8 @@ func TestCustomEndpoint_AnthropicShapedEndpointIsNormalized(t *testing.T) {
 	if got.app != "cli" {
 		t.Errorf("x-app = %q, want cli", got.app)
 	}
-	if got.stainlessOS != "Linux" {
-		t.Errorf("X-Stainless-OS = %q, want the captured value", got.stainlessOS)
+	if want := ccidentity.HostOS(runtime.GOOS); got.stainlessOS != want {
+		t.Errorf("X-Stainless-OS = %q, want the host's %q", got.stainlessOS, want)
 	}
 	if got.requestClass != "main" {
 		t.Errorf("x-claude-code-request-class = %q, want main", got.requestClass)

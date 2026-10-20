@@ -1,5 +1,7 @@
 package ccidentity
 
+import "runtime"
+
 // Values transcribed from .reference/claude-code-headers-20261020.txt, a live
 // capture of Claude Code 2.1.304's own traffic to api.anthropic.com. Each
 // constant names the artifact it came from. Nothing here is inferred unless the
@@ -57,20 +59,15 @@ var Betas = []string{
 	"cache-diagnosis-2026-04-07",
 }
 
-// staticHeaders are the captured constant header set, minus the ones net/http
-// owns (Host, Content-Length) and the ones the transport manages (Connection).
-//
-// Accept-Encoding is deliberately absent: the operator chose to leave Go's
-// transparent gzip handling in place rather than spoof the captured
-// "gzip, deflate, br, zstd", which would mean inflating upstream responses in
-// the proxy, on the SSE path, with br and zstd missing from the stdlib.
-// Accept-Encoding is in the omit list instead, so Go's default applies.
+// staticHeaders are the captured constant header set, minus the ones the
+// transport writes itself (Host, Content-Length, Connection and
+// Accept-Encoding; see httpwire and transport.ClaudeCodeMessages).
 func staticHeaders(id Identity) []Header {
 	return []Header{
 		{"Accept", "application/json"},
 		{"Content-Type", "application/json"},
 		{"User-Agent", messagesUserAgent(id)},
-		{"X-Stainless-Arch", "arm64"},
+		{"X-Stainless-Arch", stainlessArch(id)},
 		{"X-Stainless-Lang", "js"},
 		{"X-Stainless-OS", stainlessOS(id)},
 		{"X-Stainless-Package-Version", "0.128.0"},
@@ -108,15 +105,64 @@ func messagesUserAgent(id Identity) string {
 	return "claude-cli/" + version + " (external, " + entrypoint + ")"
 }
 
-// stainlessOS returns the captured OS value unless overridden. The capture ran in
-// a Linux container, so "Linux" is what was observed; a macOS host would report
-// something else. The operator chose to default to the captured value and allow
-// an override rather than infer the host's.
+// stainlessOS returns the OS the proxy runs on, in the spelling the Stainless
+// SDK reports it, unless overridden.
+//
+// The capture ran in a Linux container, so "Linux" is what was observed, but a
+// proxy on another machine would then claim an OS its TCP/IP stack contradicts:
+// the SYN's TTL, window and options say which OS sent them, whatever the headers
+// claim. The real client reports the machine it runs on, so the default is the
+// machine the proxy runs on. An operator who runs the proxy behind another
+// host's network identity sets stainlessOs.
 func stainlessOS(id Identity) string {
 	if id.StainlessOS != "" {
 		return id.StainlessOS
 	}
-	return "Linux"
+	return HostOS(runtime.GOOS)
+}
+
+// stainlessArch is stainlessOS for X-Stainless-Arch.
+func stainlessArch(id Identity) string {
+	if id.StainlessArch != "" {
+		return id.StainlessArch
+	}
+	return HostArch(runtime.GOARCH)
+}
+
+// HostOS maps a Go GOOS to the value the Stainless SDK's normalizePlatform
+// reports for the same platform.
+func HostOS(goos string) string {
+	switch goos {
+	case "darwin":
+		return "MacOS"
+	case "linux":
+		return "Linux"
+	case "windows":
+		return "Windows"
+	case "freebsd":
+		return "FreeBSD"
+	case "openbsd":
+		return "OpenBSD"
+	case "android":
+		return "Android"
+	}
+	return "Other:" + goos
+}
+
+// HostArch maps a Go GOARCH to the value the Stainless SDK's normalizeArch
+// reports for the same architecture.
+func HostArch(goarch string) string {
+	switch goarch {
+	case "amd64":
+		return "x64"
+	case "arm64":
+		return "arm64"
+	case "386":
+		return "x32"
+	case "arm":
+		return "arm"
+	}
+	return "Other:" + goarch
 }
 
 // stainlessRuntimeVersion is the captured runtime version, overridable for the
@@ -144,8 +190,9 @@ var omittedHeaders = []string{
 	"anthropic-session-id",
 	"x-conversation-id",
 
-	// Left to net/http and the transport, per the fidelity decision. Go adds
-	// gzip itself, which keeps transparent decompression working.
+	// Written by the transport, not copied from the caller: httpwire writes
+	// Accept-Encoding, Connection, Host and Content-Length itself, in the
+	// captured positions and with the captured values, and decodes br and zstd.
 	"Accept-Encoding",
 	"Connection",
 	"Content-Length",

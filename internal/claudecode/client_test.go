@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -504,8 +505,8 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 	if gotApp != "cli" {
 		t.Errorf("x-app = %q, want cli", gotApp)
 	}
-	if gotStainlessOS != "Linux" {
-		t.Errorf("X-Stainless-OS = %q, want the captured value", gotStainlessOS)
+	if want := ccidentity.HostOS(runtime.GOOS); gotStainlessOS != want {
+		t.Errorf("X-Stainless-OS = %q, want the host's %q", gotStainlessOS, want)
 	}
 	if gotAPIKey != "" {
 		t.Errorf("x-api-key = %q; the captured OAuth request has none", gotAPIKey)

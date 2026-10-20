@@ -57,8 +57,11 @@ type Identity struct {
 	TurnOrigin string
 	// UserAgent overrides the messages-path User-Agent. Empty uses the default.
 	UserAgent string
-	// StainlessOS overrides X-Stainless-OS. Empty uses the captured value.
+	// StainlessOS overrides X-Stainless-OS. Empty uses the OS the proxy runs on.
 	StainlessOS string
+	// StainlessArch overrides X-Stainless-Arch. Empty uses the architecture the
+	// proxy runs on.
+	StainlessArch string
 	// StainlessRuntimeVersion overrides X-Stainless-Runtime-Version. Empty uses
 	// the captured value.
 	StainlessRuntimeVersion string

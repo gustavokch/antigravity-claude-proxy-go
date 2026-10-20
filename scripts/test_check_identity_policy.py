@@ -13,10 +13,23 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import check_identity_policy as policy  # noqa: E402
+import diff_claude_code_identity as differ  # noqa: E402
+
+
+class HostPinned(unittest.TestCase):
+    """The fixtures claim the capture's Linux arm64; the host check compares
+    against the machine the tests run on, so the host is pinned to match."""
+
+    def setUp(self):
+        patcher = mock.patch.object(differ, "host_identity", return_value=("Linux", "arm64"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
 CAPTURED_UA = "claude-cli/2.1.280 (external, sdk-cli)"
 DISCOVERY_UA = "claude-code/2.1.280"
@@ -105,7 +118,7 @@ def write_jsonl(records):
     return handle.name
 
 
-class NormalizedTest(unittest.TestCase):
+class NormalizedTest(HostPinned):
     def test_accepts_a_normalized_request(self):
         problems = policy.check_normalized(baseline_post(), observed_normalized())
         self.assertEqual(problems, [])
@@ -278,6 +291,54 @@ class DiscoveryTest(unittest.TestCase):
         self.assertTrue(any("http_version" in p for p in problems), problems)
 
 
+# The node stack's GET as captured (settings): the caller's headers, then
+# Accept-Encoding, Host, Connection: close.
+NODE_HEADERS = [
+    ["Accept", "application/json, text/plain, */*"],
+    ["Authorization", "Bearer x"],
+    ["anthropic-beta", "oauth-2025-04-20"],
+    ["User-Agent", DISCOVERY_UA],
+    ["Cache-Control", "no-cache"],
+    ["Accept-Encoding", "gzip, compress, deflate, br"],
+    ["Host", "api.anthropic.com"],
+    ["Connection", "close"],
+]
+
+
+def node_record(headers, **overrides):
+    record = baseline_get()
+    record["headers"] = [list(h) for h in headers]
+    record.update(overrides)
+    return record
+
+
+class DiscoveryTailTest(unittest.TestCase):
+    def check(self, observed_headers):
+        return policy.check_discovery(
+            [node_record(NODE_HEADERS)], [node_record(observed_headers, path="/v1/models")], 1)
+
+    def test_the_node_layout_passes(self):
+        # A shorter header set in the same relative order is the same layout.
+        observed = [h for h in NODE_HEADERS if h[0] not in ("Cache-Control", "Accept")]
+        self.assertEqual(self.check(observed), [])
+
+    def test_go_default_accept_encoding_is_rejected(self):
+        observed = [["Accept-Encoding", "gzip"] if h[0] == "Accept-Encoding" else h for h in NODE_HEADERS]
+        problems = self.check(observed)
+        self.assertTrue(any("accept-encoding" in p for p in problems), problems)
+
+    def test_a_kept_alive_discovery_request_is_rejected(self):
+        observed = [["Connection", "keep-alive"] if h[0] == "Connection" else h for h in NODE_HEADERS]
+        problems = self.check(observed)
+        self.assertTrue(any("connection" in p for p in problems), problems)
+
+    def test_net_http_order_is_rejected(self):
+        names = {h[0]: h for h in NODE_HEADERS}
+        go_order = ["Host", "User-Agent"] + sorted(n for n in names if n not in ("Host", "User-Agent"))
+        problems = self.check([names[n] for n in go_order])
+        self.assertTrue(any("header order differs" in p for p in problems), problems)
+
+
 TLS_REFERENCE = {
     "stacks": {
         "fetch": {"ja4": "t13d1713h1_aaaaaaaaaaaa_bbbbbbbbbbbb", "ja3": "fetch-ja3"},
@@ -288,7 +349,7 @@ FETCH_TLS = {"ja4": "t13d1713h1_aaaaaaaaaaaa_bbbbbbbbbbbb", "ja3": "fetch-ja3", 
 NODE_TLS = {"ja4": "t13d181000_cccccccccccc_dddddddddddd", "ja3": "node-ja3", "alpn": []}
 
 
-class TlsStackTest(unittest.TestCase):
+class TlsStackTest(HostPinned):
     """Messages go out the fetch stack and discovery GETs out node:https.
 
     Both stacks exist in the real client, so a request sent with the OTHER
