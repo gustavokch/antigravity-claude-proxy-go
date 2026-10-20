@@ -94,12 +94,16 @@ func TurnOf(body []byte) Turn {
 //   - cache_control, at any depth. A client that moves its cache breakpoint to
 //     the latest message sends the prompt with the marker on its own request and
 //     without it on the follow-up.
+//   - Injected context. A client that adds a <system-reminder> block to the
+//     latest message for one request does not repeat it once the message is
+//     older, so the empty and <system-reminder> text blocks that promptOf does
+//     not count as typed are left out, as they are when counting prompts.
 //   - Object key order and whitespace, by decoding and encoding again.
 //   - Whether the text is a string or a text block. A string content is the one
 //     text block that holds it.
 //
 // Numbers keep their literal, so two values a float64 cannot tell apart stay
-// apart.
+// apart. Images, documents, tool results and the text a person typed all stay.
 func digestPrompt(content json.RawMessage) string {
 	canonical := canonicalPrompt(content)
 	digest := sha256.Sum256(canonical)
@@ -119,12 +123,31 @@ func canonicalPrompt(content json.RawMessage) []byte {
 	if text, ok := value.(string); ok {
 		value = []any{map[string]any{"type": "text", "text": text}}
 	}
+	if blocks, ok := value.([]any); ok {
+		value = withoutInjectedText(blocks)
+	}
 	dropCacheControl(value)
 	canonical, err := json.Marshal(value)
 	if err != nil {
 		return content
 	}
 	return canonical
+}
+
+// withoutInjectedText returns blocks without the text blocks promptOf does not
+// count as typed: empty text and <system-reminder> blocks. Everything else
+// stays, including text in a tool_result and every attachment.
+func withoutInjectedText(blocks []any) []any {
+	typed := make([]any, 0, len(blocks))
+	for _, block := range blocks {
+		if object, ok := block.(map[string]any); ok && object["type"] == "text" {
+			if text, _ := object["text"].(string); !isPromptText(text) {
+				continue
+			}
+		}
+		typed = append(typed, block)
+	}
+	return typed
 }
 
 // dropCacheControl deletes every cache_control member under value.

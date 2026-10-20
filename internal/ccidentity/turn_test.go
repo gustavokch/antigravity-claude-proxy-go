@@ -108,7 +108,10 @@ func TestTurnOfIsTheSameForAReplay(t *testing.T) {
 // what the person typed. A client that puts its cache breakpoint on the latest
 // message sends the prompt with cache_control on its own request and without it
 // on the tool follow-up, and the capture shows the follow-up repeating the
-// prompt's id. The same words in another encoding are the same prompt.
+// prompt's id. A client that injects a <system-reminder> block on the latest
+// message for one request and does not repeat it once the message is older does
+// the same to the prompt's content. The same words in another encoding, or with
+// other injected context, are the same prompt.
 func TestTurnOfKeepsThePromptIDWhenOnlyTheEncodingChanges(t *testing.T) {
 	const (
 		plainBlocks  = `{"role":"user","content":[{"type":"text","text":"list the files"}]}`
@@ -117,6 +120,13 @@ func TestTurnOfKeepsThePromptIDWhenOnlyTheEncodingChanges(t *testing.T) {
 		withNested   = `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"ok","cache_control":{"type":"ephemeral","ttl":"1h"}}]},{"type":"text","text":"also, stop"}]}`
 		withoutNest  = `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"ok"}]},{"type":"text","text":"also, stop"}]}`
 		asString     = `{"role":"user","content":"list the files"}`
+		reminded     = `{"role":"user","content":[{"type":"text","text":"<system-reminder>it is Tuesday</system-reminder>"},{"type":"text","text":"list the files"}]}`
+		remindedLast = `{"role":"user","content":[{"type":"text","text":"list the files"},{"type":"text","text":"<system-reminder>it is Tuesday</system-reminder>"}]}`
+		otherRemind  = `{"role":"user","content":[{"type":"text","text":"<system-reminder>it is Friday</system-reminder>"},{"type":"text","text":"list the files"}]}`
+		blankBlock   = `{"role":"user","content":[{"type":"text","text":" "},{"type":"text","text":"list the files"}]}`
+		remindedTest = `{"role":"user","content":[{"type":"text","text":"<system-reminder>it is Tuesday</system-reminder>"},{"type":"text","text":"list the tests"}]}`
+		remindedPic  = `{"role":"user","content":[{"type":"text","text":"<system-reminder>it is Tuesday</system-reminder>"},{"type":"image","source":{"n":1}}]}`
+		picture      = `{"role":"user","content":[{"type":"image","source":{"n":1}}]}`
 	)
 	cases := []struct {
 		name     string
@@ -129,6 +139,14 @@ func TestTurnOfKeepsThePromptIDWhenOnlyTheEncodingChanges(t *testing.T) {
 		{"string content and the equal text block", conversation(asString), conversation(plainBlocks), true},
 		{"string content and the equal text block with a breakpoint", conversation(asString), conversation(cachedBlocks), true},
 		{"object keys in another order", conversation(plainBlocks), conversation(reordered), true},
+		{"a reminder on the prompt in its own request only", conversation(reminded), conversation(plainBlocks, toolUseThree, toolResult), true},
+		{"a reminder on the prompt in the follow-up only", conversation(plainBlocks), conversation(reminded, toolUseThree, toolResult), true},
+		{"a reminder after the typed text", conversation(remindedLast), conversation(plainBlocks), true},
+		{"a different reminder", conversation(reminded), conversation(otherRemind), true},
+		{"a reminder and a string content", conversation(reminded), conversation(asString), true},
+		{"an empty text block", conversation(blankBlock), conversation(plainBlocks), true},
+		{"a reminder beside an attachment", conversation(remindedPic), conversation(picture), true},
+		{"the same reminder beside another text", conversation(reminded), conversation(remindedTest), false},
 		{"another text", conversation(plainBlocks), conversation(`{"role":"user","content":"list the tests"}`), false},
 		{"integers a float64 cannot tell apart", conversation(`{"role":"user","content":[{"type":"image","source":{"n":9007199254740992}}]}`), conversation(`{"role":"user","content":[{"type":"image","source":{"n":9007199254740993}}]}`), false},
 	}

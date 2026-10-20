@@ -211,6 +211,34 @@ func TestReplyLog_ConversationsOfOneSessionStayApart(t *testing.T) {
 	}
 }
 
+// A client may put a <system-reminder> block on the latest message for one
+// request and leave it off once the message is older. The conversation's first
+// prompt is the latest message on request 1 and an old one on request 2, so the
+// reminder it carried on request 1 must not move its conversation to another
+// scope: the follow-up would miss the reply of the request it continues.
+func TestReplyLog_FirstPromptKeepsItsScopeWhenItsReminderGoes(t *testing.T) {
+	log := NewReplyLog()
+	opening := []byte(`{"messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"<system-reminder>it is Tuesday</system-reminder>"},` +
+		`{"type":"text","text":"list the files"}]}]}`)
+	readThrough(t, log, scopeOf("claudecode:acc", "session-1", opening), "req_011Stream", streamedReply)
+
+	// On request 2 the first message has no reminder; followUp's prompt is the
+	// same words as a string.
+	if got := prevOf(log, "claudecode:acc", "session-1", followUp(`[`+echoedToolUse+`]`)); got != "req_011Stream" {
+		t.Errorf("PrevRequestID = %q, want req_011Stream", got)
+	}
+
+	other := []byte(`{"messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"<system-reminder>it is Tuesday</system-reminder>"},` +
+		`{"type":"text","text":"list the tests"}]},` +
+		`{"role":"assistant","content":[` + echoedToolUse + `]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01A","content":"a.go"}]}]}`)
+	if got := prevOf(log, "claudecode:acc", "session-1", other); got != "" {
+		t.Errorf("a conversation with another first prompt was named %q", got)
+	}
+}
+
 func TestReplyLog_DropsTheOldestKeyWhenFull(t *testing.T) {
 	log := newReplyLog(2)
 	scope := scopeOf("claudecode:acc", "session-1", firstRequest)
