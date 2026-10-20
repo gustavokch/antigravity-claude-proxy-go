@@ -105,7 +105,7 @@ func ApplyBody(body []byte, p Profile, id Identity, turn Turn) ([]byte, error) {
 	if raw, ok := fields.values["metadata"]; ok {
 		_ = json.Unmarshal(raw, &existingMetadata)
 	}
-	metadata, err := marshalJS(metadataWithUserID(existingMetadata, p, id))
+	metadata, err := MarshalJS(metadataWithUserID(existingMetadata, p, id))
 	if err != nil {
 		return nil, fmt.Errorf("ccidentity: encode metadata: %w", err)
 	}
@@ -129,7 +129,7 @@ func ApplyBody(body []byte, p Profile, id Identity, turn Turn) ([]byte, error) {
 		if out.Len() > 1 {
 			out.WriteByte(',')
 		}
-		encodedKey, err := marshalJS(key)
+		encodedKey, err := MarshalJS(key)
 		if err != nil {
 			return err
 		}
@@ -229,9 +229,10 @@ func objectFields(body []byte) (bodyFields, error) {
 	return fields, nil
 }
 
-// marshalJS encodes v the way JSON.stringify does for the values this package
-// writes: no HTML escaping and no trailing newline.
-func marshalJS(v any) ([]byte, error) {
+// MarshalJS encodes v the way JSON.stringify does: no HTML escaping and no
+// trailing newline. Go's default turns "<" into \u003c, which no JavaScript
+// client sends.
+func MarshalJS(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
 	encoder.SetEscapeHTML(false)
@@ -335,7 +336,7 @@ func SetObjectMembers(body []byte, members ...ObjectMember) ([]byte, error) {
 		if found[i] {
 			continue
 		}
-		encodedName, err := marshalJS(member.Name)
+		encodedName, err := MarshalJS(member.Name)
 		if err != nil {
 			return nil, fmt.Errorf("ccidentity: set object members: encode name %q: %w", member.Name, err)
 		}
@@ -670,7 +671,7 @@ type textBlock struct {
 // system prompt alone: replacing it would destroy content this package cannot
 // reconstruct.
 func systemWithBillingHeader(existing json.RawMessage, id Identity, turn Turn) (json.RawMessage, bool, error) {
-	marker, err := marshalJS(textBlock{Type: "text", Text: BillingHeader(id, turn)})
+	marker, err := MarshalJS(textBlock{Type: "text", Text: BillingHeader(id, turn)})
 	if err != nil {
 		return nil, false, fmt.Errorf("ccidentity: encode billing header: %w", err)
 	}

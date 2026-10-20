@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -140,7 +139,7 @@ func (server *Server) tryClaudeCodeGateway(g *gatewayRequest) bool {
 func claudeCodeGatewayBody(g *gatewayRequest, model string, derivedLimit int) ([]byte, error) {
 	maxTokens, setMaxTokens := maxTokensValue(g.body, 0, derivedLimit)
 	if !g.mutated {
-		quotedModel, err := encodeJSONUnescaped(model)
+		quotedModel, err := ccidentity.MarshalJS(model)
 		if err != nil {
 			return nil, err
 		}
@@ -155,19 +154,7 @@ func claudeCodeGatewayBody(g *gatewayRequest, model string, derivedLimit int) ([
 		body = maps.Clone(g.body)
 		body["max_tokens"] = maxTokens
 	}
-	return encodeJSONUnescaped(body)
-}
-
-// encodeJSONUnescaped encodes v the way JSON.stringify does: without HTML
-// escaping and without a trailing newline.
-func encodeJSONUnescaped(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+	return ccidentity.MarshalJS(body)
 }
 
 func (server *Server) tryOpenRouterGateway(g *gatewayRequest) bool {

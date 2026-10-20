@@ -866,8 +866,9 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	request = server.consumeCacheBumpHeader(request)
 	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
 	// Keep the raw bytes: when nothing rewrites the request, custom-endpoint
-	// forwarding passes them through byte-for-byte instead of re-marshaling
-	// the decoded map (which reorders keys and reformats numbers).
+	// forwarding passes them through byte-for-byte, and the Claude Code gateway
+	// writes only model and max_tokens into them, instead of re-marshaling the
+	// decoded map (which reorders keys, reformats numbers and escapes HTML).
 	rawBody, err := io.ReadAll(request.Body)
 	if err != nil {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to read request body: "+err.Error())
