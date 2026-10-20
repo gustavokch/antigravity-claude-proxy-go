@@ -239,8 +239,12 @@ a fresh capture, then a new baseline. Done for 2.1.304 on 2026-10-20:
    touching `~/Git/claude-container/Containerfile`:
    `printf 'FROM localhost/claude-box:mitm\nRUN npm install -g @anthropic-ai/claude-code@<version>\n' > /tmp/cc/Containerfile && podman build -t localhost/claude-box:mitm-<version> -f /tmp/cc/Containerfile /tmp/cc`
 3. `CLAUDE_CAPTURE_IMAGE=claude-box:mitm-<version> scripts/capture-claude-code-headers.sh oauth`
-4. `python3 scripts/diff_claude_code_identity.py --baseline <old>.jsonl --observed <new>.jsonl`
+4. `python3 scripts/diff_claude_code_identity.py --no-host-check --baseline <old>.jsonl --observed <new>.jsonl`
    lists every drift. Each one is a change to make in `internal/ccidentity`.
+   `--no-host-check` is for this step: both captures ran in a Linux container, so
+   their `X-Stainless-OS` and `X-Stainless-Arch` describe it, and the check that
+   they are the machine's own (right for the proxy's requests) would report a
+   drift on any other machine that is not a change to make.
 5. Write `.reference/claude-code-headers-<date>.txt`, point `BASELINE` in
    `scripts/verify-claude-code-identity.sh` at the new JSONL, and run the gate.
 

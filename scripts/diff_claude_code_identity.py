@@ -447,6 +447,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--observed", required=True)
+    parser.add_argument(
+        "--no-host-check",
+        action="store_true",
+        help="do not require X-Stainless-OS and -Arch to be this machine's own; for "
+             "diffing a real client captured on another machine, whose values describe that one",
+    )
     args = parser.parse_args()
 
     baseline = load_messages_records(args.baseline)
@@ -467,7 +473,8 @@ def main() -> int:
         )
     drifts.extend(compare_headers(baseline, observed))
     drifts.extend(compare_order(baseline[0], observed))
-    drifts.extend(compare_host(observed))
+    if not args.no_host_check:
+        drifts.extend(compare_host(observed))
     drifts.extend(compare_body(baseline, observed))
     drifts.extend(compare_correlations(observed))
     drifts.extend(compare_billing(observed))

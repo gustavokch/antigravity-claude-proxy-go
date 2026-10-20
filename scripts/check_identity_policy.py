@@ -9,8 +9,9 @@ of them correct and every one of them missing the point.
 Three policies, one per subcommand:
 
   normalized   the request carries the captured identity (pooled gateway, and
-               a custom endpoint with no configured apiKey), over the captured
-               HTTP version, with its prompt fields agreeing
+               a custom endpoint with no configured apiKey): every captured
+               header with its value and spelling, in the captured order, over
+               the captured HTTP version, with its prompt fields agreeing
   passthrough  the request carries the CALLER's identity and its own API key,
                because internal/api/server.go refuses to normalize an endpoint
                whose credential normalization would delete
@@ -36,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from diff_claude_code_identity import (  # noqa: E402
     compare_billing,
     compare_correlations,
+    compare_headers,
     compare_host,
     compare_order,
     header_map,
@@ -152,21 +154,12 @@ def user_agent(record: dict) -> object:
     return entry[1] if entry else None
 
 
-def check_http_version(baseline: dict, observed: dict) -> list[str]:
-    """The observed request must travel over the HTTP version the capture shows.
-
-    The real client speaks HTTP/1.1 on every request, and a transport that offers
-    h2 gets h2 from api.anthropic.com, so a request that arrives as h2 is
-    distinguishable without reading a single header.
-    """
-    expected = baseline.get("http_version")
-    if expected is None:
-        # Skipping here would let an h2 request pass without saying so.
-        return ["the baseline records no http_version, so this policy cannot tell HTTP/1.1 from h2"]
-    got = observed.get("http_version")
-    if got != expected:
-        return [f"HTTP version is {got!r}, want the captured {expected!r}"]
-    return []
+def without_header(record: dict, name: str) -> dict:
+    """A copy of the record with every header of that name removed."""
+    return {
+        **record,
+        "headers": [pair for pair in record.get("headers", []) if pair[0].lower() != name],
+    }
 
 
 def check_normalized(
@@ -174,18 +167,39 @@ def check_normalized(
     observed: dict,
     expect_turn_index: int | None = None,
     tls_reference: dict | None = None,
+    keyless: bool = False,
 ) -> list[str]:
     """The observed request must present the captured identity.
+
+    Every header, its value, its spelling and the HTTP version go through the
+    differ's compare_headers, so a request is held to the capture by this
+    policy as it is by the differ. The keyless custom-endpoint phase is checked
+    by this policy alone, and without that comparison it passed a request with
+    no x-claude-code-prompt-id, no X-Stainless-OS and Accept-Encoding: gzip.
+    The values that differ between any two requests, or between the capture's
+    container and this host, are the differ's own exemptions and are not
+    repeated here.
+
+    keyless is a request to a custom endpoint that configures no apiKey. It is
+    sent no credential: forwardToCustomEndpoint deletes the caller's
+    Authorization. The capture's request carries one, so such a request is held
+    to the capture without it, which also makes a credential that reaches the
+    endpoint a drift.
 
     expect_turn_index, when given, is the number of user prompts the request
     carried: cc_turn_index counts them, so a request sent with two must say 2.
     """
     problems: list[str] = []
     headers = header_map(observed)
-    problems.extend(check_http_version(baseline, observed))
+    if baseline.get("http_version") is None:
+        # compare_headers reads a missing version as agreement with a request
+        # that records none, which would let an h2 request pass in silence.
+        problems.append("the baseline records no http_version, so this policy cannot tell HTTP/1.1 from h2")
+    reference = without_header(baseline, "authorization") if keyless else baseline
+    problems.extend(compare_headers([reference], observed))
     problems.extend(compare_correlations(observed))
     problems.extend(compare_billing(observed))
-    problems.extend(compare_order(baseline, observed))
+    problems.extend(compare_order(reference, observed))
     problems.extend(compare_host(observed))
     if tls_reference is not None:
         problems.extend(check_tls(tls_reference, observed, "fetch"))
@@ -417,7 +431,11 @@ def evaluate(args) -> tuple[list[str], str]:
     if args.policy == "normalized":
         return (
             check_normalized(
-                baseline_posts[0], observed, args.expect_turn_index, load_tls_reference(args.tls_reference)
+                baseline_posts[0],
+                observed,
+                args.expect_turn_index,
+                load_tls_reference(args.tls_reference),
+                keyless=args.keyless,
             ),
             subject,
         )
@@ -442,6 +460,11 @@ def main() -> int:
         help="the number of user prompts the observed request carried",
     )
     p_norm.add_argument("--tls-reference", required=True)
+    p_norm.add_argument(
+        "--keyless",
+        action="store_true",
+        help="the request went to an endpoint with no credential of its own, so it carries no Authorization",
+    )
 
     p_pass = sub.add_parser("passthrough")
     p_pass.add_argument("--baseline", required=True)

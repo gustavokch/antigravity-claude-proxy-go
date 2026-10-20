@@ -303,10 +303,13 @@ fi
 
 # The pooled request must also come out of the TLS stack the real client sends
 # messages with. The differ above reads headers and body, which never show it.
+# It carries one user prompt, so cc_turn_index has to say 1: the differ's billing
+# pattern takes any index, and a proxy that always sent 2 would pass both phases.
 if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" normalized \
   --baseline "${BASELINE}" \
   --observed "${OBSERVED_POOLED}" \
-  --tls-reference "${TLS_REFERENCE}"; then
+  --tls-reference "${TLS_REFERENCE}" \
+  --expect-turn-index 1; then
   KEEP_WORK_DIR=1
   echo "Observed capture kept at ${OBSERVED_POOLED}" >&2
   fail "the pooled gateway did not present the real client's TLS handshake"
@@ -348,6 +351,10 @@ echo "=== [7/9] Driving a keyless custom endpoint ==="
 # has to say 2; the pooled request above carries one prompt and checks the
 # first-prompt form. The pooled phase cannot take a second request, because the
 # stub credential cools the only account after the first one.
+#
+# The endpoint configures no apiKey and forwardToCustomEndpoint deletes the
+# caller's Authorization, so the request carries no credential at all; --keyless
+# holds it to the capture without that one header.
 curl -sS -o /dev/null --max-time 60 \
   -X POST "http://127.0.0.1:${PROXY_PORT}/v1/messages" \
   -H 'Content-Type: application/json' \
@@ -362,6 +369,7 @@ if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" normalized \
   --baseline "${BASELINE}" \
   --observed "${OBSERVED_CUSTOM_KEYLESS}" \
   --tls-reference "${TLS_REFERENCE}" \
+  --keyless \
   --expect-turn-index 2; then
   KEEP_WORK_DIR=1
   echo "Observed capture kept at ${OBSERVED_CUSTOM_KEYLESS}" >&2

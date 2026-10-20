@@ -8,6 +8,8 @@ the differ stops catching a drift, not if the baseline moves alongside it.
 Run: python3 -m unittest discover -s scripts -p 'test_*.py'
 """
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -438,6 +440,60 @@ class RecordSelectionTest(unittest.TestCase):
     def test_changed_path_is_drift(self):
         observed = baseline_record(path="/v1/messages")
         self.assertNotEqual(observed["path"], baseline_record()["path"])
+
+
+CAPTURE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".reference", "claude-code-headers-20261020.jsonl",
+)
+
+
+class RealClientDiffTest(unittest.TestCase):
+    """Step 4 of the recapture procedure in docs/classifier-fallback-notes.md
+    diffs a real client captured in a Linux container against the committed
+    capture. Its X-Stainless-OS and -Arch describe that container, not the
+    machine the diff runs on, so on any other machine the host check reports a
+    drift that is not a change to make."""
+
+    def run_main(self, *flags, mutate=lambda record: None):
+        observed = differ.load_messages_records(CAPTURE)[1]
+        observed["request_body"]["billing"] = {
+            "cch": "6cba6", "cch_expected": "6cba6",
+            "version_suffix": "456", "version_suffix_expected": "456",
+        }
+        mutate(observed)
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+            handle.write(json.dumps(observed) + "\n")
+        argv = ["diff_claude_code_identity.py", "--baseline", CAPTURE, "--observed", handle.name, *flags]
+        stderr = io.StringIO()
+        try:
+            # The diff runs on a Mac; the capture's container was Linux.
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(differ, "host_identity", return_value=("MacOS", "x64")), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                code = differ.main()
+        finally:
+            os.unlink(handle.name)
+        return code, stderr.getvalue()
+
+    def test_the_capture_hosts_own_os_is_a_drift_by_default(self):
+        code, stderr = self.run_main()
+        self.assertEqual(code, 1, stderr)
+        self.assertIn("X-Stainless-OS", stderr)
+
+    def test_no_host_check_leaves_the_capture_hosts_values_alone(self):
+        code, stderr = self.run_main("--no-host-check")
+        self.assertEqual(code, 0, stderr)
+
+    def test_no_host_check_does_not_hide_any_other_drift(self):
+        def change_user_agent(record):
+            for pair in record["headers"]:
+                if pair[0] == "User-Agent":
+                    pair[1] = "foreign-harness/1.0"
+
+        code, stderr = self.run_main("--no-host-check", mutate=change_user_agent)
+        self.assertEqual(code, 1, stderr)
+        self.assertIn("User-Agent", stderr)
 
 
 if __name__ == "__main__":
