@@ -1402,11 +1402,11 @@
                                             </div>
                                             <div class="field">
                                                 <label class="field-label" for="setm-cc-id-os" x-text="$store.global.t('ccIdentityFieldStainlessOs') || 'Stainless OS'">Stainless OS</label>
-                                                <input id="setm-cc-id-os" type="text" class="input input-sm mono" x-model="ccConfig.identity.stainlessOs" placeholder="Linux">
+                                                <input id="setm-cc-id-os" type="text" class="input input-sm mono" x-model="ccConfig.identity.stainlessOs" :placeholder="$store.global.t('ccIdentityHostDefault') || 'host default'">
                                             </div>
                                             <div class="field">
                                                 <label class="field-label" for="setm-cc-id-arch" x-text="$store.global.t('ccIdentityFieldStainlessArch') || 'Stainless Arch'">Stainless Arch</label>
-                                                <input id="setm-cc-id-arch" type="text" class="input input-sm mono" x-model="ccConfig.identity.stainlessArch" placeholder="arm64">
+                                                <input id="setm-cc-id-arch" type="text" class="input input-sm mono" x-model="ccConfig.identity.stainlessArch" :placeholder="$store.global.t('ccIdentityHostDefault') || 'host default'">
                                             </div>
                                             <div class="field">
                                                 <label class="field-label" for="setm-cc-id-runtime" x-text="$store.global.t('ccIdentityFieldStainlessRuntimeVersion') || 'Stainless Runtime Version'">Stainless Runtime Version</label>

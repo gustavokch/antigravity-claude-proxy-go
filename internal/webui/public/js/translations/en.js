@@ -585,6 +585,7 @@ window.translations.en = {
     ccIdentityFieldStainlessOs: "Stainless OS",
     ccIdentityFieldStainlessArch: "Stainless Arch",
     ccIdentityFieldStainlessRuntimeVersion: "Stainless Runtime Version",
+    ccIdentityHostDefault: "host default",
     skipFastModeOrgCheck: "Skip Fast Mode Org Check",
     skipFastModeOrgCheckDesc: "Skips Anthropic organization validation when using fast mode models via proxy.",
 

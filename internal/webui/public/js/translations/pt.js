@@ -520,6 +520,7 @@ window.translations.pt = {
     ccIdentityFieldStainlessOs: "Stainless OS",
     ccIdentityFieldStainlessArch: "Arquitetura Stainless",
     ccIdentityFieldStainlessRuntimeVersion: "Versão do Runtime Stainless",
+    ccIdentityHostDefault: "padrão do host",
     skipFastModeOrgCheck: "Ignorar Verificação de Organização do Fast Mode",
     skipFastModeOrgCheckDesc: "Ignora a validação de organização da Anthropic ao usar modelos fast mode pelo proxy.",
 

@@ -1,8 +1,10 @@
 Claude Code 2.1.304 client header baseline (OAuth)
 ==================================================
 
-> GROUND TRUTH. Every value below is a verbatim quote from intercepted traffic,
-> nothing is inferred. Anything not byte-confirmed is marked `unknown`.
+> GROUND TRUTH. Every value below is a verbatim quote from intercepted traffic
+> or from a client bundle on disk. Anything not byte-confirmed is marked
+> `unknown`, and a statement that goes beyond what was observed is marked
+> [INFERENCE].
 > Supersedes .reference/claude-code-headers-20260923.txt (2.1.280) as the gate
 > baseline; that file stays as the record of the previous client.
 
@@ -43,6 +45,8 @@ What changed against 2.1.280
         added    mid-conversation-tool-changes-2026-07-01
      The two additions sit where the removed entry was, after
      prompt-caching-scope-2026-01-05 and before advanced-tool-use-2025-11-20.
+     This is the `--print` text mode; the stream-json run sends a 15th entry
+     (see "anthropic-beta is conditional").
   4. New header            x-claude-code-prompt-id, a UUID. It equals the
                            cc_prompt_id in system[0] in all 7 captured
                            messages requests.
@@ -77,7 +81,7 @@ POST /v1/messages?beta=true — headers, in wire order
   X-Stainless-Runtime: node
   X-Stainless-Runtime-Version: v26.3.0
   X-Stainless-Timeout: 600
-  anthropic-beta: <14 entries, byte-identical across all captured requests>
+  anthropic-beta: <14 entries, byte-identical across the 3 requests of this capture; 15 in the multi-prompt capture, see "anthropic-beta is conditional">
   anthropic-dangerous-direct-browser-access: true
   anthropic-version: 2023-06-01
   x-app: cli
@@ -98,6 +102,45 @@ x-claude-code-prompt-id. The multi-tool case is `unknown`.
 anthropic-beta, verbatim and in order (one comma-separated header value):
 
   claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07
+
+anthropic-beta is conditional
+-----------------------------
+
+The 14 entries above are what the 3 messages requests of the main capture sent
+(`claude --print`, text output). All 4 messages requests of the multi-prompt
+capture (`claude --print --verbose --input-format stream-json --output-format
+stream-json`) sent 15: the same 14 in the same order, with
+`thinking-display-updates-2026-08-18` between
+`thinking-binding-controls-2026-08-01` and `extended-cache-ttl-2025-04-11`.
+
+Where the 15th comes from, read out of the 2.1.280 bundle on disk
+(~/.local/share/claude/versions/2.1.280, 2026-10-20). The 2.1.304 bundle was NOT
+inspected, so this paragraph describes 2.1.280:
+
+  - The beta is pushed in one place: the `connector_text` case of a switch over
+    the thinking display mode, in the same statement that sets the thinking
+    config to `display:"updates"`:
+
+      case"connector_text":{if((yc?.type==="adaptive"||yc?.type==="enabled")&&ic&&Oe()==="firstParty"&&ms()&&!s6()&&!("thinking"in Ii)&&!em(ht,Ioe)&&!a.CLAUDE_CODE_SIMULATE_PROXY_USAGE){if(yc={...yc,display:"updates"},!Nr.includes(Ioe))Nr.push(Ioe);Vu()}break}
+
+  - The mode is chosen from the thinking config's `display`:
+
+      function wxt(e,n){if(e==="summarized"||e==="highlights")return"thinking_and_connector_text";if(e==="omitted"&&!n)return"none";if(e!=="omitted"&&yQt())return"thinking_and_connector_text";return ldr()?"connector_text":"none"}
+
+    so an `omitted` display (second argument false) is mode `none`, which adds
+    no beta.
+
+The three 2.1.304 bodies kept in internal/ccidentity/testdata carry
+`"thinking":{"type":"adaptive","display":"omitted"}`; their headers were not
+kept. Both JSONL captures record the thinking object by shape only
+(`display: string`), so neither shows its value.
+
+  [INFERENCE] The 14-entry list is the mode with `display:"omitted"`, the text
+  mode of `claude --print`, and the 15-entry list is the `connector_text` mode
+  with `display:"updates"`. The list follows the request's mode and body, not
+  the client version. Which invocation or setting selects `connector_text` in
+  2.1.304 is `unknown`: the stream-json run got it, and no capture varied one
+  flag at a time.
 
 POST /v1/messages?beta=true — body fingerprint
 ----------------------------------------------
@@ -174,7 +217,15 @@ Gaps
   - The API-key auth mode was NOT captured.
   - The interactive (`cc_entrypoint=cli`) header set was NOT captured. Every
     request is a `--print` or stream-json run, so cc_entrypoint is `sdk-cli`.
-  - cch derivation: `unknown`. Treated as opaque and generated fresh.
+  - cch and the cc_version suffix are derived, not opaque. 2.1.304 replaces
+    `cch=00000` with the xxHash64 of the body, seed 0x4d659218e32a3268, masked
+    to 20 bits, over the body with the first `model` value emptied and the first
+    `max_tokens` field removed with one adjacent comma. The suffix is the sha256
+    of a salt, three characters of the first prompt and the version. The salt is
+    a literal in the 2.1.304 JavaScript; the seed is not in the binary and comes
+    from public reverse engineering. Both rules reproduce every body captured
+    from 2.1.304 (internal/ccidentity/cch.go; scripts/cc_billing.py computes the
+    same).
   - The security-monitor (classifier) request did NOT fire; every messages
     request carried `x-claude-code-request-class: main`.
   - X-Stainless-OS is `Linux` and X-Stainless-Runtime-Version `v26.3.0` because
@@ -185,5 +236,13 @@ Gaps
     of the reply the latest assistant message echoes (ccidentity.ReplyLog). That
     is how 2.1.304 derives it, from the requestId of its latest assistant
     message, and it matches every row above: each follow-up names the
-    request-id response header of the request before it. Still not reproduced:
-    cc_prompt_index, which is 0 in every capture and has no known driver.
+    request-id response header of the request before it.
+  - cc_prompt_index is 0 in every capture. The 2.1.304 binary adds 1 to it only
+    for a prompt whose turn origin is `human` (a prompt a person typed into an
+    interactive session). No capture shows that origin: every request here is
+    `cc_turn_origin=sdk`. The rule comes from reading the binary, not from a
+    capture, and the proxy applies it (ccidentity.BillingHeader: the prompt
+    number for a `human` origin, 0 for any other).
+  - The 15-entry anthropic-beta of the stream-json run (see "anthropic-beta is
+    conditional") is NOT reproduced: the proxy always sends the 14 entries of
+    the `--print` text mode, whatever `thinking.display` the caller sent.
