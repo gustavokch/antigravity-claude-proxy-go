@@ -180,7 +180,10 @@ Gaps
   - X-Stainless-OS is `Linux` and X-Stainless-Runtime-Version `v26.3.0` because
     the capture ran in a Linux container.
   - The proxy reproduces the per-prompt cc_prompt_id and cc_turn_index from the
-    user prompts in each request's own messages (ccidentity.TurnOf), and sends
-    HTTP/1.1 as every record here shows. Still not reproduced: cc_prev_req, which
-    needs the previous response's request id kept per session, and
+    user prompts in each request's own messages (ccidentity.TurnOf), sends
+    HTTP/1.1 as every record here shows, and sends cc_prev_req: the request-id
+    of the reply the latest assistant message echoes (ccidentity.ReplyLog). That
+    is how 2.1.304 derives it, from the requestId of its latest assistant
+    message, and it matches every row above: each follow-up names the
+    request-id response header of the request before it. Still not reproduced:
     cc_prompt_index, which is 0 in every capture and has no known driver.

@@ -29,5 +29,5 @@ Replaying a Bun ClientHello through utls for Claude Code, as internal/zen does f
 
 ## Watch out
 The prompt rule is calibrated on the capture's message SHAPES, which are type-erased, so it was never run against a real Claude Code transcript. If a client's tool results carry text that is not a `<system-reminder>`, every tool round trip reads as a new prompt.
-Still different from the real client: `cc_prev_req` (needs the previous response's request id kept per session), `cc_prompt_index` (0 in every capture), and the TLS ClientHello beyond ALPN.
+Still different from the real client: `cc_prompt_index` (0 in every capture) and the TLS ClientHello beyond ALPN. `cc_prev_req` is now sent, and it is per conversation, not per session: see the cc_prev_req learning of the same date.
 Tests that need a TLS server must trust its certificate on a CLONE of the shipped transport. The shared transports cache their pools, so mutating them leaks across tests.

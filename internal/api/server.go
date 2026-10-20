@@ -154,6 +154,11 @@ type Server struct {
 	classifierAudit    *classifier.Recorder
 	classifierCorpus   atomic.Pointer[corpus.Recorder]
 
+	// ccReplies maps each normalized reply to its upstream request id, which
+	// the request that echoes the reply sends as cc_prev_req. A bare test
+	// Server has none and sends no cc_prev_req.
+	ccReplies *ccidentity.ReplyLog
+
 	// endpointCats holds the fetched model catalogs of custom endpoints that set
 	// discoverModels. Lazily built: tests construct a bare Server.
 	endpointCatalogsOnce sync.Once
@@ -215,6 +220,7 @@ func New(options Options) (*Server, error) {
 		ccUsage:            options.CCUsage,
 		mitm:               options.Mitm,
 		projects:           make(map[string]string),
+		ccReplies:          ccidentity.NewReplyLog(),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
 	srv.strictManagementHost = options.StrictManagementHost
@@ -1353,8 +1359,14 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	// One Turn for the body here and the headers in Rewrite below: the prompt id
 	// is written into both and the capture shows the same value in each.
 	var turn ccidentity.Turn
+	// replyScope is where this request's reply is recorded for cc_prev_req. It
+	// stays empty for a request that is not normalized, which sends no
+	// cc_prev_req and so has no reply to link.
+	var replyScope string
 	if normalize {
 		turn = ccidentity.TurnOf(reqBody)
+		replyScope = ccidentity.ReplyScope("endpoint:"+endpoint.URL, customSessionKey)
+		turn.PrevRequestID = server.ccReplies.PrevRequestID(replyScope, turn)
 		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, turn)
 		if err != nil {
 			if server.logger != nil {
@@ -1394,6 +1406,9 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode < 400 && isMessagesRequest {
 				server.maybeRecordCacheBump(cachebump.RouteCustom, request, reqBody, customSessionKey, model, "", model, minMaxTokensFloor)
+				if replyScope != "" {
+					server.recordCustomReply(resp, replyScope)
+				}
 			}
 			return nil
 		},
@@ -1452,6 +1467,27 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	}
 
 	proxy.ServeHTTP(writer, request)
+}
+
+// recordCustomReply records a normalized custom-endpoint reply under scope, so
+// the request that echoes it can name it in cc_prev_req. A stream is recorded as
+// the client reads it. A unary body is read here, under the cap the pooled
+// gateway reads one with.
+func (server *Server) recordCustomReply(resp *http.Response, scope string) {
+	requestID := resp.Header.Get("request-id")
+	if requestID == "" {
+		return
+	}
+	if ccIsSSEResponse(resp.Header) {
+		resp.Body = server.ccReplies.Watch(scope, requestID, resp.Body)
+		return
+	}
+	body, ok := capUpstreamBody(resp, transport.MaxUpstreamBody, server.logger, "gateway", "custom")
+	if !ok {
+		return
+	}
+	server.ccReplies.RecordMessage(scope, requestID, body)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
 }
 
 // kimiIdentityHeaders lazily computes the KimiCLI fingerprint headers. Callers

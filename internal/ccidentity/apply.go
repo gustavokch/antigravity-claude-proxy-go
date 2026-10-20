@@ -282,8 +282,12 @@ func formatUUID(value [16]byte) string {
 //   - cc_version carries a per-process build suffix.
 //   - cch differs on every request. Its derivation is unknown; a fresh 5-hex
 //     value reproduces the observed variation.
-//   - cc_prev_req appears only on a follow-up turn and carries that turn's
-//     request id.
+//   - cc_prev_req names the request that produced the reply the latest
+//     assistant message echoes, so it is absent on a conversation's first
+//     request. ReplyLog supplies it; see there for how the client derives it.
+//     It is written only when it matches the client's own guard,
+//     requestIDPattern, because the value comes from an upstream response
+//     header and is spliced into this line.
 //
 // cc_prompt_index and cc_turn_index are new in 2.1.304. cc_prompt_index was 0 in
 // all 7 captured messages requests, so nothing shows what moves it and it is sent as 0.
@@ -318,7 +322,7 @@ func BillingHeader(id Identity, turn Turn) string {
 	// five; the sixth character is discarded rather than padded.
 	b.WriteString(randomHex(3)[:5])
 	b.WriteString("; ")
-	if turn.PrevRequestID != "" {
+	if requestIDPattern.MatchString(turn.PrevRequestID) {
 		b.WriteString("cc_prev_req=")
 		b.WriteString(turn.PrevRequestID)
 		b.WriteString("; ")

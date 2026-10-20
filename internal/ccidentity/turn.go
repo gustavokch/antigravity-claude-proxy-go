@@ -39,6 +39,9 @@ const systemReminderPrefix = "<system-reminder>"
 //
 // A body that does not parse, or has no prompt, is the first prompt. ApplyBody
 // reports the parse failure itself.
+//
+// TurnOf also keeps the content of the latest assistant message, the reply a
+// ReplyLog maps to the request id sent as cc_prev_req.
 func TurnOf(body []byte) Turn {
 	var parsed struct {
 		Messages []struct {
@@ -51,18 +54,21 @@ func TurnOf(body []byte) Turn {
 	}
 
 	prompts := 0
-	var latest json.RawMessage
+	var latest, reply json.RawMessage
 	for _, message := range parsed.Messages {
-		if message.Role == "user" && carriesPrompt(message.Content) {
+		switch {
+		case message.Role == "assistant":
+			reply = message.Content
+		case message.Role == "user" && carriesPrompt(message.Content):
 			prompts++
 			latest = message.Content
 		}
 	}
 	if prompts == 0 {
-		return Turn{PromptNumber: 1}
+		return Turn{PromptNumber: 1, latestReply: reply}
 	}
 	digest := sha256.Sum256(latest)
-	return Turn{PromptNumber: prompts, promptDigest: hex.EncodeToString(digest[:])}
+	return Turn{PromptNumber: prompts, promptDigest: hex.EncodeToString(digest[:]), latestReply: reply}
 }
 
 // carriesPrompt reports whether a user message's content holds something a

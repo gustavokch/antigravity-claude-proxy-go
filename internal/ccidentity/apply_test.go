@@ -470,6 +470,11 @@ func TestBillingHeaderCarriesPrevRequestIDOnFollowUpTurns(t *testing.T) {
 	if strings.Contains(BillingHeader(testIdentity(), Turn{}), "cc_prev_req") {
 		t.Error("cc_prev_req present on a first turn; the capture only shows it on a follow-up")
 	}
+	// The client writes the field only for a value matching its own guard.
+	injected := BillingHeader(testIdentity(), Turn{PrevRequestID: "req_011; cc_turn_index=9"})
+	if strings.Contains(injected, "cc_prev_req") || strings.Contains(injected, "cc_turn_index=9") {
+		t.Errorf("billing header = %q; a request id the client's guard rejects must not be written", injected)
+	}
 }
 
 func TestBillingHeaderEntrypointAndOriginFollowTheIdentity(t *testing.T) {

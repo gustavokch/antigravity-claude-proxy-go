@@ -18,6 +18,8 @@
 //     the HTTP/1.1 transport the capture used.
 package ccidentity
 
+import "encoding/json"
+
 // Header is one request header with the exact name and value to send. The name
 // is used as a map key verbatim, so case is preserved.
 type Header struct {
@@ -64,20 +66,14 @@ type Identity struct {
 
 // Turn carries the per-request pieces of the identity.
 //
-// TurnOf fills the prompt fields from the request body, and every caller does,
-// so the prompt id and turn index follow the conversation without any caller
-// keeping a counter.
-//
-// PrevRequestID has no production caller yet: internal/api never sets it, so
-// cc_prev_req does not reach the wire. It is kept rather than deleted because it
-// encodes a real captured behaviour that could not be reconstructed from the
-// capture later, and apply.go implements it. A caller that wanted to send it
-// would have to thread the previous turn's upstream request-id (the response's
-// request-id header) through the session store that already keys on the session
-// key, then set it here.
+// TurnOf fills it from the request body, and every caller does, so the prompt
+// id and turn index follow the conversation without any caller keeping a
+// counter. PrevRequestID is the one field the body cannot give: the caller
+// asks a ReplyLog for it, with the latest reply TurnOf found.
 type Turn struct {
-	// PrevRequestID is the upstream request id of the previous turn, sent as
-	// cc_prev_req. Claude Code only includes it on a follow-up turn.
+	// PrevRequestID is the upstream request id of the reply the latest
+	// assistant message echoes, sent as cc_prev_req. Empty omits the field, as
+	// the real client does on the first request of a conversation.
 	PrevRequestID string
 	// PromptNumber is the 1-based number of the user prompt this request
 	// belongs to, sent as cc_turn_index. Zero reads as 1, so the zero Turn is
@@ -86,6 +82,9 @@ type Turn struct {
 	// promptDigest identifies the latest prompt message. It seeds cc_prompt_id
 	// beside the session key and PromptNumber; see TurnOf.
 	promptDigest string
+	// latestReply is the content of the latest assistant message, which
+	// ReplyLog.PrevRequestID looks up.
+	latestReply json.RawMessage
 }
 
 // Profile is a captured Claude Code request identity.

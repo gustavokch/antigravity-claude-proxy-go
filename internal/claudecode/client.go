@@ -347,9 +347,12 @@ type MessageRequest struct {
 	// alone: the account and the session. The prompt number and prompt id come
 	// from Body (see ccidentity.TurnOf), so they need no field here.
 	Identity ccidentity.Identity
-	// PrevRequestID is the previous turn's upstream request id, sent as
-	// cc_prev_req. Empty omits it, which is what every caller does today.
-	PrevRequestID string
+	// Replies names the previous request in cc_prev_req: SendMessage looks up
+	// the latest assistant message of Body under ReplyScope. A nil log or an
+	// empty scope omits the field. The caller records the reply this send gets
+	// back under the same scope (ccidentity.ReplyLog Watch or RecordMessage).
+	Replies    *ccidentity.ReplyLog
+	ReplyScope string
 }
 
 // SendMessage forwards a /v1/messages request to Anthropic with appropriate auth
@@ -385,7 +388,7 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 		// both, and the capture shows the same value in each. TurnOf reads the
 		// original body; normalization does not touch messages.
 		turn = ccidentity.TurnOf(req.Body)
-		turn.PrevRequestID = req.PrevRequestID
+		turn.PrevRequestID = req.Replies.PrevRequestID(req.ReplyScope, turn)
 		normalized, err := ccidentity.ApplyBody(body, profile, req.Identity, turn)
 		if err != nil {
 			// Fail closed: forwarding an unnormalised body would send exactly the

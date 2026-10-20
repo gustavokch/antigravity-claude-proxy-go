@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/config"
@@ -252,6 +253,16 @@ type ccAttempt struct {
 	pool        *claudecode.AccountPool
 	rateLimits  claudecode.RateLimits
 	requestID   string // upstream "request-id" response header
+	// replyScope is where the reply is recorded for cc_prev_req; empty when
+	// the request was not normalized or carried no session.
+	replyScope string
+}
+
+// ccReplyScope is the ReplyLog scope of a normalized pooled request. It names
+// the account as well as the session, so a conversation that fails over never
+// sends one account a request id another account issued.
+func ccReplyScope(accountID, sessionKey string) string {
+	return ccidentity.ReplyScope("claudecode:"+accountID, sessionKey)
 }
 
 // recordClaudeCodeMetrics is the single place a completed Claude Code call
@@ -316,13 +327,16 @@ func ccIsSSEResponse(h http.Header) bool {
 //
 // The capture is Anthropic-specific (claudecode.UsageInterceptor and
 // ParseUsageJSON) so it also records the message ID, served model, upstream
-// request ID and the 5m/1h cache write split.
+// request ID and the 5m/1h cache write split. The reply itself is recorded in
+// the server's ReplyLog under a.replyScope, so the request that echoes it can
+// name this one in cc_prev_req.
 func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 	a.requestID = resp.Header.Get("request-id")
 	if ccIsSSEResponse(resp.Header) {
 		resp.Body = claudecode.NewUsageInterceptor(resp.Body, func(u claudecode.Usage) {
 			server.recordClaudeCodeMetrics(a, u)
 		})
+		resp.Body = server.ccReplies.Watch(a.replyScope, a.requestID, resp.Body)
 		return
 	}
 
@@ -331,6 +345,7 @@ func (server *Server) ccInstrumentResponse(resp *http.Response, a ccAttempt) {
 		return
 	}
 	server.recordClaudeCodeMetrics(a, claudecode.ParseUsageJSON(body))
+	server.ccReplies.RecordMessage(a.replyScope, a.requestID, body)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 }
 
@@ -406,12 +421,18 @@ func (server *Server) forwardToClaudeCode(
 		startTime := time.Now()
 
 		identity, normalize := ccCfg.Identity.WireIdentity(acc.AccountUUID, sessionKey)
+		var replyScope string
+		if normalize {
+			replyScope = ccReplyScope(acc.ID, sessionKey)
+		}
 		resp, err := client.SendMessage(request.Context(), claudecode.MessageRequest{
 			Token:         acc.Token,
 			Body:          reqBody,
 			ClientHeaders: request.Header,
 			Normalize:     normalize,
 			Identity:      identity,
+			Replies:       server.ccReplies,
+			ReplyScope:    replyScope,
 		})
 		if err != nil {
 			pool.Release(acc.ID)
@@ -435,6 +456,8 @@ func (server *Server) forwardToClaudeCode(
 							ClientHeaders: request.Header,
 							Normalize:     normalize,
 							Identity:      identity,
+							Replies:       server.ccReplies,
+							ReplyScope:    replyScope,
 						})
 						if retryErr == nil {
 							_ = resp.Body.Close()
@@ -481,6 +504,7 @@ func (server *Server) forwardToClaudeCode(
 				startTime:   startTime,
 				pool:        pool,
 				rateLimits:  rl,
+				replyScope:  replyScope,
 			})
 			server.ccMaybeRecordCacheBump(request, reqBody, sessionKey, model, acc.ID)
 		} else if resp.StatusCode >= 500 {

@@ -254,5 +254,13 @@ The proxy reproduces that behaviour from the request body, not from stored state
 `ccidentity.TurnOf` counts the user prompts in `messages` (a message made only of
 `tool_result` blocks and `<system-reminder>` text is not one). The live gate's
 keyless custom-endpoint phase sends two prompts and asserts `cc_turn_index=2`.
-Still unreproduced: `cc_prev_req` (it needs the previous response's request id
-kept per session) and `cc_prompt_index`, which was 0 in every capture.
+
+`cc_prev_req` names the request whose reply the latest assistant message echoes.
+2.1.304 takes it from its transcript: the `requestId` of the latest assistant
+message that has one, checked against `^req_[A-Za-z0-9_-]{1,36}$`. The proxy's
+clients send no request ids, so `ccidentity.ReplyLog` records each normalized
+reply's tool call ids, thinking signatures and text under its `request-id`
+response header, scoped by account (or endpoint) and session. A request whose
+latest assistant message matches a recorded reply sends that id. Unkeyed requests,
+and replies the log dropped or never saw, send none. Still unreproduced:
+`cc_prompt_index`, which was 0 in every capture.
