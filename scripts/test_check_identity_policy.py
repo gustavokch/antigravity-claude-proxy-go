@@ -30,6 +30,7 @@ def baseline_post(ua=CAPTURED_UA):
     return {
         "method": "POST",
         "path": "/v1/messages?beta=true",
+        "http_version": "HTTP/1.1",
         "headers": [
             ["User-Agent", ua],
             ["x-app", "cli"],
@@ -40,13 +41,30 @@ def baseline_post(ua=CAPTURED_UA):
 
 
 def baseline_get(ua=DISCOVERY_UA, path="/api/claude_code/settings"):
-    return {"method": "GET", "path": path, "headers": [["User-Agent", ua]]}
+    return {
+        "method": "GET",
+        "path": path,
+        "http_version": "HTTP/1.1",
+        "headers": [["User-Agent", ua]],
+    }
+
+
+def observed_get(ua=DISCOVERY_UA, path="/v1/models", method="GET", **overrides):
+    record = {
+        "method": method,
+        "path": path,
+        "http_version": "HTTP/1.1",
+        "headers": [["user-agent", ua]],
+    }
+    record.update(overrides)
+    return record
 
 
 def observed_normalized(**overrides):
     record = {
         "method": "POST",
         "path": "/v1/messages?beta=true",
+        "http_version": "HTTP/1.1",
         "headers": [
             ["user-agent", CAPTURED_UA],
             ["x-claude-code-request-class", "main"],
@@ -114,6 +132,39 @@ class NormalizedTest(unittest.TestCase):
         problems = policy.check_normalized(baseline, observed_normalized())
         self.assertTrue(any("baseline" in p for p in problems), problems)
 
+    def test_rejects_a_request_that_arrived_as_h2(self):
+        # Every header right, wrong protocol: the real client speaks HTTP/1.1.
+        problems = policy.check_normalized(
+            baseline_post(), observed_normalized(http_version="HTTP/2.0")
+        )
+        self.assertTrue(any("HTTP/2.0" in p for p in problems), problems)
+
+    def test_rejects_a_baseline_that_records_no_http_version(self):
+        baseline = baseline_post()
+        del baseline["http_version"]
+        problems = policy.check_normalized(baseline, observed_normalized())
+        self.assertTrue(any("http_version" in p for p in problems), problems)
+
+    def test_rejects_a_prompt_id_header_that_disagrees_with_the_billing_one(self):
+        observed = observed_normalized(
+            request_body={"system_first_block": "x; cc_prompt_id=aaaaaaaa-0000-0000-0000-000000000000; cc_turn_index=1;"},
+        )
+        observed["headers"].append(["x-claude-code-prompt-id", "bbbbbbbb-0000-0000-0000-000000000000"])
+        problems = policy.check_normalized(baseline_post(), observed)
+        self.assertTrue(any("cc_prompt_id" in p for p in problems), problems)
+
+    def test_checks_the_turn_index_against_the_prompts_sent(self):
+        observed = observed_normalized(
+            request_body={"system_first_block": "x; cc_prompt_id=aaaaaaaa-0000-0000-0000-000000000000; cc_turn_index=1;"},
+        )
+        self.assertEqual(policy.check_normalized(baseline_post(), observed, expect_turn_index=1), [])
+        problems = policy.check_normalized(baseline_post(), observed, expect_turn_index=2)
+        self.assertTrue(any("cc_turn_index is 1, want 2" in p for p in problems), problems)
+
+    def test_a_missing_turn_index_cannot_satisfy_an_expectation(self):
+        problems = policy.check_normalized(baseline_post(), observed_normalized(), expect_turn_index=2)
+        self.assertTrue(any("no cc_turn_index" in p for p in problems), problems)
+
 
 class PassthroughTest(unittest.TestCase):
     def test_accepts_an_unnormalized_keyed_request(self):
@@ -157,55 +208,44 @@ class PassthroughTest(unittest.TestCase):
 
 class DiscoveryTest(unittest.TestCase):
     def test_accepts_the_captured_discovery_user_agent(self):
-        observed = [
-            {"method": "GET", "path": "/v1/models", "headers": [["user-agent", DISCOVERY_UA]]}
-        ] * 3
-        problems = policy.check_discovery([baseline_get()], observed, min_records=3)
+        problems = policy.check_discovery([baseline_get()], [observed_get()] * 3, min_records=3)
         self.assertEqual(problems, [])
 
     def test_rejects_the_go_default(self):
-        observed = [
-            {
-                "method": "GET",
-                "path": "/v1/models",
-                "headers": [["user-agent", "Go-http-client/1.1"]],
-            }
-        ]
+        observed = [observed_get(ua="Go-http-client/1.1")]
         problems = policy.check_discovery([baseline_get()], observed, min_records=1)
         self.assertTrue(any("Go-http-client" in p for p in problems), problems)
 
     def test_checks_a_non_get_discovery_request_too(self):
-        observed = [
-            {
-                "method": "POST",
-                "path": "/v1/oauth/token",
-                "headers": [["user-agent", "Go-http-client/1.1"]],
-            }
-        ]
+        observed = [observed_get(ua="Go-http-client/1.1", method="POST", path="/v1/oauth/token")]
         problems = policy.check_discovery([baseline_get()], observed, min_records=1)
         self.assertTrue(any("/v1/oauth/token" in p for p in problems), problems)
 
     def test_rejects_a_stale_version(self):
-        observed = [
-            {
-                "method": "GET",
-                "path": "/v1/models",
-                "headers": [["user-agent", "Claude-Code/2.1.246"]],
-            }
-        ]
+        observed = [observed_get(ua="Claude-Code/2.1.246")]
         problems = policy.check_discovery([baseline_get()], observed, min_records=1)
         self.assertTrue(any("2.1.246" in p for p in problems), problems)
 
     def test_rejects_too_few_records(self):
-        observed = [
-            {"method": "GET", "path": "/v1/models", "headers": [["user-agent", DISCOVERY_UA]]}
-        ]
-        problems = policy.check_discovery([baseline_get()], observed, min_records=3)
+        problems = policy.check_discovery([baseline_get()], [observed_get()], min_records=3)
         self.assertTrue(any("want 3" in p for p in problems), problems)
 
     def test_rejects_a_baseline_without_a_get(self):
         problems = policy.check_discovery([], [], min_records=1)
         self.assertTrue(any("baseline" in p for p in problems), problems)
+
+    def test_rejects_a_request_that_arrived_as_h2(self):
+        # Right User-Agent, wrong protocol: the real client's GETs are HTTP/1.1.
+        observed = [observed_get(http_version="HTTP/2.0")]
+        problems = policy.check_discovery([baseline_get()], observed, min_records=1)
+        self.assertTrue(any("HTTP/2.0" in p for p in problems), problems)
+
+    def test_rejects_a_baseline_that_records_no_http_version(self):
+        # Without one the comparison would pass every request in silence.
+        baseline = baseline_get()
+        del baseline["http_version"]
+        problems = policy.check_discovery([baseline], [observed_get(http_version="HTTP/2.0")], min_records=1)
+        self.assertTrue(any("http_version" in p for p in problems), problems)
 
 
 class RecordSelectionTest(unittest.TestCase):

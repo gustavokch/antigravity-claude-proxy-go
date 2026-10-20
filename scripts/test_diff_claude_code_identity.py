@@ -192,12 +192,15 @@ class HeaderDriftTest(unittest.TestCase):
         drifts = drift_of(record(headers, BASELINE_BODY))
         self.assertTrue(any("case changed" in d for d in drifts))
 
-    def test_lowercased_names_are_not_drift_across_http_versions(self):
-        # HTTP/2 lowercases every field name on the wire. Comparing case across
-        # versions would report drift on every header forever.
+    def test_h2_is_one_drift_not_a_drift_per_header(self):
+        # The real client speaks HTTP/1.1, so h2 is drift. It is reported once:
+        # HTTP/2 lowercases every field name, and comparing case across versions
+        # would repeat the same root cause for every header.
         headers = [[h[0].lower(), h[1]] for h in BASELINE_HEADERS]
         drifts = drift_of(record(headers, BASELINE_BODY, http_version="HTTP/2.0"))
-        self.assertEqual(drifts, [])
+        self.assertEqual(len(drifts), 1, drifts)
+        self.assertIn("HTTP version changed", drifts[0])
+        self.assertIn("HTTP/2.0", drifts[0])
 
     def test_extra_header_is_drift(self):
         headers = BASELINE_HEADERS + [["x-harness-telemetry", "1"]]

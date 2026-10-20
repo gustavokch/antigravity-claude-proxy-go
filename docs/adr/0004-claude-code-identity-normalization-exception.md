@@ -16,7 +16,7 @@ ADR-0001 remains authoritative. Its payload-alteration guarantee is narrowed by 
 
 2. **Payload Alteration Performed**: within that scope, `ApplyBody` makes three changes and no others.
    - `metadata.user_id` is set to the captured stringified JSON object (`device_id`, `account_uuid`, `session_id`, in that order). Other `metadata` keys are preserved.
-   - A system block carrying the `x-anthropic-billing-header` line is prepended to `system`. The caller's own system prompt is preserved after it.
+   - A system block carrying the `x-anthropic-billing-header` line is prepended to `system`. The caller's own system prompt is preserved after it. The line's `cc_prompt_id` and `cc_turn_index`, and the `x-claude-code-prompt-id` header, follow the user prompts in the request's own `messages` (`ccidentity.TurnOf`): a tool follow-up repeats its prompt's values and the next prompt gets new ones. Nothing is stored between requests, so a retry or a cache-bump replay of the same body sends the same values.
    - Six top-level fields the captured traffic never carries are deleted: `temperature`, `top_p`, `top_k`, `stop_sequences`, `tool_choice`, `service_tier`.
 
    Messages, tools, model and `max_tokens` are untouched. `context_management`, `diagnostics` and `output_config` are deliberately not synthesised: the capture shows Claude Code sending them, and this package cannot invent their contents.
@@ -33,3 +33,4 @@ ADR-0001 remains authoritative. Its payload-alteration guarantee is narrowed by 
 - ADR-0001's guarantee no longer holds unconditionally for `customEndpoints`. It holds for every endpoint outside the scope in §1, and for any endpoint with `identity.disabled`.
 - Six request fields are silently dropped in scope. A caller that depends on `temperature` reaching an Anthropic-shaped endpoint must disable normalization for it.
 - The capture is the specification. `scripts/diff_claude_code_identity.py` gates the produced request against the committed JSONL, so a drift from the captured shape is a test failure rather than a wire surprise. The gate cannot see Claude Code itself change: a new client version needs a fresh capture and a new baseline, as 2.1.304 did (new beta list, new `x-claude-code-prompt-id` header, new billing-line fields).
+- Normalized requests leave over HTTP/1.1 with an `http/1.1`-only ALPN offer, as the real client does, on a transport of their own (`transport.UpstreamHTTP1`, used by `internal/claudecode` and by `customEndpointIdentityTransport` for normalized custom endpoints). Requests forwarded unnormalized keep the shared transport and its h2. This is the one change to the ClientHello in this feature; its ciphers, curves and extensions are still Go's, so the TLS handshake still differs from the Claude Code CLI's.

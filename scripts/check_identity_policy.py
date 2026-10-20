@@ -9,12 +9,14 @@ of them correct and every one of them missing the point.
 Three policies, one per subcommand:
 
   normalized   the request carries the captured identity (pooled gateway, and
-               a custom endpoint with no configured apiKey)
+               a custom endpoint with no configured apiKey), over the captured
+               HTTP version, with its prompt fields agreeing
   passthrough  the request carries the CALLER's identity and its own API key,
                because internal/api/server.go refuses to normalize an endpoint
                whose credential normalization would delete
   discovery    every GET /v1/models carries the captured discovery User-Agent,
-               not Go's default and not a stale version
+               not Go's default and not a stale version, over the captured
+               HTTP version
 
 No fingerprint value is written here. Every expected value — the User-Agent,
 the normalization marker headers, the captured query string — is read out of
@@ -26,11 +28,12 @@ than a value.
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from diff_claude_code_identity import header_map  # noqa: E402
+from diff_claude_code_identity import compare_correlations, header_map  # noqa: E402
 
 
 def load_records(path: str) -> list[dict]:
@@ -143,10 +146,47 @@ def user_agent(record: dict) -> object:
     return entry[1] if entry else None
 
 
-def check_normalized(baseline: dict, observed: dict) -> list[str]:
-    """The observed request must present the captured identity."""
+def check_http_version(baseline: dict, observed: dict) -> list[str]:
+    """The observed request must travel over the HTTP version the capture shows.
+
+    The real client speaks HTTP/1.1 on every request, and a transport that offers
+    h2 gets h2 from api.anthropic.com, so a request that arrives as h2 is
+    distinguishable without reading a single header.
+    """
+    expected = baseline.get("http_version")
+    if expected is None:
+        # Skipping here would let an h2 request pass without saying so.
+        return ["the baseline records no http_version, so this policy cannot tell HTTP/1.1 from h2"]
+    got = observed.get("http_version")
+    if got != expected:
+        return [f"HTTP version is {got!r}, want the captured {expected!r}"]
+    return []
+
+
+def check_normalized(
+    baseline: dict, observed: dict, expect_turn_index: int | None = None
+) -> list[str]:
+    """The observed request must present the captured identity.
+
+    expect_turn_index, when given, is the number of user prompts the request
+    carried: cc_turn_index counts them, so a request sent with two must say 2.
+    """
     problems: list[str] = []
     headers = header_map(observed)
+    problems.extend(check_http_version(baseline, observed))
+    problems.extend(compare_correlations(observed))
+
+    if expect_turn_index is not None:
+        body = observed.get("request_body")
+        block = body.get("system_first_block") if isinstance(body, dict) else None
+        match = re.search(r"cc_turn_index=(\d+);", block or "")
+        if match is None:
+            problems.append("system[0] carries no cc_turn_index to check")
+        elif int(match.group(1)) != expect_turn_index:
+            problems.append(
+                f"cc_turn_index is {match.group(1)}, want {expect_turn_index}: "
+                f"the request carried {expect_turn_index} user prompt(s)"
+            )
 
     expected_ua = user_agent(baseline)
     observed_ua = user_agent(observed)
@@ -245,6 +285,16 @@ def check_discovery(
         return problems
     expected_ua = expected.pop()
 
+    versions = {r.get("http_version") for r in baseline_gets}
+    versions.discard(None)
+    if len(versions) != 1:
+        problems.append(
+            f"the baseline GETs record {sorted(versions) or 'no http_version'}, want exactly one "
+            "to compare the observed requests against"
+        )
+        return problems
+    expected_version = versions.pop()
+
     if len(observed_gets) < min_records:
         problems.append(
             f"only {len(observed_gets)} discovery request(s) reached the wire, want {min_records}"
@@ -256,6 +306,13 @@ def check_discovery(
             problems.append(
                 f"{record.get('method')} {record.get('path')} sent User-Agent "
                 f"{observed_ua!r}, want the captured {expected_ua!r}"
+            )
+        # The real client's discovery requests are HTTP/1.1 like its messages
+        # requests, so a request that arrives as h2 is a tell.
+        if record.get("http_version") != expected_version:
+            problems.append(
+                f"{record.get('method')} {record.get('path')} arrived as "
+                f"{record.get('http_version')!r}, want the captured {expected_version!r}"
             )
 
     return problems
@@ -282,7 +339,7 @@ def evaluate(args) -> tuple[list[str], str]:
     if not baseline_posts:
         raise ValueError(f"no POST /v1/messages record in {args.baseline}")
     if args.policy == "normalized":
-        return check_normalized(baseline_posts[0], observed), subject
+        return check_normalized(baseline_posts[0], observed, args.expect_turn_index), subject
     return (
         check_passthrough(
             observed, args.caller_user_agent, args.api_key_sha256, baseline_posts[0]
@@ -298,6 +355,11 @@ def main() -> int:
     p_norm = sub.add_parser("normalized")
     p_norm.add_argument("--baseline", required=True)
     p_norm.add_argument("--observed", required=True)
+    p_norm.add_argument(
+        "--expect-turn-index",
+        type=int,
+        help="the number of user prompts the observed request carried",
+    )
 
     p_pass = sub.add_parser("passthrough")
     p_pass.add_argument("--baseline", required=True)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -208,31 +209,34 @@ func NewSessionKey() string {
 	return newUUID()
 }
 
-// promptUUID is the cc_prompt_id in the billing header. It is derived from the
-// session key under a DIFFERENT salt from sessionUUID, because the captures show
-// the two are never the same value.
+// promptUUID is the cc_prompt_id in the billing header and the value of
+// x-claude-code-prompt-id. It is derived from the session key under a DIFFERENT
+// salt from sessionUUID, because the captures show the two are never the same
+// value.
 //
-// X-Claude-Code-Session-Id and cc_prompt_id differ in all six captured requests
-// across two independent OAuth accounts, and both are stable within one process
-// (rows 5 and 6 of each capture repeat both values). Deriving them from one salt
-// made every normalised request carry one UUID in both slots — a correlation no
-// real client produces. Two salts keep both properties: distinct, and stable.
+// X-Claude-Code-Session-Id and cc_prompt_id differ in every captured request
+// across two independent OAuth accounts, and the session id is stable for a
+// whole process. Deriving them from one salt made every normalised request
+// carry one UUID in both slots — a correlation no real client produces.
 //
-// KNOWN GAP, from the 2.1.304 capture: the real client mints a NEW cc_prompt_id
-// for every user prompt and repeats it only across that prompt's tool follow-up
-// requests (.reference/claude-code-headers-20261020-multiprompt.jsonl: three
-// prompts in one process gave three ids, the third repeated on its follow-up).
-// "Stable within one process" holds only inside a single prompt, which is all
-// the earlier captures contained. This function is stable for the whole
-// session, so from a conversation's second prompt on it differs from the real
-// client. Reproducing that needs a per-session prompt counter that no caller
-// keeps.
+// The real client mints a new cc_prompt_id for every user prompt and repeats it
+// only across that prompt's tool follow-up requests
+// (.reference/claude-code-headers-20261020-multiprompt.jsonl: three prompts in
+// one process gave three ids, the third repeated on its follow-up). The turn
+// carries what moves the id: the prompt's number and a digest of the prompt
+// itself. Both come from the request body (see TurnOf), so the id is stable
+// across one prompt's follow-ups and changes with the next prompt, with nothing
+// stored between requests.
 //
 // Their true relation is not knowable from the capture, since metadata's own
 // session_id is redacted to <uuid> there. Distinctness is what the capture
 // proves, and distinctness is all this reproduces.
-func promptUUID(id Identity) string {
-	return derivedUUID("ccidentity-prompt:", id.SessionKey)
+func promptUUID(id Identity, turn Turn) string {
+	if id.SessionKey == "" {
+		return derivedUUID("ccidentity-prompt:", "")
+	}
+	seed := id.SessionKey + "\x00" + strconv.Itoa(turn.promptNumber()) + "\x00" + turn.promptDigest
+	return derivedUUID("ccidentity-prompt:", seed)
 }
 
 // derivedUUID turns a salt and a seed into a stable version-5-shaped UUID. An
@@ -281,14 +285,12 @@ func formatUUID(value [16]byte) string {
 //   - cc_prev_req appears only on a follow-up turn and carries that turn's
 //     request id.
 //
-// cc_prompt_index and cc_turn_index are new in 2.1.304 and are emitted as the
-// first-prompt values, 0 and 1. cc_prompt_index was 0 in all 7 captured
-// requests, so nothing shows what moves it. cc_turn_index counts user prompts
-// from 1: three prompts sent one at a time in one process gave 1, 2, 3, and the
-// tool follow-up of the third repeated 3 (.reference/claude-code-headers-
-// 20261020-multiprompt.jsonl). Turn carries no prompt counter and no caller
-// keeps one, so a conversation's second and later prompts send 1 where the
-// real client sends 2, 3, ... Same gap as cc_prompt_id; see promptUUID.
+// cc_prompt_index and cc_turn_index are new in 2.1.304. cc_prompt_index was 0 in
+// all 7 captured messages requests, so nothing shows what moves it and it is sent as 0.
+// cc_turn_index counts user prompts from 1: three prompts sent one at a time in
+// one process gave 1, 2, 3, and the tool follow-up of the third repeated 3
+// (.reference/claude-code-headers-20261020-multiprompt.jsonl). It is the turn's
+// PromptNumber, which TurnOf reads from the request body.
 func BillingHeader(id Identity, turn Turn) string {
 	version := id.ClientVersion
 	if version == "" {
@@ -322,10 +324,12 @@ func BillingHeader(id Identity, turn Turn) string {
 		b.WriteString("; ")
 	}
 	b.WriteString("cc_prompt_id=")
-	b.WriteString(promptUUID(id))
+	b.WriteString(promptUUID(id, turn))
 	b.WriteString("; cc_turn_origin=")
 	b.WriteString(origin)
-	b.WriteString("; cc_prompt_index=0; cc_turn_index=1;")
+	b.WriteString("; cc_prompt_index=0; cc_turn_index=")
+	b.WriteString(strconv.Itoa(turn.promptNumber()))
+	b.WriteString(";")
 	return b.String()
 }
 

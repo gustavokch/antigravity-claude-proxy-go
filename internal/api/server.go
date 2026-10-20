@@ -65,6 +65,12 @@ const (
 // unchanged.
 var customEndpointTransport = transport.Upstream()
 
+// customEndpointIdentityTransport carries the custom-endpoint requests that are
+// normalized to the captured Claude Code identity. The real client speaks
+// HTTP/1.1, so these leave with HTTP/1.1 and an http/1.1-only ALPN offer; see
+// transport.UpstreamHTTP1.
+var customEndpointIdentityTransport = transport.UpstreamHTTP1()
+
 var jsonBufferPool = sync.Pool{
 	New: func() any {
 		return new(bytes.Buffer)
@@ -1344,8 +1350,12 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	// before the proxy exists is what lets this path refuse too.
 	outBody := reqBody
 	identity, normalize := customEndpointIdentity(endpoint, customSessionKey)
+	// One Turn for the body here and the headers in Rewrite below: the prompt id
+	// is written into both and the capture shows the same value in each.
+	var turn ccidentity.Turn
 	if normalize {
-		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, ccidentity.Turn{})
+		turn = ccidentity.TurnOf(reqBody)
+		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, turn)
 		if err != nil {
 			if server.logger != nil {
 				server.logger.Error("custom endpoint identity normalization failed; refusing to forward",
@@ -1362,15 +1372,25 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		outBody = normalized
 	}
 
+	// A normalized request claims to be Claude Code, which speaks HTTP/1.1, so it
+	// leaves on the HTTP/1.1 transport. A request forwarded as the caller sent it
+	// keeps the shared transport and the h2 it negotiates.
+	var upstream http.RoundTripper = customEndpointTransport
+	if normalize {
+		upstream = customEndpointIdentityTransport
+	}
+
 	// Rewrite (not Director): the stdlib strips Forwarded/X-Forwarded-* before
 	// the hook and does not re-add them, so the custom endpoint never sees
 	// proxy or client forwarding headers. It also closes the Director
 	// hop-by-hop header hole. Header names still pass through net/http
-	// canonicalization (X-Stainless-OS -> X-Stainless-Os); irrelevant over
-	// HTTP/2, which lowercases everything on the wire.
+	// canonicalization (X-Stainless-OS -> X-Stainless-Os); that is irrelevant
+	// over HTTP/2, which lowercases everything on the wire. A normalized request
+	// goes out over HTTP/1.1, where case reaches the wire, and ApplyHeaders
+	// assigns the captured names into the map directly to keep it.
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
-		Transport:     customEndpointTransport,
+		Transport:     upstream,
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode < 400 && isMessagesRequest {
 				server.maybeRecordCacheBump(cachebump.RouteCustom, request, reqBody, customSessionKey, model, "", model, minMaxTokensFloor)
@@ -1405,7 +1425,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			// the omit list can remove the x-api-key the auth block just set: the
 			// captured OAuth request carries Authorization alone.
 			if normalize {
-				ccidentity.ApplyHeaders(out.Header, ccDefaultProfile, identity, ccidentity.Turn{})
+				ccidentity.ApplyHeaders(out.Header, ccDefaultProfile, identity, turn)
 				if isMessagesRequest {
 					out.URL.RawQuery = withCapturedBetaQuery(out.URL.RawQuery)
 				}

@@ -17,10 +17,12 @@ func wireValuesOf(t *testing.T, identity ccidentity.Identity) (headerPrompt, bil
 	t.Helper()
 
 	profile := ccidentity.DefaultProfile()
+	request := []byte(`{"model":"m","messages":[]}`)
+	turn := ccidentity.TurnOf(request)
 	headers := http.Header{}
-	ccidentity.ApplyHeaders(headers, profile, identity, ccidentity.Turn{})
+	ccidentity.ApplyHeaders(headers, profile, identity, turn)
 
-	out, err := ccidentity.ApplyBody([]byte(`{"model":"m","messages":[]}`), profile, identity, ccidentity.Turn{})
+	out, err := ccidentity.ApplyBody(request, profile, identity, turn)
 	if err != nil {
 		t.Fatalf("ApplyBody: %v", err)
 	}

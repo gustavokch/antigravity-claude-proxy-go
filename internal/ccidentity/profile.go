@@ -64,19 +64,28 @@ type Identity struct {
 
 // Turn carries the per-request pieces of the identity.
 //
-// No production caller populates it today: internal/api passes Turn{} at every
-// call site and internal/claudecode never sets MessageRequest.Turn, so
-// cc_prev_req does not reach the wire. It is kept rather than deleted because
-// it encodes a real captured behaviour that could not be reconstructed from the
-// capture later, and apply.go implements it.
+// TurnOf fills the prompt fields from the request body, and every caller does,
+// so the prompt id and turn index follow the conversation without any caller
+// keeping a counter.
 //
-// A caller that wanted to send it would have to thread the previous turn's
-// upstream request-id (the response's request-id header) through the session
-// store that already keys on the session key, then set it here.
+// PrevRequestID has no production caller yet: internal/api never sets it, so
+// cc_prev_req does not reach the wire. It is kept rather than deleted because it
+// encodes a real captured behaviour that could not be reconstructed from the
+// capture later, and apply.go implements it. A caller that wanted to send it
+// would have to thread the previous turn's upstream request-id (the response's
+// request-id header) through the session store that already keys on the session
+// key, then set it here.
 type Turn struct {
 	// PrevRequestID is the upstream request id of the previous turn, sent as
 	// cc_prev_req. Claude Code only includes it on a follow-up turn.
 	PrevRequestID string
+	// PromptNumber is the 1-based number of the user prompt this request
+	// belongs to, sent as cc_turn_index. Zero reads as 1, so the zero Turn is
+	// the first prompt.
+	PromptNumber int
+	// promptDigest identifies the latest prompt message. It seeds cc_prompt_id
+	// beside the session key and PromptNumber; see TurnOf.
+	promptDigest string
 }
 
 // Profile is a captured Claude Code request identity.

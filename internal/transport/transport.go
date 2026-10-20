@@ -1,10 +1,12 @@
 // Package transport builds the outbound HTTP transports for the upstream paths
-// that carry no fingerprint requirement of their own: custom endpoints, Kimi,
-// Zen. The Cloud Code path builds its own transport in internal/cloudcode, where
-// the ClientHello is the product.
+// that carry no TLS fingerprint requirement of their own: custom endpoints,
+// Kimi, Zen, and Claude Code, which needs only HTTP/1.1 (UpstreamHTTP1). The
+// Cloud Code path builds its own transport in internal/cloudcode, where the
+// ClientHello is the product.
 package transport
 
 import (
+	"crypto/tls"
 	"net/http"
 	"time"
 )
@@ -35,4 +37,34 @@ func Upstream() *http.Transport {
 	}
 	// Only a replaced, non-Transport http.DefaultTransport reaches here.
 	return &http.Transport{ResponseHeaderTimeout: ResponseHeaderTimeout}
+}
+
+// UpstreamHTTP1 returns Upstream with HTTP/2 switched off: the ClientHello
+// offers http/1.1 as its only ALPN protocol and every request goes out as
+// HTTP/1.1.
+//
+// This is the one deliberate departure from the default ClientHello in this
+// package, and it is for the Claude Code wire identity. The real client reaches
+// api.anthropic.com over HTTP/1.1 — every record in
+// .reference/claude-code-headers-20261020*.jsonl says so, through an
+// interceptor that negotiates h2 with any client that offers it — and a default
+// Go transport offers h2 and gets it, which is a difference the server sees
+// without looking at a single header.
+//
+// Only ALPN and the HTTP version change. The cipher suites, curves and
+// extensions stay Go's own, so the TLS handshake still differs from the Claude
+// Code CLI's (see docs/claude-code-forward-proxy.md).
+func UpstreamHTTP1() *http.Transport {
+	tr := Upstream()
+	// Protocols is what decides: net/http reads it before ForceAttemptHTTP2 and
+	// TLSNextProto, and with only HTTP1 set it never registers h2 or touches
+	// the TLS config. ForceAttemptHTTP2 is cleared as well so no reader of the
+	// field is misled.
+	tr.ForceAttemptHTTP2 = false
+	tr.Protocols = new(http.Protocols)
+	tr.Protocols.SetHTTP1(true)
+	// Offered explicitly: with h2 off Go would send no ALPN extension at all,
+	// and the real client sends http/1.1.
+	tr.TLSClientConfig = &tls.Config{NextProtos: []string{"http/1.1"}}
+	return tr
 }

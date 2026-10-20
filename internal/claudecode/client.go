@@ -304,9 +304,13 @@ type Client struct {
 }
 
 // ccTransport is shared by every default Claude Code client. Management routes
-// build a Client per request, and transport.Upstream hands out a fresh pool on
-// each call, so the clone is cached here once.
-var ccTransport = transport.Upstream()
+// build a Client per request, and transport.UpstreamHTTP1 hands out a fresh pool
+// on each call, so the clone is cached here once.
+//
+// HTTP/1.1 because the real client uses it for every request it sends,
+// discovery GETs included, and a transport that offers h2 gets h2 from
+// api.anthropic.com.
+var ccTransport = transport.UpstreamHTTP1()
 
 // NewClient creates a new Anthropic Claude Code client.
 func NewClient(baseURL string, httpClient *http.Client) *Client {
@@ -339,11 +343,13 @@ type MessageRequest struct {
 	// identity. When false the request is forwarded exactly as today, so a
 	// caller that already is Claude Code keeps its own headers and body.
 	Normalize bool
-	// Identity and Turn supply the values normalization cannot derive from the
-	// request alone: the account, the session, and the previous turn's request
-	// id for cc_prev_req.
+	// Identity supplies the values normalization cannot derive from the request
+	// alone: the account and the session. The prompt number and prompt id come
+	// from Body (see ccidentity.TurnOf), so they need no field here.
 	Identity ccidentity.Identity
-	Turn     ccidentity.Turn
+	// PrevRequestID is the previous turn's upstream request id, sent as
+	// cc_prev_req. Empty omits it, which is what every caller does today.
+	PrevRequestID string
 }
 
 // SendMessage forwards a /v1/messages request to Anthropic with appropriate auth
@@ -373,8 +379,14 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 	url := fmt.Sprintf("%s%s", c.baseURL, path)
 
 	body := req.Body
+	var turn ccidentity.Turn
 	if normalize {
-		normalized, err := ccidentity.ApplyBody(body, profile, req.Identity, req.Turn)
+		// One Turn for the body and the headers: the prompt id is written into
+		// both, and the capture shows the same value in each. TurnOf reads the
+		// original body; normalization does not touch messages.
+		turn = ccidentity.TurnOf(req.Body)
+		turn.PrevRequestID = req.PrevRequestID
+		normalized, err := ccidentity.ApplyBody(body, profile, req.Identity, turn)
 		if err != nil {
 			// Fail closed: forwarding an unnormalised body would send exactly the
 			// fingerprint normalization exists to remove.
@@ -392,7 +404,7 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 		// ApplyHeaders takes the map directly; it ignores req.ClientHeaders on
 		// purpose, since the omit list must be able to remove what the client
 		// sent rather than copy it.
-		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, req.Turn)
+		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, turn)
 		httpReq.ContentLength = int64(len(body))
 	} else {
 		httpReq.Header.Set("Content-Type", "application/json")

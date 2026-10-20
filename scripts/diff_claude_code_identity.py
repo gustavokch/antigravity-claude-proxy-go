@@ -31,9 +31,9 @@ DYNAMIC_VALUE = {
 }
 
 # Headers HTTP/2 does not carry as ordinary fields. Exempt from the presence
-# check only when the two captures disagree on HTTP version: over h2 the
-# authority travels as the :authority pseudo-header, which mitmproxy does not
-# list among the request headers.
+# check only when the two captures disagree on HTTP version, which is itself
+# reported as drift: over h2 the authority travels as the :authority
+# pseudo-header, which mitmproxy does not list among the request headers.
 HTTP2_PSEUDO = {"host"}
 
 # Differences the implementation records as deliberate. See the "Deliberate
@@ -122,15 +122,24 @@ def compare_headers(baseline: list[dict], observed: dict) -> list[str]:
 
     seen = header_map(observed)
 
-    # HTTP/2 lowercases every field name on the wire, so exact case is only
-    # meaningful when both captures used the same version. The capture is
-    # HTTP/1.1 and a live run to api.anthropic.com negotiates h2, which is the
-    # normal case — comparing case across them would report drift on every
-    # header forever. Case is still asserted when the versions agree, because
-    # that is where a net/http canonicalisation bug would show.
+    # The real client speaks HTTP/1.1 on every request: all four committed
+    # captures say so, through an interceptor that negotiates h2 with any client
+    # that offers it. A request that arrives as h2 is therefore a difference the
+    # server sees without reading a header, and it is reported as one.
+    #
+    # HTTP/2 also lowercases every field name and carries the authority as a
+    # pseudo-header, so when the versions disagree the case and Host comparisons
+    # below would each report the same root cause again. They are skipped then,
+    # and compared when the versions agree, which is where a net/http
+    # canonicalisation bug would show.
     baseline_version = baseline[0].get("http_version")
     observed_version = observed.get("http_version")
     same_version = baseline_version == observed_version
+    if not same_version:
+        drifts.append(
+            f"HTTP version changed: baseline {baseline_version}, observed {observed_version} "
+            "(the real client speaks HTTP/1.1; a transport that offers h2 gets it)"
+        )
 
     for key, (wire_name, value) in sorted(expected.items()):
         if key in ALLOWED_DIFFERENCES or key in CONDITIONAL:

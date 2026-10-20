@@ -179,8 +179,8 @@ func dynamicHeaders() []DynamicHeader {
 		// all 7 captured messages requests (.reference/claude-code-headers-20261020*.jsonl).
 		// It must stay equal to promptUUID, which BillingHeader writes, or the two
 		// slots disagree in a way no real client produces.
-		{"x-claude-code-prompt-id", func(id Identity, _ Turn) string {
-			return promptUUID(id)
+		{"x-claude-code-prompt-id", func(id Identity, turn Turn) string {
+			return promptUUID(id, turn)
 		}},
 	}
 }

@@ -249,3 +249,10 @@ behaviour. `cc_prompt_id` and `cc_turn_index` only move between prompts. Pipe
 several prompts, spaced apart, into one process with
 `claude --print --verbose --input-format stream-json --output-format stream-json`
 and record that run next to the main capture (`...-multiprompt.jsonl`).
+
+The proxy reproduces that behaviour from the request body, not from stored state:
+`ccidentity.TurnOf` counts the user prompts in `messages` (a message made only of
+`tool_result` blocks and `<system-reminder>` text is not one). The live gate's
+keyless custom-endpoint phase sends two prompts and asserts `cc_turn_index=2`.
+Still unreproduced: `cc_prev_req` (it needs the previous response's request id
+kept per session) and `cc_prompt_index`, which was 0 in every capture.
