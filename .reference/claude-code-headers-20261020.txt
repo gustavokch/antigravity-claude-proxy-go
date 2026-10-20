@@ -179,9 +179,8 @@ Gaps
     request carried `x-claude-code-request-class: main`.
   - X-Stainless-OS is `Linux` and X-Stainless-Runtime-Version `v26.3.0` because
     the capture ran in a Linux container.
-  - The proxy does not reproduce the per-prompt cc_prompt_id and cc_turn_index
-    above. It sends the first-prompt values (cc_prompt_index=0, cc_turn_index=1)
-    and a cc_prompt_id that is stable for the whole session, so from a
-    conversation's second prompt on those two fields differ from the real
-    client. See the notes in internal/ccidentity/apply.go on promptUUID and
-    BillingHeader.
+  - The proxy reproduces the per-prompt cc_prompt_id and cc_turn_index from the
+    user prompts in each request's own messages (ccidentity.TurnOf), and sends
+    HTTP/1.1 as every record here shows. Still not reproduced: cc_prev_req, which
+    needs the previous response's request id kept per session, and
+    cc_prompt_index, which is 0 in every capture and has no known driver.
