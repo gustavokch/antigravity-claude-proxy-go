@@ -333,6 +333,62 @@ func TestForwardToClaudeCode_FollowUpNamesThePreviousRequest(t *testing.T) {
 	}
 }
 
+// ccPoolConfig is a Claude Code pool of enabled accounts served from baseURL.
+func ccPoolConfig(baseURL string, accounts ...claudecode.AccountConfig) claudecode.Config {
+	return claudecode.Config{
+		Enabled:   true,
+		BaseURL:   baseURL,
+		Mode:      "pool",
+		Accounts:  accounts,
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+}
+
+// newCCForwarder returns a bare server and the entry point of its pooled
+// Claude Code route for cfg. The pool is built fresh for the test.
+func newCCForwarder(t *testing.T, cfg claudecode.Config, model string) (*Server, func(http.ResponseWriter, *http.Request)) {
+	t.Helper()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	resetCCPoolForTest()
+	t.Cleanup(resetCCPoolForTest)
+	srv := &Server{ccReplies: ccidentity.NewReplyLog()}
+	return srv, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		srv.forwardToClaudeCode(w, r, cfg, body, model)
+	}
+}
+
+// "Non-normalized replies excluded": an API-key account's request leaves as it
+// came, with no billing line, so it names no previous request and a later
+// request has no use for the request id of its reply. Recording it would only
+// push real entries out of the bounded log. The OAuth account beside it shows
+// the lookup would find the reply had it been recorded.
+func TestForwardToClaudeCode_OnlyNormalizedRepliesAreRecorded(t *testing.T) {
+	for _, tc := range []struct{ name, token, want string }{
+		{"oauth account", "sk-ant-oat01-test-token", "req_up_1"},
+		{"api-key account", "sk-ant-api03-test-key", ""},
+	} {
+		for _, stream := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				upstream := newReplyUpstream(t, stream)
+				model := "claude-sonnet-5"
+				srv, serve := newCCForwarder(t, ccPoolConfig(upstream.URL,
+					claudecode.AccountConfig{ID: "acc1", Token: tc.token, Enabled: true}), model)
+
+				postInSession(t, serve, "session-1", fmt.Sprintf(firstPrompt, model))
+
+				followUp := []byte(fmt.Sprintf(toolFollowUp(1), model))
+				turn := ccidentity.TurnOf(followUp)
+				scope := ccReplyScope("acc1", "session-1", turn)
+				if got := srv.ccReplies.PrevRequestID(scope, turn); got != tc.want {
+					t.Errorf("the log names %q for the follow-up of a reply upstream issued as req_up_1, want %q", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
 func at(values []string, i int) string {
 	if i < len(values) {
 		return values[i]

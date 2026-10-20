@@ -62,11 +62,13 @@ func TestDefaultClientSpeaksHTTP11(t *testing.T) {
 		})
 	}
 
+	body := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`)
 	resp, err := client.SendMessage(context.Background(), MessageRequest{
 		Token:     "sk-ant-oat01-test-oauth-token",
-		Body:      []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`),
+		Body:      body,
 		Normalize: true,
 		Identity:  ccidentity.Identity{SessionKey: "session-abc"},
+		Turn:      ccidentity.TurnOf(body),
 	})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)

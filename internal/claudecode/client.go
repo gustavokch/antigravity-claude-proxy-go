@@ -343,42 +343,61 @@ type MessageRequest struct {
 	Token string
 	// Body is the JSON request body as received from the client.
 	Body []byte
-	// ClientHeaders are the inbound headers. They are read only when Normalize
-	// is false: normalization deletes this set rather than forwarding it, which
-	// is the point of the exercise.
+	// ClientHeaders are the inbound headers. They are read only when the request
+	// does not normalize (see Normalizes): normalization deletes this set rather
+	// than forwarding it, which is the point of the exercise.
 	ClientHeaders http.Header
-	// Normalize replaces the client's identity with the captured Claude Code
-	// identity. When false the request is forwarded exactly as today, so a
-	// caller that already is Claude Code keeps its own headers and body.
+	// Normalize asks for the captured Claude Code identity in place of the
+	// client's own. Whether the request gets it is Normalizes: an API key never
+	// does. When the request does not normalize it is forwarded exactly as
+	// before, so a caller that already is Claude Code keeps its own headers and
+	// body.
 	Normalize bool
 	// Identity supplies the values normalization cannot derive from the request
 	// alone: the account and the session. The prompt number and prompt id come
-	// from Body (see ccidentity.TurnOf), so they need no field here.
+	// from Body (see Turn), so they need no field here.
 	Identity ccidentity.Identity
+	// Turn is where Body sits in its conversation: ccidentity.TurnOf(Body). It is
+	// required when Normalizes() and ignored otherwise. SendMessage does not read
+	// Body for it, so a caller that sends one client request more than once (a
+	// retry after a token refresh, or the next account after a 429) computes it
+	// once and puts it in every attempt, and the same Turn that scopes the reply
+	// (ccidentity.ReplyScope) is the one that goes on the wire.
+	Turn ccidentity.Turn
 	// Replies names the previous request in cc_prev_req: SendMessage looks up
 	// the latest assistant message of Body under ReplyScope. A nil log or an
 	// empty scope omits the field. The caller records the reply this send gets
-	// back under the same scope (ccidentity.ReplyLog Watch or RecordMessage).
+	// back under the same scope (ccidentity.ReplyLog Watch or RecordMessage), and
+	// only when Normalizes(): a request that is not normalized sends no
+	// cc_prev_req, so its reply has nothing to link.
 	Replies    *ccidentity.ReplyLog
 	ReplyScope string
+}
+
+// Normalizes reports whether SendMessage rewrites the request to the captured
+// Claude Code identity. It is the one rule, for SendMessage and for any caller
+// that must act only on a request that was normalized.
+//
+// Normalization and API-key auth cannot both be honest. The captured identity
+// is an OAuth identity — defaults.go lists x-api-key among the names Claude
+// Code never sends — and ApplyAuthHeaders runs last, so it would put that
+// header back after the omit list removed it, leaving the full Claude Code set
+// plus one header contradicting it. The API-key wire shape is uncaptured, so
+// there is nothing to reproduce either. An API key forwards as before.
+func (r MessageRequest) Normalizes() bool {
+	return r.Normalize && IsOAuthToken(r.Token)
 }
 
 // SendMessage forwards a /v1/messages request to Anthropic with appropriate auth
 // and beta headers.
 //
-// When req.Normalize is set, the outbound request is rewritten to the captured
+// When req.Normalizes(), the outbound request is rewritten to the captured
 // Claude Code identity (see internal/ccidentity) before auth is applied, so a
-// non-Claude-Code caller is indistinguishable at the HTTP layer. When it is not
-// set, only anthropic-version, anthropic-beta and Accept are copied, exactly as
+// non-Claude-Code caller is indistinguishable at the HTTP layer. When it does
+// not, only anthropic-version, anthropic-beta and Accept are copied, exactly as
 // before.
 func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Response, error) {
-	// Normalization and API-key auth cannot both be honest. The captured identity
-	// is an OAuth identity — defaults.go lists x-api-key among the names Claude
-	// Code never sends — and ApplyAuthHeaders runs last, so it would put that
-	// header back after the omit list removed it, leaving the full Claude Code
-	// set plus one header contradicting it. The API-key wire shape is uncaptured,
-	// so there is nothing to reproduce either. An API key forwards as before.
-	normalize := req.Normalize && IsOAuthToken(strings.TrimSpace(req.Token))
+	normalize := req.Normalizes()
 
 	// One lookup for the three places that need it below.
 	profile := ccidentity.DefaultProfile()
@@ -390,12 +409,10 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 	url := fmt.Sprintf("%s%s", c.baseURL, path)
 
 	body := req.Body
-	var turn ccidentity.Turn
+	turn := req.Turn
 	if normalize {
 		// One Turn for the body and the headers: the prompt id is written into
-		// both, and the capture shows the same value in each. TurnOf reads the
-		// original body; normalization does not touch messages.
-		turn = ccidentity.TurnOf(req.Body)
+		// both, and the capture shows the same value in each.
 		turn.PrevRequestID = req.Replies.PrevRequestID(req.ReplyScope, turn)
 		normalized, err := ccidentity.ApplyBody(body, profile, req.Identity, turn)
 		if err != nil {
