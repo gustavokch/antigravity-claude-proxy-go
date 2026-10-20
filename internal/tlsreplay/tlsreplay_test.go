@@ -3,6 +3,7 @@ package tlsreplay
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -185,5 +186,49 @@ func TestProxyRefusalIsAnError(t *testing.T) {
 	tr := MustNew(readCapture(t), []string{"http/1.1"}).Transport(&http.Transport{Proxy: http.ProxyURL(proxyURL)})
 	if _, err := (&http.Client{Transport: tr}).Get("https://localhost:1/"); err == nil {
 		t.Error("a refused CONNECT produced no error")
+	}
+}
+
+// The hello is for TLS, and the proxy for an http:// target is net/http's to
+// use: a transport built from a Hello that dropped it would send a plain request
+// straight to the host, past the proxy its user set.
+func TestPlainHTTPStillGoesThroughTheProxy(t *testing.T) {
+	proxy := proxytest.NewHTTPProxy(t, false, "unused")
+	proxyURL := proxy.ProxyURL(url.UserPassword("user", "pass"))
+
+	tr := MustNew(readCapture(t), []string{"http/1.1"}).Transport(&http.Transport{Proxy: http.ProxyURL(proxyURL)})
+	t.Cleanup(tr.CloseIdleConnections)
+	resp, err := (&http.Client{Transport: tr}).Get("http://upstream.invalid/v1/models")
+	if err != nil {
+		t.Fatalf("GET through the proxy: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if string(body) != "http://upstream.invalid/v1/models" {
+		t.Errorf("the proxy answered %q, want the absolute URL it was sent", body)
+	}
+	forwarded := proxy.Forwarded()
+	if len(forwarded) != 1 || forwarded[0].Header.Get("Proxy-Authorization") != "Basic dXNlcjpwYXNz" {
+		t.Errorf("forwarded = %+v, want one request with the proxy's credentials", forwarded)
+	}
+}
+
+// Without a proxy a Hello's transport still reaches a plain-http host.
+func TestPlainHTTPWithoutAProxyIsDirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "direct")
+	}))
+	t.Cleanup(server.Close)
+	tr := MustNew(readCapture(t), []string{"http/1.1"}).Transport(&http.Transport{})
+	t.Cleanup(tr.CloseIdleConnections)
+	resp, err := (&http.Client{Transport: tr}).Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(body) != "direct" {
+		t.Errorf("body = %q", body)
 	}
 }

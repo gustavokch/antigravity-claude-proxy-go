@@ -9,11 +9,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
@@ -25,6 +27,8 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
+
+	"antigravity-go-proxy/internal/proxydial/proxytest"
 )
 
 // fetchLike and nodeLike mirror the two stacks the proxy imitates, so the tests
@@ -1164,5 +1168,174 @@ func TestZstdWindowIsBounded(t *testing.T) {
 	}
 	if grown := after.TotalAlloc - before.TotalAlloc; grown > 16<<20 {
 		t.Errorf("decoding the frame allocated %d MiB", grown>>20)
+	}
+}
+
+// An http:// request through an http proxy is sent to the proxy, not to the
+// host: in absolute form, with the proxy's credentials written after the
+// caller's headers and before the stack's own.
+func TestPlainHTTPGoesToAnHTTPProxyInAbsoluteForm(t *testing.T) {
+	proxy := newServer(t, func(int, string) []byte { return ok("via proxy") })
+	proxyURL, _ := url.Parse(proxy.url("/"))
+	proxyURL.User = url.UserPassword("user", "pass")
+
+	tr := &Transport{Stack: fetchLike(), Proxy: http.ProxyURL(proxyURL)}
+	t.Cleanup(tr.CloseIdleConnections)
+	_, body := send(t, tr, http.MethodPost, "http://upstream.invalid/v1/messages?beta=true", `{"a":1}`,
+		http.Header{"X-App": {"cli"}, "Accept": {"application/json"}, "Proxy-Authorization": {"Basic Zm9v"}})
+	if body != "via proxy" {
+		t.Fatalf("body = %q", body)
+	}
+
+	want := "POST http://upstream.invalid/v1/messages?beta=true HTTP/1.1\r\n" +
+		"Accept: application/json\r\n" +
+		"X-App: cli\r\n" +
+		"Proxy-Authorization: Basic dXNlcjpwYXNz\r\n" +
+		"Connection: keep-alive\r\n" +
+		"Host: upstream.invalid\r\n" +
+		"Accept-Encoding: gzip, deflate, br, zstd\r\n" +
+		"Content-Length: 7\r\n" +
+		"\r\n" + `{"a":1}`
+	if got := proxy.requests()[0]; got != want {
+		t.Errorf("request bytes:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// An https proxy is reached over TLS, and the request on it is the same.
+func TestPlainHTTPGoesToAnHTTPSProxyInAbsoluteForm(t *testing.T) {
+	proxy := proxytest.NewHTTPProxy(t, true, proxytest.EchoBackend(t))
+	tr := &Transport{
+		Stack:           fetchLike(),
+		Proxy:           http.ProxyURL(proxy.ProxyURL(url.UserPassword("user", "pass"))),
+		TLSClientConfig: proxytest.Trusting(proxy.Server),
+	}
+	t.Cleanup(tr.CloseIdleConnections)
+	_, body := send(t, tr, http.MethodGet, "http://upstream.invalid:8080/v1/models", "", nil)
+	if body != "http://upstream.invalid:8080/v1/models" {
+		t.Errorf("the proxy saw the request target %q, want the absolute URL", body)
+	}
+	forwarded := proxy.Forwarded()
+	if len(forwarded) != 1 || forwarded[0].Header.Get("Proxy-Authorization") != "Basic dXNlcjpwYXNz" {
+		t.Errorf("forwarded = %+v, want one request carrying the proxy's credentials", forwarded)
+	}
+}
+
+// A SOCKS5 proxy relays the connection to the host, so the server gets an
+// ordinary request.
+func TestPlainHTTPThroughSOCKS5IsInOriginForm(t *testing.T) {
+	server := newServer(t, func(int, string) []byte { return ok("via socks") })
+	socks := proxytest.NewSOCKS5(t, false, server.ln.Addr().String())
+	tr := &Transport{Stack: fetchLike(), Proxy: http.ProxyURL(&url.URL{Scheme: "socks5", Host: socks.Addr})}
+	t.Cleanup(tr.CloseIdleConnections)
+
+	if _, body := send(t, tr, http.MethodGet, "http://upstream.invalid/v1/models", "", nil); body != "via socks" {
+		t.Fatalf("body = %q", body)
+	}
+	if got := socks.Requests(); len(got) != 1 || got[0].Target != "upstream.invalid:80" {
+		t.Errorf("SOCKS requests = %+v, want one for upstream.invalid:80", got)
+	}
+	got := server.requests()[0]
+	if !strings.HasPrefix(got, "GET /v1/models HTTP/1.1\r\n") || !strings.Contains(got, "Host: upstream.invalid\r\n") {
+		t.Errorf("the server got:\n%q\nwant an origin-form request for upstream.invalid", got)
+	}
+	if strings.Contains(got, "Proxy-Authorization") {
+		t.Errorf("proxy credentials reached the server:\n%q", got)
+	}
+}
+
+// A connection that went through a proxy is not one a direct request may use,
+// nor the other way round: what the server would see differs, and so would who
+// else could.
+func TestProxiedAndDirectConnectionsAreNotMixed(t *testing.T) {
+	direct := newServer(t, func(int, string) []byte { return ok("direct") })
+	viaProxy := newServer(t, func(int, string) []byte { return ok("proxy") })
+	proxyURL, _ := url.Parse(viaProxy.url("/"))
+
+	var proxied atomic.Bool
+	tr := &Transport{Stack: fetchLike(), Proxy: func(*http.Request) (*url.URL, error) {
+		if proxied.Load() {
+			return proxyURL, nil
+		}
+		return nil, nil
+	}}
+	t.Cleanup(tr.CloseIdleConnections)
+
+	target := direct.url("/v1/messages")
+	for i, step := range []struct {
+		proxied bool
+		want    string
+	}{{false, "direct"}, {true, "proxy"}, {false, "direct"}, {true, "proxy"}} {
+		proxied.Store(step.proxied)
+		if _, body := send(t, tr, http.MethodGet, target, "", nil); body != step.want {
+			t.Fatalf("request %d (proxied=%v): body %q, want %q", i, step.proxied, body, step.want)
+		}
+	}
+	if d, p := direct.connections(), viaProxy.connections(); d != 1 || p != 1 {
+		t.Errorf("connections: direct %d, proxy %d; want one each, reused", d, p)
+	}
+}
+
+// Two proxies are two routes as well.
+func TestDifferentProxiesDoNotShareConnections(t *testing.T) {
+	first := newServer(t, func(int, string) []byte { return ok("first") })
+	second := newServer(t, func(int, string) []byte { return ok("second") })
+	var which atomic.Pointer[server]
+	tr := &Transport{Stack: fetchLike(), Proxy: func(*http.Request) (*url.URL, error) {
+		return url.Parse(which.Load().url("/"))
+	}}
+	t.Cleanup(tr.CloseIdleConnections)
+	for _, step := range []struct {
+		proxy *server
+		want  string
+	}{{first, "first"}, {second, "second"}, {first, "first"}} {
+		which.Store(step.proxy)
+		if _, body := send(t, tr, http.MethodGet, "http://upstream.invalid/", "", nil); body != step.want {
+			t.Fatalf("body %q, want %q", body, step.want)
+		}
+	}
+}
+
+// An https request's route is DialTLS's: the Proxy function is not asked, so a
+// proxy meant for plain http cannot capture a TLS connection that a dialer has
+// its own way to tunnel.
+func TestHTTPSRequestsDoNotConsultTheProxyFunction(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "fine")
+	}))
+	t.Cleanup(server.Close)
+	var asked atomic.Int32
+	tr := &Transport{Stack: fetchLike(), DialTLS: tlsDialer(server), Proxy: func(*http.Request) (*url.URL, error) {
+		asked.Add(1)
+		return &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, nil
+	}}
+	t.Cleanup(tr.CloseIdleConnections)
+	if body := get(t, tr, server.URL+"/", nil); body != "fine" {
+		t.Errorf("body = %q", body)
+	}
+	if asked.Load() != 0 {
+		t.Error("the Proxy function was consulted for an https request")
+	}
+}
+
+// A proxy that cannot be used fails the request: sending it direct would leak the
+// route the user asked to hide.
+func TestUnusableProxyFailsTheRequest(t *testing.T) {
+	direct := newServer(t, func(int, string) []byte { return ok("direct") })
+	for name, proxy := range map[string]func(*http.Request) (*url.URL, error){
+		"proxy function fails": func(*http.Request) (*url.URL, error) { return nil, errors.New("no proxy today") },
+		"unknown scheme":       func(*http.Request) (*url.URL, error) { return url.Parse("ftp://127.0.0.1:21") },
+		"unreachable":          func(*http.Request) (*url.URL, error) { return url.Parse("http://127.0.0.1:1") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			tr := &Transport{Stack: fetchLike(), Proxy: proxy}
+			req, _ := http.NewRequest(http.MethodGet, direct.url("/"), nil)
+			if resp, err := tr.RoundTrip(req); err == nil {
+				_ = resp.Body.Close()
+				t.Fatal("the request succeeded")
+			}
+		})
+	}
+	if len(direct.requests()) != 0 {
+		t.Error("a request whose proxy failed was sent directly")
 	}
 }

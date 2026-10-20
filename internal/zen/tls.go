@@ -96,7 +96,10 @@ func TLSClient() *http.Client {
 // per configuration so keep-alive pools survive across requests; it is
 // transport.Upstream() (a clone of http.DefaultTransport with a bound on time to
 // response headers) with DialTLSContext pointed at the captured hello. The shared
-// default transport itself is never mutated.
+// default transport itself is never mutated. The proxy the environment names
+// applies as it does to Upstream: an https request is tunnelled through it with
+// the captured hello sent inside, a plain-http one is sent to it as net/http
+// does.
 func Transport() *http.Transport {
 	tlsMu.Lock()
 	defer tlsMu.Unlock()

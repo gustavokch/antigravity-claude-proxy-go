@@ -126,15 +126,23 @@ func specALPN(spec *utls.ClientHelloSpec) []string {
 // one is set; its NextProtos and cipher settings play no part, because the
 // capture decides the hello.
 //
-// base.Proxy is moved into the dialer. net/http ignores DialTLSContext for an
-// https target behind a proxy: it dials the proxy in plain text and runs
+// base.Proxy is taken over for https targets. net/http ignores DialTLSContext
+// for an https target behind a proxy: it dials the proxy in plain text and runs
 // crypto/tls over the tunnel itself, so the hello on the wire would be Go's
 // own and nothing would say so. Here the dialer opens the tunnel itself, with
 // CONNECT through an http or https proxy or a relay through a socks5 or socks5h
-// one (see proxydial), and replays the hello over it.
+// one (see proxydial), and replays the hello over it. A plain-http target has no
+// handshake to replay, so net/http keeps routing it through base.Proxy.
 func (h *Hello) Transport(base *http.Transport) *http.Transport {
 	proxy := base.Proxy
-	base.Proxy = nil
+	if proxy != nil {
+		base.Proxy = func(req *http.Request) (*url.URL, error) {
+			if req.URL.Scheme == "https" {
+				return nil, nil
+			}
+			return proxy(req)
+		}
+	}
 	base.DialTLSContext = h.DialFunc(proxy, func() *tls.Config { return base.TLSClientConfig })
 	return base
 }

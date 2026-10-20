@@ -20,6 +20,12 @@
 // the wire or its method is GET, HEAD or OPTIONS and the response had not begun.
 // A POST that was written in full is never sent again: the server may have
 // processed it.
+//
+// A plain-http request goes through the proxy Transport.Proxy names, as
+// net/http's own transport sends it: in absolute form, with the proxy's
+// credentials, to an http or https proxy; as an ordinary request over a relayed
+// connection for a socks5 proxy. Such a connection is pooled apart from direct
+// ones. An https request takes whatever route DialTLS opens, tunnel included.
 package httpwire
 
 import (
@@ -43,6 +49,8 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/net/http/httpguts"
+
+	"antigravity-go-proxy/internal/proxydial"
 )
 
 // Header names the transport writes itself. A stack lists them in its Tail in
@@ -88,10 +96,19 @@ type Transport struct {
 
 	// DialTLS opens a TLS connection for an https URL. Required for https.
 	DialTLS func(ctx context.Context, network, addr string) (net.Conn, error)
-	// Dial opens a plain connection for an http URL. Nil uses a net.Dialer.
+	// Dial opens a plain connection for an http URL that goes to its server
+	// directly. Nil uses a net.Dialer.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
-	// TLSClientConfig is for the DialTLS function to read; the transport itself
-	// does not use it.
+	// Proxy selects the proxy for an http request, nil for none: an http or
+	// https proxy gets the request in absolute form, a socks5 or socks5h proxy
+	// relays the connection and gets it in origin form. It is not consulted for an
+	// https request, whose route is DialTLS's to open, tunnel included.
+	// http.ProxyFromEnvironment is the usual value.
+	Proxy func(*http.Request) (*url.URL, error)
+	// TLSClientConfig is for the DialTLS function to read, and for the TLS
+	// connection to an https proxy (RootCAs and InsecureSkipVerify, as net/http
+	// applies a transport's to both hops); the transport itself does not use it
+	// for anything else.
 	TLSClientConfig *tls.Config
 
 	// ResponseHeaderTimeout bounds the wait for the response headers after the
@@ -135,15 +152,17 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	addr := canonicalAddr(req.URL)
-	key := req.URL.Scheme + "://" + addr
+	rt, err := t.route(req)
+	if err != nil {
+		return nil, err
+	}
 	ctx := req.Context()
 	for attempt := 0; ; attempt++ {
-		c, reused, err := t.conn(ctx, req.URL.Scheme, addr, key, attempt > 0)
+		c, reused, err := t.conn(ctx, rt, attempt > 0)
 		if err != nil {
 			return nil, err
 		}
-		resp, replayable, err := t.roundTrip(ctx, c, req, body)
+		resp, replayable, err := t.roundTrip(ctx, c, rt, req, body)
 		if err == nil {
 			return resp, nil
 		}
@@ -197,30 +216,76 @@ func canonicalAddr(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), port)
 }
 
-// conn returns a connection for addr: an idle one that is still usable, unless
+// route is how a request reaches its server: where the connection goes, how the
+// request is written on it, and which connections are interchangeable.
+type route struct {
+	scheme string
+	addr   string   // the server's host:port
+	key    string   // pool key: connections with the same key can carry the same requests
+	proxy  *url.URL // the proxy an http request goes through, nil if it goes direct
+}
+
+// route works out how req gets to its server. Only an http request can go
+// through a proxy here: an https request's route is DialTLS's, and the
+// connection that comes back is already a tunnel to the server.
+func (t *Transport) route(req *http.Request) (route, error) {
+	addr := canonicalAddr(req.URL)
+	rt := route{scheme: req.URL.Scheme, addr: addr, key: req.URL.Scheme + "://" + addr}
+	if rt.scheme != "http" || t.Proxy == nil {
+		return rt, nil
+	}
+	proxy, err := t.Proxy(req)
+	if err != nil {
+		return route{}, fmt.Errorf("httpwire: proxy for %s: %w", req.URL.Host, err)
+	}
+	if proxy != nil {
+		// A connection to the proxy is not one to the server, and not one to
+		// another proxy: it is pooled apart, and the proxy is in the key.
+		rt.proxy = proxy
+		rt.key = proxy.String() + " " + rt.key
+	}
+	return rt, nil
+}
+
+// absoluteForm reports whether the request line carries the full URL: the form
+// a proxy that forwards requests expects. A SOCKS proxy relays the connection,
+// and the server sees an ordinary request.
+func (r route) absoluteForm() bool {
+	return r.proxy != nil && (r.proxy.Scheme == "http" || r.proxy.Scheme == "https")
+}
+
+// conn returns a connection for rt: an idle one that is still usable, unless
 // fresh asks for a new one, else a dialed one. reused says which.
-func (t *Transport) conn(ctx context.Context, scheme, addr, key string, fresh bool) (*conn, bool, error) {
+func (t *Transport) conn(ctx context.Context, rt route, fresh bool) (*conn, bool, error) {
 	if t.Stack.KeepAlive && !fresh {
-		if c := t.takeIdle(key); c != nil {
+		if c := t.takeIdle(rt.key); c != nil {
 			return c, true, nil
 		}
 	}
-	dial := t.Dial
-	if scheme == "https" {
-		dial = t.DialTLS
-		if dial == nil {
-			return nil, false, errors.New("httpwire: https request but no DialTLS")
-		}
-	}
-	if dial == nil {
-		dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-		dial = dialer.DialContext
-	}
-	raw, err := dial(ctx, "tcp", addr)
+	raw, err := t.dial(ctx, rt)
 	if err != nil {
 		return nil, false, err
 	}
-	return &conn{Conn: raw, br: bufio.NewReader(raw), key: key}, false, nil
+	return &conn{Conn: raw, br: bufio.NewReader(raw), key: rt.key}, false, nil
+}
+
+func (t *Transport) dial(ctx context.Context, rt route) (net.Conn, error) {
+	if rt.scheme == "https" {
+		if t.DialTLS == nil {
+			return nil, errors.New("httpwire: https request but no DialTLS")
+		}
+		return t.DialTLS(ctx, "tcp", rt.addr)
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	switch {
+	case rt.absoluteForm():
+		return proxydial.DialProxy(ctx, dialer, "tcp", rt.proxy, t.TLSClientConfig)
+	case rt.proxy != nil:
+		return proxydial.Tunnel(ctx, dialer, "tcp", rt.addr, rt.proxy, t.TLSClientConfig)
+	case t.Dial != nil:
+		return t.Dial(ctx, "tcp", rt.addr)
+	}
+	return dialer.DialContext(ctx, "tcp", rt.addr)
 }
 
 // idleProbe is how long the liveness check waits for a sign of life from an idle
@@ -357,12 +422,12 @@ func isIdempotent(method string) bool {
 //   - a response that had started is an answer, a broken one: never again. A POST
 //     to /v1/messages that went out in full is billed once, and not twice because
 //     the connection broke on the way back.
-func (t *Transport) roundTrip(ctx context.Context, c *conn, req *http.Request, body []byte) (*http.Response, bool, error) {
+func (t *Transport) roundTrip(ctx context.Context, c *conn, rt route, req *http.Request, body []byte) (*http.Response, bool, error) {
 	// Cancelling the request closes the connection, which fails a blocked read
 	// or write and, for a response whose body is still streaming, ends the body.
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 
-	if err := t.write(c, req, body); err != nil {
+	if err := t.write(c, rt, req, body); err != nil {
 		stop()
 		return nil, isStale(err), err
 	}
@@ -415,10 +480,16 @@ func readFinalResponse(br *bufio.Reader, req *http.Request) (*http.Response, err
 }
 
 // write sends the request line, the caller's headers in the stack's order, the
+// proxy's credentials when the request goes to a proxy that forwards it, the
 // stack's tail, and the body.
-func (t *Transport) write(c *conn, req *http.Request, body []byte) error {
+func (t *Transport) write(c *conn, rt route, req *http.Request, body []byte) error {
 	w := bufio.NewWriterSize(c, 4096)
 	target := req.URL.RequestURI()
+	proxyAuth := ""
+	if rt.absoluteForm() {
+		target = req.URL.Scheme + "://" + req.URL.Host + target
+		proxyAuth = proxydial.Authorization(rt.proxy)
+	}
 	method := req.Method
 	if method == "" {
 		method = http.MethodGet
@@ -427,7 +498,8 @@ func (t *Transport) write(c *conn, req *http.Request, body []byte) error {
 
 	names := make([]string, 0, len(req.Header))
 	for name := range req.Header {
-		if !owned[strings.ToLower(name)] {
+		// The proxy's credentials replace a caller's, as net/http does.
+		if !owned[strings.ToLower(name)] && !(proxyAuth != "" && strings.EqualFold(name, "Proxy-Authorization")) {
 			names = append(names, name)
 		}
 	}
@@ -438,6 +510,9 @@ func (t *Transport) write(c *conn, req *http.Request, body []byte) error {
 		for _, value := range req.Header[name] {
 			fmt.Fprintf(w, "%s: %s\r\n", name, value)
 		}
+	}
+	if proxyAuth != "" {
+		fmt.Fprintf(w, "Proxy-Authorization: %s\r\n", proxyAuth)
 	}
 
 	hasBody := len(body) > 0 || method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch

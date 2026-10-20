@@ -10,12 +10,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"antigravity-go-proxy/internal/proxydial/proxytest"
 	"antigravity-go-proxy/internal/transport"
 )
 
@@ -107,8 +110,8 @@ func TestTLSClientIsAlwaysBounded(t *testing.T) {
 
 // TestSharedTransportCached: one default-shaped utls transport per
 // configuration — consecutive calls return the same pointer, SetTLSConfig
-// invalidates it, and the clone keeps the default transport's timeouts, with
-// the proxy moved into the dialer, without ever mutating the shared default.
+// invalidates it, and the clone keeps the default transport's timeouts without
+// ever mutating the shared default.
 func TestSharedTransportCached(t *testing.T) {
 	SetTLSConfig(ZenTLSConfig{})
 	t.Cleanup(func() { SetTLSConfig(ZenTLSConfig{}) })
@@ -127,9 +130,6 @@ func TestSharedTransportCached(t *testing.T) {
 	}
 	if TLSClient().Transport != first {
 		t.Error("TLSClient should carry the shared transport")
-	}
-	if first.Proxy != nil {
-		t.Error("the proxy belongs to the dialer: net/http would otherwise skip the captured hello behind HTTPS_PROXY")
 	}
 	if first.IdleConnTimeout == 0 {
 		t.Error("shared transport should keep the default IdleConnTimeout")
@@ -423,4 +423,59 @@ func alpnOfHello(t *testing.T, record []byte) string {
 		return ""
 	}
 	return string(body[3 : 3+int(body[2])])
+}
+
+// TestZenProxyHelperProcess is the child of TestPlainHTTPZenFollowsTheProxyEnvironment,
+// not a test of its own. http.ProxyFromEnvironment reads the environment once
+// per process, so a test that wants it set runs in a process of its own.
+func TestZenProxyHelperProcess(t *testing.T) {
+	if os.Getenv("ZEN_PROXY_HELPER") == "" {
+		t.Skip("helper process of TestPlainHTTPZenFollowsTheProxyEnvironment")
+	}
+	SetTLSConfig(ZenTLSConfig{Enabled: true})
+	client := TLSClient()
+	if client.Transport == nil {
+		fmt.Println("RESULT error no utls transport")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://zen.example.invalid/zen/v1/models", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("RESULT error %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("RESULT %d %s\n", resp.StatusCode, body)
+}
+
+// A Zen base URL on http:// is reached through the proxy a user's environment
+// names whether or not the TLS disguise is on: the disguise changes how TLS is
+// dialed, and a plain request has none.
+func TestPlainHTTPZenFollowsTheProxyEnvironment(t *testing.T) {
+	proxy := proxytest.NewHTTPProxy(t, false, "unused")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestZenProxyHelperProcess$")
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(name) {
+		case "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "REQUEST_METHOD":
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "ZEN_PROXY_HELPER=1", "HTTP_PROXY="+proxy.URL)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper process: %v\n%s", err, out)
+	}
+	_, result, ok := strings.Cut(string(out), "RESULT ")
+	if !ok || !strings.HasPrefix(result, "200 http://zen.example.invalid/zen/v1/models") {
+		t.Fatalf("the request did not come back from the proxy:\n%s", out)
+	}
+	if got := proxy.Forwarded(); len(got) != 1 || got[0].Target != "http://zen.example.invalid/zen/v1/models" {
+		t.Errorf("the proxy was sent %+v, want the request in absolute form", got)
+	}
 }

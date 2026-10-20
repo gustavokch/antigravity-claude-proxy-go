@@ -5,10 +5,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +20,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/httpwire"
+	"antigravity-go-proxy/internal/proxydial/proxytest"
 )
 
 // h2Server is a TLS server that speaks both HTTP/2 and HTTP/1.1 and records what
@@ -275,5 +279,65 @@ func TestClaudeCodeMessagesReusesALiveReplayedConnection(t *testing.T) {
 	}
 	if got := accepted.Load(); got != 1 {
 		t.Errorf("3 sequential requests used %d connections, want the first reused", got)
+	}
+}
+
+// withoutProxyVariables is the process environment minus every variable that
+// steers http.ProxyFromEnvironment, so a test sets exactly the ones it means.
+func withoutProxyVariables() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(name) {
+		case "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "REQUEST_METHOD":
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
+}
+
+// TestProxyHelperProcess is the child of TestClaudeCodeTransportsHonourHTTPProxy,
+// not a test of its own. http.ProxyFromEnvironment reads the environment once per
+// process, so a test that wants it set to something runs in a process of its own.
+func TestProxyHelperProcess(t *testing.T) {
+	kind := os.Getenv("CLAUDE_CODE_PROXY_HELPER")
+	if kind == "" {
+		t.Skip("helper process of TestClaudeCodeTransportsHonourHTTPProxy")
+	}
+	build := map[string]func() *httpwire.Transport{"messages": ClaudeCodeMessages, "discovery": ClaudeCodeDiscovery}[kind]
+	client := &http.Client{Transport: build(), Timeout: 10 * time.Second}
+	resp, err := client.Get("http://custom-endpoint.example.invalid:4000/v1/messages")
+	if err != nil {
+		fmt.Printf("RESULT error %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("RESULT %d %s\n", resp.StatusCode, body)
+}
+
+// A custom endpoint on http:// is reached through the proxy a user's environment
+// names, as it was before Claude Code's own transports carried its requests; a
+// transport that dialed it directly would fail wherever the proxy is the only way
+// out.
+func TestClaudeCodeTransportsHonourHTTPProxy(t *testing.T) {
+	for _, kind := range []string{"messages", "discovery"} {
+		t.Run(kind, func(t *testing.T) {
+			proxy := proxytest.NewHTTPProxy(t, false, "unused")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestProxyHelperProcess$")
+			cmd.Env = append(withoutProxyVariables(), "CLAUDE_CODE_PROXY_HELPER="+kind, "HTTP_PROXY="+proxy.URL)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("helper process: %v\n%s", err, out)
+			}
+			_, result, ok := strings.Cut(string(out), "RESULT ")
+			if !ok || !strings.HasPrefix(result, "200 http://custom-endpoint.example.invalid:4000/v1/messages") {
+				t.Fatalf("the request did not come back from the proxy:\n%s", out)
+			}
+			if got := proxy.Forwarded(); len(got) != 1 || got[0].Target != "http://custom-endpoint.example.invalid:4000/v1/messages" {
+				t.Errorf("the proxy was sent %+v, want the request in absolute form", got)
+			}
+		})
 	}
 }

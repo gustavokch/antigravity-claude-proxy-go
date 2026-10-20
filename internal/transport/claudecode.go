@@ -111,9 +111,13 @@ func ClaudeCodeDiscovery() *httpwire.Transport {
 	return claudeCode(nodeHello, nodeStack)
 }
 
+// claudeCode builds a transport for one stack. A proxy from the environment
+// applies to both schemes: http requests go to it in absolute form, and the https
+// dialer tunnels through it before the hello is sent.
 func claudeCode(hello *tlsreplay.Hello, stack httpwire.Stack) *httpwire.Transport {
 	t := &httpwire.Transport{
 		Stack:                 stack,
+		Proxy:                 http.ProxyFromEnvironment,
 		ResponseHeaderTimeout: ResponseHeaderTimeout,
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConnsPerHost:   16,
