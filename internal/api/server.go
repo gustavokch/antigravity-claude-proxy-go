@@ -1881,7 +1881,7 @@ func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionI
 // >= 16"). Applied only to values we actually send.
 const minMaxTokensFloor = 16
 
-// applyMaxTokensPolicy decides the max_tokens sent upstream:
+// maxTokensValue decides the max_tokens sent upstream:
 //   - client value present: kept, clamped down to the effective limit when
 //     the limit is known and the value exceeds it. Never raised above the
 //     client value except by the provider floor (see minMaxTokensFloor).
@@ -1891,10 +1891,10 @@ const minMaxTokensFloor = 16
 //     raised to the floor when below it.
 //   - absent with nothing known: the field is omitted entirely.
 //
-// Returns the re-marshaled body when the value changed, the original body
-// otherwise, so both the raw passthrough path and the provider-injected path
-// see the same value. The caller's map is never mutated.
-func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, derivedLimit int) []byte {
+// It returns the value to write and whether to write it. When it does not,
+// the request's own max_tokens, or its absence, is already what the policy
+// wants.
+func maxTokensValue(req map[string]any, manualOverride, derivedLimit int) (int, bool) {
 	limit := manualOverride
 	if limit <= 0 {
 		limit = derivedLimit
@@ -1905,40 +1905,44 @@ func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, de
 	if limit > 0 && limit < floor {
 		floor = limit
 	}
-	value := 0
 	raw, present := req["max_tokens"]
 	if !present {
 		if limit <= 0 {
-			return reqBody
+			return 0, false
 		}
+		return max(limit, floor), true
+	}
+	var current int
+	switch v := raw.(type) {
+	case float64:
+		current = int(v)
+	case int:
+		current = v
+	case int64:
+		current = int(v)
+	default:
+		slog.Warn("max_tokens policy: non-numeric client value, forwarding unchanged",
+			"type", fmt.Sprintf("%T", raw))
+		return 0, false
+	}
+	value := current
+	if limit > 0 && value > limit {
 		value = limit
-		if value < floor {
-			value = floor
-		}
-	} else {
-		var current int
-		switch v := raw.(type) {
-		case float64:
-			current = int(v)
-		case int:
-			current = v
-		case int64:
-			current = int(v)
-		default:
-			slog.Warn("max_tokens policy: non-numeric client value, forwarding unchanged",
-				"type", fmt.Sprintf("%T", raw))
-			return reqBody
-		}
-		value = current
-		if limit > 0 && value > limit {
-			value = limit
-		}
-		if value < floor {
-			value = floor
-		}
-		if value == current {
-			return reqBody
-		}
+	}
+	value = max(value, floor)
+	return value, value != current
+}
+
+// applyMaxTokensPolicy applies maxTokensValue to a request that is forwarded
+// as a re-encoding of its decoded map.
+//
+// Returns the re-marshaled body when the value changed, the original body
+// otherwise, so both the raw passthrough path and the provider-injected path
+// see the same value. The caller's map is never mutated.
+func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, derivedLimit int) []byte {
+	value, write := maxTokensValue(req, manualOverride, derivedLimit)
+	if !write {
+		return reqBody
 	}
 	next := maps.Clone(req)
 	next["max_tokens"] = value

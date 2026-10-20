@@ -241,6 +241,180 @@ func marshalJS(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
+// ObjectMember is one top-level member for SetObjectMembers.
+type ObjectMember struct {
+	Name string
+	// Value is the member's value, already encoded as JSON.
+	Value []byte
+}
+
+// SetObjectMembers returns body, a JSON object, with each member set at the top
+// level and every other byte exactly as it was: key order, whitespace, number
+// spelling and string escapes. A member the object already has gets its value
+// bytes replaced where they stand, at every place the key occurs, so a parser
+// that keeps the first duplicate and one that keeps the last read the same
+// value. A member it lacks is appended after the last one. Member names are
+// distinct.
+//
+// This is for a caller that decided one or two values of a request and must
+// forward the rest as the client wrote it. Decoding into a map and encoding it
+// again sorts every nested object and, with encoding/json's defaults, turns
+// "<", ">" and "&" into \u003c, \u003e and \u0026, which no JavaScript client
+// sends and which the receiving side can see.
+//
+// body is not modified. With no members the result is body itself.
+func SetObjectMembers(body []byte, members ...ObjectMember) ([]byte, error) {
+	// One validation pass up front lets the scan below trust the grammar and
+	// skip values without decoding them.
+	if !json.Valid(body) {
+		return nil, errors.New("ccidentity: set object members: body is not valid JSON")
+	}
+	for _, member := range members {
+		if !json.Valid(member.Value) {
+			return nil, fmt.Errorf("ccidentity: set object members: value of %q is not valid JSON", member.Name)
+		}
+	}
+	open := skipJSONSpace(body, 0)
+	if body[open] != '{' {
+		return nil, ErrNotAnObject
+	}
+	if len(members) == 0 {
+		return body, nil
+	}
+
+	type replacement struct {
+		from, to int
+		value    []byte
+	}
+	var (
+		replaced []replacement
+		found    = make([]bool, len(members))
+		// appendAt is where new members go: right after the last member's
+		// value, so whitespace before the closing brace stays where it is.
+		appendAt   = open + 1
+		hasMembers bool
+	)
+	pos := skipJSONSpace(body, open+1)
+	for body[pos] != '}' {
+		keyEnd := skipJSONString(body, pos)
+		key := body[pos:keyEnd]
+		pos = skipJSONSpace(body, skipJSONSpace(body, keyEnd)+1) // past the colon
+		valueEnd := skipJSONValue(body, pos)
+		for i, member := range members {
+			if jsonKeyIs(key, member.Name) {
+				replaced = append(replaced, replacement{pos, valueEnd, member.Value})
+				found[i] = true
+			}
+		}
+		hasMembers = true
+		appendAt = valueEnd
+		pos = skipJSONSpace(body, valueEnd)
+		if body[pos] == ',' {
+			pos = skipJSONSpace(body, pos+1)
+		}
+	}
+
+	size := len(body)
+	for _, r := range replaced {
+		size += len(r.value)
+	}
+	for i, member := range members {
+		if !found[i] {
+			size += len(member.Name) + len(member.Value) + 4
+		}
+	}
+	out := make([]byte, 0, size)
+	at := 0
+	for _, r := range replaced {
+		out = append(out, body[at:r.from]...)
+		out = append(out, r.value...)
+		at = r.to
+	}
+	out = append(out, body[at:appendAt]...)
+	for i, member := range members {
+		if found[i] {
+			continue
+		}
+		encodedName, err := marshalJS(member.Name)
+		if err != nil {
+			return nil, fmt.Errorf("ccidentity: set object members: encode name %q: %w", member.Name, err)
+		}
+		if hasMembers {
+			out = append(out, ',')
+		}
+		hasMembers = true
+		out = append(out, encodedName...)
+		out = append(out, ':')
+		out = append(out, member.Value...)
+	}
+	return append(out, body[appendAt:]...), nil
+}
+
+// jsonKeyIs reports whether key, a JSON string token with its quotes, spells
+// name. Only a key containing an escape is decoded.
+func jsonKeyIs(key []byte, name string) bool {
+	inner := key[1 : len(key)-1]
+	if bytes.IndexByte(inner, '\\') < 0 {
+		return string(inner) == name
+	}
+	var decoded string
+	return json.Unmarshal(key, &decoded) == nil && decoded == name
+}
+
+func skipJSONSpace(b []byte, i int) int {
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	return i
+}
+
+// skipJSONString returns the index after the string token that starts at b[i].
+func skipJSONString(b []byte, i int) int {
+	for i++; ; i++ {
+		switch b[i] {
+		case '\\':
+			i++ // the escaped byte, so an escaped quote does not end the string
+		case '"':
+			return i + 1
+		}
+	}
+}
+
+// skipJSONValue returns the index after the value that starts at b[i]. b is
+// valid JSON.
+func skipJSONValue(b []byte, i int) int {
+	switch b[i] {
+	case '"':
+		return skipJSONString(b, i)
+	case '{', '[':
+		for depth := 0; ; i++ {
+			switch b[i] {
+			case '"':
+				i = skipJSONString(b, i) - 1
+			case '{', '[':
+				depth++
+			case '}', ']':
+				if depth--; depth == 0 {
+					return i + 1
+				}
+			}
+		}
+	}
+	for i < len(b) && !endsJSONScalar(b[i]) {
+		i++
+	}
+	return i
+}
+
+// endsJSONScalar reports whether c cannot be part of a number or a literal.
+func endsJSONScalar(c byte) bool {
+	switch c {
+	case ',', ']', '}', ' ', '\t', '\r', '\n':
+		return true
+	}
+	return false
+}
+
 // omittedBodyFields are top-level fields Claude Code does not send in the
 // captured traffic but that OpenAI-shimmed clients routinely produce. Leaving
 // them in place would advertise the real caller.
