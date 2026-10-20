@@ -1339,3 +1339,127 @@ func TestUnusableProxyFailsTheRequest(t *testing.T) {
 		t.Error("a request whose proxy failed was sent directly")
 	}
 }
+
+// A server may send interim responses before the real one, but not forever:
+// net/http gives up after five, and so does this transport, closing the
+// connection that has an unfinished exchange on it.
+func TestTooManyInterimResponsesFailTheRequest(t *testing.T) {
+	interim := func(n int) string {
+		return strings.Repeat("HTTP/1.1 103 Early Hints\r\nLink: </a>; rel=preload\r\n\r\n", n)
+	}
+
+	t.Run("six fail", func(t *testing.T) {
+		s := newServer(t, func(i int, _ string) []byte {
+			if i == 0 {
+				return append([]byte(interim(6)), ok("first")...)
+			}
+			return ok("second")
+		})
+		tr := &Transport{Stack: fetchLike()}
+		req, _ := http.NewRequest(http.MethodGet, s.url("/"), nil)
+		resp, err := tr.RoundTrip(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Fatalf("six interim responses produced status %d", resp.StatusCode)
+		}
+		if !strings.Contains(err.Error(), "too many 1xx informational responses") {
+			t.Errorf("error = %v, want it to say there were too many 1xx responses", err)
+		}
+		// The first exchange is abandoned half way, so its connection is not reused.
+		if _, body := send(t, tr, http.MethodGet, s.url("/"), "", nil); body != "second" {
+			t.Errorf("second body = %q: bytes of the abandoned exchange leaked into it", body)
+		}
+		if got := s.connections(); got != 2 {
+			t.Errorf("connections = %d, want the abandoned one replaced", got)
+		}
+	})
+
+	t.Run("five succeed", func(t *testing.T) {
+		s := newServer(t, func(i int, _ string) []byte {
+			if i == 0 {
+				return append([]byte(interim(5)), ok("first")...)
+			}
+			return ok("second")
+		})
+		tr := &Transport{Stack: fetchLike()}
+		for _, want := range []string{"first", "second"} {
+			if _, body := send(t, tr, http.MethodGet, s.url("/"), "", nil); body != want {
+				t.Fatalf("body = %q, want %q", body, want)
+			}
+		}
+		if got := s.connections(); got != 1 {
+			t.Errorf("connections = %d, want the connection reused", got)
+		}
+	})
+}
+
+// firstSegment returns the compressed bytes of text up to a flush point, from a
+// stream the writer never finishes: the head of a response whose rest is yet to
+// come. A decoder fed these has output to give, then waits for more.
+func firstSegment(t *testing.T, encoding, text string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	switch encoding {
+	case "gzip":
+		w := gzip.NewWriter(&buf)
+		_, _ = w.Write([]byte(text))
+		if err := w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	case "zstd":
+		w, err := zstd.NewWriter(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(text))
+		if err := w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return buf.Bytes()
+}
+
+// A body can be closed from another goroutine while a Read is waiting on the
+// decoder, which is how a watchdog ends a stream that stopped. The decoder is not
+// safe for a concurrent Close, so the transport must not close it under a Read;
+// the connection goes first, which ends the Read, and then the decoder is closed.
+// Run with -race: the check is that it stays silent.
+func TestCloseDuringADecodedReadIsSafe(t *testing.T) {
+	const text = "data: {\"type\":\"message_start\"}\n\n"
+	for _, encoding := range []string{"gzip", "zstd"} {
+		t.Run(encoding, func(t *testing.T) {
+			head := firstSegment(t, encoding, text)
+			base := scripted(t, func(_ int, c net.Conn) {
+				_, _ = readRequest(bufio.NewReader(c))
+				_, _ = fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Encoding: %s\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n", encoding, len(head), head)
+				time.Sleep(stallFor)
+			})
+			resp, err := (&http.Client{Transport: &Transport{Stack: fetchLike()}}).Get(base + "/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := make([]byte, len(text))
+			if _, err := io.ReadFull(resp.Body, first); err != nil || string(first) != text {
+				t.Fatalf("first segment = %q, %v; want %q", first, err, text)
+			}
+
+			read := make(chan error, 1)
+			go func() { _, err := resp.Body.Read(make([]byte, 1)); read <- err }()
+			time.Sleep(50 * time.Millisecond) // the Read is inside the decoder, waiting for more
+
+			start := time.Now()
+			_ = resp.Body.Close()
+			if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+				t.Errorf("Close took %v with a Read in flight", elapsed)
+			}
+			select {
+			case err := <-read:
+				if err == nil {
+					t.Error("the Read returned data after Close")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("the Read was still blocked after Close")
+			}
+		})
+	}
+}

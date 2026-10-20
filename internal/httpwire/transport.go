@@ -10,9 +10,9 @@
 //
 // It is deliberately small: HTTP/1.1 only, no redirects (http.Client follows
 // them), no request streaming, no Expect: 100-continue. A request body is
-// buffered and written with the headers. Interim 1xx responses are read and
-// dropped, as net/http does; a 101 is returned as it is and its connection is
-// not reused.
+// buffered and written with the headers. Up to five interim 1xx responses are
+// read and dropped, as net/http does, and a sixth fails the request; a 101 is
+// returned as it is and its connection is not reused.
 //
 // A pooled connection is checked before it is reused, and one the server has
 // closed or written to is dropped. A request that still fails on a reused
@@ -463,18 +463,26 @@ func (t *Transport) roundTrip(ctx context.Context, c *conn, rt route, req *http.
 	return resp, false, nil
 }
 
+// maxInterimResponses is how many 1xx responses may precede the final one, the
+// bound net/http applies. A server that never gets to the real response would
+// otherwise keep the request reading as long as it kept sending them.
+const maxInterimResponses = 5
+
 // readFinalResponse reads responses until one that is not interim. A server may
-// send any number of 1xx responses before the real one (100 Continue, 103 Early
-// Hints), and a client has to accept them whether or not it asked. A 101 is
-// final: the connection no longer speaks HTTP/1.1.
+// send 1xx responses before the real one (100 Continue, 103 Early Hints), up to
+// maxInterimResponses, and a client has to accept them whether or not it asked.
+// A 101 is final: the connection no longer speaks HTTP/1.1.
 func readFinalResponse(br *bufio.Reader, req *http.Request) (*http.Response, error) {
-	for {
+	for interim := 0; ; interim++ {
 		resp, err := http.ReadResponse(br, req)
 		if err != nil {
 			return nil, err
 		}
 		if resp.StatusCode < 100 || resp.StatusCode > 199 || resp.StatusCode == http.StatusSwitchingProtocols {
 			return resp, nil
+		}
+		if interim >= maxInterimResponses {
+			return nil, errors.New("httpwire: too many 1xx informational responses")
 		}
 	}
 }
@@ -569,8 +577,7 @@ type respBody struct {
 	stop     func() bool
 	src      io.ReadCloser // the framed body, from http.ReadResponse
 	dec      io.Reader     // src, decoded
-	closeDec func()        // guarded by mu: the decoder opens on a read, Close runs anywhere
-	mu       sync.Mutex
+	lazy     *lazyDecoder  // dec, when src is decoded; nil otherwise
 	reusable bool
 	once     sync.Once
 }
@@ -591,12 +598,6 @@ func (b *respBody) Close() error {
 	return nil
 }
 
-func (b *respBody) setCloser(fn func()) {
-	b.mu.Lock()
-	b.closeDec = fn
-	b.mu.Unlock()
-}
-
 // finish releases the connection. complete means the caller read the body to its
 // end, which is the only case where the connection is safe to reuse.
 func (b *respBody) finish(complete bool) {
@@ -609,11 +610,8 @@ func (b *respBody) finish(complete bool) {
 			b.stop()
 			_ = b.c.Close()
 		}
-		b.mu.Lock()
-		closeDec := b.closeDec
-		b.mu.Unlock()
-		if closeDec != nil {
-			closeDec()
+		if b.lazy != nil {
+			b.lazy.close()
 		}
 		if complete {
 			// A decoder reaches its own end before the framing does: the last
@@ -673,7 +671,8 @@ func (b *respBody) decoder(resp *http.Response) io.Reader {
 	resp.Header.Del("Content-Length")
 	resp.ContentLength = -1
 	resp.Uncompressed = true
-	return &lazyDecoder{src: b.src, open: open, body: b}
+	b.lazy = &lazyDecoder{src: b.src, open: open}
+	return b.lazy
 }
 
 // openDeflate reads HTTP's "deflate", which is zlib-wrapped in the standard and
@@ -697,17 +696,29 @@ func openDeflate(r io.Reader) (io.Reader, func(), error) {
 
 // lazyDecoder opens the decoder on the first read. gzip.NewReader and friends
 // read a header at construction, which would block RoundTrip on the body.
+//
+// The decoders are not safe for a Close during a Read, and a body is closed from
+// another goroutine to end a stream that stopped. mu keeps the two apart: Read
+// holds it throughout, close takes it. The caller closes the connection before
+// close, which ends a blocked Read, so close waits only for that Read to return.
 type lazyDecoder struct {
-	src  io.Reader
-	open func(io.Reader) (io.Reader, func(), error)
-	body *respBody
-	r    io.Reader
-	err  error
+	src     io.Reader
+	open    func(io.Reader) (io.Reader, func(), error)
+	mu      sync.Mutex
+	r       io.Reader
+	closeFn func()
+	closed  bool
+	err     error
 }
 
 func (d *lazyDecoder) Read(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.err != nil {
 		return 0, d.err
+	}
+	if d.closed {
+		return 0, http.ErrBodyReadAfterClose
 	}
 	if d.r == nil {
 		r, closeFn, err := d.open(d.src)
@@ -720,12 +731,23 @@ func (d *lazyDecoder) Read(p []byte) (int, error) {
 			}
 			return 0, d.err
 		}
-		d.r = r
-		d.body.setCloser(closeFn)
+		d.r, d.closeFn = r, closeFn
 	}
 	n, err := d.r.Read(p)
 	if err != nil {
 		d.err = err
 	}
 	return n, err
+}
+
+// close releases the decoder once no Read is inside it, and keeps a later Read
+// from opening one that nothing would close.
+func (d *lazyDecoder) close() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.closed = true
+	if d.closeFn != nil {
+		d.closeFn()
+		d.closeFn = nil
+	}
 }
