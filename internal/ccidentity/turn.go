@@ -32,10 +32,10 @@ const systemReminderPrefix = "<system-reminder>"
 // typed it.
 //
 // The prompt id is derived from the number AND from a digest of the latest
-// prompt message, not from the number alone. A client that compacts its history
-// sends a shorter conversation, so the number goes back down; the digest keeps
-// the new prompt from reusing an id an earlier prompt already presented, which
-// the real client never does.
+// prompt message (see digestPrompt), not from the number alone. A client that
+// compacts its history sends a shorter conversation, so the number goes back
+// down; the digest keeps the new prompt from reusing an id an earlier prompt
+// already presented, which the real client never does.
 //
 // A body that does not parse, or has no prompt, is the first prompt. ApplyBody
 // reports the parse failure itself.
@@ -76,8 +76,63 @@ func TurnOf(body []byte) Turn {
 	if prompts == 0 {
 		return Turn{PromptNumber: 1, latestReply: reply}
 	}
-	digest := sha256.Sum256(latest)
-	return Turn{PromptNumber: prompts, promptDigest: hex.EncodeToString(digest[:]), firstPrompt: first, latestReply: reply}
+	return Turn{PromptNumber: prompts, promptDigest: digestPrompt(latest), firstPrompt: first, latestReply: reply}
+}
+
+// digestPrompt hashes a prompt message's content in a form that does not change
+// when the client re-encodes the same prompt. The hash seeds cc_prompt_id, which
+// the real client repeats across a prompt's tool follow-ups, so everything a
+// client may vary between those requests has to drop out of it:
+//
+//   - cache_control, at any depth. A client that moves its cache breakpoint to
+//     the latest message sends the prompt with the marker on its own request and
+//     without it on the follow-up.
+//   - Object key order and whitespace, by decoding and encoding again.
+//   - Whether the text is a string or a text block. A string content is the one
+//     text block that holds it.
+//
+// Numbers keep their literal, so two values a float64 cannot tell apart stay
+// apart.
+func digestPrompt(content json.RawMessage) string {
+	canonical := canonicalPrompt(content)
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:])
+}
+
+// canonicalPrompt returns the form digestPrompt hashes. Content that does not
+// decode is returned as it came: promptOf has accepted everything that reaches
+// here, so this keeps the function total rather than covering a known case.
+func canonicalPrompt(content json.RawMessage) []byte {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return content
+	}
+	if text, ok := value.(string); ok {
+		value = []any{map[string]any{"type": "text", "text": text}}
+	}
+	dropCacheControl(value)
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return content
+	}
+	return canonical
+}
+
+// dropCacheControl deletes every cache_control member under value.
+func dropCacheControl(value any) {
+	switch v := value.(type) {
+	case map[string]any:
+		delete(v, "cache_control")
+		for _, member := range v {
+			dropCacheControl(member)
+		}
+	case []any:
+		for _, element := range v {
+			dropCacheControl(element)
+		}
+	}
 }
 
 // promptOf reports whether a user message's content holds something a person

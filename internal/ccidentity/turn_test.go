@@ -104,6 +104,51 @@ func TestTurnOfIsTheSameForAReplay(t *testing.T) {
 	}
 }
 
+// TestTurnOfKeepsThePromptIDWhenOnlyTheEncodingChanges: the prompt id belongs to
+// what the person typed. A client that puts its cache breakpoint on the latest
+// message sends the prompt with cache_control on its own request and without it
+// on the tool follow-up, and the capture shows the follow-up repeating the
+// prompt's id. The same words in another encoding are the same prompt.
+func TestTurnOfKeepsThePromptIDWhenOnlyTheEncodingChanges(t *testing.T) {
+	const (
+		plainBlocks  = `{"role":"user","content":[{"type":"text","text":"list the files"}]}`
+		cachedBlocks = `{"role":"user","content":[{"type":"text","text":"list the files","cache_control":{"type":"ephemeral"}}]}`
+		reordered    = `{"role":"user","content":[{"text":"list the files","type":"text"}]}`
+		withNested   = `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"ok","cache_control":{"type":"ephemeral","ttl":"1h"}}]},{"type":"text","text":"also, stop"}]}`
+		withoutNest  = `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"ok"}]},{"type":"text","text":"also, stop"}]}`
+		asString     = `{"role":"user","content":"list the files"}`
+	)
+	cases := []struct {
+		name     string
+		a, b     []byte
+		wantSame bool
+	}{
+		{"the breakpoint moves to the next message", conversation(cachedBlocks), conversation(plainBlocks, toolUseThree, toolResult), true},
+		{"the breakpoint is on the prompt in the follow-up only", conversation(plainBlocks), conversation(cachedBlocks, toolUseThree, toolResult), true},
+		{"a breakpoint deeper in the prompt", conversation(promptOne, replyOne, withNested), conversation(promptOne, replyOne, withoutNest), true},
+		{"string content and the equal text block", conversation(asString), conversation(plainBlocks), true},
+		{"string content and the equal text block with a breakpoint", conversation(asString), conversation(cachedBlocks), true},
+		{"object keys in another order", conversation(plainBlocks), conversation(reordered), true},
+		{"another text", conversation(plainBlocks), conversation(`{"role":"user","content":"list the tests"}`), false},
+		{"integers a float64 cannot tell apart", conversation(`{"role":"user","content":[{"type":"image","source":{"n":9007199254740992}}]}`), conversation(`{"role":"user","content":[{"type":"image","source":{"n":9007199254740993}}]}`), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			indexA, billingA, headerA := wireOf(t, tc.a)
+			indexB, billingB, headerB := wireOf(t, tc.b)
+			if indexA != indexB {
+				t.Fatalf("the cases must hold the same prompt number, got %d and %d", indexA, indexB)
+			}
+			if same := billingA == billingB; same != tc.wantSame {
+				t.Errorf("cc_prompt_id %s then %s; same = %v, want %v", billingA, billingB, same, tc.wantSame)
+			}
+			if same := headerA == headerB; same != tc.wantSame {
+				t.Errorf("x-claude-code-prompt-id %s then %s; same = %v, want %v", headerA, headerB, same, tc.wantSame)
+			}
+		})
+	}
+}
+
 // TestTurnOfGivesACompactedConversationANewPromptID: a client that compacts its
 // history sends fewer messages, so the prompt number goes back down. The real
 // client never reuses a prompt id, and the number alone would.
