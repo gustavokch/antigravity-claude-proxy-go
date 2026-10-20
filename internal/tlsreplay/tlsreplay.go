@@ -10,19 +10,23 @@
 // The capture must include the TLS record header, as utls.Fingerprinter
 // requires; that is what a recorder that reads the first record off the wire
 // yields.
+//
+// Behind a proxy the connection to the target is tunnelled first, through
+// proxydial (http, https, socks5 and socks5h proxies), and the hello is the first
+// thing sent inside the tunnel.
 package tlsreplay
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"time"
+
+	"antigravity-go-proxy/internal/proxydial"
 
 	utls "github.com/refraction-networking/utls"
 )
@@ -125,8 +129,9 @@ func specALPN(spec *utls.ClientHelloSpec) []string {
 // base.Proxy is moved into the dialer. net/http ignores DialTLSContext for an
 // https target behind a proxy: it dials the proxy in plain text and runs
 // crypto/tls over the tunnel itself, so the hello on the wire would be Go's
-// own and nothing would say so. Here the dialer opens the CONNECT tunnel and
-// replays the hello over it.
+// own and nothing would say so. Here the dialer opens the tunnel itself, with
+// CONNECT through an http or https proxy or a relay through a socks5 or socks5h
+// one (see proxydial), and replays the hello over it.
 func (h *Hello) Transport(base *http.Transport) *http.Transport {
 	proxy := base.Proxy
 	base.Proxy = nil
@@ -135,9 +140,10 @@ func (h *Hello) Transport(base *http.Transport) *http.Transport {
 }
 
 // DialFunc returns a dialer for clients that bring their own HTTP layer. proxy
-// selects the HTTP proxy for a target, nil for none; verify supplies the
-// certificate verification settings (RootCAs, InsecureSkipVerify) at dial time,
-// nil for the system roots.
+// selects the proxy for a target (http, https, socks5 or socks5h), nil for none;
+// verify supplies the certificate verification settings (RootCAs,
+// InsecureSkipVerify) at dial time, nil for the system roots. They apply to an
+// https proxy as well as to the target.
 func (h *Hello) DialFunc(proxy func(*http.Request) (*url.URL, error), verify func() *tls.Config) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		var config *tls.Config
@@ -159,7 +165,7 @@ func (h *Hello) dial(ctx context.Context, network, addr string, proxy func(*http
 	if err != nil {
 		return nil, fmt.Errorf("tlsreplay: split %q: %w", addr, err)
 	}
-	raw, err := dialTunnel(ctx, network, addr, proxy)
+	raw, err := dialTunnel(ctx, network, addr, proxy, verify)
 	if err != nil {
 		return nil, err
 	}
@@ -212,9 +218,10 @@ func (h *Hello) dial(ctx context.Context, network, addr string, proxy func(*http
 	}}, nil
 }
 
-// dialTunnel returns a connection to addr: direct, or through the HTTP proxy
-// that proxy selects for an https request to addr.
-func dialTunnel(ctx context.Context, network, addr string, proxy func(*http.Request) (*url.URL, error)) (net.Conn, error) {
+// dialTunnel returns a connection to addr: direct, or through the proxy that
+// proxy selects for an https request to addr, whichever of http, https, socks5
+// and socks5h it is. verify applies to an https proxy's certificate.
+func dialTunnel(ctx context.Context, network, addr string, proxy func(*http.Request) (*url.URL, error), verify *tls.Config) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
 	var proxyURL *url.URL
 	if proxy != nil {
@@ -224,54 +231,7 @@ func dialTunnel(ctx context.Context, network, addr string, proxy func(*http.Requ
 			return nil, fmt.Errorf("tlsreplay: proxy for %s: %w", addr, err)
 		}
 	}
-	if proxyURL == nil {
-		return dialer.DialContext(ctx, network, addr)
-	}
-	if proxyURL.Scheme != "http" {
-		return nil, fmt.Errorf("tlsreplay: proxy scheme %q is not supported, only http", proxyURL.Scheme)
-	}
-	proxyAddr := proxyURL.Host
-	if proxyURL.Port() == "" {
-		proxyAddr = net.JoinHostPort(proxyURL.Hostname(), "80")
-	}
-	conn, err := dialer.DialContext(ctx, network, proxyAddr)
-	if err != nil {
-		return nil, err
-	}
-	// The tunnel handshake shares the dial's deadline, so a proxy that accepts
-	// and then stays silent cannot hold the request.
-	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	connect := &http.Request{
-		Method: http.MethodConnect,
-		URL:    &url.URL{Opaque: addr},
-		Host:   addr,
-		Header: make(http.Header),
-	}
-	if user := proxyURL.User; user != nil {
-		password, _ := user.Password()
-		connect.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user.Username()+":"+password)))
-	}
-	if err := connect.Write(conn); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("tlsreplay: write CONNECT: %w", err)
-	}
-	reader := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(reader, connect)
-	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("tlsreplay: read CONNECT response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		_ = conn.Close()
-		return nil, fmt.Errorf("tlsreplay: proxy refused CONNECT %s: %s", addr, resp.Status)
-	}
-	// A TLS server never speaks first, so nothing may sit in the buffer.
-	if reader.Buffered() != 0 {
-		_ = conn.Close()
-		return nil, fmt.Errorf("tlsreplay: proxy sent data after the CONNECT response")
-	}
-	_ = conn.SetDeadline(time.Time{})
-	return conn, nil
+	return proxydial.Tunnel(ctx, dialer, network, addr, proxyURL, verify)
 }
 
 // spoofedConn exposes the utls handshake result to net/http as a

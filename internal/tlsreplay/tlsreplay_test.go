@@ -3,15 +3,15 @@ package tlsreplay
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"slices"
-	"sync"
 	"testing"
+
+	"antigravity-go-proxy/internal/proxydial/proxytest"
 
 	utls "github.com/refraction-networking/utls"
 )
@@ -86,98 +86,91 @@ func TestSpecALPNReadsTheExtension(t *testing.T) {
 	}
 }
 
-// connectProxy is an HTTP proxy that tunnels CONNECT to a fixed backend and
-// records what it was asked for.
-type connectProxy struct {
-	*httptest.Server
-	mu       sync.Mutex
-	targets  []string
-	authHdrs []string
-}
-
-func newConnectProxy(t *testing.T, backend string) *connectProxy {
-	t.Helper()
-	p := &connectProxy{}
-	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect {
-			http.Error(w, "CONNECT only", http.StatusMethodNotAllowed)
-			return
+// greaseNormalized maps every GREASE value to one placeholder: JA4 ignores which
+// GREASE value a client picked, and a replay may pick another, but not another
+// position.
+func greaseNormalized(types []uint16) []uint16 {
+	out := slices.Clone(types)
+	for i, v := range out {
+		if v&0x0f0f == 0x0a0a {
+			out[i] = 0x0a0a
 		}
-		p.mu.Lock()
-		p.targets = append(p.targets, r.Host)
-		p.authHdrs = append(p.authHdrs, r.Header.Get("Proxy-Authorization"))
-		p.mu.Unlock()
-		upstream, err := net.Dial("tcp", backend)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		client, _, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			_ = upstream.Close()
-			return
-		}
-		_, _ = client.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
-		go func() { _, _ = io.Copy(upstream, client); _ = upstream.Close() }()
-		go func() { _, _ = io.Copy(client, upstream); _ = client.Close() }()
-	}))
-	t.Cleanup(p.Close)
-	return p
+	}
+	return out
 }
 
 // net/http ignores DialTLSContext for an https target behind a proxy: it dials
 // the proxy in plain text and runs crypto/tls itself, so without help the
 // captured hello is never sent and nothing reports it. The tunnel must be
-// opened by the dialer, and the hello must come out of it.
-func TestHelloIsReplayedThroughAnHTTPProxy(t *testing.T) {
-	var (
-		mu   sync.Mutex
-		alpn []string
-	)
-	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	backend.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-		mu.Lock()
-		alpn = append([]string(nil), hello.SupportedProtos...)
-		mu.Unlock()
-		return nil, nil
-	}}
-	backend.StartTLS()
-	t.Cleanup(backend.Close)
+// opened by the dialer, whatever the proxy speaks (http, https, socks5, socks5h
+// are what http.ProxyFromEnvironment returns), and the captured hello must come
+// out of it.
+func TestHelloIsReplayedThroughEveryProxyScheme(t *testing.T) {
+	for _, tc := range []string{"http", "https", "socks5", "socks5h"} {
+		t.Run(tc, func(t *testing.T) {
+			backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+			listener := &recordingListener{Listener: backend.Listener}
+			backend.Listener = listener
+			backend.StartTLS()
+			t.Cleanup(backend.Close)
 
-	proxy := newConnectProxy(t, backend.Listener.Addr().String())
-	proxyURL, _ := url.Parse(proxy.URL)
-	proxyURL.User = url.UserPassword("user", "pass")
+			var (
+				proxyURL *url.URL
+				check    func()
+			)
+			pool := x509.NewCertPool()
+			pool.AddCert(backend.Certificate())
+			user := url.UserPassword("user", "pass")
+			_, port, _ := net.SplitHostPort(backend.Listener.Addr().String())
+			switch tc {
+			case "http", "https":
+				proxy := proxytest.NewHTTPProxy(t, tc == "https", backend.Listener.Addr().String())
+				if cert := proxy.Certificate(); cert != nil {
+					pool.AddCert(cert)
+				}
+				proxyURL = proxy.ProxyURL(user)
+				check = func() {
+					connects := proxy.Connects()
+					if len(connects) != 1 || connects[0].Target != "example.com:"+port || connects[0].Auth != "Basic dXNlcjpwYXNz" {
+						t.Errorf("CONNECTs = %+v, want one for example.com:%s with the proxy URL's credentials", connects, port)
+					}
+				}
+			default:
+				socks := proxytest.NewSOCKS5(t, true, backend.Listener.Addr().String())
+				proxyURL = &url.URL{Scheme: tc, Host: socks.Addr, User: user}
+				check = func() {
+					requests := socks.Requests()
+					if len(requests) != 1 || requests[0].Target != "example.com:"+port || requests[0].Cred != "user:pass" {
+						t.Errorf("SOCKS requests = %+v, want one for example.com:%s with the proxy URL's credentials", requests, port)
+					}
+				}
+			}
 
-	pool := x509.NewCertPool()
-	pool.AddCert(backend.Certificate())
-	base := &http.Transport{
-		Proxy:           http.ProxyURL(proxyURL),
-		TLSClientConfig: &tls.Config{RootCAs: pool},
-	}
-	tr := MustNew(readCapture(t), []string{"http/1.1"}).Transport(base)
-	t.Cleanup(tr.CloseIdleConnections)
+			tr := MustNew(readCapture(t), []string{"http/1.1"}).Transport(&http.Transport{
+				Proxy:           http.ProxyURL(proxyURL),
+				TLSClientConfig: &tls.Config{RootCAs: pool},
+			})
+			t.Cleanup(tr.CloseIdleConnections)
 
-	// example.com is on the httptest certificate; the proxy ignores the target
-	// and tunnels to the backend either way.
-	_, port, _ := net.SplitHostPort(backend.Listener.Addr().String())
-	resp, err := (&http.Client{Transport: tr}).Get("https://example.com:" + port + "/")
-	if err != nil {
-		t.Fatalf("GET through the proxy: %v", err)
-	}
-	_ = resp.Body.Close()
+			// example.com is on the httptest certificate; the proxy ignores the
+			// target and tunnels to the backend either way.
+			resp, err := (&http.Client{Transport: tr}).Get("https://example.com:" + port + "/")
+			if err != nil {
+				t.Fatalf("GET through the proxy: %v", err)
+			}
+			_ = resp.Body.Close()
+			check()
 
-	proxy.mu.Lock()
-	defer proxy.mu.Unlock()
-	if want := "example.com:" + port; !slices.Equal(proxy.targets, []string{want}) {
-		t.Errorf("CONNECT targets = %v, want [%s]", proxy.targets, want)
-	}
-	if got := proxy.authHdrs[0]; got != "Basic dXNlcjpwYXNz" {
-		t.Errorf("Proxy-Authorization = %q, want the proxy URL's credentials", got)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !slices.Equal(alpn, []string{"http/1.1"}) {
-		t.Errorf("the backend saw ALPN %v, want the captured [http/1.1]: the stdlib hello went through instead", alpn)
+			listener.mu.Lock()
+			defer listener.mu.Unlock()
+			if len(listener.hellos) != 1 {
+				t.Fatalf("the backend saw %d hellos, want 1", len(listener.hellos))
+			}
+			got, want := greaseNormalized(extensionTypes(listener.hellos[0])), greaseNormalized(extensionTypes(readCapture(t)))
+			if !slices.Equal(got, want) {
+				t.Errorf("extensions behind the proxy = %x, want the capture's %x: the stdlib hello went through instead", got, want)
+			}
+		})
 	}
 }
 
@@ -192,13 +185,5 @@ func TestProxyRefusalIsAnError(t *testing.T) {
 	tr := MustNew(readCapture(t), []string{"http/1.1"}).Transport(&http.Transport{Proxy: http.ProxyURL(proxyURL)})
 	if _, err := (&http.Client{Transport: tr}).Get("https://localhost:1/"); err == nil {
 		t.Error("a refused CONNECT produced no error")
-	}
-}
-
-func TestUnsupportedProxySchemeIsAnError(t *testing.T) {
-	proxyURL, _ := url.Parse("socks5://127.0.0.1:1080")
-	tr := MustNew(readCapture(t), []string{"http/1.1"}).Transport(&http.Transport{Proxy: http.ProxyURL(proxyURL)})
-	if _, err := (&http.Client{Transport: tr}).Get("https://localhost:1/"); err == nil {
-		t.Error("a SOCKS proxy was accepted and silently bypassed")
 	}
 }
