@@ -6,16 +6,22 @@ mitmproxy itself is NOT imported here: the addon guards its own import so
 the record builder stays testable on a machine without mitmproxy.
 """
 
+import gzip
 import json
 import os
+import re
 import sys
+import tempfile
+import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mitm_header_dump import (
     MAX_IDENTITY_TEXT,
     MAX_RESPONSE_BODY,
+    HeaderDump,
     body_fingerprint,
     build_record,
     generation_config_fingerprint,
@@ -317,6 +323,175 @@ class GenerationConfigFingerprintTest(unittest.TestCase):
         self.assertNotIn("generation_config", body_fingerprint(b'{"model":"m"}'))
         self.assertNotIn("generation_config", body_fingerprint(b'{"request":{"contents":[]}}'))
         self.assertNotIn("generation_config", body_fingerprint(b'{"request":"text"}'))
+
+
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+ANTHROPIC_HOST = "api.anthropic.com"
+
+
+def shipped_hello(stack):
+    """A ClientHello the proxy replays, which the real client sent."""
+    with open(os.path.join(ROOT, "internal", "transport", f"claude-code-{stack}-clienthello.bin"), "rb") as handle:
+        return handle.read()
+
+
+def real_client_tls(stack):
+    """The JA4, JA3 and ALPN the real client presented, recorded off the wire."""
+    with open(os.path.join(ROOT, ".reference", "claude-code-tls-20261020.json"), encoding="utf-8") as handle:
+        recorded = json.load(handle)["stacks"][stack]
+    return {"ja4": recorded["ja4"], "ja3": recorded["ja3"], "alpn": recorded["alpn"]}
+
+
+def real_client_body():
+    """A /v1/messages body Claude Code 2.1.304 sent, byte for byte."""
+    path = os.path.join(ROOT, "internal", "ccidentity", "testdata", "claude-code-2.1.304-bodies.jsonl.gz")
+    with gzip.open(path, "rb") as handle:
+        return next(line.rstrip(b"\n") for line in handle if line.strip())
+
+
+def hello_event(connection_id, raw):
+    """What mitmproxy hands tls_clienthello: a ClientHelloData."""
+    return types.SimpleNamespace(
+        client_hello=types.SimpleNamespace(raw_bytes=lambda: raw),
+        context=types.SimpleNamespace(client=types.SimpleNamespace(id=connection_id)),
+    )
+
+
+def messages_flow(connection_id, content=b""):
+    request = FakeRequest([("content-type", "application/json")], content)
+    request.pretty_host = ANTHROPIC_HOST
+    request.path = "/v1/messages?beta=true"
+    request.http_version = "HTTP/1.1"
+    f = FakeFlow(request, FakeResponse(200, []))
+    f.client_conn = types.SimpleNamespace(id=connection_id)
+    return f
+
+
+class AddonTlsRecordTest(unittest.TestCase):
+    """The gate's TLS verdict reads record["tls"], so the addon has to attach to
+    each request the fingerprints of the hello that opened ITS connection."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.out = os.path.join(self.dir.name, "out.jsonl")
+        self.hello_dir = os.path.join(self.dir.name, "hellos")
+
+    def addon(self, hello_dir=True):
+        environ = {"MITM_DUMP_OUT": self.out, "MITM_DUMP_HOSTS": ANTHROPIC_HOST}
+        if hello_dir:
+            environ["MITM_DUMP_HELLO_DIR"] = self.hello_dir
+        with mock.patch.dict(os.environ, environ):
+            if not hello_dir:
+                os.environ.pop("MITM_DUMP_HELLO_DIR", None)
+            return HeaderDump()
+
+    def records(self):
+        with open(self.out, encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle]
+
+    def test_a_record_carries_the_fingerprints_of_its_own_connections_hello(self):
+        addon = self.addon()
+        addon.tls_clienthello(hello_event("fetch-conn", shipped_hello("fetch")))
+        addon.tls_clienthello(hello_event("node-conn", shipped_hello("node")))
+        addon.response(messages_flow("node-conn"))
+        addon.response(messages_flow("fetch-conn"))
+
+        node, fetch = self.records()
+        self.assertEqual(node["tls"], real_client_tls("node"))
+        self.assertEqual(fetch["tls"], real_client_tls("fetch"))
+
+    def test_a_connection_whose_hello_was_not_seen_has_no_fingerprint(self):
+        # A record without one is a gate failure, not a pass: nothing is made up.
+        addon = self.addon()
+        addon.tls_clienthello(hello_event("seen", shipped_hello("fetch")))
+        addon.response(messages_flow("unseen"))
+        self.assertNotIn("tls", self.records()[0])
+
+    def test_a_malformed_hello_is_ignored(self):
+        addon = self.addon()
+        addon.tls_clienthello(hello_event("broken", shipped_hello("fetch")[:60]))
+        addon.response(messages_flow("broken"))
+        self.assertNotIn("tls", self.records()[0])
+        self.assertFalse(os.path.exists(self.hello_dir))
+
+    def test_each_distinct_hello_is_kept_under_its_ja4(self):
+        addon = self.addon()
+        for stack in ("fetch", "node"):
+            addon.tls_clienthello(hello_event(stack, shipped_hello(stack)))
+        for stack in ("fetch", "node"):
+            path = os.path.join(self.hello_dir, real_client_tls(stack)["ja4"] + ".bin")
+            with open(path, "rb") as handle:
+                self.assertEqual(handle.read(), shipped_hello(stack), stack)
+        self.assertEqual(len(os.listdir(self.hello_dir)), 2)
+
+    def test_the_first_hello_of_a_ja4_is_the_one_kept(self):
+        addon = self.addon()
+        os.makedirs(self.hello_dir)
+        kept = os.path.join(self.hello_dir, real_client_tls("fetch")["ja4"] + ".bin")
+        with open(kept, "wb") as handle:
+            handle.write(b"earlier")
+        addon.tls_clienthello(hello_event("again", shipped_hello("fetch")))
+        with open(kept, "rb") as handle:
+            self.assertEqual(handle.read(), b"earlier")
+
+    def test_no_hello_directory_is_written_unless_asked_for(self):
+        addon = self.addon(hello_dir=False)
+        addon.tls_clienthello(hello_event("conn", shipped_hello("fetch")))
+        addon.response(messages_flow("conn"))
+        self.assertFalse(os.path.exists(self.hello_dir))
+        self.assertEqual(self.records()[0]["tls"], real_client_tls("fetch"))
+
+
+class BillingRecordTest(unittest.TestCase):
+    """The gate's cch and cc_version verdicts read request_body.billing: the
+    value the request SENT next to the one the real client's derivation gives."""
+
+    def billing(self, content):
+        record = build_record(messages_flow("c", content), capture_request_body=True)
+        return record["request_body"]["billing"]
+
+    def test_a_body_the_real_client_sent_agrees_with_itself(self):
+        body = real_client_body()
+        text = body.decode("utf-8")
+        sent_cch = re.search(r"cch=([0-9a-f]{5});", text).group(1)
+        sent_suffix = re.search(r"cc_version=\d+\.\d+\.\d+\.([0-9a-f]{3});", text).group(1)
+
+        billing = self.billing(body)
+
+        self.assertEqual(billing["cch"], sent_cch)
+        self.assertEqual(billing["cch_expected"], sent_cch)
+        self.assertEqual(billing["version_suffix"], sent_suffix)
+        self.assertEqual(billing["version_suffix_expected"], sent_suffix)
+
+    def test_a_body_changed_after_signing_no_longer_agrees(self):
+        body = real_client_body()
+        sent_cch = re.search(r"cch=([0-9a-f]{5});", body.decode("utf-8")).group(1)
+
+        billing = self.billing(body.replace(b'"stream":true', b'"stream":false'))
+
+        self.assertEqual(billing["cch"], sent_cch)
+        self.assertNotEqual(billing["cch_expected"], sent_cch)
+        self.assertEqual(billing["version_suffix"], billing["version_suffix_expected"])
+
+    def test_a_first_prompt_that_is_not_the_one_hashed_disagrees_on_the_suffix(self):
+        body = real_client_body()
+        suffix = re.search(r"cc_version=\d+\.\d+\.\d+\.([0-9a-f]{3});", body.decode("utf-8")).group(1)
+        # Break the version suffix itself, leaving the first prompt alone.
+        other = "000" if suffix != "000" else "111"
+        tampered = body.replace(f".{suffix};".encode(), f".{other};".encode(), 1)
+
+        billing = self.billing(tampered)
+
+        self.assertEqual(billing["version_suffix"], other)
+        self.assertEqual(billing["version_suffix_expected"], suffix)
+
+    def test_a_request_without_a_billing_header_has_no_verdict(self):
+        record = build_record(
+            messages_flow("c", b'{"model":"m","system":[{"type":"text","text":"plain"}]}'),
+            capture_request_body=True,
+        )
+        self.assertNotIn("billing", record["request_body"])
 
 
 if __name__ == "__main__":

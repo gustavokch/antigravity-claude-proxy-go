@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -480,15 +482,17 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 	foreign.Set("X-Stainless-Lang", "js")
 	foreign.Set("X-Title", "Cursor")
 
+	body := []byte(`{"model":"claude-sonnet-5","temperature":0.7,"system":"be helpful"}`)
 	resp, err := client.SendMessage(context.Background(), MessageRequest{
 		Token:         "sk-ant-oat01-test-oauth-token",
-		Body:          []byte(`{"model":"claude-sonnet-5","temperature":0.7,"system":"be helpful"}`),
+		Body:          body,
 		ClientHeaders: foreign,
 		Normalize:     true,
 		Identity: ccidentity.Identity{
 			AccountUUID: "11111111-2222-3333-4444-555555555555",
 			SessionKey:  "session-abc",
 		},
+		Turn: ccidentity.TurnOf(body),
 	})
 	if err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
@@ -504,8 +508,8 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 	if gotApp != "cli" {
 		t.Errorf("x-app = %q, want cli", gotApp)
 	}
-	if gotStainlessOS != "Linux" {
-		t.Errorf("X-Stainless-OS = %q, want the captured value", gotStainlessOS)
+	if want := ccidentity.HostOS(runtime.GOOS); gotStainlessOS != want {
+		t.Errorf("X-Stainless-OS = %q, want the host's %q", gotStainlessOS, want)
 	}
 	if gotAPIKey != "" {
 		t.Errorf("x-api-key = %q; the captured OAuth request has none", gotAPIKey)
@@ -522,7 +526,7 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 	if strings.Contains(gotBody, "temperature") {
 		t.Errorf("body = %q; temperature must be dropped, Claude Code does not send it", gotBody)
 	}
-	if !strings.Contains(gotBody, "x-anthropic-billing-header: cc_version=2.1.280.") {
+	if !strings.Contains(gotBody, "x-anthropic-billing-header: cc_version=2.1.304.") {
 		t.Errorf("body = %q; system block 0 must be the generated billing header", gotBody)
 	}
 	// user_id is a JSON string CONTAINING JSON, so it appears escaped in the
@@ -598,10 +602,12 @@ func TestClient_SendMessage_NormalizeFailsClosedOnBadBody(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, server.Client())
+	body := []byte(`{"model":`)
 	_, err := client.SendMessage(context.Background(), MessageRequest{
 		Token:     "sk-ant-oat01-test",
-		Body:      []byte(`{"model":`),
+		Body:      body,
 		Normalize: true,
+		Turn:      ccidentity.TurnOf(body),
 	})
 	if err == nil {
 		t.Fatal("malformed body was accepted with normalization on")
@@ -611,10 +617,79 @@ func TestClient_SendMessage_NormalizeFailsClosedOnBadBody(t *testing.T) {
 	}
 }
 
+// TestMessageRequest_Normalizes pins the one rule for which requests are
+// rewritten to the captured identity: asked for, and sent with an OAuth token.
+func TestMessageRequest_Normalizes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		token     string
+		normalize bool
+		want      bool
+	}{
+		{"an OAuth token", "sk-ant-oat01-test", true, true},
+		{"an OAuth token without the sk- prefix", "ant-oat01-test", true, true},
+		{"a Bearer-prefixed token", "bearer sk-ant-oat01-test", true, true},
+		{"a token with surrounding space", " sk-ant-oat01-test\n", true, true},
+		{"an OAuth token when normalization is off", "sk-ant-oat01-test", false, false},
+		{"an API key", "sk-ant-api03-test", true, false},
+		{"no token", "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (MessageRequest{Token: tc.token, Normalize: tc.normalize}).Normalizes(); got != tc.want {
+				t.Errorf("Normalizes() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClient_SendMessage_WritesTheTurnTheCallerComputed: the caller works out
+// the Turn once per client request and gives every attempt the same one, so the
+// Turn it passes is the one on the wire. A request that does not normalize
+// goes out as it came and carries none of it.
+func TestClient_SendMessage_WritesTheTurnTheCallerComputed(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1"}`))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, server.Client())
+
+	body := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`)
+	turn := ccidentity.TurnOf(body)
+	turn.PromptNumber = 5
+	turnIndex := regexp.MustCompile(`cc_turn_index=(\d+);`)
+
+	send := func(token string) {
+		t.Helper()
+		gotBody = ""
+		resp, err := client.SendMessage(context.Background(), MessageRequest{
+			Token: token, Body: body, Normalize: true, Turn: turn,
+			Identity: ccidentity.Identity{SessionKey: "session-abc"},
+		})
+		if err != nil {
+			t.Fatalf("SendMessage: %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+
+	send("sk-ant-oat01-test")
+	if m := turnIndex.FindStringSubmatch(gotBody); m == nil || m[1] != "5" {
+		t.Errorf("normalized body = %s; want cc_turn_index=5 from the Turn the caller passed", gotBody)
+	}
+
+	send("sk-ant-api03-test")
+	if gotBody != string(body) {
+		t.Errorf("API-key body = %s; want the client's bytes untouched", gotBody)
+	}
+}
+
 // TestClient_DiscoveryRequestsSendTheCapturedUserAgent pins the version and the
 // case of the non-messages User-Agent.
 //
-// The capture records claude-code/2.1.280 on every GET it observed, lowercase
+// The capture records claude-code/2.1.304 on every GET it observed, lowercase
 // and with no parenthesised mode, which is a different family from the
 // claude-cli/ value the messages path sends. These two calls hardcoded
 // Claude-Code/2.1.246: a stale version, and a capitalisation no observed
@@ -678,7 +753,7 @@ func TestSendMessageNeverSendsGoDefaultUserAgent(t *testing.T) {
 	}{
 		{"SendMessage normalized (oauth)", func() error {
 			_, err := client.SendMessage(context.Background(), MessageRequest{
-				Token: "sk-ant-oat01-test", Body: body, Normalize: true,
+				Token: "sk-ant-oat01-test", Body: body, Normalize: true, Turn: ccidentity.TurnOf(body),
 			})
 			return err
 		}},

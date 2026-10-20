@@ -5,7 +5,7 @@
  */
 window.Components = window.Components || {};
 
-// The Claude Code wire identity overrides, as one list. The seven fields travel
+// The Claude Code wire identity overrides, as one list. The eight fields travel
 // together through the default state, the load and the save, and the panel
 // decides whether any is set; naming them once keeps those four places from
 // drifting apart.
@@ -15,6 +15,7 @@ const CC_IDENTITY_STRING_FIELDS = [
     'turnOrigin',
     'userAgent',
     'stainlessOs',
+    'stainlessArch',
     'stainlessRuntimeVersion'
 ];
 

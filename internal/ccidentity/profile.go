@@ -18,6 +18,8 @@
 //     the HTTP/1.1 transport the capture used.
 package ccidentity
 
+import "encoding/json"
+
 // Header is one request header with the exact name and value to send. The name
 // is used as a map key verbatim, so case is preserved.
 type Header struct {
@@ -51,12 +53,15 @@ type Identity struct {
 	// Entrypoint is the cc_entrypoint value, e.g. "sdk-cli" or "cli".
 	Entrypoint string
 	// TurnOrigin is the cc_turn_origin value. The capture recorded "sdk" for
-	// every --print request; the interactive value is unverified.
+	// every --print request; a typed interactive prompt is TurnOriginHuman.
 	TurnOrigin string
 	// UserAgent overrides the messages-path User-Agent. Empty uses the default.
 	UserAgent string
-	// StainlessOS overrides X-Stainless-OS. Empty uses the captured value.
+	// StainlessOS overrides X-Stainless-OS. Empty uses the OS the proxy runs on.
 	StainlessOS string
+	// StainlessArch overrides X-Stainless-Arch. Empty uses the architecture the
+	// proxy runs on.
+	StainlessArch string
 	// StainlessRuntimeVersion overrides X-Stainless-Runtime-Version. Empty uses
 	// the captured value.
 	StainlessRuntimeVersion string
@@ -64,19 +69,33 @@ type Identity struct {
 
 // Turn carries the per-request pieces of the identity.
 //
-// No production caller populates it today: internal/api passes Turn{} at every
-// call site and internal/claudecode never sets MessageRequest.Turn, so
-// cc_prev_req does not reach the wire. It is kept rather than deleted because
-// it encodes a real captured behaviour that could not be reconstructed from the
-// capture later, and apply.go implements it.
-//
-// A caller that wanted to send it would have to thread the previous turn's
-// upstream request-id (the response's request-id header) through the session
-// store that already keys on the session key, then set it here.
+// TurnOf fills it from the request body, and every caller does, so the prompt
+// id and turn index follow the conversation without any caller keeping a
+// counter. PrevRequestID is the one field the body cannot give: the caller
+// asks a ReplyLog for it, with the latest reply TurnOf found.
 type Turn struct {
-	// PrevRequestID is the upstream request id of the previous turn, sent as
-	// cc_prev_req. Claude Code only includes it on a follow-up turn.
+	// PrevRequestID is the upstream request id of the reply the latest
+	// assistant message echoes, sent as cc_prev_req. Empty omits the field, as
+	// the real client does on the first request of a conversation.
 	PrevRequestID string
+	// PromptNumber is the 1-based number of the user prompt this request
+	// belongs to, sent as cc_turn_index. Zero reads as 1, so the zero Turn is
+	// the first prompt.
+	PromptNumber int
+	// promptDigest identifies the latest prompt message. It seeds cc_prompt_id
+	// beside the session key and PromptNumber; see TurnOf.
+	promptDigest string
+	// firstPrompt is the first text the conversation's first prompt carries,
+	// which seeds the cc_version suffix; see versionSuffix.
+	firstPrompt string
+	// firstDigest identifies the conversation's first prompt message the way
+	// promptDigest identifies the latest one. It stays the same for every
+	// request of a conversation, so ReplyScope uses it to tell conversations
+	// apart. Empty when the body holds no prompt.
+	firstDigest string
+	// latestReply is the content of the latest assistant message, which
+	// ReplyLog.PrevRequestID looks up.
+	latestReply json.RawMessage
 }
 
 // Profile is a captured Claude Code request identity.

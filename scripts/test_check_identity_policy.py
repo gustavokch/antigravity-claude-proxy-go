@@ -10,13 +10,27 @@ Run: python3 -m pytest scripts/test_check_identity_policy.py -q
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import check_identity_policy as policy  # noqa: E402
+import diff_claude_code_identity as differ  # noqa: E402
+
+
+class HostPinned(unittest.TestCase):
+    """The fixtures claim the capture's Linux arm64; the host check compares
+    against the machine the tests run on, so the host is pinned to match."""
+
+    def setUp(self):
+        patcher = mock.patch.object(differ, "host_identity", return_value=("Linux", "arm64"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
 CAPTURED_UA = "claude-cli/2.1.280 (external, sdk-cli)"
 DISCOVERY_UA = "claude-code/2.1.280"
@@ -30,6 +44,7 @@ def baseline_post(ua=CAPTURED_UA):
     return {
         "method": "POST",
         "path": "/v1/messages?beta=true",
+        "http_version": "HTTP/1.1",
         "headers": [
             ["User-Agent", ua],
             ["x-app", "cli"],
@@ -40,20 +55,70 @@ def baseline_post(ua=CAPTURED_UA):
 
 
 def baseline_get(ua=DISCOVERY_UA, path="/api/claude_code/settings"):
-    return {"method": "GET", "path": path, "headers": [["User-Agent", ua]]}
+    return {
+        "method": "GET",
+        "path": path,
+        "http_version": "HTTP/1.1",
+        "headers": [["User-Agent", ua]],
+    }
+
+
+def observed_get(ua=DISCOVERY_UA, path="/v1/models", method="GET", **overrides):
+    record = {
+        "method": method,
+        "path": path,
+        "http_version": "HTTP/1.1",
+        "headers": [["user-agent", ua]],
+    }
+    record.update(overrides)
+    return record
+
+
+# A billing verdict whose sent values equal the derived ones, as the addon
+# records for a correctly normalized request.
+PASSING_BILLING = {
+    "cch": "12933", "cch_expected": "12933",
+    "version_suffix": "741", "version_suffix_expected": "741",
+}
+
+
+# The committed 2.1.304 capture. The policy is checked against it as the gate
+# checks it: the first POST is the baseline, and the second POST is what a
+# correct proxy's request looks like, because it is the real client's own: the
+# same set, values and order, with a session, prompt, request id and credential
+# of its own.
+CAPTURE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".reference", "claude-code-headers-20261020.jsonl",
+)
+
+
+def captured_baseline():
+    return differ.load_messages_records(CAPTURE)[0]
 
 
 def observed_normalized(**overrides):
-    record = {
-        "method": "POST",
-        "path": "/v1/messages?beta=true",
-        "headers": [
-            ["user-agent", CAPTURED_UA],
-            ["x-claude-code-request-class", "main"],
-            ["x-stainless-os", "Linux"],
-        ],
-    }
+    """The captured client's second request, with the billing verdict the addon
+    adds to a recorded one, so every check but the one under test passes."""
+    record = differ.load_messages_records(CAPTURE)[1]
+    record["request_body"]["billing"] = dict(PASSING_BILLING)
     record.update(overrides)
+    return record
+
+
+def without_header(record, name):
+    record["headers"] = [pair for pair in record["headers"] if pair[0].lower() != name.lower()]
+    return record
+
+
+def with_header(record, name, value):
+    """Replace the header in place, keeping its position and its wire name, or
+    append it when the record has none."""
+    for pair in record["headers"]:
+        if pair[0].lower() == name.lower():
+            pair[1] = value
+            return record
+    record["headers"].append([name, value])
     return record
 
 
@@ -78,41 +143,224 @@ def write_jsonl(records):
     return handle.name
 
 
-class NormalizedTest(unittest.TestCase):
-    def test_accepts_a_normalized_request(self):
-        problems = policy.check_normalized(baseline_post(), observed_normalized())
+class NormalizedTest(HostPinned):
+    def test_accepts_the_captured_clients_own_next_request(self):
+        problems = policy.check_normalized(captured_baseline(), observed_normalized())
         self.assertEqual(problems, [])
 
+    def test_per_request_values_may_differ_from_the_baseline(self):
+        # Every value the gate cannot reproduce — the session, the prompt, the
+        # request id, the credential, the length — differs between a proxy's
+        # request and the capture, and none of it is a drift. The two captured
+        # requests share a credential, so the proxy's own is stood in for.
+        baseline = captured_baseline()
+        observed = with_header(observed_normalized(), "Authorization",
+                               {"redacted": True, "scheme": "Bearer", "sha256": "0" * 64, "len": 108})
+        base, seen = differ.header_map(baseline), differ.header_map(observed)
+        for name in ("x-claude-code-session-id", "x-claude-code-prompt-id",
+                     "x-client-request-id", "authorization", "content-length"):
+            self.assertNotEqual(base[name][1], seen[name][1], name)
+        self.assertEqual(policy.check_normalized(baseline, observed), [])
+
+    def test_the_hosts_own_os_and_arch_are_not_the_captures(self):
+        # The capture ran in a Linux container. A proxy on a Mac sends MacOS, and
+        # that is the right value there; the same values on a Linux host are not.
+        observed = with_header(with_header(observed_normalized(), "X-Stainless-OS", "MacOS"),
+                               "X-Stainless-Arch", "x64")
+        with mock.patch.object(differ, "host_identity", return_value=("MacOS", "x64")):
+            self.assertEqual(policy.check_normalized(captured_baseline(), observed), [])
+        problems = policy.check_normalized(captured_baseline(), observed)
+        self.assertTrue(any("X-Stainless-OS" in p for p in problems), problems)
+
     def test_rejects_a_foreign_user_agent(self):
-        observed = observed_normalized(
-            headers=[["user-agent", CALLER_UA], ["x-claude-code-request-class", "main"]]
-        )
-        problems = policy.check_normalized(baseline_post(), observed)
+        observed = with_header(observed_normalized(), "User-Agent", CALLER_UA)
+        problems = policy.check_normalized(captured_baseline(), observed)
         self.assertTrue(any("User-Agent" in p for p in problems), problems)
 
     def test_rejects_a_surviving_api_key(self):
-        observed = observed_normalized(
-            headers=[
-                ["user-agent", CAPTURED_UA],
-                ["x-claude-code-request-class", "main"],
-                ["x-api-key", {"redacted": True, "sha256": GATE_KEY_SHA, "len": 8}],
-            ]
+        observed = with_header(
+            observed_normalized(), "x-api-key", {"redacted": True, "sha256": GATE_KEY_SHA, "len": 8}
         )
-        problems = policy.check_normalized(baseline_post(), observed)
+        problems = policy.check_normalized(captured_baseline(), observed)
         self.assertTrue(any("x-api-key" in p for p in problems), problems)
 
     def test_rejects_a_missing_captured_query(self):
         observed = observed_normalized(path="/v1/messages")
-        problems = policy.check_normalized(baseline_post(), observed)
+        problems = policy.check_normalized(captured_baseline(), observed)
         self.assertTrue(any("beta=true" in p for p in problems), problems)
 
     def test_rejects_a_baseline_without_the_normalization_marker(self):
         # A regenerated capture that dropped the marker would otherwise leave
         # this policy green while asserting only the User-Agent.
-        baseline = baseline_post()
-        baseline["headers"] = [["User-Agent", CAPTURED_UA]]
+        baseline = without_header(captured_baseline(), "x-claude-code-request-class")
         problems = policy.check_normalized(baseline, observed_normalized())
-        self.assertTrue(any("baseline" in p for p in problems), problems)
+        self.assertTrue(any("no x-claude-code-request-class" in p for p in problems), problems)
+
+    def test_rejects_a_request_that_arrived_as_h2(self):
+        # Every header right, wrong protocol: the real client speaks HTTP/1.1.
+        problems = policy.check_normalized(
+            captured_baseline(), observed_normalized(http_version="HTTP/2.0")
+        )
+        self.assertTrue(any("HTTP/2.0" in p for p in problems), problems)
+
+    def test_rejects_a_baseline_that_records_no_http_version(self):
+        baseline = captured_baseline()
+        del baseline["http_version"]
+        problems = policy.check_normalized(baseline, observed_normalized(http_version=None))
+        self.assertTrue(any("http_version" in p for p in problems), problems)
+
+    def test_rejects_a_prompt_id_header_that_disagrees_with_the_billing_one(self):
+        observed = with_header(
+            observed_normalized(), "x-claude-code-prompt-id", "bbbbbbbb-0000-0000-0000-000000000000"
+        )
+        problems = policy.check_normalized(captured_baseline(), observed)
+        self.assertTrue(any("cc_prompt_id" in p for p in problems), problems)
+
+    def test_checks_the_turn_index_against_the_prompts_sent(self):
+        observed = observed_normalized()
+        self.assertEqual(
+            policy.check_normalized(captured_baseline(), observed, expect_turn_index=1), [])
+        problems = policy.check_normalized(captured_baseline(), observed, expect_turn_index=2)
+        self.assertTrue(any("cc_turn_index is 1, want 2" in p for p in problems), problems)
+
+    def test_a_missing_turn_index_cannot_satisfy_an_expectation(self):
+        observed = observed_normalized(request_body={"billing": dict(PASSING_BILLING)})
+        problems = policy.check_normalized(captured_baseline(), observed, expect_turn_index=2)
+        self.assertTrue(any("no cc_turn_index" in p for p in problems), problems)
+
+    def test_rejects_a_cch_that_is_not_the_hash_of_the_body(self):
+        # A random cch has the right shape and passes every format check; only
+        # the hash relation tells it from the real client's value.
+        billing = dict(PASSING_BILLING, cch="abcde")
+        problems = policy.check_normalized(
+            captured_baseline(), observed_normalized(request_body={"billing": billing})
+        )
+        self.assertTrue(any("billing cch is abcde" in p for p in problems), problems)
+
+    def test_a_record_without_a_billing_verdict_is_not_a_pass(self):
+        problems = policy.check_normalized(
+            captured_baseline(), observed_normalized(request_body={})
+        )
+        self.assertTrue(any("no billing verdict" in p for p in problems), problems)
+
+
+class NormalizedHeaderSetTest(HostPinned):
+    """The keyless custom-endpoint phase is checked by this policy alone, so a
+    header the differ would report has to be reported here too: the real client
+    sends each of them, and a proxy that dropped one or changed its value is not
+    the real client."""
+
+    def test_a_dropped_header_is_rejected(self):
+        for name, wire_name in (
+            ("x-claude-code-prompt-id", "x-claude-code-prompt-id"),
+            ("x-stainless-os", "X-Stainless-OS"),
+            ("x-stainless-arch", "X-Stainless-Arch"),
+            ("connection", "Connection"),
+            ("accept-encoding", "Accept-Encoding"),
+            ("x-client-request-id", "x-client-request-id"),
+            ("anthropic-beta", "anthropic-beta"),
+        ):
+            with self.subTest(header=name):
+                observed = without_header(observed_normalized(), name)
+                problems = policy.check_normalized(captured_baseline(), observed)
+                self.assertTrue(
+                    any(f"missing header: {wire_name}" in p for p in problems), problems)
+
+    def test_go_default_accept_encoding_is_rejected(self):
+        observed = with_header(observed_normalized(), "Accept-Encoding", "gzip")
+        problems = policy.check_normalized(captured_baseline(), observed)
+        self.assertTrue(any("header value changed: Accept-Encoding" in p for p in problems), problems)
+
+    def test_a_canonicalised_header_name_is_rejected(self):
+        observed = observed_normalized()
+        for pair in observed["headers"]:
+            if pair[0] == "X-Stainless-OS":
+                pair[0] = "X-Stainless-Os"
+        problems = policy.check_normalized(captured_baseline(), observed)
+        self.assertTrue(any("header name case changed" in p for p in problems), problems)
+
+    def test_a_foreign_header_is_rejected(self):
+        observed = with_header(observed_normalized(), "X-Forwarded-For", "10.0.0.1")
+        problems = policy.check_normalized(captured_baseline(), observed)
+        self.assertTrue(any("unexpected header" in p and "X-Forwarded-For" in p for p in problems), problems)
+
+    def test_an_h2_request_is_reported_once(self):
+        problems = policy.check_normalized(
+            captured_baseline(), observed_normalized(http_version="HTTP/2.0"))
+        self.assertEqual(len([p for p in problems if "HTTP/2.0" in p]), 1, problems)
+
+
+class KeylessTest(HostPinned):
+    """A custom endpoint with no apiKey is sent no credential at all:
+    forwardToCustomEndpoint deletes the Authorization header the caller sent.
+    The capture's request carries one, so the baseline for this request is the
+    capture without it."""
+
+    def keyless_request(self):
+        return without_header(observed_normalized(), "authorization")
+
+    def test_a_request_without_a_credential_is_the_expected_one(self):
+        problems = policy.check_normalized(captured_baseline(), self.keyless_request(), keyless=True)
+        self.assertEqual(problems, [])
+
+    def test_the_pooled_request_must_still_carry_its_credential(self):
+        problems = policy.check_normalized(captured_baseline(), self.keyless_request())
+        self.assertTrue(any("missing header: Authorization" in p for p in problems), problems)
+
+    def test_a_credential_that_reaches_a_keyless_endpoint_is_rejected(self):
+        problems = policy.check_normalized(captured_baseline(), observed_normalized(), keyless=True)
+        self.assertTrue(any("Authorization" in p and "unexpected" in p for p in problems), problems)
+
+    def test_every_other_header_is_still_required(self):
+        observed = without_header(self.keyless_request(), "x-claude-code-prompt-id")
+        problems = policy.check_normalized(captured_baseline(), observed, keyless=True)
+        self.assertTrue(any("missing header: x-claude-code-prompt-id" in p for p in problems), problems)
+
+
+class PolicyCommandTest(unittest.TestCase):
+    """The gate runs this file as a command, so the flags are part of the contract."""
+
+    SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_identity_policy.py")
+    TLS_REFERENCE_PATH = os.path.join(
+        os.path.dirname(CAPTURE), "claude-code-tls-20261020.json")
+
+    def run_normalized(self, observed, *flags):
+        with open(self.TLS_REFERENCE_PATH, encoding="utf-8") as handle:
+            fetch = json.load(handle)["stacks"]["fetch"]
+        observed["tls"] = {"ja4": fetch["ja4"], "ja3": fetch["ja3"], "alpn": fetch["alpn"]}
+        # compare_host reads the machine this runs on, so the record claims it.
+        host_os, host_arch = differ.host_identity()
+        with_header(observed, "X-Stainless-OS", host_os)
+        with_header(observed, "X-Stainless-Arch", host_arch)
+        path = write_jsonl([observed])
+        try:
+            return subprocess.run(
+                [sys.executable, self.SCRIPT, "normalized", "--baseline", CAPTURE,
+                 "--observed", path, "--tls-reference", self.TLS_REFERENCE_PATH, *flags],
+                capture_output=True, text=True, check=False,
+            )
+        finally:
+            os.unlink(path)
+
+    def test_the_pooled_request_passes_with_its_prompt_count(self):
+        result = self.run_normalized(observed_normalized(), "--expect-turn-index", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_pooled_request_that_lost_its_credential_fails(self):
+        observed = without_header(observed_normalized(), "authorization")
+        result = self.run_normalized(observed, "--expect-turn-index", "1")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("missing header: Authorization", result.stderr)
+
+    def test_keyless_accepts_a_request_without_one(self):
+        observed = without_header(observed_normalized(), "authorization")
+        result = self.run_normalized(observed, "--keyless", "--expect-turn-index", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_turn_index_flag_decides(self):
+        result = self.run_normalized(observed_normalized(), "--expect-turn-index", "2")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("cc_turn_index is 1, want 2", result.stderr)
 
 
 class PassthroughTest(unittest.TestCase):
@@ -157,55 +405,160 @@ class PassthroughTest(unittest.TestCase):
 
 class DiscoveryTest(unittest.TestCase):
     def test_accepts_the_captured_discovery_user_agent(self):
-        observed = [
-            {"method": "GET", "path": "/v1/models", "headers": [["user-agent", DISCOVERY_UA]]}
-        ] * 3
-        problems = policy.check_discovery([baseline_get()], observed, min_records=3)
+        problems = policy.check_discovery([baseline_get()], [observed_get()] * 3, min_records=3)
         self.assertEqual(problems, [])
 
     def test_rejects_the_go_default(self):
-        observed = [
-            {
-                "method": "GET",
-                "path": "/v1/models",
-                "headers": [["user-agent", "Go-http-client/1.1"]],
-            }
-        ]
+        observed = [observed_get(ua="Go-http-client/1.1")]
         problems = policy.check_discovery([baseline_get()], observed, min_records=1)
         self.assertTrue(any("Go-http-client" in p for p in problems), problems)
 
     def test_checks_a_non_get_discovery_request_too(self):
-        observed = [
-            {
-                "method": "POST",
-                "path": "/v1/oauth/token",
-                "headers": [["user-agent", "Go-http-client/1.1"]],
-            }
-        ]
+        observed = [observed_get(ua="Go-http-client/1.1", method="POST", path="/v1/oauth/token")]
         problems = policy.check_discovery([baseline_get()], observed, min_records=1)
         self.assertTrue(any("/v1/oauth/token" in p for p in problems), problems)
 
     def test_rejects_a_stale_version(self):
-        observed = [
-            {
-                "method": "GET",
-                "path": "/v1/models",
-                "headers": [["user-agent", "Claude-Code/2.1.246"]],
-            }
-        ]
+        observed = [observed_get(ua="Claude-Code/2.1.246")]
         problems = policy.check_discovery([baseline_get()], observed, min_records=1)
         self.assertTrue(any("2.1.246" in p for p in problems), problems)
 
     def test_rejects_too_few_records(self):
-        observed = [
-            {"method": "GET", "path": "/v1/models", "headers": [["user-agent", DISCOVERY_UA]]}
-        ]
-        problems = policy.check_discovery([baseline_get()], observed, min_records=3)
+        problems = policy.check_discovery([baseline_get()], [observed_get()], min_records=3)
         self.assertTrue(any("want 3" in p for p in problems), problems)
 
     def test_rejects_a_baseline_without_a_get(self):
         problems = policy.check_discovery([], [], min_records=1)
         self.assertTrue(any("baseline" in p for p in problems), problems)
+
+    def test_rejects_a_request_that_arrived_as_h2(self):
+        # Right User-Agent, wrong protocol: the real client's GETs are HTTP/1.1.
+        observed = [observed_get(http_version="HTTP/2.0")]
+        problems = policy.check_discovery([baseline_get()], observed, min_records=1)
+        self.assertTrue(any("HTTP/2.0" in p for p in problems), problems)
+
+    def test_rejects_a_baseline_that_records_no_http_version(self):
+        # Without one the comparison would pass every request in silence.
+        baseline = baseline_get()
+        del baseline["http_version"]
+        problems = policy.check_discovery([baseline], [observed_get(http_version="HTTP/2.0")], min_records=1)
+        self.assertTrue(any("http_version" in p for p in problems), problems)
+
+
+# The node stack's GET as captured (settings): the caller's headers, then
+# Accept-Encoding, Host, Connection: close.
+NODE_HEADERS = [
+    ["Accept", "application/json, text/plain, */*"],
+    ["Authorization", "Bearer x"],
+    ["anthropic-beta", "oauth-2025-04-20"],
+    ["User-Agent", DISCOVERY_UA],
+    ["Cache-Control", "no-cache"],
+    ["Accept-Encoding", "gzip, compress, deflate, br"],
+    ["Host", "api.anthropic.com"],
+    ["Connection", "close"],
+]
+
+
+def node_record(headers, **overrides):
+    record = baseline_get()
+    record["headers"] = [list(h) for h in headers]
+    record.update(overrides)
+    return record
+
+
+class DiscoveryTailTest(unittest.TestCase):
+    def check(self, observed_headers):
+        return policy.check_discovery(
+            [node_record(NODE_HEADERS)], [node_record(observed_headers, path="/v1/models")], 1)
+
+    def test_the_node_layout_passes(self):
+        # A shorter header set in the same relative order is the same layout.
+        observed = [h for h in NODE_HEADERS if h[0] not in ("Cache-Control", "Accept")]
+        self.assertEqual(self.check(observed), [])
+
+    def test_go_default_accept_encoding_is_rejected(self):
+        observed = [["Accept-Encoding", "gzip"] if h[0] == "Accept-Encoding" else h for h in NODE_HEADERS]
+        problems = self.check(observed)
+        self.assertTrue(any("accept-encoding" in p for p in problems), problems)
+
+    def test_a_kept_alive_discovery_request_is_rejected(self):
+        observed = [["Connection", "keep-alive"] if h[0] == "Connection" else h for h in NODE_HEADERS]
+        problems = self.check(observed)
+        self.assertTrue(any("connection" in p for p in problems), problems)
+
+    def test_net_http_order_is_rejected(self):
+        names = {h[0]: h for h in NODE_HEADERS}
+        go_order = ["Host", "User-Agent"] + sorted(n for n in names if n not in ("Host", "User-Agent"))
+        problems = self.check([names[n] for n in go_order])
+        self.assertTrue(any("header order differs" in p for p in problems), problems)
+
+
+TLS_REFERENCE = {
+    "stacks": {
+        "fetch": {"ja4": "t13d1713h1_aaaaaaaaaaaa_bbbbbbbbbbbb", "ja3": "fetch-ja3"},
+        "node": {"ja4": "t13d181000_cccccccccccc_dddddddddddd", "ja3": "node-ja3"},
+    }
+}
+FETCH_TLS = {"ja4": "t13d1713h1_aaaaaaaaaaaa_bbbbbbbbbbbb", "ja3": "fetch-ja3", "alpn": ["http/1.1"]}
+NODE_TLS = {"ja4": "t13d181000_cccccccccccc_dddddddddddd", "ja3": "node-ja3", "alpn": []}
+
+
+class TlsStackTest(HostPinned):
+    """Messages go out the fetch stack and discovery GETs out node:https.
+
+    Both stacks exist in the real client, so a request sent with the OTHER
+    one's handshake is as wrong as one sent with Go's own.
+    """
+
+    def test_a_message_from_the_fetch_stack_passes(self):
+        observed = observed_normalized(tls=FETCH_TLS)
+        self.assertEqual(
+            policy.check_normalized(captured_baseline(), observed, tls_reference=TLS_REFERENCE), [])
+
+    def test_a_message_from_the_node_stack_is_rejected(self):
+        observed = observed_normalized(tls=NODE_TLS)
+        problems = policy.check_normalized(
+            captured_baseline(), observed, tls_reference=TLS_REFERENCE)
+        self.assertTrue(any("ja4 is t13d181000" in p for p in problems), problems)
+
+    def test_go_default_handshake_is_rejected(self):
+        go = {"ja4": "t13d1312h1_f57a46bbacb6_f50d94e863eb", "ja3": "03117a8ed39ef02427ebbc39f121275c"}
+        problems = policy.check_normalized(
+            captured_baseline(), observed_normalized(tls=go), tls_reference=TLS_REFERENCE)
+        self.assertEqual(len([p for p in problems if "presents" in p]), 2, problems)
+
+    def test_a_matching_ja4_with_another_ja3_is_rejected(self):
+        tls = dict(FETCH_TLS, ja3="something-else")
+        problems = policy.check_normalized(
+            captured_baseline(), observed_normalized(tls=tls), tls_reference=TLS_REFERENCE)
+        self.assertTrue(any("ja3 is something-else" in p for p in problems), problems)
+
+    def test_a_record_without_a_fingerprint_is_not_a_pass(self):
+        problems = policy.check_normalized(
+            captured_baseline(), observed_normalized(), tls_reference=TLS_REFERENCE)
+        self.assertTrue(any("no TLS fingerprint" in p for p in problems), problems)
+
+    def test_a_reference_without_the_stack_is_not_a_pass(self):
+        problems = policy.check_tls({"stacks": {}}, {"tls": FETCH_TLS}, "fetch")
+        self.assertTrue(any("no 'fetch' stack" in p for p in problems), problems)
+
+    def test_the_resumed_hello_is_the_real_client_too(self):
+        fetch = dict(TLS_REFERENCE["stacks"]["fetch"],
+                     ja4_resumed="t13d1714h1_aaaaaaaaaaaa_cccccccccccc", ja3_resumed="fetch-ja3-resumed")
+        reference = {"stacks": {"fetch": fetch}}
+        resumed = {"ja4": "t13d1714h1_aaaaaaaaaaaa_cccccccccccc", "ja3": "fetch-ja3-resumed"}
+        self.assertEqual(policy.check_tls(reference, {"tls": resumed}, "fetch"), [])
+        mixed = {"ja4": "t13d1714h1_aaaaaaaaaaaa_cccccccccccc", "ja3": "fetch-ja3"}
+        problems = policy.check_tls(reference, {"tls": mixed}, "fetch")
+        self.assertTrue(any("different forms" in p for p in problems), problems)
+
+    def test_discovery_requires_the_node_stack(self):
+        good = observed_get(tls=NODE_TLS)
+        self.assertEqual(
+            policy.check_discovery([baseline_get()], [good], 1, tls_reference=TLS_REFERENCE), [])
+        bad = observed_get(tls=FETCH_TLS)
+        problems = policy.check_discovery([baseline_get()], [bad], 1, tls_reference=TLS_REFERENCE)
+        self.assertTrue(any("ja4 is t13d1713h1" in p for p in problems), problems)
 
 
 class RecordSelectionTest(unittest.TestCase):

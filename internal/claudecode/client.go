@@ -298,18 +298,28 @@ func EnrichModel(id, displayName, createdAt string) DiscoveredModel {
 }
 
 // Client handles HTTP transport to official Anthropic API endpoints.
+//
+// It holds two HTTP clients because the real client has two TLS stacks:
+// messages go out the way fetch sends them and the account, settings and model
+// GETs the way node:https does; see transport.ClaudeCodeMessages.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL         string
+	httpClient      *http.Client
+	discoveryClient *http.Client
 }
 
-// ccTransport is shared by every default Claude Code client. Management routes
-// build a Client per request, and transport.Upstream hands out a fresh pool on
-// each call, so the clone is cached here once.
-var ccTransport = transport.Upstream()
+// ccTransport and ccDiscoveryTransport are shared by every default Claude Code
+// client. Management routes build a Client per request, and the transport
+// constructors hand out a fresh pool on each call, so each is built here once.
+var (
+	ccTransport          = transport.ClaudeCodeMessages()
+	ccDiscoveryTransport = transport.ClaudeCodeDiscovery()
+)
 
-// NewClient creates a new Anthropic Claude Code client.
+// NewClient creates a new Anthropic Claude Code client. A non-nil httpClient
+// carries every request, discovery included; nil builds the two default ones.
 func NewClient(baseURL string, httpClient *http.Client) *Client {
+	discoveryClient := httpClient
 	if httpClient == nil {
 		// No total Client.Timeout: it covers the full body read and cuts a long
 		// SSE stream mid-generation, leaving the client with a stream that ends
@@ -317,10 +327,12 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 		// is what transport.Upstream sets; cancellation comes from the request
 		// context. Same shape as internal/cloudcode and the OpenRouter gateway.
 		httpClient = &http.Client{Transport: ccTransport}
+		discoveryClient = &http.Client{Transport: ccDiscoveryTransport}
 	}
 	return &Client{
-		baseURL:    NormalizeBaseURL(baseURL),
-		httpClient: httpClient,
+		baseURL:         NormalizeBaseURL(baseURL),
+		httpClient:      httpClient,
+		discoveryClient: discoveryClient,
 	}
 }
 
@@ -331,37 +343,61 @@ type MessageRequest struct {
 	Token string
 	// Body is the JSON request body as received from the client.
 	Body []byte
-	// ClientHeaders are the inbound headers. They are read only when Normalize
-	// is false: normalization deletes this set rather than forwarding it, which
-	// is the point of the exercise.
+	// ClientHeaders are the inbound headers. They are read only when the request
+	// does not normalize (see Normalizes): normalization deletes this set rather
+	// than forwarding it, which is the point of the exercise.
 	ClientHeaders http.Header
-	// Normalize replaces the client's identity with the captured Claude Code
-	// identity. When false the request is forwarded exactly as today, so a
-	// caller that already is Claude Code keeps its own headers and body.
+	// Normalize asks for the captured Claude Code identity in place of the
+	// client's own. Whether the request gets it is Normalizes: an API key never
+	// does. When the request does not normalize it is forwarded exactly as
+	// before, so a caller that already is Claude Code keeps its own headers and
+	// body.
 	Normalize bool
-	// Identity and Turn supply the values normalization cannot derive from the
-	// request alone: the account, the session, and the previous turn's request
-	// id for cc_prev_req.
+	// Identity supplies the values normalization cannot derive from the request
+	// alone: the account and the session. The prompt number and prompt id come
+	// from Body (see Turn), so they need no field here.
 	Identity ccidentity.Identity
-	Turn     ccidentity.Turn
+	// Turn is where Body sits in its conversation: ccidentity.TurnOf(Body). It is
+	// required when Normalizes() and ignored otherwise. SendMessage does not read
+	// Body for it, so a caller that sends one client request more than once (a
+	// retry after a token refresh, or the next account after a 429) computes it
+	// once and puts it in every attempt, and the same Turn that scopes the reply
+	// (ccidentity.ReplyScope) is the one that goes on the wire.
+	Turn ccidentity.Turn
+	// Replies names the previous request in cc_prev_req: SendMessage looks up
+	// the latest assistant message of Body under ReplyScope. A nil log or an
+	// empty scope omits the field. The caller records the reply this send gets
+	// back under the same scope (ccidentity.ReplyLog Watch or RecordMessage), and
+	// only when Normalizes(): a request that is not normalized sends no
+	// cc_prev_req, so its reply has nothing to link.
+	Replies    *ccidentity.ReplyLog
+	ReplyScope string
+}
+
+// Normalizes reports whether SendMessage rewrites the request to the captured
+// Claude Code identity. It is the one rule, for SendMessage and for any caller
+// that must act only on a request that was normalized.
+//
+// Normalization and API-key auth cannot both be honest. The captured identity
+// is an OAuth identity — defaults.go lists x-api-key among the names Claude
+// Code never sends — and ApplyAuthHeaders runs last, so it would put that
+// header back after the omit list removed it, leaving the full Claude Code set
+// plus one header contradicting it. The API-key wire shape is uncaptured, so
+// there is nothing to reproduce either. An API key forwards as before.
+func (r MessageRequest) Normalizes() bool {
+	return r.Normalize && IsOAuthToken(r.Token)
 }
 
 // SendMessage forwards a /v1/messages request to Anthropic with appropriate auth
 // and beta headers.
 //
-// When req.Normalize is set, the outbound request is rewritten to the captured
+// When req.Normalizes(), the outbound request is rewritten to the captured
 // Claude Code identity (see internal/ccidentity) before auth is applied, so a
-// non-Claude-Code caller is indistinguishable at the HTTP layer. When it is not
-// set, only anthropic-version, anthropic-beta and Accept are copied, exactly as
+// non-Claude-Code caller is indistinguishable at the HTTP layer. When it does
+// not, only anthropic-version, anthropic-beta and Accept are copied, exactly as
 // before.
 func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Response, error) {
-	// Normalization and API-key auth cannot both be honest. The captured identity
-	// is an OAuth identity — defaults.go lists x-api-key among the names Claude
-	// Code never sends — and ApplyAuthHeaders runs last, so it would put that
-	// header back after the omit list removed it, leaving the full Claude Code
-	// set plus one header contradicting it. The API-key wire shape is uncaptured,
-	// so there is nothing to reproduce either. An API key forwards as before.
-	normalize := req.Normalize && IsOAuthToken(strings.TrimSpace(req.Token))
+	normalize := req.Normalizes()
 
 	// One lookup for the three places that need it below.
 	profile := ccidentity.DefaultProfile()
@@ -373,8 +409,12 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 	url := fmt.Sprintf("%s%s", c.baseURL, path)
 
 	body := req.Body
+	turn := req.Turn
 	if normalize {
-		normalized, err := ccidentity.ApplyBody(body, profile, req.Identity, req.Turn)
+		// One Turn for the body and the headers: the prompt id is written into
+		// both, and the capture shows the same value in each.
+		turn.PrevRequestID = req.Replies.PrevRequestID(req.ReplyScope, turn)
+		normalized, err := ccidentity.ApplyBody(body, profile, req.Identity, turn)
 		if err != nil {
 			// Fail closed: forwarding an unnormalised body would send exactly the
 			// fingerprint normalization exists to remove.
@@ -392,7 +432,7 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 		// ApplyHeaders takes the map directly; it ignores req.ClientHeaders on
 		// purpose, since the omit list must be able to remove what the client
 		// sent rather than copy it.
-		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, req.Turn)
+		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, turn)
 		httpReq.ContentLength = int64(len(body))
 	} else {
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -454,7 +494,7 @@ func (c *Client) ValidateAccount(ctx context.Context, token string) error {
 	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, token)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.discoveryClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("network error during account validation: %w", err)
 	}
@@ -501,7 +541,7 @@ func (c *Client) FetchModels(ctx context.Context, token string, baseURL string) 
 	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, cleanToken)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.discoveryClient.Do(req)
 	if err != nil {
 		return DefaultClaudeCatalogue(), fmt.Errorf("upstream models request failed: %w", err)
 	}
@@ -567,7 +607,7 @@ func (c *Client) FetchRateLimits(ctx context.Context, token string) (RateLimits,
 	req.Header.Set("User-Agent", ccidentity.DiscoveryUserAgent)
 	ApplyAuthHeaders(req, cleanToken)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.discoveryClient.Do(req)
 	if err != nil {
 		return RateLimits{}, fmt.Errorf("execute rate-limit probe: %w", err)
 	}

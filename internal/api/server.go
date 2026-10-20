@@ -65,6 +65,12 @@ const (
 // unchanged.
 var customEndpointTransport = transport.Upstream()
 
+// customEndpointIdentityTransport carries the custom-endpoint requests that are
+// normalized to the captured Claude Code identity. The real client sends
+// messages over HTTP/1.1 with fetch's TLS handshake, and so do these; see
+// transport.ClaudeCodeMessages.
+var customEndpointIdentityTransport = transport.ClaudeCodeMessages()
+
 var jsonBufferPool = sync.Pool{
 	New: func() any {
 		return new(bytes.Buffer)
@@ -148,6 +154,11 @@ type Server struct {
 	classifierAudit    *classifier.Recorder
 	classifierCorpus   atomic.Pointer[corpus.Recorder]
 
+	// ccReplies maps each normalized reply to its upstream request id, which
+	// the request that echoes the reply sends as cc_prev_req. A bare test
+	// Server has none and sends no cc_prev_req.
+	ccReplies *ccidentity.ReplyLog
+
 	// endpointCats holds the fetched model catalogs of custom endpoints that set
 	// discoverModels. Lazily built: tests construct a bare Server.
 	endpointCatalogsOnce sync.Once
@@ -209,6 +220,7 @@ func New(options Options) (*Server, error) {
 		ccUsage:            options.CCUsage,
 		mitm:               options.Mitm,
 		projects:           make(map[string]string),
+		ccReplies:          ccidentity.NewReplyLog(),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
 	srv.strictManagementHost = options.StrictManagementHost
@@ -854,8 +866,9 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	request = server.consumeCacheBumpHeader(request)
 	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
 	// Keep the raw bytes: when nothing rewrites the request, custom-endpoint
-	// forwarding passes them through byte-for-byte instead of re-marshaling
-	// the decoded map (which reorders keys and reformats numbers).
+	// forwarding passes them through byte-for-byte, and the Claude Code gateway
+	// writes only model and max_tokens into them, instead of re-marshaling the
+	// decoded map (which reorders keys, reformats numbers and escapes HTML).
 	rawBody, err := io.ReadAll(request.Body)
 	if err != nil {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "Failed to read request body: "+err.Error())
@@ -1344,8 +1357,18 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	// before the proxy exists is what lets this path refuse too.
 	outBody := reqBody
 	identity, normalize := customEndpointIdentity(endpoint, customSessionKey)
+	// One Turn for the body here and the headers in Rewrite below: the prompt id
+	// is written into both and the capture shows the same value in each.
+	var turn ccidentity.Turn
+	// replyScope is where this request's reply is recorded for cc_prev_req. It
+	// stays empty for a request that is not normalized, which sends no
+	// cc_prev_req and so has no reply to link.
+	var replyScope string
 	if normalize {
-		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, ccidentity.Turn{})
+		turn = ccidentity.TurnOf(reqBody)
+		replyScope = ccidentity.ReplyScope("endpoint:"+endpoint.URL, customSessionKey, turn)
+		turn.PrevRequestID = server.ccReplies.PrevRequestID(replyScope, turn)
+		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, turn)
 		if err != nil {
 			if server.logger != nil {
 				server.logger.Error("custom endpoint identity normalization failed; refusing to forward",
@@ -1362,18 +1385,31 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		outBody = normalized
 	}
 
+	// A normalized request claims to be Claude Code, which speaks HTTP/1.1, so it
+	// leaves on the HTTP/1.1 transport. A request forwarded as the caller sent it
+	// keeps the shared transport and the h2 it negotiates.
+	var upstream http.RoundTripper = customEndpointTransport
+	if normalize {
+		upstream = customEndpointIdentityTransport
+	}
+
 	// Rewrite (not Director): the stdlib strips Forwarded/X-Forwarded-* before
 	// the hook and does not re-add them, so the custom endpoint never sees
 	// proxy or client forwarding headers. It also closes the Director
 	// hop-by-hop header hole. Header names still pass through net/http
-	// canonicalization (X-Stainless-OS -> X-Stainless-Os); irrelevant over
-	// HTTP/2, which lowercases everything on the wire.
+	// canonicalization (X-Stainless-OS -> X-Stainless-Os); that is irrelevant
+	// over HTTP/2, which lowercases everything on the wire. A normalized request
+	// goes out over HTTP/1.1, where case reaches the wire, and ApplyHeaders
+	// assigns the captured names into the map directly to keep it.
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
-		Transport:     customEndpointTransport,
+		Transport:     upstream,
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode < 400 && isMessagesRequest {
 				server.maybeRecordCacheBump(cachebump.RouteCustom, request, reqBody, customSessionKey, model, "", model, minMaxTokensFloor)
+				if replyScope != "" {
+					server.recordCustomReply(resp, replyScope)
+				}
 			}
 			return nil
 		},
@@ -1405,7 +1441,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			// the omit list can remove the x-api-key the auth block just set: the
 			// captured OAuth request carries Authorization alone.
 			if normalize {
-				ccidentity.ApplyHeaders(out.Header, ccDefaultProfile, identity, ccidentity.Turn{})
+				ccidentity.ApplyHeaders(out.Header, ccDefaultProfile, identity, turn)
 				if isMessagesRequest {
 					out.URL.RawQuery = withCapturedBetaQuery(out.URL.RawQuery)
 				}
@@ -1432,6 +1468,27 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 	}
 
 	proxy.ServeHTTP(writer, request)
+}
+
+// recordCustomReply records a normalized custom-endpoint reply under scope, so
+// the request that echoes it can name it in cc_prev_req. A stream is recorded as
+// the client reads it. A unary body is read here, under the cap the pooled
+// gateway reads one with.
+func (server *Server) recordCustomReply(resp *http.Response, scope string) {
+	requestID := resp.Header.Get("request-id")
+	if requestID == "" {
+		return
+	}
+	if ccIsSSEResponse(resp.Header) {
+		resp.Body = server.ccReplies.Watch(scope, requestID, resp.Body)
+		return
+	}
+	body, ok := capUpstreamBody(resp, transport.MaxUpstreamBody, server.logger, "gateway", "custom")
+	if !ok {
+		return
+	}
+	server.ccReplies.RecordMessage(scope, requestID, body)
+	resp.Body = io.NopCloser(bytes.NewReader(body))
 }
 
 // kimiIdentityHeaders lazily computes the KimiCLI fingerprint headers. Callers
@@ -1825,7 +1882,7 @@ func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionI
 // >= 16"). Applied only to values we actually send.
 const minMaxTokensFloor = 16
 
-// applyMaxTokensPolicy decides the max_tokens sent upstream:
+// maxTokensValue decides the max_tokens sent upstream:
 //   - client value present: kept, clamped down to the effective limit when
 //     the limit is known and the value exceeds it. Never raised above the
 //     client value except by the provider floor (see minMaxTokensFloor).
@@ -1835,10 +1892,10 @@ const minMaxTokensFloor = 16
 //     raised to the floor when below it.
 //   - absent with nothing known: the field is omitted entirely.
 //
-// Returns the re-marshaled body when the value changed, the original body
-// otherwise, so both the raw passthrough path and the provider-injected path
-// see the same value. The caller's map is never mutated.
-func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, derivedLimit int) []byte {
+// It returns the value to write and whether to write it. When it does not,
+// the request's own max_tokens, or its absence, is already what the policy
+// wants.
+func maxTokensValue(req map[string]any, manualOverride, derivedLimit int) (int, bool) {
 	limit := manualOverride
 	if limit <= 0 {
 		limit = derivedLimit
@@ -1849,40 +1906,44 @@ func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, de
 	if limit > 0 && limit < floor {
 		floor = limit
 	}
-	value := 0
 	raw, present := req["max_tokens"]
 	if !present {
 		if limit <= 0 {
-			return reqBody
+			return 0, false
 		}
+		return max(limit, floor), true
+	}
+	var current int
+	switch v := raw.(type) {
+	case float64:
+		current = int(v)
+	case int:
+		current = v
+	case int64:
+		current = int(v)
+	default:
+		slog.Warn("max_tokens policy: non-numeric client value, forwarding unchanged",
+			"type", fmt.Sprintf("%T", raw))
+		return 0, false
+	}
+	value := current
+	if limit > 0 && value > limit {
 		value = limit
-		if value < floor {
-			value = floor
-		}
-	} else {
-		var current int
-		switch v := raw.(type) {
-		case float64:
-			current = int(v)
-		case int:
-			current = v
-		case int64:
-			current = int(v)
-		default:
-			slog.Warn("max_tokens policy: non-numeric client value, forwarding unchanged",
-				"type", fmt.Sprintf("%T", raw))
-			return reqBody
-		}
-		value = current
-		if limit > 0 && value > limit {
-			value = limit
-		}
-		if value < floor {
-			value = floor
-		}
-		if value == current {
-			return reqBody
-		}
+	}
+	value = max(value, floor)
+	return value, value != current
+}
+
+// applyMaxTokensPolicy applies maxTokensValue to a request that is forwarded
+// as a re-encoding of its decoded map.
+//
+// Returns the re-marshaled body when the value changed, the original body
+// otherwise, so both the raw passthrough path and the provider-injected path
+// see the same value. The caller's map is never mutated.
+func applyMaxTokensPolicy(reqBody []byte, req map[string]any, manualOverride, derivedLimit int) []byte {
+	value, write := maxTokensValue(req, manualOverride, derivedLimit)
+	if !write {
+		return reqBody
 	}
 	next := maps.Clone(req)
 	next["max_tokens"] = value

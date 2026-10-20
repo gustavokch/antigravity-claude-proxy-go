@@ -2,8 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
+	"strconv"
 
+	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/config"
 )
 
@@ -111,17 +114,47 @@ func (server *Server) tryClaudeCodeGateway(g *gatewayRequest) bool {
 		return false
 	}
 	g.body["model"] = ccMatch
-	ccBody, err := json.Marshal(g.body)
+	// The Anthropic gateway requires max_tokens; derive it from the
+	// allowlist entry (defaults carry each model's max output) when
+	// the client omitted it. Client values are clamped down, never up.
+	ccBody, err := claudeCodeGatewayBody(g, ccMatch, claudeCodeEntryMaxOutput(g.cfg.ClaudeCode, ccMatch))
 	if err != nil {
 		writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal ClaudeCode request: "+err.Error())
 		return true
 	}
-	// The Anthropic gateway requires max_tokens; derive it from the
-	// allowlist entry (defaults carry each model's max output) when
-	// the client omitted it. Client values are clamped down, never up.
-	ccBody = applyMaxTokensPolicy(ccBody, g.body, 0, claudeCodeEntryMaxOutput(g.cfg.ClaudeCode, ccMatch))
 	server.forwardToClaudeCode(g.writer, g.request, g.cfg.ClaudeCode, ccBody, ccMatch)
 	return true
+}
+
+// claudeCodeGatewayBody is the body the pooled Claude Code gateway sends for g,
+// with model and max_tokens decided by the gateway.
+//
+// When nothing rewrote the request, those two values are written into the
+// client's own bytes and everything else is forwarded as the client sent it.
+// Encoding the decoded map instead would sort every nested object and turn "<",
+// ">" and "&" into \u003c, \u003e and \u0026: a JavaScript client sends none of
+// that, and every <system-reminder> block would show it. A request the proxy did
+// rewrite exists only as the decoded map, so it is encoded from there, still
+// without HTML escaping.
+func claudeCodeGatewayBody(g *gatewayRequest, model string, derivedLimit int) ([]byte, error) {
+	maxTokens, setMaxTokens := maxTokensValue(g.body, 0, derivedLimit)
+	if !g.mutated {
+		quotedModel, err := ccidentity.MarshalJS(model)
+		if err != nil {
+			return nil, err
+		}
+		members := []ccidentity.ObjectMember{{Name: "model", Value: quotedModel}}
+		if setMaxTokens {
+			members = append(members, ccidentity.ObjectMember{Name: "max_tokens", Value: strconv.AppendInt(nil, int64(maxTokens), 10)})
+		}
+		return ccidentity.SetObjectMembers(g.rawBody, members...)
+	}
+	body := g.body
+	if setMaxTokens {
+		body = maps.Clone(g.body)
+		body["max_tokens"] = maxTokens
+	}
+	return ccidentity.MarshalJS(body)
 }
 
 func (server *Server) tryOpenRouterGateway(g *gatewayRequest) bool {

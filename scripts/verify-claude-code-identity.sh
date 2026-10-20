@@ -5,9 +5,10 @@ set -euo pipefail
 #
 # Boots the proxy behind mitmdump, drives four requests across the three paths
 # that carry a wire identity, and checks each against the committed capture at
-# .reference/claude-code-headers-20260923.jsonl:
+# .reference/claude-code-headers-20261020.jsonl:
 #
-#   pooled gateway, normalized      full header and body diff against the capture
+#   pooled gateway, normalized      full header and body diff against the capture,
+#                                   and cch/cc_version derived as the client does
 #   custom endpoint, no apiKey      must present the captured identity
 #   custom endpoint with an apiKey  must present the CALLER's identity and keep
 #                                   the key, because x-api-key is on the omit list
@@ -33,7 +34,11 @@ set -euo pipefail
 # request is the whole subject of this test.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASELINE="${REPO_ROOT}/.reference/claude-code-headers-20260923.jsonl"
+BASELINE="${REPO_ROOT}/.reference/claude-code-headers-20261020.jsonl"
+# The JA4 and JA3 each of Claude Code's two TLS stacks presents, recorded from
+# the real client by scripts/mitm_header_dump.py. The header capture above has no
+# TLS data, so the handshake is checked against this file.
+TLS_REFERENCE="${REPO_ROOT}/.reference/claude-code-tls-20261020.json"
 
 MITM_PORT="${ANTIGRAVITY_CC_IDENTITY_MITM_PORT:-18081}"
 PROXY_PORT="${ANTIGRAVITY_CC_IDENTITY_PROXY_PORT:-18099}"
@@ -296,6 +301,20 @@ if ! REPO_ROOT="${REPO_ROOT}" python3 "${REPO_ROOT}/scripts/diff_claude_code_ide
   fail "the proxy's wire identity has drifted from the committed baseline"
 fi
 
+# The pooled request must also come out of the TLS stack the real client sends
+# messages with. The differ above reads headers and body, which never show it.
+# It carries one user prompt, so cc_turn_index has to say 1: the differ's billing
+# pattern takes any index, and a proxy that always sent 2 would pass both phases.
+if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" normalized \
+  --baseline "${BASELINE}" \
+  --observed "${OBSERVED_POOLED}" \
+  --tls-reference "${TLS_REFERENCE}" \
+  --expect-turn-index 1; then
+  KEEP_WORK_DIR=1
+  echo "Observed capture kept at ${OBSERVED_POOLED}" >&2
+  fail "the pooled gateway did not present the real client's TLS handshake"
+fi
+
 # The caller's system prompt must still be there, after the marker.
 #
 # This assertion lives here rather than in the differ because it is about what THIS
@@ -326,19 +345,32 @@ echo "=== [7/9] Driving a keyless custom endpoint ==="
 # applies: this is the half of T1 that must keep working. Same hostile input as
 # the pooled request, so a regression shows up as the caller's own values
 # reaching the wire.
+#
+# The conversation holds TWO user prompts, with an assistant reply between them.
+# The real client advances cc_turn_index once per user prompt, so this request
+# has to say 2; the pooled request above carries one prompt and checks the
+# first-prompt form. The pooled phase cannot take a second request, because the
+# stub credential cools the only account after the first one.
+#
+# The endpoint configures no apiKey and forwardToCustomEndpoint deletes the
+# caller's Authorization, so the request carries no credential at all; --keyless
+# holds it to the capture without that one header.
 curl -sS -o /dev/null --max-time 60 \
   -X POST "http://127.0.0.1:${PROXY_PORT}/v1/messages" \
   -H 'Content-Type: application/json' \
   -H "User-Agent: ${GATE_CALLER_USER_AGENT}" \
   -H 'x-app: foreign-app' \
-  -d "{\"model\":\"${GATE_CUSTOM_KEYLESS_MODEL}\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+  -d "{\"model\":\"${GATE_CUSTOM_KEYLESS_MODEL}\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"},{\"role\":\"assistant\",\"content\":\"ok\"},{\"role\":\"user\",\"content\":\"ok again\"}]}" \
   >/dev/null 2>&1 || true
 
 snapshot_phase "${OBSERVED_CUSTOM_KEYLESS}" "the keyless custom endpoint"
 
 if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" normalized \
   --baseline "${BASELINE}" \
-  --observed "${OBSERVED_CUSTOM_KEYLESS}"; then
+  --observed "${OBSERVED_CUSTOM_KEYLESS}" \
+  --tls-reference "${TLS_REFERENCE}" \
+  --keyless \
+  --expect-turn-index 2; then
   KEEP_WORK_DIR=1
   echo "Observed capture kept at ${OBSERVED_CUSTOM_KEYLESS}" >&2
   fail "a keyless Anthropic-shaped custom endpoint was not normalized"
@@ -381,7 +413,8 @@ echo "=== [9/9] Driving the three discovery callers ==="
 #
 #   .../test         ValidateAccount    (sent no User-Agent at all, so Go's
 #                                        transport supplied Go-http-client/<ver>,
-#                                        2.0 over the h2 connection mitm negotiates)
+#                                        1.1 now that the client speaks HTTP/1.1;
+#                                        it was 2.0 while it negotiated h2)
 #   .../ratelimits   FetchRateLimits    (sent Claude-Code/2.1.246)
 #   models/fetch     FetchModels        (sent Claude-Code/2.1.246)
 #
@@ -415,17 +448,22 @@ snapshot_phase "${OBSERVED_DISCOVERY}" "the discovery requests"
 if ! python3 "${REPO_ROOT}/scripts/check_identity_policy.py" discovery \
   --baseline "${BASELINE}" \
   --observed "${OBSERVED_DISCOVERY}" \
+  --tls-reference "${TLS_REFERENCE}" \
   --min-records 3; then
   KEEP_WORK_DIR=1
   echo "ERROR: the capture records claude-code/<version> on every GET it observed," >&2
   echo "ERROR: lowercase and with no parenthesised mode. Go's transport supplies" >&2
   echo "ERROR: Go-http-client/<negotiated HTTP version> when no User-Agent is set" >&2
-  echo "ERROR: at all, so a 2.0 there means the header is missing, not stale." >&2
+  echo "ERROR: at all, so a 1.1 or 2.0 there means the header is missing, not stale." >&2
   echo "Observed capture kept at ${OBSERVED_DISCOVERY}" >&2
   fail "a discovery request did not carry the captured User-Agent"
 fi
 
 echo "Claude Code identity gate PASSED: the wire identity matches ${BASELINE##*/},"
+echo "messages and discovery requests present the TLS handshake of the real client's fetch and node stacks,"
+echo "write their headers in the real client's order with its Accept-Encoding and Connection,"
+echo "X-Stainless-OS and -Arch describe this host,"
+echo "cch and the cc_version suffix are the hashes the real client derives,"
 echo "the caller's system prompt survived alongside the billing marker,"
 echo "a keyed custom endpoint kept its credential and was not normalized,"
 echo "and every discovery request carried the captured User-Agent."

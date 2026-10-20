@@ -1,0 +1,248 @@
+Claude Code 2.1.304 client header baseline (OAuth)
+==================================================
+
+> GROUND TRUTH. Every value below is a verbatim quote from intercepted traffic
+> or from a client bundle on disk. Anything not byte-confirmed is marked
+> `unknown`, and a statement that goes beyond what was observed is marked
+> [INFERENCE].
+> Supersedes .reference/claude-code-headers-20260923.txt (2.1.280) as the gate
+> baseline; that file stays as the record of the previous client.
+
+Captured:  2026-10-20T15:52:52Z (main capture), 2026-10-20T15:56:08Z to
+           15:56:37Z (multi-prompt capture)
+Client:    2.1.304 (Claude Code). npm dist-tags on 2026-10-20: stable, latest and
+           next all resolve to 2.1.304, published 2026-10-19T19:47Z.
+Image:     claude-box:mitm-2.1.304 = localhost/claude-box:mitm plus
+           `npm install -g @anthropic-ai/claude-code@2.1.304`. The Containerfile
+           pin in ~/Git/claude-container is still 2.1.280; the harness takes the
+           image from CLAUDE_CAPTURE_IMAGE.
+Script:    CLAUDE_CAPTURE_IMAGE=claude-box:mitm-2.1.304 \
+             scripts/capture-claude-code-headers.sh oauth
+JSONL:     .reference/claude-code-headers-20261020.jsonl (7 records)
+           .reference/claude-code-headers-20261020-multiprompt.jsonl (6 records)
+Transport: HTTP/1.1 to api.anthropic.com, as in the 2.1.280 capture. Header case
+           reaches the wire as written.
+Auth mode: OAuth only. The API-key header set was NOT captured.
+
+Result
+------
+
+`python3 scripts/diff_claude_code_identity.py` with the 2.1.280 capture as
+baseline and this capture as observed reported five drifts. All five are
+listed below under "What changed". After the proxy was updated,
+scripts/verify-claude-code-identity.sh reports no drift against this capture.
+
+What changed against 2.1.280
+----------------------------
+
+  1. User-Agent (messages)   claude-cli/2.1.280 (external, sdk-cli)
+                          -> claude-cli/2.1.304 (external, sdk-cli)
+     User-Agent (discovery)  claude-code/2.1.280 -> claude-code/2.1.304
+  2. X-Stainless-Package-Version   0.112.1 -> 0.128.0
+  3. anthropic-beta        13 entries -> 14 entries:
+        removed  mid-conversation-system-2026-04-07
+        added    per-turn-control-2026-07-01
+        added    mid-conversation-tool-changes-2026-07-01
+     The two additions sit where the removed entry was, after
+     prompt-caching-scope-2026-01-05 and before advanced-tool-use-2025-11-20.
+     This is the `--print` text mode; the stream-json run sends a 15th entry
+     (see "anthropic-beta is conditional").
+  4. New header            x-claude-code-prompt-id, a UUID. It equals the
+                           cc_prompt_id in system[0] in all 7 captured
+                           messages requests.
+  5. system[0] billing line gains two trailing fields:
+                           cc_prompt_index=<n>; cc_turn_index=<n>;
+
+Everything else in the header set, the body key tree and the metadata shape is
+unchanged from 2.1.280.
+
+Observed requests (main capture)
+--------------------------------
+
+  GET  /api/claude_code/settings      -> 404   (x2)
+  GET  /api/claude_code/policy_limits -> 200   (x2)
+  POST /v1/messages?beta=true         -> 200   (x3: one plain prompt, then a
+                                                prompt that ran Bash, and its
+                                                follow-up)
+
+POST /v1/messages?beta=true — headers, in wire order
+----------------------------------------------------
+
+  Accept: application/json
+  Authorization: Bearer <108-char sk-ant-oat01 token>
+  Content-Type: application/json
+  User-Agent: claude-cli/2.1.304 (external, sdk-cli)
+  X-Claude-Code-Session-Id: <uuid>              dynamic, stable for one process
+  X-Stainless-Arch: arm64
+  X-Stainless-Lang: js
+  X-Stainless-OS: Linux
+  X-Stainless-Package-Version: 0.128.0
+  X-Stainless-Retry-Count: 0
+  X-Stainless-Runtime: node
+  X-Stainless-Runtime-Version: v26.3.0
+  X-Stainless-Timeout: 600
+  anthropic-beta: <14 entries, byte-identical across the 3 requests of this capture; 15 in the multi-prompt capture, see "anthropic-beta is conditional">
+  anthropic-dangerous-direct-browser-access: true
+  anthropic-version: 2023-06-01
+  x-app: cli
+  [x-claude-code-prev-tool-durations: Bash=34]  conditional, see below
+  x-claude-code-prompt-id: <uuid>               new in 2.1.304
+  x-claude-code-request-class: main
+  x-client-request-id: <uuid>                   dynamic, per request
+  Connection: keep-alive
+  Host: api.anthropic.com
+  Accept-Encoding: gzip, deflate, br, zstd
+  Content-Length: <n>
+
+x-claude-code-prev-tool-durations is present only on the request after a tool
+has run: `Bash=34` on the third request of the main capture, `Bash=22` on the
+fourth of the multi-prompt capture. Its position is between x-app and
+x-claude-code-prompt-id. The multi-tool case is `unknown`.
+
+anthropic-beta, verbatim and in order (one comma-separated header value):
+
+  claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,mid-conversation-system-clear-at-2026-08-21,effort-2025-11-24,thinking-binding-controls-2026-08-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07
+
+anthropic-beta is conditional
+-----------------------------
+
+The 14 entries above are what the 3 messages requests of the main capture sent
+(`claude --print`, text output). All 4 messages requests of the multi-prompt
+capture (`claude --print --verbose --input-format stream-json --output-format
+stream-json`) sent 15: the same 14 in the same order, with
+`thinking-display-updates-2026-08-18` between
+`thinking-binding-controls-2026-08-01` and `extended-cache-ttl-2025-04-11`.
+
+Where the 15th comes from, read out of the 2.1.280 bundle on disk
+(~/.local/share/claude/versions/2.1.280, 2026-10-20). The 2.1.304 bundle was NOT
+inspected, so this paragraph describes 2.1.280:
+
+  - The beta is pushed in one place: the `connector_text` case of a switch over
+    the thinking display mode, in the same statement that sets the thinking
+    config to `display:"updates"`:
+
+      case"connector_text":{if((yc?.type==="adaptive"||yc?.type==="enabled")&&ic&&Oe()==="firstParty"&&ms()&&!s6()&&!("thinking"in Ii)&&!em(ht,Ioe)&&!a.CLAUDE_CODE_SIMULATE_PROXY_USAGE){if(yc={...yc,display:"updates"},!Nr.includes(Ioe))Nr.push(Ioe);Vu()}break}
+
+  - The mode is chosen from the thinking config's `display`:
+
+      function wxt(e,n){if(e==="summarized"||e==="highlights")return"thinking_and_connector_text";if(e==="omitted"&&!n)return"none";if(e!=="omitted"&&yQt())return"thinking_and_connector_text";return ldr()?"connector_text":"none"}
+
+    so an `omitted` display (second argument false) is mode `none`, which adds
+    no beta.
+
+The three 2.1.304 bodies kept in internal/ccidentity/testdata carry
+`"thinking":{"type":"adaptive","display":"omitted"}`; their headers were not
+kept. Both JSONL captures record the thinking object by shape only
+(`display: string`), so neither shows its value.
+
+  [INFERENCE] The 14-entry list is the mode with `display:"omitted"`, the text
+  mode of `claude --print`, and the 15-entry list is the `connector_text` mode
+  with `display:"updates"`. The list follows the request's mode and body, not
+  the client version. Which invocation or setting selects `connector_text` in
+  2.1.304 is `unknown`: the stream-json run got it, and no capture varied one
+  flag at a time.
+
+POST /v1/messages?beta=true — body fingerprint
+----------------------------------------------
+
+Top-level keys, identical in all 7 requests and identical to 2.1.280:
+
+  context_management, diagnostics, max_tokens, messages, metadata, model,
+  output_config, stream, system, thinking, tools
+
+metadata.user_id is a STRING containing a JSON object, as in 2.1.280:
+
+  "{\"device_id\":\"<hex>\",\"account_uuid\":\"\",\"session_id\":\"<uuid>\"}"
+
+account_uuid was empty in every request of this capture too.
+
+system[0] — the billing header, verbatim. Main capture, one request each:
+
+  x-anthropic-billing-header: cc_version=2.1.304.456; cc_entrypoint=sdk-cli; cch=6cba6; cc_prompt_id=929b9264-529c-4464-bc00-abb30f590a0d; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;
+
+  x-anthropic-billing-header: cc_version=2.1.304.d31; cc_entrypoint=sdk-cli; cch=13845; cc_prompt_id=edb66409-7542-4f61-8a1a-0da6fb05c0a3; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;
+
+  x-anthropic-billing-header: cc_version=2.1.304.d31; cc_entrypoint=sdk-cli; cch=bfd5f; cc_prev_req=req_011CgDkvRyJGtnMF7Y4UgAR7; cc_prompt_id=edb66409-7542-4f61-8a1a-0da6fb05c0a3; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;
+
+Multi-prompt capture
+--------------------
+
+One container process, `claude --print --verbose --input-format stream-json
+--output-format stream-json --permission-mode=acceptEdits`, three user messages
+written to stdin 12 s apart so each was its own prompt. The third asked for a
+Bash `ls -la`. An earlier attempt with no delay between the messages coalesced
+the second and third prompts into one request; it is not committed.
+
+  request  cc_turn_index  cc_prompt_index  cc_prompt_id           cc_prev_req
+  1        1              0                cc577e4f-… (new)       absent
+  2        2              0                8cf9e663-… (new)       present
+  3        3              0                4c6ba869-… (new)       present
+  4        3              0                4c6ba869-… (same as 3) present
+
+Request 4 is the follow-up after the Bash call and carries
+x-claude-code-prev-tool-durations: Bash=22. In every row x-claude-code-prompt-id
+equals cc_prompt_id.
+
+What this shows, and what it does not:
+
+  - cc_turn_index counts user prompts from 1. A tool follow-up repeats the
+    index of the prompt that triggered it.
+  - cc_prompt_id, and with it x-claude-code-prompt-id, is a NEW UUID for every
+    user prompt, and repeats only across one prompt's follow-up requests. The
+    2.1.280 baseline described it as "stable across the turns of one session";
+    its captures held one prompt per process, so they could not show this.
+  - cc_prompt_index was 0 in all 7 messages requests of both captures. What
+    moves it is `unknown`.
+  - Whether cc_turn_index and cc_prompt_id behave the same in an interactive
+    session (cc_entrypoint=cli) is `unknown`; every request here is sdk-cli.
+
+GET /api/claude_code/* — headers
+--------------------------------
+
+Same set and values as 2.1.280 except the version:
+
+  Accept: application/json, text/plain, */*
+  User-Agent: claude-code/2.1.304
+  Cache-Control: no-cache
+  Pragma: no-cache
+  Authorization: Bearer <same token>
+  anthropic-beta: oauth-2025-04-20
+  Accept-Encoding: gzip, compress, deflate, br
+  Host: api.anthropic.com
+  Connection: close
+
+Gaps
+----
+
+  - The API-key auth mode was NOT captured.
+  - The interactive (`cc_entrypoint=cli`) header set was NOT captured. Every
+    request is a `--print` or stream-json run, so cc_entrypoint is `sdk-cli`.
+  - cch and the cc_version suffix are derived, not opaque. 2.1.304 replaces
+    `cch=00000` with the xxHash64 of the body, seed 0x4d659218e32a3268, masked
+    to 20 bits, over the body with the first `model` value emptied and the first
+    `max_tokens` field removed with one adjacent comma. The suffix is the sha256
+    of a salt, three characters of the first prompt and the version. The salt is
+    a literal in the 2.1.304 JavaScript; the seed is not in the binary and comes
+    from public reverse engineering. Both rules reproduce every body captured
+    from 2.1.304 (internal/ccidentity/cch.go; scripts/cc_billing.py computes the
+    same).
+  - The security-monitor (classifier) request did NOT fire; every messages
+    request carried `x-claude-code-request-class: main`.
+  - X-Stainless-OS is `Linux` and X-Stainless-Runtime-Version `v26.3.0` because
+    the capture ran in a Linux container.
+  - The proxy reproduces the per-prompt cc_prompt_id and cc_turn_index from the
+    user prompts in each request's own messages (ccidentity.TurnOf), sends
+    HTTP/1.1 as every record here shows, and sends cc_prev_req: the request-id
+    of the reply the latest assistant message echoes (ccidentity.ReplyLog). That
+    is how 2.1.304 derives it, from the requestId of its latest assistant
+    message, and it matches every row above: each follow-up names the
+    request-id response header of the request before it.
+  - cc_prompt_index is 0 in every capture. The 2.1.304 binary adds 1 to it only
+    for a prompt whose turn origin is `human` (a prompt a person typed into an
+    interactive session). No capture shows that origin: every request here is
+    `cc_turn_origin=sdk`. The rule comes from reading the binary, not from a
+    capture, and the proxy applies it (ccidentity.BillingHeader: the prompt
+    number for a `human` origin, 0 for any other).
+  - The 15-entry anthropic-beta of the stream-json run (see "anthropic-beta is
+    conditional") is NOT reproduced: the proxy always sends the 14 entries of
+    the `--print` text mode, whatever `thinking.display` the caller sent.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,7 +30,7 @@ func testIdentity() Identity {
 }
 
 // capturedHeaders is the constant header set read out of
-// .reference/claude-code-headers-20260923.txt. It is duplicated here on purpose:
+// .reference/claude-code-headers-20261020.txt. It is duplicated here on purpose:
 // a test that reads the artifact at run time would pass even if both the
 // artifact and the implementation were changed together, and this test's job is
 // to fail when the implementation drifts from the recorded bytes.
@@ -39,7 +40,7 @@ var capturedHeaders = map[string]string{
 	"X-Stainless-Arch":                          "arm64",
 	"X-Stainless-Lang":                          "js",
 	"X-Stainless-OS":                            "Linux",
-	"X-Stainless-Package-Version":               "0.112.1",
+	"X-Stainless-Package-Version":               "0.128.0",
 	"X-Stainless-Retry-Count":                   "0",
 	"X-Stainless-Runtime":                       "node",
 	"X-Stainless-Runtime-Version":               "v26.3.0",
@@ -52,7 +53,11 @@ var capturedHeaders = map[string]string{
 
 func TestApplyHeadersSendsTheCapturedSet(t *testing.T) {
 	h := http.Header{}
-	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+	// The capture ran on a Linux arm64 container; the OS and arch default to the
+	// host, so the test names the capture's environment rather than assuming it.
+	id := testIdentity()
+	id.StainlessOS, id.StainlessArch = "Linux", "arm64"
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
 
 	for name, want := range capturedHeaders {
 		if got := hdrGet(h, name); got != want {
@@ -65,6 +70,33 @@ func TestApplyHeadersSendsTheCapturedSet(t *testing.T) {
 	wantBeta := strings.Join(Betas, ",")
 	if got := hdrGet(h, "anthropic-beta"); got != wantBeta {
 		t.Errorf("anthropic-beta = %q, want captured order %q", got, wantBeta)
+	}
+}
+
+// The OS and arch the proxy claims are those of the machine it runs on: the
+// TCP/IP fingerprint of the connection says which OS sent it, so a default that
+// claims another one is a contradiction no header can repair.
+func TestStainlessOSAndArchDefaultToTheHost(t *testing.T) {
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), testIdentity(), Turn{})
+	if got, want := hdrGet(h, "X-Stainless-OS"), HostOS(runtime.GOOS); got != want {
+		t.Errorf("X-Stainless-OS = %q, want the host's %q", got, want)
+	}
+	if got, want := hdrGet(h, "X-Stainless-Arch"), HostArch(runtime.GOARCH); got != want {
+		t.Errorf("X-Stainless-Arch = %q, want the host's %q", got, want)
+	}
+}
+
+func TestStainlessOSAndArchOverridesWin(t *testing.T) {
+	h := http.Header{}
+	id := testIdentity()
+	id.StainlessOS, id.StainlessArch = "Windows", "x64"
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
+	if got := hdrGet(h, "X-Stainless-OS"); got != "Windows" {
+		t.Errorf("X-Stainless-OS = %q, want the override", got)
+	}
+	if got := hdrGet(h, "X-Stainless-Arch"); got != "x64" {
+		t.Errorf("X-Stainless-Arch = %q, want the override", got)
 	}
 }
 
@@ -371,28 +403,12 @@ func TestApplyBodyEmptyBodyIsPassedThrough(t *testing.T) {
 	}
 }
 
-var billingRE = regexp.MustCompile(`^x-anthropic-billing-header: cc_version=2\.1\.280\.[0-9a-f]{3}; cc_entrypoint=(sdk-cli|cli); cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=(sdk|cli);$`)
+var billingRE = regexp.MustCompile(`^x-anthropic-billing-header: cc_version=2\.1\.304\.[0-9a-f]{3}; cc_entrypoint=(sdk-cli|cli); cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=(sdk|cli); cc_prompt_index=0; cc_turn_index=1;$`)
 
 func TestBillingHeaderMatchesCapturedShape(t *testing.T) {
 	got := BillingHeader(testIdentity(), Turn{})
 	if !billingRE.MatchString(got) {
 		t.Errorf("billing header = %q, does not match the captured shape", got)
-	}
-}
-
-func TestBillingHeaderCCHIsFreshPerRequest(t *testing.T) {
-	id := testIdentity()
-	first := BillingHeader(id, Turn{})
-	second := BillingHeader(id, Turn{})
-	if first == second {
-		t.Error("two requests produced identical billing headers; cch must be fresh")
-	}
-	// Everything except cch is stable within one session.
-	strip := func(s string) string {
-		return regexp.MustCompile(`cch=[0-9a-f]{5}`).ReplaceAllString(s, "cch=X")
-	}
-	if strip(first) != strip(second) {
-		t.Errorf("only cch should vary within a session:\n %q\n %q", first, second)
 	}
 }
 
@@ -437,6 +453,31 @@ func TestBillingHeaderPromptIDDiffersFromSessionID(t *testing.T) {
 	}
 }
 
+// TestPromptIDHeaderEqualsTheBillingPromptID pins a relation 2.1.304 added:
+// x-claude-code-prompt-id carries the same UUID as cc_prompt_id in system[0].
+// All 7 captured messages requests agree. Each field is a valid UUID on its
+// own, so only a test that reads both can see them drift apart.
+func TestPromptIDHeaderEqualsTheBillingPromptID(t *testing.T) {
+	id := testIdentity()
+	h := http.Header{}
+	ApplyHeaders(h, DefaultProfile(), id, Turn{})
+
+	header := hdrGet(h, "x-claude-code-prompt-id")
+	if !uuidRE.MatchString(header) {
+		t.Fatalf("x-claude-code-prompt-id = %q, want a UUID as captured", header)
+	}
+	match := promptIDRE.FindStringSubmatch(BillingHeader(id, Turn{}))
+	if match == nil {
+		t.Fatalf("billing header carries no cc_prompt_id: %q", BillingHeader(id, Turn{}))
+	}
+	if header != match[1] {
+		t.Errorf("x-claude-code-prompt-id = %s, cc_prompt_id = %s; the capture shows one value in both", header, match[1])
+	}
+	if header == hdrGet(h, "X-Claude-Code-Session-Id") {
+		t.Errorf("x-claude-code-prompt-id equals the session id (%s); the capture keeps them distinct", header)
+	}
+}
+
 func TestBillingHeaderCarriesPrevRequestIDOnFollowUpTurns(t *testing.T) {
 	got := BillingHeader(testIdentity(), Turn{PrevRequestID: "req_011CfL3J5mtdJ5DhtF1opYTr"})
 	if !strings.Contains(got, "cc_prev_req=req_011CfL3J5mtdJ5DhtF1opYTr; cc_prompt_id=") {
@@ -445,18 +486,37 @@ func TestBillingHeaderCarriesPrevRequestIDOnFollowUpTurns(t *testing.T) {
 	if strings.Contains(BillingHeader(testIdentity(), Turn{}), "cc_prev_req") {
 		t.Error("cc_prev_req present on a first turn; the capture only shows it on a follow-up")
 	}
+	// The client writes the field only for a value matching its own guard.
+	injected := BillingHeader(testIdentity(), Turn{PrevRequestID: "req_011; cc_turn_index=9"})
+	if strings.Contains(injected, "cc_prev_req") || strings.Contains(injected, "cc_turn_index=9") {
+		t.Errorf("billing header = %q; a request id the client's guard rejects must not be written", injected)
+	}
 }
 
 func TestBillingHeaderEntrypointAndOriginFollowTheIdentity(t *testing.T) {
 	id := testIdentity()
 	id.Entrypoint = EntrypointInteractive
-	id.TurnOrigin = "cli"
+	id.TurnOrigin = TurnOriginHuman
 	got := BillingHeader(id, Turn{})
 	if !strings.Contains(got, "cc_entrypoint=cli;") {
 		t.Errorf("billing header = %q, want the configured entrypoint", got)
 	}
-	if !strings.Contains(got, "cc_turn_origin=cli;") {
+	if !strings.Contains(got, "cc_turn_origin=human;") {
 		t.Errorf("billing header = %q, want the configured turn origin", got)
+	}
+}
+
+// The binary adds 1 to cc_prompt_index only for a turn whose origin is human,
+// so a human identity counts prompts in both fields and any other origin keeps
+// the index at 0.
+func TestBillingHeaderPromptIndexCountsOnlyHumanTurns(t *testing.T) {
+	human := testIdentity()
+	human.TurnOrigin = TurnOriginHuman
+	if got := BillingHeader(human, Turn{PromptNumber: 3}); !strings.Contains(got, "cc_prompt_index=3; cc_turn_index=3;") {
+		t.Errorf("human billing header = %q, want prompt and turn index 3", got)
+	}
+	if got := BillingHeader(testIdentity(), Turn{PromptNumber: 3}); !strings.Contains(got, "cc_prompt_index=0; cc_turn_index=3;") {
+		t.Errorf("sdk billing header = %q, want prompt index 0 and turn index 3", got)
 	}
 }
 
@@ -475,7 +535,7 @@ func TestUserAgentConstructionForOtherEntrypointsIsInferred(t *testing.T) {
 	// No capture confirms this string; the test pins the construction so a
 	// change is deliberate rather than accidental.
 	got := messagesUserAgent(Identity{Entrypoint: EntrypointInteractive})
-	if got != "claude-cli/2.1.280 (external, cli)" {
+	if got != "claude-cli/2.1.304 (external, cli)" {
 		t.Errorf("User-Agent = %q, want the constructed form", got)
 	}
 }
@@ -504,8 +564,8 @@ func TestDefaultProfilePinsTheCapturedPathAndBetas(t *testing.T) {
 	if p.Path != "/v1/messages?beta=true" {
 		t.Errorf("Path = %q, want the captured path with its query string", p.Path)
 	}
-	if len(p.Betas) != 13 {
-		t.Fatalf("Betas has %d entries, want the captured 13", len(p.Betas))
+	if len(p.Betas) != 14 {
+		t.Fatalf("Betas has %d entries, want the captured 14", len(p.Betas))
 	}
 	if p.Betas[0] != "claude-code-20250219" || p.Betas[1] != "oauth-2025-04-20" {
 		t.Errorf("first betas = %q, %q; the capture puts claude-code-20250219 first", p.Betas[0], p.Betas[1])

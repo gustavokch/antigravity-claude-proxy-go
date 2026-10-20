@@ -175,10 +175,11 @@ func DefaultRoutingConfig() RoutingConfig {
 // value must mean "normalize", because the feature exists so a foreign harness
 // is not gated, and a zero-value-means-off bool would ship it silently inert.
 //
-// The overrides exist because three captured values are environment-specific
-// (X-Stainless-OS and X-Stainless-Runtime-Version came from a Linux container)
-// or still unverified (Entrypoint: only sdk-cli has ever been captured).
-// Empty means use the captured value.
+// The overrides exist because some defaults are environment-specific or still
+// unverified: X-Stainless-OS and X-Stainless-Arch default to the host the proxy
+// runs on, X-Stainless-Runtime-Version came from a Linux container, and
+// Entrypoint is unverified (only sdk-cli has ever been captured). Empty means
+// use the default.
 type IdentityConfig struct {
 	Disabled                bool   `json:"disabled,omitempty"`
 	ClientVersion           string `json:"clientVersion,omitempty"`
@@ -186,6 +187,7 @@ type IdentityConfig struct {
 	TurnOrigin              string `json:"turnOrigin,omitempty"`
 	UserAgent               string `json:"userAgent,omitempty"`
 	StainlessOS             string `json:"stainlessOs,omitempty"`
+	StainlessArch           string `json:"stainlessArch,omitempty"`
 	StainlessRuntimeVersion string `json:"stainlessRuntimeVersion,omitempty"`
 }
 
@@ -207,6 +209,7 @@ func (c IdentityConfig) Validate() error {
 		{"turnOrigin", c.TurnOrigin},
 		{"userAgent", c.UserAgent},
 		{"stainlessOs", c.StainlessOS},
+		{"stainlessArch", c.StainlessArch},
 		{"stainlessRuntimeVersion", c.StainlessRuntimeVersion},
 	} {
 		for _, r := range field.value {
@@ -239,6 +242,11 @@ func (c IdentityConfig) WireIdentity(accountUUID, sessionKey string) (ccidentity
 	if c.Disabled {
 		return ccidentity.Identity{}, false
 	}
+	// An unkeyed request still needs ONE seed, because ApplyHeaders and ApplyBody
+	// derive the session id and the prompt id separately and must agree on both.
+	if strings.TrimSpace(sessionKey) == "" {
+		sessionKey = ccidentity.NewSessionKey()
+	}
 	return ccidentity.Identity{
 		AccountUUID:             accountUUID,
 		SessionKey:              sessionKey,
@@ -247,6 +255,7 @@ func (c IdentityConfig) WireIdentity(accountUUID, sessionKey string) (ccidentity
 		TurnOrigin:              c.TurnOrigin,
 		UserAgent:               c.UserAgent,
 		StainlessOS:             c.StainlessOS,
+		StainlessArch:           c.StainlessArch,
 		StainlessRuntimeVersion: c.StainlessRuntimeVersion,
 	}, true
 }

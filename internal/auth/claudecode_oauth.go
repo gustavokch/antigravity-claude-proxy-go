@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/ccidentity"
+	"antigravity-go-proxy/internal/transport"
 )
 
 const (
@@ -152,11 +153,12 @@ type ClaudeCodeOAuthManager struct {
 	clientID            string
 }
 
-// NewClaudeCodeOAuthManager creates a new OAuth manager.
+// NewClaudeCodeOAuthManager creates a new OAuth manager. Its calls leave the way
+// Claude Code's node:https stack sends them; see transport.ClaudeCodeDiscovery.
 func NewClaudeCodeOAuthManager() *ClaudeCodeOAuthManager {
 	return &ClaudeCodeOAuthManager{
 		sessions:            make(map[string]*ClaudeCodeAuthSession),
-		httpClient:          &http.Client{Timeout: 30 * time.Second},
+		httpClient:          &http.Client{Timeout: 30 * time.Second, Transport: transport.ClaudeCodeDiscovery()},
 		authorizeURL:        ClaudeCodeAuthorizeURL,
 		consoleAuthorizeURL: ClaudeCodeConsoleAuthorizeURL,
 		tokenURL:            ClaudeCodeTokenURL,

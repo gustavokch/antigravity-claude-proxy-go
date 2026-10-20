@@ -227,3 +227,63 @@ cannot answer.
 Fingerprints recorded here are verbatim quotes from observed traffic; nothing in
 the artifact is inferred. Values that could not be confirmed are marked
 `unknown`.
+
+### When Claude Code ships a new version
+
+The drift gate (`scripts/verify-claude-code-identity.sh`) compares the proxy with
+a frozen capture, so it cannot see Claude Code change. A new client version needs
+a fresh capture, then a new baseline. Done for 2.1.304 on 2026-10-20:
+
+1. `npm view @anthropic-ai/claude-code dist-tags` — `stable` is the version.
+2. Build an image with that version on top of the existing one, without
+   touching `~/Git/claude-container/Containerfile`:
+   `printf 'FROM localhost/claude-box:mitm\nRUN npm install -g @anthropic-ai/claude-code@<version>\n' > /tmp/cc/Containerfile && podman build -t localhost/claude-box:mitm-<version> -f /tmp/cc/Containerfile /tmp/cc`
+3. `CLAUDE_CAPTURE_IMAGE=claude-box:mitm-<version> scripts/capture-claude-code-headers.sh oauth`
+4. `python3 scripts/diff_claude_code_identity.py --no-host-check --baseline <old>.jsonl --observed <new>.jsonl`
+   lists every drift. Each one is a change to make in `internal/ccidentity`.
+   `--no-host-check` is for this step: both captures ran in a Linux container, so
+   their `X-Stainless-OS` and `X-Stainless-Arch` describe it, and the check that
+   they are the machine's own (right for the proxy's requests) would report a
+   drift on any other machine that is not a change to make.
+5. Write `.reference/claude-code-headers-<date>.txt`, point `BASELINE` in
+   `scripts/verify-claude-code-identity.sh` at the new JSONL, and run the gate.
+
+The 2.1.304 capture showed that one prompt per process hides per-prompt
+behaviour. `cc_prompt_id` and `cc_turn_index` only move between prompts. Pipe
+several prompts, spaced apart, into one process with
+`claude --print --verbose --input-format stream-json --output-format stream-json`
+and record that run next to the main capture (`...-multiprompt.jsonl`).
+
+The proxy reproduces that behaviour from the request body, not from stored state:
+`ccidentity.TurnOf` counts the user prompts in `messages` (a message made only of
+`tool_result` blocks and `<system-reminder>` text is not one). The live gate's
+keyless custom-endpoint phase sends two prompts and asserts `cc_turn_index=2`.
+
+`cc_prev_req` names the request whose reply the latest assistant message echoes.
+2.1.304 takes it from its transcript: the `requestId` of the latest assistant
+message that has one, checked against `^req_[A-Za-z0-9_-]{1,36}$`. The proxy's
+clients send no request ids, so `ccidentity.ReplyLog` records each normalized
+reply's tool call ids, thinking signatures and text under its `request-id`
+response header, scoped by account (or endpoint) and session. A request whose
+latest assistant message matches a recorded reply sends that id. Unkeyed requests,
+and replies the log dropped or never saw, send none.
+
+`cch` and the `cc_version` suffix are derived, not random: see ADR 0004 and
+`internal/ccidentity/cch.go`. The capture addon records the value each request
+sent next to the value `scripts/cc_billing.py` derives from the same bytes, so a
+new Claude Code release that changes the seed or the salt fails the gate's
+`compare_billing` on its own capture. `cc_prompt_index` counts prompts only for
+the `human` turn origin (the binary adds 1 to it only then) and stays 0 for
+`sdk`; the `human` value comes from reading the 2.1.304 binary, not from a
+capture.
+
+TLS: Claude Code has two TLS stacks, and a new release can change both hellos.
+Run the capture with `MITM_DUMP_HELLO_DIR=<dir>` and the addon saves one raw
+ClientHello per JA4 seen, and records which stack carried each request. Replace
+`internal/transport/claude-code-{fetch,node}-clienthello.bin` with the hellos
+that carry `/v1/messages` and the discovery GETs, and update
+`.reference/claude-code-tls-<date>.json`. The reference also holds the resumed
+form of each hello (the same hello with `pre_shared_key` last); mitmproxy does
+not issue session tickets, so record that form against a local TLS server that
+does (the container's Python `ssl` module is enough) and read the
+`pre_shared_key` extension (0x29) off the second connection.

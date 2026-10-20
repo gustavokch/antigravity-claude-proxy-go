@@ -9,12 +9,15 @@ of them correct and every one of them missing the point.
 Three policies, one per subcommand:
 
   normalized   the request carries the captured identity (pooled gateway, and
-               a custom endpoint with no configured apiKey)
+               a custom endpoint with no configured apiKey): every captured
+               header with its value and spelling, in the captured order, over
+               the captured HTTP version, with its prompt fields agreeing
   passthrough  the request carries the CALLER's identity and its own API key,
                because internal/api/server.go refuses to normalize an endpoint
                whose credential normalization would delete
   discovery    every GET /v1/models carries the captured discovery User-Agent,
-               not Go's default and not a stale version
+               not Go's default and not a stale version, over the captured
+               HTTP version
 
 No fingerprint value is written here. Every expected value — the User-Agent,
 the normalization marker headers, the captured query string — is read out of
@@ -26,11 +29,19 @@ than a value.
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from diff_claude_code_identity import header_map  # noqa: E402
+from diff_claude_code_identity import (  # noqa: E402
+    compare_billing,
+    compare_correlations,
+    compare_headers,
+    compare_host,
+    compare_order,
+    header_map,
+)
 
 
 def load_records(path: str) -> list[dict]:
@@ -143,10 +154,67 @@ def user_agent(record: dict) -> object:
     return entry[1] if entry else None
 
 
-def check_normalized(baseline: dict, observed: dict) -> list[str]:
-    """The observed request must present the captured identity."""
+def without_header(record: dict, name: str) -> dict:
+    """A copy of the record with every header of that name removed."""
+    return {
+        **record,
+        "headers": [pair for pair in record.get("headers", []) if pair[0].lower() != name],
+    }
+
+
+def check_normalized(
+    baseline: dict,
+    observed: dict,
+    expect_turn_index: int | None = None,
+    tls_reference: dict | None = None,
+    keyless: bool = False,
+) -> list[str]:
+    """The observed request must present the captured identity.
+
+    Every header, its value, its spelling and the HTTP version go through the
+    differ's compare_headers, so a request is held to the capture by this
+    policy as it is by the differ. The keyless custom-endpoint phase is checked
+    by this policy alone, and without that comparison it passed a request with
+    no x-claude-code-prompt-id, no X-Stainless-OS and Accept-Encoding: gzip.
+    The values that differ between any two requests, or between the capture's
+    container and this host, are the differ's own exemptions and are not
+    repeated here.
+
+    keyless is a request to a custom endpoint that configures no apiKey. It is
+    sent no credential: forwardToCustomEndpoint deletes the caller's
+    Authorization. The capture's request carries one, so such a request is held
+    to the capture without it, which also makes a credential that reaches the
+    endpoint a drift.
+
+    expect_turn_index, when given, is the number of user prompts the request
+    carried: cc_turn_index counts them, so a request sent with two must say 2.
+    """
     problems: list[str] = []
     headers = header_map(observed)
+    if baseline.get("http_version") is None:
+        # compare_headers reads a missing version as agreement with a request
+        # that records none, which would let an h2 request pass in silence.
+        problems.append("the baseline records no http_version, so this policy cannot tell HTTP/1.1 from h2")
+    reference = without_header(baseline, "authorization") if keyless else baseline
+    problems.extend(compare_headers([reference], observed))
+    problems.extend(compare_correlations(observed))
+    problems.extend(compare_billing(observed))
+    problems.extend(compare_order(reference, observed))
+    problems.extend(compare_host(observed))
+    if tls_reference is not None:
+        problems.extend(check_tls(tls_reference, observed, "fetch"))
+
+    if expect_turn_index is not None:
+        body = observed.get("request_body")
+        block = body.get("system_first_block") if isinstance(body, dict) else None
+        match = re.search(r"cc_turn_index=(\d+);", block or "")
+        if match is None:
+            problems.append("system[0] carries no cc_turn_index to check")
+        elif int(match.group(1)) != expect_turn_index:
+            problems.append(
+                f"cc_turn_index is {match.group(1)}, want {expect_turn_index}: "
+                f"the request carried {expect_turn_index} user prompt(s)"
+            )
 
     expected_ua = user_agent(baseline)
     observed_ua = user_agent(observed)
@@ -230,7 +298,10 @@ def check_passthrough(
 
 
 def check_discovery(
-    baseline_gets: list[dict], observed_gets: list[dict], min_records: int
+    baseline_gets: list[dict],
+    observed_gets: list[dict],
+    min_records: int,
+    tls_reference: dict | None = None,
 ) -> list[str]:
     """Every observed non-messages request must carry the captured User-Agent."""
     problems: list[str] = []
@@ -245,6 +316,16 @@ def check_discovery(
         return problems
     expected_ua = expected.pop()
 
+    versions = {r.get("http_version") for r in baseline_gets}
+    versions.discard(None)
+    if len(versions) != 1:
+        problems.append(
+            f"the baseline GETs record {sorted(versions) or 'no http_version'}, want exactly one "
+            "to compare the observed requests against"
+        )
+        return problems
+    expected_version = versions.pop()
+
     if len(observed_gets) < min_records:
         problems.append(
             f"only {len(observed_gets)} discovery request(s) reached the wire, want {min_records}"
@@ -257,8 +338,72 @@ def check_discovery(
                 f"{record.get('method')} {record.get('path')} sent User-Agent "
                 f"{observed_ua!r}, want the captured {expected_ua!r}"
             )
+        # The real client's discovery requests are HTTP/1.1 like its messages
+        # requests, so a request that arrives as h2 is a tell.
+        if record.get("http_version") != expected_version:
+            problems.append(
+                f"{record.get('method')} {record.get('path')} arrived as "
+                f"{record.get('http_version')!r}, want the captured {expected_version!r}"
+            )
+        # The node stack's tail: the Accept-Encoding it advertises, closing the
+        # connection after each request, and writing its headers in the order
+        # the first captured GET shows (settings; policy_limits orders its own
+        # headers differently, which no single rule reproduces).
+        reference_headers = header_map(baseline_gets[0])
+        observed_headers = header_map(record)
+        for key in ("accept-encoding", "connection"):
+            want = reference_headers.get(key)
+            got = observed_headers.get(key)
+            if want is not None and (got is None or got[1] != want[1]):
+                problems.append(
+                    f"{record.get('method')} {record.get('path')} sent {key} "
+                    f"{got[1] if got else None!r}, want the captured {want[1]!r}"
+                )
+        problems.extend(compare_order(baseline_gets[0], record))
+        if tls_reference is not None:
+            problems.extend(check_tls(tls_reference, record, "node"))
 
     return problems
+
+
+def check_tls(reference: dict, observed: dict, stack: str) -> list[str]:
+    """The request must have been sent by the TLS stack the real client uses for it.
+
+    Claude Code has two: fetch for messages and node:https for the discovery
+    GETs. The reference (.reference/claude-code-tls-*.json) records the JA4 and
+    JA3 each one presents, as the first connection to a host (ja4, ja3) and as
+    every later, resumed one (ja4_resumed, ja3_resumed). Either form is the real
+    client; a JA4 from one form with the JA3 of the other is not. A record
+    without a fingerprint is a problem, not a pass: it means the capture was
+    taken without the current addon.
+    """
+    expected = (reference.get("stacks") or {}).get(stack)
+    if not isinstance(expected, dict):
+        return [f"the TLS reference has no {stack!r} stack to compare against"]
+    got = observed.get("tls")
+    what = f"{observed.get('method')} {observed.get('path')}"
+    if not isinstance(got, dict):
+        return [f"{what} carries no TLS fingerprint (record with the current scripts/mitm_header_dump.py)"]
+    forms = [(expected.get("ja4"), expected.get("ja3"))]
+    if expected.get("ja4_resumed") and expected.get("ja3_resumed"):
+        forms.append((expected["ja4_resumed"], expected["ja3_resumed"]))
+    if (got.get("ja4"), got.get("ja3")) in forms:
+        return []
+    problems = []
+    for field in ("ja4", "ja3"):
+        if got.get(field) not in {form[0 if field == "ja4" else 1] for form in forms}:
+            problems.append(
+                f"{what} {field} is {got.get(field)}, the real client's {stack} stack "
+                f"presents {expected.get(field)}"
+            )
+    return problems or [
+        f"{what} presents a JA4 and a JA3 from different forms of the {stack} stack's hello"
+    ]
+
+
+def load_tls_reference(path: str) -> dict:
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def evaluate(args) -> tuple[list[str], str]:
@@ -267,7 +412,9 @@ def evaluate(args) -> tuple[list[str], str]:
         baseline_gets = get_records(load_records(args.baseline))
         observed_gets = discovery_records(load_records(args.observed))
         return (
-            check_discovery(baseline_gets, observed_gets, args.min_records),
+            check_discovery(
+                baseline_gets, observed_gets, args.min_records, load_tls_reference(args.tls_reference)
+            ),
             f"{len(observed_gets)} discovery request(s)",
         )
 
@@ -282,7 +429,16 @@ def evaluate(args) -> tuple[list[str], str]:
     if not baseline_posts:
         raise ValueError(f"no POST /v1/messages record in {args.baseline}")
     if args.policy == "normalized":
-        return check_normalized(baseline_posts[0], observed), subject
+        return (
+            check_normalized(
+                baseline_posts[0],
+                observed,
+                args.expect_turn_index,
+                load_tls_reference(args.tls_reference),
+                keyless=args.keyless,
+            ),
+            subject,
+        )
     return (
         check_passthrough(
             observed, args.caller_user_agent, args.api_key_sha256, baseline_posts[0]
@@ -298,6 +454,17 @@ def main() -> int:
     p_norm = sub.add_parser("normalized")
     p_norm.add_argument("--baseline", required=True)
     p_norm.add_argument("--observed", required=True)
+    p_norm.add_argument(
+        "--expect-turn-index",
+        type=int,
+        help="the number of user prompts the observed request carried",
+    )
+    p_norm.add_argument("--tls-reference", required=True)
+    p_norm.add_argument(
+        "--keyless",
+        action="store_true",
+        help="the request went to an endpoint with no credential of its own, so it carries no Authorization",
+    )
 
     p_pass = sub.add_parser("passthrough")
     p_pass.add_argument("--baseline", required=True)
@@ -309,6 +476,7 @@ def main() -> int:
     p_disc.add_argument("--baseline", required=True)
     p_disc.add_argument("--observed", required=True)
     p_disc.add_argument("--min-records", type=int, default=1)
+    p_disc.add_argument("--tls-reference", required=True)
 
     args = parser.parse_args()
 

@@ -11,6 +11,11 @@ custom `CipherSuites`, no custom `CurvePreferences`, no custom `NextProtos`.
 Go 1.27rc2 + default crypto/tls reproduces `agy`'s JA3/JA4 for free.
 Overriding anything *breaks* the match.
 
+The rule covers the Cloud Code path. The Zen and Claude Code upstreams are Bun
+(BoringSSL) clients, which Go cannot imitate, so they replay recorded
+ClientHellos through utls in `internal/tlsreplay` (ADR 0004). Never route Cloud
+Code through it, and never hand-build a hello: recapture the real client's.
+
 ## Ground truth (already gathered — don't re-derive)
 - `.reference/grpc-methods.txt` — real `CloudCode/*` gRPC methods from the binary.
 - `.reference/proto-messages.txt` — real `v1internal.*` protobuf message names.

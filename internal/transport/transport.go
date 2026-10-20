@@ -1,7 +1,9 @@
 // Package transport builds the outbound HTTP transports for the upstream paths
-// that carry no fingerprint requirement of their own: custom endpoints, Kimi,
-// Zen. The Cloud Code path builds its own transport in internal/cloudcode, where
-// the ClientHello is the product.
+// that carry no TLS fingerprint requirement of their own: custom endpoints,
+// Kimi, Zen. Claude Code is the exception (see claudecode.go): its two client
+// stacks are imitated down to the handshake and the request layout. The Cloud
+// Code path builds its own transport in internal/cloudcode, where the
+// ClientHello is the product.
 package transport
 
 import (

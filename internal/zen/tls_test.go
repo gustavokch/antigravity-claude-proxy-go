@@ -10,14 +10,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	utls "github.com/refraction-networking/utls"
-
+	"antigravity-go-proxy/internal/proxydial/proxytest"
 	"antigravity-go-proxy/internal/transport"
 )
 
@@ -49,57 +50,21 @@ func (s *spyTransport) wasUsed() bool {
 
 // TestBunSpecFromCapture: the embedded ClientHello must fingerprint cleanly
 // into a utls spec with the shape of the genuine capture (17 ciphers,
-// 13 extensions).
+// 13 extensions) and offer exactly http/1.1.
 func TestBunSpecFromCapture(t *testing.T) {
-	spec, err := bunHelloSpec()
+	hello, err := bunReplay()
 	if err != nil {
 		t.Fatalf("fingerprint captured hello: %v", err)
 	}
-	if spec == nil {
-		t.Fatal("nil spec")
-	}
+	spec := hello.Spec()
 	if len(spec.CipherSuites) != 17 {
 		t.Errorf("ciphers = %d, want 17", len(spec.CipherSuites))
 	}
 	if len(spec.Extensions) != 13 {
 		t.Errorf("extensions = %d, want 13", len(spec.Extensions))
 	}
-	if alpn := specALPN(spec); len(alpn) != 1 || alpn[0] != "http/1.1" {
-		t.Errorf("captured ALPN = %v, want [http/1.1]", alpn)
-	}
-	if err := validateSpecALPN(spec); err != nil {
-		t.Errorf("captured hello rejected: %v", err)
-	}
-}
-
-// TestValidateSpecALPN: the replayed hello must offer exactly http/1.1 —
-// JA4 counts ALPN protocols instead of naming them, so an h2 capture would
-// pass the fingerprint gate while the custom-dial path cannot serve HTTP/2.
-func TestValidateSpecALPN(t *testing.T) {
-	cases := []struct {
-		name    string
-		alpn    []string
-		wantErr bool
-	}{
-		{"http11 only", []string{"http/1.1"}, false},
-		{"h2 offered", []string{"h2", "http/1.1"}, true},
-		{"h2 only", []string{"h2"}, true},
-		{"absent", nil, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			spec := &utls.ClientHelloSpec{}
-			if tc.alpn != nil {
-				spec.Extensions = []utls.TLSExtension{&utls.ALPNExtension{AlpnProtocols: tc.alpn}}
-			}
-			err := validateSpecALPN(spec)
-			if tc.wantErr && err == nil {
-				t.Errorf("ALPN %v: want error, got nil", tc.alpn)
-			}
-			if !tc.wantErr && err != nil {
-				t.Errorf("ALPN %v: %v", tc.alpn, err)
-			}
-		})
+	if got := alpnOfHello(t, opencodeClientHello); got != "http/1.1" {
+		t.Errorf("captured ALPN = %q, want http/1.1", got)
 	}
 }
 
@@ -145,8 +110,8 @@ func TestTLSClientIsAlwaysBounded(t *testing.T) {
 
 // TestSharedTransportCached: one default-shaped utls transport per
 // configuration — consecutive calls return the same pointer, SetTLSConfig
-// invalidates it, and the clone keeps the default transport's proxy and
-// timeouts without ever mutating the shared default.
+// invalidates it, and the clone keeps the default transport's timeouts without
+// ever mutating the shared default.
 func TestSharedTransportCached(t *testing.T) {
 	SetTLSConfig(ZenTLSConfig{})
 	t.Cleanup(func() { SetTLSConfig(ZenTLSConfig{}) })
@@ -165,9 +130,6 @@ func TestSharedTransportCached(t *testing.T) {
 	}
 	if TLSClient().Transport != first {
 		t.Error("TLSClient should carry the shared transport")
-	}
-	if first.Proxy == nil {
-		t.Error("shared transport should keep ProxyFromEnvironment")
 	}
 	if first.IdleConnTimeout == 0 {
 		t.Error("shared transport should keep the default IdleConnTimeout")
@@ -277,7 +239,7 @@ func TestUTLSHelloMatchesCaptureJA3(t *testing.T) {
 		// Never answer: the client handshake fails after the hello is out.
 	}()
 
-	spec, err := bunHelloSpec()
+	hello, err := bunReplay()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +251,7 @@ func TestUTLSHelloMatchesCaptureJA3(t *testing.T) {
 	}
 	// Dial via "localhost" (not the IP) so the SNI assertion is meaningful:
 	// utls strips IP literals from SNI.
-	_, _ = dialOpencodeTLS(ctx, "tcp", net.JoinHostPort("localhost", port), spec)
+	_, _ = hello.Dial(ctx, "tcp", net.JoinHostPort("localhost", port))
 
 	var sent []byte
 	select {
@@ -461,4 +423,59 @@ func alpnOfHello(t *testing.T, record []byte) string {
 		return ""
 	}
 	return string(body[3 : 3+int(body[2])])
+}
+
+// TestZenProxyHelperProcess is the child of TestPlainHTTPZenFollowsTheProxyEnvironment,
+// not a test of its own. http.ProxyFromEnvironment reads the environment once
+// per process, so a test that wants it set runs in a process of its own.
+func TestZenProxyHelperProcess(t *testing.T) {
+	if os.Getenv("ZEN_PROXY_HELPER") == "" {
+		t.Skip("helper process of TestPlainHTTPZenFollowsTheProxyEnvironment")
+	}
+	SetTLSConfig(ZenTLSConfig{Enabled: true})
+	client := TLSClient()
+	if client.Transport == nil {
+		fmt.Println("RESULT error no utls transport")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://zen.example.invalid/zen/v1/models", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("RESULT error %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("RESULT %d %s\n", resp.StatusCode, body)
+}
+
+// A Zen base URL on http:// is reached through the proxy a user's environment
+// names whether or not the TLS disguise is on: the disguise changes how TLS is
+// dialed, and a plain request has none.
+func TestPlainHTTPZenFollowsTheProxyEnvironment(t *testing.T) {
+	proxy := proxytest.NewHTTPProxy(t, false, "unused")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestZenProxyHelperProcess$")
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(name) {
+		case "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "REQUEST_METHOD":
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "ZEN_PROXY_HELPER=1", "HTTP_PROXY="+proxy.URL)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper process: %v\n%s", err, out)
+	}
+	_, result, ok := strings.Cut(string(out), "RESULT ")
+	if !ok || !strings.HasPrefix(result, "200 http://zen.example.invalid/zen/v1/models") {
+		t.Fatalf("the request did not come back from the proxy:\n%s", out)
+	}
+	if got := proxy.Forwarded(); len(got) != 1 || got[0].Target != "http://zen.example.invalid/zen/v1/models" {
+		t.Errorf("the proxy was sent %+v, want the request in absolute form", got)
+	}
 }

@@ -1,0 +1,529 @@
+package api
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"antigravity-go-proxy/internal/ccidentity"
+	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/config"
+)
+
+var (
+	billingPromptRE = regexp.MustCompile(`cc_prompt_id=([0-9a-f-]{36});`)
+	billingTurnRE   = regexp.MustCompile(`cc_turn_index=(\d+);`)
+)
+
+// promptWire is what one custom-endpoint request showed the upstream about its
+// place in the conversation.
+type promptWire struct {
+	headerPromptID  string
+	billingPromptID string
+	turnIndex       string
+}
+
+// promptUpstream is a custom-endpoint target that remembers the prompt fields of
+// the last request it served.
+type promptUpstream struct {
+	*httptest.Server
+	mu   sync.Mutex
+	last promptWire
+}
+
+func newPromptUpstream(t *testing.T) *promptUpstream {
+	t.Helper()
+	upstream := &promptUpstream{}
+	upstream.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		text := string(body)
+		wire := promptWire{headerPromptID: headerFold(r.Header, "x-claude-code-prompt-id")}
+		if m := billingPromptRE.FindStringSubmatch(text); m != nil {
+			wire.billingPromptID = m[1]
+		}
+		if m := billingTurnRE.FindStringSubmatch(text); m != nil {
+			wire.turnIndex = m[1]
+		}
+		upstream.mu.Lock()
+		upstream.last = wire
+		upstream.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_ok","content":[]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+// send posts one /v1/messages body under a fixed client session and returns the
+// prompt fields the upstream saw. Every call carries its whole conversation:
+// nothing is stored between calls.
+func (u *promptUpstream) send(t *testing.T, handler http.Handler, messages ...string) promptWire {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"claude-custom-model","max_tokens":16,"messages":[`+strings.Join(messages, ",")+`]}`))
+	req.Header.Set("x-api-key", "local-key")
+	req.Header.Set("X-Claude-Code-Session-Id", "client-session-1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.last
+}
+
+// TestCustomEndpoint_PromptFieldsFollowTheConversation: the capture shows a new
+// cc_prompt_id and cc_turn_index per user prompt, repeated across that prompt's
+// tool follow-ups, with x-claude-code-prompt-id equal to cc_prompt_id in every
+// request.
+func TestCustomEndpoint_PromptFieldsFollowTheConversation(t *testing.T) {
+	withConfigDir(t)
+
+	upstream := newPromptUpstream(t)
+	saveCustomEndpoint(t, upstream.URL+"/v1/messages", nil)
+	h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+
+	const (
+		first   = `{"role":"user","content":"list the files"}`
+		reply   = `{"role":"assistant","content":[{"type":"text","text":"done"}]}`
+		second  = `{"role":"user","content":"and the tests"}`
+		toolUse = `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}]}`
+		result  = `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}`
+	)
+
+	one := upstream.send(t, h, first)
+	two := upstream.send(t, h, first, reply, second)
+	twoAgain := upstream.send(t, h, first, reply, second, toolUse, result)
+
+	for _, tc := range []struct {
+		name  string
+		got   promptWire
+		index string
+	}{
+		{"first prompt", one, "1"},
+		{"second prompt", two, "2"},
+		{"second prompt's follow-up", twoAgain, "2"},
+	} {
+		if tc.got.turnIndex != tc.index {
+			t.Errorf("%s: cc_turn_index = %q, want %q", tc.name, tc.got.turnIndex, tc.index)
+		}
+		if tc.got.billingPromptID == "" || tc.got.headerPromptID != tc.got.billingPromptID {
+			t.Errorf("%s: x-claude-code-prompt-id = %q, cc_prompt_id = %q; the capture shows one value in both",
+				tc.name, tc.got.headerPromptID, tc.got.billingPromptID)
+		}
+	}
+	if one.billingPromptID == two.billingPromptID {
+		t.Errorf("two prompts shared prompt id %s", one.billingPromptID)
+	}
+	if two.billingPromptID != twoAgain.billingPromptID {
+		t.Errorf("a tool follow-up changed its prompt's id: %s then %s", two.billingPromptID, twoAgain.billingPromptID)
+	}
+}
+
+// TestCustomEndpoint_NormalizedRequestSpeaksHTTP11 pins the other half of the
+// wire identity: the real client reaches Anthropic over HTTP/1.1, and a
+// transport that offers h2 to an h2-capable server gets h2. The server here
+// supports both, so only a transport that declines h2 gets HTTP/1.1.
+func TestCustomEndpoint_NormalizedRequestSpeaksHTTP11(t *testing.T) {
+	withConfigDir(t)
+
+	var (
+		mu           sync.Mutex
+		protoMajor   int
+		offeredALPN  []string
+		handshakeRan bool
+	)
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		protoMajor = r.ProtoMajor
+		mu.Unlock()
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","id":"msg_ok","content":[]}`))
+	}))
+	upstream.EnableHTTP2 = true
+	upstream.TLS = &tls.Config{
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			mu.Lock()
+			offeredALPN = append([]string(nil), hello.SupportedProtos...)
+			handshakeRan = true
+			mu.Unlock()
+			return nil, nil
+		},
+	}
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+
+	// The test server's certificate is self-signed: trust it on the shipped
+	// transport, so everything else about that transport is what runs. The
+	// replayed handshake reads its trust roots from the transport at dial time.
+	pool := x509.NewCertPool()
+	pool.AddCert(upstream.Certificate())
+	customEndpointIdentityTransport.TLSClientConfig = &tls.Config{RootCAs: pool}
+	t.Cleanup(func() {
+		customEndpointIdentityTransport.TLSClientConfig = nil
+		customEndpointIdentityTransport.CloseIdleConnections()
+	})
+
+	saveCustomEndpoint(t, upstream.URL+"/v1/messages", nil)
+	h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+	if rec := serveCustomEndpointRequest(t, h); rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !handshakeRan {
+		t.Fatal("the upstream saw no TLS handshake")
+	}
+	if protoMajor != 1 {
+		t.Errorf("upstream saw HTTP/%d, want HTTP/1.1", protoMajor)
+	}
+	if len(offeredALPN) != 1 || offeredALPN[0] != "http/1.1" {
+		t.Errorf("ClientHello offered ALPN %v, want [http/1.1] as the real client does", offeredALPN)
+	}
+}
+
+var billingPrevRE = regexp.MustCompile(`cc_prev_req=([^;]*);`)
+
+// replyUpstream answers request n with a reply holding tool call toolu_up_n
+// under request id req_up_n, and remembers the cc_prev_req each request sent.
+type replyUpstream struct {
+	*httptest.Server
+	mu     sync.Mutex
+	served int
+	prev   []string
+}
+
+func newReplyUpstream(t *testing.T, stream bool) *replyUpstream {
+	t.Helper()
+	upstream := &replyUpstream{}
+	upstream.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstream.mu.Lock()
+		upstream.served++
+		n := upstream.served
+		prev := ""
+		if m := billingPrevRE.FindSubmatch(body); m != nil {
+			prev = string(m[1])
+		}
+		upstream.prev = append(upstream.prev, prev)
+		upstream.mu.Unlock()
+
+		w.Header().Set("request-id", fmt.Sprintf("req_up_%d", n))
+		toolUse := fmt.Sprintf(`{"type":"tool_use","id":"toolu_up_%d","name":"Bash","input":{}}`, n)
+		if !stream {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"type":"message","id":"msg_%d","role":"assistant","content":[%s]}`, n, toolUse)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_%d\",\"content\":[]}}\n\n"+
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":%s}\n\n"+
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"+
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", n, toolUse)
+	}))
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+func (u *replyUpstream) prevSent() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.prev...)
+}
+
+// toolFollowUp is a conversation whose latest assistant message echoes the tool
+// call of reply n.
+func toolFollowUp(n int) string {
+	return fmt.Sprintf(`{"model":"%%s","max_tokens":16,"messages":[`+
+		`{"role":"user","content":"list the files"},`+
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_up_%d","name":"Bash","input":{}}]},`+
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_up_%d","content":"a.go"}]}]}`, n, n)
+}
+
+const firstPrompt = `{"model":"%s","max_tokens":16,"messages":[{"role":"user","content":"list the files"}]}`
+
+// postInSession sends a /v1/messages body under sessionID, or under no session
+// when it is empty, and fails the test unless it is answered 200.
+func postInSession(t *testing.T, serve func(http.ResponseWriter, *http.Request), sessionID, body string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "local-key")
+	if sessionID != "" {
+		req.Header.Set("X-Claude-Code-Session-Id", sessionID)
+	}
+	rec := httptest.NewRecorder()
+	serve(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The capture shows cc_prev_req on every follow-up, naming the request-id of
+// the request whose reply the follow-up continues, and on no first request.
+func TestCustomEndpoint_FollowUpNamesThePreviousRequest(t *testing.T) {
+	for _, stream := range []bool{true, false} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			withConfigDir(t)
+			upstream := newReplyUpstream(t, stream)
+			saveCustomEndpoint(t, upstream.URL+"/v1/messages", nil)
+			h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+			model := "claude-custom-model"
+
+			postInSession(t, h.ServeHTTP, "session-1", fmt.Sprintf(firstPrompt, model))
+			postInSession(t, h.ServeHTTP, "session-1", fmt.Sprintf(toolFollowUp(1), model))
+			postInSession(t, h.ServeHTTP, "session-2", fmt.Sprintf(toolFollowUp(1), model))
+			// A client with no session cannot be told from any other: the pair below
+			// must not link, though upstream issued the reply it echoes (request 4)
+			// to the request just before it.
+			postInSession(t, h.ServeHTTP, "", fmt.Sprintf(firstPrompt, model))
+			postInSession(t, h.ServeHTTP, "", fmt.Sprintf(toolFollowUp(4), model))
+
+			want := []string{"", "req_up_1", "", "", ""}
+			got := upstream.prevSent()
+			for i, name := range []string{"first request", "follow-up", "another session", "first request with no session", "its follow-up"} {
+				if i >= len(got) || got[i] != want[i] {
+					t.Errorf("%s: cc_prev_req = %q, want %q (all: %q)", name, at(got, i), want[i], got)
+				}
+			}
+		})
+	}
+}
+
+func TestForwardToClaudeCode_FollowUpNamesThePreviousRequest(t *testing.T) {
+	for _, stream := range []bool{true, false} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			upstream := newReplyUpstream(t, stream)
+			model := "claude-sonnet-5"
+			_, serve := newCCForwarder(t, ccPoolConfig(upstream.URL,
+				claudecode.AccountConfig{ID: "acc1", Token: "sk-ant-oat01-test-token", Enabled: true}), model)
+
+			postInSession(t, serve, "session-1", fmt.Sprintf(firstPrompt, model))
+			postInSession(t, serve, "session-1", fmt.Sprintf(toolFollowUp(1), model))
+			postInSession(t, serve, "session-1", fmt.Sprintf(toolFollowUp(2), model))
+			// A client with no session cannot be told from any other, so the pair
+			// below must not link, though upstream issued the reply it echoes
+			// (request 4) to the request just before it.
+			postInSession(t, serve, "", fmt.Sprintf(firstPrompt, model))
+			postInSession(t, serve, "", fmt.Sprintf(toolFollowUp(4), model))
+
+			want := []string{"", "req_up_1", "req_up_2", "", ""}
+			got := upstream.prevSent()
+			for i := range want {
+				if at(got, i) != want[i] {
+					t.Errorf("request %d: cc_prev_req = %q, want %q (all: %q)", i+1, at(got, i), want[i], got)
+				}
+			}
+		})
+	}
+}
+
+// ccPoolConfig is a Claude Code pool of enabled accounts served from baseURL.
+func ccPoolConfig(baseURL string, accounts ...claudecode.AccountConfig) claudecode.Config {
+	return claudecode.Config{
+		Enabled:   true,
+		BaseURL:   baseURL,
+		Mode:      "pool",
+		Accounts:  accounts,
+		Allowlist: claudecode.DefaultAllowlist(),
+		Routing:   claudecode.DefaultRoutingConfig(),
+	}
+}
+
+// newCCForwarder returns a bare server and the entry point of its pooled
+// Claude Code route for cfg. The pool is built fresh for the test.
+func newCCForwarder(t *testing.T, cfg claudecode.Config, model string) (*Server, func(http.ResponseWriter, *http.Request)) {
+	t.Helper()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	resetCCPoolForTest()
+	t.Cleanup(resetCCPoolForTest)
+	srv := &Server{ccReplies: ccidentity.NewReplyLog()}
+	return srv, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		srv.forwardToClaudeCode(w, r, cfg, body, model)
+	}
+}
+
+// "Non-normalized replies excluded": an API-key account's request leaves as it
+// came, with no billing line, so it names no previous request and a later
+// request has no use for the request id of its reply. Recording it would only
+// push real entries out of the bounded log. The OAuth account beside it shows
+// the lookup would find the reply had it been recorded.
+func TestForwardToClaudeCode_OnlyNormalizedRepliesAreRecorded(t *testing.T) {
+	for _, tc := range []struct{ name, token, want string }{
+		{"oauth account", "sk-ant-oat01-test-token", "req_up_1"},
+		{"api-key account", "sk-ant-api03-test-key", ""},
+	} {
+		for _, stream := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				upstream := newReplyUpstream(t, stream)
+				model := "claude-sonnet-5"
+				srv, serve := newCCForwarder(t, ccPoolConfig(upstream.URL,
+					claudecode.AccountConfig{ID: "acc1", Token: tc.token, Enabled: true}), model)
+
+				postInSession(t, serve, "session-1", fmt.Sprintf(firstPrompt, model))
+
+				followUp := []byte(fmt.Sprintf(toolFollowUp(1), model))
+				turn := ccidentity.TurnOf(followUp)
+				scope := ccReplyScope("acc1", "session-1", turn)
+				if got := srv.ccReplies.PrevRequestID(scope, turn); got != tc.want {
+					t.Errorf("the log names %q for the follow-up of a reply upstream issued as req_up_1, want %q", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// A request that fails over to another account is sent no request id the first
+// account issued: the second account never saw that request, and naming it
+// would claim a continuity that account's records do not have. The first
+// account's own attempt names the previous request, which shows the log knew it.
+func TestForwardToClaudeCode_FailoverNamesNoRequestOfAnotherAccount(t *testing.T) {
+	type attempt struct {
+		token, prev string
+		status      int
+	}
+	var (
+		mu       sync.Mutex
+		attempts []attempt
+		first    string
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		prev := ""
+		if m := billingPrevRE.FindSubmatch(body); m != nil {
+			prev = string(m[1])
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		n := len(attempts) + 1
+		if n == 1 {
+			first = token
+		}
+		// The account that served the first request is out of quota for the second.
+		status := http.StatusOK
+		if n > 1 && token == first {
+			status = http.StatusTooManyRequests
+		}
+		attempts = append(attempts, attempt{token, prev, status})
+
+		w.Header().Set("Content-Type", "application/json")
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("request-id", fmt.Sprintf("req_up_%d", n))
+		_, _ = fmt.Fprintf(w, `{"type":"message","id":"msg_%d","role":"assistant","content":[{"type":"tool_use","id":"toolu_up_%d","name":"Bash","input":{}}]}`, n, n)
+	}))
+	t.Cleanup(upstream.Close)
+
+	model := "claude-sonnet-5"
+	_, serve := newCCForwarder(t, ccPoolConfig(upstream.URL,
+		claudecode.AccountConfig{ID: "acc-a", Token: "sk-ant-oat01-token-a", Enabled: true},
+		claudecode.AccountConfig{ID: "acc-b", Token: "sk-ant-oat01-token-b", Enabled: true},
+	), model)
+
+	postInSession(t, serve, "session-1", fmt.Sprintf(firstPrompt, model))
+	postInSession(t, serve, "session-1", fmt.Sprintf(toolFollowUp(1), model))
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(attempts) != 3 {
+		t.Fatalf("upstream served %d attempts, want 3 (first request, the 429, the failover): %+v", len(attempts), attempts)
+	}
+	if attempts[1].token != attempts[0].token || attempts[1].status != http.StatusTooManyRequests {
+		t.Fatalf("the second request must first go to the account that served the first and be refused: %+v", attempts)
+	}
+	if attempts[2].token == attempts[0].token {
+		t.Fatalf("the failover attempt went to the same account: %+v", attempts)
+	}
+	if attempts[1].prev != "req_up_1" {
+		t.Errorf("the first account's attempt sent cc_prev_req %q, want req_up_1", attempts[1].prev)
+	}
+	if attempts[2].prev != "" {
+		t.Errorf("the second account was sent cc_prev_req %q, a request the first account issued", attempts[2].prev)
+	}
+}
+
+// A cache bump replays a turn so the cache entry stays warm. It must look like
+// the turn it repeats, so it sends the cc_prev_req the original sent. The client
+// never sees the bump's reply, so no later request echoes it, and the log keeps
+// nothing of it.
+func TestSendClaudeCodeBump_ReplaysThePreviousRequestAndRecordsNothing(t *testing.T) {
+	upstream := newReplyUpstream(t, false)
+	cfg := cacheBumpTestConfig(t, upstream.URL)
+	cfg.ClaudeCode.Accounts = []claudecode.AccountConfig{
+		{ID: "acc-a", Token: "sk-ant-oat01-token-a", Priority: 1, Enabled: true},
+	}
+	persistTestConfig(t, cfg)
+	resetCCPoolForTest()
+	t.Cleanup(resetCCPoolForTest)
+
+	srv, _, sched := newCacheBumpServer(t)
+	srv.ccReplies = ccidentity.NewReplyLog()
+	model := "claude-sonnet-5"
+	serve := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		srv.forwardToClaudeCode(w, r, config.Get().ClaudeCode, body, model)
+	}
+
+	// The follow-up carries the cache breakpoint the bump exists to keep warm.
+	cachedFollowUp := `{"model":"%s","max_tokens":64000,` +
+		`"system":[{"type":"text","text":"sys prompt","cache_control":{"type":"ephemeral"}}],` +
+		`"messages":[{"role":"user","content":"list the files"},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_up_1","name":"Bash","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_up_1","content":"a.go","cache_control":{"type":"ephemeral"}}]}]}`
+	postInSession(t, serve, "sess-bump", fmt.Sprintf(firstPrompt, model))
+	postInSession(t, serve, "sess-bump", fmt.Sprintf(cachedFollowUp, model))
+
+	future := time.Now().Add(10 * time.Minute)
+	sched.Now = func() time.Time { return future }
+	sched.Tick(context.Background())
+
+	// Request 1 and the follow-up are the client's; request 3 is the bump.
+	got := upstream.prevSent()
+	if len(got) != 3 {
+		t.Fatalf("upstream served %d requests, want 3 (first request, follow-up, bump): cc_prev_req %q", len(got), got)
+	}
+	if got[1] != "req_up_1" || got[2] != got[1] {
+		t.Errorf("cc_prev_req = %q; the bump must send the one its original sent (req_up_1)", got)
+	}
+
+	// The bump's reply is toolu_up_3. A request echoing it names nothing, while
+	// the follow-up's own reply (toolu_up_2) is known: the log works, and the
+	// bump left nothing in it.
+	for _, tc := range []struct{ name, tool, want string }{
+		{"the reply the client received", "toolu_up_2", "req_up_2"},
+		{"the reply of the bump", "toolu_up_3", ""},
+	} {
+		echo := []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":"list the files"},`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"%s","name":"Bash","input":{}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"%s","content":"a.go"}]}]}`, tc.tool, tc.tool))
+		turn := ccidentity.TurnOf(echo)
+		if got := srv.ccReplies.PrevRequestID(ccReplyScope("acc-a", "sess-bump", turn), turn); got != tc.want {
+			t.Errorf("%s: the log names %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func at(values []string, i int) string {
+	if i < len(values) {
+		return values[i]
+	}
+	return "<not sent>"
+}
