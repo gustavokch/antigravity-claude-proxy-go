@@ -9,8 +9,11 @@
 // writes the layout of the client being imitated.
 //
 // It is deliberately small: HTTP/1.1 only, no redirects (http.Client follows
-// them), no 1xx handling, no request streaming. A request body is buffered so a
-// request that fails on a connection the server had closed can be sent again.
+// them), no request streaming, no Expect: 100-continue. A request body is
+// buffered and written with the headers, so a request that fails on a connection
+// the server had closed can be sent again. Interim 1xx responses are read and
+// dropped, as net/http does; a 101 is returned as it is and its connection is
+// not reused.
 package httpwire
 
 import (
@@ -46,11 +49,13 @@ const (
 	ContentLength  = "Content-Length"
 )
 
-// owned are the names a caller cannot set, compared case-insensitively.
+// owned are the names a caller cannot set, compared case-insensitively. Expect
+// is among them because the transport writes the body with the headers and never
+// waits for a 100 Continue, and neither real client sends the header.
 var owned = map[string]bool{
 	"connection": true, "host": true, "accept-encoding": true, "content-length": true,
 	"transfer-encoding": true, "keep-alive": true, "proxy-connection": true,
-	"te": true, "trailer": true, "upgrade": true,
+	"te": true, "trailer": true, "upgrade": true, "expect": true,
 }
 
 // Stack describes how one client stack lays out an HTTP/1.1 request.
@@ -296,14 +301,16 @@ func (t *Transport) roundTrip(ctx context.Context, c *conn, req *http.Request, b
 	if t.ResponseHeaderTimeout > 0 {
 		_ = c.SetReadDeadline(time.Now().Add(t.ResponseHeaderTimeout))
 	}
-	resp, err := http.ReadResponse(c.br, req)
+	resp, err := readFinalResponse(c.br, req)
 	if err != nil {
 		stop()
 		return nil, err
 	}
 	_ = c.SetReadDeadline(time.Time{})
 
-	reusable := t.Stack.KeepAlive && !resp.Close && !req.Close
+	// A 101 leaves HTTP behind on this connection, and nothing here carries on
+	// with the stream, so the connection is not offered to another request.
+	reusable := t.Stack.KeepAlive && !resp.Close && !req.Close && resp.StatusCode != http.StatusSwitchingProtocols
 	if resp.Body == http.NoBody {
 		if stop() && reusable {
 			t.putIdle(c)
@@ -317,6 +324,22 @@ func (t *Transport) roundTrip(ctx context.Context, c *conn, req *http.Request, b
 	b.dec = b.decoder(resp)
 	resp.Body = b
 	return resp, nil
+}
+
+// readFinalResponse reads responses until one that is not interim. A server may
+// send any number of 1xx responses before the real one (100 Continue, 103 Early
+// Hints), and a client has to accept them whether or not it asked. A 101 is
+// final: the connection no longer speaks HTTP/1.1.
+func readFinalResponse(br *bufio.Reader, req *http.Request) (*http.Response, error) {
+	for {
+		resp, err := http.ReadResponse(br, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode < 100 || resp.StatusCode > 199 || resp.StatusCode == http.StatusSwitchingProtocols {
+			return resp, nil
+		}
+	}
 }
 
 // write sends the request line, the caller's headers in the stack's order, the

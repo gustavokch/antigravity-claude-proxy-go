@@ -593,3 +593,104 @@ func TestOpenStreamSurvivesTheHeaderBound(t *testing.T) {
 		t.Errorf("body = %q, %v; the bound must not apply to the body", body, err)
 	}
 }
+
+// send issues one request with tr and returns the final response with its body
+// read. It fails the test on a transport error.
+func send(t *testing.T, tr *Transport, method, url, reqBody string, header http.Header) (*http.Response, string) {
+	t.Helper()
+	var rd io.Reader
+	if reqBody != "" {
+		rd = strings.NewReader(reqBody)
+	}
+	req, _ := http.NewRequest(method, url, rd)
+	for name, values := range header {
+		req.Header[name] = values
+	}
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp, string(got)
+}
+
+// An interim response (100 Continue, 103 Early Hints) precedes the final one on
+// the same connection, and RFC 9110 has a client accept it unasked. Returned as
+// the answer, it would leave the real response unread on a connection that goes
+// back to the pool, and the next request would be handed that response.
+func TestInterimResponsesAreSkipped(t *testing.T) {
+	for name, interim := range map[string]string{
+		"103 Early Hints": "HTTP/1.1 103 Early Hints\r\nLink: </app.css>; rel=preload\r\n\r\n",
+		"100 Continue":    "HTTP/1.1 100 Continue\r\n\r\n",
+		"two in a row":    "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </a>; rel=preload\r\n\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newServer(t, func(i int, _ string) []byte {
+				if i == 0 {
+					return append([]byte(interim), ok("first")...)
+				}
+				return ok("second")
+			})
+			tr := &Transport{Stack: fetchLike()}
+			for i, want := range []string{"first", "second"} {
+				resp, body := send(t, tr, http.MethodPost, s.url("/v1/messages"), "{}", nil)
+				if resp.StatusCode != http.StatusOK || body != want {
+					t.Fatalf("request %d: status %d body %q, want 200 %q", i, resp.StatusCode, body, want)
+				}
+			}
+			if got := s.connections(); got != 1 {
+				t.Errorf("connections = %d, want the interim response to leave the connection reusable", got)
+			}
+		})
+	}
+}
+
+// The interim response's own headers are not the final response's.
+func TestInterimResponseHeadersAreNotTheFinalOnes(t *testing.T) {
+	s := newServer(t, func(int, string) []byte {
+		return append([]byte("HTTP/1.1 103 Early Hints\r\nLink: </app.css>; rel=preload\r\n\r\n"), ok("fine")...)
+	})
+	resp, _ := send(t, &Transport{Stack: fetchLike()}, http.MethodGet, s.url("/"), "", nil)
+	if link := resp.Header.Get("Link"); link != "" {
+		t.Errorf("the final response carries the interim Link %q", link)
+	}
+	if resp.Header.Get("Content-Type") != "text/plain" {
+		t.Errorf("Content-Type = %q, want the final response's", resp.Header.Get("Content-Type"))
+	}
+}
+
+// A 101 ends HTTP on the connection, and the transport has no way to hand the
+// stream on, so it is returned as it came and the connection is not reused.
+func TestSwitchingProtocolsIsReturnedAndNotPooled(t *testing.T) {
+	s := newServer(t, func(i int, _ string) []byte {
+		if i == 0 {
+			return []byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n")
+		}
+		return ok("second")
+	})
+	tr := &Transport{Stack: fetchLike()}
+	if resp, _ := send(t, tr, http.MethodGet, s.url("/"), "", nil); resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want the 101 returned", resp.StatusCode)
+	}
+	if _, body := send(t, tr, http.MethodGet, s.url("/"), "", nil); body != "second" {
+		t.Errorf("second body = %q", body)
+	}
+	if got := s.connections(); got != 2 {
+		t.Errorf("connections = %d, want the 101's connection dropped", got)
+	}
+}
+
+// The transport sends the body at once and never waits for a 100 Continue, and
+// neither real client sends the header, so a caller's Expect does not go out.
+func TestExpectIsNeverSent(t *testing.T) {
+	s := newServer(t, func(int, string) []byte { return ok("fine") })
+	tr := &Transport{Stack: fetchLike()}
+	send(t, tr, http.MethodPost, s.url("/v1/messages"), "{}", http.Header{"Expect": {"100-continue"}})
+	if raw := s.requests()[0]; strings.Contains(strings.ToLower(raw), "expect") {
+		t.Errorf("Expect reached the wire:\n%s", raw)
+	}
+}
