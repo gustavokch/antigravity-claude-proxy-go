@@ -323,6 +323,11 @@ func toolResultText(content any) string {
 	return ""
 }
 
+// missingReasoningPlaceholder stands in for reasoning the model never emitted
+// on a tool-call turn. Any non-empty string satisfies the Zen thinking
+// mandate; a constant keeps the prompt prefix stable across turns.
+const missingReasoningPlaceholder = "(reasoning unavailable)"
+
 func assistantToChat(content any, renames map[string]string) map[string]any {
 	msg := map[string]any{"role": "assistant"}
 	if s, ok := content.(string); ok {
@@ -365,6 +370,15 @@ func assistantToChat(content any, renames map[string]string) map[string]any {
 	// echoed back on tool-call turns; others ignore the field.
 	if reasoning.Len() > 0 {
 		msg["reasoning_content"] = reasoning.String()
+	}
+	// The Zen thinking mandate is model-level, not request-level: a replayed
+	// assistant turn with tool_calls but no reasoning_content is rejected even
+	// when the client omitted `thinking`. The model itself drops reasoning on
+	// some tool-call turns, leaving nothing real to echo; a constant
+	// non-empty placeholder is the only shape the upstream accepts. Verified
+	// live: "" -> 400, one space -> 200.
+	if len(calls) > 0 && reasoning.Len() == 0 {
+		msg["reasoning_content"] = missingReasoningPlaceholder
 	}
 	if len(calls) > 0 {
 		msg["tool_calls"] = calls
