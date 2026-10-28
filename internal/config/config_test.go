@@ -1362,6 +1362,32 @@ func TestSave_ZenHarnessMerge(t *testing.T) {
 	}
 }
 
+// A Zen save replaces the section with the posted one, so a client that does
+// not know zen.fallbackProxy (an old cached panel, an API script) would delete
+// it. An unsent key keeps the persisted proxy; an explicit "" clears it.
+func TestSave_ZenFallbackProxyKeptWhenUnsent(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	const proxy = "socks5h://192.0.2.10:1080"
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": proxy}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if _, err := Save(map[string]any{"zen": map[string]any{"baseUrl": "https://zen.example"}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := Get().Zen.FallbackProxy; got != proxy {
+		t.Fatalf("fallbackProxy after a save without it = %q, want %q", got, proxy)
+	}
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": ""}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := Get().Zen.FallbackProxy; got != "" {
+		t.Fatalf("fallbackProxy after an explicit clear = %q, want empty", got)
+	}
+}
+
 func TestPublicConfig_ZenHarnessPassthrough(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
 	if _, err := Load(); err != nil {

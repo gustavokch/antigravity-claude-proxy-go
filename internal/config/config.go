@@ -1070,6 +1070,13 @@ func Save(updates map[string]any) (Config, error) {
 				} else if ex, ok := existingZen["harness"]; ok {
 					zenCopy["harness"] = ex
 				}
+				// Like the harness, an unsent fallbackProxy (an old panel, an
+				// API client) keeps the persisted proxy; "" clears it.
+				if _, sent := vMap["fallbackProxy"]; !sent {
+					if ex, ok := existingZen["fallbackProxy"]; ok {
+						zenCopy["fallbackProxy"] = ex
+					}
+				}
 				hasApiKey, _ := zenCopy["hasApiKey"].(bool)
 				apiKey, _ := zenCopy["apiKey"].(string)
 				if hasApiKey && apiKey == "" && existingZen != nil {

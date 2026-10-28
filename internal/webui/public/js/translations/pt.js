@@ -579,6 +579,7 @@ window.translations.pt = {
     zenApiKeyEnvActive: "Origem da chave: ambiente (OPENCODE_API_KEY). O painel não exibe o valor da chave.",
     zenFallbackProxy: "Proxy de saída alternativo",
     zenFallbackProxyHelp: "Quando a Zen responde 429 de limite de uso gratuito, as requisições passam por este proxy até o limite reiniciar. Vazio desativa o failover.",
+    zenNotLoaded: "As configurações Zen não foram carregadas. Recarregue a página e tente de novo.",
     zenHarness: "Disfarce de cliente OpenCode",
     zenHarnessDesc: "Envia o User-Agent do OpenCode e os cabeçalhos x-opencode-* e de sessão. O plano gratuito rejeita requisições sem eles.",
     zenHarnessTls: "Impressão digital TLS do OpenCode",

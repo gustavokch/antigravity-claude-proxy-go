@@ -44,8 +44,33 @@ async function importAfterDirectLoadKeepsKeyAndAllowlist() {
     assert.equal(body.fallbackProxy, 'socks5h://100.72.157.22:1080', 'save would drop the fallback proxy');
 }
 
+// The section never loaded (the GET failed): a save would post the form
+// defaults and the server would delete the key, the allowlist and the proxy.
+async function saveBeforeLoadPostsNothing() {
+    const { component: c, requests, toasts } = loadComponent('models.js', 'models');
+    c.$store = { global: { activeTab: 'settings', settingsTab: 'models' } };
+    c.$watch = () => {};
+    c.$nextTick = () => {};
+    c.loadCCConfig = () => {};
+
+    c.init();
+    await pendingTick();
+    const zenGet = requests.find((r) => r.url === '/api/zen/config' && !r.options?.method);
+    zenGet.resolve({ response: { ok: false, status: 500, json: async () => ({}) }, newPassword: null });
+    await pendingTick();
+
+    c.zenDiscovered = [{ id: 'beam-free', displayName: 'beam-free', usable: true, selected: true }];
+    c.importZenDiscovered();
+    await pendingTick();
+
+    const save = requests.find((r) => r.url === '/api/zen/config' && r.options?.method === 'POST');
+    assert.equal(save, undefined, 'a save before the Zen config loaded would delete the stored key');
+    assert.ok(toasts.some((t) => t.kind === 'error'), 'the refused save must tell the user');
+}
+
 const cases = [
     ['import after a direct models-tab load keeps the key and allowlist', importAfterDirectLoadKeepsKeyAndAllowlist],
+    ['a save before the Zen config loaded posts nothing', saveBeforeLoadPostsNothing],
 ];
 for (const [name, fn] of cases) {
     await fn();

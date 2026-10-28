@@ -948,6 +948,16 @@ window.Components.models = () => ({
     async saveZenConfig() {
         const store = Alpine.store('global');
         const password = store.webuiPassword;
+        // The server replaces the zen section with the posted one. Before a
+        // successful load (zenHarnessLoaded is set only by fetchZenConfig)
+        // the form holds defaults, and posting them would delete the stored
+        // key, allowlist and fallback proxy.
+        const loaded = this.zenHarnessLoaded;
+        if (!loaded) {
+            this.zenError = store.t('zenNotLoaded') || 'Zen settings are not loaded. Reload the page, then try again.';
+            store.showToast(this.zenError, 'error');
+            return;
+        }
         this.zenSaving = true;
         this.zenError = '';
         try {
@@ -958,18 +968,14 @@ window.Components.models = () => ({
                 allowlist: this.zenConfig.allowlist || [],
                 fallbackProxy: (this.zenConfig.fallbackProxy || '').trim()
             };
-            // Send the harness only after it was loaded, so a failed fetch
-            // cannot overwrite the saved disguise. Identity strings go only
-            // when edited: echoing the loaded defaults would pin them in
-            // config.json and stop future default bumps from applying.
-            const loaded = this.zenHarnessLoaded;
-            if (loaded) {
-                const h = this.zenConfig.harness;
-                payload.harness = { enabled: !!h.enabled, tls: !!h.tls };
-                for (const k of ['version', 'client', 'project']) {
-                    const v = (h[k] || '').trim();
-                    if (v && v !== loaded[k]) payload.harness[k] = v;
-                }
+            // Identity strings go only when edited: echoing the loaded
+            // defaults would pin them in config.json and stop future default
+            // bumps from applying.
+            const h = this.zenConfig.harness;
+            payload.harness = { enabled: !!h.enabled, tls: !!h.tls };
+            for (const k of ['version', 'client', 'project']) {
+                const v = (h[k] || '').trim();
+                if (v && v !== loaded[k]) payload.harness[k] = v;
             }
             if (this.zenConfig.apiKey && this.zenConfig.apiKey.trim()) {
                 payload.apiKey = this.zenConfig.apiKey.trim();
@@ -992,9 +998,7 @@ window.Components.models = () => ({
                     this.zenConfig.apiKey = '';
                 }
                 Alpine.store('data').zen = this.zenConfig;
-                if (payload.harness) {
-                    this.zenHarnessLoaded = { ...this.zenHarnessLoaded, ...payload.harness };
-                }
+                this.zenHarnessLoaded = { ...this.zenHarnessLoaded, ...payload.harness };
             }
             store.showToast(store.t('zenSavedSuccess') || 'Zen settings saved', 'success');
             Alpine.store('data').performHealthCheck();
