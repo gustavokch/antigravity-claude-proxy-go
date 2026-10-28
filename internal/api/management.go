@@ -2469,6 +2469,17 @@ func (server *Server) handleZenConfigSave(writer http.ResponseWriter, request *h
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid JSON: " + err.Error()})
 		return
 	}
+	if raw, present := body["fallbackProxy"]; present {
+		s, isStr := raw.(string)
+		if !isStr {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "fallbackProxy must be a string"})
+			return
+		}
+		if _, err := zen.ParseFallbackProxy(s); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+			return
+		}
+	}
 	saved, err := config.Save(map[string]any{"zen": body})
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": "Failed to save config: " + err.Error()})
@@ -2477,6 +2488,9 @@ func (server *Server) handleZenConfigSave(writer http.ResponseWriter, request *h
 	if updater, ok := server.backend.(ConfigUpdater); ok {
 		updater.UpdateConfig(saved)
 	}
+	// Same hook as startup: pushes the Zen harness disguise and the egress
+	// failover into their live package state.
+	applyRouterConfig(saved)
 	pub := config.GetPublicConfig()
 	zenMap, _ := pub["zen"].(map[string]any)
 	if zenMap != nil {

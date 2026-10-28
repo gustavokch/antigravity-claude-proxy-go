@@ -499,6 +499,6 @@ func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey str
 // clean end of stream.
 func ForwardResponses(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) error {
 	return forwardTranslated(w, "responses", modify, func() (*http.Response, error) {
-		return SendResponses(r.Context(), TLSClient(), baseURL, apiKey, body)
+		return SendResponses(r.Context(), GenerationClient(), baseURL, apiKey, body)
 	})
 }

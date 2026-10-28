@@ -95,6 +95,8 @@ func forwardZenPath(w http.ResponseWriter, r *http.Request, baseURL, apiKey stri
 
 			req.Body = io.NopCloser(bytes.NewReader(body))
 			req.ContentLength = int64(len(body))
+			// The egress failover replays the request on a free usage limit.
+			req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 
 			// Always set Bearer; clients that sent x-api-key to the proxy are
 			// also covered because we strip any prior auth header. The Zen
@@ -138,15 +140,10 @@ func forwardZenPath(w http.ResponseWriter, r *http.Request, baseURL, apiKey stri
 		},
 	}
 
-	// utls Bun handshake when the TLS disguise is on, on the one shared
-	// transport so keep-alive pools survive across requests; otherwise the
-	// shared plain transport (a typed-nil *http.Transport would panic in
-	// RoundTrip).
-	if tr := Transport(); tr != nil {
-		proxy.Transport = tr
-	} else {
-		proxy.Transport = upstreamTransport
-	}
+	// The shared generation transport: utls Bun handshake when the TLS
+	// disguise is on, the shared plain transport otherwise, and the egress
+	// failover over either once a fallback proxy is configured.
+	proxy.Transport = GenerationTransport()
 
 	proxy.ServeHTTP(w, r)
 }

@@ -56,6 +56,7 @@ func SetTLSConfig(cfg ZenTLSConfig) {
 	tlsCfg = cfg
 	tlsClient = nil
 	tlsTransport = nil
+	failoverClient = nil
 	tlsMu.Unlock()
 }
 

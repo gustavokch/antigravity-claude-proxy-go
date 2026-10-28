@@ -69,7 +69,7 @@ var ErrStreamTruncated = errors.New("zen stream ended before its terminal event"
 // clean end of stream.
 func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) error {
 	return forwardTranslated(w, "chat", modify, func() (*http.Response, error) {
-		return SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
+		return SendChat(r.Context(), GenerationClient(), baseURL, apiKey, body)
 	})
 }
 

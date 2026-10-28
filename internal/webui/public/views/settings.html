@@ -1168,6 +1168,14 @@
                                         <span class="field-help" x-show="zenConfig.keySource === 'env'" x-text="$store.global.t('zenApiKeyEnvActive') || 'Key source: environment (OPENCODE_API_KEY).'">Key source: environment (OPENCODE_API_KEY).</span>
                                         <span class="field-help" x-show="zenConfig.keySource !== 'env'" x-text="$store.global.t('zenApiKeyEnv') || 'Fallback: OPENCODE_API_KEY env.'">Fallback: OPENCODE_API_KEY env.</span>
                                     </div>
+                                    <div class="field">
+                                        <label class="field-label" for="setm-zen-fallback" x-text="$store.global.t('zenFallbackProxy') || 'Fallback egress proxy'">Fallback egress proxy</label>
+                                        <input id="setm-zen-fallback" type="text" class="input input-sm mono"
+                                            x-model="zenConfig.fallbackProxy"
+                                            aria-label="Zen fallback egress proxy"
+                                            placeholder="socks5h://100.72.157.22:1080">
+                                        <span class="field-help" x-text="$store.global.t('zenFallbackProxyHelp') || 'When Zen answers 429 free usage limit, requests move to this proxy until the limit resets. Empty disables the failover.'">When Zen answers 429 free usage limit, requests move to this proxy until the limit resets. Empty disables the failover.</span>
+                                    </div>
                                 </div>
                             </div>
 

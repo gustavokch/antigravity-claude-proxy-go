@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/proxydial/proxytest"
 )
 
 func TestServer_HandleZenConfigGet_RedactsAPIKey(t *testing.T) {
@@ -196,6 +197,51 @@ func TestServer_HandleZenConfigSave_RoundTripHonoredOnNextForward(t *testing.T) 
 	}
 	if gotAuth != "Bearer sk-saved" {
 		t.Errorf("Authorization = %q, want Bearer sk-saved (saved round-trip)", gotAuth)
+	}
+}
+
+// A Zen panel save must take effect without a restart: the fallback egress it
+// sets is used by the very next forward that hits the free usage limit.
+func TestServer_HandleZenConfigSave_AppliesFallbackEgress(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "")
+	exhausted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Zen: Free usage limit reached."}}`))
+	}))
+	defer exhausted.Close()
+	fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer fresh.Close()
+	socks := proxytest.NewSOCKS5(t, false, strings.TrimPrefix(fresh.URL, "http://"))
+
+	server, _, _ := newTestServerWithManager(t)
+	t.Cleanup(func() {
+		config.SetForTest(config.DefaultConfig())
+		applyRouterConfig(config.DefaultConfig())
+	})
+	handler := server.Handler()
+
+	payload := `{"enabled": true, "apiKey": "public", "baseUrl": "` + exhausted.URL + `",
+		"fallbackProxy": "socks5h://` + socks.Addr + `",
+		"allowlist": [{"id": "claude-sonnet-4-6", "alias": "sonnet", "enabled": true}]}`
+	saveRec := httptest.NewRecorder()
+	handler.ServeHTTP(saveRec, httptest.NewRequest(http.MethodPost, "/api/zen/config", strings.NewReader(payload)))
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveRec.Code, saveRec.Body.String())
+	}
+
+	msgReq := httptest.NewRequest(http.MethodPost, "/v1/messages",
+		strings.NewReader(`{"model":"sonnet","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`))
+	msgReq.Header.Set("Content-Type", "application/json")
+	msgReq.Header.Set("x-api-key", "test-api-key")
+	msgRec := httptest.NewRecorder()
+	handler.ServeHTTP(msgRec, msgReq)
+	if msgRec.Code != http.StatusOK {
+		t.Fatalf("forward status = %d, want the fallback's 200; body = %s", msgRec.Code, msgRec.Body.String())
 	}
 }
 

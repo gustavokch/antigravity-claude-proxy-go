@@ -261,6 +261,9 @@ func applyRouterConfig(cfg config.Config) {
 		openrouter.DefaultRateLimiter.SetMinRequestInterval(0)
 	}
 	applyZenHarnessConfig(cfg.Zen)
+	if err := zen.SetEgressConfig(zen.EgressConfig{FallbackProxy: cfg.Zen.FallbackProxy}); err != nil {
+		slog.Error("zen fallback proxy disabled", "error", err)
+	}
 }
 
 // applyZenHarnessConfig converts the persisted Zen harness section into the

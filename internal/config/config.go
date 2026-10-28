@@ -166,6 +166,9 @@ type ZenConfig struct {
 	APIKey    string            `json:"apiKey,omitempty"`
 	Allowlist []ZenModelConfig  `json:"allowlist,omitempty"`
 	Harness   *ZenHarnessConfig `json:"harness,omitempty"`
+	// FallbackProxy is the proxy URL (socks5h://host:port, …) Zen requests
+	// move to once the direct egress IP hits Zen's 429 free usage limit.
+	FallbackProxy string `json:"fallbackProxy,omitempty"`
 }
 
 type AccountSelectionConfig struct {

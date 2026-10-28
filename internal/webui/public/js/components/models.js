@@ -367,6 +367,7 @@ window.Components.models = () => ({
         hasApiKey: false,
         keySource: 'none',
         allowlist: [],
+        fallbackProxy: '',
         harness: { enabled: true, tls: false, version: '', client: '', project: '' }
     },
     zenHarnessLoaded: null,
@@ -919,6 +920,7 @@ window.Components.models = () => ({
                     hasApiKey: !!data.config.hasApiKey,
                     keySource: data.config.keySource || 'none',
                     allowlist: data.config.allowlist || [],
+                    fallbackProxy: data.config.fallbackProxy || '',
                     harness: this.zenHarnessFrom(data.config.harness)
                 };
                 this.zenHarnessLoaded = { ...this.zenConfig.harness };
@@ -952,7 +954,8 @@ window.Components.models = () => ({
                 enabled: this.zenConfig.enabled,
                 baseUrl: this.zenConfig.baseUrl || 'https://opencode.ai/zen',
                 hasApiKey: this.zenConfig.hasApiKey,
-                allowlist: this.zenConfig.allowlist || []
+                allowlist: this.zenConfig.allowlist || [],
+                fallbackProxy: (this.zenConfig.fallbackProxy || '').trim()
             };
             // Send the harness only after it was loaded, so a failed fetch
             // cannot overwrite the saved disguise. Identity strings go only

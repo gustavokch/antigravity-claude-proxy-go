@@ -653,6 +653,20 @@ Example `config.json`:
   rule for fingerprint parity — enable it per host after verifying. The
   escape hatch is a paid Zen key: keyed access may bypass the free-tier
   gate entirely, so no spoofing is needed at all.
+- **Free usage limit failover**: Zen meters free models per public egress
+  IP. When an IP's daily budget is spent, every request from it, the genuine
+  OpenCode client's included, gets 429 `FreeUsageLimitError` until the
+  `Retry-After` delay ends, or until 00:00 UTC if Zen sends no delay.
+  `zen.fallbackProxy` (`socks5`, `socks5h`, `http` or `https` URL, also on
+  the Zen settings panel) names a second egress. On that 429 the proxy
+  replays the request once through the proxy. The exhausted egress is
+  skipped until its limit lifts. If both egress routes are exhausted, the
+  client gets Zen's 429. Other 429 errors do not fail over. The fallback
+  uses the same TLS handshake as the direct route.
+
+  ```json
+  "zen": {"fallbackProxy": "socks5h://100.72.157.22:1080"}
+  ```
 
 ---
 
