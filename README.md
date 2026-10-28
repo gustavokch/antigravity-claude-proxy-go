@@ -627,11 +627,17 @@ Example `config.json`:
   within OpenCode"`, now mostly 429 `FreeUsageLimitError`). Every Zen-bound
   request therefore sends the OpenCode 2.0.20 header set by default —
   `User-Agent: opencode/latest/<version>/<client>`, `x-opencode-client`,
-  `x-opencode-project`, and a per-request session id sent as
-  `x-opencode-session`, `x-session-affinity` and `X-Session-Id` (algorithm
-  ported from the OpenCode client). The chat and Responses wires also add an
-  `<env>` block with `Working directory:` to the system prompt when the
-  client sent none. Configurable via `zen.harness` in `config.json`:
+  `x-opencode-project`, and a session id sent as `x-opencode-session`,
+  `x-session-affinity` and `X-Session-Id` (algorithm ported from the
+  OpenCode client). Like the genuine client, every turn of one conversation
+  sends the same session id, so Zen's affinity routing can follow it; the
+  cache-bump replay of a conversation sends it too. A conversation is the
+  client's session id plus its first prompt (a client with no session id is
+  keyed by its first prompt alone), and the proxy keeps the last 4096 in
+  memory. While the disguise is on, the chat and Responses wires also add an
+  `<env>` block with `Working directory: <the proxy's working directory>` to
+  the system prompt when the client sent none. Configurable via
+  `zen.harness` in `config.json`:
 
   ```json
   {
@@ -642,13 +648,15 @@ Example `config.json`:
   ```
 
   Omit `version`, `client` and `project` to follow the built-in defaults; a
-  value written there stays pinned across upgrades. Older releases wrote
-  `"version": "1.18.31"`, `"client": "cli"` and `"project": "global"` into
-  every new `config.json`. Those exact values are read as unset and removed
-  on the next save, so they cannot be pinned. `OPENCODE_VERSION` /
-  `OPENCODE_CLIENT` env vars override `version` / `client`, mirroring the
-  genuine client's env behavior. Setting `enabled` to `false` disables the
-  disguise entirely. A 403/426 gate response is logged as `zen free-tier gate
+  value written there stays pinned across upgrades. Clearing a field in the
+  Zen panel (an empty string in the update) removes the pin. Older releases
+  wrote `"version": "1.18.31"`, `"client": "cli"` and `"project": "global"`
+  into every new `config.json`. Those exact values are read as unset and
+  removed on the next save, so they cannot be pinned; a stored `1.18.31` is
+  logged when it is replaced. `OPENCODE_VERSION` / `OPENCODE_CLIENT` env vars
+  override `version` / `client`, mirroring the genuine client's env behavior.
+  Setting `enabled` to `false` turns off the headers and the `<env>` block.
+  A 403/426 gate response is logged as `zen free-tier gate
   rejected request`. A 429 `FreeUsageLimitError` is logged as `zen free usage
   limit reached`: either the daily free budget of the egress IP is spent, or
   the request failed the free-tier check.
