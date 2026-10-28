@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -52,16 +53,17 @@ func (c *harnessHeaderCapture) count() int {
 
 func withHarnessDefaults(t *testing.T) {
 	t.Helper()
+	prev := zen.GetHarnessConfig()
 	zen.SetHarnessConfig(zen.HarnessConfig{
 		Enabled: true, Version: "1.18.31", Client: "cli", Project: "global",
 	})
-	t.Cleanup(func() { zen.SetHarnessConfig(zen.HarnessConfig{}) })
+	t.Cleanup(func() { zen.SetHarnessConfig(prev) })
 }
 
 func requireHarnessHeaders(t *testing.T, hdr http.Header) {
 	t.Helper()
-	if got := hdr.Get("User-Agent"); got != "opencode/1.18.31" {
-		t.Errorf("User-Agent = %q, want %q", got, "opencode/1.18.31")
+	if got := hdr.Get("User-Agent"); got != "opencode/latest/1.18.31/cli" {
+		t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/1.18.31/cli")
 	}
 	for name, want := range map[string]string{
 		"x-opencode-client":  "cli",
@@ -71,11 +73,17 @@ func requireHarnessHeaders(t *testing.T, hdr http.Header) {
 			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
-	if hdr.Get("x-opencode-session") == "" {
+	session := hdr.Get("x-opencode-session")
+	if session == "" {
 		t.Error("x-opencode-session empty")
 	}
-	if hdr.Get("x-opencode-request") == "" {
-		t.Error("x-opencode-request empty")
+	for _, name := range []string{"x-session-affinity", "X-Session-Id"} {
+		if got := hdr.Get(name); got != session {
+			t.Errorf("%s = %q, want the x-opencode-session value %q", name, got, session)
+		}
+	}
+	if got := hdr.Get("x-opencode-request"); got != "" {
+		t.Errorf("x-opencode-request = %q, want absent (OpenCode 2.x does not send it)", got)
 	}
 }
 
@@ -127,8 +135,9 @@ func TestApplyZenHarnessConfig_TLSWiring(t *testing.T) {
 // not silently disable the header disguise: an absent key defaults to true,
 // an explicit enabled=false still turns it off.
 func TestApplyZenHarnessConfig_PartialSectionDefaultsEnabled(t *testing.T) {
+	prev := zen.GetHarnessConfig()
 	t.Cleanup(func() {
-		zen.SetHarnessConfig(zen.HarnessConfig{})
+		zen.SetHarnessConfig(prev)
 		zen.SetTLSConfig(zen.ZenTLSConfig{})
 	})
 
@@ -183,5 +192,93 @@ func TestSendZenBump_ObservesFreeTierGate(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "zen free-tier gate rejected request") ||
 		!strings.Contains(logBuf.String(), "model=mimo-v2.6-flash-free") {
 		t.Fatalf("gate warning missing:\n%s", logBuf.String())
+	}
+}
+
+// Zen routes x-session-affinity on the OpenCode session id, and the genuine
+// client keeps one id per session. Two turns of one Claude Code conversation
+// must therefore reach Zen with the same id on every wire, although the
+// second turn moves cache_control off the first prompt; the cache-bump replay
+// of that conversation must reuse it; another session gets its own.
+func TestForwardToZen_SessionIDPerConversation(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("OPENCODE_API_KEY", "")
+	withHarnessDefaults(t)
+
+	var mu sync.Mutex
+	var sessions []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sessions = append(sessions, r.Header.Get("x-opencode-session"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/chat/completions" {
+			_, _ = io.WriteString(w, `{"id":"c1","choices":[{"message":{"content":"yo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6",`+
+			`"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	saveZenTestConfig(t, map[string]any{
+		"enabled": true,
+		"apiKey":  "sk-zen-test",
+		"baseUrl": upstream.URL,
+		"allowlist": []map[string]any{
+			{"id": "claude-sonnet-4-6", "enabled": true},
+			{"id": "glm-5.3", "enabled": true},
+		},
+	})
+	server := newZenTestServer(t)
+
+	turn1 := `{"model":%q,"max_tokens":16,"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"fix the bug","cache_control":{"type":"ephemeral"}}]}]}`
+	turn2 := `{"model":%q,"max_tokens":16,"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"fix the bug"}]},` +
+		`{"role":"assistant","content":[{"type":"text","text":"done"}]},` +
+		`{"role":"user","content":[{"type":"text","text":"thanks","cache_control":{"type":"ephemeral"}}]}]}`
+	sessionOf := func(session, body string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", "test-proxy-key")
+		req.Header.Set("X-Claude-Code-Session-Id", session)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return sessions[len(sessions)-1]
+	}
+
+	for _, model := range []string{"claude-sonnet-4-6", "glm-5.3"} {
+		session := "session-a-" + model
+		first := sessionOf(session, fmt.Sprintf(turn1, model))
+		if first == "" {
+			t.Fatalf("%s: no x-opencode-session sent", model)
+		}
+		if next := sessionOf(session, fmt.Sprintf(turn2, model)); next != first {
+			t.Errorf("%s: second turn sent session %q, want the first turn's %q", model, next, first)
+		}
+		if other := sessionOf("session-b-"+model, fmt.Sprintf(turn1, model)); other == first {
+			t.Errorf("%s: another session reused %q", model, first)
+		}
+		if model != "claude-sonnet-4-6" {
+			continue
+		}
+		bump := cachebump.Record{SessionID: session, Body: []byte(fmt.Sprintf(turn2, model))}
+		if _, err := (&Server{}).sendZenBump(context.Background(), bump); err != nil {
+			t.Fatalf("sendZenBump: %v", err)
+		}
+		mu.Lock()
+		replayed := sessions[len(sessions)-1]
+		mu.Unlock()
+		if replayed != first {
+			t.Errorf("cache-bump replay sent session %q, want the conversation's %q", replayed, first)
+		}
 	}
 }

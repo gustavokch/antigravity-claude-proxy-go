@@ -1,0 +1,305 @@
+package zen
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"maps"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"antigravity-go-proxy/internal/transport"
+)
+
+// Zen meters its free models per public egress IP: a daily budget that resets
+// at 00:00 UTC, after which every request from that IP — the genuine OpenCode
+// client's included — gets 429 FreeUsageLimitError. The budget is kept per IP
+// and model bucket (models with their own rate limit get one each), and
+// another IP has its own, so the only way to keep going is to leave from a
+// different address. The fallback egress is a proxy (in practice a SOCKS5
+// server on another host of the tailnet) that a model's Zen traffic moves to
+// once the direct IP is exhausted for it.
+
+// EgressConfig is the live egress configuration for Zen generation requests.
+type EgressConfig struct {
+	// FallbackProxy is the proxy URL (socks5, socks5h, http or https) Zen
+	// requests go through once the direct egress hits the free usage limit.
+	// Empty disables the failover.
+	FallbackProxy string
+}
+
+// ParseFallbackProxy validates a fallback proxy URL. Empty input means no
+// fallback and returns nil without error. Errors never quote the password:
+// they reach the panel and the startup log.
+func ParseFallbackProxy(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		// A url.Error quotes the whole URL, so keep only its cause.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return nil, fmt.Errorf("invalid Zen fallback proxy: %w", err)
+	}
+	shown := u.Redacted()
+	switch u.Scheme {
+	case "socks5", "socks5h", "http", "https":
+	default:
+		return nil, fmt.Errorf("invalid Zen fallback proxy %q: scheme must be socks5, socks5h, http or https", shown)
+	}
+	if u.Hostname() == "" || u.Port() == "" {
+		return nil, fmt.Errorf("invalid Zen fallback proxy %q: host and port are required", shown)
+	}
+	if u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("invalid Zen fallback proxy %q: path, query and fragment are not allowed", shown)
+	}
+	return u, nil
+}
+
+type egressRoute int
+
+const (
+	routeDirect egressRoute = iota
+	routeFallback
+)
+
+func (r egressRoute) String() string {
+	if r == routeFallback {
+		return "fallback"
+	}
+	return "direct"
+}
+
+var (
+	// fallbackURL and the failover client built on it are guarded by tlsMu,
+	// so a TLS disguise change rebuilds both legs with the new handshake.
+	fallbackURL    *url.URL
+	failoverClient *http.Client
+
+	// exhaustedUntil records, per route and model, when Zen's free usage
+	// limit is expected to lift. Expired entries are pruned on each write.
+	exhaustMu      sync.Mutex
+	exhaustedUntil = map[exhaustKey]time.Time{}
+
+	// now is replaced in tests.
+	now = time.Now
+)
+
+type exhaustKey struct {
+	route egressRoute
+	model string
+}
+
+type egressModelKey struct{}
+
+// WithEgressModel tags ctx with the Zen model id a request is for. The
+// failover tracks the free usage limit per egress and model, as Zen meters
+// it, so one model's spent budget does not move the others; an untagged
+// request is tracked under the empty model.
+func WithEgressModel(ctx context.Context, model string) context.Context {
+	return context.WithValue(ctx, egressModelKey{}, model)
+}
+
+func egressModel(ctx context.Context) string {
+	model, _ := ctx.Value(egressModelKey{}).(string)
+	return model
+}
+
+// SetEgressConfig replaces the live egress configuration. An invalid proxy URL
+// disables the failover and is returned as an error. Changing the proxy forgets
+// the old fallback's exhaustion; the direct egress keeps its own.
+func SetEgressConfig(cfg EgressConfig) error {
+	u, err := ParseFallbackProxy(cfg.FallbackProxy)
+	tlsMu.Lock()
+	changed := urlString(fallbackURL) != urlString(u)
+	fallbackURL = u
+	dropFailoverLocked()
+	tlsMu.Unlock()
+	if changed {
+		exhaustMu.Lock()
+		maps.DeleteFunc(exhaustedUntil, func(k exhaustKey, _ time.Time) bool { return k.route == routeFallback })
+		exhaustMu.Unlock()
+	}
+	return err
+}
+
+func urlString(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	return u.String()
+}
+
+// dropFailoverLocked forgets the cached failover client. Its fallback leg is
+// a transport no other client shares, so its idle keep-alive connections are
+// closed rather than stranded until the idle timeout: the config hook runs on
+// every panel save. The direct leg is the shared transport SetTLSConfig owns.
+// Callers hold tlsMu.
+func dropFailoverLocked() {
+	if failoverClient != nil {
+		if ft, ok := failoverClient.Transport.(*failoverTransport); ok {
+			if tr, ok := ft.legs[routeFallback].(*http.Transport); ok {
+				tr.CloseIdleConnections()
+			}
+		}
+	}
+	failoverClient = nil
+}
+
+// directLocked is the round tripper that leaves from this host: the utls
+// transport while the disguise is on, the shared plain one otherwise. Callers
+// hold tlsMu.
+func directLocked() http.RoundTripper {
+	if tr := transportLocked(); tr != nil {
+		return tr
+	}
+	return upstreamTransport
+}
+
+// fallbackLocked builds the transport that leaves through the fallback proxy,
+// presenting the same handshake as the direct leg tunnelled through it.
+// Callers hold tlsMu and have checked fallbackURL.
+func fallbackLocked() http.RoundTripper {
+	base := transport.Upstream()
+	base.Proxy = http.ProxyURL(fallbackURL)
+	if tlsCfg.Enabled {
+		if hello, err := bunReplay(); err == nil && hello != nil {
+			return hello.Transport(base)
+		}
+	}
+	return base
+}
+
+// GenerationClient returns the client for Zen requests that spend the free
+// budget: TLSClient() while no fallback proxy is configured, else one client
+// (cached per configuration) whose transport fails over between the direct
+// and fallback egress. Like TLSClient it carries no timeout: streaming
+// callers own their deadlines.
+func GenerationClient() *http.Client {
+	tlsMu.Lock()
+	if fallbackURL == nil {
+		tlsMu.Unlock()
+		return TLSClient()
+	}
+	defer tlsMu.Unlock()
+	if failoverClient == nil {
+		failoverClient = &http.Client{Transport: &failoverTransport{legs: [2]http.RoundTripper{
+			routeDirect:   directLocked(),
+			routeFallback: fallbackLocked(),
+		}}}
+	}
+	return failoverClient
+}
+
+// GenerationTransport is GenerationClient's round tripper, for callers that
+// bring their own HTTP layer (the reverse proxy).
+func GenerationTransport() http.RoundTripper {
+	return GenerationClient().Transport
+}
+
+// failoverTransport sends a request on the egress Zen has not exhausted for
+// its model and, when Zen answers 429 FreeUsageLimitError, replays it once on
+// the other one.
+type failoverTransport struct {
+	legs [2]http.RoundTripper
+}
+
+func (f *failoverTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t := now()
+	model := egressModel(req.Context())
+	first, second := routeDirect, routeFallback
+	if exhausted(routeDirect, model, t) && !exhausted(routeFallback, model, t) {
+		first, second = routeFallback, routeDirect
+	}
+	replayable := req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
+
+	resp, err := f.legs[first].RoundTrip(req)
+	if err != nil || !hitFreeUsageLimit(resp) {
+		return resp, err
+	}
+	until := markExhausted(first, model, resp, t)
+	if exhausted(second, model, t) || !replayable {
+		slog.Warn("zen free usage limit reached; no other egress available",
+			"model", model, "egress", first.String(), "until", until.Format(time.RFC3339))
+		return resp, nil
+	}
+	retry := req.Clone(req.Context())
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return resp, nil
+		}
+		retry.Body = body
+	}
+	slog.Warn("zen free usage limit reached; failing over",
+		"model", model, "from", first.String(), "to", second.String(), "until", until.Format(time.RFC3339))
+	next, err := f.legs[second].RoundTrip(retry)
+	if err != nil {
+		slog.Error("zen egress failover failed; returning the original 429",
+			"egress", second.String(), "error", err)
+		return resp, nil
+	}
+	resp.Body.Close()
+	if hitFreeUsageLimit(next) {
+		markExhausted(second, model, next, t)
+		slog.Warn("zen free usage limit reached on both egress routes", "model", model, "egress", second.String())
+	}
+	return next, nil
+}
+
+func exhausted(r egressRoute, model string, t time.Time) bool {
+	exhaustMu.Lock()
+	defer exhaustMu.Unlock()
+	return t.Before(exhaustedUntil[exhaustKey{r, model}])
+}
+
+// markExhausted records when r should be tried again for model: after the
+// 429's Retry-After when Zen sends one, else at the next 00:00 UTC budget
+// reset.
+func markExhausted(r egressRoute, model string, resp *http.Response, t time.Time) time.Time {
+	until := nextUTCMidnight(t)
+	if secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); err == nil && secs > 0 {
+		until = t.Add(time.Duration(secs) * time.Second)
+	}
+	exhaustMu.Lock()
+	maps.DeleteFunc(exhaustedUntil, func(_ exhaustKey, lifts time.Time) bool { return !t.Before(lifts) })
+	exhaustedUntil[exhaustKey{r, model}] = until
+	exhaustMu.Unlock()
+	return until
+}
+
+func nextUTCMidnight(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day()+1, 0, 0, 0, 0, time.UTC)
+}
+
+// freeUsageErrorCap bounds how much of a 429 body is read to classify it.
+const freeUsageErrorCap = 64 << 10
+
+// hitFreeUsageLimit reports whether resp is Zen's 429 FreeUsageLimitError.
+// A 429 body is read and put back, so the caller still sees it whole.
+func hitFreeUsageLimit(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests || resp.Body == nil {
+		return false
+	}
+	head, err := io.ReadAll(io.LimitReader(resp.Body, freeUsageErrorCap))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+	if err != nil {
+		return false
+	}
+	return IsFreeUsageLimitError(head)
+}

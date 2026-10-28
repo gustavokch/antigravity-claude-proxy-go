@@ -624,25 +624,50 @@ Example `config.json`:
   the default is not clamped.
 - **Harness disguise**: OpenCode gates its free-tier models to its own
   harness (403 `FreeTierError "OpenCode's free tier can only be used from
-  within OpenCode"`). Every Zen-bound request therefore sends the genuine
-  header set by default — `User-Agent: opencode/<version>`,
-  `x-opencode-client`, `x-opencode-project`, and per-request
-  `x-opencode-session` / `x-opencode-request` ids (algorithm ported from the
-  OpenCode client). Configurable via `zen.harness` in `config.json`:
+  within OpenCode"`, now mostly 429 `FreeUsageLimitError`). Every Zen-bound
+  request therefore sends the OpenCode 2.0.20 header set by default —
+  `User-Agent: opencode/latest/<version>/<client>`, `x-opencode-client`,
+  `x-opencode-project`, and a session id sent as `x-opencode-session`,
+  `x-session-affinity` and `X-Session-Id` (algorithm ported from the
+  OpenCode client). Like the genuine client, every turn of one conversation
+  sends the same session id, so Zen's affinity routing can follow it; the
+  cache-bump replay of a conversation sends it too. A conversation is the
+  client's session id plus its first prompt (a client with no session id is
+  keyed by its first prompt alone), and the proxy keeps the last 4096 in
+  memory. While the disguise is on, the chat and Responses wires also shape
+  the body for the gate: an `<env>` block with `Working directory: <the
+  proxy's working directory>` joins the system prompt when the client sent
+  none, the client's `Bash`/`Read` tools go up as `bash`/`read`, and the
+  captured OpenCode definition of each one the client lacks is added (a
+  call to an added tool is dropped from the reply). Configurable via
+  `zen.harness` in `config.json`:
 
   ```json
   {
     "zen": {
-      "harness": {"enabled": true, "version": "1.18.31", "client": "cli", "project": "global"}
+      "harness": {"enabled": true, "version": "2.0.20", "client": "cli", "project": "global"}
     }
   }
   ```
 
-  `OPENCODE_VERSION` / `OPENCODE_CLIENT` env vars override `version` /
-  `client`, mirroring the genuine client's env behavior. Setting `enabled`
-  to `false` disables the disguise entirely. A gate response is logged
-  (`zen free-tier gate rejected request`) so a failed disguise is visible in
-  the proxy log.
+  Omit `version`, `client` and `project` to follow the built-in defaults; a
+  value written there stays pinned across upgrades. Clearing a field in the
+  Zen panel (an empty string in the update) removes the pin. Older releases
+  wrote `"version": "1.18.31"`, `"client": "cli"` and `"project": "global"`
+  into every new `config.json`. Those exact values are read as unset and
+  removed on the next save, so they cannot be pinned; a stored `1.18.31` is
+  logged when it is replaced. `OPENCODE_VERSION` / `OPENCODE_CLIENT` env vars
+  override `version` / `client`, mirroring the genuine client's env behavior.
+  Setting `enabled` to `false` disables the disguise entirely: no OpenCode
+  headers, no `<env>` block, no renamed or added tools; the client's system
+  prompt and tools go up as sent. The chat and Responses wires stream from
+  Zen either way: a non-streaming body fails the gate, and a stream keeps a
+  long answer inside the 5-minute wait for response headers. A
+  non-streaming client still gets one JSON reply.
+  A 403/426 gate response is logged as `zen free-tier gate
+  rejected request`. A 429 `FreeUsageLimitError` is logged as `zen free usage
+  limit reached`: either the daily free budget of the egress IP is spent, or
+  the request failed the free-tier check.
 - **TLS caveat**: headers alone are not enough — the gate also fingerprints
   the TLS handshake (genuine client is Bun/BoringSSL; every third-party
   stack has been rejected since Sep 2026). `"harness": {"tls": true}` opts
@@ -653,6 +678,24 @@ Example `config.json`:
   rule for fingerprint parity — enable it per host after verifying. The
   escape hatch is a paid Zen key: keyed access may bypass the free-tier
   gate entirely, so no spoofing is needed at all.
+- **Free usage limit failover**: Zen meters free models per public egress
+  IP and model bucket. When an IP's daily budget for a model is spent,
+  every request for it from that IP, the genuine OpenCode client's
+  included, gets 429 `FreeUsageLimitError` until the `Retry-After` delay
+  ends, or until 00:00 UTC if Zen sends no delay. `zen.fallbackProxy`
+  (`socks5`, `socks5h`, `http` or `https` URL, also on the Zen settings
+  panel) names a second egress. On that 429 the proxy replays the request
+  once through the proxy. The egress stays skipped for that model until its
+  limit lifts; other models keep their own state. If both egress routes are
+  exhausted, the client gets Zen's 429. Other 429 errors do not fail over.
+  The failover covers the gateway wires, cache-bump replays and the Jev
+  classifier. The fallback uses the same TLS handshake as the direct route.
+  The panel and `/api/config` show a proxy password as `xxxxx`; a save that
+  sends it back unchanged keeps the stored one.
+
+  ```json
+  "zen": {"fallbackProxy": "socks5h://192.0.2.10:1080"}
+  ```
 
 ---
 

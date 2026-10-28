@@ -156,6 +156,40 @@ func TestSharedTransportCached(t *testing.T) {
 	}
 }
 
+// The panel re-applies the TLS config on every save. The transport it drops
+// must close its idle keep-alive connection rather than strand it until the
+// idle timeout. A plain-http request pools a connection on the same transport.
+func TestSetTLSConfigClosesDroppedTransportIdleConnections(t *testing.T) {
+	closed := make(chan struct{}, 1)
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	upstream.Start()
+	defer upstream.Close()
+
+	SetTLSConfig(ZenTLSConfig{Enabled: true})
+	t.Cleanup(func() { SetTLSConfig(ZenTLSConfig{}) })
+	resp, err := (&http.Client{Transport: Transport()}).Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("request through the shared transport: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	SetTLSConfig(ZenTLSConfig{Enabled: true})
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the dropped transport kept its idle connection open")
+	}
+}
+
 // TestFetchModelsRoutesThroughTLSClient: with the disguise enabled the
 // models fetch must ride TLSClient()'s transport, not the client's own
 // timeout-bounded one; with the disguise off it must keep using the local

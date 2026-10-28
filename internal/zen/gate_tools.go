@@ -12,9 +12,10 @@ import (
 // carry functions named exactly "bash" and "read" — packet-verified: a body
 // with only "bash" (or only "read") is rejected with 403 FreeTierError, while
 // names like "Edit"/"Write" are not inspected and tool schemas are ignored.
-// Clients that do not define these functions (or define them as Anthropic's
-// "Bash"/"Read") get the captured definitions injected, so the body passes
-// the gate and still carries the schemas the genuine harness would send.
+// While the harness disguise is on (gateShapeOf), clients that do not define
+// these functions (or define them as Anthropic's "Bash"/"Read") get the
+// captured definitions injected, so the body passes the gate and still
+// carries the schemas the genuine harness would send.
 
 //go:embed gate_tools.json
 var gateToolDefsJSON []byte

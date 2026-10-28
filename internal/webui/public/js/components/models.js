@@ -314,6 +314,7 @@ window.Components.models = () => ({
         if (this.$store.global.settingsTab === 'models') {
             this.fetchOpenRouterConfig();
             this.fetchKimiConfig();
+            this.fetchZenConfig();
             this.loadCCConfig();
         }
     },
@@ -366,8 +367,11 @@ window.Components.models = () => ({
         apiKey: '',
         hasApiKey: false,
         keySource: 'none',
-        allowlist: []
+        allowlist: [],
+        fallbackProxy: '',
+        harness: { enabled: true, tls: false, version: '', client: '', project: '' }
     },
+    zenHarnessLoaded: null,
     zenSaving: false,
     zenError: '',
     zenDiscovered: [],
@@ -916,8 +920,11 @@ window.Components.models = () => ({
                     apiKey: '',
                     hasApiKey: !!data.config.hasApiKey,
                     keySource: data.config.keySource || 'none',
-                    allowlist: data.config.allowlist || []
+                    allowlist: data.config.allowlist || [],
+                    fallbackProxy: data.config.fallbackProxy || '',
+                    harness: this.zenHarnessFrom(data.config.harness)
                 };
+                this.zenHarnessLoaded = { ...this.zenConfig.harness };
                 Alpine.store('data').zen = this.zenConfig;
             }
         } catch (e) {
@@ -925,9 +932,32 @@ window.Components.models = () => ({
         }
     },
 
+    // zenHarnessFrom maps the public zen.harness section onto form state. An
+    // absent "enabled" means on, matching the server's nil-defaults-to-true.
+    zenHarnessFrom(h) {
+        h = h || {};
+        return {
+            enabled: h.enabled !== false,
+            tls: !!h.tls,
+            version: h.version || '',
+            client: h.client || '',
+            project: h.project || ''
+        };
+    },
+
     async saveZenConfig() {
         const store = Alpine.store('global');
         const password = store.webuiPassword;
+        // The server replaces the zen section with the posted one. Before a
+        // successful load (zenHarnessLoaded is set only by fetchZenConfig)
+        // the form holds defaults, and posting them would delete the stored
+        // key, allowlist and fallback proxy.
+        const loaded = this.zenHarnessLoaded;
+        if (!loaded) {
+            this.zenError = store.t('zenNotLoaded') || 'Zen settings are not loaded. Reload the page, then try again.';
+            store.showToast(this.zenError, 'error');
+            return;
+        }
         this.zenSaving = true;
         this.zenError = '';
         try {
@@ -935,8 +965,19 @@ window.Components.models = () => ({
                 enabled: this.zenConfig.enabled,
                 baseUrl: this.zenConfig.baseUrl || 'https://opencode.ai/zen',
                 hasApiKey: this.zenConfig.hasApiKey,
-                allowlist: this.zenConfig.allowlist || []
+                allowlist: this.zenConfig.allowlist || [],
+                fallbackProxy: (this.zenConfig.fallbackProxy || '').trim()
             };
+            // Identity strings go only when edited: echoing the loaded
+            // defaults would pin them in config.json and stop future default
+            // bumps from applying. A cleared field goes as "", which unpins
+            // it server-side.
+            const h = this.zenConfig.harness;
+            payload.harness = { enabled: !!h.enabled, tls: !!h.tls };
+            for (const k of ['version', 'client', 'project']) {
+                const v = (h[k] || '').trim();
+                if (v !== loaded[k]) payload.harness[k] = v;
+            }
             if (this.zenConfig.apiKey && this.zenConfig.apiKey.trim()) {
                 payload.apiKey = this.zenConfig.apiKey.trim();
             }
@@ -958,6 +999,12 @@ window.Components.models = () => ({
                     this.zenConfig.apiKey = '';
                 }
                 Alpine.store('data').zen = this.zenConfig;
+                // The server answers with the effective harness: a cleared
+                // field shows the default it follows again.
+                if (payload.harness && data.config.harness) {
+                    this.zenConfig.harness = this.zenHarnessFrom(data.config.harness);
+                    this.zenHarnessLoaded = { ...this.zenConfig.harness };
+                }
             }
             store.showToast(store.t('zenSavedSuccess') || 'Zen settings saved', 'success');
             Alpine.store('data').performHealthCheck();

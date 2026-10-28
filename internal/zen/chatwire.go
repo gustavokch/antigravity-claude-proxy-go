@@ -10,9 +10,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"antigravity-go-proxy/internal/format"
@@ -69,7 +71,7 @@ var ErrStreamTruncated = errors.New("zen stream ended before its terminal event"
 // clean end of stream.
 func ForwardChat(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) error {
 	return forwardTranslated(w, "chat", modify, func() (*http.Response, error) {
-		return SendChat(r.Context(), TLSClient(), baseURL, apiKey, body)
+		return SendChat(r.Context(), GenerationClient(), baseURL, apiKey, body)
 	})
 }
 
@@ -124,17 +126,93 @@ func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Res
 
 // --- Request translation ---
 
+// gateEnvBlock is the system-prompt marker Zen's free-tier gate requires: an
+// <env> block containing the case-sensitive "Working directory:". The genuine
+// client reports the directory it runs in, so the block reports the proxy's;
+// /workspace stands in only when that directory cannot be read. The proxy
+// never changes directory, so the block is built once.
+var gateEnvBlock = sync.OnceValue(func() string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		wd = "/workspace"
+	}
+	return "<env>\n  Working directory: " + wd + "\n</env>"
+})
+
+// gateShape is what a translated request changes for Zen's free-tier gate.
+// All of it belongs to the harness disguise: with zen.harness.enabled false
+// the client's system prompt and tools go upstream as the client sent them.
+type gateShape struct {
+	// system is the client's system prompt, carrying the gate's <env> marker
+	// while the disguise is on. Empty stays empty without the disguise.
+	system string
+	// renames maps the client's Bash/Read to the gate's bash/read; nil
+	// without the disguise.
+	renames map[string]string
+	// tools are the client's tools in Chat-Completions shape, plus the
+	// gate's bash and read while the disguise is on (ensureGateTools).
+	tools []any
+	// injected names the gate tools the client never declared.
+	injected map[string]bool
+}
+
+// gateShapeOf reads the harness toggle once, so a request is either fully
+// disguised or not at all.
+func gateShapeOf(req map[string]any) gateShape {
+	shape := gateShape{system: systemText(req["system"])}
+	if !GetHarnessConfig().Enabled {
+		shape.tools = toolsToChat(req["tools"], nil)
+		return shape
+	}
+	shape.system = withGateEnv(shape.system)
+	shape.renames = buildToolRenames(req["tools"])
+	shape.tools, shape.injected = ensureGateTools(toolsToChat(req["tools"], shape.renames))
+	return shape
+}
+
+// withGateEnv guarantees the system prompt carries the gate's <env> marker.
+func withGateEnv(sys string) string {
+	if sys == "" {
+		return gateEnvBlock()
+	}
+	if !hasGateEnv(sys) {
+		sys += "\n\n" + gateEnvBlock()
+	}
+	return sys
+}
+
+// hasGateEnv reports whether some <env> block of sys contains
+// "Working directory:". An unclosed block runs to the end of sys.
+func hasGateEnv(sys string) bool {
+	for {
+		_, rest, found := strings.Cut(sys, "<env>")
+		if !found {
+			return false
+		}
+		block, _, _ := strings.Cut(rest, "</env>")
+		if strings.Contains(block, "Working directory:") {
+			return true
+		}
+		sys = rest
+	}
+}
+
 // anthropicToChatRequest converts an Anthropic Messages request body into an
 // OpenAI Chat Completions request body.
 //
-// Two transformations serve the Zen free-tier gate (packet-verified):
+// While the harness disguise is on, two transformations serve the Zen
+// free-tier gate (packet-verified; gateShapeOf):
 //
-//   - The upstream body always carries "stream": true. A non-streaming body
-//     is rejected with 403 FreeTierError; clients that asked for JSON get the
-//     stream aggregated back in translateChatResponse.
-//   - The tools array always contains functions named exactly "bash" and
-//     "read". Client tools named "Bash"/"Read" (Anthropic spelling) are
-//     renamed; missing ones get the captured OpenCode definitions injected.
+//   - The tools array contains functions named exactly "bash" and "read".
+//     Client tools named "Bash"/"Read" (Anthropic spelling) are renamed;
+//     missing ones get the captured OpenCode definitions injected.
+//   - The system prompt carries an <env> block with "Working directory:".
+//
+// The upstream body always carries "stream": true, disguise or not. The gate
+// rejects a non-streaming body with 403 FreeTierError, and a stream also
+// keeps a long answer inside the transport's bound on the wait for response
+// headers. A client that asked for JSON gets the stream aggregated back in
+// translateChatResponse, so it never sees the difference.
 //
 // The second result maps upstream tool names back to the client's names for
 // response translation; nil when no rename occurred. The third result names
@@ -142,13 +220,14 @@ func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Res
 // declared them — a tool_call for one has no client-side tool to resolve to
 // and must be dropped from the response.
 func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]string, map[string]bool) {
-	renames := buildToolRenames(req["tools"])
+	shape := gateShapeOf(req)
+	renames := shape.renames
 	model, _ := req["model"].(string)
 	out := map[string]any{"model": StripOpencodePrefix(model)}
 
 	messages := make([]any, 0)
-	if sys := systemText(req["system"]); sys != "" {
-		messages = append(messages, map[string]any{"role": "system", "content": sys})
+	if shape.system != "" {
+		messages = append(messages, map[string]any{"role": "system", "content": shape.system})
 	}
 	rawMsgs, _ := req["messages"].([]any)
 	for _, raw := range rawMsgs {
@@ -179,10 +258,13 @@ func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]stri
 	}
 	out["stream"] = true
 	out["stream_options"] = map[string]any{"include_usage": true}
-	gateTools, injected := ensureGateTools(toolsToChat(req["tools"], renames))
-	out["tools"] = gateTools
-	if tc := toolChoiceToChat(req["tool_choice"], renames); tc != nil {
-		out["tool_choice"] = tc
+	// Chat Completions rejects an empty tools array, and a tool_choice
+	// without tools; without the disguise a tool-less client sends neither.
+	if len(shape.tools) > 0 {
+		out["tools"] = shape.tools
+		if tc := toolChoiceToChat(req["tool_choice"], renames); tc != nil {
+			out["tool_choice"] = tc
+		}
 	}
 	// Reverse map: only renames that actually changed the name, so an
 	// upstream tool the client never defined passes through untouched.
@@ -192,7 +274,7 @@ func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]stri
 			rev[upstream] = client
 		}
 	}
-	return out, rev, injected
+	return out, rev, shape.injected
 }
 
 // systemText flattens an Anthropic system field into one string for the

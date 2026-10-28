@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -140,8 +142,8 @@ type ZenModelConfig struct {
 }
 
 // ZenHarnessConfig is the OpenCode client disguise applied to every
-// zen-bound request: the User-Agent identity plus the four x-opencode-*
-// routing headers the genuine OpenCode client sends.
+// zen-bound request: the User-Agent identity plus the x-opencode-* and
+// session routing headers the genuine OpenCode client sends.
 type ZenHarnessConfig struct {
 	// Enabled is a pointer so a hand-written section can omit the key:
 	// absent (nil) means "default on", an explicit false stays false.
@@ -166,6 +168,9 @@ type ZenConfig struct {
 	APIKey    string            `json:"apiKey,omitempty"`
 	Allowlist []ZenModelConfig  `json:"allowlist,omitempty"`
 	Harness   *ZenHarnessConfig `json:"harness,omitempty"`
+	// FallbackProxy is the proxy URL (socks5h://host:port, …) Zen requests
+	// move to once the direct egress IP hits Zen's 429 free usage limit.
+	FallbackProxy string `json:"fallbackProxy,omitempty"`
 }
 
 type AccountSelectionConfig struct {
@@ -889,6 +894,7 @@ func Load() (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
+	followSeededZenIdentity(cfg.Zen.Harness)
 
 	currentConfig = cfg
 	return cfg, nil
@@ -931,6 +937,7 @@ func Save(updates map[string]any) (Config, error) {
 	if currentMap == nil {
 		defaultData, _ := json.Marshal(DefaultConfig())
 		_ = json.Unmarshal(defaultData, &currentMap)
+		dropZenHarnessIdentity(currentMap)
 	}
 
 	// Merge updates
@@ -1046,9 +1053,10 @@ func Save(updates map[string]any) (Config, error) {
 				for kk, vv := range vMap {
 					zenCopy[kk] = vv
 				}
-				// The harness section merges field-by-field so a partial
-				// update (empty string = keep persisted) cannot wipe the
-				// disguise; an absent section is preserved whole.
+				// The harness section merges field-by-field, so a partial
+				// update cannot wipe the disguise; an absent section is
+				// preserved whole. An empty identity string clears its
+				// key, so the value follows the built-in default again.
 				if hMap, ok := vMap["harness"].(map[string]any); ok {
 					existingHarness, _ := existingZen["harness"].(map[string]any)
 					hCopy := make(map[string]any)
@@ -1057,6 +1065,7 @@ func Save(updates map[string]any) (Config, error) {
 					}
 					for hk, hv := range hMap {
 						if str, isStr := hv.(string); isStr && strings.TrimSpace(str) == "" {
+							delete(hCopy, hk)
 							continue
 						}
 						hCopy[hk] = hv
@@ -1064,6 +1073,14 @@ func Save(updates map[string]any) (Config, error) {
 					zenCopy["harness"] = hCopy
 				} else if ex, ok := existingZen["harness"]; ok {
 					zenCopy["harness"] = ex
+				}
+				// Like the harness, an unsent fallbackProxy (an old panel, an
+				// API client) keeps the persisted proxy; "" clears it. The
+				// public config shows the proxy password redacted, so a save
+				// that sends the redacted form back keeps the stored one.
+				storedProxy, _ := existingZen["fallbackProxy"].(string)
+				if posted, sent := vMap["fallbackProxy"]; storedProxy != "" && (!sent || posted == any(redactProxyURL(storedProxy))) {
+					zenCopy["fallbackProxy"] = storedProxy
 				}
 				hasApiKey, _ := zenCopy["hasApiKey"].(bool)
 				apiKey, _ := zenCopy["apiKey"].(string)
@@ -1142,6 +1159,7 @@ func Save(updates map[string]any) (Config, error) {
 		}
 		currentMap[k] = v
 	}
+	dropSeededZenIdentity(currentMap)
 
 	encoded, err := json.MarshalIndent(currentMap, "", "  ")
 	if err != nil {
@@ -1162,6 +1180,86 @@ func Save(updates map[string]any) (Config, error) {
 	}
 
 	return currentConfig, nil
+}
+
+// dropZenHarnessIdentity removes the OpenCode identity strings from a
+// zen.harness section seeded from DefaultConfig. Written to disk they would
+// read as the operator's choice, and a later bump of zen.DefaultVersion would
+// never reach the install; absent, Load fills them from DefaultConfig again.
+func dropZenHarnessIdentity(configMap map[string]any) {
+	harness := zenHarnessSection(configMap)
+	for key := range seededZenIdentity {
+		delete(harness, key)
+	}
+}
+
+// seededZenIdentity holds, per zen.harness identity key, the value Save wrote
+// into every config.json it created before it stopped seeding the identity.
+// The operator did not choose it, so a stored one reads as unset and follows
+// the current default. Only seeded values belong here: a listed value can no
+// longer be pinned.
+var seededZenIdentity = map[string]string{
+	"version": "1.18.31",
+	"client":  "cli",
+	"project": "global",
+}
+
+// zenIdentityDefaults holds the built-in value of each zen.harness identity
+// key, the one a seeded value follows.
+var zenIdentityDefaults = map[string]string{
+	"version": zen.DefaultVersion,
+	"client":  zen.DefaultHarnessClient,
+	"project": zen.DefaultProject,
+}
+
+// dropSeededZenIdentity removes the seeded identity values from the
+// zen.harness section of a raw config map, so Save stores them as absent.
+func dropSeededZenIdentity(configMap map[string]any) {
+	harness := zenHarnessSection(configMap)
+	for key, seeded := range seededZenIdentity {
+		if harness[key] == seeded {
+			delete(harness, key)
+			logSeededZenIdentity(key)
+		}
+	}
+}
+
+// followSeededZenIdentity replaces the seeded identity values of a loaded
+// harness section with the current defaults.
+func followSeededZenIdentity(h *ZenHarnessConfig) {
+	if h == nil {
+		return
+	}
+	for _, field := range [...]struct {
+		key   string
+		value *string
+	}{{"version", &h.Version}, {"client", &h.Client}, {"project", &h.Project}} {
+		if *field.value == seededZenIdentity[field.key] {
+			*field.value = zenIdentityDefaults[field.key]
+			logSeededZenIdentity(field.key)
+		}
+	}
+}
+
+// logSeededZenIdentity reports that a stored seeded identity value now
+// follows the default, so an operator who chose that exact value sees why it
+// no longer applies. A seeded value equal to its default changes nothing on
+// the wire and is not reported.
+func logSeededZenIdentity(key string) {
+	seeded, now := seededZenIdentity[key], zenIdentityDefaults[key]
+	if seeded == now {
+		return
+	}
+	slog.Info("zen.harness value written by an older release follows the built-in default; set another value to pin one",
+		"key", "zen.harness."+key, "stored", seeded, "now", now)
+}
+
+// zenHarnessSection returns the zen.harness object of a raw config map, or
+// nil when there is none.
+func zenHarnessSection(configMap map[string]any) map[string]any {
+	zenMap, _ := configMap["zen"].(map[string]any)
+	harness, _ := zenMap["harness"].(map[string]any)
+	return harness
 }
 
 // maskToken renders a token for public config output.
@@ -1370,11 +1468,15 @@ func GetPublicConfig() map[string]any {
 	if zenMap, ok := result["zen"].(map[string]any); ok {
 		zenCopy := make(map[string]any)
 		for kk, vv := range zenMap {
-			if kk == "apiKey" {
+			switch kk {
+			case "apiKey":
 				if strKey, isStr := vv.(string); isStr && strKey != "" {
 					zenCopy["hasApiKey"] = true
 				}
-			} else {
+			case "fallbackProxy":
+				proxy, _ := vv.(string)
+				zenCopy[kk] = redactProxyURL(proxy)
+			default:
 				zenCopy[kk] = vv
 			}
 		}
@@ -1423,4 +1525,18 @@ func GetPublicConfig() map[string]any {
 	}
 
 	return result
+}
+
+// redactProxyURL returns a proxy URL with its password replaced the way
+// url.URL.Redacted does. A value without a password, or one that does not
+// parse, is returned unchanged.
+func redactProxyURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.User == nil {
+		return raw
+	}
+	if _, has := u.User.Password(); !has {
+		return raw
+	}
+	return u.Redacted()
 }

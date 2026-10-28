@@ -74,8 +74,10 @@ func TestAnthropicToResponsesRequest_ConversationShape(t *testing.T) {
 	if len(sysParts) != 1 {
 		t.Fatalf("system content = %v, want one input_text part", sysParts)
 	}
-	if part, _ := sysParts[0].(map[string]any); part["type"] != "input_text" || part["text"] != "be terse" {
-		t.Errorf("system part = %v, want input_text/be terse", sysParts[0])
+	part, _ := sysParts[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if part["type"] != "input_text" || !strings.HasPrefix(text, "be terse") || !hasGateEnv(text) {
+		t.Errorf("system part = %v, want input_text starting with the client prompt and carrying the gate env block", sysParts[0])
 	}
 
 	user0, _ := items[1].(map[string]any)
@@ -1615,8 +1617,8 @@ func TestAnthropicToResponsesRequest_DropsReplayedThinking(t *testing.T) {
 			t.Fatalf("reasoning item replayed without an id: %s", mustJSON(t, item))
 		}
 	}
-	if len(items) != 3 {
-		t.Fatalf("input has %d items, want 3 (user, assistant text, user): %s", len(items), mustJSON(t, items))
+	if len(items) != 4 {
+		t.Fatalf("input has %d items, want 4 (gate system, user, assistant text, user): %s", len(items), mustJSON(t, items))
 	}
 }
 
@@ -2225,14 +2227,14 @@ func TestAnthropicToResponsesRequest_UserTurnBlocks(t *testing.T) {
 	})
 
 	items := responsesInputItems(t, out)
-	if len(items) != 2 {
-		t.Fatalf("input has %d items, want function_call_output then user message: %s", len(items), mustJSON(t, items))
+	if len(items) != 3 {
+		t.Fatalf("input has %d items, want gate system, function_call_output, user message: %s", len(items), mustJSON(t, items))
 	}
-	result, _ := items[0].(map[string]any)
+	result, _ := items[1].(map[string]any)
 	if result["type"] != "function_call_output" || result["call_id"] != "toolu_1" || result["output"] != "Error: boom" {
 		t.Errorf("tool result item = %s, want function_call_output toolu_1 with an Error: prefix", mustJSON(t, result))
 	}
-	user, _ := items[1].(map[string]any)
+	user, _ := items[2].(map[string]any)
 	want := `[{"text":"look","type":"input_text"},` +
 		`{"image_url":"data:image/png;base64,QUJD","type":"input_image"},` +
 		`{"image_url":"https://example.test/a.png","type":"input_image"}]`

@@ -53,6 +53,7 @@ func (server *Server) systemone(writer http.ResponseWriter, request *http.Reques
 	if server.logger != nil {
 		server.logger.Info("zen systemone forward", "model", probe.Model)
 	}
+	request = request.WithContext(zen.WithEgressModel(request.Context(), probe.Model))
 	zen.ForwardSystemOne(writer, request, cfg.BaseURL, key, body, func(resp *http.Response) error {
 		zen.ObserveFreeTierGate(resp, probe.Model)
 		return nil

@@ -3,8 +3,10 @@ package zen
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,8 +17,8 @@ import (
 )
 
 func TestDefaultHarnessConstants(t *testing.T) {
-	if DefaultVersion != "1.18.31" {
-		t.Errorf("DefaultVersion = %q, want %q", DefaultVersion, "1.18.31")
+	if DefaultVersion != "2.0.20" {
+		t.Errorf("DefaultVersion = %q, want %q", DefaultVersion, "2.0.20")
 	}
 	if DefaultHarnessClient != "cli" {
 		t.Errorf("DefaultHarnessClient = %q, want %q", DefaultHarnessClient, "cli")
@@ -29,9 +31,6 @@ func TestDefaultHarnessConstants(t *testing.T) {
 	}
 	if HeaderSession != "x-opencode-session" {
 		t.Errorf("HeaderSession = %q", HeaderSession)
-	}
-	if HeaderRequest != "x-opencode-request" {
-		t.Errorf("HeaderRequest = %q", HeaderRequest)
 	}
 	if HeaderClient != "x-opencode-client" {
 		t.Errorf("HeaderClient = %q", HeaderClient)
@@ -53,10 +52,10 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: true})
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
-		if got := hdr.Get(HeaderUA); got != "opencode/"+DefaultVersion {
-			t.Errorf("User-Agent = %q, want %q", got, "opencode/"+DefaultVersion)
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
+			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/"+DefaultVersion+"/cli")
 		}
 		if got := hdr.Get(HeaderClient); got != DefaultHarnessClient {
 			t.Errorf("x-opencode-client = %q, want %q", got, DefaultHarnessClient)
@@ -64,12 +63,11 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		if got := hdr.Get(HeaderProject); got != DefaultProject {
 			t.Errorf("x-opencode-project = %q, want %q", got, DefaultProject)
 		}
-		if got := hdr.Get(HeaderSession); !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(got) {
-			t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", got)
+		session := hdr.Get(HeaderSession)
+		if !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(session) {
+			t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", session)
 		}
-		if got := hdr.Get(HeaderRequest); !regexp.MustCompile(`^msg_[0-9A-Za-z]{26}$`).MatchString(got) {
-			t.Errorf("x-opencode-request = %q, want msg_ + 26 base62 chars", got)
-		}
+		requireSessionMirrors(t, hdr, session)
 	})
 
 	t.Run("overrides", func(t *testing.T) {
@@ -80,10 +78,12 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 			Project: "abc123",
 		})
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
-		if got := hdr.Get(HeaderUA); got != "opencode/9.9.9" {
-			t.Errorf("User-Agent = %q, want %q", got, "opencode/9.9.9")
+		// OpenCode ends the UA with the same app name it sends as
+		// x-opencode-client (packages/core/src/app.ts useragent).
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/9.9.9/desktop" {
+			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/9.9.9/desktop")
 		}
 		if got := hdr.Get(HeaderClient); got != "desktop" {
 			t.Errorf("x-opencode-client = %q, want %q", got, "desktop")
@@ -101,10 +101,10 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 			Project: "   ",
 		})
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
-		if got := hdr.Get(HeaderUA); got != "opencode/"+DefaultVersion {
-			t.Errorf("User-Agent = %q, want %q", got, "opencode/"+DefaultVersion)
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
+			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/"+DefaultVersion+"/cli")
 		}
 		if got := hdr.Get(HeaderClient); got != DefaultHarnessClient {
 			t.Errorf("x-opencode-client = %q, want %q", got, DefaultHarnessClient)
@@ -117,7 +117,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 	t.Run("disabled is a no-op", func(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: false, Version: "9.9.9"})
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
 		if len(hdr) != 0 {
 			t.Errorf("disabled harness wrote headers: %v", hdr)
@@ -128,9 +128,9 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: true})
 		hdr := http.Header{}
 		hdr.Set(HeaderUA, "claude-cli/2.0.0")
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
-		if got := hdr.Get(HeaderUA); got != "opencode/"+DefaultVersion {
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
 			t.Errorf("User-Agent = %q, want it overwritten with the disguise", got)
 		}
 	})
@@ -138,21 +138,21 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 	t.Run("env overrides config", func(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: true, Version: "9.9.9", Client: "desktop"})
 		t.Setenv("OPENCODE_VERSION", "8.8.8")
-		t.Setenv("OPENCODE_CLIENT", "cli")
+		t.Setenv("OPENCODE_CLIENT", "acp")
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
-		if got := hdr.Get(HeaderUA); got != "opencode/8.8.8" {
-			t.Errorf("User-Agent = %q, want OPENCODE_VERSION to win", got)
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/8.8.8/acp" {
+			t.Errorf("User-Agent = %q, want OPENCODE_VERSION and OPENCODE_CLIENT to win", got)
 		}
-		if got := hdr.Get(HeaderClient); got != "cli" {
+		if got := hdr.Get(HeaderClient); got != "acp" {
 			t.Errorf("x-opencode-client = %q, want OPENCODE_CLIENT to win", got)
 		}
 	})
 
 	t.Run("nil header map does not panic", func(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: true})
-		ApplyHarnessHeaderMap(nil)
+		ApplyHarnessHeaderMap(nil, "")
 	})
 }
 
@@ -162,8 +162,8 @@ func TestApplyHarnessHeaders(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/chat/completions", nil)
 	ApplyHarnessHeaders(req)
 
-	if got := req.Header.Get(HeaderUA); got != "opencode/"+DefaultVersion {
-		t.Errorf("User-Agent = %q, want %q", got, "opencode/"+DefaultVersion)
+	if got := req.Header.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
+		t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/"+DefaultVersion+"/cli")
 	}
 	if got := req.Header.Get(HeaderClient); got != DefaultHarnessClient {
 		t.Errorf("x-opencode-client = %q, want %q", got, DefaultHarnessClient)
@@ -171,75 +171,109 @@ func TestApplyHarnessHeaders(t *testing.T) {
 	if got := req.Header.Get(HeaderProject); got != DefaultProject {
 		t.Errorf("x-opencode-project = %q, want %q", got, DefaultProject)
 	}
-	if got := req.Header.Get(HeaderSession); !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(got) {
-		t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", got)
+	session := req.Header.Get(HeaderSession)
+	if !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(session) {
+		t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", session)
 	}
-	if got := req.Header.Get(HeaderRequest); !regexp.MustCompile(`^msg_[0-9A-Za-z]{26}$`).MatchString(got) {
-		t.Errorf("x-opencode-request = %q, want msg_ + 26 base62 chars", got)
-	}
+	requireSessionMirrors(t, req.Header, session)
 
 	ApplyHarnessHeaders(nil) // must not panic
 }
 
+// The genuine client keeps one session id for a whole session, and Zen routes
+// x-session-affinity on it: every turn of a conversation must send the same
+// id, another conversation a different one, and a request that names no
+// conversation a fresh one.
+func TestSessionIDPerConversation(t *testing.T) {
+	withHarness(t, HarnessConfig{Enabled: true})
+	send := func(ctx context.Context) http.Header {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://opencode.ai/zen/v1/messages", nil)
+		ApplyHarnessHeaders(req)
+		requireSessionMirrors(t, req.Header, req.Header.Get(HeaderSession))
+		return req.Header
+	}
+	conversation := WithConversation(context.Background(), "session-a\x00first prompt")
+	first, again := send(conversation), send(conversation)
+	if sid := first.Get(HeaderSession); sid == "" || again.Get(HeaderSession) != sid {
+		t.Errorf("turns of one conversation sent %q then %q, want one id", sid, again.Get(HeaderSession))
+	}
+	other := send(WithConversation(context.Background(), "session-b\x00first prompt"))
+	if other.Get(HeaderSession) == first.Get(HeaderSession) {
+		t.Error("a second conversation reused the first one's session id")
+	}
+	if send(context.Background()).Get(HeaderSession) == send(context.Background()).Get(HeaderSession) {
+		t.Error("requests that name no conversation shared a session id")
+	}
+	hdr := http.Header{}
+	ApplyHarnessHeaderMap(hdr, "session-a\x00first prompt")
+	if got := hdr.Get(HeaderSession); got != first.Get(HeaderSession) {
+		t.Errorf("header map for the same conversation = %q, want %q", got, first.Get(HeaderSession))
+	}
+}
+
+// The id table is bounded: past sessionCapacity the oldest conversation is
+// forgotten and gets a new id, while a newer one keeps its id.
+func TestSessionIDForgetsOldestConversation(t *testing.T) {
+	reset := func() {
+		sessions.Lock()
+		sessions.ids, sessions.order, sessions.next = make(map[string]string), nil, 0
+		sessions.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+	oldest, _ := sessionIDFor("evict-0")
+	second, _ := sessionIDFor("evict-1")
+	for i := 2; i <= sessionCapacity; i++ {
+		if _, err := sessionIDFor(fmt.Sprintf("evict-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := sessionIDFor("evict-1"); got != second {
+		t.Errorf("second conversation id = %q after one eviction, want %q kept", got, second)
+	}
+	if got, _ := sessionIDFor("evict-0"); got == oldest {
+		t.Errorf("oldest conversation kept %q past capacity, want a new id", got)
+	}
+}
+
 func TestHarnessIDs(t *testing.T) {
 	seen := map[string]bool{}
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		sid, err := NewSessionID()
 		if err != nil {
 			t.Fatalf("NewSessionID: %v", err)
 		}
-		rid, err := NewRequestID()
-		if err != nil {
-			t.Fatalf("NewRequestID: %v", err)
-		}
 		if !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(sid) {
 			t.Fatalf("session id %q does not match ses_ + 26 base62 chars", sid)
 		}
-		if !regexp.MustCompile(`^msg_[0-9A-Za-z]{26}$`).MatchString(rid) {
-			t.Fatalf("request id %q does not match msg_ + 26 base62 chars", rid)
-		}
-		if seen[sid] || seen[rid] {
-			t.Fatalf("duplicate id generated: %q / %q", sid, rid)
+		if seen[sid] {
+			t.Fatalf("duplicate id generated: %q", sid)
 		}
 		seen[sid] = true
-		seen[rid] = true
 	}
 }
 
 func TestCreateIDTimestampEncoding(t *testing.T) {
 	when := time.UnixMilli(1_700_000_000_000)
 
-	ascending, err := createID(false, when)
+	id, err := createID(when)
 	if err != nil {
-		t.Fatalf("createID ascending: %v", err)
+		t.Fatalf("createID: %v", err)
 	}
-	descending, err := createID(true, when)
-	if err != nil {
-		t.Fatalf("createID descending: %v", err)
+	if len(id) != idLength {
+		t.Errorf("id length = %d, want %d", len(id), idLength)
 	}
-
-	wantAsc := "bcfe56800001" // low 48 bits of ms<<12|1
-	if got := ascending[:12]; got != wantAsc {
-		t.Errorf("ascending timestamp prefix = %q, want %q", got, wantAsc)
+	// 12 hex chars of ^uint64(ms*0x1000 + 1); the plain form is bcfe56800001.
+	if got, want := id[:12], "4301a97ffffe"; got != want {
+		t.Errorf("timestamp prefix = %q, want %q", got, want)
 	}
-	// 12 hex chars of ^uint64(ms*0x1000 + 1) — inversion must differ from
-	// the ascending form and stay 12 chars.
-	if len(descending) != idLength {
-		t.Errorf("descending id length = %d, want %d", len(descending), idLength)
-	}
-	if got, want := descending[:12], "4301a97ffffe"; got != want {
-		t.Errorf("descending timestamp prefix = %q, want %q", got, want)
-	}
-	if descending[:12] == ascending[:12] {
-		t.Errorf("descending timestamp prefix must be inverted, both = %q", ascending[:12])
-	}
-	// Descending ids must sort in reverse chronological order.
-	later, err := createID(true, when.Add(time.Second))
+	// Ids must sort in reverse chronological order.
+	later, err := createID(when.Add(time.Second))
 	if err != nil {
 		t.Fatalf("createID later: %v", err)
 	}
-	if !(later[:12] < descending[:12]) {
-		t.Errorf("descending prefix not monotonic: later=%q now=%q", later[:12], descending[:12])
+	if !(later[:12] < id[:12]) {
+		t.Errorf("prefix not descending: later=%q now=%q", later[:12], id[:12])
 	}
 }
 
@@ -274,6 +308,7 @@ func TestIsFreeTierGateError(t *testing.T) {
 			body: `{"error":{"message":"opencode's FREE TIER can only be used from within opencode"}}`,
 			want: true,
 		},
+		{name: "free usage limit is not the gate", body: freeUsageLimitBody, want: false},
 		{name: "generic 403", body: `{"type":"error","error":{"type":"permission_error","message":"insufficient credits"}}`, want: false},
 		{name: "not found", body: `{"type":"error","error":{"type":"not_found_error","message":"model not found"}}`, want: false},
 		{name: "empty", body: ``, want: false},
@@ -282,6 +317,36 @@ func TestIsFreeTierGateError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsFreeTierGateError([]byte(tc.body)); got != tc.want {
 				t.Errorf("IsFreeTierGateError(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// freeUsageLimitBody is the observed 429 body: Zen's per-IP free budget, which
+// Zen also returns to a request that fails its free-tier check.
+const freeUsageLimitBody = `{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`
+
+func TestIsFreeUsageLimitError(t *testing.T) {
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	_, _ = zw.Write([]byte(freeUsageLimitBody))
+	_ = zw.Close()
+
+	cases := []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{name: "observed 429 body", body: []byte(freeUsageLimitBody), want: true},
+		{name: "gzip body", body: gz.Bytes(), want: true},
+		{name: "translated Anthropic envelope", body: []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Zen: Free usage limit reached."}}`), want: true},
+		{name: "free-tier gate", body: []byte(`{"error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}}`), want: false},
+		{name: "plain rate limit", body: []byte(`{"type":"error","error":{"type":"RateLimitError","message":"Rate limit exceeded. Please try again later."}}`), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsFreeUsageLimitError(tc.body); got != tc.want {
+				t.Errorf("IsFreeUsageLimitError(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
@@ -374,6 +439,45 @@ func TestObserveFreeTierGate_UpgradeRequired(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "zen free-tier gate rejected request") {
 		t.Errorf("gate warning missing for 426:\n%s", logBuf.String())
+	}
+}
+
+// A 429 FreeUsageLimitError means a spent daily budget or a request that
+// failed the free-tier check. It is logged as the usage limit, naming both
+// causes, not as the gate; a plain 429 logs nothing.
+func TestObserveFreeTierGate_FreeUsageLimit(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       io.NopCloser(strings.NewReader(freeUsageLimitBody)),
+	}
+	ObserveFreeTierGate(resp, "deepseek-v4.1-flash-free")
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(got) != freeUsageLimitBody {
+		t.Errorf("body changed:\n got %s\nwant %s", got, freeUsageLimitBody)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "zen free usage limit reached") || !strings.Contains(logged, "daily free budget") {
+		t.Errorf("usage-limit warning missing:\n%s", logged)
+	}
+	if strings.Contains(logged, "gate rejected request") {
+		t.Errorf("usage limit logged as the free-tier gate:\n%s", logged)
+	}
+
+	logBuf.Reset()
+	plain := `{"type":"error","error":{"type":"RateLimitError","message":"Rate limit exceeded. Please try again later."}}`
+	resp = &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader(plain))}
+	ObserveFreeTierGate(resp, "m")
+	if got, _ := io.ReadAll(resp.Body); string(got) != plain || logBuf.Len() != 0 {
+		t.Errorf("plain 429: body=%s log=%q", got, logBuf.String())
 	}
 }
 

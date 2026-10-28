@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/openrouter"
+	"antigravity-go-proxy/internal/zen"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -1202,14 +1204,116 @@ func TestZenHarnessDefaults(t *testing.T) {
 	if cfg.Zen.Harness.Enabled == nil || !*cfg.Zen.Harness.Enabled {
 		t.Error("zen.harness.enabled must default to true")
 	}
-	if cfg.Zen.Harness.Version != "1.18.31" {
-		t.Errorf("zen.harness.version = %q, want %q", cfg.Zen.Harness.Version, "1.18.31")
+	if cfg.Zen.Harness.Version != "2.0.20" {
+		t.Errorf("zen.harness.version = %q, want %q", cfg.Zen.Harness.Version, "2.0.20")
 	}
 	if cfg.Zen.Harness.Client != "cli" {
 		t.Errorf("zen.harness.client = %q, want %q", cfg.Zen.Harness.Client, "cli")
 	}
 	if cfg.Zen.Harness.Project != "global" {
 		t.Errorf("zen.harness.project = %q, want %q", cfg.Zen.Harness.Project, "global")
+	}
+}
+
+// A config.json that Save creates from the defaults must not pin the disguise
+// identity: those values follow zen.DefaultVersion and friends, so a default
+// bump reaches installs that never chose a version.
+func TestSave_SeedDoesNotPinHarnessIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if _, err := Save(map[string]any{"maxRetries": 7}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+	var onDisk struct {
+		Zen struct {
+			Harness map[string]any `json:"harness"`
+		} `json:"zen"`
+	}
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("parse config.json: %v", err)
+	}
+	for _, key := range []string{"version", "client", "project"} {
+		if v, ok := onDisk.Zen.Harness[key]; ok {
+			t.Errorf("zen.harness.%s = %v written to a new config.json, want it absent", key, v)
+		}
+	}
+	if onDisk.Zen.Harness["enabled"] != true {
+		t.Errorf("zen.harness.enabled = %v, want the seeded true", onDisk.Zen.Harness["enabled"])
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if loaded.Zen.Harness == nil || loaded.Zen.Harness.Version != zen.DefaultVersion {
+		t.Errorf("reloaded harness = %+v, want version %q", loaded.Zen.Harness, zen.DefaultVersion)
+	}
+}
+
+// Before Save stopped seeding the identity, every config.json it created got
+// version 1.18.31, client cli and project global. Those stored values follow
+// the current defaults on Load, and the next Save removes them from the file.
+// A value the operator chose stays. An operator who chose 1.18.31 on purpose
+// must find the replacement in the log; client cli equals its default, so it
+// changes nothing and is not reported.
+func TestSeededZenIdentityFollowsDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	path := filepath.Join(tmpDir, "config.json")
+	seeded := `{"zen": {"harness": {"enabled": true, "tls": true, "version": "1.18.31", "client": "cli", "project": "abc123"}}}`
+	if err := os.WriteFile(path, []byte(seeded), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	h := loaded.Zen.Harness
+	if h == nil || h.Version != zen.DefaultVersion || h.Client != zen.DefaultHarnessClient || h.Project != "abc123" || !h.TLS {
+		t.Fatalf("loaded harness = %+v, want version %q, client %q, the chosen project and tls kept",
+			h, zen.DefaultVersion, zen.DefaultHarnessClient)
+	}
+	if got := logBuf.String(); !strings.Contains(got, "key=zen.harness.version stored=1.18.31 now="+zen.DefaultVersion) ||
+		strings.Contains(got, "zen.harness.client") {
+		t.Errorf("log = %q, want the version replacement reported and nothing for the unchanged client", got)
+	}
+
+	if _, err := Save(map[string]any{"maxRetries": 7}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk struct {
+		Zen struct {
+			Harness map[string]any `json:"harness"`
+		} `json:"zen"`
+	}
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("parse config.json: %v", err)
+	}
+	want := map[string]any{"enabled": true, "tls": true, "project": "abc123"}
+	if len(onDisk.Zen.Harness) != len(want) {
+		t.Errorf("zen.harness on disk = %v, want %v", onDisk.Zen.Harness, want)
+	}
+	for key, value := range want {
+		if onDisk.Zen.Harness[key] != value {
+			t.Errorf("zen.harness.%s = %v, want %v", key, onDisk.Zen.Harness[key], value)
+		}
 	}
 }
 
@@ -1239,21 +1343,37 @@ func TestSave_ZenHarnessMerge(t *testing.T) {
 		t.Errorf("unmentioned harness fields must survive, got %+v", h)
 	}
 
-	// Empty string = keep persisted value; an explicit false must survive.
+	// An empty identity string clears the pin, so the panel can return a
+	// field to the built-in default; an explicit false must survive.
 	if _, err := Save(map[string]any{"zen": map[string]any{
 		"harness": map[string]any{"version": "", "project": "  ", "enabled": false},
 	}}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	got := Get().Zen.Harness
-	if got.Version != "2.0.0" {
-		t.Errorf("empty version must keep persisted value, got %q", got.Version)
+	if got.Version != zen.DefaultVersion {
+		t.Errorf("cleared version = %q, want the default %q", got.Version, zen.DefaultVersion)
 	}
-	if got.Project != "global" {
-		t.Errorf("whitespace project must keep persisted value, got %q", got.Project)
+	if got.Project != zen.DefaultProject {
+		t.Errorf("whitespace project = %q, want the default %q", got.Project, zen.DefaultProject)
 	}
 	if got.Enabled != nil && *got.Enabled {
 		t.Error("explicit enabled=false must survive the merge")
+	}
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk struct {
+		Zen struct {
+			Harness map[string]any `json:"harness"`
+		} `json:"zen"`
+	}
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := onDisk.Zen.Harness["version"]; ok {
+		t.Errorf("zen.harness.version = %v on disk after clearing, want it absent", v)
 	}
 
 	// Absent harness section: the persisted section is preserved whole.
@@ -1261,11 +1381,70 @@ func TestSave_ZenHarnessMerge(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 	kept := Get().Zen.Harness
-	if kept == nil || kept.Version != "2.0.0" || (kept.Enabled != nil && *kept.Enabled) || kept.Client != "cli" {
+	if kept == nil || kept.Version != zen.DefaultVersion || (kept.Enabled != nil && *kept.Enabled) || kept.Client != "cli" {
 		t.Errorf("absent harness section must be preserved, got %+v", kept)
 	}
 	if Get().Zen.BaseURL != "https://other.example" {
 		t.Errorf("baseUrl = %q, want %q", Get().Zen.BaseURL, "https://other.example")
+	}
+}
+
+// A Zen save replaces the section with the posted one, so a client that does
+// not know zen.fallbackProxy (an old cached panel, an API script) would delete
+// it. An unsent key keeps the persisted proxy; an explicit "" clears it.
+func TestSave_ZenFallbackProxyKeptWhenUnsent(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	const proxy = "socks5h://192.0.2.10:1080"
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": proxy}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if _, err := Save(map[string]any{"zen": map[string]any{"baseUrl": "https://zen.example"}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := Get().Zen.FallbackProxy; got != proxy {
+		t.Fatalf("fallbackProxy after a save without it = %q, want %q", got, proxy)
+	}
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": ""}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := Get().Zen.FallbackProxy; got != "" {
+		t.Fatalf("fallbackProxy after an explicit clear = %q, want empty", got)
+	}
+}
+
+// The proxy password is a credential like zen.apiKey: the public config shows
+// it redacted, and a save that sends the redacted form back keeps it.
+func TestZenFallbackProxyPasswordRedacted(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	const stored = "socks5h://user:s3cret@192.0.2.10:1080"
+	const shown = "socks5h://user:xxxxx@192.0.2.10:1080"
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": stored}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	zenMap, _ := GetPublicConfig()["zen"].(map[string]any)
+	if got := zenMap["fallbackProxy"]; got != shown {
+		t.Fatalf("public fallbackProxy = %v, want %q", got, shown)
+	}
+
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": shown}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := Get().Zen.FallbackProxy; got != stored {
+		t.Fatalf("fallbackProxy after saving the redacted echo = %q, want the stored password kept", got)
+	}
+
+	const replaced = "socks5h://other:n3w@192.0.2.11:1080"
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": replaced}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := Get().Zen.FallbackProxy; got != replaced {
+		t.Fatalf("fallbackProxy after a new URL = %q, want %q", got, replaced)
 	}
 }
 
@@ -1283,7 +1462,7 @@ func TestPublicConfig_ZenHarnessPassthrough(t *testing.T) {
 	if !ok {
 		t.Fatalf("public config zen section has no harness: %#v", zenMap)
 	}
-	if h["version"] != "1.18.31" || h["client"] != "cli" || h["project"] != "global" {
+	if h["version"] != "2.0.20" || h["client"] != "cli" || h["project"] != "global" {
 		t.Errorf("harness not passed through: %#v", h)
 	}
 	if _, ok := h["enabled"]; !ok {
