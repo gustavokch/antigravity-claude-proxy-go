@@ -568,3 +568,30 @@ func TestTranslatedWires_OmitClaudeCodeBillingHeader(t *testing.T) {
 		}
 	}
 }
+
+func TestAssistantToChatFillsMissingReasoningOnToolCallTurns(t *testing.T) {
+	got := assistantToChat([]any{
+		map[string]any{"type": "text", "text": "checking"},
+		map[string]any{"type": "tool_use", "id": "tu1", "name": "bash", "input": map[string]any{}},
+	}, nil)
+	if got["reasoning_content"] != missingReasoningPlaceholder {
+		t.Fatalf("reasoning_content = %v, want %q", got["reasoning_content"], missingReasoningPlaceholder)
+	}
+}
+
+func TestAssistantToChatKeepsTextOnlyTurnFreeOfReasoning(t *testing.T) {
+	got := assistantToChat([]any{map[string]any{"type": "text", "text": "hi"}}, nil)
+	if v, ok := got["reasoning_content"]; ok {
+		t.Fatalf("reasoning_content = %v, want absent on a text-only turn", v)
+	}
+}
+
+func TestAssistantToChatKeepsReplayedReasoning(t *testing.T) {
+	got := assistantToChat([]any{
+		map[string]any{"type": "thinking", "thinking": "real chain", "signature": ""},
+		map[string]any{"type": "tool_use", "id": "tu1", "name": "bash", "input": map[string]any{}},
+	}, nil)
+	if got["reasoning_content"] != "real chain" {
+		t.Fatalf("reasoning_content = %v, want the replayed text", got["reasoning_content"])
+	}
+}
