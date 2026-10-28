@@ -656,7 +656,7 @@ window.translations.en = {
     zenHarnessVersion: "OpenCode version",
     zenHarnessClient: "Client (x-opencode-client)",
     zenHarnessProject: "Project (x-opencode-project)",
-    zenHarnessIdentityHelp: "Changed values are saved with Save. Unchanged values keep following the built-in defaults.",
+    zenHarnessIdentityHelp: "Changed values are saved with Save and stay pinned across upgrades. Unchanged values keep following the built-in defaults; clear a field to return it to its default.",
     zenDiscover: "Discover Models",
     zenAllowlist: "Allowlist",
     zenColEnabled: "On",

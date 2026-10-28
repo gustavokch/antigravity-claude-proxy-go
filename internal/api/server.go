@@ -1803,6 +1803,8 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
 	// The egress failover tracks Zen's free usage limit per model.
 	request = request.WithContext(zen.WithEgressModel(request.Context(), model))
+	// Every turn of one conversation sends the same OpenCode session id.
+	request = request.WithContext(zen.WithConversation(request.Context(), zenConversation(sessionKey, body)))
 
 	if wire == zen.WireChat || wire == zen.WireResponses {
 		forward := zen.ForwardChat
@@ -1829,6 +1831,22 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 		return nil
 	}
 	zen.ForwardMessagesWithModify(writer, request, zenCfg.BaseURL, key, body, modify)
+}
+
+// zenConversation names the conversation a Zen request belongs to, so the
+// harness sends one OpenCode session id for all of its turns, as the genuine
+// client does for a session. The name is the client session plus the
+// conversation's first prompt, the way ccidentity.ReplyScope tells
+// conversations apart: Claude Code shares one session id between its main
+// thread, its subagents and its side queries, which OpenCode would run as
+// separate sessions. A client that sends no session id is named by its first
+// prompt alone. A body with no prompt names no conversation, so its request
+// gets a fresh session id.
+func zenConversation(sessionKey string, body []byte) string {
+	if sessionKey == "" {
+		sessionKey = "anonymous"
+	}
+	return ccidentity.ReplyScope("zen", sessionKey, ccidentity.TurnOf(body))
 }
 
 // zenUsageRecorder returns the usage callback shared by every Zen path:

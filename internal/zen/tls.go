@@ -50,10 +50,16 @@ func bunReplay() (*tlsreplay.Hello, error) {
 }
 
 // SetTLSConfig replaces the live TLS disguise configuration. Safe for
-// concurrent use with request handling; called from the config hook only.
+// concurrent use with request handling; called from the config hook, which
+// runs on every panel save. The dropped transport closes its idle keep-alive
+// connections, so a save does not strand a pool; requests in flight on it
+// finish normally.
 func SetTLSConfig(cfg ZenTLSConfig) {
 	tlsMu.Lock()
 	tlsCfg = cfg
+	if tlsTransport != nil {
+		tlsTransport.CloseIdleConnections()
+	}
 	tlsClient = nil
 	tlsTransport = nil
 	failoverClient = nil

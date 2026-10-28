@@ -285,9 +285,12 @@ func (server *Server) sendZenBump(ctx context.Context, rec cachebump.Record) (ca
 		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
 	}
 	ctx = zen.WithEgressModel(ctx, rec.Model)
+	// The replay keeps the conversation's session id: x-session-affinity
+	// routes it to the provider whose cache it is meant to keep warm.
+	conversation := zenConversation(rec.SessionID, rec.Body)
 	return postBumpRequest(ctx, rec, zen.NormalizeBaseURL(zenCfg.BaseURL)+"/v1/messages", zen.GenerationClient(), func(hdr http.Header) {
 		hdr.Set("Authorization", "Bearer "+key)
-		zen.ApplyHarnessHeaderMap(hdr)
+		zen.ApplyHarnessHeaderMap(hdr, conversation)
 	}, func(resp *http.Response) {
 		zen.ObserveFreeTierGate(resp, rec.Model)
 	})

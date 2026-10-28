@@ -1188,6 +1188,7 @@
                                 <input type="checkbox" class="toggle"
                                     x-model="zenConfig.harness.enabled"
                                     @change="saveZenConfig()"
+                                    :disabled="!zenHarnessLoaded"
                                     :aria-label="$store.global.t('zenHarness') || 'OpenCode client disguise'">
                             </div>
                             <div class="row">
@@ -1198,6 +1199,7 @@
                                 <input type="checkbox" class="toggle"
                                     x-model="zenConfig.harness.tls"
                                     @change="saveZenConfig()"
+                                    :disabled="!zenHarnessLoaded"
                                     :aria-label="$store.global.t('zenHarnessTls') || 'OpenCode TLS fingerprint'">
                             </div>
                             <div class="panel-body stack" x-show="zenConfig.harness.enabled">
@@ -1205,20 +1207,20 @@
                                     <div class="field">
                                         <label class="field-label" for="setm-zen-h-version" x-text="$store.global.t('zenHarnessVersion') || 'OpenCode version'">OpenCode version</label>
                                         <input id="setm-zen-h-version" type="text" class="input input-sm mono"
-                                            x-model="zenConfig.harness.version">
+                                            x-model="zenConfig.harness.version" :disabled="!zenHarnessLoaded">
                                     </div>
                                     <div class="field">
                                         <label class="field-label" for="setm-zen-h-client" x-text="$store.global.t('zenHarnessClient') || 'Client (x-opencode-client)'">Client (x-opencode-client)</label>
                                         <input id="setm-zen-h-client" type="text" class="input input-sm mono"
-                                            x-model="zenConfig.harness.client">
+                                            x-model="zenConfig.harness.client" :disabled="!zenHarnessLoaded">
                                     </div>
                                     <div class="field">
                                         <label class="field-label" for="setm-zen-h-project" x-text="$store.global.t('zenHarnessProject') || 'Project (x-opencode-project)'">Project (x-opencode-project)</label>
                                         <input id="setm-zen-h-project" type="text" class="input input-sm mono"
-                                            x-model="zenConfig.harness.project">
+                                            x-model="zenConfig.harness.project" :disabled="!zenHarnessLoaded">
                                     </div>
                                 </div>
-                                <span class="field-help" x-text="$store.global.t('zenHarnessIdentityHelp') || 'Changed values are saved with Save. Unchanged values keep following the built-in defaults.'">Changed values are saved with Save. Unchanged values keep following the built-in defaults.</span>
+                                <span class="field-help" x-text="$store.global.t('zenHarnessIdentityHelp') || 'Changed values are saved with Save and stay pinned across upgrades. Unchanged values keep following the built-in defaults; clear a field to return it to its default.'">Changed values are saved with Save and stay pinned across upgrades. Unchanged values keep following the built-in defaults; clear a field to return it to its default.</span>
                             </div>
 
                             <div class="panel-body stack">

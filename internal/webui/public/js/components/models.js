@@ -970,12 +970,13 @@ window.Components.models = () => ({
             };
             // Identity strings go only when edited: echoing the loaded
             // defaults would pin them in config.json and stop future default
-            // bumps from applying.
+            // bumps from applying. A cleared field goes as "", which unpins
+            // it server-side.
             const h = this.zenConfig.harness;
             payload.harness = { enabled: !!h.enabled, tls: !!h.tls };
             for (const k of ['version', 'client', 'project']) {
                 const v = (h[k] || '').trim();
-                if (v && v !== loaded[k]) payload.harness[k] = v;
+                if (v !== loaded[k]) payload.harness[k] = v;
             }
             if (this.zenConfig.apiKey && this.zenConfig.apiKey.trim()) {
                 payload.apiKey = this.zenConfig.apiKey.trim();
@@ -998,7 +999,12 @@ window.Components.models = () => ({
                     this.zenConfig.apiKey = '';
                 }
                 Alpine.store('data').zen = this.zenConfig;
-                this.zenHarnessLoaded = { ...this.zenHarnessLoaded, ...payload.harness };
+                // The server answers with the effective harness: a cleared
+                // field shows the default it follows again.
+                if (payload.harness && data.config.harness) {
+                    this.zenConfig.harness = this.zenHarnessFrom(data.config.harness);
+                    this.zenHarnessLoaded = { ...this.zenConfig.harness };
+                }
             }
             store.showToast(store.t('zenSavedSuccess') || 'Zen settings saved', 'success');
             Alpine.store('data').performHealthCheck();

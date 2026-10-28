@@ -22,9 +22,11 @@ import (
 // The gate treatment mirrors anthropicToChatRequest: the upstream body always
 // carries "stream": true (a non-streaming body is rejected by the Zen
 // free-tier gate; non-streaming clients get the stream folded back in
-// translateResponsesResponse) and the tools array always contains functions
-// named exactly "bash" and "read" (client tools named "Bash"/"Read" are
-// renamed; missing ones get the captured OpenCode definitions injected).
+// translateResponsesResponse), and while the harness disguise is on the tools
+// array contains functions named exactly "bash" and "read" (client tools
+// named "Bash"/"Read" are renamed; missing ones get the captured OpenCode
+// definitions injected) and the system prompt carries the <env> marker
+// (gateShapeOf).
 //
 // Fields with no usable Responses counterpart are dropped rather than guessed:
 // stop_sequences and top_k (no field), thinking (no equivalent), and
@@ -41,7 +43,8 @@ import (
 // declared them — a tool call for one has no client-side tool to resolve to
 // and must be dropped from the response.
 func anthropicToResponsesRequest(req map[string]any) (map[string]any, map[string]string, map[string]bool) {
-	renames := buildToolRenames(req["tools"])
+	shape := gateShapeOf(req)
+	renames := shape.renames
 	model, _ := req["model"].(string)
 	out := map[string]any{"model": StripOpencodePrefix(model)}
 
@@ -49,11 +52,12 @@ func anthropicToResponsesRequest(req map[string]any) (map[string]any, map[string
 	// message array: system/assistant/user turns become messages, tool_use
 	// becomes function_call, tool_result becomes function_call_output.
 	input := make([]any, 0, len(anySlice(req["messages"]))+1)
-	sys := withGateEnv(systemText(req["system"]))
-	input = append(input, map[string]any{
-		"role":    "system",
-		"content": []any{map[string]any{"type": "input_text", "text": sys}},
-	})
+	if shape.system != "" {
+		input = append(input, map[string]any{
+			"role":    "system",
+			"content": []any{map[string]any{"type": "input_text", "text": shape.system}},
+		})
+	}
 	for _, raw := range anySlice(req["messages"]) {
 		msg, ok := raw.(map[string]any)
 		if !ok {
@@ -80,17 +84,20 @@ func anthropicToResponsesRequest(req map[string]any) (map[string]any, map[string
 	// on this wire. out is an allowlist, so no client field can switch it on.
 	out["store"] = false
 
-	// toolsToChat and ensureGateTools already produce the exact tool set the
-	// gate demands; the mapping is a shape change only (Responses tools are
-	// flat, Chat-Completions tools nest the definition under "function").
-	chatTools, injected := ensureGateTools(toolsToChat(req["tools"], renames))
-	tools := make([]any, 0, len(chatTools))
-	for _, t := range chatTools {
-		tools = append(tools, chatToolToResponses(t))
-	}
-	out["tools"] = tools
-	if tc := toolChoiceToResponses(req["tool_choice"], renames); tc != nil {
-		out["tool_choice"] = tc
+	// gateShapeOf already produced the exact tool set the gate demands; the
+	// mapping is a shape change only (Responses tools are flat,
+	// Chat-Completions tools nest the definition under "function"). A
+	// tool-less client without the disguise sends neither tools nor
+	// tool_choice.
+	if len(shape.tools) > 0 {
+		tools := make([]any, 0, len(shape.tools))
+		for _, t := range shape.tools {
+			tools = append(tools, chatToolToResponses(t))
+		}
+		out["tools"] = tools
+		if tc := toolChoiceToResponses(req["tool_choice"], renames); tc != nil {
+			out["tool_choice"] = tc
+		}
 	}
 
 	rev := make(map[string]string, len(renames))
@@ -100,7 +107,7 @@ func anthropicToResponsesRequest(req map[string]any) (map[string]any, map[string
 	if len(rev) == 0 {
 		rev = nil
 	}
-	return out, rev, injected
+	return out, rev, shape.injected
 }
 
 // anySlice returns v as a []any, or nil when it is any other type.
