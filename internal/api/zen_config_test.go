@@ -225,6 +225,34 @@ func TestServer_HandleZenConfigSave_AppliesHarnessLive(t *testing.T) {
 	}
 }
 
+// The harness identity strings become User-Agent and x-opencode-* values. A
+// control character in one would fail every Zen request, so both save routes
+// refuse it and keep the stored identity.
+func TestServer_ZenHarnessControlCharacterRefused(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	t.Cleanup(func() {
+		config.SetForTest(config.DefaultConfig())
+		applyRouterConfig(config.DefaultConfig())
+	})
+	handler := server.Handler()
+
+	for _, tc := range []struct{ name, path, body string }{
+		{"zen panel", "/api/zen/config", `{"enabled": true, "harness": {"version": "2.0.20\nX-Injected: 1"}}`},
+		{"full config", "/api/config", `{"zen": {"harness": {"client": "cli\u0000"}}}`},
+		{"non-string", "/api/zen/config", `{"harness": {"project": 7}}`},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400; body = %s", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+	h := config.Get().Zen.Harness
+	if h == nil || h.Version != zen.DefaultVersion || h.Client != zen.DefaultHarnessClient || h.Project != zen.DefaultProject {
+		t.Errorf("stored harness = %+v, want the defaults untouched", h)
+	}
+}
+
 func TestServer_HandleZenModelsFetch_SplitsBuckets(t *testing.T) {
 	t.Setenv("OPENCODE_API_KEY", "")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

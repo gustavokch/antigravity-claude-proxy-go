@@ -2469,7 +2469,14 @@ func (server *Server) handleZenConfigSave(writer http.ResponseWriter, request *h
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": "Invalid JSON: " + err.Error()})
 		return
 	}
-	saved, err := config.Save(map[string]any{"zen": body})
+	update := map[string]any{"zen": body}
+	// The harness identity becomes outbound header values; refuse a bad one
+	// here, like handleConfigSave does.
+	if err := validateIdentityOverrides(update); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+		return
+	}
+	saved, err := config.Save(update)
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]any{"status": "error", "error": "Failed to save config: " + err.Error()})
 		return

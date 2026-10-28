@@ -82,13 +82,17 @@ func validateJSONSection(body map[string]any, key, label string, target any) err
 	return nil
 }
 
-// validateIdentityOverrides checks every claudecode.IdentityConfig reachable in a
-// config update: the gateway's own, and one per custom endpoint.
+// validateIdentityOverrides checks every identity override reachable in a
+// config update: the Claude Code gateway's own, one per custom endpoint, and
+// the Zen harness.
 //
 // It re-marshals the raw map rather than decoding the whole config, so an update
-// that touches neither is untouched and an unrelated decode failure elsewhere in
-// the payload cannot make this reject a valid save.
+// that touches none of them is untouched and an unrelated decode failure
+// elsewhere in the payload cannot make this reject a valid save.
 func validateIdentityOverrides(updates map[string]any) error {
+	if err := validateZenHarness(updates["zen"]); err != nil {
+		return err
+	}
 	if raw, ok := updates["claudecode"]; ok {
 		if err := validateIdentityField(raw, "claudecode"); err != nil {
 			return err
@@ -101,6 +105,31 @@ func validateIdentityOverrides(updates map[string]any) error {
 	for model, raw := range endpoints {
 		if err := validateIdentityField(raw, "customEndpoints."+model); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateZenHarness checks the OpenCode identity strings of a zen section's
+// harness. Each becomes a User-Agent or x-opencode-* header value, so a value
+// that is not a string, or that holds a control character, is refused. A
+// missing section, key or null value is left alone.
+func validateZenHarness(section any) error {
+	zenMap, _ := section.(map[string]any)
+	harness, _ := zenMap["harness"].(map[string]any)
+	for _, key := range []string{"version", "client", "project"} {
+		raw := harness[key]
+		if raw == nil {
+			continue
+		}
+		value, isString := raw.(string)
+		if !isString {
+			return fmt.Errorf("zen.harness.%s must be a string", key)
+		}
+		for _, r := range value {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf("zen.harness.%s contains a control character (%q); it is sent as an HTTP header value", key, r)
+			}
 		}
 	}
 	return nil
