@@ -41,13 +41,15 @@ func setJevHeaders(req *http.Request, apiKey string) {
 
 // jevFormatAdapter reuses the laya request, severity mapping and escalation:
 // Jev answers the same typed-decision question. What differs is the
-// credential, the harness identity, the HTTP client (zen.TLSClient honours the
-// operator's TLS-disguise opt-in) and the field the confidence floor reads.
+// credential, the harness identity, the HTTP client (zen.GenerationClient
+// honours the operator's TLS-disguise opt-in and, since the free Jev tier
+// spends the egress IP's budget, the fallback egress) and the field the
+// confidence floor reads.
 var jevFormatAdapter = backendFormatAdapter{
 	defaultTimeout: defaultJevBackendTimeout,
 	preparePayload: buildLayaPayload,
 	setHeaders:     setJevHeaders,
 	parseResponse:  parseLayaResponse,
 	resolveKey:     resolveJevKey,
-	client:         zen.TLSClient,
+	client:         zen.GenerationClient,
 }

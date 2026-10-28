@@ -14,6 +14,8 @@ import (
 	"antigravity-go-proxy/internal/classifier"
 	"antigravity-go-proxy/internal/classifier/corpus"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/proxydial/proxytest"
+	"antigravity-go-proxy/internal/zen"
 )
 
 // Bodies captured from POST https://opencode.ai/zen/v1/systemone with model
@@ -113,6 +115,33 @@ func TestJevCallSendsZenCredentialsAndHarnessIdentity(t *testing.T) {
 	}
 	if text := verdictTextFrom(t, message); text != "<severity>0</severity>" {
 		t.Errorf("verdict = %q, want label A mapped to severity 0", text)
+	}
+}
+
+// The Jev classifier spends Zen's free budget like the gateway does, so a
+// spent direct egress must move it to the fallback as well.
+func TestJevCallFailsOverOnTheFreeUsageLimit(t *testing.T) {
+	withHarnessDefaults(t)
+	withZenKeys(t, "public", "")
+	spent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Zen: Free usage limit reached."}}`))
+	}))
+	t.Cleanup(spent.Close)
+	fresh, _ := jevUpstream(t, jevBenignAnswer)
+	socks := proxytest.NewSOCKS5(t, false, strings.TrimPrefix(fresh.URL, "http://"))
+	if err := zen.SetEgressConfig(zen.EgressConfig{FallbackProxy: "socks5h://" + socks.Addr}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = zen.SetEgressConfig(zen.EgressConfig{}) })
+
+	message, err := (&Server{}).callClassifierBackend(context.Background(), jevCall(jevBackend(spent.URL+"/v1/systemone")))
+	if err != nil {
+		t.Fatalf("callClassifierBackend: %v; want the fallback's answer", err)
+	}
+	if text := verdictTextFrom(t, message); text != "<severity>0</severity>" {
+		t.Errorf("verdict = %q, want the fallback's label A", text)
 	}
 }
 
