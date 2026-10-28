@@ -1,8 +1,10 @@
 package zen
 
 import (
+	"context"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -149,6 +151,58 @@ func TestBothEgressExhaustedReturnsTheLimit(t *testing.T) {
 	// Once both are marked, each request costs one upstream call, not two.
 	if d, f := direct.hits.Load(), alsoSpent.hits.Load(); d+f != 3 {
 		t.Errorf("upstream hits = %d direct + %d fallback, want 3 in total", d, f)
+	}
+}
+
+// With the disguise on, the fallback leg must present the captured Bun hello
+// inside the proxy tunnel: the free tier rejects Go's own handshake.
+func TestFallbackEgressSendsTheCapturedHello(t *testing.T) {
+	helloCh := make(chan []byte, 1)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		if record, err := readTLSRecord(conn); err == nil {
+			helloCh <- record
+		}
+		// Never answer: the handshake fails once the hello is out.
+	}()
+	socks := proxytest.NewSOCKS5(t, false, ln.Addr().String())
+	useEgress(t, "socks5h://"+socks.Addr)
+	SetTLSConfig(ZenTLSConfig{Enabled: true})
+	exhaustMu.Lock()
+	exhaustedUntil[exhaustKey{routeDirect, ""}] = time.Now().Add(time.Hour)
+	exhaustMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://zen.test/v1/messages", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := GenerationClient().Do(req); err == nil {
+		resp.Body.Close()
+	}
+
+	var sent []byte
+	select {
+	case sent = <-helloCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no ClientHello reached the fallback proxy's target")
+	}
+	if got, want := ja3OfHello(t, sent), ja3OfHello(t, opencodeClientHello); got != want {
+		t.Errorf("fallback hello JA3 = %s, want the capture's %s", got, want)
+	}
+	if sni := sniOfHello(t, sent); sni != "zen.test" {
+		t.Errorf("fallback hello SNI = %q, want the Zen host", sni)
 	}
 }
 
