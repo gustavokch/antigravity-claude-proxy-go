@@ -53,10 +53,11 @@ func (c *harnessHeaderCapture) count() int {
 
 func withHarnessDefaults(t *testing.T) {
 	t.Helper()
+	prev := zen.GetHarnessConfig()
 	zen.SetHarnessConfig(zen.HarnessConfig{
 		Enabled: true, Version: "1.18.31", Client: "cli", Project: "global",
 	})
-	t.Cleanup(func() { zen.SetHarnessConfig(zen.HarnessConfig{}) })
+	t.Cleanup(func() { zen.SetHarnessConfig(prev) })
 }
 
 func requireHarnessHeaders(t *testing.T, hdr http.Header) {
@@ -134,8 +135,9 @@ func TestApplyZenHarnessConfig_TLSWiring(t *testing.T) {
 // not silently disable the header disguise: an absent key defaults to true,
 // an explicit enabled=false still turns it off.
 func TestApplyZenHarnessConfig_PartialSectionDefaultsEnabled(t *testing.T) {
+	prev := zen.GetHarnessConfig()
 	t.Cleanup(func() {
-		zen.SetHarnessConfig(zen.HarnessConfig{})
+		zen.SetHarnessConfig(prev)
 		zen.SetTLSConfig(zen.ZenTLSConfig{})
 	})
 

@@ -423,29 +423,59 @@ func TestAnthropicToChatRequestInjectsGateEnv(t *testing.T) {
 }
 
 // README: enabled=false disables the disguise entirely. With the harness off
-// neither translated wire may add the <env> marker or an empty system message.
-func TestGateEnvFollowsHarnessToggle(t *testing.T) {
+// neither translated wire may add the <env> marker, an empty system message,
+// the gate's bash/read tools or the Bash→bash rename. The upstream body still
+// streams: that is framing the client never sees.
+func TestDisguiseFollowsHarnessToggle(t *testing.T) {
 	withHarness(t, HarnessConfig{Enabled: false})
 	bare := map[string]any{"model": "m", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
 
-	chat, _, _ := anthropicToChatRequest(bare)
+	chat, _, injected := anthropicToChatRequest(bare)
 	if first := chat["messages"].([]any)[0].(map[string]any); first["role"] != "user" {
 		t.Errorf("chat: first message = %v, want the user turn with no system message", first)
 	}
-	responses, _, _ := anthropicToResponsesRequest(bare)
+	if _, ok := chat["tools"]; ok || len(injected) != 0 {
+		t.Errorf("chat: tools = %v, injected = %v, want none for a tool-less client", chat["tools"], injected)
+	}
+	if chat["stream"] != true {
+		t.Errorf("chat: stream = %v, want true regardless of the disguise", chat["stream"])
+	}
+	responses, _, injected := anthropicToResponsesRequest(bare)
 	if first := responses["input"].([]any)[0].(map[string]any); first["role"] != "user" {
 		t.Errorf("responses: first item = %v, want the user turn with no system item", first)
 	}
-	chat, _, _ = anthropicToChatRequest(map[string]any{"model": "m", "system": "You are Claude"})
+	if _, ok := responses["tools"]; ok || len(injected) != 0 {
+		t.Errorf("responses: tools = %v, injected = %v, want none for a tool-less client", responses["tools"], injected)
+	}
+
+	withBash := map[string]any{
+		"model":       "m",
+		"system":      "You are Claude",
+		"messages":    []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools":       []any{map[string]any{"name": "Bash", "input_schema": map[string]any{"type": "object"}}},
+		"tool_choice": map[string]any{"type": "tool", "name": "Bash"},
+	}
+	chat, rev, injected := anthropicToChatRequest(withBash)
 	if content := chat["messages"].([]any)[0].(map[string]any)["content"]; content != "You are Claude" {
 		t.Errorf("chat: system = %q, want the client prompt unchanged", content)
 	}
+	tools := chat["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["function"].(map[string]any)["name"] != "Bash" || len(injected) != 0 || len(rev) != 0 {
+		t.Errorf("chat: tools = %v, rev = %v, injected = %v, want the client's Bash alone, not renamed", tools, rev, injected)
+	}
+	if tc := mustJSON(t, chat["tool_choice"]); !strings.Contains(tc, `"Bash"`) {
+		t.Errorf("chat: tool_choice = %s, want the client's Bash", tc)
+	}
+	responses, _, _ = anthropicToResponsesRequest(withBash)
+	if names := mustJSON(t, responses["tools"]); !strings.Contains(names, `"Bash"`) || strings.Contains(names, `"read"`) {
+		t.Errorf("responses: tools = %s, want the client's Bash alone", names)
+	}
 
 	withHarness(t, HarnessConfig{Enabled: true})
-	chat, _, _ = anthropicToChatRequest(bare)
+	chat, _, injected = anthropicToChatRequest(bare)
 	content, _ := chat["messages"].([]any)[0].(map[string]any)["content"].(string)
-	if !hasGateEnv(content) {
-		t.Errorf("chat with the harness on: system = %q, want the gate env block", content)
+	if !hasGateEnv(content) || !injected["bash"] || !injected["read"] {
+		t.Errorf("chat with the harness on: system = %q, injected = %v, want the gate env block and both gate tools", content, injected)
 	}
 }
 

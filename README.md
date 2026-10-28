@@ -634,9 +634,12 @@ Example `config.json`:
   cache-bump replay of a conversation sends it too. A conversation is the
   client's session id plus its first prompt (a client with no session id is
   keyed by its first prompt alone), and the proxy keeps the last 4096 in
-  memory. While the disguise is on, the chat and Responses wires also add an
-  `<env>` block with `Working directory: <the proxy's working directory>` to
-  the system prompt when the client sent none. Configurable via
+  memory. While the disguise is on, the chat and Responses wires also shape
+  the body for the gate: an `<env>` block with `Working directory: <the
+  proxy's working directory>` joins the system prompt when the client sent
+  none, the client's `Bash`/`Read` tools go up as `bash`/`read`, and the
+  captured OpenCode definition of each one the client lacks is added (a
+  call to an added tool is dropped from the reply). Configurable via
   `zen.harness` in `config.json`:
 
   ```json
@@ -655,7 +658,12 @@ Example `config.json`:
   removed on the next save, so they cannot be pinned; a stored `1.18.31` is
   logged when it is replaced. `OPENCODE_VERSION` / `OPENCODE_CLIENT` env vars
   override `version` / `client`, mirroring the genuine client's env behavior.
-  Setting `enabled` to `false` turns off the headers and the `<env>` block.
+  Setting `enabled` to `false` disables the disguise entirely: no OpenCode
+  headers, no `<env>` block, no renamed or added tools; the client's system
+  prompt and tools go up as sent. The chat and Responses wires stream from
+  Zen either way: a non-streaming body fails the gate, and a stream keeps a
+  long answer inside the 5-minute wait for response headers. A
+  non-streaming client still gets one JSON reply.
   A 403/426 gate response is logged as `zen free-tier gate
   rejected request`. A 429 `FreeUsageLimitError` is logged as `zen free usage
   limit reached`: either the daily free budget of the egress IP is spent, or
