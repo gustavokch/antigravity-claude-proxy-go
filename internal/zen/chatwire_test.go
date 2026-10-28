@@ -412,13 +412,6 @@ func TestAnthropicToChatRequestInjectsGateEnv(t *testing.T) {
 	}
 }
 
-func TestIsFreeTierGateError_FreeUsageLimit(t *testing.T) {
-	body := []byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`)
-	if !IsFreeTierGateError(body) {
-		t.Fatal("429 FreeUsageLimitError not recognized")
-	}
-}
-
 // A truncated upstream stream (no [DONE], no finish_reason) is a dropped
 // connection; the non-streaming client must get an error, not a partial
 // answer passed off as complete.

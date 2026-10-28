@@ -250,6 +250,7 @@ func TestIsFreeTierGateError(t *testing.T) {
 			body: `{"error":{"message":"opencode's FREE TIER can only be used from within opencode"}}`,
 			want: true,
 		},
+		{name: "free usage limit is not the gate", body: freeUsageLimitBody, want: false},
 		{name: "generic 403", body: `{"type":"error","error":{"type":"permission_error","message":"insufficient credits"}}`, want: false},
 		{name: "not found", body: `{"type":"error","error":{"type":"not_found_error","message":"model not found"}}`, want: false},
 		{name: "empty", body: ``, want: false},
@@ -258,6 +259,36 @@ func TestIsFreeTierGateError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsFreeTierGateError([]byte(tc.body)); got != tc.want {
 				t.Errorf("IsFreeTierGateError(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// freeUsageLimitBody is the observed 429 body: Zen's per-IP free budget, which
+// Zen also returns to a request that fails its free-tier check.
+const freeUsageLimitBody = `{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`
+
+func TestIsFreeUsageLimitError(t *testing.T) {
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	_, _ = zw.Write([]byte(freeUsageLimitBody))
+	_ = zw.Close()
+
+	cases := []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{name: "observed 429 body", body: []byte(freeUsageLimitBody), want: true},
+		{name: "gzip body", body: gz.Bytes(), want: true},
+		{name: "translated Anthropic envelope", body: []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Zen: Free usage limit reached."}}`), want: true},
+		{name: "free-tier gate", body: []byte(`{"error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}}`), want: false},
+		{name: "plain rate limit", body: []byte(`{"type":"error","error":{"type":"RateLimitError","message":"Rate limit exceeded. Please try again later."}}`), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsFreeUsageLimitError(tc.body); got != tc.want {
+				t.Errorf("IsFreeUsageLimitError(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
@@ -350,6 +381,45 @@ func TestObserveFreeTierGate_UpgradeRequired(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "zen free-tier gate rejected request") {
 		t.Errorf("gate warning missing for 426:\n%s", logBuf.String())
+	}
+}
+
+// A 429 FreeUsageLimitError means a spent daily budget or a request that
+// failed the free-tier check. It is logged as the usage limit, naming both
+// causes, not as the gate; a plain 429 logs nothing.
+func TestObserveFreeTierGate_FreeUsageLimit(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       io.NopCloser(strings.NewReader(freeUsageLimitBody)),
+	}
+	ObserveFreeTierGate(resp, "deepseek-v4.1-flash-free")
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read restored body: %v", err)
+	}
+	if string(got) != freeUsageLimitBody {
+		t.Errorf("body changed:\n got %s\nwant %s", got, freeUsageLimitBody)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "zen free usage limit reached") || !strings.Contains(logged, "daily free budget") {
+		t.Errorf("usage-limit warning missing:\n%s", logged)
+	}
+	if strings.Contains(logged, "gate rejected request") {
+		t.Errorf("usage limit logged as the free-tier gate:\n%s", logged)
+	}
+
+	logBuf.Reset()
+	plain := `{"type":"error","error":{"type":"RateLimitError","message":"Rate limit exceeded. Please try again later."}}`
+	resp = &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader(plain))}
+	ObserveFreeTierGate(resp, "m")
+	if got, _ := io.ReadAll(resp.Body); string(got) != plain || logBuf.Len() != 0 {
+		t.Errorf("plain 429: body=%s log=%q", got, logBuf.String())
 	}
 }
 

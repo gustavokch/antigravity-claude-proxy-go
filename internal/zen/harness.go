@@ -178,19 +178,15 @@ func randomBase62(length int) (string, error) {
 }
 
 // IsFreeTierGateError reports whether an upstream error body is Zen's
-// free-tier gate: the 403 FreeTierError returned to non-OpenCode clients.
-// A gzip-compressed body (magic bytes 1f 8b) is decompressed first, so the
+// free-tier gate: the 403 FreeTierError returned to non-OpenCode clients, or
+// the 426 UpgradeRequired returned to an old OpenCode version. A
+// gzip-compressed body (magic bytes 1f 8b) is decompressed first, so the
 // check works regardless of Content-Encoding.
 func IsFreeTierGateError(body []byte) bool {
-	if decoded, ok := gunzipBody(body); ok {
-		body = decoded
-	}
-	lower := strings.ToLower(string(body))
+	lower := errorText(body)
 	for _, phrase := range []string{
 		"free tier can only be used from within opencode",
 		"freetiererror",
-		"freeusagelimiterror",
-		"free usage limit reached",
 		"or newer is required to use the free tier",
 	} {
 		if strings.Contains(lower, phrase) {
@@ -198,6 +194,25 @@ func IsFreeTierGateError(body []byte) bool {
 		}
 	}
 	return false
+}
+
+// IsFreeUsageLimitError reports whether an upstream error body is Zen's 429
+// FreeUsageLimitError. It is the per-IP daily budget for free models, which
+// the genuine client also hits, and Zen also returns it to a request that
+// fails the free-tier check (no <env> block, no read tool). A gzip body is
+// decompressed first.
+func IsFreeUsageLimitError(body []byte) bool {
+	lower := errorText(body)
+	return strings.Contains(lower, "freeusagelimiterror") || strings.Contains(lower, "free usage limit reached")
+}
+
+// errorText returns an error body lowercased for phrase matching, gunzipped
+// first when it is gzip.
+func errorText(body []byte) string {
+	if decoded, ok := gunzipBody(body); ok {
+		body = decoded
+	}
+	return strings.ToLower(string(body))
 }
 
 // gunzipBody decompresses a gzip payload, bounded to 1 MiB. It reports
@@ -219,27 +234,40 @@ func gunzipBody(body []byte) ([]byte, bool) {
 	return out, true
 }
 
-// WarnFreeTierGate logs the single distinct warning for a Zen free-tier gate
-// response. Non-gate bodies log nothing.
+// gateHint names what the free-tier check wants from a request.
+const gateHint = "gate wants an opencode UA, valid x-opencode-session, stream:true body, read tool, and <env>Working directory:</env> in system message"
+
+// WarnFreeTierGate logs one warning for a Zen free-tier gate response or a
+// free usage limit response. Other bodies log nothing.
 func WarnFreeTierGate(model string, status int, body []byte) {
-	if !IsFreeTierGateError(body) {
-		return
+	switch {
+	case IsFreeTierGateError(body):
+		slog.Warn("zen free-tier gate rejected request",
+			"model", model,
+			"status", status,
+			"hint", gateHint)
+	case IsFreeUsageLimitError(body):
+		slog.Warn("zen free usage limit reached",
+			"model", model,
+			"status", status,
+			"hint", "either the daily free budget of this egress IP is spent, or the request failed the free-tier check ("+gateHint+")")
 	}
-	slog.Warn("zen free-tier gate rejected request",
-		"model", model,
-		"status", status,
-		"hint", "gate wants an opencode UA, valid x-opencode-session, stream:true body, read tool, and <env>Working directory:</env> in system message")
 }
 
-// ObserveFreeTierGate reads a 403 (FreeTierError) or 426 (UpgradeRequired)
-// response body (up to 1 MiB), logs the gate warning when it is Zen's
-// free-tier gate, and restores the body so the downstream reader sees
-// identical bytes: the full body, or — past the limit or after a read
-// error — the consumed prefix chained back onto the original reader. A read
-// error is logged rather than dropped, and the truncated bytes are never
-// substituted for the body. Other responses are never read.
+// ObserveFreeTierGate reads a 403 (FreeTierError), 426 (UpgradeRequired) or
+// 429 (FreeUsageLimitError) response body (up to 1 MiB), logs the warning
+// when it is one of Zen's free-tier rejections, and restores the body so the
+// downstream reader sees identical bytes: the full body, or — past the limit
+// or after a read error — the consumed prefix chained back onto the original
+// reader. A read error is logged rather than dropped, and the truncated bytes
+// are never substituted for the body. Other responses are never read.
 func ObserveFreeTierGate(resp *http.Response, model string) {
-	if resp == nil || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusUpgradeRequired && resp.StatusCode != http.StatusTooManyRequests) {
+	if resp == nil {
+		return
+	}
+	switch resp.StatusCode {
+	case http.StatusForbidden, http.StatusUpgradeRequired, http.StatusTooManyRequests:
+	default:
 		return
 	}
 	const limit = 1 << 20
