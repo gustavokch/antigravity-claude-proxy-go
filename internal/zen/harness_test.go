@@ -3,8 +3,10 @@ package zen
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -50,7 +52,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: true})
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
 		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
 			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/"+DefaultVersion+"/cli")
@@ -76,7 +78,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 			Project: "abc123",
 		})
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
 		// OpenCode ends the UA with the same app name it sends as
 		// x-opencode-client (packages/core/src/app.ts useragent).
@@ -99,7 +101,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 			Project: "   ",
 		})
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
 		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
 			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/"+DefaultVersion+"/cli")
@@ -115,7 +117,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 	t.Run("disabled is a no-op", func(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: false, Version: "9.9.9"})
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
 		if len(hdr) != 0 {
 			t.Errorf("disabled harness wrote headers: %v", hdr)
@@ -126,7 +128,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: true})
 		hdr := http.Header{}
 		hdr.Set(HeaderUA, "claude-cli/2.0.0")
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
 		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
 			t.Errorf("User-Agent = %q, want it overwritten with the disguise", got)
@@ -138,7 +140,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		t.Setenv("OPENCODE_VERSION", "8.8.8")
 		t.Setenv("OPENCODE_CLIENT", "acp")
 		hdr := http.Header{}
-		ApplyHarnessHeaderMap(hdr)
+		ApplyHarnessHeaderMap(hdr, "")
 
 		if got := hdr.Get(HeaderUA); got != "opencode/latest/8.8.8/acp" {
 			t.Errorf("User-Agent = %q, want OPENCODE_VERSION and OPENCODE_CLIENT to win", got)
@@ -150,7 +152,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 
 	t.Run("nil header map does not panic", func(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: true})
-		ApplyHarnessHeaderMap(nil)
+		ApplyHarnessHeaderMap(nil, "")
 	})
 }
 
@@ -176,6 +178,62 @@ func TestApplyHarnessHeaders(t *testing.T) {
 	requireSessionMirrors(t, req.Header, session)
 
 	ApplyHarnessHeaders(nil) // must not panic
+}
+
+// The genuine client keeps one session id for a whole session, and Zen routes
+// x-session-affinity on it: every turn of a conversation must send the same
+// id, another conversation a different one, and a request that names no
+// conversation a fresh one.
+func TestSessionIDPerConversation(t *testing.T) {
+	withHarness(t, HarnessConfig{Enabled: true})
+	send := func(ctx context.Context) http.Header {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://opencode.ai/zen/v1/messages", nil)
+		ApplyHarnessHeaders(req)
+		requireSessionMirrors(t, req.Header, req.Header.Get(HeaderSession))
+		return req.Header
+	}
+	conversation := WithConversation(context.Background(), "session-a\x00first prompt")
+	first, again := send(conversation), send(conversation)
+	if sid := first.Get(HeaderSession); sid == "" || again.Get(HeaderSession) != sid {
+		t.Errorf("turns of one conversation sent %q then %q, want one id", sid, again.Get(HeaderSession))
+	}
+	other := send(WithConversation(context.Background(), "session-b\x00first prompt"))
+	if other.Get(HeaderSession) == first.Get(HeaderSession) {
+		t.Error("a second conversation reused the first one's session id")
+	}
+	if send(context.Background()).Get(HeaderSession) == send(context.Background()).Get(HeaderSession) {
+		t.Error("requests that name no conversation shared a session id")
+	}
+	hdr := http.Header{}
+	ApplyHarnessHeaderMap(hdr, "session-a\x00first prompt")
+	if got := hdr.Get(HeaderSession); got != first.Get(HeaderSession) {
+		t.Errorf("header map for the same conversation = %q, want %q", got, first.Get(HeaderSession))
+	}
+}
+
+// The id table is bounded: past sessionCapacity the oldest conversation is
+// forgotten and gets a new id, while a newer one keeps its id.
+func TestSessionIDForgetsOldestConversation(t *testing.T) {
+	reset := func() {
+		sessions.Lock()
+		sessions.ids, sessions.order, sessions.next = make(map[string]string), nil, 0
+		sessions.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+	oldest, _ := sessionIDFor("evict-0")
+	second, _ := sessionIDFor("evict-1")
+	for i := 2; i <= sessionCapacity; i++ {
+		if _, err := sessionIDFor(fmt.Sprintf("evict-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := sessionIDFor("evict-1"); got != second {
+		t.Errorf("second conversation id = %q after one eviction, want %q kept", got, second)
+	}
+	if got, _ := sessionIDFor("evict-0"); got == oldest {
+		t.Errorf("oldest conversation kept %q past capacity, want a new id", got)
+	}
 }
 
 func TestHarnessIDs(t *testing.T) {

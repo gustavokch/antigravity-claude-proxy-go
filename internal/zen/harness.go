@@ -3,6 +3,7 @@ package zen
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -90,9 +91,10 @@ func GetHarnessConfig() HarnessConfig {
 // header map. It is a no-op when the harness is disabled. Empty or
 // whitespace-only config values fall back to the package defaults;
 // OPENCODE_VERSION and OPENCODE_CLIENT override version and client, mirroring
-// the genuine client's env behavior. The session id is regenerated on every
-// call.
-func ApplyHarnessHeaderMap(hdr http.Header) {
+// the genuine client's env behavior. The session id is the conversation's
+// (sessionIDFor): every turn of one conversation sends the same id, and an
+// empty conversation gets a fresh id.
+func ApplyHarnessHeaderMap(hdr http.Header, conversation string) {
 	if hdr == nil {
 		return
 	}
@@ -122,20 +124,78 @@ func ApplyHarnessHeaderMap(hdr http.Header) {
 	hdr.Set(HeaderUA, "opencode/latest/"+version+"/"+client)
 	hdr.Set(HeaderClient, client)
 	hdr.Set(HeaderProject, project)
-	if sid, err := NewSessionID(); err == nil {
+	if sid, err := sessionIDFor(conversation); err == nil {
 		hdr.Set(HeaderSession, sid)
 		hdr.Set(HeaderSessionAffinity, sid)
 		hdr.Set(HeaderSessionID, sid)
 	}
 }
 
-// ApplyHarnessHeaders stamps the OpenCode harness headers onto a request.
-// A nil request is ignored.
+// ApplyHarnessHeaders stamps the OpenCode harness headers onto a request, for
+// the conversation its context names (WithConversation). A nil request is
+// ignored.
 func ApplyHarnessHeaders(req *http.Request) {
 	if req == nil {
 		return
 	}
-	ApplyHarnessHeaderMap(req.Header)
+	ApplyHarnessHeaderMap(req.Header, conversationOf(req.Context()))
+}
+
+type conversationKey struct{}
+
+// WithConversation returns ctx naming the conversation a zen request belongs
+// to, so ApplyHarnessHeaders sends that conversation's session id. The name
+// is opaque: it stays the same across the turns of one conversation and
+// differs between conversations. Empty names none.
+func WithConversation(ctx context.Context, conversation string) context.Context {
+	return context.WithValue(ctx, conversationKey{}, conversation)
+}
+
+func conversationOf(ctx context.Context) string {
+	conversation, _ := ctx.Value(conversationKey{}).(string)
+	return conversation
+}
+
+// sessionCapacity bounds the conversations whose session id is kept. Past it
+// the oldest is forgotten, and its next turn gets a new id, as after a
+// restart.
+const sessionCapacity = 4096
+
+// sessions maps a conversation to the OpenCode session id its turns send.
+// The genuine client keeps one id for a whole session and Zen routes
+// x-session-affinity on it, so an id per request differs from the client and
+// gives the provider's cache routing nothing to follow.
+var sessions = struct {
+	sync.Mutex
+	ids   map[string]string
+	order []string // insertion order; a ring once it reaches sessionCapacity
+	next  int      // the oldest slot of the full ring
+}{ids: make(map[string]string)}
+
+// sessionIDFor returns the conversation's session id, minting it on first
+// sight. An empty conversation gets a fresh id on every call.
+func sessionIDFor(conversation string) (string, error) {
+	if conversation == "" {
+		return NewSessionID()
+	}
+	sessions.Lock()
+	defer sessions.Unlock()
+	if sid, ok := sessions.ids[conversation]; ok {
+		return sid, nil
+	}
+	sid, err := NewSessionID()
+	if err != nil {
+		return "", err
+	}
+	if len(sessions.order) < sessionCapacity {
+		sessions.order = append(sessions.order, conversation)
+	} else {
+		delete(sessions.ids, sessions.order[sessions.next])
+		sessions.order[sessions.next] = conversation
+		sessions.next = (sessions.next + 1) % sessionCapacity
+	}
+	sessions.ids[conversation] = sid
+	return sid, nil
 }
 
 // NewSessionID returns an OpenCode-shaped session id ("ses_" + 26 chars: 12
