@@ -82,8 +82,10 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		hdr := http.Header{}
 		ApplyHarnessHeaderMap(hdr)
 
-		if got := hdr.Get(HeaderUA); got != "opencode/latest/9.9.9/cli" {
-			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/9.9.9/cli")
+		// OpenCode ends the UA with the same app name it sends as
+		// x-opencode-client (packages/core/src/app.ts useragent).
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/9.9.9/desktop" {
+			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/9.9.9/desktop")
 		}
 		if got := hdr.Get(HeaderClient); got != "desktop" {
 			t.Errorf("x-opencode-client = %q, want %q", got, "desktop")
@@ -138,14 +140,14 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 	t.Run("env overrides config", func(t *testing.T) {
 		withHarness(t, HarnessConfig{Enabled: true, Version: "9.9.9", Client: "desktop"})
 		t.Setenv("OPENCODE_VERSION", "8.8.8")
-		t.Setenv("OPENCODE_CLIENT", "cli")
+		t.Setenv("OPENCODE_CLIENT", "acp")
 		hdr := http.Header{}
 		ApplyHarnessHeaderMap(hdr)
 
-		if got := hdr.Get(HeaderUA); got != "opencode/latest/8.8.8/cli" {
-			t.Errorf("User-Agent = %q, want OPENCODE_VERSION to win", got)
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/8.8.8/acp" {
+			t.Errorf("User-Agent = %q, want OPENCODE_VERSION and OPENCODE_CLIENT to win", got)
 		}
-		if got := hdr.Get(HeaderClient); got != "cli" {
+		if got := hdr.Get(HeaderClient); got != "acp" {
 			t.Errorf("x-opencode-client = %q, want OPENCODE_CLIENT to win", got)
 		}
 	})

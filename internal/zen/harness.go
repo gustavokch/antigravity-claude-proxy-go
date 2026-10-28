@@ -32,7 +32,7 @@ const (
 	HeaderRequest = "x-opencode-request"
 	// HeaderClient declares the calling OpenCode surface (cli, desktop).
 	HeaderClient = "x-opencode-client"
-	// HeaderUA carries the "opencode/<version>" identity.
+	// HeaderUA carries the "opencode/latest/<version>/<client>" identity.
 	HeaderUA = "User-Agent"
 
 	// DefaultVersion is the OpenCode release the disguise impersonates.
@@ -113,7 +113,9 @@ func ApplyHarnessHeaderMap(hdr http.Header) {
 		project = DefaultProject
 	}
 
-	hdr.Set(HeaderUA, "opencode/latest/"+version+"/cli")
+	// OpenCode builds its UA as opencode/<channel>/<version>/<app name> and
+	// sends the same app name as x-opencode-client.
+	hdr.Set(HeaderUA, "opencode/latest/"+version+"/"+client)
 	hdr.Set(HeaderClient, client)
 	hdr.Set(HeaderProject, project)
 	if sid, err := NewSessionID(); err == nil {
