@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1260,7 +1261,9 @@ func TestSave_SeedDoesNotPinHarnessIdentity(t *testing.T) {
 // Before Save stopped seeding the identity, every config.json it created got
 // version 1.18.31, client cli and project global. Those stored values follow
 // the current defaults on Load, and the next Save removes them from the file.
-// A value the operator chose stays.
+// A value the operator chose stays. An operator who chose 1.18.31 on purpose
+// must find the replacement in the log; client cli equals its default, so it
+// changes nothing and is not reported.
 func TestSeededZenIdentityFollowsDefaults(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
@@ -1269,6 +1272,10 @@ func TestSeededZenIdentityFollowsDefaults(t *testing.T) {
 	if err := os.WriteFile(path, []byte(seeded), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	loaded, err := Load()
 	if err != nil {
@@ -1278,6 +1285,10 @@ func TestSeededZenIdentityFollowsDefaults(t *testing.T) {
 	if h == nil || h.Version != zen.DefaultVersion || h.Client != zen.DefaultHarnessClient || h.Project != "abc123" || !h.TLS {
 		t.Fatalf("loaded harness = %+v, want version %q, client %q, the chosen project and tls kept",
 			h, zen.DefaultVersion, zen.DefaultHarnessClient)
+	}
+	if got := logBuf.String(); !strings.Contains(got, "key=zen.harness.version stored=1.18.31 now="+zen.DefaultVersion) ||
+		strings.Contains(got, "zen.harness.client") {
+		t.Errorf("log = %q, want the version replacement reported and nothing for the unchanged client", got)
 	}
 
 	if _, err := Save(map[string]any{"maxRetries": 7}); err != nil {
@@ -1332,21 +1343,37 @@ func TestSave_ZenHarnessMerge(t *testing.T) {
 		t.Errorf("unmentioned harness fields must survive, got %+v", h)
 	}
 
-	// Empty string = keep persisted value; an explicit false must survive.
+	// An empty identity string clears the pin, so the panel can return a
+	// field to the built-in default; an explicit false must survive.
 	if _, err := Save(map[string]any{"zen": map[string]any{
 		"harness": map[string]any{"version": "", "project": "  ", "enabled": false},
 	}}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	got := Get().Zen.Harness
-	if got.Version != "2.0.0" {
-		t.Errorf("empty version must keep persisted value, got %q", got.Version)
+	if got.Version != zen.DefaultVersion {
+		t.Errorf("cleared version = %q, want the default %q", got.Version, zen.DefaultVersion)
 	}
-	if got.Project != "global" {
-		t.Errorf("whitespace project must keep persisted value, got %q", got.Project)
+	if got.Project != zen.DefaultProject {
+		t.Errorf("whitespace project = %q, want the default %q", got.Project, zen.DefaultProject)
 	}
 	if got.Enabled != nil && *got.Enabled {
 		t.Error("explicit enabled=false must survive the merge")
+	}
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk struct {
+		Zen struct {
+			Harness map[string]any `json:"harness"`
+		} `json:"zen"`
+	}
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := onDisk.Zen.Harness["version"]; ok {
+		t.Errorf("zen.harness.version = %v on disk after clearing, want it absent", v)
 	}
 
 	// Absent harness section: the persisted section is preserved whole.
@@ -1354,7 +1381,7 @@ func TestSave_ZenHarnessMerge(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 	kept := Get().Zen.Harness
-	if kept == nil || kept.Version != "2.0.0" || (kept.Enabled != nil && *kept.Enabled) || kept.Client != "cli" {
+	if kept == nil || kept.Version != zen.DefaultVersion || (kept.Enabled != nil && *kept.Enabled) || kept.Client != "cli" {
 		t.Errorf("absent harness section must be preserved, got %+v", kept)
 	}
 	if Get().Zen.BaseURL != "https://other.example" {

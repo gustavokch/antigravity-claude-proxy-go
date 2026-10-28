@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1048,9 +1049,10 @@ func Save(updates map[string]any) (Config, error) {
 				for kk, vv := range vMap {
 					zenCopy[kk] = vv
 				}
-				// The harness section merges field-by-field so a partial
-				// update (empty string = keep persisted) cannot wipe the
-				// disguise; an absent section is preserved whole.
+				// The harness section merges field-by-field, so a partial
+				// update cannot wipe the disguise; an absent section is
+				// preserved whole. An empty identity string clears its
+				// key, so the value follows the built-in default again.
 				if hMap, ok := vMap["harness"].(map[string]any); ok {
 					existingHarness, _ := existingZen["harness"].(map[string]any)
 					hCopy := make(map[string]any)
@@ -1059,6 +1061,7 @@ func Save(updates map[string]any) (Config, error) {
 					}
 					for hk, hv := range hMap {
 						if str, isStr := hv.(string); isStr && strings.TrimSpace(str) == "" {
+							delete(hCopy, hk)
 							continue
 						}
 						hCopy[hk] = hv
@@ -1189,6 +1192,14 @@ var seededZenIdentity = map[string]string{
 	"project": "global",
 }
 
+// zenIdentityDefaults holds the built-in value of each zen.harness identity
+// key, the one a seeded value follows.
+var zenIdentityDefaults = map[string]string{
+	"version": zen.DefaultVersion,
+	"client":  zen.DefaultHarnessClient,
+	"project": zen.DefaultProject,
+}
+
 // dropSeededZenIdentity removes the seeded identity values from the
 // zen.harness section of a raw config map, so Save stores them as absent.
 func dropSeededZenIdentity(configMap map[string]any) {
@@ -1196,6 +1207,7 @@ func dropSeededZenIdentity(configMap map[string]any) {
 	for key, seeded := range seededZenIdentity {
 		if harness[key] == seeded {
 			delete(harness, key)
+			logSeededZenIdentity(key)
 		}
 	}
 }
@@ -1206,15 +1218,28 @@ func followSeededZenIdentity(h *ZenHarnessConfig) {
 	if h == nil {
 		return
 	}
-	if h.Version == seededZenIdentity["version"] {
-		h.Version = zen.DefaultVersion
+	for _, field := range [...]struct {
+		key   string
+		value *string
+	}{{"version", &h.Version}, {"client", &h.Client}, {"project", &h.Project}} {
+		if *field.value == seededZenIdentity[field.key] {
+			*field.value = zenIdentityDefaults[field.key]
+			logSeededZenIdentity(field.key)
+		}
 	}
-	if h.Client == seededZenIdentity["client"] {
-		h.Client = zen.DefaultHarnessClient
+}
+
+// logSeededZenIdentity reports that a stored seeded identity value now
+// follows the default, so an operator who chose that exact value sees why it
+// no longer applies. A seeded value equal to its default changes nothing on
+// the wire and is not reported.
+func logSeededZenIdentity(key string) {
+	seeded, now := seededZenIdentity[key], zenIdentityDefaults[key]
+	if seeded == now {
+		return
 	}
-	if h.Project == seededZenIdentity["project"] {
-		h.Project = zen.DefaultProject
-	}
+	slog.Info("zen.harness value written by an older release follows the built-in default; set another value to pin one",
+		"key", "zen.harness."+key, "stored", seeded, "now", now)
 }
 
 // zenHarnessSection returns the zen.harness object of a raw config map, or
