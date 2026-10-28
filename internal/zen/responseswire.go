@@ -49,12 +49,11 @@ func anthropicToResponsesRequest(req map[string]any) (map[string]any, map[string
 	// message array: system/assistant/user turns become messages, tool_use
 	// becomes function_call, tool_result becomes function_call_output.
 	input := make([]any, 0, len(anySlice(req["messages"]))+1)
-	if sys := systemText(req["system"]); sys != "" {
-		input = append(input, map[string]any{
-			"role":    "system",
-			"content": []any{map[string]any{"type": "input_text", "text": sys}},
-		})
-	}
+	sys := withGateEnv(systemText(req["system"]))
+	input = append(input, map[string]any{
+		"role":    "system",
+		"content": []any{map[string]any{"type": "input_text", "text": sys}},
+	})
 	for _, raw := range anySlice(req["messages"]) {
 		msg, ok := raw.(map[string]any)
 		if !ok {

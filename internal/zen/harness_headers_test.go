@@ -49,7 +49,7 @@ func TestForwardMessages_SendsHarnessHeaders(t *testing.T) {
 
 	ForwardMessages(w, req, upstream.URL, "sk-test", body)
 
-	requireHarnessHeaders(t, got, "opencode/"+DefaultVersion)
+	requireHarnessHeaders(t, got, "opencode/latest/"+DefaultVersion+"/cli")
 }
 
 func TestForwardMessages_HarnessDisabledSendsNoHeaders(t *testing.T) {
@@ -98,7 +98,7 @@ func TestSendChat_SendsHarnessHeaders(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	requireHarnessHeaders(t, got, "opencode/"+DefaultVersion)
+	requireHarnessHeaders(t, got, "opencode/latest/"+DefaultVersion+"/cli")
 }
 
 func TestFetchModels_SendsHarnessHeaders(t *testing.T) {
@@ -118,5 +118,5 @@ func TestFetchModels_SendsHarnessHeaders(t *testing.T) {
 		t.Fatalf("FetchModels: %v", err)
 	}
 
-	requireHarnessHeaders(t, got, "opencode/"+DefaultVersion)
+	requireHarnessHeaders(t, got, "opencode/latest/"+DefaultVersion+"/cli")
 }

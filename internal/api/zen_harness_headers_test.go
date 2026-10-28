@@ -60,8 +60,8 @@ func withHarnessDefaults(t *testing.T) {
 
 func requireHarnessHeaders(t *testing.T, hdr http.Header) {
 	t.Helper()
-	if got := hdr.Get("User-Agent"); got != "opencode/1.18.31" {
-		t.Errorf("User-Agent = %q, want %q", got, "opencode/1.18.31")
+	if got := hdr.Get("User-Agent"); got != "opencode/latest/1.18.31/cli" {
+		t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/1.18.31/cli")
 	}
 	for name, want := range map[string]string{
 		"x-opencode-client":  "cli",

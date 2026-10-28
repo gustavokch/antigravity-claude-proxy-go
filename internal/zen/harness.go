@@ -36,7 +36,7 @@ const (
 	HeaderUA = "User-Agent"
 
 	// DefaultVersion is the OpenCode release the disguise impersonates.
-	DefaultVersion = "1.18.31"
+	DefaultVersion = "2.0.20"
 	// DefaultHarnessClient is the disguise surface when no override exists.
 	DefaultHarnessClient = "cli"
 	// DefaultProject is the project id used outside a git repository.
@@ -113,11 +113,13 @@ func ApplyHarnessHeaderMap(hdr http.Header) {
 		project = DefaultProject
 	}
 
-	hdr.Set(HeaderUA, "opencode/"+version)
+	hdr.Set(HeaderUA, "opencode/latest/"+version+"/cli")
 	hdr.Set(HeaderClient, client)
 	hdr.Set(HeaderProject, project)
 	if sid, err := NewSessionID(); err == nil {
 		hdr.Set(HeaderSession, sid)
+		hdr.Set("x-session-affinity", sid)
+		hdr.Set("x-session-id", sid)
 	}
 	if rid, err := NewRequestID(); err == nil {
 		hdr.Set(HeaderRequest, rid)
@@ -196,6 +198,8 @@ func IsFreeTierGateError(body []byte) bool {
 	for _, phrase := range []string{
 		"free tier can only be used from within opencode",
 		"freetiererror",
+		"freeusagelimiterror",
+		"free usage limit reached",
 		"or newer is required to use the free tier",
 	} {
 		if strings.Contains(lower, phrase) {
@@ -233,7 +237,7 @@ func WarnFreeTierGate(model string, status int, body []byte) {
 	slog.Warn("zen free-tier gate rejected request",
 		"model", model,
 		"status", status,
-		"hint", "gate wants an opencode >=1.18.0 UA, a fresh x-opencode-session, and a stream:true body carrying bash+read tools")
+		"hint", "gate wants an opencode UA, valid x-opencode-session, stream:true body, read tool, and <env>Working directory:</env> in system message")
 }
 
 // ObserveFreeTierGate reads a 403 (FreeTierError) or 426 (UpgradeRequired)
@@ -244,7 +248,7 @@ func WarnFreeTierGate(model string, status int, body []byte) {
 // error is logged rather than dropped, and the truncated bytes are never
 // substituted for the body. Other responses are never read.
 func ObserveFreeTierGate(resp *http.Response, model string) {
-	if resp == nil || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusUpgradeRequired) {
+	if resp == nil || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusUpgradeRequired && resp.StatusCode != http.StatusTooManyRequests) {
 		return
 	}
 	const limit = 1 << 20

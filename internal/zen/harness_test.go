@@ -15,8 +15,8 @@ import (
 )
 
 func TestDefaultHarnessConstants(t *testing.T) {
-	if DefaultVersion != "1.18.31" {
-		t.Errorf("DefaultVersion = %q, want %q", DefaultVersion, "1.18.31")
+	if DefaultVersion != "2.0.20" {
+		t.Errorf("DefaultVersion = %q, want %q", DefaultVersion, "2.0.20")
 	}
 	if DefaultHarnessClient != "cli" {
 		t.Errorf("DefaultHarnessClient = %q, want %q", DefaultHarnessClient, "cli")
@@ -55,8 +55,8 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		hdr := http.Header{}
 		ApplyHarnessHeaderMap(hdr)
 
-		if got := hdr.Get(HeaderUA); got != "opencode/"+DefaultVersion {
-			t.Errorf("User-Agent = %q, want %q", got, "opencode/"+DefaultVersion)
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
+			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/"+DefaultVersion+"/cli")
 		}
 		if got := hdr.Get(HeaderClient); got != DefaultHarnessClient {
 			t.Errorf("x-opencode-client = %q, want %q", got, DefaultHarnessClient)
@@ -82,8 +82,8 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		hdr := http.Header{}
 		ApplyHarnessHeaderMap(hdr)
 
-		if got := hdr.Get(HeaderUA); got != "opencode/9.9.9" {
-			t.Errorf("User-Agent = %q, want %q", got, "opencode/9.9.9")
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/9.9.9/cli" {
+			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/9.9.9/cli")
 		}
 		if got := hdr.Get(HeaderClient); got != "desktop" {
 			t.Errorf("x-opencode-client = %q, want %q", got, "desktop")
@@ -103,8 +103,8 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		hdr := http.Header{}
 		ApplyHarnessHeaderMap(hdr)
 
-		if got := hdr.Get(HeaderUA); got != "opencode/"+DefaultVersion {
-			t.Errorf("User-Agent = %q, want %q", got, "opencode/"+DefaultVersion)
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
+			t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/"+DefaultVersion+"/cli")
 		}
 		if got := hdr.Get(HeaderClient); got != DefaultHarnessClient {
 			t.Errorf("x-opencode-client = %q, want %q", got, DefaultHarnessClient)
@@ -130,7 +130,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		hdr.Set(HeaderUA, "claude-cli/2.0.0")
 		ApplyHarnessHeaderMap(hdr)
 
-		if got := hdr.Get(HeaderUA); got != "opencode/"+DefaultVersion {
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
 			t.Errorf("User-Agent = %q, want it overwritten with the disguise", got)
 		}
 	})
@@ -142,7 +142,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		hdr := http.Header{}
 		ApplyHarnessHeaderMap(hdr)
 
-		if got := hdr.Get(HeaderUA); got != "opencode/8.8.8" {
+		if got := hdr.Get(HeaderUA); got != "opencode/latest/8.8.8/cli" {
 			t.Errorf("User-Agent = %q, want OPENCODE_VERSION to win", got)
 		}
 		if got := hdr.Get(HeaderClient); got != "cli" {
@@ -162,8 +162,8 @@ func TestApplyHarnessHeaders(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/chat/completions", nil)
 	ApplyHarnessHeaders(req)
 
-	if got := req.Header.Get(HeaderUA); got != "opencode/"+DefaultVersion {
-		t.Errorf("User-Agent = %q, want %q", got, "opencode/"+DefaultVersion)
+	if got := req.Header.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
+		t.Errorf("User-Agent = %q, want %q", got, "opencode/latest/"+DefaultVersion+"/cli")
 	}
 	if got := req.Header.Get(HeaderClient); got != DefaultHarnessClient {
 		t.Errorf("x-opencode-client = %q, want %q", got, DefaultHarnessClient)

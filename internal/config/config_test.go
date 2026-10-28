@@ -1202,8 +1202,8 @@ func TestZenHarnessDefaults(t *testing.T) {
 	if cfg.Zen.Harness.Enabled == nil || !*cfg.Zen.Harness.Enabled {
 		t.Error("zen.harness.enabled must default to true")
 	}
-	if cfg.Zen.Harness.Version != "1.18.31" {
-		t.Errorf("zen.harness.version = %q, want %q", cfg.Zen.Harness.Version, "1.18.31")
+	if cfg.Zen.Harness.Version != "2.0.20" {
+		t.Errorf("zen.harness.version = %q, want %q", cfg.Zen.Harness.Version, "2.0.20")
 	}
 	if cfg.Zen.Harness.Client != "cli" {
 		t.Errorf("zen.harness.client = %q, want %q", cfg.Zen.Harness.Client, "cli")
@@ -1283,7 +1283,7 @@ func TestPublicConfig_ZenHarnessPassthrough(t *testing.T) {
 	if !ok {
 		t.Fatalf("public config zen section has no harness: %#v", zenMap)
 	}
-	if h["version"] != "1.18.31" || h["client"] != "cli" || h["project"] != "global" {
+	if h["version"] != "2.0.20" || h["client"] != "cli" || h["project"] != "global" {
 		t.Errorf("harness not passed through: %#v", h)
 	}
 	if _, ok := h["enabled"]; !ok {

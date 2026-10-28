@@ -372,7 +372,7 @@ func TestSendChatRenamesBashRead(t *testing.T) {
 	if tc := got["tool_choice"].(map[string]any); tc["function"].(map[string]any)["name"] != "bash" {
 		t.Fatalf("tool_choice = %v", got["tool_choice"])
 	}
-	asst := got["messages"].([]any)[1].(map[string]any)
+	asst := got["messages"].([]any)[2].(map[string]any) // [0] is the injected gate system message
 	if call := asst["tool_calls"].([]any)[0].(map[string]any); call["function"].(map[string]any)["name"] != "bash" {
 		t.Fatalf("history tool_calls = %v", call)
 	}
@@ -383,6 +383,39 @@ func TestSendChatRenamesBashRead(t *testing.T) {
 	}
 	if strings.Contains(s, `"name":"bash"`) {
 		t.Errorf("response leaked upstream name bash:\n%s", s)
+	}
+}
+
+func TestAnthropicToChatRequestInjectsGateEnv(t *testing.T) {
+	cases := map[string]struct {
+		req      map[string]any
+		contains string
+	}{
+		"no system":    {map[string]any{"model": "m"}, ""},
+		"empty system": {map[string]any{"model": "m", "system": ""}, ""},
+		"claude":       {map[string]any{"model": "m", "system": "You are Claude"}, "You are Claude"},
+	}
+	for name, tc := range cases {
+		out, _, _ := anthropicToChatRequest(tc.req)
+		first := out["messages"].([]any)[0].(map[string]any)
+		content, _ := first["content"].(string)
+		if first["role"] != "system" || !strings.Contains(content, "<env>") || !strings.Contains(content, "Working directory:") {
+			t.Errorf("%s: first message = %v, want system with <env>Working directory:", name, first)
+		}
+		if tc.contains != "" && !strings.Contains(content, tc.contains) {
+			t.Errorf("%s: client system prompt lost: %q", name, content)
+		}
+	}
+	keep := "x <env>Working directory: /a</env>"
+	if got := withGateEnv(keep); got != keep {
+		t.Errorf("existing marker duplicated: %q", got)
+	}
+}
+
+func TestIsFreeTierGateError_FreeUsageLimit(t *testing.T) {
+	body := []byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`)
+	if !IsFreeTierGateError(body) {
+		t.Fatal("429 FreeUsageLimitError not recognized")
 	}
 }
 

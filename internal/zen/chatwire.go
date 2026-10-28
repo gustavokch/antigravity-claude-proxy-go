@@ -124,6 +124,21 @@ func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Res
 
 // --- Request translation ---
 
+// gateEnvBlock is the system-prompt marker Zen's free-tier gate requires:
+// an <env> block containing the case-sensitive "Working directory:".
+const gateEnvBlock = "<env>\n  Working directory: /workspace\n</env>"
+
+// withGateEnv guarantees the system prompt carries the gate's <env> marker.
+func withGateEnv(sys string) string {
+	if sys == "" {
+		return gateEnvBlock
+	}
+	if !strings.Contains(sys, "<env>") || !strings.Contains(sys, "Working directory:") {
+		sys += "\n\n" + gateEnvBlock
+	}
+	return sys
+}
+
 // anthropicToChatRequest converts an Anthropic Messages request body into an
 // OpenAI Chat Completions request body.
 //
@@ -147,9 +162,7 @@ func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]stri
 	out := map[string]any{"model": StripOpencodePrefix(model)}
 
 	messages := make([]any, 0)
-	if sys := systemText(req["system"]); sys != "" {
-		messages = append(messages, map[string]any{"role": "system", "content": sys})
-	}
+	messages = append(messages, map[string]any{"role": "system", "content": withGateEnv(systemText(req["system"]))})
 	rawMsgs, _ := req["messages"].([]any)
 	for _, raw := range rawMsgs {
 		msg, ok := raw.(map[string]any)
