@@ -1388,6 +1388,39 @@ func TestSave_ZenFallbackProxyKeptWhenUnsent(t *testing.T) {
 	}
 }
 
+// The proxy password is a credential like zen.apiKey: the public config shows
+// it redacted, and a save that sends the redacted form back keeps it.
+func TestZenFallbackProxyPasswordRedacted(t *testing.T) {
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	const stored = "socks5h://user:s3cret@192.0.2.10:1080"
+	const shown = "socks5h://user:xxxxx@192.0.2.10:1080"
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": stored}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	zenMap, _ := GetPublicConfig()["zen"].(map[string]any)
+	if got := zenMap["fallbackProxy"]; got != shown {
+		t.Fatalf("public fallbackProxy = %v, want %q", got, shown)
+	}
+
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": shown}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := Get().Zen.FallbackProxy; got != stored {
+		t.Fatalf("fallbackProxy after saving the redacted echo = %q, want the stored password kept", got)
+	}
+
+	const replaced = "socks5h://other:n3w@192.0.2.11:1080"
+	if _, err := Save(map[string]any{"zen": map[string]any{"fallbackProxy": replaced}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := Get().Zen.FallbackProxy; got != replaced {
+		t.Fatalf("fallbackProxy after a new URL = %q, want %q", got, replaced)
+	}
+}
+
 func TestPublicConfig_ZenHarnessPassthrough(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", t.TempDir())
 	if _, err := Load(); err != nil {

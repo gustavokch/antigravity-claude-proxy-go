@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1071,11 +1072,12 @@ func Save(updates map[string]any) (Config, error) {
 					zenCopy["harness"] = ex
 				}
 				// Like the harness, an unsent fallbackProxy (an old panel, an
-				// API client) keeps the persisted proxy; "" clears it.
-				if _, sent := vMap["fallbackProxy"]; !sent {
-					if ex, ok := existingZen["fallbackProxy"]; ok {
-						zenCopy["fallbackProxy"] = ex
-					}
+				// API client) keeps the persisted proxy; "" clears it. The
+				// public config shows the proxy password redacted, so a save
+				// that sends the redacted form back keeps the stored one.
+				storedProxy, _ := existingZen["fallbackProxy"].(string)
+				if posted, sent := vMap["fallbackProxy"]; storedProxy != "" && (!sent || posted == any(redactProxyURL(storedProxy))) {
+					zenCopy["fallbackProxy"] = storedProxy
 				}
 				hasApiKey, _ := zenCopy["hasApiKey"].(bool)
 				apiKey, _ := zenCopy["apiKey"].(string)
@@ -1441,11 +1443,15 @@ func GetPublicConfig() map[string]any {
 	if zenMap, ok := result["zen"].(map[string]any); ok {
 		zenCopy := make(map[string]any)
 		for kk, vv := range zenMap {
-			if kk == "apiKey" {
+			switch kk {
+			case "apiKey":
 				if strKey, isStr := vv.(string); isStr && strKey != "" {
 					zenCopy["hasApiKey"] = true
 				}
-			} else {
+			case "fallbackProxy":
+				proxy, _ := vv.(string)
+				zenCopy[kk] = redactProxyURL(proxy)
+			default:
 				zenCopy[kk] = vv
 			}
 		}
@@ -1494,4 +1500,18 @@ func GetPublicConfig() map[string]any {
 	}
 
 	return result
+}
+
+// redactProxyURL returns a proxy URL with its password replaced the way
+// url.URL.Redacted does. A value without a password, or one that does not
+// parse, is returned unchanged.
+func redactProxyURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.User == nil {
+		return raw
+	}
+	if _, has := u.User.Password(); !has {
+		return raw
+	}
+	return u.Redacted()
 }

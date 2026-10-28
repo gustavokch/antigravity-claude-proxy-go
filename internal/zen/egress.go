@@ -3,6 +3,7 @@ package zen
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,7 +36,8 @@ type EgressConfig struct {
 }
 
 // ParseFallbackProxy validates a fallback proxy URL. Empty input means no
-// fallback and returns nil without error.
+// fallback and returns nil without error. Errors never quote the password:
+// they reach the panel and the startup log.
 func ParseFallbackProxy(raw string) (*url.URL, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -43,18 +45,24 @@ func ParseFallbackProxy(raw string) (*url.URL, error) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("invalid Zen fallback proxy %q: %w", raw, err)
+		// A url.Error quotes the whole URL, so keep only its cause.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return nil, fmt.Errorf("invalid Zen fallback proxy: %w", err)
 	}
+	shown := u.Redacted()
 	switch u.Scheme {
 	case "socks5", "socks5h", "http", "https":
 	default:
-		return nil, fmt.Errorf("invalid Zen fallback proxy %q: scheme must be socks5, socks5h, http or https", raw)
+		return nil, fmt.Errorf("invalid Zen fallback proxy %q: scheme must be socks5, socks5h, http or https", shown)
 	}
 	if u.Hostname() == "" || u.Port() == "" {
-		return nil, fmt.Errorf("invalid Zen fallback proxy %q: host and port are required", raw)
+		return nil, fmt.Errorf("invalid Zen fallback proxy %q: host and port are required", shown)
 	}
 	if u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("invalid Zen fallback proxy %q: path, query and fragment are not allowed", raw)
+		return nil, fmt.Errorf("invalid Zen fallback proxy %q: path, query and fragment are not allowed", shown)
 	}
 	return u, nil
 }

@@ -647,7 +647,7 @@ window.translations.en = {
     zenApiKeyEnv: "Key source: config. Set OPENCODE_API_KEY as fallback, or leave zen.apiKey empty to use the env key.",
     zenApiKeyEnvActive: "Key source: environment (OPENCODE_API_KEY). The panel shows no key value.",
     zenFallbackProxy: "Fallback egress proxy",
-    zenFallbackProxyHelp: "When Zen answers 429 free usage limit, requests move to this proxy until the limit resets. Empty disables the failover.",
+    zenFallbackProxyHelp: "When Zen answers 429 free usage limit, requests move to this proxy until the limit resets. Empty disables the failover. A saved password shows as xxxxx; leave it as is to keep it.",
     zenNotLoaded: "Zen settings are not loaded. Reload the page, then try again.",
     zenHarness: "OpenCode client disguise",
     zenHarnessDesc: "Send the OpenCode User-Agent, x-opencode-* and session headers. The free tier rejects requests without them.",

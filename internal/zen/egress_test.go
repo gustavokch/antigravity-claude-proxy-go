@@ -158,9 +158,16 @@ func TestParseFallbackProxy(t *testing.T) {
 			t.Errorf("ParseFallbackProxy(%q) = %v, want ok", ok, err)
 		}
 	}
-	for _, bad := range []string{"100.72.157.22:1080", "socks5h://host", "ftp://h:21", "socks5h://h:1/path"} {
-		if _, err := ParseFallbackProxy(bad); err == nil {
+	for _, bad := range []string{"100.72.157.22:1080", "socks5h://host", "ftp://h:21", "socks5h://h:1/path",
+		"ftp://u:s3cret@h:21", "socks5h://u:s3cret@h", "socks5h://u:s3cret@h:1/path", "socks5h://u:s3cret@h:1/%zz", "socks5h://u:s3cret@h:abc"} {
+		_, err := ParseFallbackProxy(bad)
+		if err == nil {
 			t.Errorf("ParseFallbackProxy(%q) accepted", bad)
+			continue
+		}
+		// The error reaches the panel and the startup log.
+		if strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("ParseFallbackProxy(%q) error shows the password: %v", bad, err)
 		}
 	}
 }
