@@ -140,8 +140,8 @@ type ZenModelConfig struct {
 }
 
 // ZenHarnessConfig is the OpenCode client disguise applied to every
-// zen-bound request: the User-Agent identity plus the four x-opencode-*
-// routing headers the genuine OpenCode client sends.
+// zen-bound request: the User-Agent identity plus the x-opencode-* and
+// session routing headers the genuine OpenCode client sends.
 type ZenHarnessConfig struct {
 	// Enabled is a pointer so a hand-written section can omit the key:
 	// absent (nil) means "default on", an explicit false stays false.
@@ -934,6 +934,7 @@ func Save(updates map[string]any) (Config, error) {
 	if currentMap == nil {
 		defaultData, _ := json.Marshal(DefaultConfig())
 		_ = json.Unmarshal(defaultData, &currentMap)
+		dropZenHarnessIdentity(currentMap)
 	}
 
 	// Merge updates
@@ -1165,6 +1166,18 @@ func Save(updates map[string]any) (Config, error) {
 	}
 
 	return currentConfig, nil
+}
+
+// dropZenHarnessIdentity removes the OpenCode identity strings from a
+// zen.harness section seeded from DefaultConfig. Written to disk they would
+// read as the operator's choice, and a later bump of zen.DefaultVersion would
+// never reach the install; absent, Load fills them from DefaultConfig again.
+func dropZenHarnessIdentity(configMap map[string]any) {
+	zenMap, _ := configMap["zen"].(map[string]any)
+	harness, _ := zenMap["harness"].(map[string]any)
+	for _, key := range []string{"version", "client", "project"} {
+		delete(harness, key)
+	}
 }
 
 // maskToken renders a token for public config output.

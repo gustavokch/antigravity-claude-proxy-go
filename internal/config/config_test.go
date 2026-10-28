@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/openrouter"
+	"antigravity-go-proxy/internal/zen"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -1210,6 +1211,49 @@ func TestZenHarnessDefaults(t *testing.T) {
 	}
 	if cfg.Zen.Harness.Project != "global" {
 		t.Errorf("zen.harness.project = %q, want %q", cfg.Zen.Harness.Project, "global")
+	}
+}
+
+// A config.json that Save creates from the defaults must not pin the disguise
+// identity: those values follow zen.DefaultVersion and friends, so a default
+// bump reaches installs that never chose a version.
+func TestSave_SeedDoesNotPinHarnessIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	if _, err := Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if _, err := Save(map[string]any{"maxRetries": 7}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+	var onDisk struct {
+		Zen struct {
+			Harness map[string]any `json:"harness"`
+		} `json:"zen"`
+	}
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("parse config.json: %v", err)
+	}
+	for _, key := range []string{"version", "client", "project"} {
+		if v, ok := onDisk.Zen.Harness[key]; ok {
+			t.Errorf("zen.harness.%s = %v written to a new config.json, want it absent", key, v)
+		}
+	}
+	if onDisk.Zen.Harness["enabled"] != true {
+		t.Errorf("zen.harness.enabled = %v, want the seeded true", onDisk.Zen.Harness["enabled"])
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if loaded.Zen.Harness == nil || loaded.Zen.Harness.Version != zen.DefaultVersion {
+		t.Errorf("reloaded harness = %+v, want version %q", loaded.Zen.Harness, zen.DefaultVersion)
 	}
 }
 

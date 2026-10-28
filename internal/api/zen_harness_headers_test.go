@@ -71,11 +71,17 @@ func requireHarnessHeaders(t *testing.T, hdr http.Header) {
 			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
-	if hdr.Get("x-opencode-session") == "" {
+	session := hdr.Get("x-opencode-session")
+	if session == "" {
 		t.Error("x-opencode-session empty")
 	}
-	if hdr.Get("x-opencode-request") == "" {
-		t.Error("x-opencode-request empty")
+	for _, name := range []string{"x-session-affinity", "X-Session-Id"} {
+		if got := hdr.Get(name); got != session {
+			t.Errorf("%s = %q, want the x-opencode-session value %q", name, got, session)
+		}
+	}
+	if got := hdr.Get("x-opencode-request"); got != "" {
+		t.Errorf("x-opencode-request = %q, want absent (OpenCode 2.x does not send it)", got)
 	}
 }
 

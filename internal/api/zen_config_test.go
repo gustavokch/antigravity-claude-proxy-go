@@ -10,6 +10,7 @@ import (
 
 	"antigravity-go-proxy/internal/config"
 	"antigravity-go-proxy/internal/proxydial/proxytest"
+	"antigravity-go-proxy/internal/zen"
 )
 
 func TestServer_HandleZenConfigGet_RedactsAPIKey(t *testing.T) {
@@ -242,6 +243,59 @@ func TestServer_HandleZenConfigSave_AppliesFallbackEgress(t *testing.T) {
 	handler.ServeHTTP(msgRec, msgReq)
 	if msgRec.Code != http.StatusOK {
 		t.Fatalf("forward status = %d, want the fallback's 200; body = %s", msgRec.Code, msgRec.Body.String())
+	}
+}
+
+// The Zen panel toggles save through /api/zen/config. The disguise and the
+// TLS fingerprint they switch must take effect on that save, not at the next
+// restart.
+func TestServer_HandleZenConfigSave_AppliesHarnessLive(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	t.Cleanup(func() {
+		config.SetForTest(config.DefaultConfig())
+		applyRouterConfig(config.DefaultConfig())
+	})
+	applyRouterConfig(config.Get())
+
+	payload := `{"enabled": true, "harness": {"enabled": false, "tls": true}}`
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/zen/config", strings.NewReader(payload)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if zen.GetHarnessConfig().Enabled {
+		t.Error("harness still enabled after the panel saved enabled:false")
+	}
+	if !zen.GetTLSConfig().Enabled {
+		t.Error("TLS fingerprint still off after the panel saved tls:true")
+	}
+}
+
+// The harness identity strings become User-Agent and x-opencode-* values. A
+// control character in one would fail every Zen request, so both save routes
+// refuse it and keep the stored identity.
+func TestServer_ZenHarnessControlCharacterRefused(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	t.Cleanup(func() {
+		config.SetForTest(config.DefaultConfig())
+		applyRouterConfig(config.DefaultConfig())
+	})
+	handler := server.Handler()
+
+	for _, tc := range []struct{ name, path, body string }{
+		{"zen panel", "/api/zen/config", `{"enabled": true, "harness": {"version": "2.0.20\nX-Injected: 1"}}`},
+		{"full config", "/api/config", `{"zen": {"harness": {"client": "cli\u0000"}}}`},
+		{"non-string", "/api/zen/config", `{"harness": {"project": 7}}`},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400; body = %s", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+	h := config.Get().Zen.Harness
+	if h == nil || h.Version != zen.DefaultVersion || h.Client != zen.DefaultHarnessClient || h.Project != zen.DefaultProject {
+		t.Errorf("stored harness = %+v, want the defaults untouched", h)
 	}
 }
 

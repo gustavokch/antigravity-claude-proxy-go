@@ -133,10 +133,26 @@ func withGateEnv(sys string) string {
 	if sys == "" {
 		return gateEnvBlock
 	}
-	if !strings.Contains(sys, "<env>") || !strings.Contains(sys, "Working directory:") {
+	if !hasGateEnv(sys) {
 		sys += "\n\n" + gateEnvBlock
 	}
 	return sys
+}
+
+// hasGateEnv reports whether some <env> block of sys contains
+// "Working directory:". An unclosed block runs to the end of sys.
+func hasGateEnv(sys string) bool {
+	for {
+		_, rest, found := strings.Cut(sys, "<env>")
+		if !found {
+			return false
+		}
+		block, _, _ := strings.Cut(rest, "</env>")
+		if strings.Contains(block, "Working directory:") {
+			return true
+		}
+		sys = rest
+	}
 }
 
 // anthropicToChatRequest converts an Anthropic Messages request body into an

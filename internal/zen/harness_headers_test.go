@@ -23,11 +23,25 @@ func requireHarnessHeaders(t *testing.T, hdr http.Header, wantUA string) {
 	if got := hdr.Get(HeaderProject); got != DefaultProject {
 		t.Errorf("x-opencode-project = %q, want %q", got, DefaultProject)
 	}
-	if got := hdr.Get(HeaderSession); !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(got) {
-		t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", got)
+	session := hdr.Get(HeaderSession)
+	if !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(session) {
+		t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", session)
 	}
-	if got := hdr.Get(HeaderRequest); !regexp.MustCompile(`^msg_[0-9A-Za-z]{26}$`).MatchString(got) {
-		t.Errorf("x-opencode-request = %q, want msg_ + 26 base62 chars", got)
+	requireSessionMirrors(t, hdr, session)
+}
+
+// requireSessionMirrors asserts the OpenCode 2.0.20 session header set:
+// x-session-affinity and X-Session-Id carry the x-opencode-session value, and
+// the 1.x x-opencode-request id is gone.
+func requireSessionMirrors(t *testing.T, hdr http.Header, session string) {
+	t.Helper()
+	for _, name := range []string{"x-session-affinity", "X-Session-Id"} {
+		if got := hdr.Get(name); got != session {
+			t.Errorf("%s = %q, want the x-opencode-session value %q", name, got, session)
+		}
+	}
+	if got := hdr.Get("x-opencode-request"); got != "" {
+		t.Errorf("x-opencode-request = %q, want absent (OpenCode 2.x does not send it)", got)
 	}
 }
 

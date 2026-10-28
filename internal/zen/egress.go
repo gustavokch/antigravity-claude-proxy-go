@@ -251,15 +251,3 @@ func hitFreeUsageLimit(resp *http.Response) bool {
 	}
 	return IsFreeUsageLimitError(head)
 }
-
-// IsFreeUsageLimitError reports whether an upstream error body is Zen's
-// per-IP free usage limit (429 FreeUsageLimitError), as opposed to the
-// FreeTierError gate that rejects non-OpenCode clients. A gzip body is
-// decompressed first.
-func IsFreeUsageLimitError(body []byte) bool {
-	if decoded, ok := gunzipBody(body); ok {
-		body = decoded
-	}
-	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, "freeusagelimiterror") || strings.Contains(lower, "free usage limit reached")
-}

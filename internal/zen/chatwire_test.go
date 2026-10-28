@@ -410,12 +410,14 @@ func TestAnthropicToChatRequestInjectsGateEnv(t *testing.T) {
 	if got := withGateEnv(keep); got != keep {
 		t.Errorf("existing marker duplicated: %q", got)
 	}
-}
-
-func TestIsFreeTierGateError_FreeUsageLimit(t *testing.T) {
-	body := []byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}`)
-	if !IsFreeTierGateError(body) {
-		t.Fatal("429 FreeUsageLimitError not recognized")
+	// The working directory only counts inside an <env>…</env> block.
+	split := "<env>\nPlatform: darwin\n</env>\nWorking directory: /a"
+	if got := withGateEnv(split); got != split+"\n\n"+gateEnvBlock {
+		t.Errorf("working directory outside the env block accepted: %q", got)
+	}
+	later := "a <env></env> mention, then <env>\n  Working directory: /a\n</env>"
+	if got := withGateEnv(later); got != later {
+		t.Errorf("marker in a later env block duplicated: %q", got)
 	}
 }
 

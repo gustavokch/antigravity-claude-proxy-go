@@ -16,23 +16,27 @@ import (
 )
 
 // OpenCode gates Zen free-tier models to its own harness: the genuine client
-// sends a fixed set of x-opencode-* routing headers plus a versioned
-// User-Agent. Third-party clients send none of them, which is one of the two
-// layers the Zen free-tier check inspects (the other is the TLS handshake —
-// see tls.go).
+// sends a fixed set of x-opencode-* and session routing headers plus a
+// versioned User-Agent. Third-party clients send none of them, which is one
+// of the layers the Zen free-tier check inspects (the TLS handshake is
+// another — see tls.go).
 //
-// Header names, defaults and the ID algorithm are ported from the MIT
-// reimplementation in kode-ai/providers/opencode/headers.go.
+// The header set is the one OpenCode 2.0.20 sends on a model request
+// (packages/core/src/session/model-request.ts). Defaults and the ID algorithm
+// are ported from the MIT reimplementation in
+// kode-ai/providers/opencode/headers.go.
 const (
 	// HeaderProject declares the OpenCode project id (git root hash or "global").
 	HeaderProject = "x-opencode-project"
 	// HeaderSession declares the OpenCode session id.
 	HeaderSession = "x-opencode-session"
-	// HeaderRequest declares the OpenCode per-request message id.
-	HeaderRequest = "x-opencode-request"
+	// HeaderSessionAffinity and HeaderSessionID repeat the session id for
+	// provider cache routing.
+	HeaderSessionAffinity = "x-session-affinity"
+	HeaderSessionID       = "X-Session-Id"
 	// HeaderClient declares the calling OpenCode surface (cli, desktop).
 	HeaderClient = "x-opencode-client"
-	// HeaderUA carries the "opencode/<version>" identity.
+	// HeaderUA carries the "opencode/latest/<version>/<client>" identity.
 	HeaderUA = "User-Agent"
 
 	// DefaultVersion is the OpenCode release the disguise impersonates.
@@ -86,8 +90,8 @@ func GetHarnessConfig() HarnessConfig {
 // header map. It is a no-op when the harness is disabled. Empty or
 // whitespace-only config values fall back to the package defaults;
 // OPENCODE_VERSION and OPENCODE_CLIENT override version and client, mirroring
-// the genuine client's env behavior. Session/request ids are regenerated on
-// every call.
+// the genuine client's env behavior. The session id is regenerated on every
+// call.
 func ApplyHarnessHeaderMap(hdr http.Header) {
 	if hdr == nil {
 		return
@@ -113,16 +117,15 @@ func ApplyHarnessHeaderMap(hdr http.Header) {
 		project = DefaultProject
 	}
 
-	hdr.Set(HeaderUA, "opencode/latest/"+version+"/cli")
+	// OpenCode builds its UA as opencode/<channel>/<version>/<app name> and
+	// sends the same app name as x-opencode-client.
+	hdr.Set(HeaderUA, "opencode/latest/"+version+"/"+client)
 	hdr.Set(HeaderClient, client)
 	hdr.Set(HeaderProject, project)
 	if sid, err := NewSessionID(); err == nil {
 		hdr.Set(HeaderSession, sid)
-		hdr.Set("x-session-affinity", sid)
-		hdr.Set("x-session-id", sid)
-	}
-	if rid, err := NewRequestID(); err == nil {
-		hdr.Set(HeaderRequest, rid)
+		hdr.Set(HeaderSessionAffinity, sid)
+		hdr.Set(HeaderSessionID, sid)
 	}
 }
 
@@ -135,35 +138,23 @@ func ApplyHarnessHeaders(req *http.Request) {
 	ApplyHarnessHeaderMap(req.Header)
 }
 
-// NewSessionID returns an OpenCode-shaped session id ("ses_" + 26 base62 chars).
-// The timestamp portion is inverted so session ids sort descending by age.
+// NewSessionID returns an OpenCode-shaped session id ("ses_" + 26 chars: 12
+// hex of the inverted timestamp, then 14 base62).
 func NewSessionID() (string, error) {
-	id, err := createID(true, time.Now())
+	id, err := createID(time.Now())
 	if err != nil {
 		return "", err
 	}
 	return "ses_" + id, nil
 }
 
-// NewRequestID returns an OpenCode-shaped request id ("msg_" + 26 base62 chars).
-func NewRequestID() (string, error) {
-	id, err := createID(false, time.Now())
-	if err != nil {
-		return "", err
-	}
-	return "msg_" + id, nil
-}
-
-// createID renders 12 hex chars of the millisecond timestamp (optionally
-// bit-flipped so ids sort descending) followed by 14 random base62 chars.
-func createID(descending bool, t time.Time) (string, error) {
+// createID renders 12 hex chars of the bit-flipped millisecond timestamp (so
+// ids sort descending by age) followed by 14 random base62 chars.
+func createID(t time.Time) (string, error) {
 	if t.IsZero() {
 		t = time.Now()
 	}
-	ts := uint64(t.UnixMilli())*0x1000 + uint64(1)
-	if descending {
-		ts = ^ts
-	}
+	ts := ^(uint64(t.UnixMilli())*0x1000 + uint64(1))
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], ts)
 	random, err := randomBase62(idRandom)
@@ -187,19 +178,15 @@ func randomBase62(length int) (string, error) {
 }
 
 // IsFreeTierGateError reports whether an upstream error body is Zen's
-// free-tier gate: the 403 FreeTierError returned to non-OpenCode clients.
-// A gzip-compressed body (magic bytes 1f 8b) is decompressed first, so the
+// free-tier gate: the 403 FreeTierError returned to non-OpenCode clients, or
+// the 426 UpgradeRequired returned to an old OpenCode version. A
+// gzip-compressed body (magic bytes 1f 8b) is decompressed first, so the
 // check works regardless of Content-Encoding.
 func IsFreeTierGateError(body []byte) bool {
-	if decoded, ok := gunzipBody(body); ok {
-		body = decoded
-	}
-	lower := strings.ToLower(string(body))
+	lower := errorText(body)
 	for _, phrase := range []string{
 		"free tier can only be used from within opencode",
 		"freetiererror",
-		"freeusagelimiterror",
-		"free usage limit reached",
 		"or newer is required to use the free tier",
 	} {
 		if strings.Contains(lower, phrase) {
@@ -207,6 +194,25 @@ func IsFreeTierGateError(body []byte) bool {
 		}
 	}
 	return false
+}
+
+// IsFreeUsageLimitError reports whether an upstream error body is Zen's 429
+// FreeUsageLimitError. It is the per-IP daily budget for free models, which
+// the genuine client also hits, and Zen also returns it to a request that
+// fails the free-tier check (no <env> block, no read tool). A gzip body is
+// decompressed first.
+func IsFreeUsageLimitError(body []byte) bool {
+	lower := errorText(body)
+	return strings.Contains(lower, "freeusagelimiterror") || strings.Contains(lower, "free usage limit reached")
+}
+
+// errorText returns an error body lowercased for phrase matching, gunzipped
+// first when it is gzip.
+func errorText(body []byte) string {
+	if decoded, ok := gunzipBody(body); ok {
+		body = decoded
+	}
+	return strings.ToLower(string(body))
 }
 
 // gunzipBody decompresses a gzip payload, bounded to 1 MiB. It reports
@@ -228,27 +234,40 @@ func gunzipBody(body []byte) ([]byte, bool) {
 	return out, true
 }
 
-// WarnFreeTierGate logs the single distinct warning for a Zen free-tier gate
-// response. Non-gate bodies log nothing.
+// gateHint names what the free-tier check wants from a request.
+const gateHint = "gate wants an opencode UA, valid x-opencode-session, stream:true body, read tool, and <env>Working directory:</env> in system message"
+
+// WarnFreeTierGate logs one warning for a Zen free-tier gate response or a
+// free usage limit response. Other bodies log nothing.
 func WarnFreeTierGate(model string, status int, body []byte) {
-	if !IsFreeTierGateError(body) {
-		return
+	switch {
+	case IsFreeTierGateError(body):
+		slog.Warn("zen free-tier gate rejected request",
+			"model", model,
+			"status", status,
+			"hint", gateHint)
+	case IsFreeUsageLimitError(body):
+		slog.Warn("zen free usage limit reached",
+			"model", model,
+			"status", status,
+			"hint", "either the daily free budget of this egress IP is spent, or the request failed the free-tier check ("+gateHint+")")
 	}
-	slog.Warn("zen free-tier gate rejected request",
-		"model", model,
-		"status", status,
-		"hint", "gate wants an opencode UA, valid x-opencode-session, stream:true body, read tool, and <env>Working directory:</env> in system message")
 }
 
-// ObserveFreeTierGate reads a 403 (FreeTierError) or 426 (UpgradeRequired)
-// response body (up to 1 MiB), logs the gate warning when it is Zen's
-// free-tier gate, and restores the body so the downstream reader sees
-// identical bytes: the full body, or — past the limit or after a read
-// error — the consumed prefix chained back onto the original reader. A read
-// error is logged rather than dropped, and the truncated bytes are never
-// substituted for the body. Other responses are never read.
+// ObserveFreeTierGate reads a 403 (FreeTierError), 426 (UpgradeRequired) or
+// 429 (FreeUsageLimitError) response body (up to 1 MiB), logs the warning
+// when it is one of Zen's free-tier rejections, and restores the body so the
+// downstream reader sees identical bytes: the full body, or — past the limit
+// or after a read error — the consumed prefix chained back onto the original
+// reader. A read error is logged rather than dropped, and the truncated bytes
+// are never substituted for the body. Other responses are never read.
 func ObserveFreeTierGate(resp *http.Response, model string) {
-	if resp == nil || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusUpgradeRequired && resp.StatusCode != http.StatusTooManyRequests) {
+	if resp == nil {
+		return
+	}
+	switch resp.StatusCode {
+	case http.StatusForbidden, http.StatusUpgradeRequired, http.StatusTooManyRequests:
+	default:
 		return
 	}
 	const limit = 1 << 20
