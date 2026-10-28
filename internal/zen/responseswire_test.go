@@ -74,8 +74,10 @@ func TestAnthropicToResponsesRequest_ConversationShape(t *testing.T) {
 	if len(sysParts) != 1 {
 		t.Fatalf("system content = %v, want one input_text part", sysParts)
 	}
-	if part, _ := sysParts[0].(map[string]any); part["type"] != "input_text" || !strings.HasPrefix(part["text"].(string), "be terse") || !strings.Contains(part["text"].(string), "<env>") {
-		t.Errorf("system part = %v, want input_text/be terse", sysParts[0])
+	part, _ := sysParts[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if part["type"] != "input_text" || !strings.HasPrefix(text, "be terse") || !hasGateEnv(text) {
+		t.Errorf("system part = %v, want input_text starting with the client prompt and carrying the gate env block", sysParts[0])
 	}
 
 	user0, _ := items[1].(map[string]any)

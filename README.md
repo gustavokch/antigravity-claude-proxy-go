@@ -624,25 +624,31 @@ Example `config.json`:
   the default is not clamped.
 - **Harness disguise**: OpenCode gates its free-tier models to its own
   harness (403 `FreeTierError "OpenCode's free tier can only be used from
-  within OpenCode"`). Every Zen-bound request therefore sends the genuine
-  header set by default — `User-Agent: opencode/<version>`,
-  `x-opencode-client`, `x-opencode-project`, and per-request
-  `x-opencode-session` / `x-opencode-request` ids (algorithm ported from the
-  OpenCode client). Configurable via `zen.harness` in `config.json`:
+  within OpenCode"`, now mostly 429 `FreeUsageLimitError`). Every Zen-bound
+  request therefore sends the OpenCode 2.0.20 header set by default —
+  `User-Agent: opencode/latest/<version>/<client>`, `x-opencode-client`,
+  `x-opencode-project`, and a per-request session id sent as
+  `x-opencode-session`, `x-session-affinity` and `X-Session-Id` (algorithm
+  ported from the OpenCode client). The chat and Responses wires also add an
+  `<env>` block with `Working directory:` to the system prompt when the
+  client sent none. Configurable via `zen.harness` in `config.json`:
 
   ```json
   {
     "zen": {
-      "harness": {"enabled": true, "version": "1.18.31", "client": "cli", "project": "global"}
+      "harness": {"enabled": true, "version": "2.0.20", "client": "cli", "project": "global"}
     }
   }
   ```
 
-  `OPENCODE_VERSION` / `OPENCODE_CLIENT` env vars override `version` /
-  `client`, mirroring the genuine client's env behavior. Setting `enabled`
-  to `false` disables the disguise entirely. A gate response is logged
-  (`zen free-tier gate rejected request`) so a failed disguise is visible in
-  the proxy log.
+  Omit `version`, `client` and `project` to follow the built-in defaults; a
+  value written there stays pinned across upgrades. `OPENCODE_VERSION` /
+  `OPENCODE_CLIENT` env vars override `version` / `client`, mirroring the
+  genuine client's env behavior. Setting `enabled` to `false` disables the
+  disguise entirely. A 403/426 gate response is logged as `zen free-tier gate
+  rejected request`. A 429 `FreeUsageLimitError` is logged as `zen free usage
+  limit reached`: either the daily free budget of the egress IP is spent, or
+  the request failed the free-tier check.
 - **TLS caveat**: headers alone are not enough — the gate also fingerprints
   the TLS handshake (genuine client is Bun/BoringSSL; every third-party
   stack has been rejected since Sep 2026). `"harness": {"tls": true}` opts

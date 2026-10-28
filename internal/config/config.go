@@ -140,8 +140,8 @@ type ZenModelConfig struct {
 }
 
 // ZenHarnessConfig is the OpenCode client disguise applied to every
-// zen-bound request: the User-Agent identity plus the four x-opencode-*
-// routing headers the genuine OpenCode client sends.
+// zen-bound request: the User-Agent identity plus the x-opencode-* and
+// session routing headers the genuine OpenCode client sends.
 type ZenHarnessConfig struct {
 	// Enabled is a pointer so a hand-written section can omit the key:
 	// absent (nil) means "default on", an explicit false stays false.
