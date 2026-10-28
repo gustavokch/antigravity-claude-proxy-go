@@ -889,6 +889,7 @@ func Load() (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
+	followSeededZenIdentity(cfg.Zen.Harness)
 
 	currentConfig = cfg
 	return cfg, nil
@@ -1143,6 +1144,7 @@ func Save(updates map[string]any) (Config, error) {
 		}
 		currentMap[k] = v
 	}
+	dropSeededZenIdentity(currentMap)
 
 	encoded, err := json.MarshalIndent(currentMap, "", "  ")
 	if err != nil {
@@ -1170,11 +1172,57 @@ func Save(updates map[string]any) (Config, error) {
 // read as the operator's choice, and a later bump of zen.DefaultVersion would
 // never reach the install; absent, Load fills them from DefaultConfig again.
 func dropZenHarnessIdentity(configMap map[string]any) {
-	zenMap, _ := configMap["zen"].(map[string]any)
-	harness, _ := zenMap["harness"].(map[string]any)
-	for _, key := range []string{"version", "client", "project"} {
+	harness := zenHarnessSection(configMap)
+	for key := range seededZenIdentity {
 		delete(harness, key)
 	}
+}
+
+// seededZenIdentity holds, per zen.harness identity key, the value Save wrote
+// into every config.json it created before it stopped seeding the identity.
+// The operator did not choose it, so a stored one reads as unset and follows
+// the current default. Only seeded values belong here: a listed value can no
+// longer be pinned.
+var seededZenIdentity = map[string]string{
+	"version": "1.18.31",
+	"client":  "cli",
+	"project": "global",
+}
+
+// dropSeededZenIdentity removes the seeded identity values from the
+// zen.harness section of a raw config map, so Save stores them as absent.
+func dropSeededZenIdentity(configMap map[string]any) {
+	harness := zenHarnessSection(configMap)
+	for key, seeded := range seededZenIdentity {
+		if harness[key] == seeded {
+			delete(harness, key)
+		}
+	}
+}
+
+// followSeededZenIdentity replaces the seeded identity values of a loaded
+// harness section with the current defaults.
+func followSeededZenIdentity(h *ZenHarnessConfig) {
+	if h == nil {
+		return
+	}
+	if h.Version == seededZenIdentity["version"] {
+		h.Version = zen.DefaultVersion
+	}
+	if h.Client == seededZenIdentity["client"] {
+		h.Client = zen.DefaultHarnessClient
+	}
+	if h.Project == seededZenIdentity["project"] {
+		h.Project = zen.DefaultProject
+	}
+}
+
+// zenHarnessSection returns the zen.harness object of a raw config map, or
+// nil when there is none.
+func zenHarnessSection(configMap map[string]any) map[string]any {
+	zenMap, _ := configMap["zen"].(map[string]any)
+	harness, _ := zenMap["harness"].(map[string]any)
+	return harness
 }
 
 // maskToken renders a token for public config output.

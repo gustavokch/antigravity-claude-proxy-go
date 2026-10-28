@@ -1257,6 +1257,55 @@ func TestSave_SeedDoesNotPinHarnessIdentity(t *testing.T) {
 	}
 }
 
+// Before Save stopped seeding the identity, every config.json it created got
+// version 1.18.31, client cli and project global. Those stored values follow
+// the current defaults on Load, and the next Save removes them from the file.
+// A value the operator chose stays.
+func TestSeededZenIdentityFollowsDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	path := filepath.Join(tmpDir, "config.json")
+	seeded := `{"zen": {"harness": {"enabled": true, "tls": true, "version": "1.18.31", "client": "cli", "project": "abc123"}}}`
+	if err := os.WriteFile(path, []byte(seeded), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	h := loaded.Zen.Harness
+	if h == nil || h.Version != zen.DefaultVersion || h.Client != zen.DefaultHarnessClient || h.Project != "abc123" || !h.TLS {
+		t.Fatalf("loaded harness = %+v, want version %q, client %q, the chosen project and tls kept",
+			h, zen.DefaultVersion, zen.DefaultHarnessClient)
+	}
+
+	if _, err := Save(map[string]any{"maxRetries": 7}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk struct {
+		Zen struct {
+			Harness map[string]any `json:"harness"`
+		} `json:"zen"`
+	}
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("parse config.json: %v", err)
+	}
+	want := map[string]any{"enabled": true, "tls": true, "project": "abc123"}
+	if len(onDisk.Zen.Harness) != len(want) {
+		t.Errorf("zen.harness on disk = %v, want %v", onDisk.Zen.Harness, want)
+	}
+	for key, value := range want {
+		if onDisk.Zen.Harness[key] != value {
+			t.Errorf("zen.harness.%s = %v, want %v", key, onDisk.Zen.Harness[key], value)
+		}
+	}
+}
+
 func TestSave_ZenHarnessMerge(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)

@@ -642,7 +642,10 @@ Example `config.json`:
   ```
 
   Omit `version`, `client` and `project` to follow the built-in defaults; a
-  value written there stays pinned across upgrades. `OPENCODE_VERSION` /
+  value written there stays pinned across upgrades. Older releases wrote
+  `"version": "1.18.31"`, `"client": "cli"` and `"project": "global"` into
+  every new `config.json`. Those exact values are read as unset and removed
+  on the next save, so they cannot be pinned. `OPENCODE_VERSION` /
   `OPENCODE_CLIENT` env vars override `version` / `client`, mirroring the
   genuine client's env behavior. Setting `enabled` to `false` disables the
   disguise entirely. A 403/426 gate response is logged as `zen free-tier gate
