@@ -314,6 +314,7 @@ window.Components.models = () => ({
         if (this.$store.global.settingsTab === 'models') {
             this.fetchOpenRouterConfig();
             this.fetchKimiConfig();
+            this.fetchZenConfig();
             this.loadCCConfig();
         }
     },
