@@ -124,7 +124,7 @@ func SetEgressConfig(cfg EgressConfig) error {
 	tlsMu.Lock()
 	changed := urlString(fallbackURL) != urlString(u)
 	fallbackURL = u
-	failoverClient = nil
+	dropFailoverLocked()
 	tlsMu.Unlock()
 	if changed {
 		exhaustMu.Lock()
@@ -139,6 +139,22 @@ func urlString(u *url.URL) string {
 		return ""
 	}
 	return u.String()
+}
+
+// dropFailoverLocked forgets the cached failover client. Its fallback leg is
+// a transport no other client shares, so its idle keep-alive connections are
+// closed rather than stranded until the idle timeout: the config hook runs on
+// every panel save. The direct leg is the shared transport SetTLSConfig owns.
+// Callers hold tlsMu.
+func dropFailoverLocked() {
+	if failoverClient != nil {
+		if ft, ok := failoverClient.Transport.(*failoverTransport); ok {
+			if tr, ok := ft.legs[routeFallback].(*http.Transport); ok {
+				tr.CloseIdleConnections()
+			}
+		}
+	}
+	failoverClient = nil
 }
 
 // directLocked is the round tripper that leaves from this host: the utls

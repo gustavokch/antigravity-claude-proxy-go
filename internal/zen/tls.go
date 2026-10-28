@@ -51,9 +51,9 @@ func bunReplay() (*tlsreplay.Hello, error) {
 
 // SetTLSConfig replaces the live TLS disguise configuration. Safe for
 // concurrent use with request handling; called from the config hook, which
-// runs on every panel save. The dropped transport closes its idle keep-alive
-// connections, so a save does not strand a pool; requests in flight on it
-// finish normally.
+// runs on every panel save. The dropped transports close their idle
+// keep-alive connections, so a save does not strand a pool; requests in
+// flight on them finish normally.
 func SetTLSConfig(cfg ZenTLSConfig) {
 	tlsMu.Lock()
 	tlsCfg = cfg
@@ -62,7 +62,7 @@ func SetTLSConfig(cfg ZenTLSConfig) {
 	}
 	tlsClient = nil
 	tlsTransport = nil
-	failoverClient = nil
+	dropFailoverLocked()
 	tlsMu.Unlock()
 }
 

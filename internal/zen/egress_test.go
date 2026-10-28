@@ -154,6 +154,42 @@ func TestBothEgressExhaustedReturnsTheLimit(t *testing.T) {
 	}
 }
 
+// The config hook re-applies the egress on every panel save. The failover
+// client it drops must close the idle keep-alive connection of its fallback
+// leg rather than strand it until the idle timeout. The "proxy" here answers
+// the absolute-form request itself, which keeps the connection observable.
+func TestSetEgressConfigClosesDroppedFallbackConnections(t *testing.T) {
+	direct := newZenBackend(t, http.StatusTooManyRequests, freeUsageBody, nil)
+	closed := make(chan struct{}, 1)
+	proxy := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message"}`)
+	}))
+	proxy.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	proxy.Start()
+	t.Cleanup(proxy.Close)
+	useEgress(t, proxy.URL)
+
+	if rec := forwardMessages(t, direct.srv.URL, `{}`); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want the fallback's 200", rec.Code, rec.Body)
+	}
+	if err := SetEgressConfig(EgressConfig{FallbackProxy: proxy.URL}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the dropped fallback leg kept its idle connection open")
+	}
+}
+
 // With the disguise on, the fallback leg must present the captured Bun hello
 // inside the proxy tunnel: the free tier rejects Go's own handshake.
 func TestFallbackEgressSendsTheCapturedHello(t *testing.T) {
