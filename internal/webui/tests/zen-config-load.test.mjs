@@ -24,7 +24,7 @@ async function importAfterDirectLoadKeepsKeyAndAllowlist() {
         keySource: 'config',
         allowlist: [{ id: 'glm-5.3-flash-free', alias: 'glm', enabled: true }],
         harness: { enabled: true, tls: true },
-        fallbackProxy: 'socks5h://100.72.157.22:1080',
+        fallbackProxy: 'socks5h://192.0.2.10:1080',
     } }), newPassword: null });
     await pendingTick();
 
@@ -39,9 +39,8 @@ async function importAfterDirectLoadKeepsKeyAndAllowlist() {
     assert.deepEqual(body.allowlist.map((m) => [m.id, m.alias]),
         [['glm-5.3-flash-free', 'glm'], ['beam-free', '']],
         'save replaced the persisted allowlist');
-    // The server replaces the zen section with the posted one, so a field the
-    // form omits is deleted from config.json.
-    assert.equal(body.fallbackProxy, 'socks5h://100.72.157.22:1080', 'save would drop the fallback proxy');
+    // The form sends the loaded proxy back; an empty value would clear it.
+    assert.equal(body.fallbackProxy, 'socks5h://192.0.2.10:1080', 'save would drop the fallback proxy');
 }
 
 // The section never loaded (the GET failed): a save would post the form

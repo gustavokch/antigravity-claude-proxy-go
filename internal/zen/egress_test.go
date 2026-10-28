@@ -207,12 +207,12 @@ func TestFallbackEgressSendsTheCapturedHello(t *testing.T) {
 }
 
 func TestParseFallbackProxy(t *testing.T) {
-	for _, ok := range []string{"", "socks5h://100.72.157.22:1080", "socks5://h:1", "http://h:3128"} {
+	for _, ok := range []string{"", "socks5h://192.0.2.10:1080", "socks5://h:1", "http://h:3128"} {
 		if _, err := ParseFallbackProxy(ok); err != nil {
 			t.Errorf("ParseFallbackProxy(%q) = %v, want ok", ok, err)
 		}
 	}
-	for _, bad := range []string{"100.72.157.22:1080", "socks5h://host", "ftp://h:21", "socks5h://h:1/path",
+	for _, bad := range []string{"192.0.2.10:1080", "socks5h://host", "ftp://h:21", "socks5h://h:1/path",
 		"ftp://u:s3cret@h:21", "socks5h://u:s3cret@h", "socks5h://u:s3cret@h:1/path", "socks5h://u:s3cret@h:1/%zz", "socks5h://u:s3cret@h:abc"} {
 		_, err := ParseFallbackProxy(bad)
 		if err == nil {

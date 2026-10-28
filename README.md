@@ -663,18 +663,22 @@ Example `config.json`:
   escape hatch is a paid Zen key: keyed access may bypass the free-tier
   gate entirely, so no spoofing is needed at all.
 - **Free usage limit failover**: Zen meters free models per public egress
-  IP. When an IP's daily budget is spent, every request from it, the genuine
-  OpenCode client's included, gets 429 `FreeUsageLimitError` until the
-  `Retry-After` delay ends, or until 00:00 UTC if Zen sends no delay.
-  `zen.fallbackProxy` (`socks5`, `socks5h`, `http` or `https` URL, also on
-  the Zen settings panel) names a second egress. On that 429 the proxy
-  replays the request once through the proxy. The exhausted egress is
-  skipped until its limit lifts. If both egress routes are exhausted, the
-  client gets Zen's 429. Other 429 errors do not fail over. The fallback
-  uses the same TLS handshake as the direct route.
+  IP and model bucket. When an IP's daily budget for a model is spent,
+  every request for it from that IP, the genuine OpenCode client's
+  included, gets 429 `FreeUsageLimitError` until the `Retry-After` delay
+  ends, or until 00:00 UTC if Zen sends no delay. `zen.fallbackProxy`
+  (`socks5`, `socks5h`, `http` or `https` URL, also on the Zen settings
+  panel) names a second egress. On that 429 the proxy replays the request
+  once through the proxy. The egress stays skipped for that model until its
+  limit lifts; other models keep their own state. If both egress routes are
+  exhausted, the client gets Zen's 429. Other 429 errors do not fail over.
+  The failover covers the gateway wires, cache-bump replays and the Jev
+  classifier. The fallback uses the same TLS handshake as the direct route.
+  The panel and `/api/config` show a proxy password as `xxxxx`; a save that
+  sends it back unchanged keeps the stored one.
 
   ```json
-  "zen": {"fallbackProxy": "socks5h://100.72.157.22:1080"}
+  "zen": {"fallbackProxy": "socks5h://192.0.2.10:1080"}
   ```
 
 ---
