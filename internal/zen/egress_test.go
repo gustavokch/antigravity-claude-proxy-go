@@ -49,7 +49,7 @@ func useEgress(t *testing.T, proxy string) {
 			t.Fatal(err)
 		}
 		exhaustMu.Lock()
-		exhaustedUntil = [2]time.Time{}
+		clear(exhaustedUntil)
 		exhaustMu.Unlock()
 		now = time.Now
 	}

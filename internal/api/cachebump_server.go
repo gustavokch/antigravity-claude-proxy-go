@@ -284,6 +284,7 @@ func (server *Server) sendZenBump(ctx context.Context, rec cachebump.Record) (ca
 	if key == "" {
 		return cachebump.BumpResult{}, cachebump.ErrAccountUnavailable
 	}
+	ctx = zen.WithEgressModel(ctx, rec.Model)
 	return postBumpRequest(ctx, rec, zen.NormalizeBaseURL(zenCfg.BaseURL)+"/v1/messages", zen.GenerationClient(), func(hdr http.Header) {
 		hdr.Set("Authorization", "Bearer "+key)
 		zen.ApplyHarnessHeaderMap(hdr)

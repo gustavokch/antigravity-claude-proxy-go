@@ -1801,6 +1801,8 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 
 	startTime := server.nowTime()
 	sessionKey := ccExtractSessionID(request, ccParseBodyMap(body))
+	// The egress failover tracks Zen's free usage limit per model.
+	request = request.WithContext(zen.WithEgressModel(request.Context(), model))
 
 	if wire == zen.WireChat || wire == zen.WireResponses {
 		forward := zen.ForwardChat

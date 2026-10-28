@@ -2,9 +2,11 @@ package zen
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,10 +19,12 @@ import (
 
 // Zen meters its free models per public egress IP: a daily budget that resets
 // at 00:00 UTC, after which every request from that IP — the genuine OpenCode
-// client's included — gets 429 FreeUsageLimitError. Another IP has its own
-// budget, so the only way to keep going is to leave from a different address.
-// The fallback egress is a proxy (in practice a SOCKS5 server on another host
-// of the tailnet) that Zen traffic moves to once the direct IP is exhausted.
+// client's included — gets 429 FreeUsageLimitError. The budget is kept per IP
+// and model bucket (models with their own rate limit get one each), and
+// another IP has its own, so the only way to keep going is to leave from a
+// different address. The fallback egress is a proxy (in practice a SOCKS5
+// server on another host of the tailnet) that a model's Zen traffic moves to
+// once the direct IP is exhausted for it.
 
 // EgressConfig is the live egress configuration for Zen generation requests.
 type EgressConfig struct {
@@ -75,14 +79,34 @@ var (
 	fallbackURL    *url.URL
 	failoverClient *http.Client
 
-	// exhaustedUntil records, per route, when Zen's free usage limit is
-	// expected to lift.
+	// exhaustedUntil records, per route and model, when Zen's free usage
+	// limit is expected to lift. Expired entries are pruned on each write.
 	exhaustMu      sync.Mutex
-	exhaustedUntil [2]time.Time
+	exhaustedUntil = map[exhaustKey]time.Time{}
 
 	// now is replaced in tests.
 	now = time.Now
 )
+
+type exhaustKey struct {
+	route egressRoute
+	model string
+}
+
+type egressModelKey struct{}
+
+// WithEgressModel tags ctx with the Zen model id a request is for. The
+// failover tracks the free usage limit per egress and model, as Zen meters
+// it, so one model's spent budget does not move the others; an untagged
+// request is tracked under the empty model.
+func WithEgressModel(ctx context.Context, model string) context.Context {
+	return context.WithValue(ctx, egressModelKey{}, model)
+}
+
+func egressModel(ctx context.Context) string {
+	model, _ := ctx.Value(egressModelKey{}).(string)
+	return model
+}
 
 // SetEgressConfig replaces the live egress configuration. An invalid proxy URL
 // disables the failover and is returned as an error. Changing the proxy forgets
@@ -96,7 +120,7 @@ func SetEgressConfig(cfg EgressConfig) error {
 	tlsMu.Unlock()
 	if changed {
 		exhaustMu.Lock()
-		exhaustedUntil[routeFallback] = time.Time{}
+		maps.DeleteFunc(exhaustedUntil, func(k exhaustKey, _ time.Time) bool { return k.route == routeFallback })
 		exhaustMu.Unlock()
 	}
 	return err
@@ -160,16 +184,18 @@ func GenerationTransport() http.RoundTripper {
 	return GenerationClient().Transport
 }
 
-// failoverTransport sends a request on the egress Zen has not exhausted and,
-// when Zen answers 429 FreeUsageLimitError, replays it once on the other one.
+// failoverTransport sends a request on the egress Zen has not exhausted for
+// its model and, when Zen answers 429 FreeUsageLimitError, replays it once on
+// the other one.
 type failoverTransport struct {
 	legs [2]http.RoundTripper
 }
 
 func (f *failoverTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t := now()
+	model := egressModel(req.Context())
 	first, second := routeDirect, routeFallback
-	if exhausted(routeDirect, t) && !exhausted(routeFallback, t) {
+	if exhausted(routeDirect, model, t) && !exhausted(routeFallback, model, t) {
 		first, second = routeFallback, routeDirect
 	}
 	replayable := req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
@@ -178,10 +204,10 @@ func (f *failoverTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	if err != nil || !hitFreeUsageLimit(resp) {
 		return resp, err
 	}
-	until := markExhausted(first, resp, t)
-	if exhausted(second, t) || !replayable {
+	until := markExhausted(first, model, resp, t)
+	if exhausted(second, model, t) || !replayable {
 		slog.Warn("zen free usage limit reached; no other egress available",
-			"egress", first.String(), "until", until.Format(time.RFC3339))
+			"model", model, "egress", first.String(), "until", until.Format(time.RFC3339))
 		return resp, nil
 	}
 	retry := req.Clone(req.Context())
@@ -193,7 +219,7 @@ func (f *failoverTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		retry.Body = body
 	}
 	slog.Warn("zen free usage limit reached; failing over",
-		"from", first.String(), "to", second.String(), "until", until.Format(time.RFC3339))
+		"model", model, "from", first.String(), "to", second.String(), "until", until.Format(time.RFC3339))
 	next, err := f.legs[second].RoundTrip(retry)
 	if err != nil {
 		slog.Error("zen egress failover failed; returning the original 429",
@@ -202,27 +228,29 @@ func (f *failoverTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 	resp.Body.Close()
 	if hitFreeUsageLimit(next) {
-		markExhausted(second, next, t)
-		slog.Warn("zen free usage limit reached on both egress routes", "egress", second.String())
+		markExhausted(second, model, next, t)
+		slog.Warn("zen free usage limit reached on both egress routes", "model", model, "egress", second.String())
 	}
 	return next, nil
 }
 
-func exhausted(r egressRoute, t time.Time) bool {
+func exhausted(r egressRoute, model string, t time.Time) bool {
 	exhaustMu.Lock()
 	defer exhaustMu.Unlock()
-	return t.Before(exhaustedUntil[r])
+	return t.Before(exhaustedUntil[exhaustKey{r, model}])
 }
 
-// markExhausted records when r should be tried again: after the 429's
-// Retry-After when Zen sends one, else at the next 00:00 UTC budget reset.
-func markExhausted(r egressRoute, resp *http.Response, t time.Time) time.Time {
+// markExhausted records when r should be tried again for model: after the
+// 429's Retry-After when Zen sends one, else at the next 00:00 UTC budget
+// reset.
+func markExhausted(r egressRoute, model string, resp *http.Response, t time.Time) time.Time {
 	until := nextUTCMidnight(t)
 	if secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); err == nil && secs > 0 {
 		until = t.Add(time.Duration(secs) * time.Second)
 	}
 	exhaustMu.Lock()
-	exhaustedUntil[r] = until
+	maps.DeleteFunc(exhaustedUntil, func(_ exhaustKey, lifts time.Time) bool { return !t.Before(lifts) })
+	exhaustedUntil[exhaustKey{r, model}] = until
 	exhaustMu.Unlock()
 	return until
 }

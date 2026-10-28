@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"antigravity-go-proxy/internal/config"
@@ -243,6 +245,82 @@ func TestServer_HandleZenConfigSave_AppliesFallbackEgress(t *testing.T) {
 	handler.ServeHTTP(msgRec, msgReq)
 	if msgRec.Code != http.StatusOK {
 		t.Fatalf("forward status = %d, want the fallback's 200; body = %s", msgRec.Code, msgRec.Body.String())
+	}
+}
+
+// Zen keeps a daily free budget per egress IP and model bucket, so one
+// model's 429 must not move other models off the direct egress.
+func TestZenFreeUsageLimitOfOneModelKeepsOthersDirect(t *testing.T) {
+	t.Setenv("OPENCODE_API_KEY", "")
+	const spent, fresh = "claude-opus-4-6", "claude-opus-4-5"
+	var mu sync.Mutex
+	var directModels, fallbackModels []string
+	modelOf := func(r *http.Request) string {
+		var probe struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&probe)
+		return probe.Model
+	}
+	answer := func(w http.ResponseWriter, model string) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m1","type":"message","role":"assistant","model":"` + model + `","content":[],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		model := modelOf(r)
+		mu.Lock()
+		directModels = append(directModels, model)
+		mu.Unlock()
+		if model == spent {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Zen: Free usage limit reached."}}`))
+			return
+		}
+		answer(w, model)
+	}))
+	defer direct.Close()
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		model := modelOf(r)
+		mu.Lock()
+		fallbackModels = append(fallbackModels, model)
+		mu.Unlock()
+		answer(w, model)
+	}))
+	defer fallback.Close()
+	socks := proxytest.NewSOCKS5(t, false, strings.TrimPrefix(fallback.URL, "http://"))
+
+	server, _, _ := newTestServerWithManager(t)
+	t.Cleanup(func() {
+		config.SetForTest(config.DefaultConfig())
+		applyRouterConfig(config.DefaultConfig())
+	})
+	handler := server.Handler()
+	payload := `{"enabled": true, "apiKey": "public", "baseUrl": "` + direct.URL + `",
+		"fallbackProxy": "socks5h://` + socks.Addr + `",
+		"allowlist": [{"id": "` + spent + `", "enabled": true}, {"id": "` + fresh + `", "enabled": true}]}`
+	saveRec := httptest.NewRecorder()
+	handler.ServeHTTP(saveRec, httptest.NewRequest(http.MethodPost, "/api/zen/config", strings.NewReader(payload)))
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveRec.Code, saveRec.Body.String())
+	}
+
+	for _, model := range []string{spent, fresh} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages",
+			strings.NewReader(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", "test-api-key")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, body = %s", model, rec.Code, rec.Body.String())
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(directModels, fresh) || slices.Contains(fallbackModels, fresh) {
+		t.Fatalf("%s went direct=%v fallback=%v; want the direct egress, whose budget for it is unspent",
+			fresh, directModels, fallbackModels)
 	}
 }
 
