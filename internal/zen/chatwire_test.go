@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -412,12 +413,51 @@ func TestAnthropicToChatRequestInjectsGateEnv(t *testing.T) {
 	}
 	// The working directory only counts inside an <env>…</env> block.
 	split := "<env>\nPlatform: darwin\n</env>\nWorking directory: /a"
-	if got := withGateEnv(split); got != split+"\n\n"+gateEnvBlock {
+	if got := withGateEnv(split); got != split+"\n\n"+gateEnvBlock() {
 		t.Errorf("working directory outside the env block accepted: %q", got)
 	}
 	later := "a <env></env> mention, then <env>\n  Working directory: /a\n</env>"
 	if got := withGateEnv(later); got != later {
 		t.Errorf("marker in a later env block duplicated: %q", got)
+	}
+}
+
+// README: enabled=false disables the disguise entirely. With the harness off
+// neither translated wire may add the <env> marker or an empty system message.
+func TestGateEnvFollowsHarnessToggle(t *testing.T) {
+	withHarness(t, HarnessConfig{Enabled: false})
+	bare := map[string]any{"model": "m", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+
+	chat, _, _ := anthropicToChatRequest(bare)
+	if first := chat["messages"].([]any)[0].(map[string]any); first["role"] != "user" {
+		t.Errorf("chat: first message = %v, want the user turn with no system message", first)
+	}
+	responses, _, _ := anthropicToResponsesRequest(bare)
+	if first := responses["input"].([]any)[0].(map[string]any); first["role"] != "user" {
+		t.Errorf("responses: first item = %v, want the user turn with no system item", first)
+	}
+	chat, _, _ = anthropicToChatRequest(map[string]any{"model": "m", "system": "You are Claude"})
+	if content := chat["messages"].([]any)[0].(map[string]any)["content"]; content != "You are Claude" {
+		t.Errorf("chat: system = %q, want the client prompt unchanged", content)
+	}
+
+	withHarness(t, HarnessConfig{Enabled: true})
+	chat, _, _ = anthropicToChatRequest(bare)
+	content, _ := chat["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !hasGateEnv(content) {
+		t.Errorf("chat with the harness on: system = %q, want the gate env block", content)
+	}
+}
+
+// The genuine client reports the directory it runs in; a fixed /workspace
+// describes a host that does not exist.
+func TestGateEnvBlockReportsWorkingDirectory(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gateEnvBlock(); got != "<env>\n  Working directory: "+wd+"\n</env>" {
+		t.Errorf("gate env block = %q, want the working directory %q", got, wd)
 	}
 }
 

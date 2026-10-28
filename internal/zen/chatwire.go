@@ -10,9 +10,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"antigravity-go-proxy/internal/format"
@@ -124,17 +126,38 @@ func forwardTranslated(w http.ResponseWriter, wire string, modify func(*http.Res
 
 // --- Request translation ---
 
-// gateEnvBlock is the system-prompt marker Zen's free-tier gate requires:
-// an <env> block containing the case-sensitive "Working directory:".
-const gateEnvBlock = "<env>\n  Working directory: /workspace\n</env>"
+// gateEnvBlock is the system-prompt marker Zen's free-tier gate requires: an
+// <env> block containing the case-sensitive "Working directory:". The genuine
+// client reports the directory it runs in, so the block reports the proxy's;
+// /workspace stands in only when that directory cannot be read. The proxy
+// never changes directory, so the block is built once.
+var gateEnvBlock = sync.OnceValue(func() string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		wd = "/workspace"
+	}
+	return "<env>\n  Working directory: " + wd + "\n</env>"
+})
+
+// gateSystemText is the system prompt a translated request sends: the
+// client's, carrying the gate's <env> marker while the harness disguise is
+// on. With the disguise off the client's prompt goes out unchanged, and an
+// empty one stays empty.
+func gateSystemText(system any) string {
+	sys := systemText(system)
+	if GetHarnessConfig().Enabled {
+		sys = withGateEnv(sys)
+	}
+	return sys
+}
 
 // withGateEnv guarantees the system prompt carries the gate's <env> marker.
 func withGateEnv(sys string) string {
 	if sys == "" {
-		return gateEnvBlock
+		return gateEnvBlock()
 	}
 	if !hasGateEnv(sys) {
-		sys += "\n\n" + gateEnvBlock
+		sys += "\n\n" + gateEnvBlock()
 	}
 	return sys
 }
@@ -158,7 +181,7 @@ func hasGateEnv(sys string) bool {
 // anthropicToChatRequest converts an Anthropic Messages request body into an
 // OpenAI Chat Completions request body.
 //
-// Two transformations serve the Zen free-tier gate (packet-verified):
+// Three transformations serve the Zen free-tier gate (packet-verified):
 //
 //   - The upstream body always carries "stream": true. A non-streaming body
 //     is rejected with 403 FreeTierError; clients that asked for JSON get the
@@ -166,6 +189,8 @@ func hasGateEnv(sys string) bool {
 //   - The tools array always contains functions named exactly "bash" and
 //     "read". Client tools named "Bash"/"Read" (Anthropic spelling) are
 //     renamed; missing ones get the captured OpenCode definitions injected.
+//   - While the harness disguise is on, the system prompt carries an <env>
+//     block with "Working directory:" (gateSystemText).
 //
 // The second result maps upstream tool names back to the client's names for
 // response translation; nil when no rename occurred. The third result names
@@ -178,7 +203,9 @@ func anthropicToChatRequest(req map[string]any) (map[string]any, map[string]stri
 	out := map[string]any{"model": StripOpencodePrefix(model)}
 
 	messages := make([]any, 0)
-	messages = append(messages, map[string]any{"role": "system", "content": withGateEnv(systemText(req["system"]))})
+	if sys := gateSystemText(req["system"]); sys != "" {
+		messages = append(messages, map[string]any{"role": "system", "content": sys})
+	}
 	rawMsgs, _ := req["messages"].([]any)
 	for _, raw := range rawMsgs {
 		msg, ok := raw.(map[string]any)
