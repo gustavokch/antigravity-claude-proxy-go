@@ -2477,6 +2477,9 @@ func (server *Server) handleZenConfigSave(writer http.ResponseWriter, request *h
 	if updater, ok := server.backend.(ConfigUpdater); ok {
 		updater.UpdateConfig(saved)
 	}
+	// Same hook as startup: the panel toggles switch the Zen harness
+	// disguise and its TLS fingerprint, which live in package state.
+	applyRouterConfig(saved)
 	pub := config.GetPublicConfig()
 	zenMap, _ := pub["zen"].(map[string]any)
 	if zenMap != nil {

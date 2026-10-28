@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/zen"
 )
 
 func TestServer_HandleZenConfigGet_RedactsAPIKey(t *testing.T) {
@@ -196,6 +197,31 @@ func TestServer_HandleZenConfigSave_RoundTripHonoredOnNextForward(t *testing.T) 
 	}
 	if gotAuth != "Bearer sk-saved" {
 		t.Errorf("Authorization = %q, want Bearer sk-saved (saved round-trip)", gotAuth)
+	}
+}
+
+// The Zen panel toggles save through /api/zen/config. The disguise and the
+// TLS fingerprint they switch must take effect on that save, not at the next
+// restart.
+func TestServer_HandleZenConfigSave_AppliesHarnessLive(t *testing.T) {
+	server, _, _ := newTestServerWithManager(t)
+	t.Cleanup(func() {
+		config.SetForTest(config.DefaultConfig())
+		applyRouterConfig(config.DefaultConfig())
+	})
+	applyRouterConfig(config.Get())
+
+	payload := `{"enabled": true, "harness": {"enabled": false, "tls": true}}`
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/zen/config", strings.NewReader(payload)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if zen.GetHarnessConfig().Enabled {
+		t.Error("harness still enabled after the panel saved enabled:false")
+	}
+	if !zen.GetTLSConfig().Enabled {
+		t.Error("TLS fingerprint still off after the panel saved tls:true")
 	}
 }
 
