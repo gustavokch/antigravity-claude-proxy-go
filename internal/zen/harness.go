@@ -16,20 +16,24 @@ import (
 )
 
 // OpenCode gates Zen free-tier models to its own harness: the genuine client
-// sends a fixed set of x-opencode-* routing headers plus a versioned
-// User-Agent. Third-party clients send none of them, which is one of the two
-// layers the Zen free-tier check inspects (the other is the TLS handshake —
-// see tls.go).
+// sends a fixed set of x-opencode-* and session routing headers plus a
+// versioned User-Agent. Third-party clients send none of them, which is one
+// of the layers the Zen free-tier check inspects (the TLS handshake is
+// another — see tls.go).
 //
-// Header names, defaults and the ID algorithm are ported from the MIT
-// reimplementation in kode-ai/providers/opencode/headers.go.
+// The header set is the one OpenCode 2.0.20 sends on a model request
+// (packages/core/src/session/model-request.ts). Defaults and the ID algorithm
+// are ported from the MIT reimplementation in
+// kode-ai/providers/opencode/headers.go.
 const (
 	// HeaderProject declares the OpenCode project id (git root hash or "global").
 	HeaderProject = "x-opencode-project"
 	// HeaderSession declares the OpenCode session id.
 	HeaderSession = "x-opencode-session"
-	// HeaderRequest declares the OpenCode per-request message id.
-	HeaderRequest = "x-opencode-request"
+	// HeaderSessionAffinity and HeaderSessionID repeat the session id for
+	// provider cache routing.
+	HeaderSessionAffinity = "x-session-affinity"
+	HeaderSessionID       = "X-Session-Id"
 	// HeaderClient declares the calling OpenCode surface (cli, desktop).
 	HeaderClient = "x-opencode-client"
 	// HeaderUA carries the "opencode/latest/<version>/<client>" identity.
@@ -86,8 +90,8 @@ func GetHarnessConfig() HarnessConfig {
 // header map. It is a no-op when the harness is disabled. Empty or
 // whitespace-only config values fall back to the package defaults;
 // OPENCODE_VERSION and OPENCODE_CLIENT override version and client, mirroring
-// the genuine client's env behavior. Session/request ids are regenerated on
-// every call.
+// the genuine client's env behavior. The session id is regenerated on every
+// call.
 func ApplyHarnessHeaderMap(hdr http.Header) {
 	if hdr == nil {
 		return
@@ -120,11 +124,8 @@ func ApplyHarnessHeaderMap(hdr http.Header) {
 	hdr.Set(HeaderProject, project)
 	if sid, err := NewSessionID(); err == nil {
 		hdr.Set(HeaderSession, sid)
-		hdr.Set("x-session-affinity", sid)
-		hdr.Set("x-session-id", sid)
-	}
-	if rid, err := NewRequestID(); err == nil {
-		hdr.Set(HeaderRequest, rid)
+		hdr.Set(HeaderSessionAffinity, sid)
+		hdr.Set(HeaderSessionID, sid)
 	}
 }
 
@@ -137,35 +138,23 @@ func ApplyHarnessHeaders(req *http.Request) {
 	ApplyHarnessHeaderMap(req.Header)
 }
 
-// NewSessionID returns an OpenCode-shaped session id ("ses_" + 26 base62 chars).
-// The timestamp portion is inverted so session ids sort descending by age.
+// NewSessionID returns an OpenCode-shaped session id ("ses_" + 26 chars: 12
+// hex of the inverted timestamp, then 14 base62).
 func NewSessionID() (string, error) {
-	id, err := createID(true, time.Now())
+	id, err := createID(time.Now())
 	if err != nil {
 		return "", err
 	}
 	return "ses_" + id, nil
 }
 
-// NewRequestID returns an OpenCode-shaped request id ("msg_" + 26 base62 chars).
-func NewRequestID() (string, error) {
-	id, err := createID(false, time.Now())
-	if err != nil {
-		return "", err
-	}
-	return "msg_" + id, nil
-}
-
-// createID renders 12 hex chars of the millisecond timestamp (optionally
-// bit-flipped so ids sort descending) followed by 14 random base62 chars.
-func createID(descending bool, t time.Time) (string, error) {
+// createID renders 12 hex chars of the bit-flipped millisecond timestamp (so
+// ids sort descending by age) followed by 14 random base62 chars.
+func createID(t time.Time) (string, error) {
 	if t.IsZero() {
 		t = time.Now()
 	}
-	ts := uint64(t.UnixMilli())*0x1000 + uint64(1)
-	if descending {
-		ts = ^ts
-	}
+	ts := ^(uint64(t.UnixMilli())*0x1000 + uint64(1))
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], ts)
 	random, err := randomBase62(idRandom)

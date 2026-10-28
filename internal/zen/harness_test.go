@@ -30,9 +30,6 @@ func TestDefaultHarnessConstants(t *testing.T) {
 	if HeaderSession != "x-opencode-session" {
 		t.Errorf("HeaderSession = %q", HeaderSession)
 	}
-	if HeaderRequest != "x-opencode-request" {
-		t.Errorf("HeaderRequest = %q", HeaderRequest)
-	}
 	if HeaderClient != "x-opencode-client" {
 		t.Errorf("HeaderClient = %q", HeaderClient)
 	}
@@ -64,12 +61,11 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 		if got := hdr.Get(HeaderProject); got != DefaultProject {
 			t.Errorf("x-opencode-project = %q, want %q", got, DefaultProject)
 		}
-		if got := hdr.Get(HeaderSession); !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(got) {
-			t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", got)
+		session := hdr.Get(HeaderSession)
+		if !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(session) {
+			t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", session)
 		}
-		if got := hdr.Get(HeaderRequest); !regexp.MustCompile(`^msg_[0-9A-Za-z]{26}$`).MatchString(got) {
-			t.Errorf("x-opencode-request = %q, want msg_ + 26 base62 chars", got)
-		}
+		requireSessionMirrors(t, hdr, session)
 	})
 
 	t.Run("overrides", func(t *testing.T) {
@@ -173,75 +169,53 @@ func TestApplyHarnessHeaders(t *testing.T) {
 	if got := req.Header.Get(HeaderProject); got != DefaultProject {
 		t.Errorf("x-opencode-project = %q, want %q", got, DefaultProject)
 	}
-	if got := req.Header.Get(HeaderSession); !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(got) {
-		t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", got)
+	session := req.Header.Get(HeaderSession)
+	if !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(session) {
+		t.Errorf("x-opencode-session = %q, want ses_ + 26 base62 chars", session)
 	}
-	if got := req.Header.Get(HeaderRequest); !regexp.MustCompile(`^msg_[0-9A-Za-z]{26}$`).MatchString(got) {
-		t.Errorf("x-opencode-request = %q, want msg_ + 26 base62 chars", got)
-	}
+	requireSessionMirrors(t, req.Header, session)
 
 	ApplyHarnessHeaders(nil) // must not panic
 }
 
 func TestHarnessIDs(t *testing.T) {
 	seen := map[string]bool{}
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		sid, err := NewSessionID()
 		if err != nil {
 			t.Fatalf("NewSessionID: %v", err)
 		}
-		rid, err := NewRequestID()
-		if err != nil {
-			t.Fatalf("NewRequestID: %v", err)
-		}
 		if !regexp.MustCompile(`^ses_[0-9A-Za-z]{26}$`).MatchString(sid) {
 			t.Fatalf("session id %q does not match ses_ + 26 base62 chars", sid)
 		}
-		if !regexp.MustCompile(`^msg_[0-9A-Za-z]{26}$`).MatchString(rid) {
-			t.Fatalf("request id %q does not match msg_ + 26 base62 chars", rid)
-		}
-		if seen[sid] || seen[rid] {
-			t.Fatalf("duplicate id generated: %q / %q", sid, rid)
+		if seen[sid] {
+			t.Fatalf("duplicate id generated: %q", sid)
 		}
 		seen[sid] = true
-		seen[rid] = true
 	}
 }
 
 func TestCreateIDTimestampEncoding(t *testing.T) {
 	when := time.UnixMilli(1_700_000_000_000)
 
-	ascending, err := createID(false, when)
+	id, err := createID(when)
 	if err != nil {
-		t.Fatalf("createID ascending: %v", err)
+		t.Fatalf("createID: %v", err)
 	}
-	descending, err := createID(true, when)
-	if err != nil {
-		t.Fatalf("createID descending: %v", err)
+	if len(id) != idLength {
+		t.Errorf("id length = %d, want %d", len(id), idLength)
 	}
-
-	wantAsc := "bcfe56800001" // low 48 bits of ms<<12|1
-	if got := ascending[:12]; got != wantAsc {
-		t.Errorf("ascending timestamp prefix = %q, want %q", got, wantAsc)
+	// 12 hex chars of ^uint64(ms*0x1000 + 1); the plain form is bcfe56800001.
+	if got, want := id[:12], "4301a97ffffe"; got != want {
+		t.Errorf("timestamp prefix = %q, want %q", got, want)
 	}
-	// 12 hex chars of ^uint64(ms*0x1000 + 1) — inversion must differ from
-	// the ascending form and stay 12 chars.
-	if len(descending) != idLength {
-		t.Errorf("descending id length = %d, want %d", len(descending), idLength)
-	}
-	if got, want := descending[:12], "4301a97ffffe"; got != want {
-		t.Errorf("descending timestamp prefix = %q, want %q", got, want)
-	}
-	if descending[:12] == ascending[:12] {
-		t.Errorf("descending timestamp prefix must be inverted, both = %q", ascending[:12])
-	}
-	// Descending ids must sort in reverse chronological order.
-	later, err := createID(true, when.Add(time.Second))
+	// Ids must sort in reverse chronological order.
+	later, err := createID(when.Add(time.Second))
 	if err != nil {
 		t.Fatalf("createID later: %v", err)
 	}
-	if !(later[:12] < descending[:12]) {
-		t.Errorf("descending prefix not monotonic: later=%q now=%q", later[:12], descending[:12])
+	if !(later[:12] < id[:12]) {
+		t.Errorf("prefix not descending: later=%q now=%q", later[:12], id[:12])
 	}
 }
 
