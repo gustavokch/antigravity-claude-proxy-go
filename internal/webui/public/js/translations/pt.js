@@ -584,7 +584,7 @@ window.translations.pt = {
     zenHarnessVersion: "Versão do OpenCode",
     zenHarnessClient: "Cliente (x-opencode-client)",
     zenHarnessProject: "Projeto (x-opencode-project)",
-    zenHarnessIdentityHelp: "Valores alterados são salvos com Salvar. Valores não alterados continuam seguindo os padrões internos.",
+    zenHarnessIdentityHelp: "Valores alterados são salvos com Salvar e ficam fixos entre atualizações. Valores não alterados continuam seguindo os padrões internos; limpe um campo para voltar ao padrão.",
     zenDiscover: "Descobrir Modelos",
     zenAllowlist: "Allowlist",
     zenColEnabled: "Ativo",
