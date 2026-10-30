@@ -23,8 +23,9 @@ const bytesPerToken = 4
 // The event that crosses the limit is delivered whole.
 type OutputGuard struct {
 	limit    int
-	reported int // candidate + thought tokens upstream last reported
-	pending  int // bytes of text streamed since reported last changed
+	reported int            // candidate + thought tokens upstream last reported
+	pending  int            // bytes of text streamed since reported last changed
+	usage    map[string]any // the last usageMetadata upstream sent
 }
 
 // NewOutputGuard returns nil, a guard that never stops, for limit <= 0.
@@ -71,19 +72,24 @@ func (guard *OutputGuard) Observe(data []byte) ([]byte, bool) {
 		}
 	}
 	usage := event.Response.UsageMetadata
-	thoughts := intValue(usage["thoughtsTokenCount"], 0)
-	if reported := intValue(usage["candidatesTokenCount"], 0) + thoughts; usage != nil && reported != guard.reported {
+	if reported := intValue(usage["candidatesTokenCount"], 0) + intValue(usage["thoughtsTokenCount"], 0); usage != nil && reported != guard.reported {
 		// The new count already includes this event's text.
 		guard.reported, guard.pending = reported, 0
 	} else {
 		guard.pending += text
 	}
+	if usage != nil {
+		guard.usage = usage
+	}
 	used := guard.reported + (guard.pending+bytesPerToken-1)/bytesPerToken
 	if used < guard.limit {
 		return nil, false
 	}
-	counted := make(map[string]any, len(usage)+1)
-	for key, value := range usage {
+	// The finish carries the last usage seen, which an event without usage
+	// would otherwise drop (prompt and thought counts).
+	thoughts := intValue(guard.usage["thoughtsTokenCount"], 0)
+	counted := make(map[string]any, len(guard.usage)+1)
+	for key, value := range guard.usage {
 		counted[key] = value
 	}
 	counted["candidatesTokenCount"] = used - thoughts

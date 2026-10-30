@@ -421,6 +421,38 @@ func TestBuilderSendsTheCatalogOutputMaximumAndKeepsTheClientLimit(t *testing.T)
 // maxOutputTokens, and the client sees stop_reason max_tokens: on Gemini's
 // running thought plus candidate count, and on Claude, whose count stays at
 // its first value until the end, by the streamed text.
+// The MAX_TOKENS finish carries the last usage upstream reported, also when
+// the event that crosses the limit has none: a unary reply takes its usage
+// from that finish.
+func TestOutputGuardFinishKeepsTheLastUsage(t *testing.T) {
+	t.Parallel()
+	reported, _ := json.Marshal(map[string]any{"response": map[string]any{
+		"candidates":    []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": ""}}}}},
+		"usageMetadata": map[string]any{"promptTokenCount": 10, "candidatesTokenCount": 4, "thoughtsTokenCount": 3},
+	}})
+	unreported, _ := json.Marshal(map[string]any{"response": map[string]any{
+		"candidates": []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": strings.Repeat("x", 40)}}}}},
+	}})
+	guard := NewOutputGuard(10)
+	if _, done := guard.Observe(reported); done {
+		t.Fatal("stopped at 7 of 10 tokens")
+	}
+	final, done := guard.Observe(unreported)
+	if !done {
+		t.Fatal("did not stop at 7 reported + 40 bytes streamed")
+	}
+	accumulator := NewThinkingAccumulator()
+	for _, data := range [][]byte{reported, unreported, final} {
+		if err := accumulator.Consume(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if accumulator.InputTokens() != 10 || accumulator.ThinkingTokens() != 3 || accumulator.OutputTokens() != 14 {
+		t.Fatalf("input %d, thinking %d, output %d; want 10, 3, 14 (4 reported + 10 estimated)",
+			accumulator.InputTokens(), accumulator.ThinkingTokens(), accumulator.OutputTokens())
+	}
+}
+
 func TestOutputGuardEndsTheResponseAtTheClientLimit(t *testing.T) {
 	t.Parallel()
 	event := func(text string, candidates, thoughts int, finish string) []byte {
