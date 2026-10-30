@@ -73,6 +73,7 @@ func newDispatcherWithClient(t *testing.T, client CloudClient) *Dispatcher {
 	if err != nil {
 		t.Fatalf("new dispatcher: %v", err)
 	}
+	t.Cleanup(dispatcher.Close)
 	return dispatcher
 }
 

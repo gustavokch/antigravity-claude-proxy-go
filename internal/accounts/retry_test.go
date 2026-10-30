@@ -16,6 +16,7 @@ import (
 	"antigravity-go-proxy/internal/auth"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
+	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/modelcatalog"
 )
 
@@ -177,6 +178,10 @@ func (client *scriptedClient) StreamGenerateContent(_ context.Context, payload a
 	client.mu.Lock()
 	index := client.calls
 	client.calls++
+	if built, ok := payload.(proxyformat.CloudCodeRequest); ok {
+		payload = map[string]any{"project": built.Project, "requestId": built.RequestID, "request": map[string]any(built.Request),
+			"model": built.Model, "userAgent": built.UserAgent, "requestType": built.RequestType}
+	}
 	if object, ok := payload.(map[string]any); ok {
 		client.payload = object
 	}
@@ -232,7 +237,7 @@ func TestDispatcherUsesAgyAgentRouteAndLiveOutputLimit(t *testing.T) {
 		"agentModelSorts":[{"groups":[{"modelIds":["gemini-pro-agent","claude-opus-4-6-thinking"]}]}],
 		"models":{
 			"gemini-3.1-pro-high":{"displayName":"Gemini 3.1 Pro (High)","supportsThinking":true,"thinkingBudget":10001,"maxOutputTokens":65535},
-			"gemini-pro-agent":{"displayName":"Gemini 3.1 Pro (High)","supportsThinking":true,"thinkingBudget":10001,"maxTokens":1048576,"maxOutputTokens":65535},
+			"gemini-pro-agent":{"displayName":"Gemini 3.1 Pro (High)","supportsThinking":true,"thinkingBudget":10001,"maxTokens":1048576,"maxOutputTokens":65535,"model":"MODEL_PLACEHOLDER_M37","apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},
 			"claude-opus-4-6-thinking":{"displayName":"Claude Opus 4.6 (Thinking)","supportsThinking":true,"thinkingBudget":1024,"maxTokens":250000,"maxOutputTokens":64000}
 		}
 	}`)
@@ -246,6 +251,11 @@ func TestDispatcherUsesAgyAgentRouteAndLiveOutputLimit(t *testing.T) {
 	}
 	if client.payload["model"] != "gemini-pro-agent" {
 		t.Fatalf("upstream model=%v", client.payload["model"])
+	}
+	// The catalog entry's enum and provider reach agy's generation labels.
+	labels, _ := client.payload["request"].(map[string]any)["labels"].(map[string]string)
+	if labels["model_enum"] != "MODEL_PLACEHOLDER_M37" || labels["used_non_gemini_model"] != "false" {
+		t.Fatalf("labels=%v", labels)
 	}
 
 	request["model"] = "claude-opus-4-6-thinking"
@@ -263,8 +273,8 @@ func TestDispatcherUsesAgyAgentRouteAndLiveOutputLimit(t *testing.T) {
 	if thinking["thinking_budget"] != 1024 {
 		t.Fatalf("thinkingConfig=%#v", thinking)
 	}
-	if client.requestOption.Headers.Get("anthropic-beta") != "interleaved-thinking-2025-05-14" {
-		t.Fatalf("headers=%v", client.requestOption.Headers)
+	if got := client.requestOption.Headers.Get("anthropic-beta"); got != "" {
+		t.Fatalf("Claude budget route sent anthropic-beta %q; agy sends none", got)
 	}
 }
 
@@ -905,7 +915,7 @@ func TestDispatcherClaude55EmitsThinkingLevel(t *testing.T) {
 	}
 
 	expect("bare family with ambient low", send("claude-sonnet-5-5", ambient("low")), "claude-sonnet-5-5-low", "LOW")
-	// Level routes carry no anthropic-beta header (gate GI, no-beta probe).
+	// agy sends no anthropic-beta on any Claude route.
 	if got := client.requestOption.Headers.Get("anthropic-beta"); got != "" {
 		t.Errorf("level route sent anthropic-beta %q, want none", got)
 	}

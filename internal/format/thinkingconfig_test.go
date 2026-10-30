@@ -384,10 +384,7 @@ func TestClaude55EmitsThinkingLevel(t *testing.T) {
 	}
 
 	payload := builder.BuildCloudCodeRequestWithModel(req, "test-proj", "user@example.com", options)
-	inner, ok := payload["request"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing inner request: %#v", payload)
-	}
+	inner := payload.Request
 	gen, ok := inner["generationConfig"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing generationConfig: %#v", inner)
@@ -421,8 +418,7 @@ func TestClaude55EmitsThinkingLevel(t *testing.T) {
 		MaxOutputTokens:  128000,
 	}
 	payloadDis := builder.BuildCloudCodeRequestWithModel(reqDisabled, "test-proj", "user@example.com", optionsDisabled)
-	innerDis := payloadDis["request"].(map[string]any)
-	genDis := innerDis["generationConfig"].(map[string]any)
+	genDis := payloadDis.Request["generationConfig"].(map[string]any)
 	if _, hasTC := genDis["thinkingConfig"]; hasTC {
 		t.Errorf("disabled thinking must omit thinkingConfig, got %#v", genDis["thinkingConfig"])
 	}

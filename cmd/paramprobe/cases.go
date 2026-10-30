@@ -45,7 +45,6 @@ type Case struct {
 	Model    string
 	Prompt   string
 	Heavy    bool // spends real thinking tokens; needs -heavy
-	NoBeta   bool // send without the anthropic-beta header the proxy adds for Claude routes
 	Config   map[string]any
 }
 
@@ -70,10 +69,6 @@ func levelConfig(spelling, level string) map[string]any {
 	return map[string]any{"includeThoughts": true, "thinkingLevel": level}
 }
 
-func withoutBeta(c Case) Case {
-	c.NoBeta = true
-	return c
-}
 func snake(budget any) map[string]any {
 	config := map[string]any{"include_thoughts": true}
 	if budget != nil {
@@ -121,9 +116,6 @@ func buildCases(m Models) []Case {
 		levelCase(m, "GI-level-snake", GateLevel,
 			"does the level route also accept the snake_case spelling the budget route uses?",
 			map[string]any{"maxOutputTokens": 512, "thinkingConfig": levelConfig("snake", "LOW")}),
-		withoutBeta(levelCase(m, "GI-level-camel-no-beta", GateLevel,
-			"is the anthropic-beta interleaved-thinking header needed on the level route?",
-			map[string]any{"maxOutputTokens": 512, "thinkingConfig": levelConfig("camel", "LOW")})),
 		levelCase(m, "GI-level-and-budget", GateLevel,
 			"is thinkingLevel together with thinkingBudget rejected on the level route?",
 			map[string]any{"maxOutputTokens": 512, "thinkingConfig": map[string]any{"includeThoughts": true, "thinkingLevel": "LOW", "thinkingBudget": 1024}}),
@@ -201,7 +193,7 @@ func Summary(results []Result) []string {
 
 // buildPayload wraps the case in the production Cloud Code envelope, then
 // swaps in the case's generationConfig.
-func buildPayload(c Case, project, email string) map[string]any {
+func buildPayload(c Case, project, email string) proxyformat.CloudCodeRequest {
 	request := map[string]any{
 		"model":    c.Model,
 		"messages": []any{map[string]any{"role": "user", "content": c.Prompt}},
@@ -209,7 +201,6 @@ func buildPayload(c Case, project, email string) map[string]any {
 	payload := proxyformat.NewBuilder().BuildCloudCodeRequestWithModel(request, project, email, proxyformat.ModelOptions{
 		SupportsThinking: proxyformat.IsThinkingModel(c.Model),
 	})
-	inner, _ := payload["request"].(map[string]any)
-	inner["generationConfig"] = c.Config
+	payload.Request["generationConfig"] = c.Config
 	return payload
 }

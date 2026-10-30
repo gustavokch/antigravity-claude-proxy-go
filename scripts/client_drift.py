@@ -654,7 +654,7 @@ def request_key(record: dict) -> tuple[str, str]:
 
 
 # Keys of a generation request's inner `request` that the caller decides.
-CALLER_REQUEST_KEYS = frozenset({"tools", "toolConfig"})
+CALLER_REQUEST_KEYS = frozenset({"tools"})
 
 
 def compare_records(label: str, base: dict, seen: dict, dynamic: frozenset[str],
@@ -703,6 +703,16 @@ def compare_records(label: str, base: dict, seen: dict, dynamic: frozenset[str],
             drifts.append(f"{label}: request keys no longer sent: {', '.join(missing)}")
         if extra:
             drifts.append(f"{label}: new request keys: {', '.join(extra)}")
+    # Order of the keys both sides send; a baseline recorded before the dump
+    # kept the order has none to compare.
+    for field in ("envelope_key_order", "request_key_order"):
+        before, after = base_body.get(field), seen_body.get(field)
+        if before is None or after is None:
+            continue
+        before = [key for key in before if key in after and key not in CALLER_REQUEST_KEYS]
+        after = [key for key in after if key in before]
+        if before != after:
+            drifts.append(f"{label}: body {field} {before} -> {after}")
     return drifts
 
 

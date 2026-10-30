@@ -69,18 +69,13 @@ func ConvertGoogleToAnthropicWithID(googleResponse map[string]any, model string,
 		blocks = append(blocks, map[string]any{"type": "text", "text": ""})
 	}
 
+	// Upstream finishes tool turns with STOP; as in the stream converter, a
+	// tool call decides the stop reason.
 	stopReason := "end_turn"
-	switch stringValue(candidate["finishReason"]) {
-	case "STOP":
-		stopReason = "end_turn"
-	case "MAX_TOKENS":
-		stopReason = "max_tokens"
-	case "TOOL_USE":
+	if hasTools {
 		stopReason = "tool_use"
-	default:
-		if hasTools {
-			stopReason = "tool_use"
-		}
+	} else if stringValue(candidate["finishReason"]) == "MAX_TOKENS" {
+		stopReason = "max_tokens"
 	}
 	usage := asMap(response["usageMetadata"])
 	promptTokens := intValue(usage["promptTokenCount"], 0)

@@ -34,6 +34,10 @@ type ModelOptions struct {
 	MinThinkingBudget int
 	ThinkingLevel     string
 	MaxOutputTokens   int
+	// Enum and APIProvider fill agy's model_enum and used_* generation labels
+	// (modelcatalog.Model.Enum / APIProvider).
+	Enum        string
+	APIProvider string
 }
 
 type modelFamilyInfo struct {

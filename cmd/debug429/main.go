@@ -100,7 +100,7 @@ func main() {
 				},
 			}
 		}
-		payload := map[string]any{
+		var payload any = map[string]any{
 			"project": account.ProjectID,
 			"model":   *model,
 			"request": request,

@@ -138,22 +138,11 @@ func loadAccount() (poolAccount, error) {
 	return poolAccount{}, errors.New("no usable account in the pool")
 }
 
-// requestOptions adds the beta header the proxy sends for Claude thinking
-// routes (accounts.Dispatcher.StreamGenerateContent does the same).
-func requestOptions(c Case) cloudcode.RequestOptions {
-	if c.NoBeta || proxyformat.GetModelFamily(c.Model) != proxyformat.FamilyClaude {
-		return cloudcode.RequestOptions{}
-	}
-	headers := make(http.Header)
-	headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
-	return cloudcode.RequestOptions{Headers: headers}
-}
-
 func run(ctx context.Context, account poolAccount, c Case) Result {
 	result := Result{ID: c.ID, Gate: c.Gate, Question: c.Question, Model: c.Model, At: time.Now()}
 	accumulator := proxyformat.NewThinkingAccumulator()
 	started := time.Now()
-	_, err := account.Client.StreamGenerateContent(ctx, buildPayload(c, account.Project, account.Email), requestOptions(c),
+	_, err := account.Client.StreamGenerateContent(ctx, buildPayload(c, account.Project, account.Email), cloudcode.RequestOptions{},
 		func(event cloudcode.SSEEvent) error { return accumulator.Consume(event.Data) })
 	result.LatencyMS = time.Since(started).Milliseconds()
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -149,32 +150,456 @@ func TestStreamRejectsEmptyResponse(t *testing.T) {
 	}
 }
 
-func TestBuilderUsesStablePerAccountSessionAndExactEnvelope(t *testing.T) {
+// jsonKeys returns the keys of a JSON object in wire order.
+func jsonKeys(t *testing.T, raw []byte) []string {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		t.Fatalf("not a JSON object: %s", raw)
+	}
+	var keys []string
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, token.(string))
+		var skip json.RawMessage
+		if err := decoder.Decode(&skip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return keys
+}
+
+// agy 1.4.11 writes the envelope and the inner request in a fixed key order
+// (.reference/agy-1.4.11-generation-20261030.txt); a Go map would sort them.
+func TestBuilderWritesAgysKeyOrderAndOneSystemPart(t *testing.T) {
+	t.Parallel()
+	request := map[string]any{
+		"model":    "claude-sonnet-5-5-low",
+		"system":   "client system text",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		"tools":    []any{map[string]any{"name": "read_file", "input_schema": map[string]any{"type": "object"}}},
+	}
+	builder := NewBuilder()
+	built := builder.BuildCloudCodeRequestWithModel(request, "project", "user@example.com", ModelOptions{
+		SupportsThinking: true, ThinkingLevel: "LOW", Enum: "MODEL_PLACEHOLDER_M403", APIProvider: "API_PROVIDER_ANTHROPIC_VERTEX",
+	})
+	encoded, err := json.Marshal(built)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(jsonKeys(t, encoded), ","); got != "project,requestId,request,model,userAgent,requestType" {
+		t.Fatalf("envelope keys = %s", got)
+	}
+	var envelope struct {
+		Request json.RawMessage `json:"request"`
+	}
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(jsonKeys(t, envelope.Request), ","); got != "contents,systemInstruction,tools,labels,generationConfig,sessionId" {
+		t.Fatalf("request keys = %s", got)
+	}
+	parts := asSlice(asMap(built.Request["systemInstruction"])["parts"])
+	if len(parts) != 1 {
+		t.Fatalf("system parts = %d, want the single part agy sends", len(parts))
+	}
+	text := stringValue(asMap(parts[0])["text"])
+	if !strings.HasPrefix(text, AntigravitySystemInstruction+"\n\n") || !strings.Contains(text, "[/ignore]\n\nclient system text") {
+		t.Fatalf("system text = %q", text)
+	}
+}
+
+func TestBuilderSendsAgysSessionIDForEveryAccount(t *testing.T) {
 	t.Parallel()
 	request := map[string]any{
 		"model":    "gemini-3.5-flash-low",
 		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
 	}
-	sessions := NewSessionStore()
-	sequence := 0
-	sessions.newID = func() string {
-		sequence++
-		return "session-" + stringValue(sequence)
-	}
-	builder := &Builder{Cache: NewSignatureCache(), Sessions: sessions, NewRequestID: func() string { return "request-id" }}
+	builder := NewBuilder()
 	first := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
-	second := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
-	if first["requestId"] != "agent-request-id" || first["requestType"] != "agent" || first["userAgent"] != "antigravity" {
-		t.Fatalf("envelope = %#v", first)
+	other := builder.BuildCloudCodeRequest(request, "project", "other@example.com")
+	anonymous := builder.BuildCloudCodeRequest(request, "project", "")
+	for _, built := range []CloudCodeRequest{first, other, anonymous} {
+		if built.Request["sessionId"] != "-3750763034362895579" {
+			t.Fatalf("sessionId = %q", built.Request["sessionId"])
+		}
 	}
-	firstRequest := asMap(first["request"])
-	secondRequest := asMap(second["request"])
-	if firstRequest["sessionId"] != "session-1" || secondRequest["sessionId"] != "session-1" {
-		t.Fatalf("sessions = %q, %q", firstRequest["sessionId"], secondRequest["sessionId"])
+	if _, ok := first.Request["labels"]; ok {
+		t.Fatal("labels sent without a catalog model enum")
 	}
-	parts := asSlice(asMap(firstRequest["systemInstruction"])["parts"])
-	if len(parts) != 2 || asMap(parts[0])["text"] != AntigravitySystemInstruction {
-		t.Fatalf("system instruction = %#v", firstRequest["systemInstruction"])
+}
+
+// agyCall is one captured agy model call reduced to what the builder derives.
+type agyCall struct {
+	cascade, trajectory, requestID string
+	labels                         map[string]string
+}
+
+func buildAgyCall(t *testing.T, builder *Builder, account, session string, messages []any, provider, enum string) agyCall {
+	t.Helper()
+	request := map[string]any{"model": "m", "messages": messages, "metadata": map[string]any{"user_id": `{"session_id":"` + session + `"}`}}
+	built := builder.BuildCloudCodeRequestWithModel(request, "project", account, ModelOptions{Enum: enum, APIProvider: provider})
+	labels, _ := built.Request["labels"].(map[string]string)
+	if labels == nil {
+		t.Fatalf("no labels: %#v", built.Request)
+	}
+	return agyCall{cascade: labels["cascade_id"], trajectory: labels["trajectory_id"], requestID: built.RequestID, labels: labels}
+}
+
+// The label and requestId progression of the captured four-process agy
+// conversation and tool loop (.reference/agy-1.4.11-generation-20261030.txt
+// section 3): prompts on steps 0, 3, 6, 9; a tool result on step 2; k counts
+// model calls; used_claude stays true after a Claude turn.
+func TestBuilderLabelsFollowAgysConversationProgression(t *testing.T) {
+	t.Parallel()
+	const gemini, claude = "API_PROVIDER_GOOGLE_GEMINI", "API_PROVIDER_ANTHROPIC_VERTEX"
+	builder := NewBuilder()
+	builder.Now = func() time.Time { return time.UnixMilli(1793346815160) }
+	user := func(text string) any { return map[string]any{"role": "user", "content": text} }
+	answer := func(text string) any {
+		return map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}}
+	}
+	history := []any{user("ONE")}
+	turns := []struct {
+		provider, enum        string
+		step, k               int
+		usedClaude, nonGemini string
+	}{
+		{gemini, "MODEL_PLACEHOLDER_M320", 0, 0, "false", "false"},
+		{gemini, "MODEL_PLACEHOLDER_M320", 3, 1, "false", "false"},
+		{claude, "MODEL_PLACEHOLDER_M403", 6, 2, "true", "true"},
+		{gemini, "MODEL_PLACEHOLDER_M320", 9, 3, "true", "true"},
+	}
+	var first agyCall
+	for index, turn := range turns {
+		if index > 0 {
+			history = append(history, answer("reply"), user("next"))
+		}
+		call := buildAgyCall(t, builder, "user@example.com", "s1", history, turn.provider, turn.enum)
+		if index == 0 {
+			first = call
+		}
+		want := map[string]string{
+			"cascade_id": first.cascade, "root_cascade_id": first.cascade, "trajectory_id": first.trajectory,
+			"last_step_index": stringValue(turn.step), "request_id": first.trajectory + "-" + stringValue(turn.k),
+			"model_enum": turn.enum, "used_claude": turn.usedClaude, "used_claude_conservative": turn.usedClaude,
+			"used_non_gemini_model": turn.nonGemini,
+		}
+		if !reflect.DeepEqual(call.labels, want) {
+			t.Fatalf("turn %d labels = %v, want %v", index+1, call.labels, want)
+		}
+		wantID := "agent/" + first.cascade + "/1793346815160/" + first.trajectory + "/" + stringValue(turn.step+1)
+		if call.requestID != wantID {
+			t.Fatalf("turn %d requestId = %q, want %q", index+1, call.requestID, wantID)
+		}
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(first.cascade) || first.cascade == first.trajectory {
+		t.Fatalf("cascade %q / trajectory %q are not two distinct v4 UUIDs", first.cascade, first.trajectory)
+	}
+
+	// Tool loops from the second capture: each tool result is one step, also
+	// for parallel calls in one model response.
+	toolUse := func(ids ...string) any {
+		blocks := []any{}
+		for _, id := range ids {
+			blocks = append(blocks, map[string]any{"type": "tool_use", "id": id, "name": "read_file", "input": map[string]any{}})
+		}
+		return map[string]any{"role": "assistant", "content": blocks}
+	}
+	toolResult := func(ids ...string) any {
+		blocks := []any{}
+		for _, id := range ids {
+			blocks = append(blocks, map[string]any{"type": "tool_result", "tool_use_id": id, "content": "x"})
+		}
+		return map[string]any{"role": "user", "content": blocks}
+	}
+	for name, loop := range map[string]struct {
+		messages []any
+		step, k  int
+	}{
+		"one call":            {[]any{user("read it"), toolUse("t1"), toolResult("t1")}, 2, 1},
+		"three parallel":      {[]any{user("read them"), toolUse("t1", "t2", "t3"), toolResult("t1", "t2", "t3")}, 4, 1},
+		"two sequential":      {[]any{user("read both"), toolUse("t1"), toolResult("t1"), toolUse("t2"), toolResult("t2")}, 4, 2},
+		"parallel then final": {[]any{user("go"), toolUse("t1", "t2"), toolResult("t1", "t2"), answer("done"), user("again")}, 6, 2},
+	} {
+		call := buildAgyCall(t, NewBuilder(), "user@example.com", "s-"+name, loop.messages, gemini, "MODEL_PLACEHOLDER_M320")
+		if call.labels["last_step_index"] != stringValue(loop.step) || call.labels["request_id"] != call.trajectory+"-"+stringValue(loop.k) ||
+			!strings.HasSuffix(call.requestID, "/"+stringValue(loop.step+1)) {
+			t.Fatalf("%s: labels = %v, requestId = %q, want step %d k %d", name, call.labels, call.requestID, loop.step, loop.k)
+		}
+	}
+}
+
+// A client that marks only its newest messages for caching sends the first
+// prompt as a block on the first turn and as a string once it is older; both
+// are the same conversation.
+func TestBuilderKeepsTheConversationWhenTheFirstPromptBecomesAString(t *testing.T) {
+	t.Parallel()
+	const gemini = "API_PROVIDER_GOOGLE_GEMINI"
+	builder := NewBuilder()
+	first := buildAgyCall(t, builder, "user@example.com", "s1", []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "start", "cache_control": map[string]any{"type": "ephemeral"}},
+	}}}, gemini, "E")
+	second := buildAgyCall(t, builder, "user@example.com", "s1", []any{
+		map[string]any{"role": "user", "content": "start"},
+		map[string]any{"role": "assistant", "content": "ok"},
+		map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "more", "cache_control": map[string]any{"type": "ephemeral"}}}},
+	}, gemini, "E")
+	if second.cascade != first.cascade || second.trajectory != first.trajectory {
+		t.Fatalf("turn 2 cascade %q / trajectory %q, turn 1 %q / %q", second.cascade, second.trajectory, first.cascade, first.trajectory)
+	}
+}
+
+func TestBuilderConversationIdentity(t *testing.T) {
+	t.Parallel()
+	const gemini = "API_PROVIDER_GOOGLE_GEMINI"
+	firstTurn := func(cacheControl bool) []any {
+		block := map[string]any{"type": "text", "text": "start"}
+		if cacheControl {
+			block["cache_control"] = map[string]any{"type": "ephemeral"}
+		}
+		return []any{map[string]any{"role": "user", "content": []any{block}}}
+	}
+	builder := NewBuilder()
+	base := buildAgyCall(t, builder, "user@example.com", "s1", firstTurn(true), gemini, "E")
+	later := buildAgyCall(t, builder, "user@example.com", "s1", append(firstTurn(false),
+		map[string]any{"role": "assistant", "content": "ok"}, map[string]any{"role": "user", "content": "more"}), gemini, "E")
+	if later.cascade != base.cascade || later.trajectory != base.trajectory {
+		t.Fatal("a moved cache_control marker changed the conversation ids")
+	}
+	for name, other := range map[string]agyCall{
+		"account":       buildAgyCall(t, builder, "other@example.com", "s1", firstTurn(true), gemini, "E"),
+		"session":       buildAgyCall(t, builder, "user@example.com", "s2", firstTurn(true), gemini, "E"),
+		"first message": buildAgyCall(t, builder, "user@example.com", "s1", []any{map[string]any{"role": "user", "content": "other start"}}, gemini, "E"),
+	} {
+		if other.cascade == base.cascade || other.trajectory == base.trajectory {
+			t.Fatalf("a different %s kept the conversation ids", name)
+		}
+	}
+}
+
+func TestGenerateRequestPutsUnknownKeysLastInSortedOrder(t *testing.T) {
+	t.Parallel()
+	encoded, err := json.Marshal(GenerateRequest{"zeta": 1, "sessionId": "s", "alpha": true, "contents": []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `{"contents":[],"sessionId":"s","alpha":true,"zeta":1}` {
+		t.Fatalf("encoded = %s", encoded)
+	}
+}
+
+// agy sends the catalog's maxOutputTokens on every agent call; the client's
+// smaller limit moves to OutputLimit for the stream to enforce.
+func TestBuilderSendsTheCatalogOutputMaximumAndKeepsTheClientLimit(t *testing.T) {
+	t.Parallel()
+	build := func(maxTokens int, options ModelOptions) CloudCodeRequest {
+		request := map[string]any{"model": "claude-sonnet-5-5-low", "max_tokens": maxTokens,
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		return NewBuilder().BuildCloudCodeRequestWithModel(request, "project", "user@example.com", options)
+	}
+	catalog := ModelOptions{SupportsThinking: true, ThinkingLevel: "LOW", MaxOutputTokens: 128000}
+	for name, test := range map[string]struct {
+		built         CloudCodeRequest
+		sent, limited int
+	}{
+		"client below the catalog":        {build(4096, catalog), 128000, 4096},
+		"client above the catalog":        {build(200000, catalog), 128000, 0},
+		"catalog entry without a maximum": {build(4096, ModelOptions{}), 4096, 0},
+	} {
+		sent := asMap(test.built.Request["generationConfig"])["maxOutputTokens"]
+		if sent != test.sent || test.built.OutputLimit != test.limited {
+			t.Errorf("%s: maxOutputTokens = %v, OutputLimit = %d; want %d, %d", name, sent, test.built.OutputLimit, test.sent, test.limited)
+		}
+	}
+}
+
+// The guard ends a response where upstream would have stopped at the client's
+// maxOutputTokens, and the client sees stop_reason max_tokens: on Gemini's
+// running thought plus candidate count, and on Claude, whose count stays at
+// its first value until the end, by the streamed text.
+// The MAX_TOKENS finish carries the last usage upstream reported, also when
+// the event that crosses the limit has none: a unary reply takes its usage
+// from that finish.
+func TestOutputGuardFinishKeepsTheLastUsage(t *testing.T) {
+	t.Parallel()
+	reported, _ := json.Marshal(map[string]any{"response": map[string]any{
+		"candidates":    []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": ""}}}}},
+		"usageMetadata": map[string]any{"promptTokenCount": 10, "candidatesTokenCount": 4, "thoughtsTokenCount": 3},
+	}})
+	unreported, _ := json.Marshal(map[string]any{"response": map[string]any{
+		"candidates": []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": strings.Repeat("x", 40)}}}}},
+	}})
+	guard := NewOutputGuard(10)
+	if _, done := guard.Observe(reported); done {
+		t.Fatal("stopped at 7 of 10 tokens")
+	}
+	final, done := guard.Observe(unreported)
+	if !done {
+		t.Fatal("did not stop at 7 reported + 40 bytes streamed")
+	}
+	accumulator := NewThinkingAccumulator()
+	for _, data := range [][]byte{reported, unreported, final} {
+		if err := accumulator.Consume(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if accumulator.InputTokens() != 10 || accumulator.ThinkingTokens() != 3 || accumulator.OutputTokens() != 14 {
+		t.Fatalf("input %d, thinking %d, output %d; want 10, 3, 14 (4 reported + 10 estimated)",
+			accumulator.InputTokens(), accumulator.ThinkingTokens(), accumulator.OutputTokens())
+	}
+}
+
+// A tool call's arguments are output too. Claude does not update its count
+// while it streams, so their bytes go into the estimate like text.
+func TestOutputGuardCountsToolCallArguments(t *testing.T) {
+	t.Parallel()
+	event := func(part map[string]any) []byte {
+		encoded, _ := json.Marshal(map[string]any{"response": map[string]any{
+			"candidates":    []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{part}}}},
+			"usageMetadata": map[string]any{"promptTokenCount": 10, "candidatesTokenCount": 4},
+		}})
+		return encoded
+	}
+	guard := NewOutputGuard(10)
+	if _, done := guard.Observe(event(map[string]any{"text": ""})); done {
+		t.Fatal("stopped at 4 of 10 tokens")
+	}
+	call := event(map[string]any{"functionCall": map[string]any{"name": "write_file", "args": map[string]any{"content": strings.Repeat("x", 40)}}})
+	if _, done := guard.Observe(call); !done {
+		t.Fatal("a tool call with 40+ bytes of arguments did not count toward the limit")
+	}
+}
+
+func TestOutputGuardEndsTheResponseAtTheClientLimit(t *testing.T) {
+	t.Parallel()
+	event := func(text string, candidates, thoughts int, finish string) []byte {
+		candidate := map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": text}}}}
+		if finish != "" {
+			candidate["finishReason"] = finish
+		}
+		encoded, _ := json.Marshal(map[string]any{"response": map[string]any{
+			"candidates":    []any{candidate},
+			"usageMetadata": map[string]any{"promptTokenCount": 10, "candidatesTokenCount": candidates, "thoughtsTokenCount": thoughts},
+		}})
+		return encoded
+	}
+	finish := func(t *testing.T, delivered ...[]byte) (string, any) {
+		t.Helper()
+		converter := NewStreamConverter("claude-sonnet-5-5-low", nil, "msg_guard")
+		for _, data := range delivered {
+			if _, err := converter.Consume(data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		events, err := converter.Finish()
+		if err != nil {
+			t.Fatal(err)
+		}
+		delta := events[len(events)-2]
+		return stringValue(asMap(delta["delta"])["stop_reason"]), asMap(delta["usage"])["output_tokens"]
+	}
+	if NewOutputGuard(0) != nil {
+		t.Fatal("a zero limit must not guard")
+	}
+
+	gemini := NewOutputGuard(100)
+	if _, done := gemini.Observe(event("x", 40, 50, "")); done {
+		t.Fatal("stopped below the limit")
+	}
+	if _, done := gemini.Observe(event("x", 60, 50, "STOP")); done {
+		t.Fatal("replaced a response that finished on its own")
+	}
+	crossing := event("x", 51, 50, "")
+	final, done := gemini.Observe(crossing)
+	if !done {
+		t.Fatal("did not stop at 101 output tokens with a limit of 100")
+	}
+	if reason, tokens := finish(t, crossing, final); reason != "max_tokens" || tokens != 51 {
+		t.Fatalf("Gemini: stop_reason %q, output_tokens %v", reason, tokens)
+	}
+
+	claude := NewOutputGuard(10)
+	first, second, third := event("", 4, 0, ""), event("twelve bytes", 4, 0, ""), event("twelve bytes", 4, 0, "")
+	for _, data := range [][]byte{first, second} {
+		if _, done := claude.Observe(data); done {
+			t.Fatal("Claude stopped below 10 tokens (4 reported + 12 bytes)")
+		}
+	}
+	final, done = claude.Observe(third)
+	if !done {
+		t.Fatal("Claude did not stop at 4 reported + 24 bytes streamed")
+	}
+	if reason, tokens := finish(t, first, second, third, final); reason != "max_tokens" || tokens != 10 {
+		t.Fatalf("Claude: stop_reason %q, output_tokens %v", reason, tokens)
+	}
+}
+
+// agy sends writeTrajectoryAcls and the title checkpoint once, when a
+// conversation starts; a later turn or a retry of the first turn sends none.
+// agy's ACL names the trajectory its first call's labels carry. Without a
+// catalog enum the call has no labels, so there is no start to send, and the
+// start stays available for a labelled build of the same turn.
+func TestConversationStartNeedsLabels(t *testing.T) {
+	t.Parallel()
+	builder := NewBuilder()
+	first := map[string]any{"model": "gemini-3.8-flash-low", "messages": []any{map[string]any{"role": "user", "content": "Fix the login bug"}}}
+	unlabelled := builder.BuildCloudCodeRequestWithModel(first, "project", "user@example.com", ModelOptions{})
+	if _, _, ok := builder.ConversationStart(unlabelled, first, "gemini-3.5-flash-lite"); ok {
+		t.Fatal("started a conversation for a call without labels")
+	}
+	labelled := builder.BuildCloudCodeRequestWithModel(first, "project", "user@example.com",
+		ModelOptions{Enum: "MODEL_PLACEHOLDER_M320", APIProvider: "API_PROVIDER_GOOGLE_GEMINI"})
+	if _, _, ok := builder.ConversationStart(labelled, first, "gemini-3.5-flash-lite"); !ok {
+		t.Fatal("the unlabelled call used up the conversation start")
+	}
+}
+
+func TestConversationStartOnlyForTheFirstTurnOnce(t *testing.T) {
+	t.Parallel()
+	builder := NewBuilder()
+	options := ModelOptions{Enum: "MODEL_PLACEHOLDER_M320", APIProvider: "API_PROVIDER_GOOGLE_GEMINI"}
+	first := map[string]any{"model": "gemini-3.8-flash-low", "messages": []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "<system-reminder>context</system-reminder>"},
+		map[string]any{"type": "text", "text": "Fix the login bug"},
+	}}}}
+	agent := builder.BuildCloudCodeRequestWithModel(first, "project", "user@example.com", options)
+	if _, _, ok := builder.ConversationStart(agent, first, ""); ok {
+		t.Fatal("started without a title model")
+	}
+	trajectoryID, checkpoint, ok := builder.ConversationStart(agent, first, "gemini-3.5-flash-lite")
+	if !ok {
+		t.Fatal("first turn did not start a conversation")
+	}
+	labels := agent.Request["labels"].(map[string]string)
+	if trajectoryID != labels["trajectory_id"] {
+		t.Fatalf("ACL trajectory %q, labels trajectory %q", trajectoryID, labels["trajectory_id"])
+	}
+	if checkpoint.RequestType != "checkpoint" || checkpoint.Model != "gemini-3.5-flash-lite" || checkpoint.Project != "project" ||
+		!strings.HasPrefix(checkpoint.RequestID, "checkpoint/") || checkpoint.Request["sessionId"] != agent.Request["sessionId"] {
+		t.Fatalf("checkpoint envelope = %#v", checkpoint)
+	}
+	encoded, err := json.Marshal(checkpoint.Request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(jsonKeys(t, encoded), ","); got != "contents,systemInstruction,generationConfig,sessionId" {
+		t.Fatalf("checkpoint request keys = %s", got)
+	}
+	contents := asSlice(checkpoint.Request["contents"])
+	if text := asMap(asSlice(asMap(contents[0])["parts"])[0])["text"]; text != "Fix the login bug" {
+		t.Fatalf("checkpoint titles %q, want the user's own words", text)
+	}
+	if _, _, ok := builder.ConversationStart(builder.BuildCloudCodeRequestWithModel(first, "project", "user@example.com", options), first, "gemini-3.5-flash-lite"); ok {
+		t.Fatal("a retry of the first turn started the conversation again")
+	}
+	later := map[string]any{"model": "gemini-3.8-flash-low", "messages": append(asSlice(first["messages"]),
+		map[string]any{"role": "assistant", "content": "ok"}, map[string]any{"role": "user", "content": "more"})}
+	if _, _, ok := NewBuilder().ConversationStart(NewBuilder().BuildCloudCodeRequestWithModel(later, "project", "user@example.com", options), later, "gemini-3.5-flash-lite"); ok {
+		t.Fatal("a later turn started a conversation")
 	}
 }
 
@@ -197,21 +622,16 @@ func TestBuilderDropsAnthropicBillingHeaderSystemPart(t *testing.T) {
 	}
 	builder := NewBuilder()
 	built := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
-	parts := asSlice(asMap(asMap(built["request"])["systemInstruction"])["parts"])
-	texts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		texts = append(texts, stringValue(asMap(part)["text"]))
+	parts := asSlice(asMap(built.Request["systemInstruction"])["parts"])
+	if len(parts) != 1 {
+		t.Fatalf("parts = %#v", parts)
 	}
-	if len(texts) != 3 {
-		t.Fatalf("parts = %#v", texts)
+	text := stringValue(asMap(parts[0])["text"])
+	if strings.Contains(strings.ToLower(text), "x-anthropic-billing-header") {
+		t.Fatalf("billing header leaked upstream: %q", text)
 	}
-	if texts[2] != "You are Claude Code, Anthropic's official CLI for Claude." {
-		t.Fatalf("client part dropped or reordered: %#v", texts)
-	}
-	for _, text := range texts {
-		if strings.Contains(strings.ToLower(text), "x-anthropic-billing-header") {
-			t.Fatalf("billing header leaked upstream: %q", text)
-		}
+	if !strings.HasSuffix(text, "[/ignore]\n\nYou are Claude Code, Anthropic's official CLI for Claude.") {
+		t.Fatalf("client text dropped or reordered: %q", text)
 	}
 }
 

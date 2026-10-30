@@ -2,8 +2,10 @@
 // (scripts/client_drift.py) cannot answer from outside the proxy's own code:
 //
 //	clientprobe cloudcode -proxy http://127.0.0.1:PORT
-//	    Sends loadCodeAssist, fetchAvailableModels and a streamGenerateContent
-//	    built by the production format.Builder through the given HTTP proxy
+//	    Sends loadCodeAssist, fetchAvailableModels, and the conversation start
+//	    agy sends (writeTrajectoryAcls, the title checkpoint, the agent
+//	    streamGenerateContent), all built by the production format.Builder,
+//	    through the given HTTP proxy
 //	    with the proxy's own Cloud Code client and transport, using a token
 //	    Google rejects. The interceptor records the ClientHello, header order
 //	    and body this build sends, so the hook can diff them against what agy
@@ -21,6 +23,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -83,23 +86,39 @@ func probeCloudCode(args []string) (cloudCodeResult, error) {
 		HTTPClient:  &http.Client{Transport: transport},
 	})
 	// The dispatcher's build path with the options a catalog entry for this
-	// model carries; only the prompt is synthetic.
-	generation := format.NewBuilder().BuildCloudCodeRequestWithModel(map[string]any{
+	// model carries (fetchAvailableModels publishes gemini-3.8-flash-high as
+	// MODEL_PLACEHOLDER_M318, and gemini-3.5-flash-lite as its flash-lite
+	// tier); only the prompt is synthetic.
+	builder := format.NewBuilder()
+	request := map[string]any{
 		"model":      "gemini-3.8-flash-high",
 		"max_tokens": 1024,
 		"stream":     true,
 		"messages":   []any{map[string]any{"role": "user", "content": "Reply with exactly OK"}},
-	}, "clientprobe-project", "clientprobe@example.invalid", format.ModelOptions{
+	}
+	generation := builder.BuildCloudCodeRequestWithModel(request, "clientprobe-project", "clientprobe@example.invalid", format.ModelOptions{
 		SupportsThinking: true, ThinkingLevel: "HIGH", MaxOutputTokens: 65536,
+		Enum: "MODEL_PLACEHOLDER_M318", APIProvider: "API_PROVIDER_GOOGLE_GEMINI",
 	})
+	trajectoryID, checkpoint, ok := builder.ConversationStart(generation, request, "gemini-3.5-flash-lite")
+	if !ok {
+		return nil, errors.New("the probe request did not start a conversation")
+	}
+	discard := func(cloudcode.SSEEvent) error { return nil }
 	result := cloudCodeResult{}
 	for name, call := range map[string]func(context.Context) (cloudcode.Response, error){
 		"loadCodeAssist": func(ctx context.Context) (cloudcode.Response, error) { return client.LoadCodeAssist(ctx) },
 		"fetchAvailableModels": func(ctx context.Context) (cloudcode.Response, error) {
 			return client.FetchAvailableModels(ctx, "clientprobe-project")
 		},
+		"writeTrajectoryAcls": func(ctx context.Context) (cloudcode.Response, error) {
+			return client.WriteTrajectoryAcls(ctx, trajectoryID)
+		},
+		"streamGenerateContent (checkpoint)": func(ctx context.Context) (cloudcode.Response, error) {
+			return client.StreamGenerateContent(ctx, checkpoint, cloudcode.RequestOptions{}, discard)
+		},
 		"streamGenerateContent": func(ctx context.Context) (cloudcode.Response, error) {
-			return client.StreamGenerateContent(ctx, generation, cloudcode.RequestOptions{}, func(cloudcode.SSEEvent) error { return nil })
+			return client.StreamGenerateContent(ctx, generation, cloudcode.RequestOptions{}, discard)
 		},
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
