@@ -535,7 +535,7 @@ func TestUserAgentConstructionForOtherEntrypointsIsInferred(t *testing.T) {
 	// No capture confirms this string; the test pins the construction so a
 	// change is deliberate rather than accidental.
 	got := messagesUserAgent(Identity{Entrypoint: EntrypointInteractive})
-	if got != "claude-cli/2.1.304 (external, cli)" {
+	if got != "claude-cli/2.1.308 (external, cli)" {
 		t.Errorf("User-Agent = %q, want the constructed form", got)
 	}
 }

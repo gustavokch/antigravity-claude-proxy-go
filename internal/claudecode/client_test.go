@@ -526,7 +526,7 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 	if strings.Contains(gotBody, "temperature") {
 		t.Errorf("body = %q; temperature must be dropped, Claude Code does not send it", gotBody)
 	}
-	if !strings.Contains(gotBody, "x-anthropic-billing-header: cc_version=2.1.304.") {
+	if !strings.Contains(gotBody, "x-anthropic-billing-header: cc_version=2.1.308.") {
 		t.Errorf("body = %q; system block 0 must be the generated billing header", gotBody)
 	}
 	// user_id is a JSON string CONTAINING JSON, so it appears escaped in the
@@ -689,7 +689,7 @@ func TestClient_SendMessage_WritesTheTurnTheCallerComputed(t *testing.T) {
 // TestClient_DiscoveryRequestsSendTheCapturedUserAgent pins the version and the
 // case of the non-messages User-Agent.
 //
-// The capture records claude-code/2.1.304 on every GET it observed, lowercase
+// The capture records claude-code/2.1.308 on every GET it observed, lowercase
 // and with no parenthesised mode, which is a different family from the
 // claude-cli/ value the messages path sends. These two calls hardcoded
 // Claude-Code/2.1.246: a stale version, and a capitalisation no observed
