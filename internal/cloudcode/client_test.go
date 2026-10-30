@@ -212,6 +212,36 @@ func TestLoadCodeAssistSendsAgysExactBody(t *testing.T) {
 	}
 }
 
+// No agy onboardUser request has been captured (that needs an account that is
+// not onboarded yet), so its body keeps the older ClientMetadata form. This pins
+// that form and its host until a capture replaces both.
+func TestOnboardUserKeepsUncapturedBodyOnDaily(t *testing.T) {
+	t.Parallel()
+	if want := []string{DailyEndpoint}; !reflect.DeepEqual(ContentEndpoints, want) {
+		t.Errorf("ContentEndpoints = %#v, want %#v", ContentEndpoints, want)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != PathOnboardUser {
+			t.Errorf("path = %q, want %q", request.URL.Path, PathOnboardUser)
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		want := fmt.Sprintf(`{"tierId":"free-tier","metadata":{"ideType":9,"platform":%d,"duetProject":"project","pluginType":2}}`, platformEnum())
+		if string(body) != want {
+			t.Errorf("body = %s, want %s", body, want)
+		}
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
+	client.contentEndpoints = []string{server.URL}
+	if _, err := client.OnboardUser(context.Background(), "free-tier", "project"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Every call is pinned to agy's host with no cross-host fallback: agy 1.4.10
 // sends all of its Cloud Code calls to daily, and a thought signature issued by
 // one host is rejected by the other. The no-fallback behaviour itself is
