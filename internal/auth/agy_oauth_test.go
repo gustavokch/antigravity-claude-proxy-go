@@ -213,6 +213,8 @@ func TestManagerGetRefreshesTheDefaultAgyTokenWithoutDeadlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(agyBinaryPathEnv, binary)
+	t.Setenv(oauthClientIDEnv, "")
+	t.Setenv(oauthClientSecretEnv, "")
 	t.Setenv("AGY_TOKEN_PATH", fixtureLoginToken(t, loginID))
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
