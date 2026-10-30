@@ -493,7 +493,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			var lastCredits []cloudcode.CreditBalance
 			response, requestErr := func() (cloudcode.Response, error) {
 				defer dispatcher.meter.End(account.Email)
-				return client.StreamGenerateContent(ctx, payload, options, func(event cloudcode.SSEEvent) error {
+				return client.StreamGenerateContent(ctx, dispatcher.builder.Stamp(payload), options, func(event cloudcode.SSEEvent) error {
 					eventCount++
 					if len(event.Data) > 0 {
 						if balances, ok := cloudcode.ParseRemainingCredits(event.Data); ok {

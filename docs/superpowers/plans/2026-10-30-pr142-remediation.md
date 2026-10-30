@@ -33,7 +33,7 @@
 
 ## Task 2 — Stamp the requestId at send time
 
-**Files:** Modify `internal/format/builder.go`, `internal/format/agyrequest.go` (add `Builder.Stamp`), `internal/accounts/dispatcher.go`; Test `internal/format/format_test.go`, `internal/accounts/agy_conversation_test.go`.
+**Files:** Modify `internal/format/builder.go`, `internal/format/agyrequest.go` (add `Builder.Stamp`), `internal/accounts/dispatcher.go`; Test `internal/accounts/agy_conversation_test.go`.
 
 **Consumes:** `Builder.Now`, `conversation.requestID`. **Produces:** `func (builder *Builder) Stamp(request CloudCodeRequest) CloudCodeRequest`.
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,5 +161,45 @@ func TestDispatcherSendsAgysConversationStartOnce(t *testing.T) {
 	}
 	if checkpoints[0].Model != "gemini-3.5-flash-lite" || checkpoints[0].Project != "aicode-consumers" {
 		t.Fatalf("checkpoint = %#v", checkpoints[0])
+	}
+}
+
+// agy builds its requestId 1-160 ms before the request leaves. The
+// dispatcher builds the payload before the throttle delay, so it stamps the
+// id again when it sends.
+func TestDispatcherStampsTheRequestIDWhenItSends(t *testing.T) {
+	t.Parallel()
+	var clock atomic.Int64
+	clock.Store(1793346815000)
+	now := func() time.Time { return time.UnixMilli(clock.Load()) }
+	builder := proxyformat.NewBuilder()
+	builder.Now = now
+	manager, err := New(Options{Accounts: []*Account{{Email: "test@example.com", Enabled: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &agyClient{modelsBody: []byte(agyModelsBody), events: [][]byte{agyEvent(1, "STOP")}}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager: manager, Resolver: stubResolver{}, NewClient: func(string) CloudClient { return client },
+		Builder: builder, Now: now, RequestThrottlingEnabled: true, RequestDelay: 200 * time.Millisecond,
+		Sleep: func(_ context.Context, wait time.Duration) error {
+			clock.Add(wait.Milliseconds())
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := map[string]any{"model": "gemini-3.8-flash-low", "max_tokens": float64(1024),
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	if _, err := dispatcher.StreamGenerateContent(context.Background(), request, func(cloudcode.SSEEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	agent := client.byType("agent")
+	if len(agent) != 1 {
+		t.Fatalf("agent calls = %d", len(agent))
+	}
+	if parts := strings.Split(agent[0].RequestID, "/"); len(parts) != 5 || parts[2] != "1793346815200" {
+		t.Fatalf("requestId = %q, want the send time 1793346815200 (after the 200 ms throttle delay)", agent[0].RequestID)
 	}
 }

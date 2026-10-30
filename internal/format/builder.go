@@ -68,13 +68,9 @@ func (builder *Builder) buildCloudCodeRequest(request, googleRequest map[string]
 	if labels := builder.labels(conversation, options); labels != nil {
 		googleRequest["labels"] = labels
 	}
-	now := time.Now
-	if builder.Now != nil {
-		now = builder.Now
-	}
 	return CloudCodeRequest{
 		Project:      projectID,
-		RequestID:    conversation.requestID(now()),
+		RequestID:    conversation.requestID(builder.now()),
 		Request:      GenerateRequest(googleRequest),
 		Model:        stringValue(request["model"]),
 		UserAgent:    "antigravity",
@@ -82,6 +78,23 @@ func (builder *Builder) buildCloudCodeRequest(request, googleRequest map[string]
 		OutputLimit:  outputLimit,
 		conversation: conversation,
 	}
+}
+
+// Stamp sets the time in request's requestId to now. agy builds the id 1-160
+// ms before the request leaves, so a caller that waits between building and
+// sending (throttle delay, retry backoff) stamps it before each send.
+func (builder *Builder) Stamp(request CloudCodeRequest) CloudCodeRequest {
+	if request.conversation.cascadeID != "" {
+		request.RequestID = request.conversation.requestID(builder.now())
+	}
+	return request
+}
+
+func (builder *Builder) now() time.Time {
+	if builder.Now != nil {
+		return builder.Now()
+	}
+	return time.Now()
 }
 
 // billingHeaderToken is the Claude Code client identity marker that leaks into
