@@ -51,11 +51,14 @@ func TestSharedTransportConfiguration(t *testing.T) {
 	}
 }
 
-func TestFetchAvailableModelsHeadersAndDailyFallback(t *testing.T) {
+// Production lists hold only daily (TestEndpointsMatchAgyHost). This covers how
+// DoJSON walks an explicit list, as LoadCodeAssistAt and
+// cmd/cloudcodecheck -endpoint pass one.
+func TestFetchAvailableModelsHeadersAndEndpointListFallback(t *testing.T) {
 	t.Parallel()
-	var dailyCalls, prodCalls int
-	daily := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		dailyCalls++
+	var firstCalls, secondCalls int
+	first := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		firstCalls++
 		if request.URL.Path != PathFetchAvailableModels {
 			t.Errorf("path = %q", request.URL.Path)
 		}
@@ -86,22 +89,22 @@ func TestFetchAvailableModelsHeadersAndDailyFallback(t *testing.T) {
 		}
 		http.Error(writer, "capacity", http.StatusServiceUnavailable)
 	}))
-	defer daily.Close()
-	prod := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		prodCalls++
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		secondCalls++
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"models":{}}`))
 	}))
-	defer prod.Close()
+	defer second.Close()
 
-	client := New(Options{AccessToken: "token", HTTPClient: daily.Client()})
-	client.contentEndpoints = []string{daily.URL, prod.URL}
+	client := New(Options{AccessToken: "token", HTTPClient: first.Client()})
+	client.contentEndpoints = []string{first.URL, second.URL}
 	response, err := client.FetchAvailableModels(context.Background(), "project")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dailyCalls != 1 || prodCalls != 1 || response.Endpoint != prod.URL {
-		t.Fatalf("daily=%d prod=%d endpoint=%q", dailyCalls, prodCalls, response.Endpoint)
+	if firstCalls != 1 || secondCalls != 1 || response.Endpoint != second.URL {
+		t.Fatalf("first=%d second=%d endpoint=%q", firstCalls, secondCalls, response.Endpoint)
 	}
 }
 
@@ -170,7 +173,8 @@ func TestDoSSEDecompressesGzipStream(t *testing.T) {
 	}
 }
 
-func TestDoSSEClosesBodyOnGunzipError(t *testing.T) {
+// net/http decodes the stream, so a corrupt gzip body fails in ParseSSE's read.
+func TestDoSSEFailsOnCorruptGzipStream(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Encoding", "gzip")
