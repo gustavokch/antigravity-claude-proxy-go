@@ -236,9 +236,12 @@ func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	// The server reports through the channel, never through t: its goroutine
+	// can outlive the test.
 	type captured struct {
 		head []string
 		body string
+		err  error
 	}
 	requests := make(chan captured, 2)
 	go func() {
@@ -252,7 +255,7 @@ func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 				var raw bytes.Buffer
 				request, err := http.ReadRequest(bufio.NewReader(io.TeeReader(conn, &raw)))
 				if err != nil {
-					t.Error(err)
+					requests <- captured{err: err}
 					return
 				}
 				body, _ := io.ReadAll(request.Body)
@@ -263,17 +266,25 @@ func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 		}
 	}()
 
+	receive := func() captured {
+		got := <-requests
+		if got.err != nil {
+			t.Fatalf("read request: %v", got.err)
+		}
+		return got
+	}
+
 	client := New(Options{AccessToken: "token"})
 	client.provisioningEndpoints = []string{"http://" + listener.Addr().String()}
 	client.generationEndpoints = client.provisioningEndpoints
 	if _, err := client.LoadCodeAssist(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	unary := <-requests
+	unary := receive()
 	if _, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(SSEEvent) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	stream := <-requests
+	stream := receive()
 
 	names := func(head []string) []string {
 		var out []string
@@ -288,6 +299,11 @@ func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 	}
 	if got, want := names(stream.head), []string{"Host", "User-Agent", "Transfer-Encoding", "Authorization", "Content-Type", "Accept-Encoding"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("streaming header order = %v, want %v", got, want)
+	}
+	if t.Failed() {
+		// The values below are read by position, which only holds once the
+		// order matched.
+		return
 	}
 	if stream.head[2] != "Transfer-Encoding: chunked" || stream.head[5] != "Accept-Encoding: gzip" {
 		t.Errorf("streaming head = %q", stream.head)
