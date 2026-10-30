@@ -403,7 +403,7 @@ func TestApplyBodyEmptyBodyIsPassedThrough(t *testing.T) {
 	}
 }
 
-var billingRE = regexp.MustCompile(`^x-anthropic-billing-header: cc_version=2\.1\.304\.[0-9a-f]{3}; cc_entrypoint=(sdk-cli|cli); cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=(sdk|cli); cc_prompt_index=0; cc_turn_index=1;$`)
+var billingRE = regexp.MustCompile(`^x-anthropic-billing-header: cc_version=` + regexp.QuoteMeta(ClientVersion) + `\.[0-9a-f]{3}; cc_entrypoint=(sdk-cli|cli); cch=[0-9a-f]{5}; cc_prompt_id=[0-9a-f-]{36}; cc_turn_origin=(sdk|cli); cc_prompt_index=0; cc_turn_index=1;$`)
 
 func TestBillingHeaderMatchesCapturedShape(t *testing.T) {
 	got := BillingHeader(testIdentity(), Turn{})
