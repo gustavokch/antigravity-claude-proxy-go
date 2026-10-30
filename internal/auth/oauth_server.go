@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -27,13 +26,6 @@ const (
 	OAuthUserInfoURL    = "https://www.googleapis.com/oauth2/v1/userinfo"
 	DefaultCallbackPort = 51121
 )
-
-func resolveOAuthCredentials() (string, string, error) {
-	if id, secret := os.Getenv(oauthClientIDEnv), os.Getenv(oauthClientSecretEnv); id != "" && secret != "" {
-		return id, secret, nil
-	}
-	return AgyOAuthCredentials()
-}
 
 var OAuthScopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
@@ -86,13 +78,13 @@ func GetAuthorizationURL(customRedirectURI string) (authURL, verifier, state str
 		redirectURI = customRedirectURI
 	}
 
-	clientID, _, err := resolveOAuthCredentials()
-	if err != nil || clientID == "" {
+	candidates, err := (Manager{}).oauthCredentialCandidates()
+	if err != nil {
 		return "", "", "", fmt.Errorf("resolve OAuth client credentials: %w", err)
 	}
 
 	params := url.Values{}
-	params.Set("client_id", clientID)
+	params.Set("client_id", candidates[0].clientID)
 	params.Set("redirect_uri", redirectURI)
 	params.Set("response_type", "code")
 	params.Set("scope", strings.Join(OAuthScopes, " "))
@@ -255,8 +247,8 @@ func (om *OAuthManager) callbackHandler(srv *http.Server) http.HandlerFunc {
 
 // CompleteFlow exchanges code for tokens, gets user info, and saves account.
 func (om *OAuthManager) CompleteFlow(code, verifier, redirectURI string) (*AuthResult, error) {
-	clientID, clientSecret, err := resolveOAuthCredentials()
-	if err != nil || clientID == "" || clientSecret == "" {
+	candidates, err := (Manager{}).oauthCredentialCandidates()
+	if err != nil {
 		return nil, fmt.Errorf("resolve OAuth client credentials: %w", err)
 	}
 
@@ -264,37 +256,9 @@ func (om *OAuthManager) CompleteFlow(code, verifier, redirectURI string) (*AuthR
 		redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", DefaultCallbackPort)
 	}
 
-	// Token exchange
-	form := url.Values{}
-	form.Set("client_id", clientID)
-	form.Set("client_secret", clientSecret)
-	form.Set("code", code)
-	form.Set("code_verifier", verifier)
-	form.Set("grant_type", "authorization_code")
-	form.Set("redirect_uri", redirectURI)
-
-	resp, err := http.PostForm(OAuthTokenURL, form)
+	tokenRes, err := redeemAuthorizationCode(OAuthTokenURL, candidates, code, verifier, redirectURI)
 	if err != nil {
-		return nil, fmt.Errorf("token exchange request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("token exchange failed (%d): %s", resp.StatusCode, string(body))
-	}
-
-	var tokenRes struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenRes); err != nil {
-		return nil, fmt.Errorf("decode token response: %w", err)
-	}
-
-	if tokenRes.AccessToken == "" {
-		return nil, errors.New("no access token received")
+		return nil, err
 	}
 
 	// Fetch user email
@@ -316,6 +280,64 @@ func (om *OAuthManager) CompleteFlow(code, verifier, redirectURI string) (*AuthR
 	}
 
 	return result, nil
+}
+
+type authorizationTokens struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+}
+
+// redeemAuthorizationCode exchanges code for the client the authorization URL
+// named, candidates[0].clientID. Only that client's secret is unknown, so each
+// of its pairs is tried until Google stops answering invalid_client. Google
+// authenticates the client before it redeems the code, so a rejected pair
+// leaves the code usable for the next one.
+func redeemAuthorizationCode(tokenURL string, candidates []oauthClientCredentials, code, verifier, redirectURI string) (authorizationTokens, error) {
+	var err error
+	for _, credentials := range candidates {
+		if credentials.clientID != candidates[0].clientID {
+			break
+		}
+		var tokens authorizationTokens
+		var invalidClient bool
+		tokens, invalidClient, err = redeemWithCredentials(tokenURL, credentials, code, verifier, redirectURI)
+		if !invalidClient {
+			return tokens, err
+		}
+	}
+	return authorizationTokens{}, err
+}
+
+func redeemWithCredentials(tokenURL string, credentials oauthClientCredentials, code, verifier, redirectURI string) (authorizationTokens, bool, error) {
+	form := url.Values{}
+	form.Set("client_id", credentials.clientID)
+	form.Set("client_secret", credentials.clientSecret)
+	form.Set("code", code)
+	form.Set("code_verifier", verifier)
+	form.Set("grant_type", "authorization_code")
+	form.Set("redirect_uri", redirectURI)
+
+	resp, err := http.PostForm(tokenURL, form)
+	if err != nil {
+		return authorizationTokens{}, false, fmt.Errorf("token exchange request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		invalidClient := resp.StatusCode == http.StatusUnauthorized && strings.Contains(string(body), "invalid_client")
+		return authorizationTokens{}, invalidClient, fmt.Errorf("token exchange failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var tokens authorizationTokens
+	if err := json.NewDecoder(resp.Body).Decode(&tokens); err != nil {
+		return authorizationTokens{}, false, fmt.Errorf("decode token response: %w", err)
+	}
+	if tokens.AccessToken == "" {
+		return authorizationTokens{}, false, errors.New("no access token received")
+	}
+	return tokens, false, nil
 }
 
 // FetchUserEmail queries Google userinfo endpoint for email address.

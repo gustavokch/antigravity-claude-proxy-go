@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -151,23 +152,53 @@ func TestAgyClientIDSuffixIsPatternTail(t *testing.T) {
 	}
 }
 
-func TestAgyOAuthCredentialsReadsInstalledConsumerPair(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, "agy")
-	firstID, secondID := fixtureClientID("123", "client"), fixtureClientID("456", "other")
+// fixtureLoginToken writes an agy token file whose id_token names clientID as
+// its authorized party, the way agy's own login does.
+func fixtureLoginToken(t *testing.T, clientID string) string {
+	t.Helper()
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"azp":"` + clientID + `","aud":"` + clientID + `"}`))
+	contents := `{"token":{"refresh_token":"r"},"auth_method":"consumer","id_token":"e30.` + payload + `.c2ln"}`
+	path := filepath.Join(t.TempDir(), "antigravity-oauth-token")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAgyOAuthCredentialCandidatesPutLoginClientFirst(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agy")
+	firstID, loginID, lastID := fixtureClientID("123", "client"), fixtureClientID("456", "login"), fixtureClientID("789", "other")
 	firstSecret, secondSecret := fixtureClientSecret("a"), fixtureClientSecret("b")
-	contents := []byte("prefix " + firstID + " middle " + firstSecret + " suffix " + secondID + " " + secondSecret)
+	contents := []byte(firstID + " " + loginID + " " + firstSecret + " " + lastID + " " + secondSecret)
 	if err := os.WriteFile(path, contents, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(agyBinaryPathEnv, path)
-	clientID, clientSecret, err := AgyOAuthCredentials()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if clientID != secondID || clientSecret != firstSecret {
-		t.Fatalf("credentials = (%q, %q)", clientID, clientSecret)
-	}
+
+	t.Run("login client first", func(t *testing.T) {
+		t.Setenv("AGY_TOKEN_PATH", fixtureLoginToken(t, loginID))
+		candidates, err := agyOAuthCredentialCandidates()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if candidates[0].clientID != loginID || candidates[0].clientSecret != firstSecret {
+			t.Fatalf("first candidate = %+v", candidates[0])
+		}
+		if len(candidates) != 6 {
+			t.Fatalf("got %d candidates, want every ID and secret pair", len(candidates))
+		}
+	})
+
+	t.Run("without a login, last ID and first secret", func(t *testing.T) {
+		t.Setenv("AGY_TOKEN_PATH", filepath.Join(t.TempDir(), "missing"))
+		candidates, err := agyOAuthCredentialCandidates()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if candidates[0].clientID != lastID || candidates[0].clientSecret != firstSecret {
+			t.Fatalf("first candidate = %+v", candidates[0])
+		}
+	})
 }
 
 func TestManagerReadsRefreshCredentialsFromAgy(t *testing.T) {
@@ -197,6 +228,7 @@ func TestManagerRefreshFallsBackToMatchingInstalledCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(agyBinaryPathEnv, path)
+	t.Setenv("AGY_TOKEN_PATH", filepath.Join(t.TempDir(), "missing"))
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if err := request.ParseForm(); err != nil {

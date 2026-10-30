@@ -2,12 +2,16 @@ package auth
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 )
 
 const agyBinaryPathEnv = "AGY_BINARY_PATH"
@@ -63,20 +67,10 @@ type oauthClientCredentials struct {
 	clientSecret string
 }
 
-// AgyOAuthCredentials reads the installed CLI's current OAuth client
-// credentials. They are intentionally not copied into this proxy or its
-// environment files. In current agy builds the consumer client ID is the last
-// matching ID and its secret is the first matching secret in the string table.
-// Keeping that extraction local aligns refreshes with the installed CLI
-// version.
-func AgyOAuthCredentials() (string, string, error) {
-	candidates, err := agyOAuthCredentialCandidates()
-	if err != nil {
-		return "", "", err
-	}
-	return candidates[0].clientID, candidates[0].clientSecret, nil
-}
-
+// agyOAuthCredentialCandidates reads the installed CLI's OAuth client
+// credentials, most likely pair first. They are intentionally not copied into
+// this proxy or its environment files; reading them locally keeps sign-in and
+// refresh aligned with the installed CLI version.
 func agyOAuthCredentialCandidates() ([]oauthClientCredentials, error) {
 	path, err := AgyBinaryPath()
 	if err != nil {
@@ -92,11 +86,22 @@ func agyOAuthCredentialCandidates() ([]oauthClientCredentials, error) {
 		return nil, fmt.Errorf("could not find OAuth refresh credentials in agy executable %q", path)
 	}
 
-	// agy includes consumer and business installed-app credentials. Keep the
-	// observed consumer pair first, then try every other unique local pair only
-	// if Google rejects it as invalid_client. A refresh token remains scoped to
-	// the issuing client, so this resolves the exact pair for the active login.
+	// agy embeds several installed-app clients, and not every one accepts a
+	// loopback redirect (agy 1.4.10 added one that answers
+	// redirect_uri_mismatch). Their order in the string table is a linker
+	// artifact, so the client that issued agy's own login goes first. Without
+	// that login the older observation stands: last ID, first secret. Every other
+	// unique pair follows, tried only if Google rejects the one before it as
+	// invalid_client. A refresh token remains scoped to the issuing client, so
+	// this resolves the exact pair for the active login.
 	orderedIDs := append([][]byte{clientIDs[len(clientIDs)-1]}, clientIDs[:len(clientIDs)-1]...)
+	if loginClientID := agyLoginClientID(); loginClientID != "" {
+		if i := slices.IndexFunc(orderedIDs, func(id []byte) bool { return string(id) == loginClientID }); i > 0 {
+			id := orderedIDs[i]
+			copy(orderedIDs[1:i+1], orderedIDs[:i])
+			orderedIDs[0] = id
+		}
+	}
 	orderedSecrets := append([][]byte{clientSecrets[0]}, clientSecrets[1:]...)
 	candidates := make([]oauthClientCredentials, 0, len(orderedIDs)*len(orderedSecrets))
 	seen := make(map[oauthClientCredentials]struct{})
@@ -111,6 +116,48 @@ func agyOAuthCredentialCandidates() ([]oauthClientCredentials, error) {
 		}
 	}
 	return candidates, nil
+}
+
+// agyLoginClientID returns the OAuth client that issued agy's own login: the
+// azp claim of the id_token agy stores beside the refresh token. It returns ""
+// when the token file, the id_token, or the claim is missing.
+func agyLoginClientID() string {
+	path, err := DefaultTokenPath()
+	if err != nil {
+		return ""
+	}
+	raw, err := readTokenFile(path)
+	if err != nil {
+		return ""
+	}
+	var document struct {
+		IDToken string `json:"id_token"`
+		Token   struct {
+			IDToken string `json:"id_token"`
+		} `json:"token"`
+	}
+	if json.Unmarshal(raw, &document) != nil {
+		return ""
+	}
+	idToken := document.IDToken
+	if idToken == "" {
+		idToken = document.Token.IDToken
+	}
+	segments := strings.Split(idToken, ".")
+	if len(segments) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(segments[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		AuthorizedParty string `json:"azp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	return claims.AuthorizedParty
 }
 
 // AgyBinaryPath resolves the executable associated with the local agy login.
