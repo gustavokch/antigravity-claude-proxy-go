@@ -238,9 +238,9 @@ GPT-OSS. Claude responseId "req_vrtx_…".
                                                                      with the last text block of the first user
                                                                      message, beside the first model call
   writeTrajectoryAcls  on each new conversation                      none → sent beside the first model call
+  sessionId            "-3750763034362895579" (constant)             per-account uuid + unix ms → the same constant
 
 Kept by decision or not reproducible:
-  sessionId            "-3750763034362895579" (constant)             per-account uuid + unix ms (kept)
   system text          agy's 20 KB agent prompt                      identity block + [ignore] copy + caller text
   user message wrapper <USER_REQUEST>, <ADDITIONAL_METADATA>,        the client's messages as sent
                        <USER_SETTINGS_CHANGE> blocks

@@ -212,24 +212,20 @@ func TestBuilderWritesAgysKeyOrderAndOneSystemPart(t *testing.T) {
 	}
 }
 
-func TestBuilderKeepsAStablePerAccountSession(t *testing.T) {
+func TestBuilderSendsAgysSessionIDForEveryAccount(t *testing.T) {
 	t.Parallel()
 	request := map[string]any{
 		"model":    "gemini-3.5-flash-low",
 		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
 	}
-	sessions := NewSessionStore()
-	sequence := 0
-	sessions.newID = func() string {
-		sequence++
-		return "session-" + stringValue(sequence)
-	}
-	builder := &Builder{Cache: NewSignatureCache(), Sessions: sessions}
+	builder := NewBuilder()
 	first := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
-	second := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
 	other := builder.BuildCloudCodeRequest(request, "project", "other@example.com")
-	if first.Request["sessionId"] != "session-1" || second.Request["sessionId"] != "session-1" || other.Request["sessionId"] != "session-2" {
-		t.Fatalf("sessions = %q, %q, %q", first.Request["sessionId"], second.Request["sessionId"], other.Request["sessionId"])
+	anonymous := builder.BuildCloudCodeRequest(request, "project", "")
+	for _, built := range []CloudCodeRequest{first, other, anonymous} {
+		if built.Request["sessionId"] != "-3750763034362895579" {
+			t.Fatalf("sessionId = %q", built.Request["sessionId"])
+		}
 	}
 	if _, ok := first.Request["labels"]; ok {
 		t.Fatal("labels sent without a catalog model enum")
