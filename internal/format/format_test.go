@@ -453,6 +453,27 @@ func TestOutputGuardFinishKeepsTheLastUsage(t *testing.T) {
 	}
 }
 
+// A tool call's arguments are output too. Claude does not update its count
+// while it streams, so their bytes go into the estimate like text.
+func TestOutputGuardCountsToolCallArguments(t *testing.T) {
+	t.Parallel()
+	event := func(part map[string]any) []byte {
+		encoded, _ := json.Marshal(map[string]any{"response": map[string]any{
+			"candidates":    []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{part}}}},
+			"usageMetadata": map[string]any{"promptTokenCount": 10, "candidatesTokenCount": 4},
+		}})
+		return encoded
+	}
+	guard := NewOutputGuard(10)
+	if _, done := guard.Observe(event(map[string]any{"text": ""})); done {
+		t.Fatal("stopped at 4 of 10 tokens")
+	}
+	call := event(map[string]any{"functionCall": map[string]any{"name": "write_file", "args": map[string]any{"content": strings.Repeat("x", 40)}}})
+	if _, done := guard.Observe(call); !done {
+		t.Fatal("a tool call with 40+ bytes of arguments did not count toward the limit")
+	}
+}
+
 func TestOutputGuardEndsTheResponseAtTheClientLimit(t *testing.T) {
 	t.Parallel()
 	event := func(text string, candidates, thoughts int, finish string) []byte {

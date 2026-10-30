@@ -20,7 +20,8 @@ const bytesPerToken = 4
 // so the guard counts them too. Gemini reports a running count on every
 // event; Claude repeats its first count until the last event, so the text
 // streamed since the reported count last changed is added as an estimate.
-// The event that crosses the limit is delivered whole.
+// A tool call's arguments count as streamed text. The event that crosses the
+// limit is delivered whole.
 type OutputGuard struct {
 	limit    int
 	reported int            // candidate + thought tokens upstream last reported
@@ -41,7 +42,10 @@ type guardedEvent struct {
 		Candidates []struct {
 			Content struct {
 				Parts []struct {
-					Text string `json:"text"`
+					Text         string `json:"text"`
+					FunctionCall *struct {
+						Args json.RawMessage `json:"args"`
+					} `json:"functionCall"`
 				} `json:"parts"`
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
@@ -69,6 +73,9 @@ func (guard *OutputGuard) Observe(data []byte) ([]byte, bool) {
 		}
 		for _, part := range candidate.Content.Parts {
 			text += len(part.Text)
+			if part.FunctionCall != nil {
+				text += len(part.FunctionCall.Args)
+			}
 		}
 	}
 	usage := event.Response.UsageMetadata
