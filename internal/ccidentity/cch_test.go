@@ -60,7 +60,9 @@ func TestSignCCHReproducesTheRealClient(t *testing.T) {
 	}
 }
 
-var capturedVersion = regexp.MustCompile(`cc_version=2\.1\.304\.([0-9a-f]{3});`)
+// capturedVersion reads the version a fixture body was sent with. The suffix
+// hashes that version, so the fixtures stay valid after ClientVersion moves.
+var capturedVersion = regexp.MustCompile(`cc_version=(\d+\.\d+\.\d+)\.([0-9a-f]{3});`)
 
 // The real client's cc_version suffix is a hash of its first prompt. Reading
 // each captured body as a caller's request must give back the suffix it
@@ -72,8 +74,8 @@ func TestVersionSuffixReproducesTheRealClient(t *testing.T) {
 			t.Fatalf("body %d carries no cc_version", i)
 		}
 		turn := TurnOf(body)
-		if got := versionSuffix(turn.firstPrompt, ClientVersion); got != string(match[1]) {
-			t.Errorf("body %d (prompt %q): suffix = %s, the real client sent %s", i, turn.firstPrompt, got, match[1])
+		if got := versionSuffix(turn.firstPrompt, string(match[1])); got != string(match[2]) {
+			t.Errorf("body %d (prompt %q): suffix = %s, the real client sent %s", i, turn.firstPrompt, got, match[2])
 		}
 	}
 }
