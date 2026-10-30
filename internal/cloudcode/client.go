@@ -3,7 +3,6 @@ package cloudcode
 import (
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -31,20 +30,20 @@ const (
 	PathGenerateContent          = "/v1internal:generateContent"
 	PathStreamGenerate           = "/v1internal:streamGenerateContent?alt=sse"
 
-	DefaultUserAgentVersion = "1.4.0"
-	AgyBuildCL              = "1000494485"
+	DefaultUserAgentVersion = "1.4.11"
+	AgyBuildCL              = "1010154931"
 	AgyAuthMethod           = "consumer"
 )
 
+// Every Cloud Code call goes to daily, as agy 1.4.10 sends all of them there
+// (.reference/agy-1.4.10-wire-20261030.txt). There is no cross-host fallback:
+// agy shows none, and for generation a thought signature issued by one host is
+// rejected by the other ("Corrupted thought signature"), so a fallback turns a
+// retryable 429 into a permanent 400.
 var (
-	// GenerationEndpoints carries generateContent/streamGenerateContent. It
-	// holds exactly one host: agy 1.2.10 generates on daily (SNI parity), and
-	// a thought signature issued by one host is rejected by the other
-	// ("Corrupted thought signature"), so a cross-host fallback turns a
-	// retryable 429 into a permanent 400.
 	GenerationEndpoints   = []string{DailyEndpoint}
-	ContentEndpoints      = []string{ProdEndpoint, DailyEndpoint}
-	ProvisioningEndpoints = []string{ProdEndpoint, DailyEndpoint}
+	ContentEndpoints      = []string{DailyEndpoint}
+	ProvisioningEndpoints = []string{DailyEndpoint}
 )
 
 type Options struct {
@@ -78,11 +77,21 @@ type ClientMetadata struct {
 	IdeName       string `json:"ideName,omitempty"`
 }
 
+// LoadCodeAssistRequest is the body agy 1.4.10 sends on every loadCodeAssist,
+// byte for byte {"metadata":{"ideType":"ANTIGRAVITY"}}: the IDE type by enum
+// name, and no platform, pluginType, duetProject or mode, even once agy knows
+// its project (.reference/agy-1.4.10-wire-20261030.txt).
 type LoadCodeAssistRequest struct {
-	Metadata ClientMetadata `json:"metadata"`
-	Mode     int            `json:"mode"`
+	Metadata LoadCodeAssistMetadata `json:"metadata"`
 }
 
+type LoadCodeAssistMetadata struct {
+	IdeType string `json:"ideType"`
+}
+
+// OnboardUserRequest keeps the older ClientMetadata form: no agy onboardUser
+// request has been captured, because a capture needs an account that is not
+// onboarded yet.
 type OnboardUserRequest struct {
 	TierID   string         `json:"tierId"`
 	Metadata ClientMetadata `json:"metadata"`
@@ -230,15 +239,17 @@ func New(options Options) *Client {
 		client = &http.Client{Transport: transport}
 	}
 
-	// Header set matches agy 1.1.25 wire ground truth exactly (MITM capture
-	// 2026-09-03, .reference/agy-headers-mitm-20260903.txt): agy sends only
-	// Authorization, Content-Type, Accept-Encoding: gzip and User-Agent on
-	// Cloud Code requests — no X-Client-*, no x-goog-api-client, no Accept.
+	// Header set matches agy's wire ground truth (MITM captures of 1.1.25,
+	// .reference/agy-headers-mitm-20260903.txt, and of 1.4.10): agy sets only
+	// Authorization, Content-Type and User-Agent on Cloud Code requests — no
+	// X-Client-*, no x-goog-api-client, no Accept. Accept-Encoding: gzip is
+	// net/http's own: the transport adds it after the request's headers and
+	// decompresses the response. Setting it here would move it ahead of
+	// Authorization on the wire.
 	userAgent := agyUserAgent(options.UserAgentVersion)
 	header := make(http.Header)
 	header.Set("Authorization", "Bearer "+options.AccessToken)
 	header.Set("Content-Type", "application/json")
-	header.Set("Accept-Encoding", "gzip")
 	header.Set("User-Agent", userAgent)
 
 	return &Client{
@@ -254,6 +265,7 @@ func New(options Options) *Client {
 	}
 }
 
+// Metadata is the ClientMetadata of an onboardUser request.
 func Metadata(projectID string) ClientMetadata {
 	return ClientMetadata{
 		IdeType:     9,
@@ -263,13 +275,13 @@ func Metadata(projectID string) ClientMetadata {
 	}
 }
 
-func (c *Client) LoadCodeAssist(ctx context.Context, projectID string) (Response, error) {
-	return c.LoadCodeAssistAt(ctx, c.provisioningEndpoints, projectID)
+func (c *Client) LoadCodeAssist(ctx context.Context) (Response, error) {
+	return c.LoadCodeAssistAt(ctx, c.provisioningEndpoints)
 }
 
 // LoadCodeAssistAt is LoadCodeAssist against an explicit endpoint list.
-func (c *Client) LoadCodeAssistAt(ctx context.Context, endpoints []string, projectID string) (Response, error) {
-	request := LoadCodeAssistRequest{Metadata: Metadata(projectID), Mode: 1}
+func (c *Client) LoadCodeAssistAt(ctx context.Context, endpoints []string) (Response, error) {
+	request := LoadCodeAssistRequest{Metadata: LoadCodeAssistMetadata{IdeType: "ANTIGRAVITY"}}
 	return c.DoJSON(ctx, endpoints, PathLoadCodeAssist, request, RequestOptions{})
 }
 
@@ -375,6 +387,11 @@ func (c *Client) DoSSE(ctx context.Context, endpoints []string, path string, pay
 		if err != nil {
 			return Response{}, err
 		}
+		// agy streams the body of a streaming call (Transfer-Encoding:
+		// chunked) where its unary calls send Content-Length. An unknown
+		// length gives the same framing and header order; GetBody stays set,
+		// so the request can still be replayed on a stale connection.
+		request.ContentLength = -1
 		response, err := c.httpClient.Do(request)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("Cloud Code stream to %s: %w", endpoint, err))
@@ -390,13 +407,7 @@ func (c *Client) DoSSE(ctx context.Context, endpoints []string, path string, pay
 			continue
 		}
 		result := Response{Endpoint: endpoint, StatusCode: response.StatusCode, Header: response.Header}
-		streamReader, streamErr := maybeGunzip(response)
-		if streamErr != nil {
-			_ = response.Body.Close()
-			failures = append(failures, fmt.Errorf("open Cloud Code stream from %s: %w", endpoint, streamErr))
-			continue
-		}
-		err = ParseSSE(streamReader, consume)
+		err = ParseSSE(response.Body, consume)
 		closeErr := response.Body.Close()
 		if err != nil {
 			return result, fmt.Errorf("parse Cloud Code SSE stream: %w", err)
@@ -424,23 +435,9 @@ func (c *Client) newRequest(ctx context.Context, endpoint, path string, body []b
 	return request, nil
 }
 
-// maybeGunzip returns a decompressed view of response.Body when upstream
-// honored our Accept-Encoding: gzip. Setting that header manually disables
-// net/http's automatic decompression, so the client handles it here.
-func maybeGunzip(response *http.Response) (io.Reader, error) {
-	if !strings.EqualFold(response.Header.Get("Content-Encoding"), "gzip") {
-		return response.Body, nil
-	}
-	return gzip.NewReader(response.Body)
-}
-
 func readResponse(endpoint string, response *http.Response) (Response, error) {
 	defer response.Body.Close()
-	bodyReader, err := maybeGunzip(response)
-	if err != nil {
-		return Response{}, fmt.Errorf("open Cloud Code response from %s: %w", endpoint, err)
-	}
-	body, err := io.ReadAll(io.LimitReader(bodyReader, 64<<20))
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
 	if err != nil {
 		return Response{}, fmt.Errorf("read Cloud Code response from %s: %w", endpoint, err)
 	}

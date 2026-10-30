@@ -85,7 +85,7 @@ type fakeAgyClient struct {
 	responseBytes []byte
 }
 
-func (c *fakeAgyClient) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
+func (c *fakeAgyClient) LoadCodeAssist(context.Context) (cloudcode.Response, error) {
 	return cloudcode.Response{StatusCode: http.StatusOK, Body: []byte(`{"cloudaicompanionProject":"proj-agy-1"}`)}, nil
 }
 

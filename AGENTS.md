@@ -39,10 +39,10 @@ Code through it, and never hand-build a hello: recapture the real client's.
 - agy OAuth token: `~/.gemini/antigravity-cli/antigravity-oauth-token`.
   Never commit OAuth client credentials; obtain refresh values from the
   installed `agy` executable only when a refresh is needed.
-- Target host: generation goes only to `daily-cloudcode-pa.googleapis.com:443`
-  (agy 1.2.10 parity; thought signatures are tied to the issuing host, so there
-  is no cross-host fallback); metadata and provisioning go to
-  `cloudcode-pa.googleapis.com` and then daily.
+- Target host: every Cloud Code call (generation, metadata, provisioning) goes
+  only to `daily-cloudcode-pa.googleapis.com:443` (agy 1.4.10 parity,
+  `.reference/agy-1.4.10-wire-20261030.txt`; thought signatures are tied to the
+  issuing host, so there is no cross-host fallback).
 - Local port: the binary defaults to **8080** (`127.0.0.1:8080`). `make install`
   restarts a running `~/.local/bin/antigravity-proxy` with the flags it was
   started with, so its port does not change. The Linux systemd unit

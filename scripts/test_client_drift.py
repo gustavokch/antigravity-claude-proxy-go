@@ -115,6 +115,18 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(drifts, [])
         self.assertEqual(len(notes), 2)
 
+    def test_generation_request_keys_are_compared_per_request_type(self):
+        path = "/v1internal:streamGenerateContent?alt=sse"
+
+        def stream(request_type: str, keys: list[str]) -> dict:
+            return record(path, [], {"requestType": request_type, "shape": {"request": dict.fromkeys(keys, "x")}})
+
+        agy = [stream("checkpoint", ["contents"]), stream("agent", ["contents", "labels", "sessionId", "tools"])]
+        proxy = [stream("agent", ["contents", "sessionId", "toolConfig"])]
+        drifts, notes = drift.compare_captures(agy, proxy, frozenset(), [])
+        self.assertEqual(drifts, ["POST /v1internal:streamGenerateContent (agent): request keys no longer sent: labels"])
+        self.assertEqual(notes, ["POST /v1internal:streamGenerateContent (checkpoint): in the baseline, not sent this run"])
+
     def test_agy_user_agent_parts(self):
         capture = drift.Capture([record("/v1:load", [[
             "User-Agent",

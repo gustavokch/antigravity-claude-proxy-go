@@ -38,7 +38,7 @@ type blockingModelsClient struct {
 	release chan struct{}
 }
 
-func (c *blockingModelsClient) LoadCodeAssist(ctx context.Context, project string) (cloudcode.Response, error) {
+func (c *blockingModelsClient) LoadCodeAssist(ctx context.Context) (cloudcode.Response, error) {
 	return cloudcode.Response{Body: []byte(`{"cloudaicompanionProject":{"id":"project"}}`)}, nil
 }
 
@@ -484,7 +484,7 @@ type alwaysRateLimitedModelsClient struct {
 	calls atomic.Int32
 }
 
-func (c *alwaysRateLimitedModelsClient) LoadCodeAssist(ctx context.Context, project string) (cloudcode.Response, error) {
+func (c *alwaysRateLimitedModelsClient) LoadCodeAssist(ctx context.Context) (cloudcode.Response, error) {
 	return cloudcode.Response{Body: []byte(`{"cloudaicompanionProject":{"id":"project"}}`)}, nil
 }
 
