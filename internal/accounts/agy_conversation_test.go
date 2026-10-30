@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -202,4 +203,182 @@ func TestDispatcherStampsTheRequestIDWhenItSends(t *testing.T) {
 	if parts := strings.Split(agent[0].RequestID, "/"); len(parts) != 5 || parts[2] != "1793346815200" {
 		t.Fatalf("requestId = %q, want the send time 1793346815200 (after the 200 ms throttle delay)", agent[0].RequestID)
 	}
+}
+
+// upstreamTail is a CloudClient whose stream sends head, waits for release,
+// then sends tail and ends: upstream generating past the client's limit. Like
+// cloudcode.Client.DoSSE, it stops reading at the first consume error or when
+// its context ends.
+type upstreamTail struct {
+	agyClient
+	head, tail [][]byte
+	release    chan struct{}
+	ended      chan struct{} // closed when the stream call returns
+	// Set before ended is closed.
+	readToEOF, cancelled bool
+}
+
+func newUpstreamTail(head, tail [][]byte) *upstreamTail {
+	return &upstreamTail{
+		agyClient: agyClient{modelsBody: []byte(agyModelsBody)},
+		head:      head, tail: tail, release: make(chan struct{}), ended: make(chan struct{}),
+	}
+}
+
+func (upstream *upstreamTail) StreamGenerateContent(ctx context.Context, payload any, options cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	if built, ok := payload.(proxyformat.CloudCodeRequest); !ok || built.RequestType != "agent" {
+		return upstream.agyClient.StreamGenerateContent(ctx, payload, options, func(cloudcode.SSEEvent) error { return nil })
+	}
+	defer close(upstream.ended)
+	send := func(events [][]byte) error {
+		for _, data := range events {
+			if err := consume(cloudcode.SSEEvent{Data: data}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := send(upstream.head); err != nil {
+		return cloudcode.Response{StatusCode: http.StatusOK}, err
+	}
+	select {
+	case <-upstream.release:
+	case <-ctx.Done():
+		upstream.cancelled = true
+		return cloudcode.Response{StatusCode: http.StatusOK}, ctx.Err()
+	}
+	if err := send(upstream.tail); err != nil {
+		return cloudcode.Response{StatusCode: http.StatusOK}, err
+	}
+	upstream.cancelled = ctx.Err() != nil
+	upstream.readToEOF = !upstream.cancelled
+	return cloudcode.Response{StatusCode: http.StatusOK}, nil
+}
+
+func waitFor(t *testing.T, what string, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// At the client's max_tokens the client gets its finish at once, and upstream
+// is read to its end, as agy reads every stream: no cancel, also after the
+// client's request context ends. The read holds the account's in-flight slot
+// until upstream ends, and the credits upstream reports at the end count.
+func TestDispatcherFinishesAtTheClientLimitAndReadsUpstreamToTheEnd(t *testing.T) {
+	t.Parallel()
+	credits := []byte(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"x"}]},"finishReason":"STOP"}],` +
+		`"usageMetadata":{"candidatesTokenCount":160}},"remainingCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":555}]}`)
+	upstream := newUpstreamTail([][]byte{agyEvent(30, ""), agyEvent(120, "")}, [][]byte{agyEvent(150, ""), credits})
+	dispatcher := newDispatcherWithClient(t, upstream)
+	clientCtx, disconnect := context.WithCancel(context.Background())
+	defer disconnect()
+	var delivered [][]byte
+	_, err := dispatcher.StreamGenerateContent(clientCtx, map[string]any{
+		"model": "gemini-3.8-flash-low", "max_tokens": float64(100),
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, func(event cloudcode.SSEEvent) error {
+		delivered = append(delivered, event.Data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("a response ended at the client's limit is a success, got %v", err)
+	}
+	select {
+	case <-upstream.ended:
+		t.Fatalf("the client got its finish only after upstream ended (read to EOF %v, cancelled %v)", upstream.readToEOF, upstream.cancelled)
+	default:
+	}
+	if len(delivered) != 3 || !strings.Contains(string(delivered[2]), `"MAX_TOKENS"`) {
+		t.Fatalf("delivered %d events, want the two before the limit and the MAX_TOKENS finish", len(delivered))
+	}
+	if inFlight, _ := dispatcher.meter.Observe("test@example.com"); inFlight != 1 {
+		t.Fatalf("in flight = %d while upstream still generates, want 1", inFlight)
+	}
+
+	disconnect() // the client leaves once it has its finish
+	close(upstream.release)
+	select {
+	case <-upstream.ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream never ended")
+	}
+	if !upstream.readToEOF || upstream.cancelled {
+		t.Fatalf("upstream read to EOF %v, cancelled %v; want read to the end, never cancelled", upstream.readToEOF, upstream.cancelled)
+	}
+	waitFor(t, "the in-flight slot and the trailing credits", func() bool {
+		inFlight, _ := dispatcher.meter.Observe("test@example.com")
+		dispatcher.manager.mu.RLock()
+		defer dispatcher.manager.mu.RUnlock()
+		return inFlight == 0 && dispatcher.manager.accounts[0].Credits["GOOGLE_ONE_AI"] == 555
+	})
+	if len(delivered) != 3 {
+		t.Fatalf("%d events reached the client; nothing may follow the finish", len(delivered))
+	}
+}
+
+// Close ends a read that runs past the client's limit, so a shutdown leaves
+// no goroutine behind even when upstream never ends; after Close a request
+// that would need one is refused.
+func TestDispatcherCloseEndsAReadPastTheClientLimit(t *testing.T) {
+	t.Parallel()
+	upstream := newUpstreamTail([][]byte{agyEvent(30, ""), agyEvent(120, "")}, nil) // never released
+	dispatcher := newDispatcherWithClient(t, upstream)
+	request := map[string]any{"model": "gemini-3.8-flash-low", "max_tokens": float64(100),
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	if _, err := dispatcher.StreamGenerateContent(context.Background(), request, func(cloudcode.SSEEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan struct{})
+	go func() {
+		dispatcher.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not end the read past the client's limit")
+	}
+	if !upstream.cancelled {
+		t.Fatal("Close returned while the read was still running")
+	}
+	if inFlight, _ := dispatcher.meter.Observe("test@example.com"); inFlight != 0 {
+		t.Fatalf("in flight = %d after Close", inFlight)
+	}
+	if _, err := dispatcher.StreamGenerateContent(context.Background(), request, func(cloudcode.SSEEvent) error { return nil }); !errors.Is(err, errDispatcherClosed) {
+		t.Fatalf("a request after Close = %v, want errDispatcherClosed", err)
+	}
+}
+
+// A panic in the client's consume before the finish is raised on the
+// client's goroutine, as before; it stops upstream and frees the in-flight
+// slot.
+func TestDispatcherRaisesAConsumePanicOnTheCallersGoroutine(t *testing.T) {
+	t.Parallel()
+	upstream := newUpstreamTail([][]byte{agyEvent(30, "")}, nil) // never released
+	dispatcher := newDispatcherWithClient(t, upstream)
+	request := map[string]any{"model": "gemini-3.8-flash-low", "max_tokens": float64(100),
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	recovered := func() (value any) {
+		defer func() { value = recover() }()
+		_, _ = dispatcher.StreamGenerateContent(context.Background(), request, func(cloudcode.SSEEvent) error { panic("client write") })
+		return nil
+	}()
+	if recovered != "client write" {
+		t.Fatalf("recovered %v, want the consume panic", recovered)
+	}
+	select {
+	case <-upstream.ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream kept running after the panic")
+	}
+	waitFor(t, "the in-flight slot", func() bool {
+		inFlight, _ := dispatcher.meter.Observe("test@example.com")
+		return inFlight == 0
+	})
 }

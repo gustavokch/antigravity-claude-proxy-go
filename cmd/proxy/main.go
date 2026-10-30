@@ -348,6 +348,9 @@ func runServer(args []string) {
 				slogger.Warn("mitm forward proxy shutdown", "error", err)
 			}
 		}
+		// After the drain: ends the upstream reads that outlive their
+		// client requests (a stream read past the client's max_tokens).
+		dispatcher.Close()
 		// After the drain, so usage recorded by the last requests reaches
 		// the ledger.
 		if err := handler.Close(); err != nil {

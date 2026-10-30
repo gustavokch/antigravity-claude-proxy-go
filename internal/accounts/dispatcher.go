@@ -101,6 +101,14 @@ type Dispatcher struct {
 	forensics429             *Forensics429Recorder
 	meter                    *throttleMeter
 
+	// lifetime ends with Close. Work that outlives a client request runs
+	// under it, on goroutines counted in background (goBackground).
+	lifetime     context.Context
+	endLifetime  context.CancelFunc
+	backgroundMu sync.Mutex
+	closed       bool
+	background   sync.WaitGroup
+
 	mu        sync.RWMutex
 	clients   map[string]accountClient
 	catalog   *modelcatalog.Catalog
@@ -163,7 +171,10 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 	if options.Random == nil {
 		options.Random = rand.Float64
 	}
+	lifetime, endLifetime := context.WithCancel(context.Background())
 	return &Dispatcher{
+		lifetime:                 lifetime,
+		endLifetime:              endLifetime,
 		manager:                  options.Manager,
 		resolver:                 options.Resolver,
 		builder:                  options.Builder,
@@ -475,7 +486,6 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 
 		capacityAttempt := 0
 		for {
-			eventCount := 0
 			dispatcher.mu.RLock()
 			throttling := dispatcher.requestThrottlingEnabled
 			delay := dispatcher.requestDelay
@@ -486,50 +496,18 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				}
 			}
 			inFlight, priorMinute := dispatcher.meter.Begin(account.Email)
-			// The release is deferred inside its own scope so a panic in the
-			// consume callback cannot strand the account's in-flight count.
-			// The wrapper also snoops the stream for remaining_credits: the
-			// only per-request consumption signal upstream sends.
-			var lastCredits []cloudcode.CreditBalance
-			response, requestErr := func() (cloudcode.Response, error) {
-				defer dispatcher.meter.End(account.Email)
-				return client.StreamGenerateContent(ctx, dispatcher.builder.Stamp(payload), options, func(event cloudcode.SSEEvent) error {
-					eventCount++
-					if len(event.Data) > 0 {
-						if balances, ok := cloudcode.ParseRemainingCredits(event.Data); ok {
-							lastCredits = balances
-						}
-					}
-					if err := consume(event); err != nil {
-						return err
-					}
-					if final, done := guard.Observe(event.Data); done {
-						if err := consume(cloudcode.SSEEvent{Data: final}); err != nil {
-							return err
-						}
-						return proxyformat.ErrOutputLimit
-					}
-					return nil
-				})
-			}()
-			if errors.Is(requestErr, proxyformat.ErrOutputLimit) {
-				requestErr = nil
-			}
+			response, eventCount, requestErr := dispatcher.sendStream(ctx, account, client, project,
+				dispatcher.builder.Stamp(payload), options, guard, consume)
 			if requestErr == nil {
-				if len(lastCredits) > 0 {
-					balances := make(map[string]int64, len(lastCredits))
-					for _, b := range lastCredits {
-						balances[b.CreditType] = b.Amount
-					}
-					dispatcher.manager.UpdateAccountCredits(account.Email, balances)
-				}
-				dispatcher.refreshLiveQuotaThrottled(ctx, account, client, project)
 				if dispatcher.meter.TakeRecovery(account.Email) {
 					dispatcher.recordRecovery(account, project, model, inFlight, priorMinute)
 				}
 				dispatcher.manager.MarkSuccess(account, model)
 				cloudcode.SetExecutionMetadata(ctx, account.Email, project)
 				return response, nil
+			}
+			if errors.Is(requestErr, errDispatcherClosed) {
+				return cloudcode.Response{}, requestErr
 			}
 			lastError = requestErr
 			if eventCount > 0 {
@@ -597,23 +575,30 @@ func (dispatcher *Dispatcher) startConversation(ctx context.Context, client Clou
 	if !ok {
 		return
 	}
-	background := context.WithoutCancel(ctx)
+	start := func(ctx context.Context) (context.Context, context.CancelFunc) {
+		detached, cancel := dispatcher.detach(ctx)
+		ctx, cancelTimeout := context.WithTimeout(detached, conversationStartTimeout)
+		return ctx, func() {
+			cancelTimeout()
+			cancel()
+		}
+	}
 	if writer, ok := client.(trajectoryACLWriter); ok {
-		go func() {
-			ctx, cancel := context.WithTimeout(background, conversationStartTimeout)
+		dispatcher.goBackground(func() {
+			ctx, cancel := start(ctx)
 			defer cancel()
 			if _, err := writer.WriteTrajectoryAcls(ctx, trajectoryID); err != nil {
 				slog.Debug("writeTrajectoryAcls failed", "error", err)
 			}
-		}()
+		})
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(background, conversationStartTimeout)
+	dispatcher.goBackground(func() {
+		ctx, cancel := start(ctx)
 		defer cancel()
 		if _, err := client.StreamGenerateContent(ctx, checkpoint, cloudcode.RequestOptions{}, func(cloudcode.SSEEvent) error { return nil }); err != nil {
 			slog.Debug("title checkpoint failed", "model", checkpoint.Model, "error", err)
 		}
-	}()
+	})
 }
 
 // modelRecoveryCall is one shared recovery pass for a model key. found is set

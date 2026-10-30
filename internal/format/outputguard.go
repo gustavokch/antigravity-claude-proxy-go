@@ -1,13 +1,6 @@
 package format
 
-import (
-	"encoding/json"
-	"errors"
-)
-
-// ErrOutputLimit ends a Cloud Code stream that reached the client's output
-// token limit. The caller treats it as a finished response.
-var ErrOutputLimit = errors.New("client output token limit reached")
+import "encoding/json"
 
 // bytesPerToken converts streamed text to tokens where upstream reports no
 // running count: about four bytes of English per token.
@@ -57,7 +50,8 @@ type guardedEvent struct {
 // Observe reads one delivered event. When the response has reached the limit
 // without finishing, it returns the event to deliver in place of the rest of
 // the stream: finishReason MAX_TOKENS with the usage counted so far. The
-// caller then stops the stream with ErrOutputLimit.
+// caller ends the client's response with it and reads the rest of the stream
+// without delivering it, as agy reads every stream to its end.
 func (guard *OutputGuard) Observe(data []byte) ([]byte, bool) {
 	if guard == nil {
 		return nil, false
