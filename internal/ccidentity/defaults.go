@@ -12,16 +12,16 @@ import (
 const (
 	// ClientVersion is the version literal in cc_version, minus the suffix that
 	// versionSuffix derives from the conversation's first prompt.
-	ClientVersion = "2.1.304"
+	ClientVersion = "2.1.308"
 
 	// MessagesUserAgent is the User-Agent on POST /v1/messages. The capture
 	// records claude-cli/, lowercase, with a parenthesised mode.
-	MessagesUserAgent = "claude-cli/2.1.304 (external, sdk-cli)"
+	MessagesUserAgent = "claude-cli/2.1.308 (external, sdk-cli)"
 
 	// DiscoveryUserAgent is the User-Agent on GET /api/claude_code/*. It is a
 	// DIFFERENT family from the messages path: claude-code/ not claude-cli/, and
 	// no parenthesised mode. Two spellings, two families.
-	DiscoveryUserAgent = "claude-code/2.1.304"
+	DiscoveryUserAgent = "claude-code/2.1.308"
 
 	// EntrypointSDKCLI and EntrypointInteractive are the two cc_entrypoint values
 	// known to exist. The capture only ever produced sdk-cli (because every run
@@ -90,7 +90,7 @@ func staticHeaders(id Identity) []Header {
 //
 // The construction is INFERRED, not captured: the sample shows the entrypoint
 // appears inside the parentheses, so substituting cli yields
-// "claude-cli/2.1.304 (external, cli)". No capture has confirmed that exact
+// "claude-cli/2.1.308 (external, cli)". No capture has confirmed that exact
 // string. It is used only when the operator explicitly sets a non-default
 // entrypoint, and it is the reason a cli capture is still wanted.
 func messagesUserAgent(id Identity) string {
