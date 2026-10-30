@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -149,7 +150,69 @@ func TestStreamRejectsEmptyResponse(t *testing.T) {
 	}
 }
 
-func TestBuilderUsesStablePerAccountSessionAndExactEnvelope(t *testing.T) {
+// jsonKeys returns the keys of a JSON object in wire order.
+func jsonKeys(t *testing.T, raw []byte) []string {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		t.Fatalf("not a JSON object: %s", raw)
+	}
+	var keys []string
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, token.(string))
+		var skip json.RawMessage
+		if err := decoder.Decode(&skip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return keys
+}
+
+// agy 1.4.11 writes the envelope and the inner request in a fixed key order
+// (.reference/agy-1.4.11-generation-20261030.txt); a Go map would sort them.
+func TestBuilderWritesAgysKeyOrderAndOneSystemPart(t *testing.T) {
+	t.Parallel()
+	request := map[string]any{
+		"model":    "claude-sonnet-5-5-low",
+		"system":   "client system text",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		"tools":    []any{map[string]any{"name": "read_file", "input_schema": map[string]any{"type": "object"}}},
+	}
+	builder := NewBuilder()
+	built := builder.BuildCloudCodeRequestWithModel(request, "project", "user@example.com", ModelOptions{
+		SupportsThinking: true, ThinkingLevel: "LOW", Enum: "MODEL_PLACEHOLDER_M403", APIProvider: "API_PROVIDER_ANTHROPIC_VERTEX",
+	})
+	encoded, err := json.Marshal(built)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(jsonKeys(t, encoded), ","); got != "project,requestId,request,model,userAgent,requestType" {
+		t.Fatalf("envelope keys = %s", got)
+	}
+	var envelope struct {
+		Request json.RawMessage `json:"request"`
+	}
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(jsonKeys(t, envelope.Request), ","); got != "contents,systemInstruction,tools,toolConfig,labels,generationConfig,sessionId" {
+		t.Fatalf("request keys = %s", got)
+	}
+	parts := asSlice(asMap(built.Request["systemInstruction"])["parts"])
+	if len(parts) != 1 {
+		t.Fatalf("system parts = %d, want the single part agy sends", len(parts))
+	}
+	text := stringValue(asMap(parts[0])["text"])
+	if !strings.HasPrefix(text, AntigravitySystemInstruction+"\n\n") || !strings.Contains(text, "[/ignore]\n\nclient system text") {
+		t.Fatalf("system text = %q", text)
+	}
+}
+
+func TestBuilderKeepsAStablePerAccountSession(t *testing.T) {
 	t.Parallel()
 	request := map[string]any{
 		"model":    "gemini-3.5-flash-low",
@@ -161,20 +224,132 @@ func TestBuilderUsesStablePerAccountSessionAndExactEnvelope(t *testing.T) {
 		sequence++
 		return "session-" + stringValue(sequence)
 	}
-	builder := &Builder{Cache: NewSignatureCache(), Sessions: sessions, NewRequestID: func() string { return "request-id" }}
+	builder := &Builder{Cache: NewSignatureCache(), Sessions: sessions}
 	first := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
 	second := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
-	if first["requestId"] != "agent-request-id" || first["requestType"] != "agent" || first["userAgent"] != "antigravity" {
-		t.Fatalf("envelope = %#v", first)
+	other := builder.BuildCloudCodeRequest(request, "project", "other@example.com")
+	if first.Request["sessionId"] != "session-1" || second.Request["sessionId"] != "session-1" || other.Request["sessionId"] != "session-2" {
+		t.Fatalf("sessions = %q, %q, %q", first.Request["sessionId"], second.Request["sessionId"], other.Request["sessionId"])
 	}
-	firstRequest := asMap(first["request"])
-	secondRequest := asMap(second["request"])
-	if firstRequest["sessionId"] != "session-1" || secondRequest["sessionId"] != "session-1" {
-		t.Fatalf("sessions = %q, %q", firstRequest["sessionId"], secondRequest["sessionId"])
+	if _, ok := first.Request["labels"]; ok {
+		t.Fatal("labels sent without a catalog model enum")
 	}
-	parts := asSlice(asMap(firstRequest["systemInstruction"])["parts"])
-	if len(parts) != 2 || asMap(parts[0])["text"] != AntigravitySystemInstruction {
-		t.Fatalf("system instruction = %#v", firstRequest["systemInstruction"])
+}
+
+// agyCall is one captured agy model call reduced to what the builder derives.
+type agyCall struct {
+	cascade, trajectory, requestID string
+	labels                         map[string]string
+}
+
+func buildAgyCall(t *testing.T, builder *Builder, account, session string, messages []any, provider, enum string) agyCall {
+	t.Helper()
+	request := map[string]any{"model": "m", "messages": messages, "metadata": map[string]any{"user_id": `{"session_id":"` + session + `"}`}}
+	built := builder.BuildCloudCodeRequestWithModel(request, "project", account, ModelOptions{Enum: enum, APIProvider: provider})
+	labels, _ := built.Request["labels"].(map[string]string)
+	if labels == nil {
+		t.Fatalf("no labels: %#v", built.Request)
+	}
+	return agyCall{cascade: labels["cascade_id"], trajectory: labels["trajectory_id"], requestID: built.RequestID, labels: labels}
+}
+
+// The label and requestId progression of the captured four-process agy
+// conversation and tool loop (.reference/agy-1.4.11-generation-20261030.txt
+// section 3): prompts on steps 0, 3, 6, 9; a tool result on step 2; k counts
+// model calls; used_claude stays true after a Claude turn.
+func TestBuilderLabelsFollowAgysConversationProgression(t *testing.T) {
+	t.Parallel()
+	const gemini, claude = "API_PROVIDER_GOOGLE_GEMINI", "API_PROVIDER_ANTHROPIC_VERTEX"
+	builder := NewBuilder()
+	builder.Now = func() time.Time { return time.UnixMilli(1793346815160) }
+	user := func(text string) any { return map[string]any{"role": "user", "content": text} }
+	answer := func(text string) any {
+		return map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}}
+	}
+	history := []any{user("ONE")}
+	turns := []struct {
+		provider, enum        string
+		step, k               int
+		usedClaude, nonGemini string
+	}{
+		{gemini, "MODEL_PLACEHOLDER_M320", 0, 0, "false", "false"},
+		{gemini, "MODEL_PLACEHOLDER_M320", 3, 1, "false", "false"},
+		{claude, "MODEL_PLACEHOLDER_M403", 6, 2, "true", "true"},
+		{gemini, "MODEL_PLACEHOLDER_M320", 9, 3, "true", "true"},
+	}
+	var first agyCall
+	for index, turn := range turns {
+		if index > 0 {
+			history = append(history, answer("reply"), user("next"))
+		}
+		call := buildAgyCall(t, builder, "user@example.com", "s1", history, turn.provider, turn.enum)
+		if index == 0 {
+			first = call
+		}
+		want := map[string]string{
+			"cascade_id": first.cascade, "root_cascade_id": first.cascade, "trajectory_id": first.trajectory,
+			"last_step_index": stringValue(turn.step), "request_id": first.trajectory + "-" + stringValue(turn.k),
+			"model_enum": turn.enum, "used_claude": turn.usedClaude, "used_claude_conservative": turn.usedClaude,
+			"used_non_gemini_model": turn.nonGemini,
+		}
+		if !reflect.DeepEqual(call.labels, want) {
+			t.Fatalf("turn %d labels = %v, want %v", index+1, call.labels, want)
+		}
+		wantID := "agent/" + first.cascade + "/1793346815160/" + first.trajectory + "/" + stringValue(turn.step+1)
+		if call.requestID != wantID {
+			t.Fatalf("turn %d requestId = %q, want %q", index+1, call.requestID, wantID)
+		}
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(first.cascade) || first.cascade == first.trajectory {
+		t.Fatalf("cascade %q / trajectory %q are not two distinct v4 UUIDs", first.cascade, first.trajectory)
+	}
+
+	tool := buildAgyCall(t, NewBuilder(), "user@example.com", "s2", []any{
+		user("read it"),
+		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{}}}},
+		map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "x"}}},
+	}, gemini, "MODEL_PLACEHOLDER_M320")
+	if tool.labels["last_step_index"] != "2" || tool.labels["request_id"] != tool.trajectory+"-1" || !strings.HasSuffix(tool.requestID, "/3") {
+		t.Fatalf("tool loop labels = %v, requestId = %q", tool.labels, tool.requestID)
+	}
+}
+
+func TestBuilderConversationIdentity(t *testing.T) {
+	t.Parallel()
+	const gemini = "API_PROVIDER_GOOGLE_GEMINI"
+	firstTurn := func(cacheControl bool) []any {
+		block := map[string]any{"type": "text", "text": "start"}
+		if cacheControl {
+			block["cache_control"] = map[string]any{"type": "ephemeral"}
+		}
+		return []any{map[string]any{"role": "user", "content": []any{block}}}
+	}
+	builder := NewBuilder()
+	base := buildAgyCall(t, builder, "user@example.com", "s1", firstTurn(true), gemini, "E")
+	later := buildAgyCall(t, builder, "user@example.com", "s1", append(firstTurn(false),
+		map[string]any{"role": "assistant", "content": "ok"}, map[string]any{"role": "user", "content": "more"}), gemini, "E")
+	if later.cascade != base.cascade || later.trajectory != base.trajectory {
+		t.Fatal("a moved cache_control marker changed the conversation ids")
+	}
+	for name, other := range map[string]agyCall{
+		"account":       buildAgyCall(t, builder, "other@example.com", "s1", firstTurn(true), gemini, "E"),
+		"session":       buildAgyCall(t, builder, "user@example.com", "s2", firstTurn(true), gemini, "E"),
+		"first message": buildAgyCall(t, builder, "user@example.com", "s1", []any{map[string]any{"role": "user", "content": "other start"}}, gemini, "E"),
+	} {
+		if other.cascade == base.cascade || other.trajectory == base.trajectory {
+			t.Fatalf("a different %s kept the conversation ids", name)
+		}
+	}
+}
+
+func TestGenerateRequestPutsUnknownKeysLastInSortedOrder(t *testing.T) {
+	t.Parallel()
+	encoded, err := json.Marshal(GenerateRequest{"zeta": 1, "sessionId": "s", "alpha": true, "contents": []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `{"contents":[],"sessionId":"s","alpha":true,"zeta":1}` {
+		t.Fatalf("encoded = %s", encoded)
 	}
 }
 
@@ -197,21 +372,16 @@ func TestBuilderDropsAnthropicBillingHeaderSystemPart(t *testing.T) {
 	}
 	builder := NewBuilder()
 	built := builder.BuildCloudCodeRequest(request, "project", "user@example.com")
-	parts := asSlice(asMap(asMap(built["request"])["systemInstruction"])["parts"])
-	texts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		texts = append(texts, stringValue(asMap(part)["text"]))
+	parts := asSlice(asMap(built.Request["systemInstruction"])["parts"])
+	if len(parts) != 1 {
+		t.Fatalf("parts = %#v", parts)
 	}
-	if len(texts) != 3 {
-		t.Fatalf("parts = %#v", texts)
+	text := stringValue(asMap(parts[0])["text"])
+	if strings.Contains(strings.ToLower(text), "x-anthropic-billing-header") {
+		t.Fatalf("billing header leaked upstream: %q", text)
 	}
-	if texts[2] != "You are Claude Code, Anthropic's official CLI for Claude." {
-		t.Fatalf("client part dropped or reordered: %#v", texts)
-	}
-	for _, text := range texts {
-		if strings.Contains(strings.ToLower(text), "x-anthropic-billing-header") {
-			t.Fatalf("billing header leaked upstream: %q", text)
-		}
+	if !strings.HasSuffix(text, "[/ignore]\n\nYou are Claude Code, Anthropic's official CLI for Claude.") {
+		t.Fatalf("client text dropped or reordered: %q", text)
 	}
 }
 

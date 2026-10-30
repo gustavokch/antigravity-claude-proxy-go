@@ -20,6 +20,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/cloudcode"
 	"antigravity-go-proxy/internal/config"
+	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/logger"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
@@ -51,6 +52,10 @@ func (upstream *fakeUpstream) FetchAvailableModels(context.Context, string) (clo
 func (upstream *fakeUpstream) StreamGenerateContent(_ context.Context, payload any, options cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
 	upstream.mu.Lock()
 	upstream.streamCalls++
+	if built, ok := payload.(proxyformat.CloudCodeRequest); ok {
+		payload = map[string]any{"project": built.Project, "requestId": built.RequestID, "request": map[string]any(built.Request),
+			"model": built.Model, "userAgent": built.UserAgent, "requestType": built.RequestType}
+	}
 	if object, ok := payload.(map[string]any); ok {
 		upstream.payloads = append(upstream.payloads, object)
 	}

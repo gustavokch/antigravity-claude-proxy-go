@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"time"
 
 	"antigravity-go-proxy/internal/auth"
@@ -43,13 +42,7 @@ func main() {
 	stream := proxyformat.NewStreamConverter(*model, builder.Cache, "msg_format_gate")
 	accumulator := proxyformat.NewThinkingAccumulator()
 	eventCount := 0
-	headers := make(http.Header)
-	if proxyformat.GetModelFamily(*model) == proxyformat.FamilyClaude && proxyformat.IsThinkingModel(*model) {
-		headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
-	}
-	response, err := client.StreamGenerateContent(ctx, payload, cloudcode.RequestOptions{
-		Headers: headers,
-	}, func(event cloudcode.SSEEvent) error {
+	response, err := client.StreamGenerateContent(ctx, payload, cloudcode.RequestOptions{}, func(event cloudcode.SSEEvent) error {
 		if err := accumulator.Consume(event.Data); err != nil {
 			return err
 		}

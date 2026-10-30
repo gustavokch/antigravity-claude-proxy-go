@@ -263,6 +263,11 @@ def body_fingerprint(content: bytes) -> dict | None:
     generation = generation_config_fingerprint(body)
     if generation is not None:
         fingerprint["generation_config"] = generation
+    # A Cloud Code generation body: the shape above sorts keys, and agy's key
+    # order is part of its wire.
+    if isinstance(body.get("request"), dict):
+        fingerprint["envelope_key_order"] = list(body)
+        fingerprint["request_key_order"] = list(body["request"])
     billing = billing_verdict(content)
     if billing is not None:
         fingerprint["billing"] = billing

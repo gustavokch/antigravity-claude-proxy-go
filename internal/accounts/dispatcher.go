@@ -459,13 +459,11 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 		payload := dispatcher.builder.BuildCloudCodeRequestWithModel(request, project, credentials.Email, proxyformat.ModelOptions{
 			SupportsThinking: modelDetails.SupportsThinking, ThinkingBudget: modelDetails.ThinkingBudget,
 			MinThinkingBudget: modelDetails.MinThinkingBudget, MaxOutputTokens: modelDetails.MaxOutputTokens,
-			ThinkingLevel: modelDetails.ThinkingLevel,
+			ThinkingLevel: modelDetails.ThinkingLevel, Enum: modelDetails.Enum, APIProvider: modelDetails.APIProvider,
 		})
+		// agy sends no anthropic-beta on Claude calls, and Claude still thinks
+		// after tool results without it (.reference/agy-1.4.11-generation-20261030.txt).
 		options := cloudcode.RequestOptions{}
-		if proxyformat.GetModelFamily(model) == proxyformat.FamilyClaude && modelDetails.SupportsThinking && modelDetails.ThinkingLevel == "" {
-			options.Headers = make(http.Header)
-			options.Headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
-		}
 
 		capacityAttempt := 0
 		for {

@@ -200,26 +200,36 @@ responseId}, traceId, metadata:{}}. modelVersion: "gemini-3.8-flash-n" for all
 3.8 flash tiers, "gemini-4-argon-trial" for argon, the model id for Claude and
 GPT-OSS. Claude responseId "req_vrtx_…".
 
-11. Differences from this build (internal/format/builder.go, buildCloudCodeRequest)
--------------------------------------------------------------------------------
-  item                 agy 1.4.11                                    proxy
-  envelope key order   project, requestId, request, model,           alphabetical (map): model, project,
-                       userAgent, requestType                        request, requestId, requestType, userAgent
-  requestId            agent/<cascade>/<ms>/<trajectory>/<step>      agent-<uuid>
-  request key order    contents, systemInstruction, tools, labels,   alphabetical (map)
-                       generationConfig, sessionId
-  labels               9 keys (section 3)                            absent
-  sessionId            "-3750763034362895579" (constant)             per-account uuid + unix ms
-  systemInstruction    agy prompt only, per-conversation lines       proxy instruction, an [ignore] copy, then
-                                                                     the caller's system parts
-  anthropic-beta       never sent                                    interleaved-thinking-2025-05-14 on Claude
-                                                                     (dispatcher.go, server.go)
+11. Differences from format.Builder at capture time, and what changed
+--------------------------------------------------------------------
+  item                 agy 1.4.11                                    proxy before → after feat/agy-generation-body
+  envelope key order   project, requestId, request, model,           alphabetical (map) → agy's order (struct)
+                       userAgent, requestType
+  requestId            agent/<cascade>/<ms>/<trajectory>/<step>      agent-<uuid> → agy's form
+  request key order    contents, systemInstruction, tools, labels,   alphabetical (map) → agy's order, toolConfig
+                       generationConfig, sessionId                   after tools (slot unknown)
+  labels               9 keys (section 3)                            absent → all 9; cascade/trajectory are UUIDs
+                                                                     fixed by account + client session + first
+                                                                     user message, counters from the history,
+                                                                     model_enum/provider from the catalog
+  systemInstruction    one part, agy's prompt                        3+ parts → the same texts joined into one part
+  anthropic-beta       never sent                                    interleaved-thinking-2025-05-14 on Claude →
+                                                                     none (Claude still thinks after a tool
+                                                                     result without it, checked live)
+
+Kept by decision or not reproducible:
+  sessionId            "-3750763034362895579" (constant)             per-account uuid + unix ms (kept)
+  system text          agy's 20 KB agent prompt                      proxy instruction + [ignore] copy + caller text
+  toolConfig           never sent                                    {"functionCallingConfig":{"mode":"VALIDATED"}}
+                                                                     on Claude requests with tools
+  generationConfig     maxOutputTokens = catalog maximum             the client's max_tokens, capped by the catalog
   checkpoint call      on each new conversation                      none
   writeTrajectoryAcls  on each new conversation                      none
 
 Open
 ----
   - toolConfig position inside request (agy never sends one).
+  - Step counting for parallel tool calls (agy captures had one call per turn).
   - What fills the hashed string at BuildGenerateContentRequest arg+0x58 when it
     is not empty.
   - onboardUser body (needs an account that is not onboarded).

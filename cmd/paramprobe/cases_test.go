@@ -90,11 +90,11 @@ func TestBuildPayloadKeepsTheProductionEnvelopeAndSwapsOnlyTheConfig(t *testing.
 	t.Parallel()
 	c := buildCases(testModels)[1] // GA-claude-camel
 	payload := buildPayload(c, "proj-1", "user@example.com")
-	if payload["project"] != "proj-1" || payload["model"] != c.Model ||
-		payload["userAgent"] != "antigravity" || payload["requestType"] != "agent" {
+	if payload.Project != "proj-1" || payload.Model != c.Model ||
+		payload.UserAgent != "antigravity" || payload.RequestType != "agent" {
 		t.Fatalf("envelope = %#v", payload)
 	}
-	inner, _ := payload["request"].(map[string]any)
+	inner := payload.Request
 	generation, _ := inner["generationConfig"].(map[string]any)
 	encoded, _ := json.Marshal(generation)
 	want, _ := json.Marshal(c.Config)
@@ -103,20 +103,6 @@ func TestBuildPayloadKeepsTheProductionEnvelopeAndSwapsOnlyTheConfig(t *testing.
 	}
 	if inner["systemInstruction"] == nil || inner["contents"] == nil {
 		t.Fatalf("inner request lost the production system instruction or contents: %#v", inner)
-	}
-}
-
-func TestClaudeCasesCarryTheInterleavedThinkingBeta(t *testing.T) {
-	t.Parallel()
-	for _, c := range buildCases(testModels) {
-		got := requestOptions(c).Headers.Get("anthropic-beta")
-		claude := c.Model == testModels.Claude || c.Model == testModels.Level
-		if claude && !c.NoBeta && got != "interleaved-thinking-2025-05-14" {
-			t.Errorf("%s: anthropic-beta = %q", c.ID, got)
-		}
-		if (!claude || c.NoBeta) && got != "" {
-			t.Errorf("%s: a non-Claude or no-beta probe must not send anthropic-beta, got %q", c.ID, got)
-		}
 	}
 }
 
@@ -130,7 +116,7 @@ func TestLevelCasesProbeTheLevelRoute(t *testing.T) {
 		byID[c.ID] = c
 	}
 	for _, id := range []string{
-		"GI-level-camel", "GI-level-snake", "GI-level-camel-no-beta", "GI-level-and-budget", "GI-level-no-config",
+		"GI-level-camel", "GI-level-snake", "GI-level-and-budget", "GI-level-no-config",
 		"GH-level-camel-low", "GH-level-camel-high", "GH-level-snake-low", "GH-level-snake-high",
 	} {
 		c, ok := byID[id]
@@ -145,9 +131,6 @@ func TestLevelCasesProbeTheLevelRoute(t *testing.T) {
 		if _, hasBudget := thinking["thinkingBudget"]; hasBudget != (id == "GI-level-and-budget") {
 			t.Errorf("%s: thinkingBudget present = %v", id, hasBudget)
 		}
-	}
-	if !byID["GI-level-camel-no-beta"].NoBeta || byID["GI-level-camel"].NoBeta {
-		t.Error("only GI-level-camel-no-beta may drop the anthropic-beta header")
 	}
 	if _, present := byID["GI-level-no-config"].Config["thinkingConfig"]; present {
 		t.Errorf("GI-level-no-config must send no thinkingConfig, got %#v", byID["GI-level-no-config"].Config)

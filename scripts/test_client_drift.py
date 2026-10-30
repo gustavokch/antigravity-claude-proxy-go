@@ -127,6 +127,24 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(drifts, ["POST /v1internal:streamGenerateContent (agent): request keys no longer sent: labels"])
         self.assertEqual(notes, ["POST /v1internal:streamGenerateContent (checkpoint): in the baseline, not sent this run"])
 
+    def test_generation_key_order_is_compared_when_both_sides_recorded_it(self):
+        path = "/v1internal:streamGenerateContent?alt=sse"
+
+        def stream(order: list[str] | None) -> dict:
+            body = {"requestType": "agent"}
+            if order is not None:
+                body["request_key_order"] = order
+            return record(path, [], body)
+
+        agy = [stream(["contents", "systemInstruction", "tools", "labels", "generationConfig", "sessionId"])]
+        sorted_proxy = [stream(["contents", "generationConfig", "labels", "sessionId", "systemInstruction", "toolConfig"])]
+        drifts, _ = drift.compare_captures(agy, sorted_proxy, frozenset(), [])
+        self.assertEqual(len(drifts), 1)
+        self.assertIn("request_key_order", drifts[0])
+        matching = [stream(["contents", "systemInstruction", "tools", "toolConfig", "labels", "generationConfig", "sessionId"])]
+        self.assertEqual(drift.compare_captures(agy, matching, frozenset(), [])[0], [])
+        self.assertEqual(drift.compare_captures([stream(None)], sorted_proxy, frozenset(), [])[0], [])
+
     def test_agy_user_agent_parts(self):
         capture = drift.Capture([record("/v1:load", [[
             "User-Agent",

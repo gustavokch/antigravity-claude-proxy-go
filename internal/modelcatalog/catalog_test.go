@@ -713,6 +713,37 @@ func TestGemini38FlashBaseFallbackSendsTierVerbatim(t *testing.T) {
 	}
 }
 
+// The enum names the upstream model a request goes to, and agy sends it as
+// model_enum. A tier synthesized from another model ID must not inherit that
+// model's enum.
+func TestEnumBelongsOnlyToTheModelItWasPublishedFor(t *testing.T) {
+	t.Parallel()
+	catalog, err := Parse([]byte(`{
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high","claude-opus-5-5-low"]}]}],
+		"models":{
+			"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)","model":"MODEL_PLACEHOLDER_M318","apiProvider":"API_PROVIDER_GOOGLE_GEMINI","thinkingLevel":3},
+			"claude-opus-5-5-low":{"displayName":"Claude Opus 5.5 (Low)","model":"MODEL_PLACEHOLDER_M400","apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX","thinkingLevel":1}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string][2]string{
+		"gemini-3.8-flash-high": {"MODEL_PLACEHOLDER_M318", "API_PROVIDER_GOOGLE_GEMINI"},
+		"claude-opus-5-5-low":   {"MODEL_PLACEHOLDER_M400", "API_PROVIDER_ANTHROPIC_VERTEX"},
+		// Synthesized from gemini-3.8-flash-high but sent as its own ID.
+		"gemini-4-argon-high": {"", "API_PROVIDER_GOOGLE_GEMINI"},
+	} {
+		model, err := catalog.Resolve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if model.Enum != want[0] || model.APIProvider != want[1] {
+			t.Fatalf("%s (upstream %s): Enum=%q APIProvider=%q, want %q %q", id, model.GetUpstreamID(), model.Enum, model.APIProvider, want[0], want[1])
+		}
+	}
+}
+
 func TestGemini37FlashBaseFallbackSendsTierVerbatim(t *testing.T) {
 	t.Parallel()
 	catalog, err := Parse([]byte(`{

@@ -83,7 +83,8 @@ func probeCloudCode(args []string) (cloudCodeResult, error) {
 		HTTPClient:  &http.Client{Transport: transport},
 	})
 	// The dispatcher's build path with the options a catalog entry for this
-	// model carries; only the prompt is synthetic.
+	// model carries (fetchAvailableModels publishes gemini-3.8-flash-high as
+	// MODEL_PLACEHOLDER_M318); only the prompt is synthetic.
 	generation := format.NewBuilder().BuildCloudCodeRequestWithModel(map[string]any{
 		"model":      "gemini-3.8-flash-high",
 		"max_tokens": 1024,
@@ -91,6 +92,7 @@ func probeCloudCode(args []string) (cloudCodeResult, error) {
 		"messages":   []any{map[string]any{"role": "user", "content": "Reply with exactly OK"}},
 	}, "clientprobe-project", "clientprobe@example.invalid", format.ModelOptions{
 		SupportsThinking: true, ThinkingLevel: "HIGH", MaxOutputTokens: 65536,
+		Enum: "MODEL_PLACEHOLDER_M318", APIProvider: "API_PROVIDER_GOOGLE_GEMINI",
 	})
 	result := cloudCodeResult{}
 	for name, call := range map[string]func(context.Context) (cloudcode.Response, error){

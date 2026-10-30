@@ -28,6 +28,14 @@ type Model struct {
 	MaxOutputTokens          int
 	QuotaRemainingFraction   *float64
 	QuotaResetTime           string
+	// Enum is upstream's model enum for GetUpstreamID() (fetchAvailableModels
+	// models[id].model, e.g. MODEL_PLACEHOLDER_M318). agy sends it as the
+	// model_enum generation label. Empty when the entry is borrowed from
+	// another model ID, whose enum would name the wrong model.
+	Enum string
+	// APIProvider is fetchAvailableModels models[id].apiProvider, e.g.
+	// API_PROVIDER_ANTHROPIC_VERTEX.
+	APIProvider string
 }
 
 func (m Model) GetUpstreamID() string {
@@ -83,6 +91,8 @@ type modelDetails struct {
 	MaxTokens                int       `json:"maxTokens"`
 	MaxOutputTokens          int       `json:"maxOutputTokens"`
 	QuotaInfo                quotaInfo `json:"quotaInfo"`
+	Model                    string    `json:"model"`
+	APIProvider              string    `json:"apiProvider"`
 }
 
 type quotaInfo struct {
@@ -220,6 +230,7 @@ func Parse(body []byte) (*Catalog, error) {
 			MaxTokens: details.MaxTokens, MaxOutputTokens: details.MaxOutputTokens,
 			QuotaRemainingFraction: remaining,
 			QuotaResetTime:         details.QuotaInfo.ResetTime,
+			Enum:                   details.Model, APIProvider: details.APIProvider,
 		}
 		if model.DisplayName == "" {
 			model.DisplayName = id
@@ -625,6 +636,7 @@ func modelFromDetails(id string, details modelDetails) Model {
 		MaxTokens: details.MaxTokens, MaxOutputTokens: details.MaxOutputTokens,
 		QuotaRemainingFraction: remaining,
 		QuotaResetTime:         details.QuotaInfo.ResetTime,
+		Enum:                   details.Model, APIProvider: details.APIProvider,
 	}
 	if model.DisplayName == "" {
 		model.DisplayName = id
@@ -674,9 +686,13 @@ func applyGemini37(catalog *Catalog, models map[string]modelDetails) {
 			model = base
 			model.UpstreamID = variant.id
 			model.ThinkingLevel = variant.level
+			model.Enum = ""
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
 			model = base
 			model.UpstreamID = variant.fallback
+			if base.GetUpstreamID() != variant.fallback {
+				model.Enum = ""
+			}
 		} else {
 			continue
 		}
@@ -733,9 +749,13 @@ func applyGemini38(catalog *Catalog, models map[string]modelDetails) {
 			model = base
 			model.UpstreamID = variant.id
 			model.ThinkingLevel = variant.level
+			model.Enum = ""
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
 			model = base
 			model.UpstreamID = variant.fallback
+			if base.GetUpstreamID() != variant.fallback {
+				model.Enum = ""
+			}
 		} else {
 			continue
 		}
@@ -797,6 +817,7 @@ func applyGemini4Argon(catalog *Catalog, models map[string]modelDetails) {
 			model = base
 			model.UpstreamID = variant.id
 			model.ThinkingLevel = variant.level
+			model.Enum = ""
 		} else if base, ok := catalog.byID[variant.fallback]; ok {
 			// Upstream FetchAvailableModels does not list Gemini 4 Argon, but
 			// agy 1.3.3 embeds it and daily accepts it. Borrow only the
@@ -805,6 +826,7 @@ func applyGemini4Argon(catalog *Catalog, models map[string]modelDetails) {
 			model = base
 			model.UpstreamID = variant.id
 			model.ThinkingLevel = variant.level
+			model.Enum = ""
 			model.SupportsThinking = true
 			model.MaxTokens = 1048576
 			model.MaxOutputTokens = 65536

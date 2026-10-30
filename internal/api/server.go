@@ -1193,15 +1193,10 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 			server.writeError(writer, err)
 			return
 		}
-		options := cloudcode.RequestOptions{}
-		if proxyformat.GetModelFamily(model) == proxyformat.FamilyClaude && proxyformat.IsThinkingModel(model) {
-			options.Headers = make(http.Header)
-			options.Headers.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
-		}
 		send = func(ctx context.Context, req map[string]any, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
 			cloudcode.SetExecutionMetadata(ctx, credentials.Email, projectID)
 			dynPayload := server.builder.BuildCloudCodeRequest(req, projectID, credentials.Email)
-			return upstream.StreamGenerateContent(ctx, dynPayload, options, consume)
+			return upstream.StreamGenerateContent(ctx, dynPayload, cloudcode.RequestOptions{}, consume)
 		}
 	}
 
