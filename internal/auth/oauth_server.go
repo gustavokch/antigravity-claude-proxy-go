@@ -78,7 +78,7 @@ func GetAuthorizationURL(customRedirectURI string) (authURL, verifier, state str
 		redirectURI = customRedirectURI
 	}
 
-	candidates, err := (Manager{}).oauthCredentialCandidates()
+	candidates, err := (Manager{}).oauthCredentialCandidates(agyLoginClientID)
 	if err != nil {
 		return "", "", "", fmt.Errorf("resolve OAuth client credentials: %w", err)
 	}
@@ -247,7 +247,7 @@ func (om *OAuthManager) callbackHandler(srv *http.Server) http.HandlerFunc {
 
 // CompleteFlow exchanges code for tokens, gets user info, and saves account.
 func (om *OAuthManager) CompleteFlow(code, verifier, redirectURI string) (*AuthResult, error) {
-	candidates, err := (Manager{}).oauthCredentialCandidates()
+	candidates, err := (Manager{}).oauthCredentialCandidates(agyLoginClientID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve OAuth client credentials: %w", err)
 	}

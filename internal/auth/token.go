@@ -70,7 +70,7 @@ func (m Manager) FromRefreshToken(ctx context.Context, refreshToken, email strin
 	if refreshToken == "" {
 		return Credentials{}, errors.New("OAuth account has no refresh_token")
 	}
-	response, err := m.refresh(ctx, refreshToken)
+	response, err := m.refresh(ctx, refreshToken, agyLoginClientID)
 	if err != nil {
 		return Credentials{}, err
 	}
@@ -109,29 +109,21 @@ func DefaultTokenPath() (string, error) {
 
 // Read returns the current token while holding a shared advisory lock.
 func Read(path string) (Token, error) {
-	raw, err := readTokenFile(path)
-	if err != nil {
-		return Token{}, err
-	}
-	return parseToken(raw, path)
-}
-
-func readTokenFile(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open agy token: %w", err)
+		return Token{}, fmt.Errorf("open agy token: %w", err)
 	}
 	defer file.Close()
 	if err := flockShared(file.Fd()); err != nil {
-		return nil, fmt.Errorf("lock agy token: %w", err)
+		return Token{}, fmt.Errorf("lock agy token: %w", err)
 	}
 	defer flockUnlock(file.Fd()) //nolint:errcheck
 
 	raw, err := io.ReadAll(file)
 	if err != nil {
-		return nil, fmt.Errorf("read agy token: %w", err)
+		return Token{}, fmt.Errorf("read agy token: %w", err)
 	}
-	return raw, nil
+	return parseToken(raw, path)
 }
 
 // Fresh reports whether an access token remains valid beyond the safety skew.
@@ -219,7 +211,10 @@ func (m Manager) Get(ctx context.Context) (Credentials, error) {
 		if token.RefreshToken == "" {
 			return Credentials{}, errors.New("agy token is expired and has no refresh_token")
 		}
-		response, refreshErr := m.refresh(ctx, token.RefreshToken)
+		// The login client comes from the bytes held under the lock: reopening
+		// the file here would read another login when m.Path is not the default
+		// path, and a locked reopen would wait on this process's own lock.
+		response, refreshErr := m.refresh(ctx, token.RefreshToken, func() string { return loginClientIDFromToken(raw) })
 		if refreshErr != nil {
 			return Credentials{}, refreshErr
 		}
@@ -258,8 +253,8 @@ func (m Manager) Get(ctx context.Context) (Credentials, error) {
 	return creds, nil
 }
 
-func (m Manager) refresh(ctx context.Context, refreshToken string) (tokenResponse, error) {
-	candidates, err := m.oauthCredentialCandidates()
+func (m Manager) refresh(ctx context.Context, refreshToken string, loginClientID func() string) (tokenResponse, error) {
+	candidates, err := m.oauthCredentialCandidates(loginClientID)
 	if err != nil {
 		return tokenResponse{}, err
 	}
@@ -316,14 +311,17 @@ func (m Manager) refreshWithCredentials(ctx context.Context, refreshToken string
 }
 
 func (m Manager) oauthCredentials() (string, string, error) {
-	candidates, err := m.oauthCredentialCandidates()
+	candidates, err := m.oauthCredentialCandidates(agyLoginClientID)
 	if err != nil {
 		return "", "", err
 	}
 	return candidates[0].clientID, candidates[0].clientSecret, nil
 }
 
-func (m Manager) oauthCredentialCandidates() ([]oauthClientCredentials, error) {
+// oauthCredentialCandidates returns the configured client when one is set, and
+// otherwise the installed agy clients with the one loginClientID names first.
+// loginClientID runs only in the second case.
+func (m Manager) oauthCredentialCandidates(loginClientID func() string) ([]oauthClientCredentials, error) {
 	clientID := m.OAuthClientID
 	if clientID == "" {
 		clientID = os.Getenv(oauthClientIDEnv)
@@ -338,7 +336,7 @@ func (m Manager) oauthCredentialCandidates() ([]oauthClientCredentials, error) {
 		}
 		return []oauthClientCredentials{{clientID: clientID, clientSecret: clientSecret}}, nil
 	}
-	candidates, err := agyOAuthCredentialCandidates()
+	candidates, err := agyOAuthCredentialCandidates(loginClientID())
 	if err != nil {
 		return nil, fmt.Errorf("read OAuth refresh credentials from installed agy: %w", err)
 	}
