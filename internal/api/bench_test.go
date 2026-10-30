@@ -23,7 +23,7 @@ func (m *mockStreamSender) StreamGenerateContent(ctx context.Context, payload an
 	return cloudcode.Response{StatusCode: 200}, nil
 }
 
-func (m *mockStreamSender) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
+func (m *mockStreamSender) LoadCodeAssist(context.Context) (cloudcode.Response, error) {
 	return cloudcode.Response{}, nil
 }
 

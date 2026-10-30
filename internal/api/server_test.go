@@ -37,7 +37,7 @@ type fakeUpstream struct {
 	requestOptions []cloudcode.RequestOptions
 }
 
-func (upstream *fakeUpstream) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
+func (upstream *fakeUpstream) LoadCodeAssist(context.Context) (cloudcode.Response, error) {
 	upstream.mu.Lock()
 	defer upstream.mu.Unlock()
 	upstream.loadCalls++

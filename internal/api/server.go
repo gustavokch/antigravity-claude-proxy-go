@@ -78,7 +78,7 @@ var jsonBufferPool = sync.Pool{
 }
 
 type Upstream interface {
-	LoadCodeAssist(context.Context, string) (cloudcode.Response, error)
+	LoadCodeAssist(context.Context) (cloudcode.Response, error)
 	FetchAvailableModels(context.Context, string) (cloudcode.Response, error)
 	StreamGenerateContent(context.Context, any, cloudcode.RequestOptions, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
 }
@@ -3250,7 +3250,7 @@ func (server *Server) resolveProject(ctx context.Context, credentials auth.Crede
 	if projectID != "" {
 		return projectID, nil
 	}
-	response, err := upstream.LoadCodeAssist(ctx, "")
+	response, err := upstream.LoadCodeAssist(ctx)
 	if err != nil {
 		return "", fmt.Errorf("discover managed Cloud Code project: %w", err)
 	}

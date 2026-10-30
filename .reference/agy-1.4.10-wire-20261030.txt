@@ -1,0 +1,65 @@
+agy 1.4.10 Cloud Code wire, recorded 2026-10-29/30
+===================================================
+
+Client: agy 1.4.10 (UA cl=1009308193, auth_method=consumer), macOS arm64.
+Method: scripts/client_drift.py capture (mitmdump + scripts/mitm_header_dump.py,
+credentials redacted, bodies fingerprinted), `agy models` and
+`agy -p "Reply with exactly OK"` in a scrubbed environment; a second run with a
+throwaway addon recorded the non-content values of the generation request
+(identifiers reduced to their shape, texts to sha256+length). Baseline JSONL:
+.reference/client-drift/agy.jsonl (written by the drift hook).
+
+Hosts
+-----
+Every call goes to daily-cloudcode-pa.googleapis.com, HTTP/1.1, no ALPN:
+loadCodeAssist (x5), fetchUserInfo, fetchAdminControls, listExperiments,
+fetchAvailableModels, retrieveUserQuotaSummary, streamGenerateContent,
+writeTrajectoryAcls. None went to cloudcode-pa.googleapis.com. The executable
+still contains the prod URL once (and an autopush URL), so it is selectable
+somehow, but it is not used by default.
+JA4 t13d131100_f57a46bbacb6_f50d94e863eb on every connection (unchanged).
+
+Header order (names as written)
+-------------------------------
+unary:      Host, User-Agent, Content-Length, Authorization, Content-Type, Accept-Encoding
+streaming:  Host, User-Agent, Transfer-Encoding: chunked, Authorization, Content-Type, Accept-Encoding
+Accept-Encoding: gzip comes last because net/http's transport adds it; agy does
+not set it. A client that sets it writes it before Authorization.
+
+loadCodeAssist body (all five calls, 38 bytes)
+----------------------------------------------
+{"metadata":{"ideType":"ANTIGRAVITY"}}
+No platform, pluginType, duetProject or mode, also after agy knows its project.
+onboardUser was not observed (the account is onboarded).
+
+Other unary bodies
+------------------
+fetchAvailableModels, retrieveUserQuotaSummary, fetchUserInfo,
+fetchAdminControls, listExperiments: {"project": <project>}.
+writeTrajectoryAcls: {"trajectoryId": <uuid>}.
+
+streamGenerateContent (agent turn)
+----------------------------------
+envelope key order: project, requestId, request, model, userAgent, requestType
+  requestId   "agent/<uuid>/<digits>/<uuid>/<n>"  (n = 1, 3: grows with the step)
+  userAgent   "antigravity", requestType "agent"
+request key order: contents, systemInstruction, tools, labels, generationConfig, sessionId
+  sessionId   "-<decimal digits>"
+  systemInstruction: role "user", ONE part (agy's own prompt, 20986 chars)
+  tools: one functionDeclaration per tool object (12 tools)
+  generationConfig {"maxOutputTokens":65536,"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"HIGH"}}
+  labels:
+    cascade_id <uuid>, root_cascade_id <uuid>, trajectory_id <uuid>,
+    request_id "<uuid>-<k>", last_step_index "<step>",
+    model_enum "MODEL_PLACEHOLDER_M318" (gemini-3.8-flash-high),
+    used_claude / used_claude_conservative / used_non_gemini_model "false"
+A "checkpoint" call (requestType "checkpoint", requestId "checkpoint/<uuid>",
+gemini-3.5-flash-lite, no tools, no labels) summarises the turn.
+
+What the proxy matches since this capture
+-----------------------------------------
+Hosts, unary and streaming header order and framing, loadCodeAssist body,
+User-Agent version and cl. Generation still differs: no labels, requestId
+"agent-<uuid>", alphabetical key order (Go maps), a two-part system
+instruction plus the caller's, and its own sessionId form. See
+scripts/client_drift.py (it reports the labels difference on every run).

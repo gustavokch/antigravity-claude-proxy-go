@@ -121,7 +121,7 @@ type scriptedClient struct {
 	modelsBudget time.Duration
 }
 
-func (client *scriptedClient) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
+func (client *scriptedClient) LoadCodeAssist(context.Context) (cloudcode.Response, error) {
 	return cloudcode.Response{StatusCode: http.StatusOK, Body: []byte(`{"cloudaicompanionProject":{"id":"discovered"}}`)}, nil
 }
 

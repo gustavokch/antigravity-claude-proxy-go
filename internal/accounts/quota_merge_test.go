@@ -115,7 +115,7 @@ func TestUpdateAccountCredits_StoresAndIgnoresEmpty(t *testing.T) {
 // 0.4 and a stream carrying remaining_credits.
 type quotaCapableClient struct{}
 
-func (quotaCapableClient) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
+func (quotaCapableClient) LoadCodeAssist(context.Context) (cloudcode.Response, error) {
 	return cloudcode.Response{Body: []byte(`{"cloudaicompanionProject":{"id":"p"}}`)}, nil
 }
 

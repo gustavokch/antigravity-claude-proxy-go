@@ -646,7 +646,15 @@ def explained(pairs: list[tuple[str, str]], before: object, after: object) -> bo
 
 
 def request_key(record: dict) -> tuple[str, str]:
-    return record.get("method", ""), str(record.get("path", "")).split("?")[0]
+    """Method and path, plus the requestType of a generation call: agy's agent
+    turns and its checkpoint summaries are different requests."""
+    path = str(record.get("path", "")).split("?")[0]
+    request_type = (record.get("request_body") or {}).get("requestType")
+    return record.get("method", ""), f"{path} ({request_type})" if request_type else path
+
+
+# Keys of a generation request's inner `request` that the caller decides.
+CALLER_REQUEST_KEYS = frozenset({"tools", "toolConfig"})
 
 
 def compare_records(label: str, base: dict, seen: dict, dynamic: frozenset[str],
@@ -686,6 +694,15 @@ def compare_records(label: str, base: dict, seen: dict, dynamic: frozenset[str],
     seen_config = sorted((seen_body.get("generation_config") or {}).keys())
     if base_config != seen_config:
         drifts.append(f"{label}: generationConfig keys {base_config} -> {seen_config}")
+    base_request = (base_body.get("shape") or {}).get("request")
+    seen_request = (seen_body.get("shape") or {}).get("request")
+    if isinstance(base_request, dict) and isinstance(seen_request, dict):
+        missing = sorted(set(base_request) - set(seen_request) - CALLER_REQUEST_KEYS)
+        extra = sorted(set(seen_request) - set(base_request) - CALLER_REQUEST_KEYS)
+        if missing:
+            drifts.append(f"{label}: request keys no longer sent: {', '.join(missing)}")
+        if extra:
+            drifts.append(f"{label}: new request keys: {', '.join(extra)}")
     return drifts
 
 

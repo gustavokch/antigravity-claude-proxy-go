@@ -67,7 +67,7 @@ func newTestServerWithManager(t *testing.T) (*Server, *accounts.Manager, *logger
 
 type mockUpstream struct{}
 
-func (m *mockUpstream) LoadCodeAssist(context.Context, string) (cloudcode.Response, error) {
+func (m *mockUpstream) LoadCodeAssist(context.Context) (cloudcode.Response, error) {
 	return cloudcode.Response{Body: []byte(`{"cloudaicompanionProject":"proj-123"}`)}, nil
 }
 func (m *mockUpstream) FetchAvailableModels(context.Context, string) (cloudcode.Response, error) {

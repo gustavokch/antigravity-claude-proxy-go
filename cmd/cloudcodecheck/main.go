@@ -26,7 +26,7 @@ func endpointOverride(name string) (string, error) {
 
 func main() {
 	operation := flag.String("operation", "models", "gate operation: models or load")
-	project := flag.String("project", "", "optional Cloud Code project ID")
+	project := flag.String("project", "", "optional Cloud Code project ID (models only; agy sends none on load)")
 	timeout := flag.Duration("timeout", 30*time.Second, "request timeout")
 	details := flag.Bool("details", false, "print the successful response JSON for inspection")
 	endpoint := flag.String("endpoint", "", "optional Cloud Code endpoint override: daily or prod")
@@ -58,9 +58,9 @@ func main() {
 		}
 	case "load":
 		if override != nil {
-			response, err = client.LoadCodeAssistAt(ctx, override, *project)
+			response, err = client.LoadCodeAssistAt(ctx, override)
 		} else {
-			response, err = client.LoadCodeAssist(ctx, *project)
+			response, err = client.LoadCodeAssist(ctx)
 		}
 	default:
 		log.Fatalf("unknown operation %q", *operation)

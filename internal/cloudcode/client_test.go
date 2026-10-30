@@ -1,6 +1,7 @@
 package cloudcode
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -8,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -105,8 +108,8 @@ func TestFetchAvailableModelsHeadersAndDailyFallback(t *testing.T) {
 func TestDoJSONDecompressesGzipResponse(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		// Manual Accept-Encoding disables net/http auto-decompression; the
-		// client must decompress itself (MITM: agy sends Accept-Encoding: gzip).
+		// net/http adds Accept-Encoding: gzip itself (as agy's does) and then
+		// owns decompression.
 		if got := request.Header.Get("Accept-Encoding"); got != "gzip" {
 			t.Errorf("Accept-Encoding = %q", got)
 		}
@@ -185,34 +188,112 @@ func TestDoSSEClosesBodyOnGunzipError(t *testing.T) {
 	}
 }
 
-func TestLoadCodeAssistMetadata(t *testing.T) {
+func TestLoadCodeAssistSendsAgysExactBody(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		var body LoadCodeAssistRequest
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
 			t.Error(err)
 		}
-		if body.Mode != 1 || body.Metadata.IdeType != 9 || body.Metadata.Platform != platformEnum() || body.Metadata.PluginType != 2 || body.Metadata.DuetProject != "project" {
-			t.Errorf("body = %#v", body)
+		if want := `{"metadata":{"ideType":"ANTIGRAVITY"}}`; string(body) != want {
+			t.Errorf("body = %s, want %s", body, want)
 		}
 		_, _ = writer.Write([]byte(`{}`))
 	}))
 	defer server.Close()
 	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
 	client.provisioningEndpoints = []string{server.URL}
-	if _, err := client.LoadCodeAssist(context.Background(), "project"); err != nil {
+	if _, err := client.LoadCodeAssist(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// Generation is pinned to agy's host with no cross-host fallback: agy 1.2.10
-// sends streamGenerateContent to daily (SNI parity), and a thought signature
-// issued by one host is rejected by the other. The no-fallback behaviour itself
-// is covered by TestGenerationTargetsOnlyGenerationEndpoints.
-func TestGenerationEndpointsMatchAgyHost(t *testing.T) {
+// Every call is pinned to agy's host with no cross-host fallback: agy 1.4.10
+// sends all of its Cloud Code calls to daily, and a thought signature issued by
+// one host is rejected by the other. The no-fallback behaviour itself is
+// covered by TestGenerationTargetsOnlyGenerationEndpoints.
+func TestEndpointsMatchAgyHost(t *testing.T) {
 	t.Parallel()
-	if want := []string{DailyEndpoint}; !reflect.DeepEqual(GenerationEndpoints, want) {
-		t.Errorf("GenerationEndpoints = %#v, want %#v", GenerationEndpoints, want)
+	want := []string{DailyEndpoint}
+	for name, endpoints := range map[string][]string{
+		"generation": GenerationEndpoints, "content": ContentEndpoints, "provisioning": ProvisioningEndpoints,
+	} {
+		if !reflect.DeepEqual(endpoints, want) {
+			t.Errorf("%s endpoints = %#v, want %#v", name, endpoints, want)
+		}
+	}
+}
+
+// TestRequestHeadsOnTheWireMatchAgy reads the request head as the production
+// transport writes it, before a server could reorder or canonicalise it, and
+// compares the header order with agy 1.4.10's: a unary call carries
+// Content-Length and a streaming call is chunked, and Accept-Encoding comes
+// last because net/http, not the client, adds it
+// (.reference/agy-1.4.10-wire-20261030.txt).
+func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	type captured struct {
+		head []string
+		body string
+	}
+	requests := make(chan captured, 2)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				var raw bytes.Buffer
+				request, err := http.ReadRequest(bufio.NewReader(io.TeeReader(conn, &raw)))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				body, _ := io.ReadAll(request.Body)
+				head, _, _ := strings.Cut(raw.String(), "\r\n\r\n")
+				requests <- captured{head: strings.Split(head, "\r\n")[1:], body: string(body)}
+				_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+			}(conn)
+		}
+	}()
+
+	client := New(Options{AccessToken: "token"})
+	client.provisioningEndpoints = []string{"http://" + listener.Addr().String()}
+	client.generationEndpoints = client.provisioningEndpoints
+	if _, err := client.LoadCodeAssist(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	unary := <-requests
+	if _, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(SSEEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	stream := <-requests
+
+	names := func(head []string) []string {
+		var out []string
+		for _, line := range head {
+			name, _, _ := strings.Cut(line, ":")
+			out = append(out, name)
+		}
+		return out
+	}
+	if got, want := names(unary.head), []string{"Host", "User-Agent", "Content-Length", "Authorization", "Content-Type", "Accept-Encoding"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("unary header order = %v, want %v", got, want)
+	}
+	if got, want := names(stream.head), []string{"Host", "User-Agent", "Transfer-Encoding", "Authorization", "Content-Type", "Accept-Encoding"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("streaming header order = %v, want %v", got, want)
+	}
+	if stream.head[2] != "Transfer-Encoding: chunked" || stream.head[5] != "Accept-Encoding: gzip" {
+		t.Errorf("streaming head = %q", stream.head)
+	}
+	if stream.body != `{"x":"y"}` {
+		t.Errorf("streaming body = %q", stream.body)
 	}
 }
 
@@ -413,25 +494,20 @@ func TestFindHTTPError(t *testing.T) {
 	}
 }
 
-func TestLoadCodeAssistAt_UsesGivenEndpointAndLoadRequestSchema(t *testing.T) {
+func TestLoadCodeAssistAt_UsesGivenEndpoint(t *testing.T) {
 	var gotPath string
-	var gotBody LoadCodeAssistRequest
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		gotPath = request.URL.Path
-		_ = json.NewDecoder(request.Body).Decode(&gotBody)
 		_, _ = writer.Write([]byte(`{}`))
 	}))
 	defer server.Close()
 	client := New(Options{AccessToken: "token", HTTPClient: server.Client()})
 	// Default provisioning endpoints must NOT be used.
 	client.provisioningEndpoints = []string{"http://127.0.0.1:1"}
-	if _, err := client.LoadCodeAssistAt(context.Background(), []string{server.URL}, "proj-1"); err != nil {
+	if _, err := client.LoadCodeAssistAt(context.Background(), []string{server.URL}); err != nil {
 		t.Fatalf("LoadCodeAssistAt error: %v", err)
 	}
 	if gotPath != PathLoadCodeAssist {
 		t.Errorf("path = %q, want %q", gotPath, PathLoadCodeAssist)
-	}
-	if gotBody.Mode != 1 || gotBody.Metadata.DuetProject != "proj-1" {
-		t.Errorf("body = %+v, want Mode=1 and DuetProject=proj-1", gotBody)
 	}
 }

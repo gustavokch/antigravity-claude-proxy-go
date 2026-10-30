@@ -22,7 +22,7 @@ import (
 )
 
 type CloudClient interface {
-	LoadCodeAssist(context.Context, string) (cloudcode.Response, error)
+	LoadCodeAssist(context.Context) (cloudcode.Response, error)
 	FetchAvailableModels(context.Context, string) (cloudcode.Response, error)
 	StreamGenerateContent(context.Context, any, cloudcode.RequestOptions, func(cloudcode.SSEEvent) error) (cloudcode.Response, error)
 }
@@ -825,7 +825,7 @@ func (dispatcher *Dispatcher) resolveProject(ctx context.Context, account *Accou
 		return project, nil
 	}
 	response, err := dispatcher.metered(account.Email, func() (cloudcode.Response, error) {
-		return client.LoadCodeAssist(ctx, "")
+		return client.LoadCodeAssist(ctx)
 	})
 	if err != nil {
 		return "", fmt.Errorf("discover project for %s: %w", account.Email, err)
@@ -873,7 +873,7 @@ func (dispatcher *Dispatcher) RefreshAccount(ctx context.Context, email string) 
 
 	client := dispatcher.client(targetAccount, credentials.AccessToken)
 	response, err := dispatcher.metered(email, func() (cloudcode.Response, error) {
-		return client.LoadCodeAssist(ctx, "")
+		return client.LoadCodeAssist(ctx)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("load code assist for %s: %w", email, err)
