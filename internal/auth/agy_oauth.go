@@ -121,12 +121,18 @@ func agyOAuthCredentialCandidates() ([]oauthClientCredentials, error) {
 // agyLoginClientID returns the OAuth client that issued agy's own login: the
 // azp claim of the id_token agy stores beside the refresh token. It returns ""
 // when the token file, the id_token, or the claim is missing.
+//
+// The file is read without the advisory lock: Manager.Get holds the exclusive
+// lock on this same file while it refreshes, and flock locks belong to the open
+// file, so a shared lock taken here would wait on this process forever. The
+// claim only orders the candidates; a read torn by a concurrent rewrite fails
+// to parse and leaves the default order for that one call.
 func agyLoginClientID() string {
 	path, err := DefaultTokenPath()
 	if err != nil {
 		return ""
 	}
-	raw, err := readTokenFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}

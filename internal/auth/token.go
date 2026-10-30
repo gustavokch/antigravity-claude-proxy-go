@@ -109,29 +109,21 @@ func DefaultTokenPath() (string, error) {
 
 // Read returns the current token while holding a shared advisory lock.
 func Read(path string) (Token, error) {
-	raw, err := readTokenFile(path)
-	if err != nil {
-		return Token{}, err
-	}
-	return parseToken(raw, path)
-}
-
-func readTokenFile(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open agy token: %w", err)
+		return Token{}, fmt.Errorf("open agy token: %w", err)
 	}
 	defer file.Close()
 	if err := flockShared(file.Fd()); err != nil {
-		return nil, fmt.Errorf("lock agy token: %w", err)
+		return Token{}, fmt.Errorf("lock agy token: %w", err)
 	}
 	defer flockUnlock(file.Fd()) //nolint:errcheck
 
 	raw, err := io.ReadAll(file)
 	if err != nil {
-		return nil, fmt.Errorf("read agy token: %w", err)
+		return Token{}, fmt.Errorf("read agy token: %w", err)
 	}
-	return raw, nil
+	return parseToken(raw, path)
 }
 
 // Fresh reports whether an access token remains valid beyond the safety skew.
