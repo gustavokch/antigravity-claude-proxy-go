@@ -304,10 +304,12 @@ const titleSystemPrompt = "You are a conversation title generator. The message p
 // the title checkpoint on titleModel (the catalog's flash-lite tier). agent is
 // the conversation's first model call, built from request. ok is false for a
 // later turn, for a start already returned (a retry of the first turn), when
-// there is no title model, and when the first message has no text to title.
+// there is no title model, when the first message has no text to title, and
+// when agent has no labels: agy's ACL names the trajectory its first call's
+// labels carry.
 func (builder *Builder) ConversationStart(agent CloudCodeRequest, request map[string]any, titleModel string) (trajectoryID string, checkpoint CloudCodeRequest, ok bool) {
 	c := agent.conversation
-	if c.cascadeID == "" || c.modelCalls > 0 || titleModel == "" {
+	if _, labelled := agent.Request["labels"]; !labelled || c.cascadeID == "" || c.modelCalls > 0 || titleModel == "" {
 		return "", CloudCodeRequest{}, false
 	}
 	prompt := promptText(asSlice(request["messages"]))

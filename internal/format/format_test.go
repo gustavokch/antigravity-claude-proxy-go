@@ -540,6 +540,24 @@ func TestOutputGuardEndsTheResponseAtTheClientLimit(t *testing.T) {
 
 // agy sends writeTrajectoryAcls and the title checkpoint once, when a
 // conversation starts; a later turn or a retry of the first turn sends none.
+// agy's ACL names the trajectory its first call's labels carry. Without a
+// catalog enum the call has no labels, so there is no start to send, and the
+// start stays available for a labelled build of the same turn.
+func TestConversationStartNeedsLabels(t *testing.T) {
+	t.Parallel()
+	builder := NewBuilder()
+	first := map[string]any{"model": "gemini-3.8-flash-low", "messages": []any{map[string]any{"role": "user", "content": "Fix the login bug"}}}
+	unlabelled := builder.BuildCloudCodeRequestWithModel(first, "project", "user@example.com", ModelOptions{})
+	if _, _, ok := builder.ConversationStart(unlabelled, first, "gemini-3.5-flash-lite"); ok {
+		t.Fatal("started a conversation for a call without labels")
+	}
+	labelled := builder.BuildCloudCodeRequestWithModel(first, "project", "user@example.com",
+		ModelOptions{Enum: "MODEL_PLACEHOLDER_M320", APIProvider: "API_PROVIDER_GOOGLE_GEMINI"})
+	if _, _, ok := builder.ConversationStart(labelled, first, "gemini-3.5-flash-lite"); !ok {
+		t.Fatal("the unlabelled call used up the conversation start")
+	}
+}
+
 func TestConversationStartOnlyForTheFirstTurnOnce(t *testing.T) {
 	t.Parallel()
 	builder := NewBuilder()
