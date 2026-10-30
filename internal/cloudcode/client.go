@@ -30,8 +30,8 @@ const (
 	PathGenerateContent          = "/v1internal:generateContent"
 	PathStreamGenerate           = "/v1internal:streamGenerateContent?alt=sse"
 
-	DefaultUserAgentVersion = "1.4.10"
-	AgyBuildCL              = "1009308193"
+	DefaultUserAgentVersion = "1.4.11"
+	AgyBuildCL              = "1010154931"
 	AgyAuthMethod           = "consumer"
 )
 

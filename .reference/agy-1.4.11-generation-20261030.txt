@@ -1,0 +1,225 @@
+agy 1.4.11 streamGenerateContent ground truth — 2026-10-30
+==========================================================
+
+Binary: ~/.local/bin/agy 1.4.11 (User-Agent `antigravity/cli/1.4.11 (aidev_client;
+os_type=darwin; arch=arm64; cl=1010154931; auth_method=consumer)`). agy updated
+itself from 1.4.10 at the start of this capture; every request below is 1.4.11.
+Account: consumer free tier, loadCodeAssist `cloudaicompanionProject` =
+"aicode-consumers".
+
+Method
+------
+21 `agy -p ... --output-format json` runs through mitmdump (allow-hosts = the
+Cloud Code hosts, SSL_CERT_FILE = mitm CA + system roots), 332 Cloud Code flows,
+42 generation requests. A recording addon wrote shapes only: every UUID, 6+ digit
+run and 16+ hex run became a campaign-wide alias (U1, N1, H1), so equality across
+fields, calls and processes is visible without values. Free text became
+{len, sha256[:12]}; system prompts per-line sha256[:8]. No prompt, file or token
+content was stored.
+
+Runs:
+  - one run per model in `agy models` (13 models, prompt "Reply with exactly OK")
+  - one conversation over 4 processes: new (gemini-3.8-flash-low), resumed with
+    `--conversation <id>` (same model), resumed with claude-sonnet-5-5-low,
+    resumed again with gemini-3.8-flash-low
+  - a read_file tool call on gemini-3.8-flash-low and on claude-sonnet-5-5-low
+  - a run from a second working directory, and a probe run
+
+1. Envelope
+-----------
+JSON key order, every agent call:
+
+  project, requestId, request, model, userAgent, requestType
+
+  project      = loadCodeAssist cloudaicompanionProject ("aicode-consumers")
+  requestId    = "agent/<cascade_id>/<unix_ms>/<trajectory_id>/<last_step_index+1>"
+  model        = the agy model id ("gemini-3.8-flash-high", "claude-opus-5-5-low", ...)
+  userAgent    = "antigravity"
+  requestType  = "agent"
+
+  <unix_ms> is 13 digits: the request build time, 1-160 ms before the request
+  leaves (measured against the mitm timestamp on 24 agent calls).
+
+2. request object
+-----------------
+JSON key order, every agent call (all models):
+
+  contents, systemInstruction, tools, labels, generationConfig, sessionId
+
+agy sent no toolConfig in any call, so its position is not known. The vendored
+aiplatform GenerateContentRequest struct puts tool_config right after tools, but
+agy's order is not that struct's order (systemInstruction comes second), so the
+struct does not answer it.
+
+3. labels (all agent calls; keys sorted alphabetically)
+------------------------------------------------------
+  cascade_id                 = the conversation id (U-alias equal to
+                               `--output-format json` conversation_id, to the
+                               conversations/<id>.db file name, and to the
+                               "Conversation ID:" line of the system prompt)
+  last_step_index            = decimal string; trajectory steps before this call
+  model_enum                 = fetchAvailableModels models[<model id>].model
+  request_id                 = "<trajectory_id>-<k>", k = 0,1,2,... counts model
+                               calls in the conversation, across processes
+  root_cascade_id            = cascade_id (no subagents ran)
+  trajectory_id              = UUID; equal to the writeTrajectoryAcls
+                               {"trajectoryId"} body sent before the first call
+  used_claude                = "true" once any call in the conversation used a
+                               Claude model; it stays "true" for later Gemini calls
+  used_claude_conservative   = same value as used_claude in every capture
+  used_non_gemini_model      = "true" once any call used a non-Gemini model
+                               (Claude or GPT-OSS); sticky like used_claude
+
+Step and counter progression in the 4-process conversation:
+
+  call                        requestId suffix  last_step_index  request_id k
+  turn 1 (new, gemini)        1                 0                0
+  turn 2 (resumed, gemini)    4                 3                1
+  turn 3 (resumed, claude)    7                 6                2
+  turn 4 (resumed, gemini)    10                9                3
+
+  Within one turn, a tool call gives a second call: suffix 1 → 3, last_step_index
+  0 → 2, k 0 → 1 (user input step, model step, tool result step).
+  cascade_id, trajectory_id and the conversation persist across processes.
+  turn 4 still has used_claude = "true" after turn 3.
+
+Model table (labels.model_enum = fetchAvailableModels .model, checked for every
+model with cmd/cloudcodecheck -operation models -details):
+
+  model                     model_enum                         used_claude  used_non_gemini  generationConfig
+  gemini-3.8-flash-high     MODEL_PLACEHOLDER_M318             false        false            {"maxOutputTokens":65536,"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"HIGH"}}
+  gemini-3.8-flash-medium   MODEL_PLACEHOLDER_M319             false        false            ... "thinkingLevel":"MEDIUM"
+  gemini-3.8-flash-low      MODEL_PLACEHOLDER_M320             false        false            ... "thinkingLevel":"LOW"
+  gemini-4-argon-high       MODEL_PLACEHOLDER_M417             false        false            {"maxOutputTokens":65536,... "HIGH"}
+  gemini-4-argon-medium     MODEL_PLACEHOLDER_M418             false        false            ... "MEDIUM"
+  gemini-4-argon-low        MODEL_PLACEHOLDER_M419             false        false            ... "LOW"
+  claude-opus-5-5-low       MODEL_PLACEHOLDER_M400             true         true             {"maxOutputTokens":128000,"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"LOW"}}
+  claude-opus-5-5-medium    MODEL_PLACEHOLDER_M401             true         true             ... "MEDIUM"
+  claude-opus-5-5-high      MODEL_PLACEHOLDER_M402             true         true             ... "HIGH"
+  claude-sonnet-5-5-low     MODEL_PLACEHOLDER_M403             true         true             {"maxOutputTokens":128000,... "LOW"}
+  claude-sonnet-5-5-medium  MODEL_PLACEHOLDER_M404             true         true             ... "MEDIUM"
+  claude-sonnet-5-5-high    MODEL_PLACEHOLDER_M405             true         true             ... "HIGH"
+  gpt-oss-120b-medium       MODEL_OPENAI_GPT_OSS_120B_MEDIUM   false        true             {"maxOutputTokens":32768,"thinkingConfig":{"includeThoughts":true,"thinkingBudget":8192}}
+
+  fetchAvailableModels apiProvider: API_PROVIDER_GOOGLE_GEMINI (gemini),
+  API_PROVIDER_ANTHROPIC_VERTEX (claude), API_PROVIDER_OPENAI_VERTEX (gpt-oss).
+  The used_* flags follow apiProvider.
+
+4. sessionId
+------------
+Every generation call (agent and checkpoint, all models, all processes, both
+working directories) sent the same value:
+
+  "sessionId": "-3750763034362895579"
+
+That is int64(0xcbf29ce484222325), the FNV-1a 64-bit offset basis, i.e. the
+FNV-1a hash of the empty string. It is a public constant, not an identifier.
+Binary evidence (function bounds from __lrodata_gopcln, disassembled with
+/usr/bin/objdump):
+
+  genairequest.hashToSessionID   0x101f92d90  FNV-1a 64 over the string, then
+  codeassistclient.getSessionID  0x101ac35f0  strconv.FormatInt(int64(h), 10)
+  codeassistclient.BuildGenerateContentRequest calls getSessionID with the
+  string at offset 0x58 of its first argument; that string was empty in every
+  capture.
+
+The same value is in 171 of 183 CLI conversation databases (file dates
+2026-07-02 to 2026-10-30) and in 146 Antigravity IDE conversation databases
+(~/.gemini/antigravity and ~/.gemini/antigravity-ide, from 2026-07-02).
+listExperiments returns `jetski-shared-beyond-session-id` = false.
+
+5. systemInstruction
+--------------------
+  agent:      role "user", one part, 20894-20896 chars, 221 lines. Identical
+              across all 13 models except lines 218-219 (0-based):
+                "Conversation ID: <cascade_id>"
+                "Artifact Directory Path: <app data dir>/brain/<cascade_id>"
+              Line 217 is "App Data Directory: <home>/.gemini/antigravity-cli"
+              and line 220 closes a <user_information> block.
+  checkpoint: role "user", one part, 520 chars, constant (sha 7109e9482e71).
+
+6. tools
+--------
+One functionDeclarations entry per tool, 12 tools, same names for every model:
+
+  read_file, run_command, manage_task, send_message, schedule, invoke_subagent,
+  define_subagent, manage_subagents, write_file, edit_file, search_web,
+  ask_question
+
+The serialized tools differ per family (three sha256 values: gemini, claude,
+gpt-oss), i.e. agy adapts the schemas per provider.
+
+7. contents
+-----------
+  - The user prompt is wrapped: a 21-char prompt became a 439-445 char user
+    part. A resumed turn adds two user contents: a 152-char one after the
+    previous model reply and a 520-538 char wrapped prompt.
+  - Gemini tool loop: model content [functionCall{id:"call_<6 digits>", name,
+    args} + thoughtSignature in the same part], then the functionResponse
+    {id, name, response} in a content with role "model".
+  - Claude tool loop: model content [functionCall{id:"toolu_vrtx_…", name,
+    args}] with no thoughtSignature, then the functionResponse in a content
+    with role "user".
+  - Gemini history sent to Claude (turn 3) drops the thoughtSignatures. The
+    following Gemini call (turn 4) sends them again on the Gemini turns and none
+    on the Claude turn.
+
+8. Headers (generation, every model)
+------------------------------------
+  Host, User-Agent, Transfer-Encoding: chunked, Authorization, Content-Type:
+  application/json, Accept-Encoding: gzip
+
+Claude models get the same header set. agy sends no anthropic-beta header.
+Query: ?alt=sse.
+
+9. Call sequence
+----------------
+New conversation:  ... loadCodeAssist, writeTrajectoryAcls{trajectoryId},
+                   [loadCodeAssist], checkpoint, agent call(s)
+Resumed turn:      ... loadCodeAssist, agent call(s): no writeTrajectoryAcls,
+                   no checkpoint
+
+  checkpoint: envelope {project, requestId:"checkpoint/<fresh uuid>", request,
+  model:"gemini-3.5-flash-lite", userAgent:"antigravity",
+  requestType:"checkpoint"}; request order contents, systemInstruction,
+  generationConfig, sessionId; no tools, no labels; generationConfig
+  {"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"LOW"}}; contents =
+  one user part holding the raw prompt (same length). fetchAvailableModels
+  names its model in CASCADE_USE_EXPERIMENT_CHECKPOINTER.checkpoint_model =
+  MODEL_PLACEHOLDER_M50.
+
+Every process start also sends loadCodeAssist (x4), fetchUserInfo (x2),
+fetchAdminControls, retrieveUserQuotaSummary (x4), fetchAvailableModels and
+listExperiments, all with {"project": "aicode-consumers"} except
+loadCodeAssist.
+
+10. Responses
+-------------
+SSE `data:` events {response:{candidates, usageMetadata, modelVersion,
+responseId}, traceId, metadata:{}}. modelVersion: "gemini-3.8-flash-n" for all
+3.8 flash tiers, "gemini-4-argon-trial" for argon, the model id for Claude and
+GPT-OSS. Claude responseId "req_vrtx_…".
+
+11. Differences from this build (internal/format/builder.go, buildCloudCodeRequest)
+-------------------------------------------------------------------------------
+  item                 agy 1.4.11                                    proxy
+  envelope key order   project, requestId, request, model,           alphabetical (map): model, project,
+                       userAgent, requestType                        request, requestId, requestType, userAgent
+  requestId            agent/<cascade>/<ms>/<trajectory>/<step>      agent-<uuid>
+  request key order    contents, systemInstruction, tools, labels,   alphabetical (map)
+                       generationConfig, sessionId
+  labels               9 keys (section 3)                            absent
+  sessionId            "-3750763034362895579" (constant)             per-account uuid + unix ms
+  systemInstruction    agy prompt only, per-conversation lines       proxy instruction, an [ignore] copy, then
+                                                                     the caller's system parts
+  anthropic-beta       never sent                                    interleaved-thinking-2025-05-14 on Claude
+                                                                     (dispatcher.go, server.go)
+  checkpoint call      on each new conversation                      none
+  writeTrajectoryAcls  on each new conversation                      none
+
+Open
+----
+  - toolConfig position inside request (agy never sends one).
+  - What fills the hashed string at BuildGenerateContentRequest arg+0x58 when it
+    is not empty.
+  - onboardUser body (needs an account that is not onboarded).
