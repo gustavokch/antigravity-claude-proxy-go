@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -178,7 +179,7 @@ func TestAgyOAuthCredentialCandidatesPutLoginClientFirst(t *testing.T) {
 
 	t.Run("login client first", func(t *testing.T) {
 		t.Setenv("AGY_TOKEN_PATH", fixtureLoginToken(t, loginID))
-		candidates, err := agyOAuthCredentialCandidates()
+		candidates, err := agyOAuthCredentialCandidates(agyLoginClientID())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -192,7 +193,7 @@ func TestAgyOAuthCredentialCandidatesPutLoginClientFirst(t *testing.T) {
 
 	t.Run("without a login, last ID and first secret", func(t *testing.T) {
 		t.Setenv("AGY_TOKEN_PATH", filepath.Join(t.TempDir(), "missing"))
-		candidates, err := agyOAuthCredentialCandidates()
+		candidates, err := agyOAuthCredentialCandidates(agyLoginClientID())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,6 +249,61 @@ func TestManagerGetRefreshesTheDefaultAgyTokenWithoutDeadlock(t *testing.T) {
 	}
 }
 
+// A refresh token is scoped to the client that issued it, and the id_token
+// stored beside it names that client. An agy account can point at a token file
+// other than the default one, so Get must take the login client from the file
+// it refreshes, not from the default agy login.
+func TestManagerGetOrdersByTheLoginOfTheTokenItRefreshes(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "agy")
+	loginID, otherID := fixtureClientID("123", "login"), fixtureClientID("456", "other")
+	if err := os.WriteFile(binary, []byte(loginID+" "+otherID+" "+fixtureClientSecret("a")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(agyBinaryPathEnv, binary)
+	t.Setenv(oauthClientIDEnv, "")
+	t.Setenv(oauthClientSecretEnv, "")
+	t.Setenv("AGY_TOKEN_PATH", fixtureLoginToken(t, otherID))
+
+	var mu sync.Mutex
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/token":
+			if err := request.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			clientID := request.Form.Get("client_id")
+			mu.Lock()
+			attempts = append(attempts, clientID)
+			mu.Unlock()
+			if clientID != loginID {
+				writer.WriteHeader(http.StatusUnauthorized)
+				_, _ = writer.Write([]byte(`{"error":"invalid_client"}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"access_token":"fresh","expires_in":3600}`))
+		case "/userinfo":
+			_, _ = writer.Write([]byte(`{"email":"user@example.com"}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	manager := Manager{
+		Path:       fixtureLoginToken(t, loginID),
+		HTTPClient: server.Client(), TokenURL: server.URL + "/token", UserInfoURL: server.URL + "/userinfo",
+	}
+	if _, err := manager.Get(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(attempts) != 1 || attempts[0] != loginID {
+		t.Fatalf("client_id attempts = %v, want only the login client of the refreshed token %q", attempts, loginID)
+	}
+}
+
 func TestManagerReadsRefreshCredentialsFromAgy(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "agy")
@@ -290,7 +346,7 @@ func TestManagerRefreshFallsBackToMatchingInstalledCredentials(t *testing.T) {
 		_, _ = writer.Write([]byte(`{"access_token":"fresh","expires_in":3600}`))
 	}))
 	defer server.Close()
-	response, err := (Manager{HTTPClient: server.Client(), TokenURL: server.URL}).refresh(context.Background(), "refresh-token")
+	response, err := (Manager{HTTPClient: server.Client(), TokenURL: server.URL}).refresh(context.Background(), "refresh-token", agyLoginClientID)
 	if err != nil {
 		t.Fatal(err)
 	}

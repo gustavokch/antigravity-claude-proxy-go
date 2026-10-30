@@ -70,8 +70,9 @@ type oauthClientCredentials struct {
 // agyOAuthCredentialCandidates reads the installed CLI's OAuth client
 // credentials, most likely pair first. They are intentionally not copied into
 // this proxy or its environment files; reading them locally keeps sign-in and
-// refresh aligned with the installed CLI version.
-func agyOAuthCredentialCandidates() ([]oauthClientCredentials, error) {
+// refresh aligned with the installed CLI version. loginClientID, when it names
+// one of the embedded clients, goes first; "" keeps the default order.
+func agyOAuthCredentialCandidates(loginClientID string) ([]oauthClientCredentials, error) {
 	path, err := AgyBinaryPath()
 	if err != nil {
 		return nil, err
@@ -95,7 +96,7 @@ func agyOAuthCredentialCandidates() ([]oauthClientCredentials, error) {
 	// invalid_client. A refresh token remains scoped to the issuing client, so
 	// this resolves the exact pair for the active login.
 	orderedIDs := append([][]byte{clientIDs[len(clientIDs)-1]}, clientIDs[:len(clientIDs)-1]...)
-	if loginClientID := agyLoginClientID(); loginClientID != "" {
+	if loginClientID != "" {
 		if i := slices.IndexFunc(orderedIDs, func(id []byte) bool { return string(id) == loginClientID }); i > 0 {
 			id := orderedIDs[i]
 			copy(orderedIDs[1:i+1], orderedIDs[:i])
@@ -119,14 +120,15 @@ func agyOAuthCredentialCandidates() ([]oauthClientCredentials, error) {
 }
 
 // agyLoginClientID returns the OAuth client that issued agy's own login: the
-// azp claim of the id_token agy stores beside the refresh token. It returns ""
-// when the token file, the id_token, or the claim is missing.
+// azp claim of the id_token in the default agy token file. It returns "" when
+// the file, the id_token, or the claim is missing.
 //
-// The file is read without the advisory lock: Manager.Get holds the exclusive
-// lock on this same file while it refreshes, and flock locks belong to the open
-// file, so a shared lock taken here would wait on this process forever. The
-// claim only orders the candidates; a read torn by a concurrent rewrite fails
-// to parse and leaves the default order for that one call.
+// The file is read without the advisory lock. The claim only orders the
+// candidates, and a lock would make sign-in and oauth-account refreshes wait on
+// any agy refresh that holds the exclusive lock. A read torn by a concurrent
+// rewrite fails to parse and leaves the default order for that one call.
+// Manager.Get does not call this: it reads the claim from the bytes it already
+// holds under its lock (loginClientIDFromToken).
 func agyLoginClientID() string {
 	path, err := DefaultTokenPath()
 	if err != nil {
@@ -136,6 +138,12 @@ func agyLoginClientID() string {
 	if err != nil {
 		return ""
 	}
+	return loginClientIDFromToken(raw)
+}
+
+// loginClientIDFromToken returns the azp claim of the id_token stored in an
+// agy token file's contents, or "" when the id_token or the claim is missing.
+func loginClientIDFromToken(raw []byte) string {
 	var document struct {
 		IDToken string `json:"id_token"`
 		Token   struct {
