@@ -4,8 +4,8 @@ set -euo pipefail
 # Claude Code wire-identity drift gate.
 #
 # Boots the proxy behind mitmdump, drives four requests across the three paths
-# that carry a wire identity, and checks each against the committed capture at
-# .reference/claude-code-headers-20261020.jsonl:
+# that carry a wire identity, and checks each against the committed capture in
+# BASELINE below (override with CLAUDE_IDENTITY_BASELINE):
 #
 #   pooled gateway, normalized      full header and body diff against the capture,
 #                                   and cch/cc_version derived as the client does
@@ -20,8 +20,9 @@ set -euo pipefail
 #
 # What it does NOT detect: CLAUDE CODE drifting away from the baseline. A new
 # Claude Code version changing its own fingerprint is invisible here, because
-# both sides of this diff are frozen. Detecting that needs a fresh capture:
-#   scripts/capture-claude-code-headers.sh oauth
+# both sides of this diff are frozen. scripts/client_drift.py captures the
+# installed client after every update and moves BASELINE with it; a container
+# capture is still: scripts/capture-claude-code-headers.sh oauth
 #
 # TLS is why this uses mitmdump rather than tcpdump alone, as scripts/verify-ja4.sh
 # does: JA4 reads the plaintext ClientHello, but request headers are inside the
@@ -34,7 +35,7 @@ set -euo pipefail
 # request is the whole subject of this test.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASELINE="${REPO_ROOT}/.reference/claude-code-headers-20261020.jsonl"
+BASELINE="${CLAUDE_IDENTITY_BASELINE:-${REPO_ROOT}/.reference/claude-code-headers-20261020.jsonl}"
 # The JA4 and JA3 each of Claude Code's two TLS stacks presents, recorded from
 # the real client by scripts/mitm_header_dump.py. The header capture above has no
 # TLS data, so the handshake is checked against this file.

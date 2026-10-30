@@ -3,7 +3,7 @@ BIN_DIR=bin
 VERSION?=1.0.0
 LDFLAGS=-s -w -X main.version=$(VERSION)
 
-.PHONY: all build test clean cross-compile dist install install-hooks fmt fmt-check secret-scan
+.PHONY: all build test clean cross-compile dist install install-hooks fmt fmt-check secret-scan client-drift
 
 all: build
 
@@ -75,3 +75,8 @@ install-hooks:
 # Scan the full git history for verified or unverifiable secrets (needs trufflehog).
 secret-scan:
 	@scripts/secret-scan.sh history
+
+# Capture agy, opencode and Claude Code against their real upstreams and report
+# drift from the proxy's pins. Changes nothing; see scripts/client_drift.py.
+client-drift:
+	@python3 scripts/client_drift.py check
