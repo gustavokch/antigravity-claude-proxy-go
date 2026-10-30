@@ -1029,8 +1029,9 @@ def publish(root: Path, results: list[Result], changed: list[str], report: str, 
     existing = json.loads(listed.stdout or "[]")
     if existing:
         number, url = str(existing[0]["number"]), existing[0]["url"]
-        subprocess.run(["gh", "pr", "edit", number, "--repo", slug, "--title", title, "--body-file", str(body)],
-                       check=True, capture_output=True)
+        # The branch was rebuilt from BASE_BRANCH, so the PR must target it too.
+        subprocess.run(["gh", "pr", "edit", number, "--repo", slug, "--base", BASE_BRANCH, "--title", title,
+                        "--body-file", str(body)], check=True, capture_output=True)
         subprocess.run(["gh", "pr", "ready", number, "--repo", slug, *(["--undo"] if draft else [])],
                        capture_output=True)
         return url
