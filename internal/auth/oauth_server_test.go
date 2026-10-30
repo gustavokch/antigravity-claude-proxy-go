@@ -125,3 +125,48 @@ func TestOAuthManager_HTTPHandler(t *testing.T) {
 		}
 	})
 }
+
+func TestRedeemAuthorizationCodeTriesOnlyTheAuthorizedClientsSecrets(t *testing.T) {
+	candidates := []oauthClientCredentials{
+		{clientID: "login", clientSecret: "wrong"},
+		{clientID: "login", clientSecret: "right"},
+		{clientID: "other", clientSecret: "right"},
+	}
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		attempts = append(attempts, r.Form.Get("client_id")+"/"+r.Form.Get("client_secret"))
+		if r.Form.Get("client_id") != "login" || r.Form.Get("client_secret") != "right" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"access","refresh_token":"refresh"}`))
+	}))
+	defer server.Close()
+
+	t.Run("finds the secret", func(t *testing.T) {
+		attempts = nil
+		tokens, err := redeemAuthorizationCode(server.URL, candidates, "code", "verifier", "http://localhost:51121/oauth-callback")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tokens.RefreshToken != "refresh" || strings.Join(attempts, ",") != "login/wrong,login/right" {
+			t.Fatalf("tokens=%+v attempts=%v", tokens, attempts)
+		}
+	})
+
+	t.Run("never switches client", func(t *testing.T) {
+		attempts = nil
+		withoutRightSecret := []oauthClientCredentials{candidates[0], candidates[2]}
+		_, err := redeemAuthorizationCode(server.URL, withoutRightSecret, "code", "verifier", "http://localhost:51121/oauth-callback")
+		if err == nil || !strings.Contains(err.Error(), "invalid_client") {
+			t.Fatalf("err = %v", err)
+		}
+		if strings.Join(attempts, ",") != "login/wrong" {
+			t.Fatalf("attempts=%v", attempts)
+		}
+	})
+}
