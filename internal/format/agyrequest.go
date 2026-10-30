@@ -129,14 +129,16 @@ func clientSessionID(request map[string]any) string {
 
 // firstUserText is the text of the first message, without block metadata:
 // clients move cache_control markers between turns, and the text alone stays
-// the same for the whole conversation.
+// the same for the whole conversation. A string content counts as one text
+// block: a client that marks only its newest messages for caching sends the
+// first prompt as a block on the first turn and as a string later.
 func firstUserText(messages []any) string {
 	if len(messages) == 0 {
 		return ""
 	}
 	first := asMap(messages[0])
 	if text, ok := first["content"].(string); ok {
-		return text
+		return "text\x00" + text + "\x00"
 	}
 	var builder strings.Builder
 	for _, rawBlock := range asSlice(first["content"]) {

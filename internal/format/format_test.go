@@ -333,6 +333,26 @@ func TestBuilderLabelsFollowAgysConversationProgression(t *testing.T) {
 	}
 }
 
+// A client that marks only its newest messages for caching sends the first
+// prompt as a block on the first turn and as a string once it is older; both
+// are the same conversation.
+func TestBuilderKeepsTheConversationWhenTheFirstPromptBecomesAString(t *testing.T) {
+	t.Parallel()
+	const gemini = "API_PROVIDER_GOOGLE_GEMINI"
+	builder := NewBuilder()
+	first := buildAgyCall(t, builder, "user@example.com", "s1", []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "start", "cache_control": map[string]any{"type": "ephemeral"}},
+	}}}, gemini, "E")
+	second := buildAgyCall(t, builder, "user@example.com", "s1", []any{
+		map[string]any{"role": "user", "content": "start"},
+		map[string]any{"role": "assistant", "content": "ok"},
+		map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "more", "cache_control": map[string]any{"type": "ephemeral"}}}},
+	}, gemini, "E")
+	if second.cascade != first.cascade || second.trajectory != first.trajectory {
+		t.Fatalf("turn 2 cascade %q / trajectory %q, turn 1 %q / %q", second.cascade, second.trajectory, first.cascade, first.trajectory)
+	}
+}
+
 func TestBuilderConversationIdentity(t *testing.T) {
 	t.Parallel()
 	const gemini = "API_PROVIDER_GOOGLE_GEMINI"
