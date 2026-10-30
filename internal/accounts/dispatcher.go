@@ -43,6 +43,12 @@ type userQuotaFetcher interface {
 	RetrieveUserQuota(context.Context, string) (cloudcode.Response, error)
 }
 
+// trajectoryACLWriter is an optional CloudClient capability for agy's
+// conversation-start call (startConversation).
+type trajectoryACLWriter interface {
+	WriteTrajectoryAcls(context.Context, string) (cloudcode.Response, error)
+}
+
 type SleepFunc func(context.Context, time.Duration) error
 
 type DispatcherOptions struct {
@@ -464,6 +470,8 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 		// agy sends no anthropic-beta on Claude calls, and Claude still thinks
 		// after tool results without it (.reference/agy-1.4.11-generation-20261030.txt).
 		options := cloudcode.RequestOptions{}
+		dispatcher.startConversation(ctx, client, request, payload)
+		guard := proxyformat.NewOutputGuard(payload.OutputLimit)
 
 		capacityAttempt := 0
 		for {
@@ -492,9 +500,21 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 							lastCredits = balances
 						}
 					}
-					return consume(event)
+					if err := consume(event); err != nil {
+						return err
+					}
+					if final, done := guard.Observe(event.Data); done {
+						if err := consume(cloudcode.SSEEvent{Data: final}); err != nil {
+							return err
+						}
+						return proxyformat.ErrOutputLimit
+					}
+					return nil
 				})
 			}()
+			if errors.Is(requestErr, proxyformat.ErrOutputLimit) {
+				requestErr = nil
+			}
 			if requestErr == nil {
 				if len(lastCredits) > 0 {
 					balances := make(map[string]int64, len(lastCredits))
@@ -563,6 +583,37 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 		}
 	}
 	return cloudcode.Response{}, fmt.Errorf("max retries exceeded: %w", lastError)
+}
+
+const conversationStartTimeout = time.Minute
+
+// startConversation sends what agy sends when a conversation starts, next to
+// its first model call: writeTrajectoryAcls for the trajectory and the title
+// checkpoint on the catalog's flash-lite model. agy starts both a few ms
+// before the model call and does not wait for them, so neither delays the
+// request or changes its outcome; a failure is only logged.
+func (dispatcher *Dispatcher) startConversation(ctx context.Context, client CloudClient, request map[string]any, payload proxyformat.CloudCodeRequest) {
+	trajectoryID, checkpoint, ok := dispatcher.builder.ConversationStart(payload, request, dispatcher.currentCatalog().FlashLiteID())
+	if !ok {
+		return
+	}
+	background := context.WithoutCancel(ctx)
+	if writer, ok := client.(trajectoryACLWriter); ok {
+		go func() {
+			ctx, cancel := context.WithTimeout(background, conversationStartTimeout)
+			defer cancel()
+			if _, err := writer.WriteTrajectoryAcls(ctx, trajectoryID); err != nil {
+				slog.Debug("writeTrajectoryAcls failed", "error", err)
+			}
+		}()
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(background, conversationStartTimeout)
+		defer cancel()
+		if _, err := client.StreamGenerateContent(ctx, checkpoint, cloudcode.RequestOptions{}, func(cloudcode.SSEEvent) error { return nil }); err != nil {
+			slog.Debug("title checkpoint failed", "model", checkpoint.Model, "error", err)
+		}
+	}()
 }
 
 // modelRecoveryCall is one shared recovery pass for a model key. found is set

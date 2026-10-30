@@ -654,7 +654,7 @@ def request_key(record: dict) -> tuple[str, str]:
 
 
 # Keys of a generation request's inner `request` that the caller decides.
-CALLER_REQUEST_KEYS = frozenset({"tools", "toolConfig"})
+CALLER_REQUEST_KEYS = frozenset({"tools"})
 
 
 def compare_records(label: str, base: dict, seen: dict, dynamic: frozenset[str],

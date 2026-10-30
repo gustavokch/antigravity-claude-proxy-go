@@ -46,10 +46,11 @@ func (m Model) GetUpstreamID() string {
 }
 
 type Catalog struct {
-	defaultID  string
-	selectable []Model
-	byID       map[string]Model
-	byDisplay  map[string]Model
+	defaultID   string
+	flashLiteID string
+	selectable  []Model
+	byID        map[string]Model
+	byDisplay   map[string]Model
 }
 
 type SelectionError struct {
@@ -68,6 +69,9 @@ type responseDocument struct {
 	Models              map[string]modelDetails `json:"models"`
 	DefaultAgentModelID string                  `json:"defaultAgentModelId"`
 	AgentModelSorts     []modelSort             `json:"agentModelSorts"`
+	TieredModelIDs      struct {
+		FlashLite []string `json:"flashLite"`
+	} `json:"tieredModelIds"`
 }
 
 type modelSort struct {
@@ -212,6 +216,9 @@ func Parse(body []byte) (*Catalog, error) {
 		byID:      make(map[string]Model),
 		byDisplay: make(map[string]Model),
 	}
+	if len(document.TieredModelIDs.FlashLite) > 0 {
+		catalog.flashLiteID = document.TieredModelIDs.FlashLite[0]
+	}
 	for _, id := range ids {
 		details, exists := document.Models[id]
 		if !exists || details.Disabled {
@@ -268,6 +275,15 @@ func (catalog *Catalog) Selectable() []Model {
 	return append([]Model(nil), catalog.selectable...)
 }
 
+// FlashLiteID is the catalog's flash-lite tier (tieredModelIds.flashLite),
+// the model agy titles a new conversation with. "" when upstream names none.
+func (catalog *Catalog) FlashLiteID() string {
+	if catalog == nil {
+		return ""
+	}
+	return catalog.flashLiteID
+}
+
 // Merge returns a new Catalog that combines models from catalog and other. Models
 // in other override or update models in catalog with the same ID, while models
 // unique to catalog are preserved. If catalog is nil, other is returned. If
@@ -281,12 +297,16 @@ func (catalog *Catalog) Merge(other *Catalog) *Catalog {
 	}
 
 	merged := &Catalog{
-		defaultID: catalog.defaultID,
-		byID:      make(map[string]Model, len(catalog.byID)+len(other.byID)),
-		byDisplay: make(map[string]Model, len(catalog.byDisplay)+len(other.byDisplay)),
+		defaultID:   catalog.defaultID,
+		flashLiteID: catalog.flashLiteID,
+		byID:        make(map[string]Model, len(catalog.byID)+len(other.byID)),
+		byDisplay:   make(map[string]Model, len(catalog.byDisplay)+len(other.byDisplay)),
 	}
 	if other.defaultID != "" {
 		merged.defaultID = other.defaultID
+	}
+	if other.flashLiteID != "" {
+		merged.flashLiteID = other.flashLiteID
 	}
 
 	// Copy base models

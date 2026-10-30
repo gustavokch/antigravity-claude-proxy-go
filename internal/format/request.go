@@ -223,9 +223,6 @@ func convertAnthropicToGoogle(request map[string]any, cache *SignatureCache, opt
 			})
 		}
 		result["tools"] = []any{map[string]any{"functionDeclarations": declarations}}
-		if family == FamilyClaude {
-			result["toolConfig"] = map[string]any{"functionCallingConfig": map[string]any{"mode": "VALIDATED"}}
-		}
 	}
 
 	if family == FamilyGemini && maxOutputTokens <= 0 && intValue(generation["maxOutputTokens"], 0) > GeminiMaxOutputTokens {

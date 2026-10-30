@@ -1,0 +1,163 @@
+package accounts
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"sync"
+	"testing"
+	"time"
+
+	"antigravity-go-proxy/internal/cloudcode"
+	proxyformat "antigravity-go-proxy/internal/format"
+)
+
+// agyClient is a CloudClient with agy's conversation-start capability. It
+// records every generation payload and trajectory ACL.
+type agyClient struct {
+	modelsBody []byte
+	events     [][]byte
+
+	mu       sync.Mutex
+	payloads []proxyformat.CloudCodeRequest
+	acls     []string
+}
+
+func (client *agyClient) LoadCodeAssist(context.Context) (cloudcode.Response, error) {
+	return cloudcode.Response{StatusCode: http.StatusOK, Body: []byte(`{"cloudaicompanionProject":"aicode-consumers"}`)}, nil
+}
+
+func (client *agyClient) FetchAvailableModels(context.Context, string) (cloudcode.Response, error) {
+	return cloudcode.Response{StatusCode: http.StatusOK, Body: client.modelsBody}, nil
+}
+
+func (client *agyClient) StreamGenerateContent(_ context.Context, payload any, _ cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	client.mu.Lock()
+	client.payloads = append(client.payloads, payload.(proxyformat.CloudCodeRequest))
+	client.mu.Unlock()
+	for _, data := range client.events {
+		if err := consume(cloudcode.SSEEvent{Data: data}); err != nil {
+			return cloudcode.Response{StatusCode: http.StatusOK}, err
+		}
+	}
+	return cloudcode.Response{Endpoint: cloudcode.DailyEndpoint, StatusCode: http.StatusOK}, nil
+}
+
+func (client *agyClient) WriteTrajectoryAcls(_ context.Context, trajectoryID string) (cloudcode.Response, error) {
+	client.mu.Lock()
+	client.acls = append(client.acls, trajectoryID)
+	client.mu.Unlock()
+	return cloudcode.Response{StatusCode: http.StatusOK, Body: []byte(`{}`)}, nil
+}
+
+func (client *agyClient) byType(requestType string) []proxyformat.CloudCodeRequest {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	var out []proxyformat.CloudCodeRequest
+	for _, payload := range client.payloads {
+		if payload.RequestType == requestType {
+			out = append(out, payload)
+		}
+	}
+	return out
+}
+
+func agyEvent(candidates int, finish string) []byte {
+	candidate := map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": "x"}}}}
+	if finish != "" {
+		candidate["finishReason"] = finish
+	}
+	encoded, _ := json.Marshal(map[string]any{"response": map[string]any{
+		"candidates": []any{candidate}, "usageMetadata": map[string]any{"candidatesTokenCount": candidates},
+	}})
+	return encoded
+}
+
+const agyModelsBody = `{
+	"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-low"]}]}],
+	"tieredModelIds":{"flashLite":["gemini-3.5-flash-lite"]},
+	"models":{"gemini-3.8-flash-low":{"displayName":"Gemini 3.8 Flash (Low)","supportsThinking":true,"thinkingLevel":1,
+		"maxTokens":1048576,"maxOutputTokens":65536,"model":"MODEL_PLACEHOLDER_M320","apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}}
+}`
+
+// The request carries the catalog maximum, as agy sends it, and the client's
+// max_tokens ends the response where upstream would have: the event that
+// crosses it, then a MAX_TOKENS finish, and nothing after.
+func TestDispatcherEndsTheStreamAtTheClientOutputLimit(t *testing.T) {
+	t.Parallel()
+	client := &agyClient{modelsBody: []byte(agyModelsBody), events: [][]byte{agyEvent(30, ""), agyEvent(120, ""), agyEvent(150, "STOP")}}
+	dispatcher := newDispatcherWithClient(t, client)
+	var delivered [][]byte
+	_, err := dispatcher.StreamGenerateContent(context.Background(), map[string]any{
+		"model": "gemini-3.8-flash-low", "max_tokens": float64(100),
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, func(event cloudcode.SSEEvent) error {
+		delivered = append(delivered, event.Data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("a response ended at the client's limit is a success, got %v", err)
+	}
+	agent := client.byType("agent")
+	if len(agent) != 1 {
+		t.Fatalf("agent calls = %d", len(agent))
+	}
+	if got := agent[0].Request["generationConfig"].(map[string]any)["maxOutputTokens"]; got != 65536 {
+		t.Fatalf("maxOutputTokens = %v, want the catalog maximum", got)
+	}
+	if len(delivered) != 3 {
+		t.Fatalf("delivered %d events, want the two before the limit and the MAX_TOKENS finish", len(delivered))
+	}
+	var final struct {
+		Response struct {
+			Candidates []struct {
+				FinishReason string `json:"finishReason"`
+			} `json:"candidates"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(delivered[2], &final); err != nil || len(final.Response.Candidates) != 1 || final.Response.Candidates[0].FinishReason != "MAX_TOKENS" {
+		t.Fatalf("final event = %s", delivered[2])
+	}
+}
+
+// A conversation's first turn sends agy's start calls once, with the
+// trajectory its labels carry; a repeat of the first turn and a later turn
+// send none.
+func TestDispatcherSendsAgysConversationStartOnce(t *testing.T) {
+	t.Parallel()
+	client := &agyClient{modelsBody: []byte(agyModelsBody), events: [][]byte{agyEvent(1, "STOP")}}
+	dispatcher := newDispatcherWithClient(t, client)
+	first := []any{map[string]any{"role": "user", "content": "Fix the login bug"}}
+	later := append(append([]any(nil), first...),
+		map[string]any{"role": "assistant", "content": "done"}, map[string]any{"role": "user", "content": "thanks"})
+	for _, messages := range [][]any{first, first, later} {
+		request := map[string]any{"model": "gemini-3.8-flash-low", "max_tokens": float64(1024), "messages": messages}
+		if _, err := dispatcher.StreamGenerateContent(context.Background(), request, func(cloudcode.SSEEvent) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The start calls run beside the first model call; the later calls
+	// decided synchronously not to send any, so once these arrive the counts
+	// are final.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(client.byType("checkpoint")) == 0 || func() bool { client.mu.Lock(); defer client.mu.Unlock(); return len(client.acls) == 0 }() {
+		if time.Now().After(deadline) {
+			t.Fatal("the conversation start calls never arrived")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	agent := client.byType("agent")
+	checkpoints := client.byType("checkpoint")
+	client.mu.Lock()
+	acls := append([]string(nil), client.acls...)
+	client.mu.Unlock()
+	if len(agent) != 3 || len(checkpoints) != 1 || len(acls) != 1 {
+		t.Fatalf("agent=%d checkpoint=%d acl=%d, want 3, 1, 1", len(agent), len(checkpoints), len(acls))
+	}
+	if labels := agent[0].Request["labels"].(map[string]string); acls[0] != labels["trajectory_id"] {
+		t.Fatalf("ACL trajectory %q, first call's labels %v", acls[0], labels)
+	}
+	if checkpoints[0].Model != "gemini-3.5-flash-lite" || checkpoints[0].Project != "aicode-consumers" {
+		t.Fatalf("checkpoint = %#v", checkpoints[0])
+	}
+}

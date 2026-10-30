@@ -29,6 +29,7 @@ const (
 	PathRetrieveUserQuotaSummary = "/v1internal:retrieveUserQuotaSummary"
 	PathGenerateContent          = "/v1internal:generateContent"
 	PathStreamGenerate           = "/v1internal:streamGenerateContent?alt=sse"
+	PathWriteTrajectoryAcls      = "/v1internal:writeTrajectoryAcls"
 
 	DefaultUserAgentVersion = "1.4.11"
 	AgyBuildCL              = "1010154931"
@@ -312,6 +313,12 @@ func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, projectID string)
 		request["project"] = projectID
 	}
 	return c.DoJSON(ctx, c.contentEndpoints, PathRetrieveUserQuotaSummary, request, RequestOptions{})
+}
+
+// WriteTrajectoryAcls is the call agy makes for a new conversation's
+// trajectory, alongside its first model call.
+func (c *Client) WriteTrajectoryAcls(ctx context.Context, trajectoryID string) (Response, error) {
+	return c.DoJSON(ctx, c.contentEndpoints, PathWriteTrajectoryAcls, map[string]string{"trajectoryId": trajectoryID}, RequestOptions{})
 }
 
 // RetrieveUserQuota fetches per-model token-bucket quotas (model_id keyed).

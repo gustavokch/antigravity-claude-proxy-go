@@ -199,7 +199,7 @@ func TestBuilderWritesAgysKeyOrderAndOneSystemPart(t *testing.T) {
 	if err := json.Unmarshal(encoded, &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(jsonKeys(t, envelope.Request), ","); got != "contents,systemInstruction,tools,toolConfig,labels,generationConfig,sessionId" {
+	if got := strings.Join(jsonKeys(t, envelope.Request), ","); got != "contents,systemInstruction,tools,labels,generationConfig,sessionId" {
 		t.Fatalf("request keys = %s", got)
 	}
 	parts := asSlice(asMap(built.Request["systemInstruction"])["parts"])
@@ -304,13 +304,36 @@ func TestBuilderLabelsFollowAgysConversationProgression(t *testing.T) {
 		t.Fatalf("cascade %q / trajectory %q are not two distinct v4 UUIDs", first.cascade, first.trajectory)
 	}
 
-	tool := buildAgyCall(t, NewBuilder(), "user@example.com", "s2", []any{
-		user("read it"),
-		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "t1", "name": "read_file", "input": map[string]any{}}}},
-		map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "t1", "content": "x"}}},
-	}, gemini, "MODEL_PLACEHOLDER_M320")
-	if tool.labels["last_step_index"] != "2" || tool.labels["request_id"] != tool.trajectory+"-1" || !strings.HasSuffix(tool.requestID, "/3") {
-		t.Fatalf("tool loop labels = %v, requestId = %q", tool.labels, tool.requestID)
+	// Tool loops from the second capture: each tool result is one step, also
+	// for parallel calls in one model response.
+	toolUse := func(ids ...string) any {
+		blocks := []any{}
+		for _, id := range ids {
+			blocks = append(blocks, map[string]any{"type": "tool_use", "id": id, "name": "read_file", "input": map[string]any{}})
+		}
+		return map[string]any{"role": "assistant", "content": blocks}
+	}
+	toolResult := func(ids ...string) any {
+		blocks := []any{}
+		for _, id := range ids {
+			blocks = append(blocks, map[string]any{"type": "tool_result", "tool_use_id": id, "content": "x"})
+		}
+		return map[string]any{"role": "user", "content": blocks}
+	}
+	for name, loop := range map[string]struct {
+		messages []any
+		step, k  int
+	}{
+		"one call":            {[]any{user("read it"), toolUse("t1"), toolResult("t1")}, 2, 1},
+		"three parallel":      {[]any{user("read them"), toolUse("t1", "t2", "t3"), toolResult("t1", "t2", "t3")}, 4, 1},
+		"two sequential":      {[]any{user("read both"), toolUse("t1"), toolResult("t1"), toolUse("t2"), toolResult("t2")}, 4, 2},
+		"parallel then final": {[]any{user("go"), toolUse("t1", "t2"), toolResult("t1", "t2"), answer("done"), user("again")}, 6, 2},
+	} {
+		call := buildAgyCall(t, NewBuilder(), "user@example.com", "s-"+name, loop.messages, gemini, "MODEL_PLACEHOLDER_M320")
+		if call.labels["last_step_index"] != stringValue(loop.step) || call.labels["request_id"] != call.trajectory+"-"+stringValue(loop.k) ||
+			!strings.HasSuffix(call.requestID, "/"+stringValue(loop.step+1)) {
+			t.Fatalf("%s: labels = %v, requestId = %q, want step %d k %d", name, call.labels, call.requestID, loop.step, loop.k)
+		}
 	}
 }
 
@@ -350,6 +373,146 @@ func TestGenerateRequestPutsUnknownKeysLastInSortedOrder(t *testing.T) {
 	}
 	if string(encoded) != `{"contents":[],"sessionId":"s","alpha":true,"zeta":1}` {
 		t.Fatalf("encoded = %s", encoded)
+	}
+}
+
+// agy sends the catalog's maxOutputTokens on every agent call; the client's
+// smaller limit moves to OutputLimit for the stream to enforce.
+func TestBuilderSendsTheCatalogOutputMaximumAndKeepsTheClientLimit(t *testing.T) {
+	t.Parallel()
+	build := func(maxTokens int, options ModelOptions) CloudCodeRequest {
+		request := map[string]any{"model": "claude-sonnet-5-5-low", "max_tokens": maxTokens,
+			"messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		return NewBuilder().BuildCloudCodeRequestWithModel(request, "project", "user@example.com", options)
+	}
+	catalog := ModelOptions{SupportsThinking: true, ThinkingLevel: "LOW", MaxOutputTokens: 128000}
+	for name, test := range map[string]struct {
+		built         CloudCodeRequest
+		sent, limited int
+	}{
+		"client below the catalog":        {build(4096, catalog), 128000, 4096},
+		"client above the catalog":        {build(200000, catalog), 128000, 0},
+		"catalog entry without a maximum": {build(4096, ModelOptions{}), 4096, 0},
+	} {
+		sent := asMap(test.built.Request["generationConfig"])["maxOutputTokens"]
+		if sent != test.sent || test.built.OutputLimit != test.limited {
+			t.Errorf("%s: maxOutputTokens = %v, OutputLimit = %d; want %d, %d", name, sent, test.built.OutputLimit, test.sent, test.limited)
+		}
+	}
+}
+
+// The guard ends a response where upstream would have stopped at the client's
+// maxOutputTokens, and the client sees stop_reason max_tokens: on Gemini's
+// running thought plus candidate count, and on Claude, whose count stays at
+// its first value until the end, by the streamed text.
+func TestOutputGuardEndsTheResponseAtTheClientLimit(t *testing.T) {
+	t.Parallel()
+	event := func(text string, candidates, thoughts int, finish string) []byte {
+		candidate := map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": text}}}}
+		if finish != "" {
+			candidate["finishReason"] = finish
+		}
+		encoded, _ := json.Marshal(map[string]any{"response": map[string]any{
+			"candidates":    []any{candidate},
+			"usageMetadata": map[string]any{"promptTokenCount": 10, "candidatesTokenCount": candidates, "thoughtsTokenCount": thoughts},
+		}})
+		return encoded
+	}
+	finish := func(t *testing.T, delivered ...[]byte) (string, any) {
+		t.Helper()
+		converter := NewStreamConverter("claude-sonnet-5-5-low", nil, "msg_guard")
+		for _, data := range delivered {
+			if _, err := converter.Consume(data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		events, err := converter.Finish()
+		if err != nil {
+			t.Fatal(err)
+		}
+		delta := events[len(events)-2]
+		return stringValue(asMap(delta["delta"])["stop_reason"]), asMap(delta["usage"])["output_tokens"]
+	}
+	if NewOutputGuard(0) != nil {
+		t.Fatal("a zero limit must not guard")
+	}
+
+	gemini := NewOutputGuard(100)
+	if _, done := gemini.Observe(event("x", 40, 50, "")); done {
+		t.Fatal("stopped below the limit")
+	}
+	if _, done := gemini.Observe(event("x", 60, 50, "STOP")); done {
+		t.Fatal("replaced a response that finished on its own")
+	}
+	crossing := event("x", 51, 50, "")
+	final, done := gemini.Observe(crossing)
+	if !done {
+		t.Fatal("did not stop at 101 output tokens with a limit of 100")
+	}
+	if reason, tokens := finish(t, crossing, final); reason != "max_tokens" || tokens != 51 {
+		t.Fatalf("Gemini: stop_reason %q, output_tokens %v", reason, tokens)
+	}
+
+	claude := NewOutputGuard(10)
+	first, second, third := event("", 4, 0, ""), event("twelve bytes", 4, 0, ""), event("twelve bytes", 4, 0, "")
+	for _, data := range [][]byte{first, second} {
+		if _, done := claude.Observe(data); done {
+			t.Fatal("Claude stopped below 10 tokens (4 reported + 12 bytes)")
+		}
+	}
+	final, done = claude.Observe(third)
+	if !done {
+		t.Fatal("Claude did not stop at 4 reported + 24 bytes streamed")
+	}
+	if reason, tokens := finish(t, first, second, third, final); reason != "max_tokens" || tokens != 10 {
+		t.Fatalf("Claude: stop_reason %q, output_tokens %v", reason, tokens)
+	}
+}
+
+// agy sends writeTrajectoryAcls and the title checkpoint once, when a
+// conversation starts; a later turn or a retry of the first turn sends none.
+func TestConversationStartOnlyForTheFirstTurnOnce(t *testing.T) {
+	t.Parallel()
+	builder := NewBuilder()
+	options := ModelOptions{Enum: "MODEL_PLACEHOLDER_M320", APIProvider: "API_PROVIDER_GOOGLE_GEMINI"}
+	first := map[string]any{"model": "gemini-3.8-flash-low", "messages": []any{map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "text", "text": "<system-reminder>context</system-reminder>"},
+		map[string]any{"type": "text", "text": "Fix the login bug"},
+	}}}}
+	agent := builder.BuildCloudCodeRequestWithModel(first, "project", "user@example.com", options)
+	if _, _, ok := builder.ConversationStart(agent, first, ""); ok {
+		t.Fatal("started without a title model")
+	}
+	trajectoryID, checkpoint, ok := builder.ConversationStart(agent, first, "gemini-3.5-flash-lite")
+	if !ok {
+		t.Fatal("first turn did not start a conversation")
+	}
+	labels := agent.Request["labels"].(map[string]string)
+	if trajectoryID != labels["trajectory_id"] {
+		t.Fatalf("ACL trajectory %q, labels trajectory %q", trajectoryID, labels["trajectory_id"])
+	}
+	if checkpoint.RequestType != "checkpoint" || checkpoint.Model != "gemini-3.5-flash-lite" || checkpoint.Project != "project" ||
+		!strings.HasPrefix(checkpoint.RequestID, "checkpoint/") || checkpoint.Request["sessionId"] != agent.Request["sessionId"] {
+		t.Fatalf("checkpoint envelope = %#v", checkpoint)
+	}
+	encoded, err := json.Marshal(checkpoint.Request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(jsonKeys(t, encoded), ","); got != "contents,systemInstruction,generationConfig,sessionId" {
+		t.Fatalf("checkpoint request keys = %s", got)
+	}
+	contents := asSlice(checkpoint.Request["contents"])
+	if text := asMap(asSlice(asMap(contents[0])["parts"])[0])["text"]; text != "Fix the login bug" {
+		t.Fatalf("checkpoint titles %q, want the user's own words", text)
+	}
+	if _, _, ok := builder.ConversationStart(builder.BuildCloudCodeRequestWithModel(first, "project", "user@example.com", options), first, "gemini-3.5-flash-lite"); ok {
+		t.Fatal("a retry of the first turn started the conversation again")
+	}
+	later := map[string]any{"model": "gemini-3.8-flash-low", "messages": append(asSlice(first["messages"]),
+		map[string]any{"role": "assistant", "content": "ok"}, map[string]any{"role": "user", "content": "more"})}
+	if _, _, ok := NewBuilder().ConversationStart(NewBuilder().BuildCloudCodeRequestWithModel(later, "project", "user@example.com", options), later, "gemini-3.5-flash-lite"); ok {
+		t.Fatal("a later turn started a conversation")
 	}
 }
 

@@ -744,6 +744,28 @@ func TestEnumBelongsOnlyToTheModelItWasPublishedFor(t *testing.T) {
 	}
 }
 
+// agy titles a new conversation with the flash-lite tier upstream names in
+// tieredModelIds; the per-account catalog union must keep it.
+func TestFlashLiteIDComesFromTheTieredModelList(t *testing.T) {
+	t.Parallel()
+	parse := func(tiered string) *Catalog {
+		catalog, err := Parse([]byte(`{"agentModelSorts":[{"groups":[{"modelIds":["gemini-3.8-flash-high"]}]}],` + tiered +
+			`"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)"}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return catalog
+	}
+	named := parse(`"tieredModelIds":{"flash":["gemini-3.8-flash-tiered"],"flashLite":["gemini-3.5-flash-lite"]},`)
+	unnamed := parse("")
+	if named.FlashLiteID() != "gemini-3.5-flash-lite" || unnamed.FlashLiteID() != "" {
+		t.Fatalf("FlashLiteID = %q / %q", named.FlashLiteID(), unnamed.FlashLiteID())
+	}
+	if got := named.Merge(unnamed).FlashLiteID(); got != "gemini-3.5-flash-lite" {
+		t.Fatalf("a newer snapshot without the list dropped it: %q", got)
+	}
+}
+
 func TestGemini37FlashBaseFallbackSendsTierVerbatim(t *testing.T) {
 	t.Parallel()
 	catalog, err := Parse([]byte(`{

@@ -80,6 +80,11 @@ Step and counter progression in the 4-process conversation:
 
   Within one turn, a tool call gives a second call: suffix 1 → 3, last_step_index
   0 → 2, k 0 → 1 (user input step, model step, tool result step).
+  Second capture (same day, gemini-3.8-flash-low and claude-sonnet-5-5-low,
+  read_file with --dangerously-skip-permissions): three parallel calls in one
+  model response give suffix 1 → 5, last_step_index 0 → 4, k 0 → 1, so each
+  tool result is one step; two sequential calls give last_step_index 0, 2, 4
+  and k 0, 1, 2.
   cascade_id, trajectory_id and the conversation persist across processes.
   turn 4 still has used_claude = "true" after turn 3.
 
@@ -136,7 +141,9 @@ listExperiments returns `jetski-shared-beyond-session-id` = false.
                 "Artifact Directory Path: <app data dir>/brain/<cascade_id>"
               Line 217 is "App Data Directory: <home>/.gemini/antigravity-cli"
               and line 220 closes a <user_information> block.
-  checkpoint: role "user", one part, 520 chars, constant (sha 7109e9482e71).
+  checkpoint: role "user", one part, 520 chars, constant (sha 7109e9482e71): a
+              conversation-title generator ("You are a conversation title
+              generator. ..."); agy got "Parallel File Reading Task" back.
 
 6. tools
 --------
@@ -160,6 +167,9 @@ gpt-oss), i.e. agy adapts the schemas per provider.
   - Claude tool loop: model content [functionCall{id:"toolu_vrtx_…", name,
     args}] with no thoughtSignature, then the functionResponse in a content
     with role "user".
+  - Parallel calls: one model content with all functionCall parts (Gemini puts
+    the thoughtSignature on the first), then one content with all
+    functionResponse parts (role "model" for Gemini, "user" for Claude).
   - Gemini history sent to Claude (turn 3) drops the thoughtSignatures. The
     following Gemini call (turn 4) sends them again on the Gemini turns and none
     on the Claude turn.
@@ -175,7 +185,9 @@ Query: ?alt=sse.
 9. Call sequence
 ----------------
 New conversation:  ... loadCodeAssist, writeTrajectoryAcls{trajectoryId},
-                   [loadCodeAssist], checkpoint, agent call(s)
+                   checkpoint, agent call(s). agy starts the ACL 12-33 ms and
+                   the checkpoint 0-21 ms before the first agent call and does
+                   not wait for either (second capture, four runs).
 Resumed turn:      ... loadCodeAssist, agent call(s): no writeTrajectoryAcls,
                    no checkpoint
 
@@ -184,9 +196,10 @@ Resumed turn:      ... loadCodeAssist, agent call(s): no writeTrajectoryAcls,
   requestType:"checkpoint"}; request order contents, systemInstruction,
   generationConfig, sessionId; no tools, no labels; generationConfig
   {"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"LOW"}}; contents =
-  one user part holding the raw prompt (same length). fetchAvailableModels
-  names its model in CASCADE_USE_EXPERIMENT_CHECKPOINTER.checkpoint_model =
-  MODEL_PLACEHOLDER_M50.
+  one user part holding the raw prompt. The model is fetchAvailableModels
+  tieredModelIds.flashLite (also mqueryModelIds, webSearchModelIds and
+  commitMessageModelIds), not CASCADE_USE_EXPERIMENT_CHECKPOINTER's
+  checkpoint_model (MODEL_PLACEHOLDER_M50 = gemini-3.1-flash-lite).
 
 Every process start also sends loadCodeAssist (x4), fetchUserInfo (x2),
 fetchAdminControls, retrieveUserQuotaSummary (x4), fetchAvailableModels and
@@ -206,30 +219,35 @@ GPT-OSS. Claude responseId "req_vrtx_…".
   envelope key order   project, requestId, request, model,           alphabetical (map) → agy's order (struct)
                        userAgent, requestType
   requestId            agent/<cascade>/<ms>/<trajectory>/<step>      agent-<uuid> → agy's form
-  request key order    contents, systemInstruction, tools, labels,   alphabetical (map) → agy's order, toolConfig
-                       generationConfig, sessionId                   after tools (slot unknown)
+  request key order    contents, systemInstruction, tools, labels,   alphabetical (map) → agy's order
+                       generationConfig, sessionId
   labels               9 keys (section 3)                            absent → all 9; cascade/trajectory are UUIDs
                                                                      fixed by account + client session + first
                                                                      user message, counters from the history,
                                                                      model_enum/provider from the catalog
-  systemInstruction    one part, agy's prompt                        3+ parts → the same texts joined into one part
+  systemInstruction    one part, agy's prompt                        3+ parts → one part: agy's exact <identity>
+                                                                     block, its [ignore] copy, the caller's text
   anthropic-beta       never sent                                    interleaved-thinking-2025-05-14 on Claude →
                                                                      none (Claude still thinks after a tool
                                                                      result without it, checked live)
+  toolConfig           never sent                                    VALIDATED on Claude with tools → none
+  maxOutputTokens      catalog maximum                               client's max_tokens → catalog maximum; the
+                                                                     client's limit is enforced on the stream
+                                                                     (MAX_TOKENS finish at candidates + thoughts)
+  checkpoint call      on each new conversation                      none → title call on tieredModelIds.flashLite
+                                                                     with the last text block of the first user
+                                                                     message, beside the first model call
+  writeTrajectoryAcls  on each new conversation                      none → sent beside the first model call
 
 Kept by decision or not reproducible:
   sessionId            "-3750763034362895579" (constant)             per-account uuid + unix ms (kept)
-  system text          agy's 20 KB agent prompt                      proxy instruction + [ignore] copy + caller text
-  toolConfig           never sent                                    {"functionCallingConfig":{"mode":"VALIDATED"}}
-                                                                     on Claude requests with tools
-  generationConfig     maxOutputTokens = catalog maximum             the client's max_tokens, capped by the catalog
-  checkpoint call      on each new conversation                      none
-  writeTrajectoryAcls  on each new conversation                      none
+  system text          agy's 20 KB agent prompt                      identity block + [ignore] copy + caller text
+  user message wrapper <USER_REQUEST>, <ADDITIONAL_METADATA>,        the client's messages as sent
+                       <USER_SETTINGS_CHANGE> blocks
 
 Open
 ----
   - toolConfig position inside request (agy never sends one).
-  - Step counting for parallel tool calls (agy captures had one call per turn).
   - What fills the hashed string at BuildGenerateContentRequest arg+0x58 when it
     is not empty.
   - onboardUser body (needs an account that is not onboarded).

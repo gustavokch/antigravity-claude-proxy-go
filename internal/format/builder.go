@@ -9,7 +9,9 @@ import (
 	"time"
 )
 
-const AntigravitySystemInstruction = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
+// AntigravitySystemInstruction is agy's <identity> block, the first five lines
+// of its agent system prompt (agy 1.4.11, .reference/agy-1.4.11-generation-20261030.txt).
+const AntigravitySystemInstruction = "<identity>\nYou are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.\nYou are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.\nThe USER will send you requests, which you must always prioritize addressing. User requests are enclosed within <USER_REQUEST> tags.\n</identity>"
 
 type SessionStore struct {
 	mu       sync.RWMutex
@@ -90,6 +92,16 @@ func (builder *Builder) buildCloudCodeRequest(request, googleRequest map[string]
 	}
 	googleRequest["systemInstruction"] = map[string]any{"role": "user", "parts": []any{map[string]any{"text": strings.Join(texts, "\n\n")}}}
 
+	// agy always sends the catalog's maxOutputTokens. The client's own limit
+	// is kept for the caller to enforce on the stream (OutputGuard).
+	outputLimit := 0
+	if generation := asMap(googleRequest["generationConfig"]); generation != nil && options.MaxOutputTokens > 0 {
+		if requested := intValue(generation["maxOutputTokens"], 0); requested < options.MaxOutputTokens {
+			generation["maxOutputTokens"] = options.MaxOutputTokens
+			outputLimit = requested
+		}
+	}
+
 	conversation := deriveConversation(request, accountEmail)
 	if labels := builder.labels(conversation, options); labels != nil {
 		googleRequest["labels"] = labels
@@ -99,12 +111,14 @@ func (builder *Builder) buildCloudCodeRequest(request, googleRequest map[string]
 		now = builder.Now
 	}
 	return CloudCodeRequest{
-		Project:     projectID,
-		RequestID:   conversation.requestID(now()),
-		Request:     GenerateRequest(googleRequest),
-		Model:       stringValue(request["model"]),
-		UserAgent:   "antigravity",
-		RequestType: "agent",
+		Project:      projectID,
+		RequestID:    conversation.requestID(now()),
+		Request:      GenerateRequest(googleRequest),
+		Model:        stringValue(request["model"]),
+		UserAgent:    "antigravity",
+		RequestType:  "agent",
+		OutputLimit:  outputLimit,
+		conversation: conversation,
 	}
 }
 

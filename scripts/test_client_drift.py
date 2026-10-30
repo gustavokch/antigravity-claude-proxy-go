@@ -122,7 +122,7 @@ class CompareTest(unittest.TestCase):
             return record(path, [], {"requestType": request_type, "shape": {"request": dict.fromkeys(keys, "x")}})
 
         agy = [stream("checkpoint", ["contents"]), stream("agent", ["contents", "labels", "sessionId", "tools"])]
-        proxy = [stream("agent", ["contents", "sessionId", "toolConfig"])]
+        proxy = [stream("agent", ["contents", "sessionId"])]
         drifts, notes = drift.compare_captures(agy, proxy, frozenset(), [])
         self.assertEqual(drifts, ["POST /v1internal:streamGenerateContent (agent): request keys no longer sent: labels"])
         self.assertEqual(notes, ["POST /v1internal:streamGenerateContent (checkpoint): in the baseline, not sent this run"])
@@ -137,11 +137,11 @@ class CompareTest(unittest.TestCase):
             return record(path, [], body)
 
         agy = [stream(["contents", "systemInstruction", "tools", "labels", "generationConfig", "sessionId"])]
-        sorted_proxy = [stream(["contents", "generationConfig", "labels", "sessionId", "systemInstruction", "toolConfig"])]
+        sorted_proxy = [stream(["contents", "generationConfig", "labels", "sessionId", "systemInstruction"])]
         drifts, _ = drift.compare_captures(agy, sorted_proxy, frozenset(), [])
         self.assertEqual(len(drifts), 1)
         self.assertIn("request_key_order", drifts[0])
-        matching = [stream(["contents", "systemInstruction", "tools", "toolConfig", "labels", "generationConfig", "sessionId"])]
+        matching = [stream(["contents", "systemInstruction", "labels", "generationConfig", "sessionId"])]
         self.assertEqual(drift.compare_captures(agy, matching, frozenset(), [])[0], [])
         self.assertEqual(drift.compare_captures([stream(None)], sorted_proxy, frozenset(), [])[0], [])
 
