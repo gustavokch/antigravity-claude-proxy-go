@@ -25,7 +25,9 @@ sign-in client and its loopback redirect.
 
 Updated without a human: the pins in PINS (versions, user-agent parts, the beta
 list, Stainless header values, JA3/JA4 literals), the replayed ClientHello
-files in HELLOS, and the baseline captures under .reference/client-drift/.
+files in HELLOS, and the baseline captures under .reference/client-drift/. The
+advisor beta is read from the installed Claude Code binary, because the capture
+never turns the advisor on; a new name moves its pin and also needs a human.
 Anything else becomes a manual item in the PR body, and the PR stays a draft.
 
 State lives outside the repo, in $CLIENT_DRIFT_STATE_DIR (default
@@ -40,6 +42,7 @@ import dataclasses
 import datetime
 import fcntl
 import json
+import mmap
 import os
 import pty
 import re
@@ -590,6 +593,26 @@ def claude_betas(capture: Capture) -> list[str] | None:
     return value.split(",") if value else None
 
 
+ADVISOR_BETA = r"advisor-tool-\d{4}-\d{2}-\d{2}"
+
+
+def claude_advisor_beta(path: str | None) -> str | None:
+    """The advisor beta the installed Claude Code sends when the advisor is on.
+
+    The capture never turns the advisor on, so the name is read from the binary:
+    the one advisor-tool-<date> string its bundle carries. None when there is
+    none, or more than one.
+    """
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            names = {match.group(0).decode() for match in re.finditer(ADVISOR_BETA.encode(), data)}
+    except (OSError, ValueError):  # ValueError: mmap of an empty file
+        return None
+    return names.pop() if len(names) == 1 else None
+
+
 # OpenCode's Zen model requests: 2.0.20 sent them to /zen/v1/*, 2.2.3 to
 # /inference/<family>/v1/*, the base URLs models.dev lists for its provider.
 ZEN_PATHS = ("/zen/", "/inference/")
@@ -649,6 +672,11 @@ PINS: tuple[Pin, ...] = (
     ), claude_betas,
         decode=lambda text: re.findall(r'"([^"]+)"', text),
         encode=lambda values: "\n".join(f'\t"{value}",' for value in values)),
+    # Read from the installed binary by analyze_advisor_beta, not from the
+    # capture: the capture never turns the advisor on.
+    Pin("claude.advisor_beta", "claude", ADVISOR_BETA, (
+        Site("internal/ccidentity/apply.go", 'const AdvisorToolBeta = "<<V>>"'),
+    )),
     Pin("claude.stainless_package", "claude", SEMVER, (
         Site("internal/ccidentity/defaults.go", '{"X-Stainless-Package-Version", "<<V>>"}'),
         Site("internal/ccidentity/apply_test.go", '"X-Stainless-Package-Version":<<S>>"<<V>>"'),
@@ -971,6 +999,7 @@ def analyze_agy(root: Path, result: Result, capture: Capture, proxy: Capture | N
 
 
 def analyze_claude(root: Path, result: Result, capture: Capture, pairs: list[tuple[str, str]]) -> None:
+    analyze_advisor_beta(root, result)
     observed = claude_messages(capture)
     if observed is None:
         result.manual.append("no POST /v1/messages was captured, so headers, body and cch are unchecked")
@@ -1002,6 +1031,30 @@ def analyze_claude(root: Path, result: Result, capture: Capture, pairs: list[tup
     drifts += ccdiff.compare_billing(observed)
     result.manual.extend(drift.replace("\n", " ") for drift in drifts)
     result.write_baseline = bool(result.pin_changes or result.hello_changes) and not result.manual
+
+
+def analyze_advisor_beta(root: Path, result: Result) -> None:
+    """Compare the pinned advisor beta with the one the installed binary carries.
+
+    A new name moves the pin, and it is also a manual item. The proxy inserts
+    the beta right before ccidentity.advisorBetaPrecedes, and only a person can
+    check in the bundle whether the new release still sends it there
+    (ADR-0004 §6).
+    """
+    pin = PIN["claude.advisor_beta"]
+    try:
+        pinned = read_pin(root, pin)
+    except PinError as error:
+        result.manual.append(f"pin registry out of step: {error}")
+        return
+    seen = claude_advisor_beta(binary_path(CLIENTS["claude"]))
+    if seen is None:
+        result.manual.append("`claude.advisor_beta`: the installed claude binary does not carry exactly one "
+                             "advisor-tool-<date> beta; check how it now enables the advisor (ADR-0004 §6)")
+    elif seen != pinned:
+        result.pin_changes.append((pin, pinned, seen))
+        result.manual.append(f"the advisor beta is now {seen}: check where Claude Code puts it in "
+                             "anthropic-beta and update ccidentity.advisorBetaPrecedes (ADR-0004 §6)")
 
 
 def analyze_generic(root: Path, result: Result, capture: Capture, pairs: list[tuple[str, str]]) -> None:
