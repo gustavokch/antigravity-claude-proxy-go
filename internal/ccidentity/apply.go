@@ -79,21 +79,33 @@ const OAuthBetaKey = "anthropic-beta"
 // beta list; WithClientBetas keeps it when the client sent it.
 const AdvisorToolBeta = "advisor-tool-2026-03-01"
 
-// WithClientBetas returns p with the client betas ADR-0004 §6 keeps appended
-// after the captured list: AdvisorToolBeta, when the client's anthropic-beta
-// names it. Every other client beta is still replaced by the captured list.
+// advisorBetaPrecedes is the captured beta Claude Code sends right after
+// AdvisorToolBeta. 2.1.311 pushes the advisor beta onto the model's base list
+// (which ends at mid-conversation-tool-changes in the capture) and pushes this
+// one next; the header keeps push order. A recapture without it fails
+// TestDefaultProfilePinsTheCapturedPathAndBetas, because the position then has
+// to be read from the client again (ADR-0004 §6).
+const advisorBetaPrecedes = "thinking-token-count-2026-05-13"
+
+// WithClientBetas returns p with the client betas ADR-0004 §6 keeps:
+// AdvisorToolBeta, when the client's anthropic-beta names it, placed where
+// Claude Code places it (right before advisorBetaPrecedes, or last in a list
+// without it). Every other client beta is still replaced by the captured list.
 //
 // client is read case-insensitively, as ApplyHeaders reads h, and the header is
 // a comma-separated list that may arrive on several lines. p.Betas is shared by
-// every caller of DefaultProfile, so it is copied rather than appended to. A
-// captured list that already carries the beta is returned as it is, so a
-// recapture that adds it does not send it twice.
+// every caller of DefaultProfile, so the result is a new slice. A captured list
+// that already carries the beta is returned as it is, so a recapture that adds
+// it does not send it twice.
 func (p Profile) WithClientBetas(client map[string][]string) Profile {
 	if slices.Contains(p.Betas, AdvisorToolBeta) || !clientSentBeta(client, AdvisorToolBeta) {
 		return p
 	}
-	betas := make([]string, 0, len(p.Betas)+1)
-	p.Betas = append(append(betas, p.Betas...), AdvisorToolBeta)
+	at := slices.Index(p.Betas, advisorBetaPrecedes)
+	if at < 0 {
+		at = len(p.Betas)
+	}
+	p.Betas = slices.Concat(p.Betas[:at], []string{AdvisorToolBeta}, p.Betas[at:])
 	return p
 }
 

@@ -545,9 +545,9 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 }
 
 // TestClient_SendMessage_NormalizedKeepsTheClientsAdvisorBeta pins that the
-// pooled gateway path sends the client's advisor beta after the captured list
-// (ADR-0004 §6) and still drops a foreign one. The matching rules are
-// ccidentity's TestWithClientBetas.
+// pooled gateway path sends the client's advisor beta in the captured list
+// (ADR-0004 §6) and still drops a foreign one. Where the beta goes and which
+// names match are ccidentity's TestWithClientBetas.
 func TestClient_SendMessage_NormalizedKeepsTheClientsAdvisorBeta(t *testing.T) {
 	var got []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -571,7 +571,7 @@ func TestClient_SendMessage_NormalizedKeepsTheClientsAdvisorBeta(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	want := strings.Join(ccidentity.Betas, ",") + "," + ccidentity.AdvisorToolBeta
+	want := strings.Join(ccidentity.DefaultProfile().WithClientBetas(http.Header{"Anthropic-Beta": {ccidentity.AdvisorToolBeta}}).Betas, ",")
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("anthropic-beta = %q, want the single value %q", got, want)
 	}

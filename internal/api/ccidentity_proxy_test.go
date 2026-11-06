@@ -202,7 +202,7 @@ func TestCustomEndpoint_NormalizedRequestCarriesTheCapturedQuery(t *testing.T) {
 }
 
 // TestCustomEndpoint_NormalizedKeepsTheClientsAdvisorBeta pins that the
-// custom-endpoint path sends the client's advisor beta after the captured list
+// custom-endpoint path sends the client's advisor beta in the captured list
 // (ADR-0004 §6), as the pooled gateway path does, and still drops a foreign one.
 func TestCustomEndpoint_NormalizedKeepsTheClientsAdvisorBeta(t *testing.T) {
 	withConfigDir(t)
@@ -221,7 +221,8 @@ func TestCustomEndpoint_NormalizedKeepsTheClientsAdvisorBeta(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	if want := strings.Join(ccidentity.Betas, ",") + "," + ccidentity.AdvisorToolBeta; got.beta != want {
+	want := strings.Join(ccidentity.DefaultProfile().WithClientBetas(http.Header{"Anthropic-Beta": {ccidentity.AdvisorToolBeta}}).Betas, ",")
+	if got.beta != want {
 		t.Errorf("anthropic-beta = %q, want %q", got.beta, want)
 	}
 }
