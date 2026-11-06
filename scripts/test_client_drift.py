@@ -154,6 +154,16 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(drift.agy_user_agent(capture, "cl"), "1009308193")
         self.assertEqual(drift.agy_user_agent(capture, "auth"), "consumer")
 
+    def test_opencode_is_read_from_either_zen_route(self):
+        # 2.2.3 left /zen/v1 for /inference/<family>/v1; reading only the old
+        # route left its version and ClientHello unchecked.
+        for path in ("/zen/v1/chat/completions", "/inference/openai/v1/chat/completions"):
+            seen = record(path, [["User-Agent", "opencode/latest/2.2.3/cli"]])
+            capture = drift.Capture([record("/other", []), seen], {})
+            self.assertEqual(drift.opencode_version(capture), "2.2.3", path)
+            zen = next(hello for hello in drift.HELLOS if hello.name == "zen")
+            self.assertIs(zen.select(capture), seen, path)
+
 
 class StatusTest(unittest.TestCase):
     def setUp(self):

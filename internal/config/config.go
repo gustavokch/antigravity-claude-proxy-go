@@ -348,9 +348,10 @@ const (
 	// the graded action and maps the chosen label back to a severity.
 	BackendFormatLaya BackendFormat = "laya"
 	// BackendFormatJev speaks the same typed-decision protocol to a hosted
-	// Jev model, Zen's POST /zen/v1/systemone. The question, severity map and
-	// escalation policy are the Laya* settings; the Zen key and the OpenCode
-	// harness identity replace laya-serve's optional bearer token.
+	// Jev model, Zen's POST /inference/systemone/v1/systemone. The question,
+	// severity map and escalation policy are the Laya* settings; the Zen key
+	// and the OpenCode harness identity replace laya-serve's optional bearer
+	// token.
 	BackendFormatJev BackendFormat = "jev"
 )
 
@@ -895,6 +896,11 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
 	followSeededZenIdentity(cfg.Zen.Harness)
+	if isSeededZenBaseURL(cfg.Zen.BaseURL) {
+		slog.Info("zen.baseUrl written by an older release follows the built-in default",
+			"stored", cfg.Zen.BaseURL, "now", zen.DefaultBaseURL)
+		cfg.Zen.BaseURL = zen.DefaultBaseURL
+	}
 
 	currentConfig = cfg
 	return cfg, nil
@@ -1160,6 +1166,7 @@ func Save(updates map[string]any) (Config, error) {
 		currentMap[k] = v
 	}
 	dropSeededZenIdentity(currentMap)
+	dropDefaultZenBaseURL(currentMap)
 
 	encoded, err := json.MarshalIndent(currentMap, "", "  ")
 	if err != nil {
@@ -1190,6 +1197,31 @@ func dropZenHarnessIdentity(configMap map[string]any) {
 	harness := zenHarnessSection(configMap)
 	for key := range seededZenIdentity {
 		delete(harness, key)
+	}
+}
+
+// seededZenBaseURL is the zen.baseUrl the WebUI wrote into config.json with
+// every Zen save while it was the default: the panel posts its default back.
+// Zen's routes moved to /inference/<family>/v1 (zen.MessagesPath and the rest),
+// none of which exists under it, so a stored one follows zen.DefaultBaseURL.
+// The old normalization stripped a trailing /v1, so that form counts too.
+const seededZenBaseURL = "https://opencode.ai/zen"
+
+func isSeededZenBaseURL(raw string) bool {
+	base := strings.TrimRight(strings.TrimSpace(raw), "/")
+	return strings.TrimSuffix(base, "/v1") == seededZenBaseURL
+}
+
+// dropDefaultZenBaseURL removes a zen.baseUrl that is the built-in default,
+// current or seeded, from a raw config map. The WebUI posts the default back
+// with every Zen save; stored, it reads as the operator's choice and a later
+// move of zen.DefaultBaseURL never reaches the install. Absent, Load fills in
+// the current default.
+func dropDefaultZenBaseURL(configMap map[string]any) {
+	zenMap, _ := configMap["zen"].(map[string]any)
+	stored, _ := zenMap["baseUrl"].(string)
+	if isSeededZenBaseURL(stored) || zen.NormalizeBaseURL(stored) == zen.DefaultBaseURL {
+		delete(zenMap, "baseUrl")
 	}
 }
 

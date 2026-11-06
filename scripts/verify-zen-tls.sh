@@ -7,7 +7,7 @@ set -euo pipefail
 # zen.harness.tls=true, captures the upstream ClientHello to opencode.ai,
 # and asserts both fingerprints against the genuine OpenCode capture
 # (internal/zen/opencode-clienthello.bin):
-#   JA4 t13d1713h1_5b57614c22b0_6a3d802a7139
+#   JA4 t13d1713h1_5b57614c22b0_7f527383e249
 #   JA3 1523504b38f0fae0d881d4b6554aac1b   (md5 of ja3_full)
 # It also asserts the Zen free-tier gate PASSES (HTTP 200): the request body
 # carries stream:true plus the bash/read tools the gate demands (the proxy
@@ -26,7 +26,7 @@ PROXY_PORT="${ANTIGRAVITY_ZEN_VERIFY_PORT:-18099}"
 PROXY_LOG="$OUT_DIR/proxy.log"
 MODEL="${ANTIGRAVITY_ZEN_VERIFY_MODEL:-mimo-v2.6-flash-free}"
 
-EXPECTED_JA4="t13d1713h1_5b57614c22b0_6a3d802a7139"
+EXPECTED_JA4="t13d1713h1_5b57614c22b0_7f527383e249"
 EXPECTED_JA3="1523504b38f0fae0d881d4b6554aac1b"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

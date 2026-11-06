@@ -8,7 +8,7 @@ import { loadComponent, okResponse, pendingTick } from './kimi-poll-race.harness
 
 const zenConfig = (harness) => ({ status: 'ok', config: {
     enabled: true,
-    baseUrl: 'https://opencode.ai/zen',
+    baseUrl: 'https://opencode.ai/inference',
     hasApiKey: true,
     keySource: 'config',
     allowlist: [],
@@ -33,10 +33,10 @@ async function clearingAPinnedFieldUnpinsIt() {
         { enabled: true, tls: true, version: '', project: '' },
         'cleared fields must post "", untouched ones nothing');
     post.resolve({ response: okResponse(zenConfig(
-        { enabled: true, tls: true, version: '2.0.20', client: 'cli', project: 'global' })), newPassword: null });
+        { enabled: true, tls: true, version: '2.2.3', client: 'cli', project: 'global' })), newPassword: null });
     await save;
 
-    assert.equal(c.zenConfig.harness.version, '2.0.20', 'the form must show the default the version follows again');
+    assert.equal(c.zenConfig.harness.version, '2.2.3', 'the form must show the default the version follows again');
     assert.equal(c.zenConfig.harness.project, 'global', 'the form must show the default the project follows again');
 
     const again = c.saveZenConfig();
@@ -45,7 +45,7 @@ async function clearingAPinnedFieldUnpinsIt() {
     assert.deepEqual(JSON.parse(second.options.body).harness, { enabled: true, tls: true },
         'a later save must not pin the defaults the form now shows');
     second.resolve({ response: okResponse(zenConfig(
-        { enabled: true, tls: true, version: '2.0.20', client: 'cli', project: 'global' })), newPassword: null });
+        { enabled: true, tls: true, version: '2.2.3', client: 'cli', project: 'global' })), newPassword: null });
     await again;
 }
 

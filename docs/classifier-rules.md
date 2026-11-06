@@ -238,7 +238,7 @@ A Jev backend answers low-risk Stage 1 requests with Jev, TypeSafe's hosted Syst
 "backends": {
   "zen-jev": {
     "name": "Zen Jev",
-    "url": "https://opencode.ai/zen/v1/systemone",
+    "url": "https://opencode.ai/inference/systemone/v1/systemone",
     "format": "jev",
     "model": "jev-1.13-free",
     "timeoutMs": 5000
@@ -246,6 +246,7 @@ A Jev backend answers low-risk Stage 1 requests with Jev, TypeSafe's hosted Syst
 }
 ```
 
+- **URL.** `https://opencode.ai/inference/systemone/v1/systemone` is the route OpenCode 2.2.3 calls. A backend saved with the older `https://opencode.ai/zen/v1/systemone` still answers, but its path no longer matches the harness identity it sends, so change it.
 - **Key.** A blank `apiKey` uses `zen.apiKey`, then `OPENCODE_API_KEY`; a key on the backend overrides both. With no key the reroute fails without sending anything. The backend does not read `zen.enabled`: it is configured explicitly, like any other backend.
 - **Model.** A blank `model` means `jev-1.13-free`, which Zen offers for a limited time. When the free period ends, set `model` to `jev-1.13` (Zen lists it at $0.042 per million input tokens with free output; a short action used 400 input tokens). Until then, a call the gateway refuses fails the reroute, the audit event is `error`, and the request goes to the teacher.
 - **Timeout.** An unset `timeoutMs` is 5 seconds, which is what a backend added in the WebUI gets. A backend the WebUI added before it stopped writing 20000 carries that value, so set 5000 on it yourself: this call sits in front of the permission prompt. On 2026-09-30 Zen answered in 0.39 to 0.69 seconds, and in 3.4 seconds on the first call of a cold process.

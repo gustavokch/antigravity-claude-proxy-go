@@ -65,8 +65,8 @@ func saveZenTestConfig(t *testing.T, zenCfg map[string]any) {
 func zenUpstream(t *testing.T, gotBody *[]byte, gotAuth *string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/messages" {
-			t.Errorf("upstream path = %q, want /v1/messages", r.URL.Path)
+		if r.URL.Path != "/anthropic/v1/messages" {
+			t.Errorf("upstream path = %q, want /anthropic/v1/messages", r.URL.Path)
 		}
 		body, _ := io.ReadAll(r.Body)
 		*gotBody = body
@@ -685,8 +685,8 @@ func TestServer_ForwardToZen_ChatWireRouting(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/v1/chat/completions" {
-		t.Fatalf("upstream path = %q, want /v1/chat/completions", gotPath)
+	if gotPath != "/openai/v1/chat/completions" {
+		t.Fatalf("upstream path = %q, want /openai/v1/chat/completions", gotPath)
 	}
 	if gotAuth != "Bearer sk-zen-test" {
 		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)
@@ -756,8 +756,8 @@ func TestServer_ForwardToZen_ResponsesWireRouting(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("client status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/v1/responses" {
-		t.Fatalf("upstream path = %q, want /v1/responses", gotPath)
+	if gotPath != "/openai/v1/responses" {
+		t.Fatalf("upstream path = %q, want /openai/v1/responses", gotPath)
 	}
 	if gotAuth != "Bearer sk-zen-test" {
 		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)

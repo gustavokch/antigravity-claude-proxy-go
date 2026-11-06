@@ -4,13 +4,12 @@ import "testing"
 
 func TestNormalizeBaseURL(t *testing.T) {
 	cases := map[string]string{
-		"https://opencode.ai/zen/":    "https://opencode.ai/zen",
-		"https://opencode.ai/zen":     "https://opencode.ai/zen",
-		"https://opencode.ai/zen/v1/": "https://opencode.ai/zen",
-		"https://opencode.ai/zen/v1":  "https://opencode.ai/zen",
-		"  https://opencode.ai/zen  ": "https://opencode.ai/zen",
-		"":                            DefaultBaseURL,
-		"   ":                         DefaultBaseURL,
+		"https://opencode.ai/inference/":    "https://opencode.ai/inference",
+		"https://opencode.ai/inference":     "https://opencode.ai/inference",
+		"https://opencode.ai/inference//":   "https://opencode.ai/inference",
+		"  https://opencode.ai/inference  ": "https://opencode.ai/inference",
+		"":                                  DefaultBaseURL,
+		"   ":                               DefaultBaseURL,
 	}
 	for in, want := range cases {
 		if got := NormalizeBaseURL(in); got != want {

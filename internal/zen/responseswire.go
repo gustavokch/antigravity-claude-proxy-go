@@ -478,7 +478,7 @@ func SendResponses(ctx context.Context, client *http.Client, baseURL, apiKey str
 	if err != nil {
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, NormalizeBaseURL(baseURL)+"/v1/responses", bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, NormalizeBaseURL(baseURL)+ResponsesPath, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}

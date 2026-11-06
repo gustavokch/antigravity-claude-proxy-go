@@ -231,13 +231,12 @@ type zenModelsResponse struct {
 	Data []ModelItem `json:"data"`
 }
 
-// FetchModels GETs /v1/models from Zen, returns the parsed list, and caches
+// FetchModels GETs ModelsPath from Zen, returns the parsed list, and caches
 // it. The endpoint answers unauthenticated, so an empty apiKey is not an
 // error — the WebUI can populate its picker before the operator pastes a key.
 // A non-empty key is sent as Bearer for signature symmetry with Kimi.
 func (c *Client) FetchModels(ctx context.Context, apiKey, baseURL string) ([]ModelItem, error) {
-	base := strings.TrimRight(NormalizeBaseURL(baseURL), "/")
-	url := base + "/v1/models"
+	url := NormalizeBaseURL(baseURL) + ModelsPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build Zen models request: %w", err)

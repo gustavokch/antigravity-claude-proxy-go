@@ -17,7 +17,7 @@ import (
 func TestSendChatStreamingToolCall(t *testing.T) {
 	var got map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer k" {
+		if r.URL.Path != "/openai/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer k" {
 			t.Errorf("bad upstream call %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
 		}
 		_ = json.NewDecoder(r.Body).Decode(&got)

@@ -77,7 +77,7 @@ func requireHarnessHeaders(t *testing.T, hdr http.Header) {
 	if session == "" {
 		t.Error("x-opencode-session empty")
 	}
-	for _, name := range []string{"x-session-affinity", "X-Session-Id"} {
+	for _, name := range []string{"x-opencode-session-id", "x-session-affinity", "X-Session-Id"} {
 		if got := hdr.Get(name); got != session {
 			t.Errorf("%s = %q, want the x-opencode-session value %q", name, got, session)
 		}
@@ -214,7 +214,7 @@ func TestForwardToZen_SessionIDPerConversation(t *testing.T) {
 		sessions = append(sessions, r.Header.Get("x-opencode-session"))
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/v1/chat/completions" {
+		if r.URL.Path == "/openai/v1/chat/completions" {
 			_, _ = io.WriteString(w, `{"id":"c1","choices":[{"message":{"content":"yo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 			return
 		}

@@ -40,8 +40,8 @@ func TestForwardMessages_DirectorBehavior(t *testing.T) {
 
 	ForwardMessages(w, req, upstream.URL, "sk-test", body)
 
-	if gotPath != "/v1/messages" {
-		t.Errorf("upstream path = %q, want /v1/messages", gotPath)
+	if gotPath != "/anthropic/v1/messages" {
+		t.Errorf("upstream path = %q, want /anthropic/v1/messages", gotPath)
 	}
 	if gotAuth != "Bearer sk-test" {
 		t.Errorf("Authorization = %q, want Bearer sk-test", gotAuth)
@@ -146,8 +146,8 @@ func TestForwardSystemOne_TargetsSystemoneWireWithoutAnthropicHeaders(t *testing
 
 	ForwardSystemOne(rec, req, upstream.URL, "sk-zen-test", body, nil)
 
-	if gotPath != "/v1/systemone" {
-		t.Errorf("upstream path = %q, want /v1/systemone", gotPath)
+	if gotPath != "/systemone/v1/systemone" {
+		t.Errorf("upstream path = %q, want /systemone/v1/systemone", gotPath)
 	}
 	if gotAuth != "Bearer sk-zen-test" {
 		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)

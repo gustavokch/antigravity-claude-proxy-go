@@ -1331,8 +1331,8 @@ func TestSendResponses_NonStreamClientGetsJSON(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if gotPath != "/v1/responses" {
-		t.Errorf("upstream path = %q, want /v1/responses", gotPath)
+	if gotPath != "/openai/v1/responses" {
+		t.Errorf("upstream path = %q, want /openai/v1/responses", gotPath)
 	}
 	if gotAuth != "Bearer sk-zen-test" {
 		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)

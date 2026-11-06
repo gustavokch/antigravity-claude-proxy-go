@@ -11,7 +11,7 @@ import (
 
 func TestClient_FetchModels_ParsesResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
+		if r.URL.Path != "/openai/v1/models" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer test-key" {
@@ -82,8 +82,7 @@ func TestClient_FetchModels_BaseURLVariations(t *testing.T) {
 	variations := []string{
 		srv.URL,
 		srv.URL + "/",
-		srv.URL + "/v1",
-		srv.URL + "/v1/",
+		"  " + srv.URL + "//  ",
 	}
 
 	c := &Client{}
@@ -93,8 +92,8 @@ func TestClient_FetchModels_BaseURLVariations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FetchModels(%q): %v", base, err)
 		}
-		if requestedPath != "/v1/models" {
-			t.Errorf("base %q led to path %q, want /v1/models", base, requestedPath)
+		if requestedPath != "/openai/v1/models" {
+			t.Errorf("base %q led to path %q, want /openai/v1/models", base, requestedPath)
 		}
 		if len(got) != 1 || got[0].ID != "claude-sonnet-4-6" {
 			t.Errorf("base %q failed to parse models: %+v", base, got)

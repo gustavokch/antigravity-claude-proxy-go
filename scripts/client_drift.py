@@ -105,7 +105,7 @@ CLIENTS = {
         "opencode", "opencode", ("opencode.ai",),
         frozenset({
             "authorization", "content-length", "host", "b3", "traceparent",
-            "x-opencode-session", "x-session-affinity", "x-session-id",
+            "x-opencode-session", "x-opencode-session-id", "x-session-affinity", "x-session-id",
             # A hash of the working directory's project root.
             "x-opencode-project",
         }),
@@ -158,7 +158,7 @@ class Capture:
     hellos: dict[str, bytes]  # JA4 -> raw ClientHello
     runs: list[dict] = dataclasses.field(default_factory=list)
 
-    def first(self, method: str, path_prefix: str) -> dict | None:
+    def first(self, method: str, path_prefix: str | tuple[str, ...]) -> dict | None:
         for record in self.records:
             if record.get("method") == method and str(record.get("path", "")).startswith(path_prefix):
                 return record
@@ -478,8 +478,17 @@ def claude_betas(capture: Capture) -> list[str] | None:
     return value.split(",") if value else None
 
 
+# OpenCode's Zen model requests: 2.0.20 sent them to /zen/v1/*, 2.2.3 to
+# /inference/<family>/v1/*, the base URLs models.dev lists for its provider.
+ZEN_PATHS = ("/zen/", "/inference/")
+
+
+def zen_request(capture: Capture) -> dict | None:
+    return capture.first("POST", ZEN_PATHS)
+
+
 def opencode_version(capture: Capture) -> str | None:
-    match = re.match(r"opencode/latest/([^/]+)/", header(capture.first("POST", "/zen/"), "user-agent") or "")
+    match = re.match(r"opencode/latest/([^/]+)/", header(zen_request(capture), "user-agent") or "")
     return match.group(1) if match else None
 
 
@@ -603,7 +612,7 @@ HELLOS: tuple[Hello, ...] = (
     Hello("claude.node", "claude", "internal/transport/claude-code-node-clienthello.bin",
           "claude.node.ja4", "claude.node.ja3", lambda c: c.first("GET", "/api/")),
     Hello("zen", "opencode", "internal/zen/opencode-clienthello.bin",
-          "zen.ja4", "zen.ja3", lambda c: c.first("POST", "/zen/")),
+          "zen.ja4", "zen.ja3", zen_request),
 )
 
 

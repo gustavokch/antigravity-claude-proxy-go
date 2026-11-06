@@ -30,12 +30,12 @@ func requireHarnessHeaders(t *testing.T, hdr http.Header, wantUA string) {
 	requireSessionMirrors(t, hdr, session)
 }
 
-// requireSessionMirrors asserts the OpenCode 2.0.20 session header set:
-// x-session-affinity and X-Session-Id carry the x-opencode-session value, and
-// the 1.x x-opencode-request id is gone.
+// requireSessionMirrors asserts the OpenCode 2.2.3 session header set:
+// x-opencode-session-id, x-session-affinity and X-Session-Id carry the
+// x-opencode-session value, and the 1.x x-opencode-request id is gone.
 func requireSessionMirrors(t *testing.T, hdr http.Header, session string) {
 	t.Helper()
-	for _, name := range []string{"x-session-affinity", "X-Session-Id"} {
+	for _, name := range []string{"x-opencode-session-id", "x-session-affinity", "X-Session-Id"} {
 		if got := hdr.Get(name); got != session {
 			t.Errorf("%s = %q, want the x-opencode-session value %q", name, got, session)
 		}
