@@ -838,6 +838,12 @@ def analyze_agy(root: Path, result: Result, capture: Capture, proxy: Capture | N
         pending = [(new, old) for old, new in substitutions(result.pin_changes)]
         drifts, _ = compare_captures(capture.records, proxy.records, CLIENTS["agy"].dynamic_headers, pending)
         result.manual.extend(f"this build differs from agy: {drift}" for drift in drifts)
+        # agy makes calls the probe never does, which is expected. The reverse
+        # is a request nothing checked: the probe sent it and agy did not.
+        sent_by_agy = {request_key(record) for record in capture.records}
+        result.manual.extend(
+            f"this build sends {' '.join(key)}, which agy did not send this run, so its shape is unchecked"
+            for key in sorted({request_key(record) for record in proxy.records} - sent_by_agy))
     analyze_generic(root, result, capture, pairs)
     if oauth is None:
         return

@@ -164,6 +164,23 @@ class CompareTest(unittest.TestCase):
             zen = next(hello for hello in drift.HELLOS if hello.name == "zen")
             self.assertIs(zen.select(capture), seen, path)
 
+    def test_a_request_only_this_build_sends_needs_a_human(self):
+        # agy 1.5.2's print mode stopped sending the title checkpoint the proxy
+        # sends; the run dropped that one-sided request, so its shape went
+        # unchecked behind a report of zero manual items.
+        path = "/v1internal:streamGenerateContent?alt=sse"
+        agy = drift.Capture([record("/v1internal:loadCodeAssist", []), record("/v1internal:fetchAdminControls", []),
+                             record(path, [], {"requestType": "agent"})], {})
+        build = drift.Capture([record("/v1internal:loadCodeAssist", []), record(path, [], {"requestType": "checkpoint"}),
+                               record(path, [], {"requestType": "agent"})], {})
+        result = drift.Result("agy", "1.5.2", agy)
+        with mock.patch.object(drift, "analyze_generic"):
+            drift.analyze_agy(ROOT, result, agy, build, None, [])
+        self.assertEqual(result.manual, [
+            "this build sends POST /v1internal:streamGenerateContent (checkpoint), which agy did not send this run, "
+            "so its shape is unchecked",
+        ])
+
 
 class HandCommitTest(unittest.TestCase):
     """A run rebuilds the drift branch from main; it must not discard a commit
