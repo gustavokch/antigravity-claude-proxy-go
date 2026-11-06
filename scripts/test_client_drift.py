@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -153,6 +154,134 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(drift.agy_user_agent(capture, "version"), "1.4.10")
         self.assertEqual(drift.agy_user_agent(capture, "cl"), "1009308193")
         self.assertEqual(drift.agy_user_agent(capture, "auth"), "consumer")
+
+    def test_opencode_is_read_from_either_zen_route(self):
+        # 2.2.3 left /zen/v1 for /inference/<family>/v1; reading only the old
+        # route left its version and ClientHello unchecked.
+        for path in ("/zen/v1/chat/completions", "/inference/openai/v1/chat/completions"):
+            seen = record(path, [["User-Agent", "opencode/latest/2.2.3/cli"]])
+            capture = drift.Capture([record("/other", []), seen], {})
+            self.assertEqual(drift.opencode_version(capture), "2.2.3", path)
+            zen = next(hello for hello in drift.HELLOS if hello.name == "zen")
+            self.assertIs(zen.select(capture), seen, path)
+
+    def test_a_request_only_this_build_sends_needs_a_human(self):
+        # agy 1.5.2's print mode stopped sending the title checkpoint the proxy
+        # sends; the run dropped that one-sided request, so its shape went
+        # unchecked behind a report of zero manual items.
+        path = "/v1internal:streamGenerateContent?alt=sse"
+        agy = drift.Capture([record("/v1internal:loadCodeAssist", []), record("/v1internal:fetchAdminControls", []),
+                             record(path, [], {"requestType": "agent"})], {})
+        build = drift.Capture([record("/v1internal:loadCodeAssist", []), record(path, [], {"requestType": "checkpoint"}),
+                               record(path, [], {"requestType": "agent"})], {})
+        result = drift.Result("agy", "1.5.2", agy)
+        with mock.patch.object(drift, "analyze_generic"):
+            drift.analyze_agy(ROOT, result, agy, build, None, [])
+        self.assertEqual(result.manual, [
+            "this build sends POST /v1internal:streamGenerateContent (checkpoint), which agy did not send this run, "
+            "so its shape is unchecked",
+        ])
+
+
+# A stand-in for agy's interactive mode: the trust dialog, a turn once the
+# dialog is answered, and then it waits for the user like the real client.
+FAKE_TERMINAL_CLIENT = """
+import os, sys, time
+progress, mode = sys.argv[1], sys.argv[2]
+open(progress + ".pid", "w").write(str(os.getpid()))
+if mode == "exit":
+    sys.exit(3)
+print("Do you trust the contents of this project?")
+print("> Yes, I trust this folder", flush=True)
+sys.stdin.readline()
+if mode == "turn":
+    open(progress, "a").write("agent\\n")
+time.sleep(60)
+"""
+
+
+class TerminalRunTest(unittest.TestCase):
+    """agy's title checkpoint is sent only in interactive mode, so the capture
+    drives it on a terminal; the run must end on its own in every case."""
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.work)
+        self.client = self.work / "client.py"
+        self.client.write_text(FAKE_TERMINAL_CLIENT)
+        self.progress = self.work / "progress"
+
+    def run_client(self, mode: str, timeout: int = 20) -> dict:
+        def calls() -> int:
+            return len(self.progress.read_text().splitlines()) if self.progress.exists() else 0
+
+        return drift.run_on_terminal([sys.executable, str(self.client), str(self.progress), mode],
+                                     dict(os.environ), self.work, calls, timeout=timeout, settle=0.3)
+
+    def assert_gone(self) -> None:
+        pid = int(Path(str(self.progress) + ".pid").read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_answers_the_trust_dialog_and_ends_the_client_after_its_turn(self):
+        run = self.run_client("turn")
+        self.assertEqual(run["exit"], 0, run)
+        self.assertLess(run["seconds"], 10)
+        self.assertEqual(self.progress.read_text(), "agent\n")
+        self.assert_gone()
+
+    def test_a_client_that_never_calls_is_ended_at_the_timeout(self):
+        run = self.run_client("idle", timeout=2)
+        self.assertEqual(run["exit"], "timeout")
+        self.assert_gone()
+
+    def test_a_client_that_exits_reports_its_code(self):
+        run = self.run_client("exit")
+        self.assertEqual(run["exit"], 3)
+
+
+class HandCommitTest(unittest.TestCase):
+    """A run rebuilds the drift branch from main; it must not discard a commit
+    a person pushed to that branch (the 2026-11-06 run did, on PR #138)."""
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        remote = tmp / "remote.git"
+        self.root = tmp / "tree"
+        drift.git(tmp, "init", "--bare", "-b", drift.BASE_BRANCH, str(remote))
+        drift.git(tmp, "init", "-b", drift.BASE_BRANCH, str(self.root))
+        for key, value in (("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false"),
+                           ("core.hooksPath", "/dev/null")):
+            drift.git(self.root, "config", key, value)
+        drift.git(self.root, "remote", "add", drift.REMOTE, str(remote))
+        self.commit("base")
+        drift.git(self.root, "push", drift.REMOTE, f"HEAD:refs/heads/{drift.BASE_BRANCH}")
+        drift.git(self.root, "fetch", drift.REMOTE)
+
+    def commit(self, *message: str) -> None:
+        drift.git(self.root, "commit", "--allow-empty", *(arg for line in message for arg in ("-m", line)))
+
+    def push_branch(self) -> str:
+        drift.git(self.root, "push", "--force", drift.REMOTE, f"HEAD:refs/heads/{drift.DRIFT_BRANCH}")
+        return drift.git(self.root, "rev-parse", "HEAD")
+
+    def test_no_drift_branch_yet(self):
+        self.assertEqual(drift.hand_commits(self.root), ("", []))
+
+    def test_a_branch_of_tool_commits_may_be_replaced(self):
+        self.commit("chore(identity): follow agy 1.5.2", drift.COMMIT_MARKER + "; the PR body has the report.")
+        tip = self.push_branch()
+        self.assertEqual(drift.hand_commits(self.root), (tip, []))
+
+    def test_a_hand_commit_is_reported(self):
+        self.commit("chore(identity): follow agy 1.5.2", drift.COMMIT_MARKER + "; the PR body has the report.")
+        self.commit("fix(identity): pass the gate")
+        tip = self.push_branch()
+        _, hand = drift.hand_commits(self.root)
+        self.assertEqual(len(hand), 1, hand)
+        self.assertIn("fix(identity): pass the gate", hand[0])
+        self.assertEqual(drift.hand_commits(self.root)[0], tip)
 
 
 class StatusTest(unittest.TestCase):

@@ -19,7 +19,7 @@ async function importAfterDirectLoadKeepsKeyAndAllowlist() {
     assert.ok(zenGet, 'init() on the models tab did not load the Zen config');
     zenGet.resolve({ response: okResponse({ status: 'ok', config: {
         enabled: true,
-        baseUrl: 'https://opencode.ai/zen',
+        baseUrl: 'https://opencode.ai/inference',
         hasApiKey: true,
         keySource: 'config',
         allowlist: [{ id: 'glm-5.3-flash-free', alias: 'glm', enabled: true }],

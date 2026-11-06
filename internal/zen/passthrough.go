@@ -57,7 +57,7 @@ func ForwardMessagesWithHook(w http.ResponseWriter, r *http.Request, baseURL, ap
 // ForwardMessagesWithModify behaves like ForwardMessages and accepts a custom
 // ModifyResponse function.
 func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	forwardZenPath(w, r, baseURL, apiKey, body, "/v1/messages", modify, true)
+	forwardZenPath(w, r, baseURL, apiKey, body, MessagesPath, modify, true)
 }
 
 // ForwardSystemOne transparently forwards a Jev systemone request to the Zen
@@ -70,7 +70,7 @@ func ForwardMessagesWithModify(w http.ResponseWriter, r *http.Request, baseURL, 
 // On proxy error, it writes a 502 with an `api_error` body so the client
 // receives a structured response matching the rest of the proxy.
 func ForwardSystemOne(w http.ResponseWriter, r *http.Request, baseURL, apiKey string, body []byte, modify func(*http.Response) error) {
-	forwardZenPath(w, r, baseURL, apiKey, body, "/v1/systemone", modify, false)
+	forwardZenPath(w, r, baseURL, apiKey, body, SystemOnePath, modify, false)
 }
 
 // forwardZenPath is the shared ReverseProxy template behind

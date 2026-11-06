@@ -380,7 +380,7 @@ func TestServer_ZenHarnessControlCharacterRefused(t *testing.T) {
 func TestServer_HandleZenModelsFetch_SplitsBuckets(t *testing.T) {
 	t.Setenv("OPENCODE_API_KEY", "")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
+		if r.URL.Path != "/openai/v1/models" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		if auth := r.Header.Get("Authorization"); auth != "" {

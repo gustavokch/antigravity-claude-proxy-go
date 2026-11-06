@@ -107,6 +107,12 @@ def get_records(records: list[dict]) -> list[dict]:
 # grows or drops one moves the policy with it.
 MARKER_PREFIXES = ("x-claude-code-", "x-stainless-")
 
+# The captured GET whose header order the proxy's discovery requests reproduce.
+# policy_limits writes its headers in an order of its own that no single rule
+# reproduces, and a capture records the two GETs in whichever order they
+# finished, so the reference is chosen by path, never by position.
+ORDER_REFERENCE_PATH = "/api/claude_code/settings"
+
 
 def captured_query(baseline: dict) -> str:
     """The query string the captured request carries, if any."""
@@ -326,6 +332,15 @@ def check_discovery(
         return problems
     expected_version = versions.pop()
 
+    reference = next(
+        (r for r in baseline_gets if str(r.get("path", "")).partition("?")[0] == ORDER_REFERENCE_PATH),
+        None,
+    )
+    if reference is None:
+        problems.append(f"the baseline holds no GET {ORDER_REFERENCE_PATH} to take the header order from")
+        return problems
+    reference_headers = header_map(reference)
+
     if len(observed_gets) < min_records:
         problems.append(
             f"only {len(observed_gets)} discovery request(s) reached the wire, want {min_records}"
@@ -347,9 +362,7 @@ def check_discovery(
             )
         # The node stack's tail: the Accept-Encoding it advertises, closing the
         # connection after each request, and writing its headers in the order
-        # the first captured GET shows (settings; policy_limits orders its own
-        # headers differently, which no single rule reproduces).
-        reference_headers = header_map(baseline_gets[0])
+        # the captured settings GET shows.
         observed_headers = header_map(record)
         for key in ("accept-encoding", "connection"):
             want = reference_headers.get(key)
@@ -359,7 +372,7 @@ def check_discovery(
                     f"{record.get('method')} {record.get('path')} sent {key} "
                     f"{got[1] if got else None!r}, want the captured {want[1]!r}"
                 )
-        problems.extend(compare_order(baseline_gets[0], record))
+        problems.extend(compare_order(reference, record))
         if tls_reference is not None:
             problems.extend(check_tls(tls_reference, record, "node"))
 

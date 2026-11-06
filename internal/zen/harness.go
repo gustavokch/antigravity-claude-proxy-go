@@ -22,7 +22,7 @@ import (
 // of the layers the Zen free-tier check inspects (the TLS handshake is
 // another — see tls.go).
 //
-// The header set is the one OpenCode 2.0.20 sends on a model request
+// The header set is the one OpenCode 2.2.3 sends on a model request
 // (packages/core/src/session/model-request.ts). Defaults and the ID algorithm
 // are ported from the MIT reimplementation in
 // kode-ai/providers/opencode/headers.go.
@@ -31,6 +31,10 @@ const (
 	HeaderProject = "x-opencode-project"
 	// HeaderSession declares the OpenCode session id.
 	HeaderSession = "x-opencode-session"
+	// HeaderOpencodeSessionID repeats the session id. OpenCode fills it from
+	// the session itself and the other three from its parent or fork source
+	// when it has one; a proxy conversation never does, so all four agree.
+	HeaderOpencodeSessionID = "x-opencode-session-id"
 	// HeaderSessionAffinity and HeaderSessionID repeat the session id for
 	// provider cache routing.
 	HeaderSessionAffinity = "x-session-affinity"
@@ -41,7 +45,7 @@ const (
 	HeaderUA = "User-Agent"
 
 	// DefaultVersion is the OpenCode release the disguise impersonates.
-	DefaultVersion = "2.0.20"
+	DefaultVersion = "2.2.3"
 	// DefaultHarnessClient is the disguise surface when no override exists.
 	DefaultHarnessClient = "cli"
 	// DefaultProject is the project id used outside a git repository.
@@ -126,6 +130,7 @@ func ApplyHarnessHeaderMap(hdr http.Header, conversation string) {
 	hdr.Set(HeaderProject, project)
 	if sid, err := sessionIDFor(conversation); err == nil {
 		hdr.Set(HeaderSession, sid)
+		hdr.Set(HeaderOpencodeSessionID, sid)
 		hdr.Set(HeaderSessionAffinity, sid)
 		hdr.Set(HeaderSessionID, sid)
 	}

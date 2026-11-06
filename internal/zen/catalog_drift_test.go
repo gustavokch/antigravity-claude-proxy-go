@@ -41,7 +41,7 @@ func loadCatalogSnapshot(t *testing.T) catalogSnapshot {
 const (
 	reasonGoogleWire    = "docs endpoint table serves it on /inference/google/v1beta, a wire the proxy does not speak"
 	reasonSystemoneWire = "docs endpoint table serves it on /inference/systemone, a typed-decision protocol the Messages router cannot carry; it reaches Zen through the proxy's POST /v1/systemone passthrough"
-	reasonUndocumented  = "in /zen/v1/models but absent from the docs endpoint table (2026-10-18): its wire is unverified, so it stays fail-closed"
+	reasonUndocumented  = "in the Zen catalog but absent from the docs endpoint table (2026-10-18): its wire is unverified, so it stays fail-closed"
 )
 
 // unforwardableCatalogIDs are catalog ids the proxy deliberately leaves on

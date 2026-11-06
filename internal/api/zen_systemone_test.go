@@ -91,8 +91,8 @@ func TestServer_Systemone_ForwardsBodyToZenGateway(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if gotPath != "/v1/systemone" {
-		t.Errorf("upstream path = %q, want /v1/systemone", gotPath)
+	if gotPath != "/systemone/v1/systemone" {
+		t.Errorf("upstream path = %q, want /systemone/v1/systemone", gotPath)
 	}
 	if gotAuth != "Bearer sk-zen-test" {
 		t.Errorf("Authorization = %q, want Bearer sk-zen-test", gotAuth)

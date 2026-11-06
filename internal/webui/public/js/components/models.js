@@ -363,7 +363,7 @@ window.Components.models = () => ({
     // OpenCode Zen Gateway State & Methods
     zenConfig: {
         enabled: false,
-        baseUrl: 'https://opencode.ai/zen',
+        baseUrl: 'https://opencode.ai/inference',
         apiKey: '',
         hasApiKey: false,
         keySource: 'none',
@@ -916,7 +916,7 @@ window.Components.models = () => ({
             if (data.config) {
                 this.zenConfig = {
                     enabled: !!data.config.enabled,
-                    baseUrl: data.config.baseUrl || 'https://opencode.ai/zen',
+                    baseUrl: data.config.baseUrl || 'https://opencode.ai/inference',
                     apiKey: '',
                     hasApiKey: !!data.config.hasApiKey,
                     keySource: data.config.keySource || 'none',
@@ -963,7 +963,7 @@ window.Components.models = () => ({
         try {
             const payload = {
                 enabled: this.zenConfig.enabled,
-                baseUrl: this.zenConfig.baseUrl || 'https://opencode.ai/zen',
+                baseUrl: this.zenConfig.baseUrl || 'https://opencode.ai/inference',
                 hasApiKey: this.zenConfig.hasApiKey,
                 allowlist: this.zenConfig.allowlist || [],
                 fallbackProxy: (this.zenConfig.fallbackProxy || '').trim()

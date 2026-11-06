@@ -35,7 +35,7 @@ set -euo pipefail
 # request is the whole subject of this test.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASELINE="${CLAUDE_IDENTITY_BASELINE:-${REPO_ROOT}/.reference/claude-code-headers-20261020.jsonl}"
+BASELINE="${CLAUDE_IDENTITY_BASELINE:-${REPO_ROOT}/.reference/client-drift/claude.jsonl}"
 # The JA4 and JA3 each of Claude Code's two TLS stacks presents, recorded from
 # the real client by scripts/mitm_header_dump.py. The header capture above has no
 # TLS data, so the handshake is checked against this file.

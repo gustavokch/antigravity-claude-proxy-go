@@ -38,7 +38,7 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	if err != nil {
 		return nil, fmt.Errorf("marshal chat request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, NormalizeBaseURL(baseURL)+"/v1/chat/completions", bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, NormalizeBaseURL(baseURL)+ChatPath, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}

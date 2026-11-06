@@ -492,6 +492,17 @@ class DiscoveryTailTest(unittest.TestCase):
         problems = self.check([names[n] for n in go_order])
         self.assertTrue(any("header order differs" in p for p in problems), problems)
 
+    def test_order_follows_settings_wherever_the_capture_records_it(self):
+        # The 2.1.311 capture recorded policy_limits first; its own header order
+        # must not become the reference the proxy is held to.
+        policy_limits = node_record(
+            [h for h in NODE_HEADERS if h[0] in ("Accept", "User-Agent", "Cache-Control")]
+            + [h for h in NODE_HEADERS if h[0] not in ("Accept", "User-Agent", "Cache-Control")],
+            path="/api/claude_code/policy_limits",
+        )
+        observed = node_record(NODE_HEADERS, path="/v1/models")
+        self.assertEqual(policy.check_discovery([policy_limits, node_record(NODE_HEADERS)], [observed], 1), [])
+
 
 TLS_REFERENCE = {
     "stacks": {

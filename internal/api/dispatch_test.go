@@ -64,17 +64,17 @@ func (p *dispatchProbe) total() int {
 	return n
 }
 
-// probeUpstream returns an httptest server emulating an Anthropic
-// /v1/messages endpoint for one gateway. It also serves the Claude Code pool
-// (which sends its account token as x-api-key) and the custom-endpoint
-// reverse proxy.
+// probeUpstream returns an httptest server emulating an Anthropic messages
+// endpoint for one gateway: /v1/messages, or Zen's /anthropic/v1/messages. It
+// also serves the Claude Code pool (which sends its account token as
+// x-api-key) and the custom-endpoint reverse proxy.
 func probeUpstream(t *testing.T, probe *dispatchProbe, name string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		// Only dispatch forwards count: the OpenRouter catalog warmup also
 		// polls its base URL on other paths and must not pollute the probe.
-		if r.URL.Path == "/v1/messages" {
+		if strings.HasSuffix(r.URL.Path, "/v1/messages") {
 			probe.record(name, body)
 		}
 		w.Header().Set("Content-Type", "application/json")

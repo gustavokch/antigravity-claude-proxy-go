@@ -1204,8 +1204,8 @@ func TestZenHarnessDefaults(t *testing.T) {
 	if cfg.Zen.Harness.Enabled == nil || !*cfg.Zen.Harness.Enabled {
 		t.Error("zen.harness.enabled must default to true")
 	}
-	if cfg.Zen.Harness.Version != "2.0.20" {
-		t.Errorf("zen.harness.version = %q, want %q", cfg.Zen.Harness.Version, "2.0.20")
+	if cfg.Zen.Harness.Version != "2.2.3" {
+		t.Errorf("zen.harness.version = %q, want %q", cfg.Zen.Harness.Version, "2.2.3")
 	}
 	if cfg.Zen.Harness.Client != "cli" {
 		t.Errorf("zen.harness.client = %q, want %q", cfg.Zen.Harness.Client, "cli")
@@ -1314,6 +1314,66 @@ func TestSeededZenIdentityFollowsDefaults(t *testing.T) {
 		if onDisk.Zen.Harness[key] != value {
 			t.Errorf("zen.harness.%s = %v, want %v", key, onDisk.Zen.Harness[key], value)
 		}
+	}
+}
+
+// The WebUI saved its zen.baseUrl default into every config.json. Under the
+// /inference routes that base names no endpoint, so a stored copy must follow
+// the current default on Load and after any Save, while an operator's own base
+// is kept.
+func TestSeededZenBaseURLFollowsDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)
+	path := filepath.Join(tmpDir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"zen": {"enabled": true, "baseUrl": "https://opencode.ai/zen/v1/"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Zen.BaseURL != zen.DefaultBaseURL {
+		t.Fatalf("loaded zen.baseUrl = %q, want %q", loaded.Zen.BaseURL, zen.DefaultBaseURL)
+	}
+
+	// A save of another section rewrites the file from disk, not from memory.
+	saved, err := Save(map[string]any{"maxRetries": 7})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if saved.Zen.BaseURL != zen.DefaultBaseURL {
+		t.Errorf("zen.baseUrl after save = %q, want %q", saved.Zen.BaseURL, zen.DefaultBaseURL)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "opencode.ai/zen") {
+		t.Errorf("config.json still stores the seeded base: %s", raw)
+	}
+
+	// The WebUI posts its default back with every Zen section: an old page the
+	// seeded base, a current one zen.DefaultBaseURL. Neither may be stored.
+	for _, posted := range []string{"https://opencode.ai/zen", zen.DefaultBaseURL + "/"} {
+		saved, err = Save(map[string]any{"zen": map[string]any{"enabled": true, "baseUrl": posted}})
+		if err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		if saved.Zen.BaseURL != zen.DefaultBaseURL {
+			t.Errorf("zen.baseUrl after posting %q = %q, want %q", posted, saved.Zen.BaseURL, zen.DefaultBaseURL)
+		}
+		if raw, _ := os.ReadFile(path); strings.Contains(string(raw), "baseUrl") {
+			t.Errorf("posting %q stored a baseUrl: %s", posted, raw)
+		}
+	}
+
+	const own = "https://relay.example/zen"
+	saved, err = Save(map[string]any{"zen": map[string]any{"enabled": true, "baseUrl": own}})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if saved.Zen.BaseURL != own {
+		t.Errorf("zen.baseUrl = %q, want the operator's %q", saved.Zen.BaseURL, own)
 	}
 }
 
@@ -1462,7 +1522,7 @@ func TestPublicConfig_ZenHarnessPassthrough(t *testing.T) {
 	if !ok {
 		t.Fatalf("public config zen section has no harness: %#v", zenMap)
 	}
-	if h["version"] != "2.0.20" || h["client"] != "cli" || h["project"] != "global" {
+	if h["version"] != "2.2.3" || h["client"] != "cli" || h["project"] != "global" {
 		t.Errorf("harness not passed through: %#v", h)
 	}
 	if _, ok := h["enabled"]; !ok {

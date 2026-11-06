@@ -17,8 +17,8 @@ import (
 )
 
 func TestDefaultHarnessConstants(t *testing.T) {
-	if DefaultVersion != "2.0.20" {
-		t.Errorf("DefaultVersion = %q, want %q", DefaultVersion, "2.0.20")
+	if DefaultVersion != "2.2.3" {
+		t.Errorf("DefaultVersion = %q, want %q", DefaultVersion, "2.2.3")
 	}
 	if DefaultHarnessClient != "cli" {
 		t.Errorf("DefaultHarnessClient = %q, want %q", DefaultHarnessClient, "cli")
@@ -159,7 +159,7 @@ func TestApplyHarnessHeaderMap(t *testing.T) {
 func TestApplyHarnessHeaders(t *testing.T) {
 	withHarness(t, HarnessConfig{Enabled: true})
 
-	req, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/chat/completions", nil)
+	req, _ := http.NewRequest(http.MethodPost, "https://opencode.ai/inference/openai/v1/chat/completions", nil)
 	ApplyHarnessHeaders(req)
 
 	if got := req.Header.Get(HeaderUA); got != "opencode/latest/"+DefaultVersion+"/cli" {
@@ -187,7 +187,7 @@ func TestApplyHarnessHeaders(t *testing.T) {
 func TestSessionIDPerConversation(t *testing.T) {
 	withHarness(t, HarnessConfig{Enabled: true})
 	send := func(ctx context.Context) http.Header {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://opencode.ai/zen/v1/messages", nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://opencode.ai/inference/anthropic/v1/messages", nil)
 		ApplyHarnessHeaders(req)
 		requireSessionMirrors(t, req.Header, req.Header.Get(HeaderSession))
 		return req.Header

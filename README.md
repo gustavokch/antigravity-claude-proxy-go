@@ -519,10 +519,11 @@ The OpenRouter Gateway allows querying OpenRouter's Anthropic-compatible message
 ## OpenCode Zen Gateway
 
 The Zen Gateway forwards allowlisted models to the OpenCode Zen
-endpoints (`https://opencode.ai/zen/...`) with
-`Authorization: Bearer <key>`, same pattern as the Kimi gateway.
-Anthropic-compatible clients (Claude Code, Hermes) reach Zen
-models through the existing `POST /v1/messages` path.
+endpoints under `https://opencode.ai/inference` (the routes OpenCode
+2.2.3 calls: `/anthropic/v1/messages`, `/openai/v1/chat/completions`,
+`/openai/v1/responses`) with `Authorization: Bearer <key>`, same
+pattern as the Kimi gateway. Anthropic-compatible clients (Claude Code,
+Hermes) reach Zen models through the existing `POST /v1/messages` path.
 
 Three wire families are supported on the existing `POST /v1/messages`
 path. Anthropic-wire ids are forwarded transparently (no payload
@@ -602,7 +603,7 @@ Example `config.json`:
 {
   "zen": {
     "enabled": true,
-    "baseUrl": "https://opencode.ai/zen",
+    "baseUrl": "https://opencode.ai/inference",
     "apiKey": "sk-zen-...",
     "allowlist": [
       {"id": "claude-sonnet-4-6", "alias": "sonnet", "enabled": true}
@@ -625,12 +626,13 @@ Example `config.json`:
 - **Harness disguise**: OpenCode gates its free-tier models to its own
   harness (403 `FreeTierError "OpenCode's free tier can only be used from
   within OpenCode"`, now mostly 429 `FreeUsageLimitError`). Every Zen-bound
-  request therefore sends the OpenCode 2.0.20 header set by default —
+  request therefore sends the OpenCode 2.2.3 header set by default —
   `User-Agent: opencode/latest/<version>/<client>`, `x-opencode-client`,
   `x-opencode-project`, and a session id sent as `x-opencode-session`,
-  `x-session-affinity` and `X-Session-Id` (algorithm ported from the
-  OpenCode client). Like the genuine client, every turn of one conversation
-  sends the same session id, so Zen's affinity routing can follow it; the
+  `x-opencode-session-id`, `x-session-affinity` and `X-Session-Id`
+  (algorithm ported from the OpenCode client). Like the genuine client,
+  every turn of one conversation sends the same session id, so Zen's
+  affinity routing can follow it; the
   cache-bump replay of a conversation sends it too. A conversation is the
   client's session id plus its first prompt (a client with no session id is
   keyed by its first prompt alone), and the proxy keeps the last 4096 in
@@ -645,7 +647,7 @@ Example `config.json`:
   ```json
   {
     "zen": {
-      "harness": {"enabled": true, "version": "2.0.20", "client": "cli", "project": "global"}
+      "harness": {"enabled": true, "version": "2.2.3", "client": "cli", "project": "global"}
     }
   }
   ```

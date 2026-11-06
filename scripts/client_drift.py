@@ -41,12 +41,17 @@ import datetime
 import fcntl
 import json
 import os
+import pty
 import re
+import select
 import shutil
+import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 from pathlib import Path
 from typing import Callable
@@ -105,7 +110,7 @@ CLIENTS = {
         "opencode", "opencode", ("opencode.ai",),
         frozenset({
             "authorization", "content-length", "host", "b3", "traceparent",
-            "x-opencode-session", "x-session-affinity", "x-session-id",
+            "x-opencode-session", "x-opencode-session-id", "x-session-affinity", "x-session-id",
             # A hash of the working directory's project root.
             "x-opencode-project",
         }),
@@ -158,7 +163,7 @@ class Capture:
     hellos: dict[str, bytes]  # JA4 -> raw ClientHello
     runs: list[dict] = dataclasses.field(default_factory=list)
 
-    def first(self, method: str, path_prefix: str) -> dict | None:
+    def first(self, method: str, path_prefix: str | tuple[str, ...]) -> dict | None:
         for record in self.records:
             if record.get("method") == method and str(record.get("path", "")).startswith(path_prefix):
                 return record
@@ -203,6 +208,107 @@ def run_command(argv: list[str], env: dict[str, str], cwd: Path, timeout: int = 
     tail = " | ".join(line for line in output.strip().splitlines()[-3:])
     return {"argv": " ".join([Path(argv[0]).name, *argv[1:]]), "exit": code,
             "seconds": round(time.monotonic() - started, 1), "tail": tail[-300:], "stdout": stdout[-4000:]}
+
+
+# How long the capture must hold still after the interactive turn's agent call
+# before the client is ended: agy follows its first call with another.
+TERMINAL_SETTLE = 5.0
+# agy's workspace-trust dialog, which every fresh scratch directory raises.
+TRUST_PROMPT = b"trust this folder"
+ANSI_ESCAPE = re.compile(rb"\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])")
+
+
+def stop(pid: int) -> int:
+    """pid's exit code. A process group still running gets SIGTERM, then SIGKILL."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        deadline = time.monotonic() + 5
+        sent = False
+        while time.monotonic() < deadline:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                return os.waitstatus_to_exitcode(status)
+            if not sent:
+                # macOS refuses killpg for a group whose leader is already a
+                # zombie; the waitpid above reaps it next time round.
+                for kill in (os.killpg, os.kill):
+                    try:
+                        kill(pid, sig)
+                        break
+                    except ProcessLookupError:
+                        break
+                    except PermissionError:
+                        continue
+                sent = True
+            time.sleep(0.05)
+    return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+
+
+def run_on_terminal(argv: list[str], env: dict[str, str], cwd: Path, calls: Callable[[], int],
+                    timeout: int = CLIENT_TIMEOUT, settle: float = TERMINAL_SETTLE) -> dict:
+    """argv on a pseudo-terminal, for a client whose interactive mode sends what
+    its print mode does not. Answers agy's workspace-trust dialog, and ends the
+    client once calls() has grown and then held still for settle seconds."""
+    started = time.monotonic()
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+            os.chdir(cwd)
+            os.execve(argv[0], argv, env)
+        finally:
+            os._exit(127)
+    output = bytearray()
+    trusted = False
+    initial = last = calls()
+    changed_at = started
+    code: int | str = "timeout"
+    exited = False
+    try:
+        while time.monotonic() - started < timeout:
+            if select.select([fd], [], [], 0.2)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:  # the client exited and the terminal closed
+                    chunk = b""
+                if not chunk:
+                    exited = True
+                    break
+                output += chunk
+                if not trusted and TRUST_PROMPT in output:
+                    os.write(fd, b"\r")
+                    trusted = True
+            count = calls()
+            if count != last:
+                last, changed_at = count, time.monotonic()
+            if last > initial and time.monotonic() - changed_at >= settle:
+                code = 0
+                break
+    finally:
+        # Close the terminal first: agy, ended while it still had output for a
+        # terminal nobody read any more, never finished exiting, even on SIGKILL.
+        os.close(fd)
+        status = stop(pid)
+    if exited:
+        code = status
+    text = ANSI_ESCAPE.sub(b"", bytes(output)).decode("utf-8", "replace")
+    tail = "" if code == 0 else " | ".join(line.strip() for line in text.splitlines() if line.strip())[-300:]
+    return {"argv": " ".join([Path(argv[0]).name, *argv[1:]]), "exit": code,
+            "seconds": round(time.monotonic() - started, 1), "tail": tail, "stdout": ""}
+
+
+def agent_turns(dump: Path) -> int:
+    """agy agent calls the interceptor has recorded so far."""
+    try:
+        lines = dump.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    turns = 0
+    for line in lines:
+        try:
+            turns += (json.loads(line).get("request_body") or {}).get("requestType") == "agent"
+        except ValueError:  # a record the addon is still writing
+            continue
+    return turns
 
 
 class Interceptor:
@@ -296,6 +402,12 @@ def capture_client(name: str, run_dir: Path, root: Path) -> Capture:
             env = scrubbed_env(interceptor.url, {"SSL_CERT_FILE": interceptor.root_bundle()})
             runs.append(run_command([path, "models"], env, work))
             runs.append(run_command([path, "-p", PROMPT, "--print-timeout", "90s"], env, work))
+            # Print mode skips the conversation-title request (requestType
+            # "checkpoint") that interactive mode still sends with a
+            # conversation's first turn, and the proxy sends it too (agy 1.5.2
+            # changelog), so the turn runs once more on a terminal.
+            runs.append(run_on_terminal([path, "-i", PROMPT], dict(env, TERM="xterm-256color"), work,
+                                        lambda: agent_turns(interceptor.dump)))
         elif name == "claude":
             token_file = Path(os.environ.get("CLIENT_DRIFT_CLAUDE_TOKEN_FILE", Path.home() / ".claude-oat"))
             if not token_file.is_file():
@@ -478,8 +590,17 @@ def claude_betas(capture: Capture) -> list[str] | None:
     return value.split(",") if value else None
 
 
+# OpenCode's Zen model requests: 2.0.20 sent them to /zen/v1/*, 2.2.3 to
+# /inference/<family>/v1/*, the base URLs models.dev lists for its provider.
+ZEN_PATHS = ("/zen/", "/inference/")
+
+
+def zen_request(capture: Capture) -> dict | None:
+    return capture.first("POST", ZEN_PATHS)
+
+
 def opencode_version(capture: Capture) -> str | None:
-    match = re.match(r"opencode/latest/([^/]+)/", header(capture.first("POST", "/zen/"), "user-agent") or "")
+    match = re.match(r"opencode/latest/([^/]+)/", header(zen_request(capture), "user-agent") or "")
     return match.group(1) if match else None
 
 
@@ -603,7 +724,7 @@ HELLOS: tuple[Hello, ...] = (
     Hello("claude.node", "claude", "internal/transport/claude-code-node-clienthello.bin",
           "claude.node.ja4", "claude.node.ja3", lambda c: c.first("GET", "/api/")),
     Hello("zen", "opencode", "internal/zen/opencode-clienthello.bin",
-          "zen.ja4", "zen.ja3", lambda c: c.first("POST", "/zen/")),
+          "zen.ja4", "zen.ja3", zen_request),
 )
 
 
@@ -829,6 +950,12 @@ def analyze_agy(root: Path, result: Result, capture: Capture, proxy: Capture | N
         pending = [(new, old) for old, new in substitutions(result.pin_changes)]
         drifts, _ = compare_captures(capture.records, proxy.records, CLIENTS["agy"].dynamic_headers, pending)
         result.manual.extend(f"this build differs from agy: {drift}" for drift in drifts)
+        # agy makes calls the probe never does, which is expected. The reverse
+        # is a request nothing checked: the probe sent it and agy did not.
+        sent_by_agy = {request_key(record) for record in capture.records}
+        result.manual.extend(
+            f"this build sends {' '.join(key)}, which agy did not send this run, so its shape is unchecked"
+            for key in sorted({request_key(record) for record in proxy.records} - sent_by_agy))
     analyze_generic(root, result, capture, pairs)
     if oauth is None:
         return
@@ -1038,7 +1165,33 @@ def prepare_worktree() -> Path:
     return tree
 
 
+# Every commit this tool writes carries this line. A commit on the drift branch
+# without it was pushed by a person, and a run must not discard it.
+COMMIT_MARKER = "Generated by scripts/client_drift.py"
+
+
+def hand_commits(root: Path) -> tuple[str, list[str]]:
+    """The drift branch's tip on REMOTE ("" when there is none) and its commits
+    since BASE_BRANCH that this tool did not write, as "<sha> <subject>"."""
+    listed = git(root, "ls-remote", REMOTE, f"refs/heads/{DRIFT_BRANCH}")
+    if not listed:
+        return "", []
+    tip = listed.split()[0]
+    git(root, "fetch", REMOTE, f"refs/heads/{DRIFT_BRANCH}")
+    hand = [git(root, "log", "-1", "--format=%h %s", sha)
+            for sha in git(root, "rev-list", tip, f"^{REMOTE}/{BASE_BRANCH}").split()
+            if COMMIT_MARKER not in git(root, "log", "-1", "--format=%B", sha)]
+    return tip, hand
+
+
 def publish(root: Path, results: list[Result], changed: list[str], report: str, draft: bool) -> str:
+    # The branch is rebuilt from BASE_BRANCH, so pushing it over a hand commit
+    # deletes that commit from the PR. Hold the update until the PR merges.
+    tip, hand = hand_commits(root)
+    if hand:
+        shas = ", ".join(entry.split()[0] for entry in hand)
+        raise RuntimeError(f"{DRIFT_BRANCH} carries {len(hand)} commit(s) this tool did not write ({shas}); "
+                           "merge its PR or delete the branch, then the next run publishes")
     git(root, "add", "--", *changed)
     scan = subprocess.run([str(root / "scripts" / "secret-scan.sh"), "staged"], cwd=root,
                           capture_output=True, text=True)
@@ -1046,8 +1199,9 @@ def publish(root: Path, results: list[Result], changed: list[str], report: str, 
         raise RuntimeError(f"secret scan blocked the commit: {(scan.stdout + scan.stderr).strip()[-400:]}")
     moved = [f"{r.client} {r.installed}" for r in results if r.pin_changes or r.hello_changes]
     title = ("chore(identity): follow " + ", ".join(moved)) if moved else "chore(identity): refresh client drift baselines"
-    git(root, "commit", "-m", title, "-m", "Generated by scripts/client_drift.py; the PR body has the report.")
-    git(root, "push", "--force", REMOTE, f"HEAD:refs/heads/{DRIFT_BRANCH}")
+    git(root, "commit", "-m", title, "-m", COMMIT_MARKER + "; the PR body has the report.")
+    # The lease fails the push if the branch moved since it was checked.
+    git(root, "push", f"--force-with-lease=refs/heads/{DRIFT_BRANCH}:{tip}", REMOTE, f"HEAD:refs/heads/{DRIFT_BRANCH}")
     slug = fork_slug(root)
     body = root.parent / "pr-body.md"
     body.write_text(report, encoding="utf-8")

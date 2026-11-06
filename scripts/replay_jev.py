@@ -42,7 +42,7 @@ from pathlib import Path
 
 import corpus_to_laya
 
-ZEN_URL = "https://opencode.ai/zen/v1/systemone"
+ZEN_URL = "https://opencode.ai/inference/systemone/v1/systemone"
 # Mirror config.DefaultJevModel, DefaultLayaQuestionName, DefaultLayaStateChars
 # and defaultLayaEscalateLabels in internal/config/config.go.
 MODEL = "jev-1.13-free"
