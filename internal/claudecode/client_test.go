@@ -544,6 +544,39 @@ func TestClient_SendMessage_NormalizesToCapturedIdentity(t *testing.T) {
 	}
 }
 
+// TestClient_SendMessage_NormalizedKeepsTheClientsAdvisorBeta pins that the
+// pooled gateway path sends the client's advisor beta after the captured list
+// (ADR-0004 §6) and still drops a foreign one. The matching rules are
+// ccidentity's TestWithClientBetas.
+func TestClient_SendMessage_NormalizedKeepsTheClientsAdvisorBeta(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Values("anthropic-beta")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	headers := make(http.Header)
+	headers.Set("anthropic-beta", "some-harness-beta,"+ccidentity.AdvisorToolBeta)
+	body := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`)
+	resp, err := NewClient(server.URL, server.Client()).SendMessage(context.Background(), MessageRequest{
+		Token:         "sk-ant-oat01-test-oauth-token",
+		Body:          body,
+		ClientHeaders: headers,
+		Normalize:     true,
+		Turn:          ccidentity.TurnOf(body),
+	})
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	resp.Body.Close()
+
+	want := strings.Join(ccidentity.Betas, ",") + "," + ccidentity.AdvisorToolBeta
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("anthropic-beta = %q, want the single value %q", got, want)
+	}
+}
+
 // TestClient_SendMessage_NormalizeWithAPIKeyDoesNotClaimTheOAuthIdentity pins
 // that the two cannot both be sent.
 //

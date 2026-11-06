@@ -201,6 +201,31 @@ func TestCustomEndpoint_NormalizedRequestCarriesTheCapturedQuery(t *testing.T) {
 	}
 }
 
+// TestCustomEndpoint_NormalizedKeepsTheClientsAdvisorBeta pins that the
+// custom-endpoint path sends the client's advisor beta after the captured list
+// (ADR-0004 §6), as the pooled gateway path does, and still drops a foreign one.
+func TestCustomEndpoint_NormalizedKeepsTheClientsAdvisorBeta(t *testing.T) {
+	withConfigDir(t)
+
+	target, got := customEndpointUpstream(t)
+	saveCustomEndpoint(t, target.URL+"/v1/messages", nil)
+
+	h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"claude-custom-model","messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("x-api-key", "local-key")
+	req.Header.Set("anthropic-beta", "some-harness-beta,"+ccidentity.AdvisorToolBeta)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if want := strings.Join(ccidentity.Betas, ",") + "," + ccidentity.AdvisorToolBeta; got.beta != want {
+		t.Errorf("anthropic-beta = %q, want %q", got.beta, want)
+	}
+}
+
 // TestCustomEndpoint_NormalizationFailureFailsClosed pins the error discipline
 // ccidentity.ErrNotAnObject's own doc comment demands: an unnormalised body is
 // the fingerprint normalization exists to remove, so forwarding it is worse than

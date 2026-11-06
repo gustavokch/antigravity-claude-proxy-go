@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -569,5 +570,41 @@ func TestDefaultProfilePinsTheCapturedPathAndBetas(t *testing.T) {
 	}
 	if p.Betas[0] != "claude-code-20250219" || p.Betas[1] != "oauth-2025-04-20" {
 		t.Errorf("first betas = %q, %q; the capture puts claude-code-20250219 first", p.Betas[0], p.Betas[1])
+	}
+}
+
+// TestWithClientBetas pins ADR-0004 §6: the client's advisor beta is appended
+// after the captured list, and only when the client named it exactly.
+func TestWithClientBetas(t *testing.T) {
+	withAdvisor := append(append([]string{}, Betas...), AdvisorToolBeta)
+	cases := []struct {
+		name   string
+		client map[string][]string
+		want   []string
+	}{
+		{"in a list with a foreign beta", map[string][]string{"Anthropic-Beta": {"some-harness-beta, " + AdvisorToolBeta}}, withAdvisor},
+		{"on its own header line", map[string][]string{"Anthropic-Beta": {"some-harness-beta", AdvisorToolBeta}}, withAdvisor},
+		{"under a non-canonical key", map[string][]string{"anthropic-beta": {AdvisorToolBeta}}, withAdvisor},
+		{"a longer name is not the beta", map[string][]string{"Anthropic-Beta": {AdvisorToolBeta + "-preview"}}, Betas},
+		{"named in another header", map[string][]string{"X-Beta": {AdvisorToolBeta}}, Betas},
+		{"no client headers", nil, Betas},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DefaultProfile().WithClientBetas(tc.client).Betas
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("Betas = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithClientBetasDoesNotRepeatACapturedAdvisorBeta covers a recapture whose
+// list already carries the beta: appending it again would send it twice.
+func TestWithClientBetasDoesNotRepeatACapturedAdvisorBeta(t *testing.T) {
+	p := Profile{Betas: []string{"claude-code-20250219", AdvisorToolBeta, "oauth-2025-04-20"}}
+	got := p.WithClientBetas(map[string][]string{"Anthropic-Beta": {AdvisorToolBeta}}).Betas
+	if !slices.Equal(got, p.Betas) {
+		t.Errorf("Betas = %q, want the captured list unchanged %q", got, p.Betas)
 	}
 }

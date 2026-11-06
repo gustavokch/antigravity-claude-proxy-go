@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -73,6 +74,45 @@ func ApplyHeaders(h map[string][]string, p Profile, id Identity, turn Turn) {
 // the wire, which is why this package addresses it by name rather than through
 // the canonicalising http.Header helpers.
 const OAuthBetaKey = "anthropic-beta"
+
+// AdvisorToolBeta enables Claude Code's advisor tool. It is not in the captured
+// beta list; WithClientBetas keeps it when the client sent it.
+const AdvisorToolBeta = "advisor-tool-2026-03-01"
+
+// WithClientBetas returns p with the client betas ADR-0004 §6 keeps appended
+// after the captured list: AdvisorToolBeta, when the client's anthropic-beta
+// names it. Every other client beta is still replaced by the captured list.
+//
+// client is read case-insensitively, as ApplyHeaders reads h, and the header is
+// a comma-separated list that may arrive on several lines. p.Betas is shared by
+// every caller of DefaultProfile, so it is copied rather than appended to. A
+// captured list that already carries the beta is returned as it is, so a
+// recapture that adds it does not send it twice.
+func (p Profile) WithClientBetas(client map[string][]string) Profile {
+	if slices.Contains(p.Betas, AdvisorToolBeta) || !clientSentBeta(client, AdvisorToolBeta) {
+		return p
+	}
+	betas := make([]string, 0, len(p.Betas)+1)
+	p.Betas = append(append(betas, p.Betas...), AdvisorToolBeta)
+	return p
+}
+
+// clientSentBeta reports whether the anthropic-beta header in h names beta.
+func clientSentBeta(h map[string][]string, beta string) bool {
+	for key, values := range h {
+		if !strings.EqualFold(key, OAuthBetaKey) {
+			continue
+		}
+		for _, value := range values {
+			for name := range strings.SplitSeq(value, ",") {
+				if strings.TrimSpace(name) == beta {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
 
 // ApplyBody rewrites a /v1/messages body into the captured Claude Code shape:
 // metadata.user_id becomes the captured stringified JSON object, system block 0

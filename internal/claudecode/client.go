@@ -431,8 +431,9 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 	if normalize {
 		// ApplyHeaders takes the map directly; it ignores req.ClientHeaders on
 		// purpose, since the omit list must be able to remove what the client
-		// sent rather than copy it.
-		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, turn)
+		// sent rather than copy it. The one client beta kept over the captured
+		// list (ADR-0004 §6) is added to the profile instead.
+		ccidentity.ApplyHeaders(httpReq.Header, profile.WithClientBetas(req.ClientHeaders), req.Identity, turn)
 		httpReq.ContentLength = int64(len(body))
 	} else {
 		httpReq.Header.Set("Content-Type", "application/json")

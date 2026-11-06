@@ -29,6 +29,10 @@ ADR-0001 remains authoritative. Its payload-alteration guarantee is narrowed by 
 
 5. **Opt-out**: `identity.disabled` on the endpoint (or on the Claude Code config for the pooled path) restores ADR-0001 behaviour exactly. The flag is a *disable*, so the zero value normalizes; an operator who wants transparent forwarding for an Anthropic-shaped keyless endpoint must set it.
 
+6. **Advisor Beta Exception**: the captured beta list replaces the client's `anthropic-beta`, so a client beta not in the capture is dropped. `advisor-tool-2026-03-01` is the one exception, on both normalized paths. When the client's `anthropic-beta` names it, `ccidentity.Profile.WithClientBetas` copies `profile.Betas` and appends it after the captured list. `claudecode.Client.SendMessage` (pooled gateway) and the custom-endpoint `Rewrite` in `internal/api/server.go` both call it before `ApplyHeaders`. The shared slice is never written. A client that does not send the beta gets the captured list unchanged, and a captured list that already carries it is not extended.
+   - **Unverified assumption**: the Anthropic API accepts this beta on an OAuth Claude Code request. ccusage fixtures show Claude Code transcripts recording `advisorModel`, which suggests the real client uses the advisor tool over OAuth. No live call has been made through this proxy with the beta, and no capture shows the real client's request, so its position in the list is a guess too. If OAuth rejects the beta, a request that carries it fails where it previously went out with the beta stripped.
+   - The identity gate does not exercise this case. Its baseline is a capture with no advisor request, and `scripts/verify-claude-code-identity.sh` sends a foreign beta, not this one. The matching rules are proved by `TestWithClientBetas`, and each path by `TestClient_SendMessage_NormalizedKeepsTheClientsAdvisorBeta` and `TestCustomEndpoint_NormalizedKeepsTheClientsAdvisorBeta`.
+
 ## Consequences
 
 - Foreign harnesses reach Anthropic-shaped endpoints without advertising themselves, which is the feature's purpose.
