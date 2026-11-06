@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -180,6 +181,63 @@ class CompareTest(unittest.TestCase):
             "this build sends POST /v1internal:streamGenerateContent (checkpoint), which agy did not send this run, "
             "so its shape is unchecked",
         ])
+
+
+# A stand-in for agy's interactive mode: the trust dialog, a turn once the
+# dialog is answered, and then it waits for the user like the real client.
+FAKE_TERMINAL_CLIENT = """
+import os, sys, time
+progress, mode = sys.argv[1], sys.argv[2]
+open(progress + ".pid", "w").write(str(os.getpid()))
+if mode == "exit":
+    sys.exit(3)
+print("Do you trust the contents of this project?")
+print("> Yes, I trust this folder", flush=True)
+sys.stdin.readline()
+if mode == "turn":
+    open(progress, "a").write("agent\\n")
+time.sleep(60)
+"""
+
+
+class TerminalRunTest(unittest.TestCase):
+    """agy's title checkpoint is sent only in interactive mode, so the capture
+    drives it on a terminal; the run must end on its own in every case."""
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.work)
+        self.client = self.work / "client.py"
+        self.client.write_text(FAKE_TERMINAL_CLIENT)
+        self.progress = self.work / "progress"
+
+    def run_client(self, mode: str, timeout: int = 20) -> dict:
+        def calls() -> int:
+            return len(self.progress.read_text().splitlines()) if self.progress.exists() else 0
+
+        return drift.run_on_terminal([sys.executable, str(self.client), str(self.progress), mode],
+                                     dict(os.environ), self.work, calls, timeout=timeout, settle=0.3)
+
+    def assert_gone(self) -> None:
+        pid = int(Path(str(self.progress) + ".pid").read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_answers_the_trust_dialog_and_ends_the_client_after_its_turn(self):
+        run = self.run_client("turn")
+        self.assertEqual(run["exit"], 0, run)
+        self.assertLess(run["seconds"], 10)
+        self.assertEqual(self.progress.read_text(), "agent\n")
+        self.assert_gone()
+
+    def test_a_client_that_never_calls_is_ended_at_the_timeout(self):
+        run = self.run_client("idle", timeout=2)
+        self.assertEqual(run["exit"], "timeout")
+        self.assert_gone()
+
+    def test_a_client_that_exits_reports_its_code(self):
+        run = self.run_client("exit")
+        self.assertEqual(run["exit"], 3)
 
 
 class HandCommitTest(unittest.TestCase):

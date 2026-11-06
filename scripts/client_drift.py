@@ -41,12 +41,17 @@ import datetime
 import fcntl
 import json
 import os
+import pty
 import re
+import select
 import shutil
+import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 from pathlib import Path
 from typing import Callable
@@ -205,6 +210,107 @@ def run_command(argv: list[str], env: dict[str, str], cwd: Path, timeout: int = 
             "seconds": round(time.monotonic() - started, 1), "tail": tail[-300:], "stdout": stdout[-4000:]}
 
 
+# How long the capture must hold still after the interactive turn's agent call
+# before the client is ended: agy follows its first call with another.
+TERMINAL_SETTLE = 5.0
+# agy's workspace-trust dialog, which every fresh scratch directory raises.
+TRUST_PROMPT = b"trust this folder"
+ANSI_ESCAPE = re.compile(rb"\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-Z\\-_])")
+
+
+def stop(pid: int) -> int:
+    """pid's exit code. A process group still running gets SIGTERM, then SIGKILL."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        deadline = time.monotonic() + 5
+        sent = False
+        while time.monotonic() < deadline:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                return os.waitstatus_to_exitcode(status)
+            if not sent:
+                # macOS refuses killpg for a group whose leader is already a
+                # zombie; the waitpid above reaps it next time round.
+                for kill in (os.killpg, os.kill):
+                    try:
+                        kill(pid, sig)
+                        break
+                    except ProcessLookupError:
+                        break
+                    except PermissionError:
+                        continue
+                sent = True
+            time.sleep(0.05)
+    return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+
+
+def run_on_terminal(argv: list[str], env: dict[str, str], cwd: Path, calls: Callable[[], int],
+                    timeout: int = CLIENT_TIMEOUT, settle: float = TERMINAL_SETTLE) -> dict:
+    """argv on a pseudo-terminal, for a client whose interactive mode sends what
+    its print mode does not. Answers agy's workspace-trust dialog, and ends the
+    client once calls() has grown and then held still for settle seconds."""
+    started = time.monotonic()
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+            os.chdir(cwd)
+            os.execve(argv[0], argv, env)
+        finally:
+            os._exit(127)
+    output = bytearray()
+    trusted = False
+    initial = last = calls()
+    changed_at = started
+    code: int | str = "timeout"
+    exited = False
+    try:
+        while time.monotonic() - started < timeout:
+            if select.select([fd], [], [], 0.2)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:  # the client exited and the terminal closed
+                    chunk = b""
+                if not chunk:
+                    exited = True
+                    break
+                output += chunk
+                if not trusted and TRUST_PROMPT in output:
+                    os.write(fd, b"\r")
+                    trusted = True
+            count = calls()
+            if count != last:
+                last, changed_at = count, time.monotonic()
+            if last > initial and time.monotonic() - changed_at >= settle:
+                code = 0
+                break
+    finally:
+        # Close the terminal first: agy, ended while it still had output for a
+        # terminal nobody read any more, never finished exiting, even on SIGKILL.
+        os.close(fd)
+        status = stop(pid)
+    if exited:
+        code = status
+    text = ANSI_ESCAPE.sub(b"", bytes(output)).decode("utf-8", "replace")
+    tail = "" if code == 0 else " | ".join(line.strip() for line in text.splitlines() if line.strip())[-300:]
+    return {"argv": " ".join([Path(argv[0]).name, *argv[1:]]), "exit": code,
+            "seconds": round(time.monotonic() - started, 1), "tail": tail, "stdout": ""}
+
+
+def agent_turns(dump: Path) -> int:
+    """agy agent calls the interceptor has recorded so far."""
+    try:
+        lines = dump.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    turns = 0
+    for line in lines:
+        try:
+            turns += (json.loads(line).get("request_body") or {}).get("requestType") == "agent"
+        except ValueError:  # a record the addon is still writing
+            continue
+    return turns
+
+
 class Interceptor:
     """mitmdump with the redacting header-dump addon, for one capture phase."""
 
@@ -296,6 +402,12 @@ def capture_client(name: str, run_dir: Path, root: Path) -> Capture:
             env = scrubbed_env(interceptor.url, {"SSL_CERT_FILE": interceptor.root_bundle()})
             runs.append(run_command([path, "models"], env, work))
             runs.append(run_command([path, "-p", PROMPT, "--print-timeout", "90s"], env, work))
+            # Print mode skips the conversation-title request (requestType
+            # "checkpoint") that interactive mode still sends with a
+            # conversation's first turn, and the proxy sends it too (agy 1.5.2
+            # changelog), so the turn runs once more on a terminal.
+            runs.append(run_on_terminal([path, "-i", PROMPT], dict(env, TERM="xterm-256color"), work,
+                                        lambda: agent_turns(interceptor.dump)))
         elif name == "claude":
             token_file = Path(os.environ.get("CLIENT_DRIFT_CLAUDE_TOKEN_FILE", Path.home() / ".claude-oat"))
             if not token_file.is_file():
