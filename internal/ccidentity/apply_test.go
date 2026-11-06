@@ -43,7 +43,7 @@ var capturedHeaders = map[string]string{
 	"X-Stainless-Package-Version":               "0.128.0",
 	"X-Stainless-Retry-Count":                   "0",
 	"X-Stainless-Runtime":                       "node",
-	"X-Stainless-Runtime-Version":               "v26.3.0",
+	"X-Stainless-Runtime-Version":               "v26.12.1",
 	"X-Stainless-Timeout":                       "600",
 	"anthropic-dangerous-direct-browser-access": "true",
 	"anthropic-version":                         "2023-06-01",
@@ -535,7 +535,7 @@ func TestUserAgentConstructionForOtherEntrypointsIsInferred(t *testing.T) {
 	// No capture confirms this string; the test pins the construction so a
 	// change is deliberate rather than accidental.
 	got := messagesUserAgent(Identity{Entrypoint: EntrypointInteractive})
-	if got != "claude-cli/2.1.304 (external, cli)" {
+	if got != "claude-cli/2.1.311 (external, cli)" {
 		t.Errorf("User-Agent = %q, want the constructed form", got)
 	}
 }
