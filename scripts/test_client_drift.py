@@ -165,6 +165,50 @@ class CompareTest(unittest.TestCase):
             self.assertIs(zen.select(capture), seen, path)
 
 
+class HandCommitTest(unittest.TestCase):
+    """A run rebuilds the drift branch from main; it must not discard a commit
+    a person pushed to that branch (the 2026-11-06 run did, on PR #138)."""
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        remote = tmp / "remote.git"
+        self.root = tmp / "tree"
+        drift.git(tmp, "init", "--bare", "-b", drift.BASE_BRANCH, str(remote))
+        drift.git(tmp, "init", "-b", drift.BASE_BRANCH, str(self.root))
+        for key, value in (("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false"),
+                           ("core.hooksPath", "/dev/null")):
+            drift.git(self.root, "config", key, value)
+        drift.git(self.root, "remote", "add", drift.REMOTE, str(remote))
+        self.commit("base")
+        drift.git(self.root, "push", drift.REMOTE, f"HEAD:refs/heads/{drift.BASE_BRANCH}")
+        drift.git(self.root, "fetch", drift.REMOTE)
+
+    def commit(self, *message: str) -> None:
+        drift.git(self.root, "commit", "--allow-empty", *(arg for line in message for arg in ("-m", line)))
+
+    def push_branch(self) -> str:
+        drift.git(self.root, "push", "--force", drift.REMOTE, f"HEAD:refs/heads/{drift.DRIFT_BRANCH}")
+        return drift.git(self.root, "rev-parse", "HEAD")
+
+    def test_no_drift_branch_yet(self):
+        self.assertEqual(drift.hand_commits(self.root), ("", []))
+
+    def test_a_branch_of_tool_commits_may_be_replaced(self):
+        self.commit("chore(identity): follow agy 1.5.2", drift.COMMIT_MARKER + "; the PR body has the report.")
+        tip = self.push_branch()
+        self.assertEqual(drift.hand_commits(self.root), (tip, []))
+
+    def test_a_hand_commit_is_reported(self):
+        self.commit("chore(identity): follow agy 1.5.2", drift.COMMIT_MARKER + "; the PR body has the report.")
+        self.commit("fix(identity): pass the gate")
+        tip = self.push_branch()
+        _, hand = drift.hand_commits(self.root)
+        self.assertEqual(len(hand), 1, hand)
+        self.assertIn("fix(identity): pass the gate", hand[0])
+        self.assertEqual(drift.hand_commits(self.root)[0], tip)
+
+
 class StatusTest(unittest.TestCase):
     def setUp(self):
         self.state = tempfile.mkdtemp()

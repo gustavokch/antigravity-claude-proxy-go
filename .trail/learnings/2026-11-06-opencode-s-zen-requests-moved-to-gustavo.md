@@ -31,7 +31,7 @@ touches:
 
 ## Watch out
 - The drift tool found OpenCode requests only on `/zen/`, so the 2.2.3 version and ClientHello came through as "not found" and "no zen connection" manual items, not as drift. The opencode baseline from the 2.0.20 run never merged, so the header diff had to be made by hand from two run directories under `~/.cache/antigravity-proxy/client-drift/runs`.
-- The drift tool rebuilds `chore/client-identity-drift` from `fork/main` and force-pushes it on every run. Commits added to that branch by hand are lost if a run starts before the PR merges.
+- The drift tool rebuilds `chore/client-identity-drift` from `fork/main` on every run. The 09:03 run force-pushed over this work (`cd4498d..59a680f`) six minutes after it was pushed. `publish` now refuses while the branch carries a commit without `COMMIT_MARKER` and pushes with a lease, but a run uses the `client_drift.py` on `fork/main`, so the guard protects a PR only after it merges.
 - Jev classifier backends keep the URL the operator saved; one saved with the old `/zen/v1/systemone` still works but no longer matches the client. OpenCode's Jev route also sends `TypeSafe-Danger-Zone-Images: true`, read from the binary and not captured on the wire, so the proxy does not send it.
 
 In the code: `scripts/check_identity_policy.py` (`ORDER_REFERENCE_PATH`), `scripts/client_drift.py` (`ZEN_PATHS`, `zen_request`), `internal/zen/zen.go` (route constants), `internal/zen/harness.go` (`HeaderOpencodeSessionID`), `internal/config/config.go` (`seededZenBaseURL`, `dropDefaultZenBaseURL`).
