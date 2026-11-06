@@ -6,7 +6,7 @@ ADR-0001 states that custom endpoints are forwarded transparently, streaming "th
 
 Anthropic distinguishes first-party Claude Code traffic from third-party traffic by fingerprint, not only by credential. A request forwarded verbatim from a foreign harness (Cursor, an OpenAI shim, any SDK) advertises that harness through its headers and through body fields Claude Code never sends. Forwarding it unaltered to an Anthropic-shaped endpoint is what the fingerprint check is looking for.
 
-`internal/ccidentity` therefore rewrites the request to match the captured first-party traffic, currently `.reference/claude-code-headers-20261020.jsonl` (Claude Code 2.1.304; the 2.1.280 captures `.reference/claude-code-headers-20260923*.jsonl` stay as history). `internal/api/server.go` calls `ccidentity.ApplyBody` on the custom-endpoint path — the exact path ADR-0001 and ADR-0003 §2 declare untouched. That is payload alteration on the main route, so it is recorded here rather than left as a silent override.
+`internal/ccidentity` therefore rewrites the request to match the captured first-party traffic, currently `.reference/client-drift/claude.jsonl`, which `scripts/client_drift.py` re-records when the installed Claude Code changes (`ccidentity.ClientVersion` names its version). The 2.1.304 captures `.reference/claude-code-headers-20261020*.jsonl` and the 2.1.280 captures `.reference/claude-code-headers-20260923*.jsonl` stay as history. `internal/api/server.go` calls `ccidentity.ApplyBody` on the custom-endpoint path — the exact path ADR-0001 and ADR-0003 §2 declare untouched. That is payload alteration on the main route, so it is recorded here rather than left as a silent override.
 
 ## Decision
 

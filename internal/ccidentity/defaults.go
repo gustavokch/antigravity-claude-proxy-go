@@ -5,10 +5,12 @@ import (
 	"strings"
 )
 
-// Values transcribed from .reference/claude-code-headers-20261020.txt, a live
-// capture of Claude Code 2.1.304's own traffic to api.anthropic.com. Each
-// constant names the artifact it came from. Nothing here is inferred unless the
-// comment says so and says why.
+// Values transcribed from live captures of Claude Code's own traffic to
+// api.anthropic.com: .reference/claude-code-headers-20261020.txt (2.1.304) and,
+// for the values scripts/client_drift.py moves with each release (version,
+// betas, runtime version), its baseline .reference/client-drift/claude.jsonl.
+// Each constant names the artifact it came from. Nothing here is inferred
+// unless the comment says so and says why.
 const (
 	// ClientVersion is the version literal in cc_version, minus the suffix that
 	// versionSuffix derives from the conversation's first prompt.
