@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -569,5 +570,56 @@ func TestDefaultProfilePinsTheCapturedPathAndBetas(t *testing.T) {
 	}
 	if p.Betas[0] != "claude-code-20250219" || p.Betas[1] != "oauth-2025-04-20" {
 		t.Errorf("first betas = %q, %q; the capture puts claude-code-20250219 first", p.Betas[0], p.Betas[1])
+	}
+	if !slices.Contains(p.Betas, advisorBetaPrecedes) {
+		t.Errorf("Betas lost %q, the beta Claude Code sends right after the advisor beta; re-derive the advisor position (ADR-0004 §6)", advisorBetaPrecedes)
+	}
+}
+
+// TestWithClientBetas pins ADR-0004 §6: the client's advisor beta goes right
+// before advisorBetaPrecedes, where Claude Code 2.1.311 puts it, and only when
+// the client named it exactly.
+func TestWithClientBetas(t *testing.T) {
+	captured := []string{"claude-code-20250219", "mid-conversation-tool-changes-2026-07-01", advisorBetaPrecedes, "cache-diagnosis-2026-04-07"}
+	withAdvisor := []string{"claude-code-20250219", "mid-conversation-tool-changes-2026-07-01", AdvisorToolBeta, advisorBetaPrecedes, "cache-diagnosis-2026-04-07"}
+	cases := []struct {
+		name   string
+		client map[string][]string
+		want   []string
+	}{
+		{"in a list with a foreign beta", map[string][]string{"Anthropic-Beta": {"some-harness-beta, " + AdvisorToolBeta}}, withAdvisor},
+		{"on its own header line", map[string][]string{"Anthropic-Beta": {"some-harness-beta", AdvisorToolBeta}}, withAdvisor},
+		{"under a non-canonical key", map[string][]string{"anthropic-beta": {AdvisorToolBeta}}, withAdvisor},
+		{"a longer name is not the beta", map[string][]string{"Anthropic-Beta": {AdvisorToolBeta + "-preview"}}, captured},
+		{"named in another header", map[string][]string{"X-Beta": {AdvisorToolBeta}}, captured},
+		{"no client headers", nil, captured},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Profile{Betas: captured}.WithClientBetas(tc.client).Betas
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("Betas = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithClientBetasAppendsWithoutItsSuccessor covers a list without
+// advisorBetaPrecedes: the beta goes last rather than being dropped.
+func TestWithClientBetasAppendsWithoutItsSuccessor(t *testing.T) {
+	p := Profile{Betas: []string{"claude-code-20250219", "oauth-2025-04-20"}}
+	got := p.WithClientBetas(map[string][]string{"Anthropic-Beta": {AdvisorToolBeta}}).Betas
+	if want := []string{"claude-code-20250219", "oauth-2025-04-20", AdvisorToolBeta}; !slices.Equal(got, want) {
+		t.Errorf("Betas = %q, want %q", got, want)
+	}
+}
+
+// TestWithClientBetasDoesNotRepeatACapturedAdvisorBeta covers a recapture whose
+// list already carries the beta: appending it again would send it twice.
+func TestWithClientBetasDoesNotRepeatACapturedAdvisorBeta(t *testing.T) {
+	p := Profile{Betas: []string{"claude-code-20250219", AdvisorToolBeta, "oauth-2025-04-20"}}
+	got := p.WithClientBetas(map[string][]string{"Anthropic-Beta": {AdvisorToolBeta}}).Betas
+	if !slices.Equal(got, p.Betas) {
+		t.Errorf("Betas = %q, want the captured list unchanged %q", got, p.Betas)
 	}
 }

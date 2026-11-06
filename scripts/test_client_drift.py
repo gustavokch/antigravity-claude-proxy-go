@@ -183,6 +183,55 @@ class CompareTest(unittest.TestCase):
         ])
 
 
+class AdvisorBetaTest(unittest.TestCase):
+    """The drift capture never turns the advisor on, so its beta is read from the binary."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.pinned = drift.read_pin(ROOT, drift.PIN["claude.advisor_beta"])
+
+    def binary(self, content: bytes) -> str:
+        path = self.dir / "claude"
+        path.write_bytes(content)
+        return str(path)
+
+    def analyze(self, content: bytes) -> drift.Result:
+        result = drift.Result("claude", None, drift.Capture([], {}))
+        with mock.patch.object(drift, "binary_path", return_value=self.binary(content)):
+            drift.analyze_claude(ROOT, result, result.capture, [])
+        return result
+
+    def test_reads_the_one_name_the_bundle_carries(self):
+        # 2.1.311 carries it twice: in a string table and in its beta registry.
+        path = self.binary(b'\x00advisor-tool-2026-03-01\x00n3t=v("advisor_tool","advisor-tool-2026-03-01")')
+        self.assertEqual(drift.claude_advisor_beta(path), "advisor-tool-2026-03-01")
+
+    def test_no_name_or_two_names_is_no_reading(self):
+        self.assertIsNone(drift.claude_advisor_beta(self.binary(b'"advisor_tool"')))
+        self.assertIsNone(drift.claude_advisor_beta(self.binary(b"")))
+        self.assertIsNone(drift.claude_advisor_beta(self.binary(b"advisor-tool-2026-03-01 advisor-tool-2026-11-01")))
+        self.assertIsNone(drift.claude_advisor_beta(None))
+
+    def test_the_pinned_name_is_no_finding(self):
+        result = self.analyze(f'"advisor_tool","{self.pinned}"'.encode())
+        self.assertEqual(result.pin_changes, [])
+        self.assertFalse([item for item in result.manual if "advisor" in item])
+
+    def test_a_renamed_beta_moves_the_pin_and_needs_a_human(self):
+        # A rename can move the beta in the list too, and only a person can
+        # read that from the bundle.
+        result = self.analyze(b'"advisor_tool","advisor-tool-2099-01-01"')
+        self.assertEqual([(pin.name, old, new) for pin, old, new in result.pin_changes],
+                         [("claude.advisor_beta", self.pinned, "advisor-tool-2099-01-01")])
+        self.assertTrue([item for item in result.manual if "advisorBetaPrecedes" in item])
+
+    def test_a_binary_without_the_beta_needs_a_human(self):
+        result = self.analyze(b"no advisor here")
+        self.assertEqual(result.pin_changes, [])
+        self.assertTrue([item for item in result.manual if "claude.advisor_beta" in item])
+
+
 # A stand-in for agy's interactive mode: the trust dialog, a turn once the
 # dialog is answered, and then it waits for the user like the real client.
 FAKE_TERMINAL_CLIENT = """

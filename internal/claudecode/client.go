@@ -343,9 +343,11 @@ type MessageRequest struct {
 	Token string
 	// Body is the JSON request body as received from the client.
 	Body []byte
-	// ClientHeaders are the inbound headers. They are read only when the request
-	// does not normalize (see Normalizes): normalization deletes this set rather
-	// than forwarding it, which is the point of the exercise.
+	// ClientHeaders are the inbound headers. A request that does not normalize
+	// (see Normalizes) copies anthropic-version, anthropic-beta and Accept from
+	// them. A normalized request does not forward this set, which is the point
+	// of the exercise; it reads only the advisor beta from it
+	// (ccidentity.Profile.WithClientBetas, ADR-0004 §6).
 	ClientHeaders http.Header
 	// Normalize asks for the captured Claude Code identity in place of the
 	// client's own. Whether the request gets it is Normalizes: an API key never
@@ -431,8 +433,9 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 	if normalize {
 		// ApplyHeaders takes the map directly; it ignores req.ClientHeaders on
 		// purpose, since the omit list must be able to remove what the client
-		// sent rather than copy it.
-		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, turn)
+		// sent rather than copy it. The one client beta kept over the captured
+		// list (ADR-0004 §6) is added to the profile instead.
+		ccidentity.ApplyHeaders(httpReq.Header, profile.WithClientBetas(req.ClientHeaders), req.Identity, turn)
 		httpReq.ContentLength = int64(len(body))
 	} else {
 		httpReq.Header.Set("Content-Type", "application/json")

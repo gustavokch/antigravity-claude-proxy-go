@@ -121,6 +121,6 @@ type Profile struct {
 	// Betas is the captured anthropic-beta list in captured order. It replaces
 	// whatever the client sent rather than being appended to: the captured order
 	// puts claude-code-20250219 ahead of oauth-2025-04-20, which append-only
-	// cannot produce.
+	// cannot produce. The one client beta kept is added by WithClientBetas.
 	Betas []string
 }

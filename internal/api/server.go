@@ -1437,9 +1437,10 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 
 			// Normalization runs LAST and only for Anthropic-shaped endpoints, so
 			// the omit list can remove the x-api-key the auth block just set: the
-			// captured OAuth request carries Authorization alone.
+			// captured OAuth request carries Authorization alone. The client's
+			// advisor beta is the one beta kept over the captured list (ADR-0004 §6).
 			if normalize {
-				ccidentity.ApplyHeaders(out.Header, ccDefaultProfile, identity, turn)
+				ccidentity.ApplyHeaders(out.Header, ccDefaultProfile.WithClientBetas(request.Header), identity, turn)
 				if isMessagesRequest {
 					out.URL.RawQuery = withCapturedBetaQuery(out.URL.RawQuery)
 				}
