@@ -145,7 +145,7 @@ Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt`
 | Response | `200`, `application/json`, 19–22 bytes, no `anthropic-ratelimit-unified-*` headers | SSE, carries `anthropic-ratelimit-unified-*` |
 
 - `ccidentity` gains a count_tokens profile: the captured header order, `x-claude-code-request-class: auxiliary`, and the captured beta list (version-pinned like the other betas, with a `client_drift.py` `Site` entry).
-- The body is forwarded as the client sent it, with no billing header, identity block or `metadata` injected. The real client's count bodies carry only `messages`, `model` and `tools`; a caller that adds other keys (for example `system`) has them forwarded unchanged.
+- The body is forwarded as the client sent it, with no billing header, identity block or `metadata` injected. The one change is the `model` value, which becomes the gateway's model id after model mapping (6.1), exactly as on `/v1/messages`; with the identity mapping the bytes are unchanged. The real client's count bodies carry only `messages`, `model` and `tools`; a caller that adds other keys (for example `system`) has them forwarded unchanged.
 - `X-Claude-Code-Session-Id` is forwarded from the client when present, as on `/v1/messages`.
 - A count response carries no unified rate-limit headers, so the Claude Code pool's rate-limit state is not updated from it; a 429 on a count still marks the account as on `/v1/messages`.
 - Load shape: counts arrive as bursts of about 34 concurrent requests per `/context`, never during turns. The Claude Code forward must not serialize them per account.

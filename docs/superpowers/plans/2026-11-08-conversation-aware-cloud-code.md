@@ -17,10 +17,10 @@
 - No new Go modules; standard library only.
 - Clean cutover: when a signature changes, every caller and test changes in the same task; no aliases or deprecated shims.
 - Pins: idle TTL `1 h`, cap `10,000`, wait bound `maxStickyWait = 2 * time.Minute` (existing const, `internal/accounts/manager.go:24`).
-- Control-plane calls: `10 s` timeout each, failures logged at debug, never block or fail generation.
+- Control-plane calls: `10 s` timeout each, run before generation and delay it by at most their timeouts, failures logged at debug, never fail generation.
 - Estimator: start ratio `4.0` chars/token, EMA `α = 0.2`, learn only from requests with `≥ 1,000` measured characters; memory TTL `1 h`, cap `10,000`.
 - count_tokens never returns an error status for an upstream failure; unsupported gateways (404/405/501) are marked for `1 h`.
-- Claude Code count_tokens identity is the captured one (`x-claude-code-request-class: auxiliary`, `anthropic-beta: claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01`); body forwarded unchanged.
+- Claude Code count_tokens identity is the captured one (`x-claude-code-request-class: auxiliary`, `anthropic-beta: claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01`); body forwarded unchanged except the model id, which becomes the gateway's model id as on `/v1/messages`.
 - Per-package test command: `go test ./internal/<pkg> -run '<Name>' -count=1`; before the final commit `go test -race ./...` and `gofmt -l $(git ls-files '*.go' | grep -v '^gen/')` prints nothing.
 - Commit after every task; push only to `fork` (`git push fork <branch>`), never `origin`.
 
@@ -2239,7 +2239,7 @@ Decisions in this task:
 - **When a burst completes.** A burst marks the account started for the session once every one of its calls got an HTTP answer, whatever the status. A call counts as answered when `err == nil`, or when `cloudcode.FindHTTPError(err) != nil`. `DoJSON` drops the `Response` on a non-2xx answer, so the debug log reads that status from the `HTTPError`. Only a call with no answer leaves the account unstarted: a transport error, the 10 s timeout, or a request context that has ended (after which no further call is sent). The session's next request then sends the burst again. Without this rule, a call that always answers 4xx for some account would make every request of that session resend all nine calls. A call without an answer does not stop the calls after it, so the sequence stays agy's. Only a 2xx answer's body is applied (`loadCodeAssist`, `retrieveUserQuotaSummary`, `fetchAvailableModels`).
 - **Concurrent groups** use `sync.WaitGroup.Go`, already used in `internal/claudecode/ccusage`. Every call goes through `dispatcher.metered`, as every upstream call does today.
 - **Which client the calls use.** The control-plane calls use the `client` and `project` that `StreamGenerateContent` already holds. The burst's `fetchAvailableModels` feeds `cacheCatalog(email, body)` and `updateAccountQuota`, the same steps `fetchAvailableModelsForAccount` takes on success (`dispatcher.go:406-407`). It does not call that function, which would re-resolve credentials and mark pool state on a control-plane failure.
-- **Known cost, not changed here.** `applyCodeAssist` keeps `RefreshAccount`'s writes: `CacheProject` and `UpdateSubscription` each save `accounts.json`, and the per-turn `loadCodeAssist` now runs them on every new prompt. `Save` writes `<path>.tmp` and then renames it (`manager.go:1289-1293`), so two concurrent saves can interleave in the temp file. That hazard already exists, and this task makes it more frequent.
+- **Save frequency.** `applyCodeAssist` keeps `RefreshAccount`'s writes: `CacheProject` and `UpdateSubscription` each save `accounts.json`, and the per-turn `loadCodeAssist` now runs them on every new prompt. Task 4 serializes `SaveToDisk` from snapshot to rename, so the more frequent concurrent saves no longer interleave in the temp file.
 
 - [ ] **Step 1: Write the failing tests.** Create `internal/accounts/controlplane_test.go`:
 
@@ -2999,7 +2999,9 @@ func (dispatcher *Dispatcher) applyCodeAssist(account *Account, body []byte) Sub
 	if sub.ProjectID != "" {
 		dispatcher.manager.CacheProject(account, sub.ProjectID)
 	}
-	_ = dispatcher.manager.UpdateSubscription(account.Email, sub)
+	if err := dispatcher.manager.UpdateSubscription(account.Email, sub); err != nil {
+		slog.Debug("saving the account's subscription failed", "account", account.Email, "error", err)
+	}
 	return sub
 }
 
@@ -3095,8 +3097,8 @@ git commit -m "feat(accounts): agy's start burst and per-turn calls, shared per 
 
 **Interfaces:**
 - Consumes:
-  - Task 1: `func WithSessionKey(ctx context.Context, key string) context.Context` and `func SessionKey(ctx context.Context) string`. `server.messages()` puts the key on the request context; that change belongs to the affinity/api task.
-  - Task 3: a pinned session whose target has a limit longer than `maxStickyWait` overflows to another account through the strategy.
+  - Task 3: `func WithSessionKey(ctx context.Context, key string) context.Context` and `func SessionKey(ctx context.Context) string`; `server.messages()` puts the key on the request context, and `StreamGenerateContent` holds it in `session := SessionKey(ctx)` before the attempt loop.
+  - Task 2: a pinned session whose target has a limit longer than `maxStickyWait` overflows to another account through the strategy.
   - Task 6: `beginConversation`, `beginTurn` and the test helpers `agyCallRecorder`, `newControlPlaneDispatcher`, `assertSteps`, `agyStartBurst`, `agyTurn`, `sequenceModel`, `sequenceModelsBody`, `toolList`.
 - Produces:
   - `func (dispatcher *Dispatcher) settle(account *Account, credits []cloudcode.CreditBalance)`, without ctx, client or project.
@@ -3376,8 +3378,8 @@ Expected FAIL. The capture checks pass; the dispatcher checks fail:
 			lastError = err
 			continue
 		}
-		dispatcher.beginConversation(ctx, SessionKey(ctx), account, client, project)
-		dispatcher.beginTurn(ctx, SessionKey(ctx), account, client, project, request)
+		dispatcher.beginConversation(ctx, session, account, client, project)
+		dispatcher.beginTurn(ctx, session, account, client, project, request)
 		payload := dispatcher.builder.BuildCloudCodeRequestWithModel(request, project, credentials.Email, proxyformat.ModelOptions{
 ```
 
@@ -6603,7 +6605,7 @@ git commit -m "feat(claudecode): forward count_tokens with Claude Code's capture
 
 **Files:**
 - Modify: `internal/kimi/passthrough.go:3-13` (imports `context`, `fmt`), `:74-92` (Director uses the shared header helper)
-- Modify: `internal/api/server.go:2252-2267` (spoof defaults removed: `openrouter.ApplySpoofHeaders` already defaults empty values), `:2382-2411` (headers via helper), new `setOpenRouterHeaders` after `openRouterUpstreamClient` (`:2652-2658`)
+- Modify: `internal/api/server.go:2252-2267` (spoof defaults removed: `openrouter.ApplySpoofHeaders` already defaults empty values), `:2382-2411` (headers via helper), new `setOpenRouterHeaders` after `openRouterUpstreamClient` (`:2652-2658`), and the custom endpoint Director's auth block and version/beta block (`:1430-1456`), which call the new `setCustomEndpointKey` and `setClientAnthropicHeaders` (defined next to `countCustomEndpoint`) with unchanged behaviour
 - Modify: `internal/api/count_tokens.go` (`countForwards` entries, three count calls, `customCountURL`)
 - Test: `internal/kimi/passthrough_test.go`, `internal/api/count_tokens_test.go`
 
@@ -6611,7 +6613,7 @@ git commit -m "feat(claudecode): forward count_tokens with Claude Code's capture
 - Consumes: from the Claude Code count forward task, `countCall`, `countForwards`, `forwardCount`, marks, `ccidentity.CountTokensProfile()`, and the test helpers `newCountServer`, `sendInSession`, `countOf`, `estimateOf`, `newCountUpstream`, `countPath`. Existing: `customEndpointIdentity(endpoint config.EndpointConfig, sessionKey string) (ccidentity.Identity, bool)`, `withCapturedBetaQuery(rawQuery string) string`, `resolveCustomEndpointURL(endpointURL, requestPath string) (*url.URL, error)`, `customEndpointTransport`, `customEndpointIdentityTransport`, `(*Server).resolveKimiCredential`, `(*Server).kimiIdentityHeaders`, `openRouterUpstreamClient()`.
 - Produces:
   - `kimi`: `func CountTokens(ctx context.Context, baseURL, apiKey string, body []byte, client, identity http.Header) (*http.Response, error)`
-  - `api`: `func (server *Server) setOpenRouterHeaders(upReq *http.Request, client http.Header, cfg config.OpenRouterConfig) bool`; `func (server *Server) countOpenRouter(call countCall) (*http.Response, error)`; `func (server *Server) countKimi(call countCall) (*http.Response, error)`; `func (server *Server) countCustomEndpoint(call countCall) (*http.Response, error)`; `func customCountURL(endpointURL string) (*url.URL, bool)`; `var errNoCountRoute error`
+  - `api`: `func (server *Server) setOpenRouterHeaders(upReq *http.Request, client http.Header, cfg config.OpenRouterConfig) bool`; `func (server *Server) countOpenRouter(call countCall) (*http.Response, error)`; `func (server *Server) countKimi(call countCall) (*http.Response, error)`; `func (server *Server) countCustomEndpoint(call countCall) (*http.Response, error)`; `func setCustomEndpointKey(h http.Header, apiKey string)`; `func setClientAnthropicHeaders(h, client http.Header, defaultVersion bool)`; `func customCountURL(endpointURL string) (*url.URL, bool)`; `var errNoCountRoute error`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -7192,19 +7194,36 @@ func (server *Server) countCustomEndpoint(call countCall) (*http.Response, error
 	}
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Accept", "application/json")
-	if endpoint.APIKey != "" {
-		upReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
-		upReq.Header.Set("x-api-key", endpoint.APIKey)
-	}
-	version := call.request.Header.Get("anthropic-version")
-	if version == "" {
-		version = "2023-06-01"
-	}
-	upReq.Header.Set("anthropic-version", version)
-	if beta := call.request.Header.Get("anthropic-beta"); beta != "" {
-		upReq.Header.Set("anthropic-beta", beta)
-	}
+	setCustomEndpointKey(upReq.Header, endpoint.APIKey)
+	setClientAnthropicHeaders(upReq.Header, call.request.Header, true)
 	return customCountClient.Do(upReq)
+}
+
+// setCustomEndpointKey sends a custom endpoint's own key in both header forms
+// Anthropic-format servers accept. An endpoint without a key gets no
+// credential at all, never the client's.
+func setCustomEndpointKey(h http.Header, apiKey string) {
+	if apiKey == "" {
+		h.Del("Authorization")
+		h.Del("x-api-key")
+		return
+	}
+	h.Set("Authorization", "Bearer "+apiKey)
+	h.Set("x-api-key", apiKey)
+}
+
+// setClientAnthropicHeaders forwards the client's anthropic-version and
+// anthropic-beta to a custom endpoint that is not normalized. defaultVersion
+// sets 2023-06-01 when the client sent none; Messages API calls need one.
+func setClientAnthropicHeaders(h, client http.Header, defaultVersion bool) {
+	if version := client.Get("anthropic-version"); version != "" {
+		h.Set("anthropic-version", version)
+	} else if defaultVersion {
+		h.Set("anthropic-version", "2023-06-01")
+	}
+	if beta := client.Get("anthropic-beta"); beta != "" {
+		h.Set("anthropic-beta", beta)
+	}
 }
 
 // customCountURL is the count_tokens URL of an Anthropic-format endpoint: its
@@ -7493,7 +7512,7 @@ A count takes the `/v1/messages` route: model mapping, then the gateway preceden
 
 An upstream that answers `404`, `405` or `501` is estimated for an hour without being asked (custom endpoints per URL). Any other failure is estimated for that request. A count never answers an error status for an upstream's sake; only a body without a `messages` array is refused, with `400`.
 
-The estimate is the conversation's last real input count (input plus cache reads and writes of the latest completed Cloud Code or Zen request with the same session id) plus a chars-per-token estimate of the messages added since. The ratio is learned per model family (`claude`, `gemini`, `gpt-oss`, otherwise the model id) from requests of at least 1,000 characters, starting at 4.0. Images count by their dimensions: `width × height / 750`, at most 1,600 tokens, or 258 per 768 × 768 tile for Gemini. Without a session id, or when the conversation's earlier messages, system prompt or tools changed, the whole request is estimated. The memory is in process, kept an hour after its last use, for at most 10,000 conversations. With debug logging, each estimate is logged as `count_tokens estimate` with its `session_id`, next to the `input_tokens` and `cache_read_tokens` of that session's next request.
+The estimate is the conversation's last real input count (input plus cache reads and writes of the latest completed Cloud Code or Zen request with the same session id) plus a chars-per-token estimate of the messages added since. The ratio is learned per model family (`claude`, `gemini`, `gpt-oss`, otherwise the model id) from requests of at least 1,000 characters, starting at 4.0. Images count by their dimensions: for Claude and other non-Gemini models, the image is scaled down to the long-edge limit and costs `ceil(width/28) × ceil(height/28)` tokens (1,568 px and at most 1,568 tokens; 2,576 px and at most 4,784 tokens for Claude 4.7 and later); for Gemini, 258 tokens per 768 × 768 tile, or 258 for an image of 384 × 384 or less. An image whose size cannot be read costs the maximum (1,600 for Gemini). Without a session id, or when the conversation's earlier messages, system prompt or tools changed, the whole request is estimated. The memory is in process, kept an hour after its last use, for at most 10,000 conversations. With debug logging, each estimate is logged as `count_tokens estimate` with its `session_id`, next to the `input_tokens` and `cache_read_tokens` of that session's next request.
 ```
 
 - [ ] **Step 3: CONTEXT.md**
@@ -7546,7 +7565,7 @@ ANTIGRAVITY_CONFIG_DIR="$SMOKE" DEBUG=1 bin/antigravity-proxy --port 18090 2>"$S
 
   In two terminals run interactive Claude Code sessions against `http://127.0.0.1:18090` (same `ANTHROPIC_BASE_URL`/token setup as `README.md` "Claude Code Integration") on a Cloud Code model, each with a tool-using prompt and a second turn; run `/context` in one of them.
 - [ ] Pins: `grep -iE 'pin|overflow|rebind' "$SMOKE/proxy.log"` shows one pin per session (first 8 characters of the session id, model, account, reason); `curl -s http://127.0.0.1:18090/api/accounts | jq '.accounts[] | {email, activeSessions}'` (add `-H "x-webui-password: …"` when the copied config sets one) shows both sessions counted.
-- [ ] Overflow and rebind: force the home account of one session out with `curl -s -X PATCH http://127.0.0.1:18090/api/accounts/<home email> -H 'Content-Type: application/json' -d '{"quotaThreshold":0.99}'` (the quota branch of the overflow rule), send a turn, and check the log names an overflow for that model only; then `curl -s -X POST http://127.0.0.1:18090/api/accounts/<home email>/toggle`, send a turn, and check the log names a rebind of the home account while the overflow entry stays. Restore with the same `toggle` and `{"quotaThreshold":null}`.
+- [ ] Overflow and rebind: force a long limit on the home account of one session for its model. Edit `$SMOKE/accounts.json` so that account's `modelRateLimits` has `"<model>": {"isRateLimited": true, "resetTime": <now + 30 min, epoch ms>}`, then immediately `curl -s -X POST http://127.0.0.1:18090/api/accounts/reload` (`Manager.Reload` swaps in the file's accounts; pins hold emails, so they survive). Send a turn and check the log names an overflow for that model only. Then `curl -s -X POST http://127.0.0.1:18090/api/accounts/<home email>/toggle`, send a turn, and check the log names a rebind of the home account while the overflow entry stays. Restore with the same `toggle` and by removing the `modelRateLimits` entry followed by another reload.
 - [ ] Control-plane sequence: `grep -E 'loadCodeAssist|fetchAdminControls|fetchUserInfo|retrieveUserQuotaSummary|fetchAvailableModels|listExperiments|cascadeNuxes' "$SMOKE/proxy.log"` shows, for each session's first turn on an account, the start burst in the order of `.reference/client-drift/agy.jsonl` followed by the per-turn calls, and only the per-turn calls before later prompts; no `retrieveUserQuotaSummary` after a stream.
 - [ ] Interceptor capture against agy: `python3 scripts/client_drift.py check --clients agy` (captures agy and this build's `tools/clientprobe` requests through the same mitmdump `Interceptor`); the report has no `this build differs from agy` line.
 - [ ] JA4 gate (`AGENTS.md`), including the new GET: start `sudo tcpdump -i pktap,all -P -w /tmp/proxy-cc.pcap host daily-cloudcode-pa.googleapis.com` (Linux: `-i any`), start a new Claude Code session against the smoke proxy so its first turn sends the start burst with `GET cascadeNuxes`, stop tcpdump, then `tshark -r /tmp/proxy-cc.pcap -Y 'tls.handshake.type==1' -T fields -e tls.handshake.ja4 | sort | uniq -c` prints one JA4, equal to the one in `.reference/agy-current-baseline.txt`.
