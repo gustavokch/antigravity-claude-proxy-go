@@ -15,6 +15,9 @@ The rule covers the Cloud Code path. The Zen and Claude Code upstreams are Bun
 (BoringSSL) clients, which Go cannot imitate, so they replay recorded
 ClientHellos through utls in `internal/tlsreplay` (ADR 0004). Never route Cloud
 Code through it, and never hand-build a hello: recapture the real client's.
+Codex is the one non-replay exception: requests to `codex.baseUrl` use utls's
+stock `HelloChrome_Auto` (`internal/transport/codex.go`), for parity with
+CLIProxyAPI (ADR 0005).
 
 ## Ground truth (already gathered — don't re-derive)
 - `.reference/grpc-methods.txt` — real `CloudCode/*` gRPC methods from the binary.

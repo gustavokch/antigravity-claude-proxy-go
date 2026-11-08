@@ -61,8 +61,9 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
 │    a. Kimi Code Gateway (allowlist ID/alias, [1m]-insensitive)?             │
 │    b. OpenCode Zen Gateway (forwardable-wire allowlist, key must resolve)?  │
 │    c. Claude Code Gateway (pool accounts, allowlist ID/alias)?              │
-│    d. OpenRouter Allowlist / Alias (literal match)?                         │
-│    e. Custom Endpoints Map (Anthropic-format path)?                         │
+│    d. ChatGPT Codex Gateway (pool accounts, allowlist ID/alias)?            │
+│    e. OpenRouter Allowlist / Alias (literal match)?                         │
+│    f. Custom Endpoints Map (Anthropic-format path)?                         │
 │    └─► First matching gateway forwards; see gatewayOrder paragraph below   │
 │                                                                             │
 │ 3. Match Google Cloud Code Catalog? (terminal account-backed route)         │
@@ -76,14 +77,14 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
 One model ID can exist on more than one gateway. The proxy resolves the
 collision by walking a configured precedence list and handing the request to
 the first gateway whose matcher already accepts the model. The default order
-is `kimi`, `zen`, `claudecode`, `openrouter`, `custom`, `cloudcode`:
+is `kimi`, `zen`, `claudecode`, `codex`, `openrouter`, `custom`, `cloudcode`:
 
 ```json
 {
   "gatewayOrder": {
-    "order": ["kimi", "zen", "claudecode", "openrouter", "custom", "cloudcode"],
+    "order": ["kimi", "zen", "claudecode", "codex", "openrouter", "custom", "cloudcode"],
     "byModel": {
-      "claude-sonnet-5": ["openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"]
+      "claude-sonnet-5": ["openrouter", "kimi", "zen", "claudecode", "codex", "custom", "cloudcode"]
     }
   }
 }
@@ -492,8 +493,8 @@ retrying, once no account has capacity for its model:
 | Recognized classifier call, unsupported variant | unchanged | non-retryable 400, no retry/backoff |
 
 The gate applies only to requests bound for the account-backed dispatch path.
-Traffic routed to Kimi, Zen, Claude Code, OpenRouter or a custom endpoint carries
-its own credentials and never consumes account capacity, so it is never
+Traffic routed to Kimi, Zen, Claude Code, Codex, OpenRouter or a custom endpoint
+carries its own credentials and never consumes account capacity, so it is never
 stubbed or failed by this flag. Streaming requests are also left alone: the
 canned verdict is a plain JSON body, which a caller awaiting
 `text/event-stream` could not parse.
@@ -505,6 +506,135 @@ that match a captured classifier fingerprint (see
 `docs/classifier-fallback-notes.md`) — ordinary chat and tool-use traffic is
 never stubbed or fast-failed by this flag, regardless of capacity. Every stub
 and fast-fail is logged at warning level with the detected variant and model.
+
+---
+
+## ChatGPT Codex Gateway
+
+The Codex gateway serves Anthropic `POST /v1/messages` requests (Claude Code or any Anthropic client) from a pool of ChatGPT-subscription accounts through the Codex backend, `https://chatgpt.com/backend-api/codex/responses`, the endpoint the official Codex CLI calls. Each request is translated from Anthropic to the Responses format on the way up, and the answer back to Anthropic SSE (or one JSON message for a non-streaming client) on the way down. The gateway is off by default; signing in an account turns it on.
+
+### Signing in
+
+- Accounts are added in the WebUI: Add Account → **ChatGPT Codex**. The login is OAuth 2.0 PKCE against `https://auth.openai.com` with the Codex CLI's client and redirect URI, `http://localhost:1455/auth/callback`. The proxy listens on `127.0.0.1:1455` for the callback while a popup shows the sign-in page, and the WebUI polls the login until it completes.
+- **Paste fallback**: the paste field is always visible. When the browser and the proxy run on different machines, the redirect to `localhost:1455` fails to load; copy the full URL from the address bar and paste it. If port 1455 is busy, the login starts in paste mode. The `state` parameter is checked either way, and a login expires after 5 minutes.
+- `~/.codex/auth.json` is not imported. ChatGPT refresh tokens rotate on every refresh and are single-use, so a token shared with the codex CLI would sign one of them out. Sign each account in through the WebUI, separately from the CLI.
+- A completed login registers the account. Signing in again with the same ChatGPT account (matched by `accountId`, the `chatgpt_account_id` claim) updates it in place. A new one gets the id `codex-<email>` (`codex-<accountId>` without an email, with `-<first 8 characters of accountId>` appended if the id is taken), `source: "oauth"`, `enabled: true` and `priority: 1`. The login also sets `codex.enabled` to `true`.
+
+### Account pool
+
+- Accounts live in `config.json` under `codex.accounts[]`; there is no separate pool file. Quota and cooldown state are kept in memory: they survive a pool rebuild after a config change, but not a restart.
+- A request goes to the account its Claude Code session used last while that account is healthy, else to the healthy account with the lowest `priority`, then the fewest requests in flight, then the fewest consecutive failures.
+- A request gets up to 3 attempts:
+  - `401`: the access token is refreshed and the request retried once; if that fails too, the account is excluded and the next one is tried.
+  - `429` with `usage_limit_reached`: the account cools down until the reset the error names. Any other `429` cools it down for `Retry-After`, or 60 s without one. The request moves on to the next account; when none is left, the client gets the last `429` as an Anthropic `rate_limit_error`.
+  - `5xx` and transport errors count as failures against the account.
+  - Other upstream `4xx` errors become Anthropic error envelopes: `400` → `invalid_request_error`, `401`/`403` → `authentication_error`/`permission_error`, `404` → `not_found_error`, `413` → `request_too_large`.
+- Access tokens are refreshed when less than 24 hours remain, one refresh at a time per account. The rotated tokens are written to `config.json` before the new access token is used. A refresh rejected because the grant is gone (`invalid_grant`, `refresh_token_reused`, `refresh_token_expired`, `refresh_token_invalidated`, `token_revoked`, or HTTP 401) marks the account `needs_login`, and it is skipped until you sign it in again.
+- The WebUI Codex accounts tab shows each account's status (`healthy`, `cooldown`, `needs_login`, `disabled`) and usage bars, and can toggle, reprioritise, refresh, test and delete it.
+
+### Usage windows
+
+Every successful response reports the account's usage in `x-codex-primary-*` and `x-codex-secondary-*` headers (`-used-percent`, `-window-minutes`, and `-reset-after-seconds` or `-reset-at`) plus `x-codex-plan-type`. The proxy records them per account. Nothing is polled, so an account's windows appear after its first request. The Codex accounts tab draws them as 5h and weekly bars, and `GET /v1/usage` adds one window per account and header pair, with `label`, `remaining_fraction`, `used_percent`, `reset_at`, `model_ids`, `provider: "codex"` and `account_id`. The label is `Codex 5h (<name>)` for a 300-minute window, `Codex weekly (<name>)` for a 10080-minute one, and `Codex <n>m (<name>)` for any other length.
+
+### Models and allowlist
+
+`codex.allowlist` decides which model IDs the gateway claims. A requested ID matches an enabled entry by exact `id`, then by alias (`alias`, a comma list, and `aliases`), then case-insensitively. Enabled entries are listed in `GET /v1/models` with `owned_by: "openai"`.
+
+The default allowlist is the list of models CLIProxyAPI's Codex client catalog shows to clients. Each entry carries the model's reasoning levels (`efforts`) and `defaultEffort`, and an output limit of 128,000 tokens:
+
+| Model | Context window |
+|---|---:|
+| `gpt-6.1-sol` | 500,000 |
+| `gpt-6.1-terra` | 500,000 |
+| `gpt-6-astra` | 272,000 |
+| `gpt-6-sol` | 272,000 |
+| `gpt-6-luna` | 272,000 |
+| `gpt-5.6-sol` | 272,000 |
+| `gpt-5.6-terra` | 272,000 |
+| `gpt-5.6-luna` | 272,000 |
+| `gpt-5.5` | 500,000 |
+
+The WebUI allowlist editor can fetch the live list (`POST /api/codex/models/fetch`, which calls `GET {baseUrl}/models?client_version=0.154.0` with a pool account) and import the defaults. Which models an account can use depends on its plan.
+
+Zen's Responses wire serves several of the same IDs (`gpt-6-sol`, `gpt-5.6-luna`, …). When both allowlists hold an ID, `gatewayOrder` decides, and Zen comes first by default.
+
+### Effort and thinking
+
+| Anthropic request | Codex `reasoning.effort` |
+|---|---|
+| `output_config.effort` (`low`, `medium`, `high`, `xhigh`, `max`) | the same level |
+| no `output_config.effort`, `thinking.budget_tokens` ≤ 512 | `minimal`, or `low` on a model without `minimal` |
+| no `output_config.effort`, `thinking.budget_tokens` ≤ 1024 | `low` |
+| no `output_config.effort`, `thinking.budget_tokens` ≤ 8192 | `medium` |
+| no `output_config.effort`, `thinking.budget_tokens` ≤ 24576 | `high` |
+| no `output_config.effort`, larger `thinking.budget_tokens` | `xhigh` |
+| `thinking.type: "disabled"` | not sent |
+| none of these | the entry's `defaultEffort`, else `medium` |
+
+The level is then lowered to the highest level in the entry's `efforts` at or below it, so `max` on a model whose `efforts` stop at `xhigh` runs `xhigh` (Effort Level in `CONTEXT.md`). When thinking is enabled or adaptive and `thinking.display` is not `"omitted"`, the request also asks for `reasoning.summary: "auto"`, which streams back as the thinking text.
+
+Reasoning carries across turns in the thinking block's `signature`. Codex returns its `reasoning.encrypted_content` there, and the next request sends it back as a `reasoning` item; the thinking text itself is never sent upstream. A signature from another backend (one that does not start with `gAAAA`) is dropped, so a conversation that moves to Codex from another gateway keeps its text but not that gateway's reasoning. Every request carries `store: false`, so the backend keeps nothing between turns.
+
+Other request shaping:
+
+- `system` becomes one developer message; `instructions` is sent empty.
+- `max_tokens` becomes `max_output_tokens`, raised to 16 when lower.
+- `temperature`, `top_p`, `top_k`, `stop_sequences` and `metadata` are not sent.
+- `service_tier: "fast"` or `"priority"`, or `speed: "fast"`, becomes `service_tier: "priority"`.
+- Each Claude Code session and agent (`X-Claude-Code-Agent-Id`, default `main`) gets its own prompt cache key, a UUIDv5 of model, session and agent, sent as `prompt_cache_key` and `Session-Id`. A request with no session id gets no key.
+- Tool names and call ids longer than 64 bytes are shortened on the way up and restored on the way down.
+- Images become `input_image` parts and base64 PDFs become `input_file` parts.
+
+### Web search
+
+Claude's `web_search_20250305` and `web_search_20260209` server tools become Codex's built-in `{"type": "web_search"}` tool, keeping `allowed_domains` (as `filters.allowed_domains`) and `user_location`; the request then also asks for `web_search_call.action.sources`. A `tool_choice` naming the search tool becomes `{"type": "web_search"}`. Each search comes back as a `server_tool_use` block (`name: "web_search"`, `input.query`) followed by a `web_search_tool_result` block whose `web_search_result` entries carry `title`, `url` and `page_age: null`. On later turns those two blocks are not sent back upstream.
+
+### Wire identity
+
+Requests to `codex.baseUrl` present a Chrome TLS ClientHello (utls `HelloChrome_Auto`) with the Codex CLI's headers, `User-Agent: codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)` and `Originator: codex-tui`, as CLIProxyAPI does. This is a scoped exception to the repo's empty-`tls.Config` rule; [ADR-0005](docs/adr/0005-codex-gateway-wire-identity.md) records why, and the contradiction it accepts. `HTTPS_PROXY` and `ALL_PROXY` are honoured. The client-drift tooling does not track the Codex CLI, so the pinned `0.154.0` is bumped by hand; until then `codex.identity.userAgent` and `codex.identity.originator` override the two headers. The Cloud Code path keeps Go's default handshake.
+
+### Configuration
+
+```json
+{
+  "codex": {
+    "enabled": true,
+    "baseUrl": "https://chatgpt.com/backend-api/codex",
+    "accounts": [
+      {
+        "id": "codex-you@example.com",
+        "name": "work",
+        "token": "<access token>",
+        "refreshToken": "<refresh token>",
+        "idToken": "<id token>",
+        "expiresAt": "2026-11-18T09:30:00Z",
+        "email": "you@example.com",
+        "accountId": "<chatgpt_account_id>",
+        "planType": "plus",
+        "priority": 1,
+        "enabled": true,
+        "source": "oauth"
+      }
+    ],
+    "allowlist": [
+      {
+        "id": "gpt-6-luna",
+        "alias": "luna",
+        "displayName": "GPT-6-Luna",
+        "contextLength": 272000,
+        "maxOutputTokens": 128000,
+        "efforts": ["low", "medium", "high", "xhigh", "max"],
+        "defaultEffort": "medium",
+        "enabled": true
+      }
+    ]
+  }
+}
+```
+
+- Defaults: `enabled: false`, `baseUrl` `https://chatgpt.com/backend-api/codex`, no accounts, and the default allowlist above.
+- `accounts` is written by the login and by token refresh, so let the WebUI manage it. `POST /api/codex/config` saves `enabled`, `baseUrl`, `allowlist` and `identity` and ignores `accounts`; `POST /api/codex/accounts` changes one account's `enabled`, `priority` or `name`. `GET /api/codex/config` and `GET /api/config` return `token` as `hasToken` and `maskedToken`, `refreshToken` as `hasRefreshToken`, and leave out `idToken`.
+- `identity` (`userAgent`, `originator`) replaces the default headers. Omit it to follow the built-in values: a value written here stays pinned when the default is bumped. Control characters are rejected.
 
 ---
 
@@ -629,10 +759,10 @@ Example `config.json`:
 }
 ```
 
-- **Routing order**: ModelMapping → Kimi → Zen → Claude Code → OpenRouter →
-  CustomEndpoints → CloudCode. An explicit Zen allowlist entry wins on ID
-  collision (e.g. `claude-sonnet-4-6` exists in both Zen and CloudCode);
-  use aliases to disambiguate.
+- **Routing order**: ModelMapping → Kimi → Zen → Claude Code → Codex →
+  OpenRouter → CustomEndpoints → CloudCode. An explicit Zen allowlist entry
+  wins on ID collision (e.g. `claude-sonnet-4-6` exists in both Zen and
+  CloudCode); use aliases to disambiguate.
 - **Key**: `zen.apiKey`, with `OPENCODE_API_KEY` env fallback. The WebUI
   reports the source as `keySource: "config"|"env"|"none"` and never echoes
   the env value. OpenCode config ids use the `opencode/<model-id>` format;
@@ -904,7 +1034,7 @@ Management payloads are small, so they are capped: a management request body ove
 | `/v1/models` | `GET` | Unified catalog of available models, context lengths, thinking support |
 | `/v1/usage` | `GET` | Quota usage per model and grouped quota reset windows |
 | `/v1/messages` | `POST` | Anthropic-compliant messages API (supports streaming SSE) |
-| `/v1/messages/count_tokens` | `POST` | Input token count `{"input_tokens": N}`: forwarded to Claude Code, OpenRouter, Kimi and Anthropic-format custom endpoints, estimated for Cloud Code and Zen (see below) |
+| `/v1/messages/count_tokens` | `POST` | Input token count `{"input_tokens": N}`: forwarded to Claude Code, OpenRouter, Kimi and Anthropic-format custom endpoints, estimated for Cloud Code, Zen and Codex (see below) |
 | `/v1/systemone` | `POST` | Zen Jev systemone passthrough: body forwarded unchanged (needs `zen.enabled` and a Zen key) |
 | `/api/accounts` | `GET` | List account pool with tiers, quotas, and health scores |
 | `/api/accounts/{email}` | `DELETE`/`PATCH` | Remove account or update quota thresholds |
@@ -940,6 +1070,16 @@ Management payloads are small, so they are capped: a management request body ove
 | `/api/claudecode/accounts` | `GET` | List configured Claude Code accounts and status |
 | `/api/claudecode/accounts/{email}` | `DELETE` | Remove a Claude Code account from pool |
 | `/api/claudecode/status` | `GET` | Retrieve Claude Code gateway and pool health status |
+| `/api/codex/config` | `GET`/`POST` | Read the redacted `codex` section, or save `enabled`, `baseUrl`, `allowlist` and `identity` (accounts are ignored) |
+| `/api/codex/accounts` | `GET`/`POST` | List Codex accounts with status, cooldown and usage windows, or change one account's `enabled`, `priority` or `name` by `id` |
+| `/api/codex/accounts/{id}` | `DELETE` | Remove a Codex account |
+| `/api/codex/accounts/{id}/refresh` | `POST` | Refresh the account's access token now; answers the new `expiresAt` |
+| `/api/codex/accounts/{id}/test` | `POST` | Check the account against the Codex backend; answers the number of models it serves |
+| `/api/codex/auth/start` | `POST` | Start a ChatGPT login (`mode`: `loopback`, the default, or `manual`); answers `session_id`, `auth_url` and `mode` |
+| `/api/codex/auth/status` | `GET` | Poll a ChatGPT login (`?session_id=`) |
+| `/api/codex/auth/complete` | `POST` | Finish a ChatGPT login with the pasted redirect URL (`session_id`, `redirect_url`) |
+| `/api/codex/auth/cancel` | `POST` | Cancel a ChatGPT login (`session_id`) |
+| `/api/codex/models/fetch` | `POST` | Fetch the live Codex model list for the allowlist editor |
 | `/api/headroom/stats` | `GET` | Real-time Headroom compression statistics |
 | `/api/cache-bump` | `GET`/`DELETE` | List recorded cache-bump sessions with stats, or clear all records (bodies are never returned) |
 | `/api/cache-bump/{sessionID}/stop` | `POST` | Stop cache bumping for one session across all routes |
@@ -956,6 +1096,7 @@ A count takes the `/v1/messages` route: model mapping, then the gateway preceden
 | Kimi | Forwarded to `<base>/v1/messages/count_tokens` with the Kimi credential, plus the KimiCLI identity for a Kimi Code login. |
 | Custom endpoint | Forwarded to the endpoint URL with `/messages` replaced by `/messages/count_tokens` (`/v1/messages/count_tokens` when the URL leaves the path to the request). A normalized endpoint gets the Claude Code count identity. A URL that names no messages route is estimated. |
 | Cloud Code, Zen | Estimated. |
+| Codex | Estimated from the model family's chars-per-token ratio; Codex replies do not teach the estimator, so it keeps no conversation memory for Codex models. |
 
 An upstream that answers `404`, `405` or `501` is estimated for an hour without being asked, per gateway and model (custom endpoints per URL and model). A `429` is estimated, and that gateway is not asked for counts again until its `Retry-After` (10 s without one). Only a Claude Code `429` that carries the subscription's `anthropic-ratelimit-unified-*` headers also cools the account down, as on `/v1/messages`; Anthropic documents count limits as separate from message limits. Any other failure, including no answer within 10 s, is estimated for that request. A count never answers an error status for an upstream's sake; only a body the proxy cannot use is refused with `400`: one that cannot be read or is over the size limit, invalid JSON, or one without a `messages` array.
 
