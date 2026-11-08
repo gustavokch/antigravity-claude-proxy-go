@@ -20,8 +20,8 @@ import (
 	"antigravity-go-proxy/internal/openrouter"
 )
 
-// countUnsupportedFor is how long a gateway that answered count_tokens with
-// 404, 405 or 501 is estimated without being asked.
+// countUnsupportedFor is how long a model whose gateway answered its
+// count_tokens with 404, 405 or 501 is estimated without being asked.
 const countUnsupportedFor = time.Hour
 
 // countBackoffDefault is how long counts back off after a count_tokens 429
@@ -42,10 +42,11 @@ const maxCountResponse = 64 << 10
 // A count takes the /v1/messages route: model mapping, then the gateway
 // precedence. Headroom and the classifier do not run: a count measures the
 // request as the client wrote it. A gateway with a count endpoint is asked
-// (forwardCount). Zen and Cloud Code have none, and a gateway that cannot
-// answer is no error for the client, so those counts are estimated from what
-// the conversation really cost so far (internal/tokencount). Only a body the
-// proxy cannot read is refused.
+// (forwardCount). Zen and Cloud Code have none, so their counts are estimated
+// from what the conversation really cost so far (internal/tokencount), and so
+// is any count a gateway fails to answer: an upstream failure never gives the
+// client an error status. A body that cannot be read, is not JSON or has no
+// messages array is refused with 400.
 func (server *Server) countTokens(writer http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
 	rawBody, err := io.ReadAll(request.Body)
@@ -116,24 +117,25 @@ var countForwards = map[config.GatewayID]func(*Server, countCall) (*http.Respons
 }
 
 // forwardCount asks the gateway route names for the count. ok is false when
-// the gateway does not count tokens, is marked, or the call failed in any
-// way; the caller then estimates, so a count never fails the client for an
-// upstream's sake. The forward, answer included, gets countForwardTimeout. A
-// 404, 405 or 501 marks the gateway (a custom endpoint: that endpoint) for
-// countUnsupportedFor, and a 429 marks it for countBackoff: counts back off,
-// and nothing generation uses changes.
+// the gateway does not count tokens, the model is marked on it, or the call
+// failed in any way; the caller then estimates, so a count never fails the
+// client for an upstream's sake. The forward, answer included, gets
+// countForwardTimeout. A 404, 405 or 501 marks the model on the gateway (on a
+// custom endpoint: that endpoint) for countUnsupportedFor, and a 429 marks it
+// for countBackoff: counts back off, and nothing generation uses changes.
 func (server *Server) forwardCount(request *http.Request, cfg config.Config, route gatewayRoute, session string, rawBody []byte) (int, bool) {
 	send, ok := countForwards[route.id]
 	if !ok {
 		return 0, false
 	}
-	key := countMarkKey(route)
+	gateway := countGateway(route)
+	key := countMarkKey(gateway, route.target)
 	if server.countMarks.marked(key, server.nowTime()) {
 		return 0, false
 	}
 	body, err := countBody(rawBody, route.target)
 	if err != nil {
-		server.logger.Debug("count_tokens body not forwardable; estimating", "gateway", key, "error", err)
+		server.logger.Debug("count_tokens body not forwardable; estimating", "gateway", gateway, "model", route.target, "error", err)
 		return 0, false
 	}
 	timeout := server.countTimeout
@@ -144,30 +146,30 @@ func (server *Server) forwardCount(request *http.Request, cfg config.Config, rou
 	defer cancel()
 	resp, err := send(server, countCall{ctx: ctx, request: request, cfg: cfg, route: route, body: body, session: session})
 	if err != nil {
-		server.logger.Debug("count_tokens forward failed; estimating", "gateway", key, "error", err)
+		server.logger.Debug("count_tokens forward failed; estimating", "gateway", gateway, "model", route.target, "error", err)
 		return 0, false
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
 		server.countMarks.mark(key, server.nowTime(), countUnsupportedFor)
-		server.logger.Info("count_tokens not served upstream; estimating for an hour", "gateway", key, "status", resp.StatusCode)
+		server.logger.Info("count_tokens not served upstream; estimating for an hour", "gateway", gateway, "model", route.target, "status", resp.StatusCode)
 		return 0, false
 	case http.StatusTooManyRequests:
 		backoff := countBackoff(resp.Header)
 		server.countMarks.mark(key, server.nowTime(), backoff)
-		server.logger.Info("count_tokens rate limited upstream; estimating", "gateway", key, "backoff", backoff)
+		server.logger.Info("count_tokens rate limited upstream; estimating", "gateway", gateway, "model", route.target, "backoff", backoff)
 		return 0, false
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		server.logger.Debug("count_tokens upstream error; estimating", "gateway", key, "status", resp.StatusCode)
+		server.logger.Debug("count_tokens upstream error; estimating", "gateway", gateway, "model", route.target, "status", resp.StatusCode)
 		return 0, false
 	}
 	var counted struct {
 		InputTokens *int `json:"input_tokens"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCountResponse)).Decode(&counted); err != nil || counted.InputTokens == nil || *counted.InputTokens < 0 {
-		server.logger.Debug("count_tokens upstream answered no count; estimating", "gateway", key)
+		server.logger.Debug("count_tokens upstream answered no count; estimating", "gateway", gateway, "model", route.target)
 		return 0, false
 	}
 	return *counted.InputTokens, true
@@ -195,19 +197,27 @@ func countBody(rawBody []byte, model string) ([]byte, error) {
 	return ccidentity.SetObjectMembers(rawBody, ccidentity.ObjectMember{Name: "model", Value: quoted})
 }
 
-// countMarkKey names what a mark covers: a custom endpoint by its URL, since
-// one endpoint can count and another not; any other gateway by its id.
-func countMarkKey(route gatewayRoute) string {
+// countGateway names the gateway a count goes to: a custom endpoint by its
+// URL, since one endpoint can count and another not; any other gateway by its
+// id.
+func countGateway(route gatewayRoute) string {
 	if route.id == config.GatewayCustom {
 		return string(config.GatewayCustom) + ":" + route.endpoint.URL
 	}
 	return string(route.id)
 }
 
-// countMarks remembers the gateways not to ask for counts, and until when:
-// those that do not count tokens and those that answered a count 429. Keys
-// come from the configuration, so the map stays small. The zero value is
-// ready.
+// countMarkKey names what a mark covers: one model on one gateway
+// (countGateway), since a gateway can count one model and not another. NUL,
+// which neither a URL nor a model id holds, ends the gateway.
+func countMarkKey(gateway, model string) string {
+	return gateway + "\x00" + model
+}
+
+// countMarks remembers the gateway models not to ask for counts, and until
+// when: those that do not count tokens and those that answered a count 429.
+// Keys are configured gateways and the models they serve, so the map stays
+// small. The zero value is ready.
 type countMarks struct {
 	mu    sync.Mutex
 	until map[string]time.Time

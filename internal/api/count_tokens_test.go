@@ -507,7 +507,7 @@ func TestCountTokens_429BacksOffForTheRetryAfter(t *testing.T) {
 }
 
 // 404, 405 and 501 say the upstream does not count tokens: the count is
-// estimated, and the gateway is not asked again for an hour.
+// estimated, and the gateway is not asked again for that model for an hour.
 func TestCountTokens_UnsupportedUpstreamIsEstimatedForAnHour(t *testing.T) {
 	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
@@ -821,6 +821,59 @@ func TestCountTokens_UnsupportedMarkCoversOneCustomEndpoint(t *testing.T) {
 	}
 	if n := len(counting.requests()); n != 2 {
 		t.Errorf("counting endpoint asked %d times, want 2: another endpoint's mark must not cover it", n)
+	}
+}
+
+// A gateway can count one model and not another: a 404 for one model marks
+// that model, and the gateway's other models are still asked.
+func TestCountTokens_UnsupportedMarkCoversOneModel(t *testing.T) {
+	var mu sync.Mutex
+	asked := map[string]int{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/count_tokens") {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		asked[body.Model]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if body.Model == "vendor/model-x" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"count_tokens is not available for this model"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"input_tokens":4321}`)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := config.DefaultConfig()
+	cfg.OpenRouter = config.OpenRouterConfig{Enabled: true, BaseURL: upstream.URL + "/api/v1", APIKey: "k",
+		Allowlist: []config.OpenRouterModelConfig{{ID: "vendor/model-x", Enabled: true}, {ID: "vendor/model-y", Enabled: true}}}
+	server := newCountServer(t, cfg, time.Now)
+	handler := server.Handler()
+	bodyX := `{"model":"vendor/model-x","messages":[{"role":"user","content":"hi"}]}`
+	bodyY := `{"model":"vendor/model-y","messages":[{"role":"user","content":"hi"}]}`
+	wantX := estimateOf(t, server, "", "vendor/model-x", bodyX)
+
+	for i := range 2 {
+		if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "", bodyX, nil)); got != wantX {
+			t.Errorf("round %d: model-x count = %d, want the estimate %d", i, got, wantX)
+		}
+		if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "", bodyY, nil)); got != 4321 {
+			t.Errorf("round %d: model-y count = %d, want the upstream's 4321", i, got)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n := asked["vendor/model-x"]; n != 1 {
+		t.Errorf("model-x asked %d times, want 1: its 404 marks it", n)
+	}
+	if n := asked["vendor/model-y"]; n != 2 {
+		t.Errorf("model-y asked %d times, want 2: another model's mark must not cover it", n)
 	}
 }
 
