@@ -512,6 +512,35 @@ func TestCodexGateway_RevokedGrantNeedsLogin(t *testing.T) {
 	requireNoCodexInFlight(t, srv)
 }
 
+// A 401 that a fresh token does not fix rests the account as unauthorized,
+// and the request moves on.
+func TestCodexGateway_UnauthorizedAfterRefreshRestsTheAccount(t *testing.T) {
+	_, upstream := newFakeCodexBackend(t, func(w http.ResponseWriter, r *http.Request, token string) {
+		if strings.HasPrefix(token, "tok-a") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeCodexSSE(w, nil)
+	})
+	tokenEndpoint := fakeCodexTokenEndpoint(t, func(w http.ResponseWriter, _ url.Values) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"tok-a2","refresh_token":"r-a2","expires_in":864000}`)
+	})
+	srv := newCodexTestServer(t, upstream,
+		codex.AccountConfig{ID: "codex-a", Token: "tok-a", RefreshToken: "r-a", Priority: 1, Enabled: true},
+		codex.AccountConfig{ID: "codex-b", Token: "tok-b", RefreshToken: "r-b", Priority: 2, Enabled: true})
+	srv.codexOAuthMgr.SetEndpoints("", tokenEndpoint.URL)
+
+	rec := postCodexMessages(t, srv, `{"model":"gpt-5.5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if snap := codexSnapshot(t, srv, "codex-a"); snap.Status != "cooldown" || snap.CooldownReason != "unauthorized" {
+		t.Errorf("codex-a = %s/%s, want cooldown/unauthorized", snap.Status, snap.CooldownReason)
+	}
+	requireNoCodexInFlight(t, srv)
+}
+
 // A 4xx other than 401 and 429 is the request's own fault: no failover, and
 // the client gets the upstream's reason in an Anthropic envelope.
 func TestCodexGateway_ClientErrorIsNotRetried(t *testing.T) {

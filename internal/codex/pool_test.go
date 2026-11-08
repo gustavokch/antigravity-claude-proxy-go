@@ -55,7 +55,7 @@ func TestSelectAccountRanking(t *testing.T) {
 		t.Errorf("with b busy: %q, want c (fewer in flight)", got.ID)
 	}
 	p.Release("b")
-	p.RecordFailure("b", false, time.Minute)
+	p.RecordFailure("b", time.Minute, "")
 	if got, _ := p.SelectAccount("", nil); got.ID != "c" {
 		t.Errorf("with b failing: %q, want c (fewer consecutive failures)", got.ID)
 	}
@@ -103,12 +103,12 @@ func TestSelectAccountSkipsUnusableAccounts(t *testing.T) {
 func TestCooldownRules(t *testing.T) {
 	p, clock := newTestPool(t, account("a", 1))
 
-	p.RecordFailure("a", false, time.Minute)
-	p.RecordFailure("a", false, time.Minute)
+	p.RecordFailure("a", time.Minute, "")
+	p.RecordFailure("a", time.Minute, "")
 	if snap := p.Snapshots()[0]; snap.Status != "healthy" {
 		t.Fatalf("after two failures: status %q, want healthy", snap.Status)
 	}
-	p.RecordFailure("a", false, time.Minute)
+	p.RecordFailure("a", time.Minute, "")
 	snap := p.Snapshots()[0]
 	if snap.Status != "cooldown" || snap.CooldownReason != "consecutive_failures" || snap.ConsecutiveFailures != 3 {
 		t.Fatalf("after three failures: %+v", snap)
@@ -116,7 +116,7 @@ func TestCooldownRules(t *testing.T) {
 
 	until := clock.now().Add(3 * time.Hour)
 	p.RecordCooldown("a", until, "usage_limit_reached")
-	p.RecordFailure("a", true, time.Minute) // a 5xx must not cut the longer cooldown short
+	p.RecordFailure("a", time.Minute, "server_error") // a 5xx must not cut the longer cooldown short
 	p.RecordCooldown("a", clock.now().Add(time.Minute), "retry_after")
 	snap = p.Snapshots()[0]
 	if !snap.CooldownUntil.Equal(until) || snap.CooldownReason != "usage_limit_reached" {
@@ -335,7 +335,7 @@ func TestPersistFailureKeepsTheNewToken(t *testing.T) {
 func TestInherit(t *testing.T) {
 	old, clock := newTestPool(t, account("a", 1), account("b", 1), account("gone", 1))
 	old.Acquire("a")
-	old.RecordFailure("a", true, time.Hour)
+	old.RecordFailure("a", time.Hour, "server_error")
 	old.UpdateQuota("a", Quota{PlanType: "plus", ObservedAt: clock.now()})
 	old.SetTokenRefresher(func(context.Context, string) (TokenSet, error) {
 		return TokenSet{}, errors.New("invalid_grant")

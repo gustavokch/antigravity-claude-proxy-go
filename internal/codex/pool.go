@@ -537,10 +537,11 @@ func (p *AccountPool) RecordSuccess(id string) {
 	}
 }
 
-// RecordFailure counts a failed request. A server error, or a third failure in
-// a row, puts the account in cooldown; a cooldown already running for longer is
-// kept.
-func (p *AccountPool) RecordFailure(id string, is5xx bool, cooldown time.Duration) {
+// RecordFailure counts a failed request. A failure with a reason (a server
+// error, a token the backend keeps refusing) puts the account in cooldown under
+// that reason at once; one without (a transport error) does at the third in a
+// row, as consecutive_failures. A cooldown already running for longer is kept.
+func (p *AccountPool) RecordFailure(id string, cooldown time.Duration, reason string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	st := p.accounts[id]
@@ -548,11 +549,10 @@ func (p *AccountPool) RecordFailure(id string, is5xx bool, cooldown time.Duratio
 		return
 	}
 	st.consecutiveFailures++
-	if is5xx || st.consecutiveFailures >= 3 {
-		reason := "consecutive_failures"
-		if is5xx {
-			reason = "server_error"
-		}
+	if reason == "" && st.consecutiveFailures >= 3 {
+		reason = "consecutive_failures"
+	}
+	if reason != "" {
 		st.extendCooldown(p.clock().Add(cooldown), reason)
 	}
 }

@@ -310,7 +310,7 @@ func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.R
 			if ctx.Err() != nil {
 				return
 			}
-			pool.RecordFailure(acc.ID, false, codexFailureCooldown)
+			pool.RecordFailure(acc.ID, codexFailureCooldown, "")
 			server.warnCodex("codex: request failed, failing over", "account", acc.ID, "error", err)
 			excluded[acc.ID] = true
 			continue
@@ -325,14 +325,14 @@ func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.R
 		pool.Release(acc.ID)
 		switch {
 		case reply.status == http.StatusUnauthorized:
-			pool.RecordFailure(acc.ID, true, codexFailureCooldown)
+			pool.RecordFailure(acc.ID, codexFailureCooldown, "unauthorized")
 			server.warnCodex("codex: 401 that a token refresh did not fix, failing over", "account", acc.ID)
 		case reply.status == http.StatusTooManyRequests:
 			noteCodexRateLimit(pool, acc.ID, reply)
 			server.warnCodex("codex: 429, failing over", "account", acc.ID, "body", strings.TrimSpace(string(reply.body)))
 			last429 = reply
 		case reply.status >= 500:
-			pool.RecordFailure(acc.ID, true, codexFailureCooldown)
+			pool.RecordFailure(acc.ID, codexFailureCooldown, "server_error")
 			server.warnCodex("codex: upstream server error, failing over", "account", acc.ID, "status", reply.status)
 			lastFailure = reply
 		default:
