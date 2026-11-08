@@ -125,6 +125,9 @@ type Dispatcher struct {
 	modelRecoveries map[string]*modelRecoveryCall
 	// modelsFetch is the shared in-flight catalog fetch; guarded by mu.
 	modelsFetch *modelFetchCall
+	// controlCalls is the in-flight start burst or turn calls per key
+	// (shareControlCall), guarded by mu; concurrent requests share one run.
+	controlCalls map[string]chan struct{}
 	// liveQuotaRefreshMS is the last live-quota refresh per account email,
 	// guarded by mu; it throttles post-request quota RPCs.
 	liveQuotaRefreshMS map[string]int64
@@ -198,6 +201,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		forensics429:             options.Forensics429,
 		meter:                    newThrottleMeter(nil),
 		clients:                  make(map[string]accountClient),
+		controlCalls:             make(map[string]chan struct{}),
 		liveQuotaRefreshMS:       make(map[string]int64),
 	}, nil
 }
@@ -918,11 +922,7 @@ func (dispatcher *Dispatcher) RefreshAccount(ctx context.Context, email string) 
 		return nil, fmt.Errorf("load code assist for %s: %w", email, err)
 	}
 
-	sub := ExtractSubscription(response.Body, dispatcher.now())
-	if sub.ProjectID != "" {
-		dispatcher.manager.CacheProject(targetAccount, sub.ProjectID)
-	}
-	_ = dispatcher.manager.UpdateSubscription(email, sub)
+	sub := dispatcher.applyCodeAssist(targetAccount, response.Body)
 
 	project := sub.ProjectID
 	if project == "" {
@@ -1148,11 +1148,7 @@ func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Acc
 	if fetcher, ok := client.(quotaSummaryFetcher); ok {
 		if response, err := fetcher.RetrieveUserQuotaSummary(ctx, project); err == nil &&
 			response.StatusCode >= 200 && response.StatusCode < 300 {
-			for _, bucket := range cloudcode.ParseQuotaSummary(response.Body) {
-				dispatcher.mergeQuotaReading(account.Email,
-					strings.ToLower(strings.TrimSpace(bucket.ID)),
-					bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime, true)
-			}
+			dispatcher.applyQuotaSummary(account.Email, response.Body)
 		}
 	}
 	if fetcher, ok := client.(userQuotaFetcher); ok {
