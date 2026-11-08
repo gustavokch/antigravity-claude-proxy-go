@@ -174,32 +174,50 @@ func dropCacheControl(value any) {
 // the request body that context arrives as <system-reminder> blocks in the same
 // message, so they are skipped. A string content is the text itself.
 func promptOf(content json.RawMessage) (text string, isPrompt bool) {
-	content = bytes.TrimSpace(content)
-	if len(content) == 0 {
+	var decoded any
+	if json.Unmarshal(bytes.TrimSpace(content), &decoded) != nil {
 		return "", false
 	}
-	switch content[0] {
-	case '"':
-		if json.Unmarshal(content, &text) != nil {
-			return "", false
-		}
-		return text, isPromptText(text)
-	case '[':
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(content, &blocks) != nil {
-			return "", false
-		}
+	return promptContent(decoded)
+}
+
+// HasPromptContent reports whether a user message's decoded content (a string
+// or a []any of blocks) holds something a person sent: the rule promptOf
+// applies. Text that is empty or starts with <system-reminder> and tool
+// results do not count; an image or a document does.
+func HasPromptContent(content any) bool {
+	_, isPrompt := promptContent(content)
+	return isPrompt
+}
+
+// promptContent is the rule behind promptOf and HasPromptContent, over
+// decoded content. A block that is no object, or whose type or text is no
+// string, makes the content no prompt, as a typed decode of it would fail.
+func promptContent(content any) (text string, isPrompt bool) {
+	switch content := content.(type) {
+	case string:
+		return content, isPromptText(content)
+	case []any:
 		found := false
-		for _, block := range blocks {
-			switch block.Type {
+		for _, raw := range content {
+			var block map[string]any
+			if raw != nil {
+				var ok bool
+				if block, ok = raw.(map[string]any); !ok {
+					return "", false
+				}
+			}
+			kind, kindOK := stringMember(block, "type")
+			blockText, textOK := stringMember(block, "text")
+			if !kindOK || !textOK {
+				return "", false
+			}
+			switch kind {
 			case "tool_result":
 			case "text":
-				if isPromptText(block.Text) {
+				if isPromptText(blockText) {
 					if !found {
-						text = block.Text
+						text = blockText
 					}
 					found = true
 				}
@@ -211,6 +229,17 @@ func promptOf(content json.RawMessage) (text string, isPrompt bool) {
 		return text, isPrompt || found
 	}
 	return "", false
+}
+
+// stringMember reads object[key] as a string; a missing or null member reads
+// as "", a member of another type as not ok.
+func stringMember(object map[string]any, key string) (string, bool) {
+	value, present := object[key]
+	if !present || value == nil {
+		return "", true
+	}
+	text, ok := value.(string)
+	return text, ok
 }
 
 func isPromptText(text string) bool {

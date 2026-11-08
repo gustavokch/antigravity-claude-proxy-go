@@ -242,6 +242,8 @@ func TestIsNewUserPrompt(t *testing.T) {
 		{"tool result with typed text", toolList(), []any{user([]any{toolResult, block("text", "stop, use the other file")})}, true},
 		{"tool result", toolList(), []any{user([]any{toolResult})}, false},
 		{"tool result with reminder", toolList(), []any{user([]any{toolResult, reminder})}, false},
+		{"document block", toolList(), []any{user([]any{toolResult, map[string]any{"type": "document", "source": map[string]any{}}})}, true},
+		{"tool result with empty text", toolList(), []any{user([]any{toolResult, block("text", "")})}, false},
 		{"blank string", toolList(), []any{user("  ")}, false},
 		{"no tools", nil, []any{user("Write a five-word title")}, false},
 		{"assistant last", toolList(), []any{user("hi"), map[string]any{"role": "assistant", "content": "hello"}}, false},

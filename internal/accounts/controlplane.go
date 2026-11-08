@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/cloudcode"
 )
 
@@ -102,9 +103,7 @@ func (dispatcher *Dispatcher) beginTurn(ctx context.Context, session string, acc
 // isNewUserPrompt reports whether request carries something a person sent to
 // a main loop: it declares tools, which title and topic side calls do not,
 // and its last message is a user message with more than tool results and
-// injected <system-reminder> text. That is ccidentity's prompt rule (promptOf)
-// read from the decoded body: an image or document block counts, an empty or
-// reminder text block does not.
+// injected <system-reminder> text, by ccidentity's prompt rule.
 func isNewUserPrompt(request map[string]any) bool {
 	if tools, _ := request["tools"].([]any); len(tools) == 0 {
 		return false
@@ -117,29 +116,7 @@ func isNewUserPrompt(request map[string]any) bool {
 	if role, _ := last["role"].(string); role != "user" {
 		return false
 	}
-	switch content := last["content"].(type) {
-	case string:
-		return isPromptText(content)
-	case []any:
-		for _, raw := range content {
-			block, _ := raw.(map[string]any)
-			switch kind, _ := block["type"].(string); kind {
-			case "tool_result":
-			case "text":
-				if text, _ := block["text"].(string); isPromptText(text) {
-					return true
-				}
-			default:
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isPromptText(text string) bool {
-	text = strings.TrimSpace(text)
-	return text != "" && !strings.HasPrefix(text, "<system-reminder>")
+	return ccidentity.HasPromptContent(last["content"])
 }
 
 // shareControlCall runs work once for key among the requests that ask for it
