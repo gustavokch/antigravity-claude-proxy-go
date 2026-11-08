@@ -74,7 +74,7 @@ func TestNewDefaultDoesNotAutoImportAgyTokenWithoutAccountFile(t *testing.T) {
 	if manager.Count() != 0 {
 		t.Fatalf("expected empty pool without accounts.json, got %d accounts", manager.Count())
 	}
-	selection := manager.Select("gemini")
+	selection := manager.Select("", "gemini")
 	if selection.Account != nil {
 		t.Fatalf("expected nil selection, got %#v", selection.Account)
 	}
@@ -94,7 +94,7 @@ func TestNewDefaultEmptyPoolWithoutAnyAccount(t *testing.T) {
 	if got := manager.Available("gemini"); got != 0 {
 		t.Fatalf("expected 0 available, got %d", got)
 	}
-	if selection := manager.Select("gemini"); selection.Account != nil {
+	if selection := manager.Select("", "gemini"); selection.Account != nil {
 		t.Fatalf("expected nil selection, got %v", selection.Account)
 	}
 }
@@ -108,15 +108,15 @@ func TestRoundRobinAndPerModelRateLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selection := manager.Select("claude-sonnet-4-6")
+	selection := manager.Select("", "claude-sonnet-4-6")
 	if selection.Account != second {
 		t.Fatalf("first round-robin selection=%v", selection.Account.Email)
 	}
 	manager.MarkRateLimited(second, "claude-sonnet-4-6", time.Minute)
-	if got := manager.Select("claude-sonnet-4-6").Account; got != first {
+	if got := manager.Select("", "claude-sonnet-4-6").Account; got != first {
 		t.Fatalf("Claude selection=%v", got)
 	}
-	if got := manager.Select("gemini-3.5-flash-low").Account; got != second {
+	if got := manager.Select("", "gemini-3.5-flash-low").Account; got != second {
 		t.Fatalf("model-specific limit leaked to Gemini: selection=%v", got)
 	}
 	now = now.Add(time.Minute + time.Millisecond)
@@ -134,12 +134,12 @@ func TestStickyWaitsOnlyForShortCurrentLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.MarkRateLimited(account, "claude", 30*time.Second)
-	selection := manager.Select("claude")
+	selection := manager.Select("", "claude")
 	if selection.Account != nil || selection.Wait != 30*time.Second {
 		t.Fatalf("selection=%#v", selection)
 	}
 	manager.MarkRateLimited(account, "claude", 3*time.Minute)
-	if selection := manager.Select("claude"); selection.Account != nil || selection.Wait != 0 {
+	if selection := manager.Select("", "claude"); selection.Account != nil || selection.Wait != 0 {
 		t.Fatalf("long cooldown should rotate/fail without waiting: %#v", selection)
 	}
 }
@@ -472,7 +472,7 @@ func TestDynamicScoringAndThresholds(t *testing.T) {
 }
 func TestSelectStickyLocked_EmptyAccounts(t *testing.T) {
 	manager := &Manager{accounts: []*Account{}, now: time.Now}
-	selection := manager.selectStickyLocked("model")
+	selection := manager.selectStickyLocked("model", nil)
 	if selection.Account != nil {
 		t.Error("expected nil account when empty")
 	}
@@ -480,7 +480,7 @@ func TestSelectStickyLocked_EmptyAccounts(t *testing.T) {
 
 func TestSelectRoundRobinLocked_EmptyAccounts(t *testing.T) {
 	manager := &Manager{accounts: []*Account{}, now: time.Now}
-	selection := manager.selectRoundRobinLocked("model")
+	selection := manager.selectRoundRobinLocked("model", nil)
 	if selection.Account != nil {
 		t.Error("expected nil account when empty")
 	}
@@ -488,7 +488,7 @@ func TestSelectRoundRobinLocked_EmptyAccounts(t *testing.T) {
 
 func TestSelectHybridLocked_EmptyAccounts(t *testing.T) {
 	manager := &Manager{accounts: []*Account{}, now: time.Now}
-	selection := manager.selectHybridLocked("model")
+	selection := manager.selectHybridLocked("model", nil)
 	if selection.Account != nil {
 		t.Error("expected nil account when empty")
 	}
@@ -581,7 +581,7 @@ func TestSharedThrottleBlocksSelectionAfterTwoAccounts(t *testing.T) {
 	clock = clock.Add(time.Second)
 	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
 
-	selection := manager.Select("gemini-3.8-flash-high")
+	selection := manager.Select("", "gemini-3.8-flash-high")
 	if selection.Account != nil {
 		t.Fatalf("Select returned %s, want no account under a shared throttle", selection.Account.Email)
 	}
@@ -601,7 +601,7 @@ func TestSharedThrottleNotSetForASingleAccount(t *testing.T) {
 
 	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
 
-	selection := manager.Select("gemini-3.8-flash-high")
+	selection := manager.Select("", "gemini-3.8-flash-high")
 	if selection.Account == nil || selection.Account.Email != "b@example.com" {
 		t.Fatal("one rejected account must still rotate to the other account")
 	}
@@ -649,7 +649,7 @@ func TestSharedThrottleExpires(t *testing.T) {
 	if got := manager.SharedThrottleWait("gemini-3.8-flash-high"); got != 0 {
 		t.Fatalf("SharedThrottleWait after expiry = %s, want 0", got)
 	}
-	if manager.Select("gemini-3.8-flash-high").Account == nil {
+	if manager.Select("", "gemini-3.8-flash-high").Account == nil {
 		t.Fatal("Select must return an account once the shared throttle expires")
 	}
 }
@@ -662,7 +662,7 @@ func TestSharedThrottleIsPerModel(t *testing.T) {
 	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
 	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
 
-	if manager.Select("gemini-2.5-pro").Account == nil {
+	if manager.Select("", "gemini-2.5-pro").Account == nil {
 		t.Fatal("a shared throttle on one model must not block another model")
 	}
 }
@@ -674,14 +674,14 @@ func TestSharedThrottleBlocksSelectionAfterTwoAccountsWithIntermediateSelect(t *
 	manager := sharedThrottleManager(t, &clock, "a@example.com", "b@example.com")
 
 	manager.MarkRateLimited(manager.GetAllAccounts()[0], "gemini-3.8-flash-high", 30*time.Second)
-	rot := manager.Select("gemini-3.8-flash-high")
+	rot := manager.Select("", "gemini-3.8-flash-high")
 	if rot.Account == nil || rot.Account.Email != "b@example.com" {
 		t.Fatalf("expected rotation to b@example.com, got %#v", rot)
 	}
 	clock = clock.Add(time.Second)
 	manager.MarkRateLimited(manager.GetAllAccounts()[1], "gemini-3.8-flash-high", 30*time.Second)
 
-	selection := manager.Select("gemini-3.8-flash-high")
+	selection := manager.Select("", "gemini-3.8-flash-high")
 	if selection.Account != nil {
 		t.Fatalf("Select returned %s, want no account under a shared throttle", selection.Account.Email)
 	}
@@ -780,7 +780,7 @@ func TestManager_QuotaCritical_Normalizes1mSuffix(t *testing.T) {
 
 	// When selecting with the [1m] suffix, exhaustedAcc should be identified as quotaCritical
 	// and skipped in favor of freshAcc.
-	selection := manager.Select("gemini-3.8-flash-high[1m]")
+	selection := manager.Select("", "gemini-3.8-flash-high[1m]")
 	if selection.Account == nil {
 		t.Fatalf("expected an account to be selected")
 	}
@@ -1081,21 +1081,21 @@ func TestManager_SelectFiltersAccountsByModelSupport(t *testing.T) {
 
 	// Requesting Claude 5.5 must NEVER select legacy account
 	for i := range 5 {
-		sel := mgr.Select("claude-sonnet-5-5-high")
+		sel := mgr.Select("", "claude-sonnet-5-5-high")
 		if sel.Account == nil || sel.Account.Email != "capable@example.com" {
 			t.Fatalf("iteration %d: expected capable@example.com, got %v", i, sel.Account)
 		}
 	}
 
 	// Requesting Claude 4.6 must select legacy account
-	sel46 := mgr.Select("claude-sonnet-4-6")
+	sel46 := mgr.Select("", "claude-sonnet-4-6")
 	if sel46.Account == nil || sel46.Account.Email != "legacy@example.com" {
 		t.Fatalf("expected legacy@example.com, got %v", sel46.Account)
 	}
 
 	// When capable is rate limited for claude-5-5, selection must NOT fall back to legacy
 	mgr.MarkRateLimited(capable, "claude-sonnet-5-5-high", time.Minute)
-	selBlocked := mgr.Select("claude-sonnet-5-5-high")
+	selBlocked := mgr.Select("", "claude-sonnet-5-5-high")
 	if selBlocked.Account != nil {
 		t.Fatalf("expected nil account when capable is rate limited, got %v", selBlocked.Account.Email)
 	}
@@ -1143,7 +1143,7 @@ func TestMarkModelUnavailable_BlocksOnlyTheMissingTier(t *testing.T) {
 			t.Errorf("%s purged; only the 404ed tier may be", kept)
 		}
 	}
-	if sel := mgr.Select("claude-sonnet-5-5-low"); sel.Account != acc {
+	if sel := mgr.Select("", "claude-sonnet-5-5-low"); sel.Account != acc {
 		t.Errorf("Select(claude-sonnet-5-5-low) = %v, want the account", sel.Account)
 	}
 }
@@ -1174,7 +1174,7 @@ func TestMarkModelUnavailable_KeepsTheOnlyCandidate(t *testing.T) {
 	if _, ok := only.Quota.Models["claude-sonnet-5-5-high"]; !ok {
 		t.Error("quota cache purged although the model was not blocked")
 	}
-	if sel := mgr.Select("claude-sonnet-5-5-high"); sel.Account != only {
+	if sel := mgr.Select("", "claude-sonnet-5-5-high"); sel.Account != only {
 		t.Errorf("Select(claude-sonnet-5-5-high) = %v, want the only candidate", sel.Account)
 	}
 }
@@ -1195,7 +1195,7 @@ func TestManager_SelectKeepsUndiscoveredAccountWhenPoolListsModel(t *testing.T) 
 		t.Fatalf("New: %v", err)
 	}
 	mgr.MarkRateLimited(listed, "claude-sonnet-5-5-high", time.Minute)
-	if sel := mgr.Select("claude-sonnet-5-5-high"); sel.Account != fresh {
+	if sel := mgr.Select("", "claude-sonnet-5-5-high"); sel.Account != fresh {
 		t.Fatalf("Select = %v, want the undiscovered account", sel.Account)
 	}
 }

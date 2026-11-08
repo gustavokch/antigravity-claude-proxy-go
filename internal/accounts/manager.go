@@ -369,20 +369,26 @@ func (manager *Manager) Count() int {
 	return len(manager.accounts)
 }
 
-func (manager *Manager) Select(model string) Selection {
+func (manager *Manager) Select(session, model string) Selection {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.clearExpiredLocked()
 	if wait := manager.sharedThrottleWaitLocked(rateLimitModelKey(model)); wait > 0 {
 		return Selection{Wait: wait}
 	}
+	return manager.pickLocked(model, nil)
+}
+
+// pickLocked runs the configured strategy. Accounts in exclude are treated as
+// unusable; a nil or empty set is the plain strategy.
+func (manager *Manager) pickLocked(model string, exclude map[string]bool) Selection {
 	switch manager.strategy {
 	case StrategySticky:
-		return manager.selectStickyLocked(model)
+		return manager.selectStickyLocked(model, exclude)
 	case StrategyRoundRobin:
-		return manager.selectRoundRobinLocked(model)
+		return manager.selectRoundRobinLocked(model, exclude)
 	default:
-		return manager.selectHybridLocked(model)
+		return manager.selectHybridLocked(model, exclude)
 	}
 }
 
@@ -842,7 +848,7 @@ func (manager *Manager) Snapshot() []Snapshot {
 	return result
 }
 
-func (manager *Manager) selectStickyLocked(model string) Selection {
+func (manager *Manager) selectStickyLocked(model string, exclude map[string]bool) Selection {
 	if len(manager.accounts) == 0 {
 		return Selection{} // No accounts available
 	}
@@ -851,19 +857,21 @@ func (manager *Manager) selectStickyLocked(model string) Selection {
 		manager.currentIndex = 0
 	}
 	current := manager.accounts[manager.currentIndex]
-	if manager.usableLocked(current, model, poolSupports) {
+	if manager.usableLocked(current, model, poolSupports) && !exclude[current.Email] {
 		current.LastUsedMS = manager.now().UnixMilli()
 		return Selection{Account: current}
 	}
 	for offset := 1; offset <= len(manager.accounts); offset++ {
 		index := (manager.currentIndex + offset) % len(manager.accounts)
-		if manager.usableLocked(manager.accounts[index], model, poolSupports) {
+		account := manager.accounts[index]
+		if manager.usableLocked(account, model, poolSupports) && !exclude[account.Email] {
 			manager.currentIndex = index
-			manager.accounts[index].LastUsedMS = manager.now().UnixMilli()
-			return Selection{Account: manager.accounts[index]}
+			account.LastUsedMS = manager.now().UnixMilli()
+			return Selection{Account: account}
 		}
 	}
-	if limit := current.ModelRateLimits[rateLimitModelKey(model)]; current.Enabled && !current.IsInvalid && limit != nil {
+	// Only a current account that may be picked at all is worth waiting for.
+	if limit := current.ModelRateLimits[rateLimitModelKey(model)]; current.Enabled && !current.IsInvalid && !exclude[current.Email] && limit != nil {
 		wait := time.Duration(limit.ResetTimeMS-manager.now().UnixMilli()) * time.Millisecond
 		if wait > 0 && wait <= maxStickyWait {
 			return Selection{Wait: wait}
@@ -872,7 +880,7 @@ func (manager *Manager) selectStickyLocked(model string) Selection {
 	return Selection{}
 }
 
-func (manager *Manager) selectRoundRobinLocked(model string) Selection {
+func (manager *Manager) selectRoundRobinLocked(model string, exclude map[string]bool) Selection {
 	if len(manager.accounts) == 0 {
 		return Selection{} // No accounts available
 	}
@@ -884,7 +892,7 @@ func (manager *Manager) selectRoundRobinLocked(model string) Selection {
 	for offset := range len(manager.accounts) {
 		index := (start + offset) % len(manager.accounts)
 		account := manager.accounts[index]
-		if manager.usableLocked(account, model, poolSupports) {
+		if manager.usableLocked(account, model, poolSupports) && !exclude[account.Email] {
 			manager.cursor = index
 			manager.currentIndex = index
 			account.LastUsedMS = manager.now().UnixMilli()
@@ -894,7 +902,7 @@ func (manager *Manager) selectRoundRobinLocked(model string) Selection {
 	return Selection{}
 }
 
-func (manager *Manager) selectHybridLocked(model string) Selection {
+func (manager *Manager) selectHybridLocked(model string, exclude map[string]bool) Selection {
 	type candidate struct {
 		account *Account
 		index   int
@@ -904,7 +912,7 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	minUsable := mapFloat(manager.selectionConfig.HealthScore, "minUsable", 50)
 	poolSupports := manager.poolSupportsModelLocked(model)
 	for index, account := range manager.accounts {
-		if !manager.usableLocked(account, model, poolSupports) || manager.healthScoreLocked(account.Email) < minUsable || manager.tokensLocked(account.Email) < 1 {
+		if !manager.usableLocked(account, model, poolSupports) || exclude[account.Email] || manager.healthScoreLocked(account.Email) < minUsable || manager.tokensLocked(account.Email) < 1 {
 			continue
 		}
 		if manager.quotaCriticalLocked(account, model) {
@@ -914,7 +922,7 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	}
 	if len(candidates) == 0 {
 		for index, account := range manager.accounts {
-			if manager.usableLocked(account, model, poolSupports) {
+			if manager.usableLocked(account, model, poolSupports) && !exclude[account.Email] {
 				candidates = append(candidates, candidate{account: account, index: index, score: manager.scoreLocked(account, model)})
 			}
 		}

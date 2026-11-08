@@ -26,7 +26,7 @@ func BenchmarkSelectHeterogeneousPool(b *testing.B) {
 			}
 			b.ReportAllocs()
 			for range b.N {
-				_ = mgr.Select("claude-sonnet-5-5-high")
+				_ = mgr.Select("", "claude-sonnet-5-5-high")
 			}
 		})
 	}

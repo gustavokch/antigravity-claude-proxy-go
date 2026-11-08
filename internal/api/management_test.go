@@ -1525,7 +1525,7 @@ func TestManagement_AccountLimits_GoogleModelActive429NotStaleQuota(t *testing.T
 		},
 	}, nil)
 
-	sel := mgr.Select("gemini-3.8-flash-high")
+	sel := mgr.Select("", "gemini-3.8-flash-high")
 	if sel.Account == nil {
 		t.Fatalf("expected an account to be selected")
 	}
@@ -1736,7 +1736,7 @@ func TestManagement_AccountLimits_GoogleActive429Normalizes1m(t *testing.T) {
 		},
 	}, nil)
 
-	sel := mgr.Select("gemini-3.8-flash-high")
+	sel := mgr.Select("", "gemini-3.8-flash-high")
 	if sel.Account == nil {
 		t.Fatalf("expected an account to be selected")
 	}
@@ -1897,7 +1897,7 @@ func TestManagement_AccountLimits_GoogleAccountRateLimitedStatus(t *testing.T) {
 		},
 	}, nil)
 
-	sel := mgr.Select("gemini-3.8-flash-high")
+	sel := mgr.Select("", "gemini-3.8-flash-high")
 	if sel.Account == nil {
 		t.Fatalf("expected an account to be selected")
 	}

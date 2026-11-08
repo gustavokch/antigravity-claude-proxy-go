@@ -335,7 +335,7 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 				}
 			}
 		}
-		selection := dispatcher.manager.Select("")
+		selection := dispatcher.manager.Select("", "")
 		if selection.Account == nil {
 			return cloudcode.Response{}, errors.New("no accounts available")
 		}
@@ -426,7 +426,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	maxAttempts := max(dispatcher.maxRetries, dispatcher.manager.Count()+1)
 	var lastError error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		selection := dispatcher.manager.Select(model)
+		selection := dispatcher.manager.Select("", model)
 		if selection.Account == nil {
 			if dispatcher.manager.AllInvalid() {
 				return cloudcode.Response{}, errors.New("all accounts are invalid and require user intervention")
