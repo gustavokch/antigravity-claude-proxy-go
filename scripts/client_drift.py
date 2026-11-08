@@ -802,6 +802,29 @@ def request_key(record: dict) -> tuple[str, str]:
     return record.get("method", ""), f"{path} ({request_type})" if request_type else path
 
 
+# agy sends these together, so a capture shows them in either order.
+AGY_CONCURRENT_CALLS = frozenset({"fetchAdminControls", "fetchUserInfo", "retrieveUserQuotaSummary"})
+
+
+def agy_call_sequence(records: list[dict]) -> list[str]:
+    """agy's Cloud Code calls in capture order, named without the /v1internal
+    prefix. A run of calls agy sends together is sorted, so the order they
+    happened to arrive in is not a change."""
+    sequence: list[str] = []
+    group: list[str] = []
+    for record in records:
+        _, path = request_key(record)
+        name = path.removeprefix("/v1internal:").removeprefix("/v1internal/")
+        if name in AGY_CONCURRENT_CALLS:
+            group.append(name)
+            continue
+        sequence.extend(sorted(group))
+        group = []
+        sequence.append(name)
+    sequence.extend(sorted(group))
+    return sequence
+
+
 # Keys of a generation request's inner `request` that the caller decides.
 CALLER_REQUEST_KEYS = frozenset({"tools"})
 
@@ -984,6 +1007,15 @@ def analyze_agy(root: Path, result: Result, capture: Capture, proxy: Capture | N
         result.manual.extend(
             f"this build sends {' '.join(key)}, which agy did not send this run, so its shape is unchecked"
             for key in sorted({request_key(record) for record in proxy.records} - sent_by_agy))
+    baseline_file = baseline_path(root, "agy")
+    if baseline_file.exists():
+        before = agy_call_sequence(load_capture_file(baseline_file))
+        now = agy_call_sequence(capture.records)
+        if before != now:
+            result.manual.append(
+                "agy's Cloud Code call sequence changed; update the start burst and per-turn calls "
+                "(internal/accounts/controlplane.go) and their sequence test, then the baseline: "
+                f"baseline {' → '.join(before)}; now {' → '.join(now)}")
     analyze_generic(root, result, capture, pairs)
     if oauth is None:
         return
