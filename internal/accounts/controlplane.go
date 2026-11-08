@@ -86,9 +86,8 @@ func (dispatcher *Dispatcher) beginTurn(ctx context.Context, session string, acc
 	if session == "" || !capable || !isNewUserPrompt(request) {
 		return
 	}
-	messages, _ := request["messages"].([]any)
 	// A decoded JSON body always encodes again.
-	prompt, _ := json.Marshal(messages[len(messages)-1])
+	prompt, _ := json.Marshal(promptMessage(request))
 	digest := sha256.Sum256(prompt)
 	dispatcher.shareControlCall(ctx, "turn\x00"+session+"\x00"+account.Email+"\x00"+hex.EncodeToString(digest[:]), func() {
 		run := &controlRun{dispatcher: dispatcher, ctx: ctx, account: account, client: client, project: project}
@@ -102,21 +101,30 @@ func (dispatcher *Dispatcher) beginTurn(ctx context.Context, session string, acc
 
 // isNewUserPrompt reports whether request carries something a person sent to
 // a main loop: it declares tools, which title and topic side calls do not,
-// and its last message is a user message with more than tool results and
+// and its last non-system message is a user message with more than tool results and
 // injected <system-reminder> text, by ccidentity's prompt rule.
 func isNewUserPrompt(request map[string]any) bool {
 	if tools, _ := request["tools"].([]any); len(tools) == 0 {
 		return false
 	}
-	messages, _ := request["messages"].([]any)
-	if len(messages) == 0 {
-		return false
-	}
-	last, _ := messages[len(messages)-1].(map[string]any)
+	last := promptMessage(request)
 	if role, _ := last["role"].(string); role != "user" {
 		return false
 	}
 	return ccidentity.HasPromptContent(last["content"])
+}
+
+// promptMessage returns the last message of request that is not a system
+// message (Claude Code ends its main request with one), or nil.
+func promptMessage(request map[string]any) map[string]any {
+	messages, _ := request["messages"].([]any)
+	for index := len(messages) - 1; index >= 0; index-- {
+		message, _ := messages[index].(map[string]any)
+		if role, _ := message["role"].(string); role != "system" {
+			return message
+		}
+	}
+	return nil
 }
 
 // shareControlCall runs work once for key among the requests that ask for it

@@ -252,6 +252,7 @@ func TestIsNewUserPrompt(t *testing.T) {
 	block := func(kind, text string) map[string]any { return map[string]any{"type": kind, "text": text} }
 	toolResult := map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "package login"}
 	reminder := block("text", "<system-reminder>\nlogin.go is short.\n</system-reminder>")
+	system := map[string]any{"role": "system", "content": []any{block("text", "# Environment\nYou have been invoked in the following environment: ...")}}
 	for _, test := range []struct {
 		name     string
 		tools    []any
@@ -270,6 +271,9 @@ func TestIsNewUserPrompt(t *testing.T) {
 		{"no tools", nil, []any{user("Write a five-word title")}, false},
 		{"assistant last", toolList(), []any{user("hi"), map[string]any{"role": "assistant", "content": "hello"}}, false},
 		{"no messages", toolList(), nil, false},
+		{"prompt before trailing system message", toolList(), []any{user([]any{reminder, block("text", "Read calc.py and tell me in one sentence what add does.")}), system}, true},
+		{"tool continuation before trailing system message", toolList(), []any{user([]any{toolResult}), system}, false},
+		{"only system messages", toolList(), []any{system, system}, false},
 	} {
 		request := map[string]any{"messages": test.messages}
 		if test.tools != nil {
@@ -447,6 +451,24 @@ func TestBeginTurnSharesOneRunAmongIdenticalPrompts(t *testing.T) {
 		requests.Wait()
 		assertSteps(t, client.recorded(), agyTurn)
 	})
+}
+
+// Claude Code ends every main request with the same system message: two
+// different prompts behind it are two runs, not one.
+func TestBeginTurnKeysOnThePromptNotTheTrailingSystemMessage(t *testing.T) {
+	t.Parallel()
+	const email = "a@example.com"
+	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
+	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+	account := dispatcher.manager.accounts[0]
+	system := map[string]any{"role": "system", "content": []any{map[string]any{"type": "text", "text": "# Environment"}}}
+	request := func(text string) map[string]any {
+		return map[string]any{"tools": toolList(), "messages": []any{map[string]any{"role": "user", "content": text}, system}}
+	}
+
+	dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", request("Fix the login bug"))
+	dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", request("Now fix logout"))
+	assertSteps(t, client.recorded(), slices.Concat(agyTurn, agyTurn))
 }
 
 // Identical prompts of one session on different accounts are separate runs:
