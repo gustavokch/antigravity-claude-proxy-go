@@ -1,0 +1,45 @@
+Claude Code wire capture — count_tokens probe (interactive, oauth auth)
+========================================================================
+
+Captured: 2026-11-07T23:40:41.278156+00:00
+Client:   2.1.311 (Claude Code), macOS arm64, interactive TUI driven through tmux
+Script:   none (manual spike); mitmdump with scripts/mitm_header_dump.py,
+          MITM_DUMP_HOSTS=api.anthropic.com, MITM_DUMP_REQUEST_BODY=1
+Env:      throwaway CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-oat,
+          DISABLE_AUTOUPDATER=1; telemetry and nonessential traffic left on
+Hosts:    api.anthropic.com
+Records:  47
+JSONL:    claude-code-count-tokens-20261107.jsonl
+
+Steps: start the TUI, run /context, send one prompt asking to read a file.
+
+Headline requests observed (path only; bodies are fingerprinted, never dumped):
+
+    33   POST api.anthropic.com/v1/messages/count_tokens?beta=true -> 403
+     4   GET api.anthropic.com/mcp-registry/v0/servers -> 200
+     3   POST api.anthropic.com/v1/messages?beta=true -> 403
+     3   POST api.anthropic.com/api/event_logging/v2/batch -> 200
+     1   GET api.anthropic.com/api/claude_code/settings -> 403
+     1   GET api.anthropic.com/api/claude_code/policy_limits -> 403
+     1   POST api.anthropic.com/api/eval/sdk-zAZezfDKGoZuXXKe -> 200
+     1   GET api.anthropic.com/api/claude_cli/bootstrap -> 403
+
+Findings:
+- /context sends 33 POST /v1/messages/count_tokens?beta=true within 0.5 s.
+  Bodies carry only messages, model and tools (no system, no metadata); 14 have
+  tools: [] and the rest carry tool definitions.
+- count_tokens headers differ from /v1/messages: x-claude-code-request-class
+  auxiliary, and anthropic-beta claude-code-20250219,oauth-2025-04-20,
+  interleaved-thinking-2025-05-14,context-management-2025-06-27,
+  token-counting-2024-11-01. Same TLS hello as /v1/messages (JA4
+  t13d1713h1_5b57614c22b0_7f527383e249), HTTP/1.1.
+- No count_tokens at startup or on the prompt.
+
+Caveat: the token's organization rejects OAuth, so every /v1/messages,
+count_tokens, settings and bootstrap call returned 403
+oauth_not_allowed_for_organization. Request shapes are what the client sent;
+behaviour after a successful turn (autocompact, attachments) is not covered.
+
+Provenance note: every value in this capture is a verbatim quote from observed
+traffic. Credential values are redacted before writing. Anything not confirmed
+byte-for-byte is marked unknown rather than inferred.

@@ -2,7 +2,7 @@
 
 Status: approved section by section in conversation on 2026-11-07; not implemented.
 Covers three changes that share one per-conversation record: session affinity for the Cloud Code account pool, the control-plane calls agy makes that the proxy does not, and `POST /v1/messages/count_tokens`.
-Related: `.reference/client-drift/agy.jsonl` (agy 1.5.2 capture), `.reference/agy-1.4.10-wire-20261030.txt`, `internal/accounts/manager.go`, `internal/accounts/dispatcher.go`, `internal/claudecode/pool.go` (existing sticky pattern).
+Related: `.reference/client-drift/agy.jsonl` (agy 1.5.2 capture), `.reference/agy-1.4.10-wire-20261030.txt`, `.reference/claude-code-count-tokens-20261107.jsonl` (Claude Code 2.1.311 count_tokens capture), `internal/accounts/manager.go`, `internal/accounts/dispatcher.go`, `internal/claudecode/pool.go` (existing sticky pattern).
 
 ## 1. Goal and scope
 
@@ -123,15 +123,32 @@ Each call has a 10 s timeout and runs on the request context (a client that disc
 
 | Gateway | Action |
 |---|---|
-| Claude Code | Forward to `https://api.anthropic.com/v1/messages/count_tokens?beta=true` through `claudecode.Client` with the same `ccidentity` header and body normalization as `/v1/messages`. |
+| Claude Code | Forward to `https://api.anthropic.com/v1/messages/count_tokens?beta=true` through `claudecode.Client` with the count_tokens identity of 6.2, not the `/v1/messages` normalization. |
 | OpenRouter | Forward to `<baseUrl>/v1/messages/count_tokens`. |
 | Kimi | Forward to `<base>/v1/messages/count_tokens` with the Kimi identity headers. |
 | Custom (Anthropic format) | Forward to the endpoint URL with `/messages` replaced by `/messages/count_tokens`. |
-| Zen, Cloud Code | Estimate (6.2). |
+| Zen, Cloud Code | Estimate (6.3). |
 
 A forwarded call that answers 404, 405 or 501 marks that gateway (custom endpoints: that endpoint) as not counting for 1 h and returns the estimate. Any other failure (network, auth, 429, 5xx) returns the estimate for that request. count_tokens never returns an error status for an upstream failure.
 
-### 6.2 Estimator (`internal/tokencount`)
+### 6.2 Claude Code count_tokens identity
+
+Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt` (Claude Code 2.1.311, interactive, 2026-11-07). The real client calls count_tokens: `/context` sent 33 requests within 0.5 s. Its identity differs from `/v1/messages`:
+
+| Field | count_tokens (captured) | `/v1/messages` main (same capture) |
+|---|---|---|
+| `x-claude-code-request-class` | `auxiliary` | `main` (what `ccidentity.staticHeaders` pins, `defaults.go:86`) |
+| `anthropic-beta` | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01` | 18-entry list |
+| Body keys | `messages`, `model`, `tools` | `context_management`, `diagnostics`, `max_tokens`, `messages`, `metadata`, `model`, `output_config`, `stream`, `system`, `thinking`, `thread`, `tools` |
+| `X-Claude-Code-Session-Id` | present | present |
+| TLS / HTTP | JA4 `t13d1713h1_5b57614c22b0_7f527383e249`, HTTP/1.1 | same |
+
+- `ccidentity` gains a count_tokens profile: the captured header order, `x-claude-code-request-class: auxiliary`, and the captured beta list (version-pinned like the other betas, with a `client_drift.py` `Site` entry).
+- The body is forwarded as the client sent it, with no billing header, identity block or `metadata` injected. The real client's count bodies carry only `messages`, `model` and `tools`; a caller that adds other keys (for example `system`) has them forwarded unchanged.
+- `X-Claude-Code-Session-Id` is forwarded from the client when present, as on `/v1/messages`.
+- Not yet observed: the response of a successful count (the capture's token was refused with 403 `oauth_not_allowed_for_organization`) and whether count_tokens also fires in successful turns, on attachments or before autocompact. A re-run with a token whose organization allows OAuth closes both.
+
+### 6.3 Estimator (`internal/tokencount`)
 
 - **Characters measured:** text of `system`, every message's `text` and `thinking` blocks, `tool_use` input as compact JSON, `tool_result` content text, and each tool definition as compact JSON.
 - **Ratio:** one chars-per-token value per family. `tokencount.Family(model)` returns `claude` when the model id contains `claude`, `gemini` when it contains `gemini`, `gpt-oss` when it contains `gpt-oss`, and otherwise the model id itself (so each other model, Zen ones included, learns its own ratio). Start value 4.0. Each observation of a request with at least 1,000 measured characters updates the ratio as an exponential moving average with α = 0.2.
@@ -158,7 +175,7 @@ Unit tests, deterministic (the Manager's `now` func, fake `CloudClient`, `httpte
 - **Control plane:** burst once per (session, account) under concurrent requests; burst again for an overflow account; per-turn calls for a new prompt with tools, none for tool continuations or tool-less requests; failures do not block generation and leave `started` unset; `settle` no longer calls `retrieveUserQuotaSummary`; responses update subscription, project and quota.
 - **Wire:** `TestRequestHeadsOnTheWireMatchAgy` extended to the four new calls (header order, body bytes). A sequence test reads `.reference/client-drift/agy.jsonl`, takes the two generation runs, and checks the calls recorded by the fake client against them, accepting any order inside the concurrent groups of 5.2.
 - **tokencount:** ratio converges on synthetic observations; continuing-conversation estimate; full estimate after a changed prefix; image rules per family; TTL and cap.
-- **count_tokens route:** each gateway row of 6.1; 404 → estimate plus 1 h mark; 5xx → estimate without a mark; Claude Code forward carries the identity headers; `TestGateScopeIsTheManagementSurface` and `TestLoggingMiddleware` updated from the 501.
+- **count_tokens route:** each gateway row of 6.1; 404 → estimate plus 1 h mark; 5xx → estimate without a mark; Claude Code forward matches the 6.2 identity (header order and values compared with `.reference/claude-code-count-tokens-20261107.jsonl`, no injected body keys); a burst of 33 concurrent counts completes without serializing; `TestGateScopeIsTheManagementSurface` and `TestLoggingMiddleware` updated from the 501.
 
 ## 9. Verification
 
@@ -169,7 +186,7 @@ Unit tests, deterministic (the Manager's `now` func, fake `CloudClient`, `httpte
 
 ## 10. Risks
 
-- **Claude Code count_tokens identity is unverified.** No capture shows the real client calling `count_tokens` (`.reference/client-drift/claude.jsonl`, `claude-code-headers-20261020*.jsonl` contain only `/v1/messages` and two settings GETs). Forwarding it is the operator's decision (2026-11-07). Its header set is the `/v1/messages` normalization; adding a `count_tokens` scenario to `client_drift.py` would verify it.
+- **Claude Code count_tokens is partly verified.** The request side is captured (6.2). The success response and any count_tokens traffic during successful turns are not, because the capture token's organization refuses OAuth. The same token backs `client_drift.py`'s Claude Code capture, which therefore records 403s until it is replaced.
 - **Added latency:** about six sequential round trips before the first prompt of each conversation on an account, and up to two before each new prompt.
 - **More upstream calls per turn** than today; they match agy's per-turn pattern.
 - **Pins are lost on restart:** a resumed session may start on another account.
