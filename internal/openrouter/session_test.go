@@ -123,7 +123,7 @@ func TestExtractSessionID(t *testing.T) {
 	req2b := httptest.NewRequest("POST", "/v1/messages", nil)
 	body2b := map[string]any{
 		"metadata": map[string]any{
-			"user_id": `{"device_id":"6a0a24c32704dc7fec147799c3e8161a371cbea05de6ccb8c376847bfa428346","account_uuid":"aabe0580-c4df-475e-8f00-7715f1947755","session_id":"6c03114f-4472-472b-8abc-b64396665e4d"}`,
+			"user_id": `{"device_id":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","account_uuid":"11111111-2222-4333-8444-555555555555","session_id":"6c03114f-4472-472b-8abc-b64396665e4d"}`,
 		},
 	}
 	if id := ExtractSessionID(req2b, body2b); id != "6c03114f-4472-472b-8abc-b64396665e4d" {
