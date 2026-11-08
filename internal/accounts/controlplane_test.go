@@ -58,6 +58,10 @@ type agyCallRecorder struct {
 	// hold, when set, keeps every loadCodeAssist waiting, after it is
 	// recorded, until hold is closed.
 	hold chan struct{}
+	// hang, when set, makes every control-plane call wait, after it is
+	// recorded, for its context to end and return the context's error: an
+	// upstream that never answers.
+	hang bool
 	// streamFailures are returned, in order, by the next model calls.
 	streamFailures []error
 
@@ -75,6 +79,10 @@ func (client *agyCallRecorder) answer(ctx context.Context, name string, body []b
 	}
 	err := client.failures[name]
 	client.mu.Unlock()
+	if client.hang {
+		<-ctx.Done()
+		return cloudcode.Response{}, ctx.Err()
+	}
 	if err != nil {
 		// As cloudcode.Client.DoJSON: no Response beside the error.
 		return cloudcode.Response{}, err
@@ -402,6 +410,27 @@ func TestBeginConversationStopsWithTheClient(t *testing.T) {
 	}
 }
 
+// A burst whose calls never answer holds the request until the run's
+// deadline, not until each of its seven steps used up its own call timeout,
+// and leaves the account unstarted.
+func TestBeginConversationIsBoundedAsAWhole(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const email = "a@example.com"
+		client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hang: true}
+		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+		dispatcher.manager.Select("session-1", sequenceModel)
+
+		start := time.Now()
+		dispatcher.beginConversation(context.Background(), "session-1", dispatcher.manager.accounts[0], client, "p")
+		if took := time.Since(start); took > controlPlaneRunTimeout {
+			t.Fatalf("a burst whose calls never answer held the request for %s, want at most %s", took, controlPlaneRunTimeout)
+		}
+		if dispatcher.manager.conversationStarted("session-1", email) {
+			t.Fatal("a burst cut short by its deadline marked the account started")
+		}
+	})
+}
+
 // Only a new prompt in a session's main loop sends the turn calls: tool
 // continuations, tool-less side calls and requests without a session send
 // none.
@@ -428,6 +457,23 @@ func TestBeginTurnSendsTheTurnCallsBeforeANewPromptOnly(t *testing.T) {
 	}
 	dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", prompt)
 	assertSteps(t, client.recorded(), agyTurn)
+}
+
+// Turn calls that never answer hold the request until the run's deadline,
+// not until each step used up its own call timeout.
+func TestBeginTurnIsBoundedAsAWhole(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const email = "a@example.com"
+		client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hang: true}
+		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+		prompt := map[string]any{"tools": toolList(), "messages": []any{map[string]any{"role": "user", "content": "Fix the login bug"}}}
+
+		start := time.Now()
+		dispatcher.beginTurn(context.Background(), "session-1", dispatcher.manager.accounts[0], client, "p", prompt)
+		if took := time.Since(start); took > controlPlaneRunTimeout {
+			t.Fatalf("turn calls that never answer held the request for %s, want at most %s", took, controlPlaneRunTimeout)
+		}
+	})
 }
 
 // Identical prompts of one session that arrive together share one run of

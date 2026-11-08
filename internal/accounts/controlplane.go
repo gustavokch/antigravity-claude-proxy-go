@@ -14,10 +14,15 @@ import (
 	"antigravity-go-proxy/internal/cloudcode"
 )
 
-// controlPlaneCallTimeout bounds each control-plane call on its own: a slow
-// call delays generation by at most this much, and a timeout only fails its
-// run.
+// controlPlaneCallTimeout bounds each control-plane call on its own. A call
+// that times out goes unanswered and the run sends its next call; generation
+// waits for the whole run, which controlPlaneRunTimeout bounds.
 const controlPlaneCallTimeout = 10 * time.Second
+
+// controlPlaneRunTimeout bounds one start burst or one turn's calls as a
+// whole. Their steps run one after another, so the per-call bound alone would
+// let a burst of seven slow steps hold a request for 70 s.
+const controlPlaneRunTimeout = 15 * time.Second
 
 // controlPlaneClient is the optional CloudClient capability for the calls agy
 // 1.5.2 sends around a conversation whose answers the proxy does not read
@@ -46,7 +51,8 @@ var (
 // every call has an HTTP answer, whatever its status, the account is started
 // for the session; a call without one (a transport error, a timeout, a client
 // that has gone) leaves it unstarted, and the session's next request sends
-// the burst again.
+// the burst again. The burst stops after controlPlaneRunTimeout, and a call
+// without an answer by then, or not yet sent, counts as unanswered.
 func (dispatcher *Dispatcher) beginConversation(ctx context.Context, session string, account *Account, client CloudClient, project string) {
 	plane, capable := client.(controlPlaneClient)
 	if session == "" || !capable || dispatcher.manager.conversationStarted(session, account.Email) {
@@ -58,7 +64,9 @@ func (dispatcher *Dispatcher) beginConversation(ctx context.Context, session str
 		if dispatcher.manager.conversationStarted(session, account.Email) {
 			return
 		}
-		run := &controlRun{dispatcher: dispatcher, ctx: ctx, account: account, client: client, project: project}
+		runCtx, cancel := context.WithTimeout(ctx, controlPlaneRunTimeout)
+		defer cancel()
+		run := &controlRun{dispatcher: dispatcher, ctx: runCtx, account: account, client: client, project: project}
 		run.loadCodeAssist()
 		together(
 			func() { run.withProject("fetchAdminControls", plane.FetchAdminControls) },
@@ -80,7 +88,8 @@ func (dispatcher *Dispatcher) beginConversation(ctx context.Context, session str
 // fetchUserInfo and retrieveUserQuotaSummary at once
 // (.reference/client-drift/agy.jsonl). Tool continuations and tool-less side
 // calls (titles, topic checks) send nothing. Identical prompts of the session
-// that arrive together on one account share one run.
+// that arrive together on one account share one run, which stops after
+// controlPlaneRunTimeout.
 func (dispatcher *Dispatcher) beginTurn(ctx context.Context, session string, account *Account, client CloudClient, project string, request map[string]any) {
 	plane, capable := client.(controlPlaneClient)
 	if session == "" || !capable || !isNewUserPrompt(request) {
@@ -90,7 +99,9 @@ func (dispatcher *Dispatcher) beginTurn(ctx context.Context, session string, acc
 	prompt, _ := json.Marshal(promptMessage(request))
 	digest := sha256.Sum256(prompt)
 	dispatcher.shareControlCall(ctx, "turn\x00"+session+"\x00"+account.Email+"\x00"+hex.EncodeToString(digest[:]), func() {
-		run := &controlRun{dispatcher: dispatcher, ctx: ctx, account: account, client: client, project: project}
+		runCtx, cancel := context.WithTimeout(ctx, controlPlaneRunTimeout)
+		defer cancel()
+		run := &controlRun{dispatcher: dispatcher, ctx: runCtx, account: account, client: client, project: project}
 		run.loadCodeAssist()
 		together(
 			func() { run.withProject("fetchUserInfo", plane.FetchUserInfo) },
@@ -168,8 +179,9 @@ type controlRun struct {
 // and returns the body of a 2xx answer. Any HTTP answer, an error status too,
 // counts as answered: a call that always answers 4xx for an account must not
 // make each of its requests resend the burst. A call without an answer (a
-// transport error, a timeout, or a client that has gone, after which nothing
-// is sent) marks the run unanswered. Each outcome is logged at debug.
+// transport error, a timeout, or a run whose client has gone or whose
+// deadline has passed, after which nothing is sent) marks the run
+// unanswered. Each outcome is logged at debug.
 func (run *controlRun) send(name string, call func(context.Context) (cloudcode.Response, error)) ([]byte, bool) {
 	if run.ctx.Err() != nil {
 		run.markUnanswered()
