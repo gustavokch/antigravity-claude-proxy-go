@@ -80,7 +80,7 @@ func (dispatcher *Dispatcher) beginConversation(ctx context.Context, session str
 // fetchUserInfo and retrieveUserQuotaSummary at once
 // (.reference/client-drift/agy.jsonl). Tool continuations and tool-less side
 // calls (titles, topic checks) send nothing. Identical prompts of the session
-// that arrive together share one run.
+// that arrive together on one account share one run.
 func (dispatcher *Dispatcher) beginTurn(ctx context.Context, session string, account *Account, client CloudClient, project string, request map[string]any) {
 	plane, capable := client.(controlPlaneClient)
 	if session == "" || !capable || !isNewUserPrompt(request) {
@@ -90,7 +90,7 @@ func (dispatcher *Dispatcher) beginTurn(ctx context.Context, session string, acc
 	// A decoded JSON body always encodes again.
 	prompt, _ := json.Marshal(messages[len(messages)-1])
 	digest := sha256.Sum256(prompt)
-	dispatcher.shareControlCall(ctx, "turn\x00"+session+"\x00"+hex.EncodeToString(digest[:]), func() {
+	dispatcher.shareControlCall(ctx, "turn\x00"+session+"\x00"+account.Email+"\x00"+hex.EncodeToString(digest[:]), func() {
 		run := &controlRun{dispatcher: dispatcher, ctx: ctx, account: account, client: client, project: project}
 		run.loadCodeAssist()
 		together(

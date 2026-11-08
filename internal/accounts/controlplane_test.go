@@ -58,6 +58,8 @@ type agyCallRecorder struct {
 	// hold, when set, keeps every loadCodeAssist waiting, after it is
 	// recorded, until hold is closed.
 	hold chan struct{}
+	// streamFailures are returned, in order, by the next model calls.
+	streamFailures []error
 
 	mu       sync.Mutex
 	failures map[string]error
@@ -118,7 +120,14 @@ func (client *agyCallRecorder) ListCascadeNuxes(ctx context.Context) (cloudcode.
 func (client *agyCallRecorder) StreamGenerateContent(_ context.Context, payload any, _ cloudcode.RequestOptions, consume func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
 	client.mu.Lock()
 	client.calls = append(client.calls, payload.(proxyformat.CloudCodeRequest).RequestType)
+	var failure error
+	if len(client.streamFailures) > 0 {
+		failure, client.streamFailures = client.streamFailures[0], client.streamFailures[1:]
+	}
 	client.mu.Unlock()
+	if failure != nil {
+		return cloudcode.Response{}, failure
+	}
 	if err := consume(cloudcode.SSEEvent{Data: agyEvent(1, "STOP")}); err != nil {
 		return cloudcode.Response{StatusCode: http.StatusOK}, err
 	}
@@ -160,7 +169,8 @@ func (client *agyCallRecorder) reset() {
 
 // newControlPlaneDispatcher builds a sticky pool of emails, in that order,
 // each served by its recorder, with the catalog already cached so that no
-// request fetches it.
+// request fetches it. Its clock starts at controlPlaneNow and moves only when
+// the dispatcher sleeps.
 func newControlPlaneDispatcher(t *testing.T, clients map[string]*agyCallRecorder, emails ...string) *Dispatcher {
 	t.Helper()
 	pool := make([]*Account, 0, len(emails))
@@ -169,14 +179,26 @@ func newControlPlaneDispatcher(t *testing.T, clients map[string]*agyCallRecorder
 		pool = append(pool, testAccount(email))
 		tokens[email] = "token-" + email
 	}
-	manager, err := New(Options{Accounts: pool, Strategy: StrategySticky, Now: func() time.Time { return controlPlaneNow }})
+	var clock sync.Mutex
+	now := controlPlaneNow
+	readClock := func() time.Time {
+		clock.Lock()
+		defer clock.Unlock()
+		return now
+	}
+	manager, err := New(Options{Accounts: pool, Strategy: StrategySticky, Now: readClock})
 	if err != nil {
 		t.Fatal(err)
 	}
 	dispatcher, err := NewDispatcher(DispatcherOptions{
 		Manager: manager, Resolver: &staticResolver{tokens: tokens},
-		Now:    func() time.Time { return controlPlaneNow },
-		Sleep:  func(context.Context, time.Duration) error { return nil },
+		Now: readClock,
+		Sleep: func(_ context.Context, wait time.Duration) error {
+			clock.Lock()
+			now = now.Add(wait)
+			clock.Unlock()
+			return nil
+		},
 		Random: func() float64 { return 0 },
 		NewClient: func(token string) CloudClient {
 			client := clients[strings.TrimPrefix(token, "token-")]
@@ -424,6 +446,32 @@ func TestBeginTurnSharesOneRunAmongIdenticalPrompts(t *testing.T) {
 		close(client.hold)
 		requests.Wait()
 		assertSteps(t, client.recorded(), agyTurn)
+	})
+}
+
+// Identical prompts of one session on different accounts are separate runs:
+// each account gets its own turn calls.
+func TestBeginTurnRunsPerAccount(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hold := make(chan struct{})
+		first := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hold: hold}
+		second := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hold: hold}
+		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{"a@example.com": first, "b@example.com": second},
+			"a@example.com", "b@example.com")
+		prompt := map[string]any{"tools": toolList(), "messages": []any{map[string]any{"role": "user", "content": "Fix the login bug"}}}
+
+		var requests sync.WaitGroup
+		for index, client := range []*agyCallRecorder{first, second} {
+			account := dispatcher.manager.accounts[index]
+			requests.Go(func() {
+				dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", prompt)
+			})
+		}
+		synctest.Wait()
+		close(hold)
+		requests.Wait()
+		assertSteps(t, first.recorded(), agyTurn)
+		assertSteps(t, second.recorded(), agyTurn)
 	})
 }
 
