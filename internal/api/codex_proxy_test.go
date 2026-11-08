@@ -254,6 +254,23 @@ func TestCodexGateway_NonStreamingRequest(t *testing.T) {
 	requireNoCodexInFlight(t, srv)
 }
 
+// A fast-tier request names its tier in the routing hint as well as the body.
+func TestCodexGateway_FastTierReachesTheRoutingHint(t *testing.T) {
+	backend, upstream := newFakeCodexBackend(t, func(w http.ResponseWriter, r *http.Request, _ string) {
+		writeCodexSSE(w, nil)
+	})
+	srv := newCodexTestServer(t, upstream, codex.AccountConfig{ID: "codex-a", Token: "tok-a", Enabled: true})
+
+	postCodexMessages(t, srv, `{"model":"gpt-5.5","max_tokens":64,"speed":"fast","messages":[{"role":"user","content":"hi"}]}`, nil)
+	call := backend.last(t)
+	if got := call.header.Get("X-Codex-Routing-Hint"); got != "model=gpt-5.5;tier=priority" {
+		t.Errorf("routing hint = %q, want model=gpt-5.5;tier=priority", got)
+	}
+	if call.body["service_tier"] != "priority" {
+		t.Errorf("service_tier = %v, want priority", call.body["service_tier"])
+	}
+}
+
 // A subagent's requests carry their own agent id, so they get a prompt cache
 // key of their own.
 func TestCodexGateway_AgentIDScopesPromptCacheKey(t *testing.T) {

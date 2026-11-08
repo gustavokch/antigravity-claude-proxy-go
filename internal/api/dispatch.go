@@ -215,7 +215,7 @@ func (server *Server) forwardCodexGateway(g *gatewayRequest, route gatewayRoute)
 		toolNames:      toolNames,
 		sessionKey:     sessionKey,
 		promptCacheKey: cacheKey,
-		serviceTier:    codexServiceTier(body),
+		serviceTier:    codex.ServiceTier(g.body),
 		stream:         stream,
 		withoutReasoning: func() ([]byte, error) {
 			o := opts

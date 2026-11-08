@@ -95,16 +95,6 @@ func codexAgentID(r *http.Request) string {
 	return codexDefaultAgent
 }
 
-// codexServiceTier reads the service tier BuildRequest put in the body; the
-// routing hint repeats it.
-func codexServiceTier(body []byte) string {
-	var top struct {
-		ServiceTier string `json:"service_tier"`
-	}
-	_ = json.Unmarshal(body, &top)
-	return top.ServiceTier
-}
-
 // codexPoolFor returns the Codex account pool and client for cfg. The pool is
 // rebuilt when the configured accounts differ from the ones it was built from,
 // and the new pool inherits the old one's quota, cooldown and in-progress

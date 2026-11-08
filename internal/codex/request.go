@@ -190,7 +190,7 @@ func BuildRequest(anthropicBody []byte, opts BuildOptions) (body []byte, toolNam
 		Store:          false,
 		Stream:         true,
 		Include:        []string{"reasoning.encrypted_content"},
-		ServiceTier:    serviceTier(req),
+		ServiceTier:    ServiceTier(req),
 		PromptCacheKey: opts.PromptCacheKey,
 		Text:           textFormat(req),
 	}
@@ -889,9 +889,9 @@ func budgetEffort(budget int64) string {
 	return "xhigh"
 }
 
-// serviceTier is "priority" when the client asked for the fast tier, as
-// service_tier fast or priority, or speed fast.
-func serviceTier(req map[string]any) string {
+// ServiceTier is "priority" when the Anthropic request req asked for the fast
+// tier, as service_tier fast or priority, or speed fast.
+func ServiceTier(req map[string]any) string {
 	switch strings.ToLower(strings.TrimSpace(str(req["service_tier"]))) {
 	case "fast", "priority":
 		return "priority"
