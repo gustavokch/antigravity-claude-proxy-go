@@ -48,6 +48,22 @@ _Avoid_: Backoff window, mute period, lockout timer.
 The header set and body shape a request presents to Anthropic, rewritten to match the committed Claude Code capture so a foreign harness is not advertised. Distinct from an Account, which is the credential a request authenticates with: a Wire Identity claims what the client is, an Account proves who the user is. Owned by `internal/ccidentity`, applied by `internal/claudecode` on the pooled path and `internal/api` on the custom-endpoint path, and scoped by ADR-0004.
 _Avoid_: Spoof, spoofing, normalize, normalization, identity (bare — it collides with Account).
 
+**Start Burst**:
+The control-plane calls sent, in agy's order, the first time a session uses an Account: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET cascadeNuxes`. Sent again for each Account the session overflows to, and on the session's next request after a burst in which a call got no HTTP answer.
+_Avoid_: Warmup, handshake, init calls.
+
+**Per-Turn Calls**:
+The calls sent before each new prompt of a session: `loadCodeAssist`, then `fetchUserInfo` and `retrieveUserQuotaSummary` together. Tool continuations and tool-less side calls send none. Their answers keep the Account's tier, project and quota pools current; no quota call follows a stream.
+_Avoid_: Pre-flight, quota poll, post-request refresh.
+
+**Session Pin**:
+The binding of one client session to the Account that serves all of its models, so a conversation keeps one cascade and one prompt cache. Made by the Selection Strategy on the session's first request; dropped after an hour without a request.
+_Avoid_: Sticky session (collides with the `sticky` strategy), affinity entry, session lock.
+
+**Overflow Pin**:
+A per-model exception to a Session Pin: the Account one model of the session moved to when its pinned Account hit a long rate limit, exhausted quota or a failure lock. It stays for the rest of the session, even after the pinned Account recovers.
+_Avoid_: Fallback account, spillover, failover pin.
+
 ### Models & Catalog
 
 **Requested Model**:
