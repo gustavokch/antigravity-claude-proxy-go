@@ -49,11 +49,11 @@ The header set and body shape a request presents to Anthropic, rewritten to matc
 _Avoid_: Spoof, spoofing, normalize, normalization, identity (bare — it collides with Account).
 
 **Start Burst**:
-The control-plane calls sent, in agy's order, the first time a session uses an Account: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET cascadeNuxes`. Sent again for each Account the session overflows to, and on the session's next request after a burst in which a call got no HTTP answer.
+The control-plane calls sent, in the order of the agy 1.5.2 baseline, the first time a session uses an Account: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET cascadeNuxes`. Sent again for each Account the session overflows to, and on the session's next request after a burst in which a call got no HTTP answer. Its `fetchAvailableModels` refreshes the Account's per-model quota. Checks against agy compare only the set of endpoints: runs of one agy version reorder calls and vary the count of `retrieveUserQuotaSummary`.
 _Avoid_: Warmup, handshake, init calls.
 
 **Per-Turn Calls**:
-The calls sent before each new prompt of a session: `loadCodeAssist`, then `fetchUserInfo` and `retrieveUserQuotaSummary` together. Tool continuations and tool-less side calls send none. Their answers keep the Account's tier, project and quota pools current; no quota call follows a stream.
+The calls sent before each new prompt of a session, once per Account even when the prompt is retried: `loadCodeAssist`, then `fetchUserInfo` and `retrieveUserQuotaSummary` together. Tool continuations and tool-less side calls send none. Their answers keep the Account's tier, project and shared quota pools current, not its per-model quota; no quota call follows a stream.
 _Avoid_: Pre-flight, quota poll, post-request refresh.
 
 **Session Pin**:
@@ -107,7 +107,7 @@ A temporary request rate limit error (HTTP 429) carrying retry duration headers 
 _Avoid_: Throttling, 429 error, rate block.
 
 **Quota Exhausted**:
-A depletion of model quota capacity (`remainingFraction` below threshold) that suspends an Account for that model until the quota reset timestamp.
+A depletion of model quota capacity (`remainingFraction` below threshold) that suspends an Account for that model until the quota reset timestamp. Per-model fractions come from the catalog fetch (24 h TTL), a manual account refresh and each Start Burst, and stay near 1 until the model is exhausted.
 _Avoid_: Usage limit, out of credits, quota burn.
 
 **Model Capacity Exhausted**:

@@ -128,7 +128,10 @@ The Go proxy matches the complete JA4, SNI, ALPN state, cipher list, and signatu
 - [current model catalog](.reference/agy-current-models.txt)
 
 
-Around a conversation the proxy also sends the control-plane calls agy 1.5.2 sends ([agy capture](.reference/client-drift/agy.jsonl)), over the same transport to the same host. The first request of a Claude Code session on an account sends agy's start burst: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET /v1internal/cascadeNuxes`. Each new prompt then sends `loadCodeAssist`, followed by `fetchUserInfo` and `retrieveUserQuotaSummary`, before generation. Tool continuations, tool-less side calls (titles) and requests without a session id send none of these. The `loadCodeAssist` and `retrieveUserQuotaSummary` answers update the account's tier, project and quota; the other calls are sent for parity, and only their status is logged at debug. Each call has a 10 s timeout and never fails the request. A start burst in which a call got no HTTP answer (a network error or a timeout) is sent again on the session's next request; an error status counts as an answer.
+Around a conversation the proxy also sends the control-plane calls agy 1.5.2 sends ([agy capture](.reference/client-drift/agy.jsonl)), over the same transport to the same host. The first request of a Claude Code session on an account sends agy's start burst: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET /v1internal/cascadeNuxes`. Each new prompt then sends `loadCodeAssist`, followed by `fetchUserInfo` and `retrieveUserQuotaSummary`, before generation, once per account even when the prompt is retried. Tool continuations, tool-less side calls (titles) and requests without a session id send none of these. The `loadCodeAssist` answers update the account's tier and project, the burst's `fetchAvailableModels` its per-model quota, and the `retrieveUserQuotaSummary` answers its shared quota pools only; the other calls are sent for parity, and only their status is logged at debug. Each call has a 10 s timeout and never fails the request. A start burst in which a call got no HTTP answer (a network error or a timeout) is sent again on the session's next request; an error status counts as an answer.
+
+Like agy, the proxy sends no per-model quota call on the request path. Per-model quota (the hybrid strategy's quota score, the `quotaThreshold` filter and the dashboard's model rows) is refreshed by the catalog fetch (24 h TTL), a manual account refresh and each start burst's `fetchAvailableModels`. Those catalog fractions stay at 1 until a model is exhausted, so between fetches a model's fraction stays near 1 until it runs out. Each new prompt's quota summary refreshes the shared pools (`gemini-5h`, `3p-weekly`, ...) only.
+
 TLS transport intentionally uses Go's standard library with an empty `tls.Config{}`. Never set custom cipher suites, curves, ALPN, or TLS versions, as doing so alters the fingerprint.
 
 ---
@@ -424,7 +427,7 @@ To manage multiple accounts, create `~/.config/antigravity-proxy/accounts.json` 
 ```
 
 ### Selection Strategies (`ACCOUNT_STRATEGY`)
-- `hybrid` *(Default)*: Scores available accounts using health score, token bucket rate, quota remaining, and least-recently-used timestamp. Skips invalid or cooling-down accounts.
+- `hybrid` *(Default)*: Scores available accounts using health score, token bucket rate, quota remaining, and least-recently-used timestamp. Skips invalid or cooling-down accounts. Per-model quota is as fresh as the last catalog fetch or start burst (see the control-plane calls under “What Matching agy Means”).
 - `sticky`: Uses current active account until it encounters a cooldown or rate limit, then rotates to another account.
 - `round-robin`: Cycles sequentially through usable accounts for every request.
 
@@ -434,7 +437,7 @@ On `429` rate limits, cooldowns are scoped to the specific model and account so 
 
 A request that carries a session id (`X-Claude-Code-Session-Id` or another session header, else `metadata.session_id` or the session inside `metadata.user_id`) is pinned to one account for all of its models, so a conversation keeps its cascade and its prompt cache. The strategy chooses only when a pin is made, rebound or overflowed: `sticky` gives a new pin the current account, `round-robin` rotates per new pin or overflow, `hybrid` scores. A request without a session id is still chosen per request.
 
-- A model rate limit on the pinned account that resets within 2 minutes makes the request wait for that account (or within `maxWaitBeforeErrorMs`, when that is shorter).
+- A model rate limit on the pinned account that resets within 2 minutes makes the request wait for that account (or within `maxWaitBeforeErrorMs`, when that is above 0 and shorter; 0 keeps the 2-minute bound).
 - A longer limit, exhausted quota, a failure lock or the 404 model lock moves only that model to an **overflow** account, chosen once by the strategy and kept for the rest of the session; the model does not move back when the pinned account recovers.
 - A pinned account that is removed, disabled or invalid is replaced through the strategy; overflow entries on healthy accounts stay.
 
@@ -452,7 +455,7 @@ The proxy provides native support for official Anthropic Claude Code accounts, i
   - Automatically identifies incoming Claude Code OAuth tokens (e.g. `ant-oat-*`) or routes configured Claude Code accounts.
   - Reverse-proxies requests directly to `https://api.anthropic.com/v1/messages` with native SSE streaming and low latency.
   - Automatically handles `Authorization: Bearer` formatting and injects required `anthropic-beta` headers.
-  - Answers `POST /v1/messages/count_tokens` (Claude Code's `/context`) through the pool with the identity the real client sends on counts; a burst of counts runs concurrently, and a `429` on a count cools the account down as one on `/v1/messages` does.
+  - Answers `POST /v1/messages/count_tokens` (Claude Code's `/context`) through the pool; for an OAuth account with the identity not disabled it sends the identity the real client sends on counts, otherwise the client's `anthropic-version`, `anthropic-beta` and `Accept` are forwarded. A burst of counts runs concurrently, and a `429` on a count cools the account down as one on `/v1/messages` does.
 - **Native Multi-Account OAuth Login**:
   - Add official Anthropic accounts directly via the Web UI (Claude tab) or CLI:
     ```bash
@@ -948,13 +951,13 @@ A count takes the `/v1/messages` route: model mapping, then the gateway preceden
 
 | Gateway | Count |
 |---|---|
-| Claude Code | Forwarded to `/v1/messages/count_tokens?beta=true` through the pool, with the identity Claude Code sends on its own counts (`x-claude-code-request-class: auxiliary` and a five-entry `anthropic-beta` list ending in `token-counting-2024-11-01`). The body is forwarded as the client sent it, with the gateway's model id written in. |
+| Claude Code | Forwarded through the pool. For an OAuth account with the identity not disabled, it goes to `/v1/messages/count_tokens?beta=true` with the identity Claude Code sends on its own counts (`x-claude-code-request-class: auxiliary` and a five-entry `anthropic-beta` list ending in `token-counting-2024-11-01`); otherwise to `/v1/messages/count_tokens` with the client's `anthropic-version`, `anthropic-beta` and `Accept`. The body is forwarded as the client sent it, with the gateway's model id written in. A request without a model takes the `/v1/messages` default. |
 | OpenRouter | Forwarded to `<baseUrl>/v1/messages/count_tokens` with the key and attribution headers of its messages forward. |
 | Kimi | Forwarded to `<base>/v1/messages/count_tokens` with the Kimi credential, plus the KimiCLI identity for a Kimi Code login. |
 | Custom endpoint | Forwarded to the endpoint URL with `/messages` replaced by `/messages/count_tokens` (`/v1/messages/count_tokens` when the URL leaves the path to the request). A normalized endpoint gets the Claude Code count identity. A URL that names no messages route is estimated. |
 | Cloud Code, Zen | Estimated. |
 
-An upstream that answers `404`, `405` or `501` is estimated for an hour without being asked (custom endpoints per URL). Any other failure is estimated for that request. A count never answers an error status for an upstream's sake; only a body without a `messages` array is refused, with `400`.
+An upstream that answers `404`, `405` or `501` is estimated for an hour without being asked (custom endpoints per URL). Any other failure is estimated for that request. A count never answers an error status for an upstream's sake; only a body the proxy cannot use is refused with `400`: one that cannot be read or is over the size limit, invalid JSON, or one without a `messages` array.
 
 The estimate is the conversation's last real input count (input plus cache reads and writes of the latest completed Cloud Code or Zen request with the same session id) plus a chars-per-token estimate of the messages added since. The ratio is learned per model family (`claude`, `gemini`, `gpt-oss`, otherwise the model id) from requests of at least 1,000 characters, starting at 4.0. Images count by their dimensions: for Claude and other non-Gemini models, the image is scaled down to the long-edge limit and costs `ceil(width/28) × ceil(height/28)` tokens (1,568 px and at most 1,568 tokens; 2,576 px and at most 4,784 tokens for Claude 4.7 and later); for Gemini, 258 tokens per 768 × 768 tile, or 258 for an image of 384 × 384 or less. An image whose size cannot be read costs the maximum (1,600 for Gemini). Without a session id, or when the conversation's earlier messages, system prompt or tools changed, the whole request is estimated. The memory is in process, kept an hour after its last use, for at most 10,000 conversations. With debug logging, each estimate is logged as `count_tokens estimate` with its `session_id`, next to the `input_tokens` and `cache_read_tokens` of that session's next request.
 
