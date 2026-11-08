@@ -421,3 +421,24 @@ func TestStickyForgetsTheLeastRecentlyUsedSession(t *testing.T) {
 		t.Errorf("idle = %q, want a (evicted, so it starts over by priority)", got.ID)
 	}
 }
+
+// A rebuilt pool keeps each session on the account it was using, so a config
+// edit does not move live conversations, their prompt caches or their encrypted
+// reasoning to another account. A session whose account left starts over.
+func TestInheritKeepsStickySessions(t *testing.T) {
+	old, _ := newTestPool(t, account("a", 1), account("b", 2), account("gone", 1))
+	if got, _ := old.SelectAccount("on-b", map[string]bool{"a": true, "gone": true}); got.ID != "b" {
+		t.Fatalf("setup: on-b got %q, want b", got.ID)
+	}
+	if got, _ := old.SelectAccount("on-gone", map[string]bool{"a": true}); got.ID != "gone" {
+		t.Fatalf("setup: on-gone got %q, want gone", got.ID)
+	}
+	p, _ := newTestPool(t, account("a", 1), account("b", 2))
+	p.Inherit(old)
+	if got, _ := p.SelectAccount("on-b", nil); got.ID != "b" {
+		t.Errorf("on-b after the rebuild = %q, want b", got.ID)
+	}
+	if got, _ := p.SelectAccount("on-gone", nil); got.ID != "a" {
+		t.Errorf("on-gone after the rebuild = %q, want a (its account left the pool)", got.ID)
+	}
+}

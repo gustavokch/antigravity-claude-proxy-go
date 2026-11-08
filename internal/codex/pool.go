@@ -154,8 +154,11 @@ func (p *AccountPool) clock() time.Time {
 // Inherit carries the runtime state of old's accounts into the accounts of p
 // with the same ID: quota, cooldown, request and failure counters, the last
 // error, and the needs-login mark while the config still holds the grant that
-// failed. In-flight counts stay with the pool a request acquired its account
-// from, which is the pool it releases it to.
+// failed. Sticky sessions carry over too, in their recency order, when their
+// account is still in the pool, so a config edit does not move a conversation
+// off the account holding its prompt cache and encrypted reasoning. In-flight
+// counts stay with the pool a request acquired its account from, which is the
+// pool it releases it to.
 //
 // Two token cases are covered as well. When old holds a later token set than
 // the config p was built from (a refresh the rebuild did not see), p takes it.
@@ -175,10 +178,19 @@ func (p *AccountPool) Inherit(old *AccountPool) {
 	for id, call := range old.refreshing {
 		calls[id] = call
 	}
+	sessions := make([]stickyEntry, 0, old.stickyOrder.Len())
+	for el := old.stickyOrder.Back(); el != nil; el = el.Prev() {
+		sessions = append(sessions, *el.Value.(*stickyEntry))
+	}
 	old.mu.Unlock()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for _, s := range sessions {
+		if p.accounts[s.id] != nil {
+			p.pin(s.key, s.id)
+		}
+	}
 	for id, st := range p.accounts {
 		o, ok := prev[id]
 		if !ok {
