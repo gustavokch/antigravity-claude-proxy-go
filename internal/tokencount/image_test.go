@@ -69,17 +69,24 @@ func TestClaudeResolutionTierComesFromTheModelVersion(t *testing.T) {
 	}
 }
 
-// https://ai.google.dev/gemini-api/docs/tokens: images with both sides at
-// most 384 px count 258 tokens; larger ones 258 per 768×768 tile.
-func TestGeminiImageTokensCountTiles(t *testing.T) {
-	pricing := pricingFor("gemini-3.1-pro-high")
+// .reference/gemini-image-tokens-20261108.txt: on Cloud Code a Gemini image
+// fills a grid of at most 1,120 patches with its aspect ratio kept, whatever
+// its pixel size.
+func TestGeminiImageTokensFillTheGridBudget(t *testing.T) {
+	pricing := pricingFor("gemini-3.8-flash")
 	for _, tc := range []struct{ width, height, want int }{
-		{384, 384, 258},
-		{385, 100, 258},
-		{768, 768, 258},
-		{769, 768, 516},
-		{1920, 1080, 1548},
-		{100, 2000, 774},
+		{64, 64, 1089},
+		{1536, 1536, 1089},
+		{1000, 999, 1089},
+		{1000, 500, 1081},
+		{1920, 1080, 1100},
+		{3000, 1000, 1083},
+		{2000, 200, 1050},
+		{200, 1000, 1036},
+		// Whole-number sides, √784 × √1600, stay whole.
+		{7, 10, 28 * 40},
+		// Thinner than the grid can hold: one row, never above the budget.
+		{100000, 1, 1120},
 	} {
 		if got := pricing.tokens(tc.width, tc.height); got != tc.want {
 			t.Errorf("gemini %dx%d = %d tokens, want %d", tc.width, tc.height, got, tc.want)
@@ -130,6 +137,8 @@ func TestImageBlocksArePricedFromTheirHeader(t *testing.T) {
 		map[string]any{"role": "user", "content": []any{
 			base64ImageBlock("image/webp", "UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAwA0JaQAA3AA/vuUAAA="),
 			map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": "https://example.com/a.png"}},
+			// A GIF header that declares a 0×0 screen.
+			base64ImageBlock("image/gif", "R0lGODlhAAAAAAAAADs="),
 		}},
 	}}
 
@@ -138,10 +147,11 @@ func TestImageBlocksArePricedFromTheirHeader(t *testing.T) {
 		readable, unread int
 	}{
 		// PNG 200×200 = 8×8 patches, JPEG 56×28 = 2×1, GIF 29×28 = 2×1.
-		{"claude-sonnet-4-6", 64 + 2 + 2, 2 * 1568},
-		{"claude-opus-4-7", 64 + 2 + 2, 2 * 4784},
-		{"gpt-oss-120b-medium", 64 + 2 + 2, 2 * 1568},
-		{"gemini-3.1-pro", 3 * 258, 2 * 1600},
+		{"claude-sonnet-4-6", 64 + 2 + 2, 3 * 1568},
+		{"claude-opus-4-7", 64 + 2 + 2, 3 * 4784},
+		{"gpt-oss-120b-medium", 64 + 2 + 2, 3 * 1568},
+		// Gemini grids: 200×200 = 33×33, 56×28 = 47×23, 29×28 = 34×32.
+		{"gemini-3.1-pro", 1089 + 1081 + 1088, 3 * 1120},
 	} {
 		pricing := pricingFor(tc.model)
 		if got := measureRequest(pricing, readable); got != (measurement{chars: 4, imageTokens: tc.readable}) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// Image costs, from the providers' published rules:
+// Image costs:
 //
 //   - Claude, https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size
 //     and the resize rule at
@@ -19,8 +19,10 @@ import (
 //     one token per 28×28 patch, ⌈w/28⌉ × ⌈h/28⌉, after the image is scaled down
 //     to fit the model's tier (standard: 1,568 px long edge and 1,568 tokens;
 //     Claude 4.7 and later: 2,576 px and 4,784 tokens).
-//   - Gemini, https://ai.google.dev/gemini-api/docs/tokens: 258 tokens when
-//     both sides are at most 384 px, otherwise 258 per 768×768 tile.
+//   - Gemini, measured on Cloud Code (.reference/gemini-image-tokens-20261108.txt):
+//     whatever its pixel size, the image fills a grid of at most 1,120 patches
+//     with its aspect ratio kept, ⌊√(1120·w/h)⌋ × ⌊√(1120·h/w)⌋ tokens. The
+//     Gemini API's 258-per-768×768-tile rule does not hold there.
 //
 // Families with no published rule here (gpt-oss, Zen models) use Claude's
 // standard tier.
@@ -31,12 +33,7 @@ const (
 	claudeHighResEdge    = 2576
 	claudeHighResTokens  = 4784
 
-	geminiSmallEdge  = 384
-	geminiTile       = 768
-	geminiTileTokens = 258
-	// geminiUnknownTokens prices a Gemini image whose size cannot be read:
-	// Gemini has no cap to fall back on, so it counts a flat 1,600.
-	geminiUnknownTokens = 1600
+	geminiGridTokens = 1120
 )
 
 // imagePricing prices images for one model.
@@ -49,7 +46,7 @@ type imagePricing struct {
 func pricingFor(model string) imagePricing {
 	switch Family(model) {
 	case "gemini":
-		return imagePricing{gemini: true}
+		return imagePricing{gemini: true, maxTokens: geminiGridTokens}
 	case "claude-4.7":
 		return imagePricing{maxEdge: claudeHighResEdge, maxTokens: claudeHighResTokens}
 	}
@@ -103,16 +100,14 @@ func shortNumber(field string) (int, bool) {
 func (pricing imagePricing) sourceTokens(source any) int {
 	width, height, ok := imageSize(source)
 	if !ok {
-		if pricing.gemini {
-			return geminiUnknownTokens
-		}
 		return pricing.maxTokens
 	}
 	return pricing.tokens(width, height)
 }
 
 // imageSize reads the dimensions from the header of base64 image data. The
-// decoder streams, so only the header is decoded, not the whole image.
+// decoder streams, so only the header is decoded, not the whole image. A GIF
+// header may declare a 0×0 screen; a size with no area is not a size.
 func imageSize(source any) (width, height int, ok bool) {
 	object, _ := source.(map[string]any)
 	if object["type"] != "base64" {
@@ -120,7 +115,7 @@ func imageSize(source any) (width, height int, ok bool) {
 	}
 	data, _ := object["data"].(string)
 	config, _, err := image.DecodeConfig(base64.NewDecoder(base64.StdEncoding, strings.NewReader(data)))
-	if err != nil {
+	if err != nil || config.Width <= 0 || config.Height <= 0 {
 		return 0, 0, false
 	}
 	return config.Width, config.Height, true
@@ -128,10 +123,10 @@ func imageSize(source any) (width, height int, ok bool) {
 
 func (pricing imagePricing) tokens(width, height int) int {
 	if pricing.gemini {
-		if width <= geminiSmallEdge && height <= geminiSmallEdge {
-			return geminiTileTokens
-		}
-		return ceilDiv(width, geminiTile) * ceilDiv(height, geminiTile) * geminiTileTokens
+		// One division each, so a side that is a whole number stays whole.
+		columns := max(1, int(math.Sqrt(float64(geminiGridTokens*width)/float64(height))))
+		rows := max(1, int(math.Sqrt(float64(geminiGridTokens*height)/float64(width))))
+		return min(columns*rows, geminiGridTokens)
 	}
 	width, height = pricing.resized(width, height)
 	return claudePatches(width, height)
