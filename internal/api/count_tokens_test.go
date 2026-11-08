@@ -775,6 +775,73 @@ func TestCountTokens_UnreachableUpstreamIsEstimated(t *testing.T) {
 	}
 }
 
+// A gateway that takes the count and never answers holds it only until the
+// count deadline: the count is estimated, and a Claude Code account is
+// released.
+func TestCountTokens_SilentUpstreamIsEstimatedAfterTheDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(c *config.Config, upstreamURL string)
+		model     string
+		pooled    bool
+	}{
+		{"claude code", func(c *config.Config, upstreamURL string) {
+			c.ClaudeCode = ccPoolConfig(upstreamURL, ccCountAccount)
+		}, "claude-sonnet-5", true},
+		{"openrouter", func(c *config.Config, upstreamURL string) {
+			c.OpenRouter = config.OpenRouterConfig{Enabled: true, BaseURL: upstreamURL + "/api/v1", APIKey: "k",
+				Allowlist: []config.OpenRouterModelConfig{{ID: "vendor/model-x", Enabled: true}}}
+		}, "vendor/model-x", false},
+		{"kimi", func(c *config.Config, upstreamURL string) {
+			c.Kimi = config.KimiConfig{Enabled: true, BaseURL: upstreamURL, APIKey: "k",
+				Allowlist: []config.KimiModelConfig{{ID: "kimi-k2", Enabled: true}}}
+		}, "kimi-k2", false},
+		{"custom", func(c *config.Config, upstreamURL string) {
+			c.CustomEndpoints = map[string]config.EndpointConfig{"relay-model": {URL: upstreamURL + "/v1/messages", APIKey: "k"}}
+		}, "relay-model", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stop := make(chan struct{})
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/count_tokens") {
+					http.NotFound(w, r)
+					return
+				}
+				select {
+				case <-r.Context().Done():
+				case <-stop:
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			t.Cleanup(func() { close(stop) })
+			cfg := config.DefaultConfig()
+			tc.configure(&cfg, upstream.URL)
+			server := newCountServer(t, cfg, time.Now)
+			server.countTimeout = 50 * time.Millisecond
+			body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, tc.model)
+			want := estimateOf(t, server, "", tc.model, body)
+
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				answered <- sendInSession(server.Handler(), countPath, "test-proxy-key", "", body, nil)
+			}()
+			select {
+			case recorder := <-answered:
+				if got := countOf(t, recorder); got != want {
+					t.Errorf("count = %d, want the estimate %d", got, want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("count unanswered after 2 s: the forward waits on a silent upstream")
+			}
+			if tc.pooled {
+				if state := ccCountAccountState(t, server, cfg); state.InFlight != 0 {
+					t.Errorf("account in flight = %d, want 0: the timed-out count did not release it", state.InFlight)
+				}
+			}
+		})
+	}
+}
+
 func TestCustomCountURL(t *testing.T) {
 	for _, tc := range []struct{ endpoint, want string }{
 		{"https://relay.example/v1/messages", "https://relay.example/v1/messages/count_tokens"},

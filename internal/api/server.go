@@ -169,6 +169,10 @@ type Server struct {
 	// 501, until they are asked again. The zero value is ready.
 	countMarks countMarks
 
+	// countTimeout bounds one count_tokens forward, its answer included; zero
+	// is countForwardTimeout. Tests shorten it.
+	countTimeout time.Duration
+
 	// endpointCats holds the fetched model catalogs of custom endpoints that set
 	// discoverModels. Lazily built: tests construct a bare Server.
 	endpointCatalogsOnce sync.Once

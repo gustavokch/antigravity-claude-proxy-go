@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,12 @@ import (
 // countUnsupportedFor is how long a gateway that answered count_tokens with
 // 404, 405 or 501 is estimated without being asked.
 const countUnsupportedFor = time.Hour
+
+// countForwardTimeout bounds a count_tokens forward, from the request to the
+// decoded answer. An estimate answers a count well enough, so a gateway that
+// takes the count and stays silent is given up on long before the transports'
+// response-header timeout.
+const countForwardTimeout = 10 * time.Second
 
 // maxCountResponse caps a count answer; Claude Code's is about 20 bytes.
 const maxCountResponse = 64 << 10
@@ -80,10 +87,13 @@ func (server *Server) observeTokens(session, model string, request map[string]an
 	server.tokens.Observe(session, model, request, realInput)
 }
 
-// countCall is one count_tokens forward: the client's request, the gateway
-// routeGateway chose, the body to send (the client's bytes with the gateway's
-// model id written in) and the client's session.
+// countCall is one count_tokens forward: its context (the client's, bounded
+// by the count deadline), the client's request, the gateway routeGateway
+// chose, the body to send (the client's bytes with the gateway's model id
+// written in) and the client's session. A send uses ctx, never the client
+// request's own context.
 type countCall struct {
+	ctx     context.Context
 	request *http.Request
 	cfg     config.Config
 	route   gatewayRoute
@@ -104,7 +114,8 @@ var countForwards = map[config.GatewayID]func(*Server, countCall) (*http.Respons
 // forwardCount asks the gateway route names for the count. ok is false when
 // the gateway does not count tokens, is marked as not counting, or the call
 // failed in any way; the caller then estimates, so a count never fails the
-// client for an upstream's sake. A 404, 405 or 501 marks the gateway (a custom
+// client for an upstream's sake. The forward, answer included, gets
+// countForwardTimeout. A 404, 405 or 501 marks the gateway (a custom
 // endpoint: that endpoint) for countUnsupportedFor.
 func (server *Server) forwardCount(request *http.Request, cfg config.Config, route gatewayRoute, session string, rawBody []byte) (int, bool) {
 	send, ok := countForwards[route.id]
@@ -120,7 +131,13 @@ func (server *Server) forwardCount(request *http.Request, cfg config.Config, rou
 		server.logger.Debug("count_tokens body not forwardable; estimating", "gateway", key, "error", err)
 		return 0, false
 	}
-	resp, err := send(server, countCall{request: request, cfg: cfg, route: route, body: body, session: session})
+	timeout := server.countTimeout
+	if timeout <= 0 {
+		timeout = countForwardTimeout
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), timeout)
+	defer cancel()
+	resp, err := send(server, countCall{ctx: ctx, request: request, cfg: cfg, route: route, body: body, session: session})
 	if err != nil {
 		server.logger.Debug("count_tokens forward failed; estimating", "gateway", key, "error", err)
 		return 0, false
@@ -216,7 +233,7 @@ func (server *Server) countClaudeCode(call countCall) (*http.Response, error) {
 	}
 	pool.Acquire(acc.ID)
 	identity, normalize := call.cfg.ClaudeCode.Identity.WireIdentity(acc.AccountUUID, call.session)
-	resp, err := client.CountTokens(call.request.Context(), claudecode.CountTokensRequest{
+	resp, err := client.CountTokens(call.ctx, claudecode.CountTokensRequest{
 		Token:         acc.Token,
 		Body:          call.body,
 		ClientHeaders: call.request.Header,
@@ -240,7 +257,7 @@ func (server *Server) countClaudeCode(call countCall) (*http.Response, error) {
 // headers its messages forward sends (setOpenRouterHeaders).
 func (server *Server) countOpenRouter(call countCall) (*http.Response, error) {
 	target := openrouter.NormalizeBaseURL(call.cfg.OpenRouter.BaseURL) + "/v1/messages/count_tokens"
-	upReq, err := http.NewRequestWithContext(call.request.Context(), http.MethodPost, target, bytes.NewReader(call.body))
+	upReq, err := http.NewRequestWithContext(call.ctx, http.MethodPost, target, bytes.NewReader(call.body))
 	if err != nil {
 		return nil, fmt.Errorf("build OpenRouter count_tokens request: %w", err)
 	}
@@ -251,7 +268,7 @@ func (server *Server) countOpenRouter(call countCall) (*http.Response, error) {
 // countKimi asks the Kimi gateway for the count with the credential, and for a
 // Kimi Code login the KimiCLI identity headers, its messages forward sends.
 func (server *Server) countKimi(call countCall) (*http.Response, error) {
-	cred, err := server.resolveKimiCredential(call.request.Context(), call.cfg.Kimi)
+	cred, err := server.resolveKimiCredential(call.ctx, call.cfg.Kimi)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +276,7 @@ func (server *Server) countKimi(call countCall) (*http.Response, error) {
 	if cred.oauth {
 		identity = server.kimiIdentityHeaders()
 	}
-	return kimi.CountTokens(call.request.Context(), cred.baseURL, cred.token, call.body, call.request.Header, identity)
+	return kimi.CountTokens(call.ctx, cred.baseURL, cred.token, call.body, call.request.Header, identity)
 }
 
 // errNoCountRoute is a custom endpoint whose URL names no Anthropic messages
@@ -288,7 +305,7 @@ func (server *Server) countCustomEndpoint(call countCall) (*http.Response, error
 	if normalize {
 		target.RawQuery = withCapturedBetaQuery(target.RawQuery)
 	}
-	upReq, err := http.NewRequestWithContext(call.request.Context(), http.MethodPost, target.String(), bytes.NewReader(call.body))
+	upReq, err := http.NewRequestWithContext(call.ctx, http.MethodPost, target.String(), bytes.NewReader(call.body))
 	if err != nil {
 		return nil, fmt.Errorf("build custom endpoint count_tokens request: %w", err)
 	}
