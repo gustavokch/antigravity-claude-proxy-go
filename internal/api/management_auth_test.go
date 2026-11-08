@@ -399,7 +399,8 @@ func TestGateScopeIsTheManagementSurface(t *testing.T) {
 		wantGate     bool // answered by the management password gate
 	}{
 		// Not management: the gate never answers these.
-		{http.MethodPost, "/v1/messages/count_tokens", http.StatusNotImplemented, false},
+		// count_tokens answers a body with no messages itself, with a 400.
+		{http.MethodPost, "/v1/messages/count_tokens", http.StatusBadRequest, false},
 		{http.MethodGet, "/", http.StatusOK, false},
 		{http.MethodGet, "/index.html", http.StatusOK, false},
 		{http.MethodPost, "/no/such/path", http.StatusNotFound, false},

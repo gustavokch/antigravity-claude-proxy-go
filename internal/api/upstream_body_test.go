@@ -89,7 +89,7 @@ func TestInstrumentedUpstreamBodyFailureIsNotAShort200(t *testing.T) {
 		gateway string
 		run     func(*Server, *http.Response)
 	}{
-		{"zen", "zen", func(s *Server, r *http.Response) { s.zenInstrumentResponse(r, "m", "s", time.Now()) }},
+		{"zen", "zen", func(s *Server, r *http.Response) { s.zenInstrumentResponse(r, "m", "s", time.Now(), nil) }},
 		{"kimi", "kimi", func(s *Server, r *http.Response) { s.kimiInstrumentResponse(r, "m", "s", time.Now()) }},
 		{"claudecode", "claudecode", func(s *Server, r *http.Response) { s.ccInstrumentResponse(r, ccAttempt{accountID: "acc1"}) }},
 	}

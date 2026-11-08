@@ -2,9 +2,11 @@ package kimi
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -112,5 +114,60 @@ func TestForwardMessages_NilHookDelegates(t *testing.T) {
 
 	if w.Code != 200 {
 		t.Errorf("client code = %d, want 200", w.Code)
+	}
+}
+
+// A count carries what a Kimi messages forward carries: the Bearer
+// credential, the identity headers, and the caller's Anthropic headers, and
+// never the x-api-key the caller sent the proxy.
+func TestCountTokens_SendsTheForwardsHeaders(t *testing.T) {
+	var gotPath string
+	var gotHeader http.Header
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotHeader = r.URL.Path, r.Header.Clone()
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"input_tokens":9}`)
+	}))
+	defer upstream.Close()
+
+	client := http.Header{}
+	client.Set("anthropic-version", "2023-06-01")
+	client.Set("anthropic-beta", "token-counting-2024-11-01")
+	client.Set("x-api-key", "proxy-key")
+	identity := http.Header{}
+	identity.Set("User-Agent", "KimiCLI/"+CLIVersion)
+	identity.Set("X-Msh-Platform", "kimi_cli")
+	body := []byte(`{"model":"kimi-k2","messages":[]}`)
+
+	resp, err := CountTokens(context.Background(), upstream.URL+"/coding/v1", "sk-kimi", body, client, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if gotPath != "/coding/v1/messages/count_tokens" {
+		t.Errorf("path = %q, want /coding/v1/messages/count_tokens", gotPath)
+	}
+	for name, want := range map[string]string{
+		"Authorization":     "Bearer sk-kimi",
+		"X-Api-Key":         "",
+		"User-Agent":        "KimiCLI/" + CLIVersion,
+		"X-Msh-Platform":    "kimi_cli",
+		"Anthropic-Version": "2023-06-01",
+		"Anthropic-Beta":    "token-counting-2024-11-01",
+		"Content-Type":      "application/json",
+	} {
+		if got := gotHeader.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if !bytes.Equal(gotBody, body) {
+		t.Errorf("body = %s, want %s", gotBody, body)
+	}
+	if !strings.Contains(string(answer), `"input_tokens":9`) {
+		t.Errorf("answer = %s, want the upstream's", answer)
 	}
 }
