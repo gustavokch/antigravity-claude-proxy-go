@@ -126,15 +126,17 @@ type TokenPersister func(accountID string, ts TokenSet) error // writes config.j
 func NewAccountPool(cfgs []AccountConfig) *AccountPool
 func (p *AccountPool) SetTokenRefresher(TokenRefresher)
 func (p *AccountPool) SetTokenPersister(TokenPersister)
-func (p *AccountPool) Inherit(old *AccountPool)                      // carries quota, cooldown and counters for surviving ids
-func (p *AccountPool) SelectAccount(sessionKey string, excluded map[string]bool) (Account, error) // sticky, then priority, in-flight, failures
+func (p *AccountPool) Inherit(old *AccountPool)                      // carries quota, cooldown, counters and sticky sessions for surviving ids
+func (p *AccountPool) SelectAccount(sessionKey string, excluded map[string]bool) (Account, error) // sticky (LRU, 10,000 sessions), then priority, in-flight, failures
 func (p *AccountPool) EnsureFresh(ctx context.Context, id string) (Account, error) // refresh when < RefreshLead left; single-flight per account
-func (p *AccountPool) ForceRefresh(ctx context.Context, id string) (Account, error)
+func (p *AccountPool) ForceRefresh(ctx context.Context, id string) (Account, error) // management API
+func (p *AccountPool) RefreshRejected(ctx context.Context, id, rejected string) (Account, error) // after a 401; no refresh once the token changed
 func (p *AccountPool) Acquire(id string)
 func (p *AccountPool) Release(id string)
 func (p *AccountPool) RecordSuccess(id string)
-func (p *AccountPool) RecordFailure(id string, is5xx bool, cooldown time.Duration)
+func (p *AccountPool) RecordFailure(id string, cooldown time.Duration, reason string) // "" counts; 3rd in a row → consecutive_failures
 func (p *AccountPool) RecordCooldown(id string, until time.Time, reason string) // usage_limit_reached, Retry-After
+func (p *AccountPool) CooldownEnd() (until time.Time, ok bool)        // earliest reset when every account is cooling down
 func (p *AccountPool) UpdateQuota(id string, q Quota)
 func (p *AccountPool) GetAccount(id string) (Account, bool)
 func (p *AccountPool) Snapshots() []AccountSnapshot
@@ -243,7 +245,7 @@ Authorize params: `client_id`, `response_type=code`, `redirect_uri`, `scope`, `s
 
 - Config root field `Codex codex.Config` (JSON `codex`), defaults `{Enabled:false, BaseURL:DefaultBaseURL, Accounts:[], Allowlist:DefaultAllowlist()}`, `Save` merge preserving accounts, `GetPublicConfig` redaction (`token` → `hasToken`+`maskedToken`, `refreshToken` → `hasRefreshToken`, `idToken` removed).
 - Gateway id `codex` (`config.GatewayCodex`), default order Kimi, Zen, ClaudeCode, Codex, OpenRouter, Custom, CloudCode. `matchCodexGateway` / `forwardCodexGateway` in the `gateways` table of `dispatch.go`; `appendCodexDiscovery` in `discovery.go` (`owned_by:"openai"`). Codex has no count endpoint, so `count_tokens` estimates its models.
-- `forwardToCodex`: session id via `ccExtractSessionID`, agent from `X-Claude-Code-Agent-Id` (default `main`), prompt cache key, up to 3 attempts. 401 → `ForceRefresh` and one retry, else exclude. 429 with `usage_limit_reached` → `RecordCooldown(resets)`, other 429 → `Retry-After` or 60 s; exclude and try the next account; when none is left, return the last 429 as an Anthropic `rate_limit_error`. 5xx/transport → `RecordFailure`. 2xx → `ParseQuota` → `UpdateQuota`, then `responses.Stream` (streaming client) or `Aggregate` + `ToAnthropic`. Upstream 4xx bodies become Anthropic error envelopes (400 → `invalid_request_error`, 401/403 → `authentication_error`/`permission_error`, 404 → `not_found_error`, 413 → `request_too_large`).
+- `forwardToCodex`: session id via `ccExtractSessionID`, agent from `X-Claude-Code-Agent-Id` (default `main`), prompt cache key, up to 3 attempts. 401 → `RefreshRejected` and one retry, else `RecordFailure(unauthorized)` and exclude. 429 with `usage_limit_reached` → `RecordCooldown(resets)`, other 429 → `Retry-After` or 60 s; exclude and try the next account; when none is left, return the last 429 as an Anthropic `rate_limit_error`. When every account is cooling down before any attempt, answer 429 `rate_limit_error` with `Retry-After` from `CooldownEnd`. 5xx → `RecordFailure(server_error)`, transport → `RecordFailure("")`. A 2xx stream is held back by `codex.Peek` (up to `PeekLimit`, 1 MiB) until its first output event; a failure before it (`response.failed`, `response.error`, `error`) is handled like the status `codex.FailureStatus` gives it, so a spent window fails over. A 400 `invalid_encrypted_content` is resent once on the same account, rebuilt with `BuildOptions.DropReasoning`. 2xx → `ParseQuota` → `UpdateQuota`, then `responses.Stream` (streaming client) or `Aggregate` + `ToAnthropic`. Upstream 4xx bodies become Anthropic error envelopes (400 → `invalid_request_error`, 401/403 → `authentication_error`/`permission_error`, 404 → `not_found_error`, 413 → `request_too_large`).
 - Routes:
 
 | Method | Path | Body / query | Response |
