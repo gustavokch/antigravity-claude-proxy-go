@@ -1049,3 +1049,97 @@ func TestStreamGenerateContentMovesAPinnedSessionPastMaxWait(t *testing.T) {
 		}
 	})
 }
+
+// failingCredentialResolver answers like accountTokenResolver until fail
+// names an account; from then on that account's credentials fail with err,
+// and each refusal is counted.
+type failingCredentialResolver struct {
+	err error
+
+	mu       sync.Mutex
+	failing  string
+	refusals int
+}
+
+func (resolver *failingCredentialResolver) Resolve(_ context.Context, account *Account) (auth.Credentials, error) {
+	resolver.mu.Lock()
+	defer resolver.mu.Unlock()
+	if account.Email == resolver.failing {
+		resolver.refusals++
+		return auth.Credentials{}, resolver.err
+	}
+	return auth.Credentials{AccessToken: account.Email, Email: account.Email}, nil
+}
+
+func (*failingCredentialResolver) Invalidate(string) {}
+
+func (resolver *failingCredentialResolver) fail(email string) {
+	resolver.mu.Lock()
+	defer resolver.mu.Unlock()
+	resolver.failing = email
+}
+
+func (resolver *failingCredentialResolver) refused() int {
+	resolver.mu.Lock()
+	defer resolver.mu.Unlock()
+	return resolver.refusals
+}
+
+// A pinned session leaves an account whose credentials keep failing. A
+// transient credential error counts toward the model's failure lock like any
+// other failure, so the third one moves the session to another account
+// instead of the request spending every attempt on the pinned one.
+func TestStreamGenerateContentPinnedSessionLeavesAnAccountWhoseCredentialsFail(t *testing.T) {
+	t.Parallel()
+	// Transient: neither IsPermanentAuthFailure nor invalid_grant, so the
+	// account stays valid and the pin does not simply rebind.
+	resolver := &failingCredentialResolver{err: errors.New("token refresh: 503")}
+	pool := map[string]*Account{
+		"acc1@example.com": {Email: "acc1@example.com", Enabled: true},
+		"acc2@example.com": {Email: "acc2@example.com", Enabled: true},
+	}
+	manager, err := New(Options{
+		Accounts: []*Account{pool["acc1@example.com"], pool["acc2@example.com"]},
+		Strategy: StrategyRoundRobin,
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	release := make(chan struct{})
+	close(release)
+	// NewDispatcher's default MaxRetries is 5, so a request gets
+	// max(5, Count()+1) = 5 attempts: room for the three failures that set the
+	// failure lock and the attempt on the overflow account.
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  resolver,
+		NewClient: func(string) CloudClient { return &blockingModelsClient{release: release} },
+		ProjectID: "test-proj-affinity",
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Close)
+	dispatcher.cacheCatalog("acc1@example.com", []byte(testCatalogBody))
+	serve := func() (string, error) {
+		ctx, meta := cloudcode.WithExecutionMetadata(WithSessionKey(context.Background(), "s1"))
+		_, err := dispatcher.StreamGenerateContent(ctx, map[string]any{"model": "gemini-2.5-pro"}, func(cloudcode.SSEEvent) error { return nil })
+		return meta.Account, err
+	}
+
+	home, err := serve()
+	if err != nil {
+		t.Fatalf("first request of s1: %v", err)
+	}
+	resolver.fail(home)
+	got, err := serve()
+	if err != nil || got == "" || got == home {
+		t.Fatalf("home %s whose credentials fail: served by %q (error %v), want the other account", home, got, err)
+	}
+	if refused := resolver.refused(); refused > 3 {
+		t.Fatalf("home %s was asked for credentials %d times, want at most 3", home, refused)
+	}
+	if pool[home].IsInvalid {
+		t.Fatalf("home %s marked invalid by a transient credential error", home)
+	}
+}

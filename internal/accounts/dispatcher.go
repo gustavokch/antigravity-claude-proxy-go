@@ -474,7 +474,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 		account := selection.Account
 		credentials, err := dispatcher.resolver.Resolve(ctx, account)
 		if err != nil {
-			dispatcher.handleCredentialError(account, err)
+			dispatcher.handleCredentialError(account, model, err)
 			lastError = err
 			continue
 		}
@@ -983,12 +983,16 @@ func (dispatcher *Dispatcher) project(account *Account) string {
 	return dispatcher.manager.Project(account)
 }
 
-func (dispatcher *Dispatcher) handleCredentialError(account *Account, err error) {
+// handleCredentialError marks account invalid for a revoked or rejected token.
+// Any other credential error is a failure for model: three in a row set the
+// failure lock, so a pinned session moves the model to another account
+// instead of retrying one that cannot get a token.
+func (dispatcher *Dispatcher) handleCredentialError(account *Account, model string, err error) {
 	if IsPermanentAuthFailure(err.Error()) || containsAny(strings.ToLower(err.Error()), "auth_invalid", "invalid_grant") {
 		dispatcher.manager.MarkInvalid(account, "Credentials are invalid - re-authentication required", "")
 	} else {
 		slog.Warn("credential error — marking account as failed", "email", account.Email, "error", err)
-		dispatcher.manager.MarkFailure(account, "")
+		dispatcher.manager.MarkFailure(account, model)
 	}
 }
 
