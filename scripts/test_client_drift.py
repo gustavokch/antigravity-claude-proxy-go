@@ -122,6 +122,17 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(drifts, [])
         self.assertEqual(len(notes), 2)
 
+    def test_a_changed_query_is_drift(self):
+        # Requests are paired by the path without its query, so only the
+        # record comparison can see the query change.
+        base = record("/v1internal/cascadeNuxes?page_size=1000", [])
+        seen = record("/v1internal/cascadeNuxes?page_size=500", [])
+        drifts, notes = drift.compare_captures([base], [seen], frozenset(), [])
+        self.assertEqual(len(drifts), 1, drifts)
+        self.assertIn("?page_size=1000", drifts[0])
+        self.assertIn("?page_size=500", drifts[0])
+        self.assertEqual(notes, [])
+
     def test_generation_request_keys_are_compared_per_request_type(self):
         path = "/v1internal:streamGenerateContent?alt=sse"
 

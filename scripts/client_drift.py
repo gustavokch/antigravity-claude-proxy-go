@@ -827,6 +827,10 @@ def compare_records(label: str, base: dict, seen: dict, dynamic: frozenset[str],
     drifts = []
     if base.get("host") != seen.get("host"):
         drifts.append(f"{label}: host {base.get('host')} -> {seen.get('host')}")
+    # request_key pairs records by the path without its query, so a changed
+    # query shows only here.
+    if base.get("path") != seen.get("path"):
+        drifts.append(f"{label}: path {base.get('path')} -> {seen.get('path')}")
     if base.get("http_version") != seen.get("http_version"):
         drifts.append(f"{label}: {base.get('http_version')} -> {seen.get('http_version')}")
     base_headers = [(name.lower(), value) for name, value in base.get("headers", [])]
