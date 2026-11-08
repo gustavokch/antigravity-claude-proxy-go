@@ -28,6 +28,10 @@ type RateLimit struct {
 	IsRateLimited bool  `json:"isRateLimited"`
 	ResetTimeMS   int64 `json:"-"`
 	ActualResetMS int64 `json:"actualResetMs,omitempty"`
+	// failure marks MarkFailure's lock: a session pin moves the model to
+	// another account instead of waiting it out. Not persisted, so a reloaded
+	// lock reads as a plain rate limit.
+	failure bool
 }
 
 func (limit *RateLimit) UnmarshalJSON(data []byte) error {
@@ -246,6 +250,12 @@ type Manager struct {
 	projects             map[string]string
 	sharedThrottleWindow time.Duration
 	modelThrottles       map[string]*sharedThrottle
+	// pins maps a session id to the account its conversation is pinned to;
+	// see conversation.go. Created on first use.
+	pins map[string]*pin
+	// pinWait is the longest rate limit a pinned session waits out before
+	// its model moves to another account; see setPinWait.
+	pinWait time.Duration
 }
 
 func mapFloat(m map[string]any, key string, fallback float64) float64 {
@@ -328,6 +338,7 @@ func New(options Options) (*Manager, error) {
 		projects:             make(map[string]string),
 		sharedThrottleWindow: sharedThrottleWindow,
 		modelThrottles:       make(map[string]*sharedThrottle),
+		pinWait:              maxStickyWait,
 	}, nil
 }
 
@@ -369,6 +380,9 @@ func (manager *Manager) Count() int {
 	return len(manager.accounts)
 }
 
+// Select picks an account for model. A request with a session stays on the
+// session's pinned account (selectPinnedLocked); one without keeps the
+// per-request strategy choice.
 func (manager *Manager) Select(session, model string) Selection {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -376,7 +390,10 @@ func (manager *Manager) Select(session, model string) Selection {
 	if wait := manager.sharedThrottleWaitLocked(rateLimitModelKey(model)); wait > 0 {
 		return Selection{Wait: wait}
 	}
-	return manager.pickLocked(model, nil)
+	if session == "" {
+		return manager.pickLocked(model, nil)
+	}
+	return manager.selectPinnedLocked(session, model)
 }
 
 // pickLocked runs the configured strategy. Accounts in exclude are treated as
@@ -600,6 +617,7 @@ func (manager *Manager) MarkFailure(account *Account, model string) {
 	if key != "" && account.ConsecutiveFailure >= 3 {
 		account.ModelRateLimits[key] = &RateLimit{
 			IsRateLimited: true, ResetTimeMS: manager.now().Add(time.Minute).UnixMilli(), ActualResetMS: time.Minute.Milliseconds(),
+			failure: true,
 		}
 	}
 }
@@ -966,15 +984,15 @@ func (manager *Manager) usableLocked(account *Account, model string, poolSupport
 	if limit := account.ModelRateLimits[rateLimitModelKey(model)]; limit != nil && limit.IsRateLimited && limit.ResetTimeMS > now {
 		return false
 	}
-	// In a heterogeneous pool where at least one account explicitly supports
-	// model, filter out accounts whose non-empty quota models do not support it.
-	// Accounts with uninitialized quota (len == 0) remain usable to allow initial discovery.
-	if poolSupports && len(account.Quota.Models) > 0 {
-		if !accountSupportsQuotaModel(account, model) {
-			return false
-		}
-	}
-	return true
+	return servesModel(account, model, poolSupports)
+}
+
+// servesModel applies the heterogeneous-pool filter: when some account in the
+// pool lists model, an account whose non-empty quota cache does not is
+// skipped. Accounts with uninitialized quota (len == 0) stay usable to allow
+// initial discovery.
+func servesModel(account *Account, model string, poolSupports bool) bool {
+	return !poolSupports || len(account.Quota.Models) == 0 || accountSupportsQuotaModel(account, model)
 }
 
 func (manager *Manager) clearExpiredLocked() {
