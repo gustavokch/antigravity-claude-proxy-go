@@ -171,6 +171,9 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 	if options.Random == nil {
 		options.Random = rand.Float64
 	}
+	// A pinned session waits for its account only as long as this
+	// Dispatcher waits before answering with a RateLimitError.
+	options.Manager.setPinWait(options.MaxWait)
 	lifetime, endLifetime := context.WithCancel(context.Background())
 	return &Dispatcher{
 		lifetime:                 lifetime,
@@ -208,6 +211,7 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 	}
 	if cfg.MaxWaitBeforeErrorMs > 0 {
 		dispatcher.maxWait = time.Duration(cfg.MaxWaitBeforeErrorMs) * time.Millisecond
+		dispatcher.manager.setPinWait(dispatcher.maxWait)
 	}
 	if cfg.MaxCapacityRetries > 0 {
 		dispatcher.maxCapacityRetries = cfg.MaxCapacityRetries
@@ -424,9 +428,10 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	request["model"] = modelDetails.GetUpstreamID()
 	model := modelDetails.ID
 	maxAttempts := max(dispatcher.maxRetries, dispatcher.manager.Count()+1)
+	session := SessionKey(ctx)
 	var lastError error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		selection := dispatcher.manager.Select("", model)
+		selection := dispatcher.manager.Select(session, model)
 		if selection.Account == nil {
 			if dispatcher.manager.AllInvalid() {
 				return cloudcode.Response{}, errors.New("all accounts are invalid and require user intervention")

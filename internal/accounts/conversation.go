@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"context"
 	"log/slog"
 	"slices"
 	"time"
@@ -258,4 +259,21 @@ func sessionPrefix(session string) string {
 		return session[:8]
 	}
 	return session
+}
+
+type sessionKeyContextKey struct{}
+
+// WithSessionKey returns ctx carrying the conversation's session id, which
+// Select pins to one account. An empty key leaves ctx unchanged.
+func WithSessionKey(ctx context.Context, key string) context.Context {
+	if key == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionKeyContextKey{}, key)
+}
+
+// SessionKey returns the session id stored by WithSessionKey, or "".
+func SessionKey(ctx context.Context) string {
+	key, _ := ctx.Value(sessionKeyContextKey{}).(string)
+	return key
 }

@@ -888,6 +888,9 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "messages is required and must be an array")
 		return
 	}
+	// The account pool keeps a conversation on one account, keyed by the
+	// same session id the request metrics use.
+	request = request.WithContext(accounts.WithSessionKey(request.Context(), ccExtractSessionID(request, anthropicRequest)))
 	if model, _ := anthropicRequest["model"].(string); model == "" {
 		anthropicRequest["model"] = "gemini-3.5-flash-low"
 		bodyMutated = true

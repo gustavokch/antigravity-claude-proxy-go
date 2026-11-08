@@ -999,6 +999,13 @@ func (server *Server) handleAccountsList(writer http.ResponseWriter, request *ht
 		return
 	}
 	status := server.accountManager.GetStatus()
+	sessions := server.accountManager.ActiveSessions()
+	if list, ok := status["accounts"].([]map[string]any); ok {
+		for _, item := range list {
+			email, _ := item["email"].(string)
+			item["activeSessions"] = sessions[email]
+		}
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"status":   "ok",
 		"accounts": status["accounts"],
