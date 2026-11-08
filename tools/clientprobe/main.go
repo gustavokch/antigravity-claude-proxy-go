@@ -2,9 +2,11 @@
 // (scripts/client_drift.py) cannot answer from outside the proxy's own code:
 //
 //	clientprobe cloudcode -proxy http://127.0.0.1:PORT
-//	    Sends loadCodeAssist, fetchAvailableModels, and the conversation start
-//	    agy sends (writeTrajectoryAcls, the title checkpoint, the agent
-//	    streamGenerateContent), all built by the production format.Builder,
+//	    Sends loadCodeAssist, fetchAvailableModels, the control-plane calls
+//	    agy sends around a conversation (fetchAdminControls, fetchUserInfo,
+//	    retrieveUserQuotaSummary, listExperiments, GET cascadeNuxes), and the
+//	    conversation start (writeTrajectoryAcls, the title checkpoint, the
+//	    agent streamGenerateContent), all built by the production code,
 //	    through the given HTTP proxy
 //	    with the proxy's own Cloud Code client and transport, using a token
 //	    Google rejects. The interceptor records the ClientHello, header order
@@ -111,6 +113,19 @@ func probeCloudCode(args []string) (cloudCodeResult, error) {
 		"fetchAvailableModels": func(ctx context.Context) (cloudcode.Response, error) {
 			return client.FetchAvailableModels(ctx, "clientprobe-project")
 		},
+		"fetchAdminControls": func(ctx context.Context) (cloudcode.Response, error) {
+			return client.FetchAdminControls(ctx, "clientprobe-project")
+		},
+		"fetchUserInfo": func(ctx context.Context) (cloudcode.Response, error) {
+			return client.FetchUserInfo(ctx, "clientprobe-project")
+		},
+		"retrieveUserQuotaSummary": func(ctx context.Context) (cloudcode.Response, error) {
+			return client.RetrieveUserQuotaSummary(ctx, "clientprobe-project")
+		},
+		"listExperiments": func(ctx context.Context) (cloudcode.Response, error) {
+			return client.ListExperiments(ctx, "clientprobe-project")
+		},
+		"cascadeNuxes": func(ctx context.Context) (cloudcode.Response, error) { return client.ListCascadeNuxes(ctx) },
 		"writeTrajectoryAcls": func(ctx context.Context) (cloudcode.Response, error) {
 			return client.WriteTrajectoryAcls(ctx, trajectoryID)
 		},
