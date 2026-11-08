@@ -7,11 +7,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"antigravity-go-proxy/internal/ccidentity"
+	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
 )
@@ -190,5 +194,290 @@ func TestCountTokens_AnthropicMirrorAnswers(t *testing.T) {
 	}
 	if upstream.streamCalls != 0 {
 		t.Errorf("upstream generations = %d, want 0", upstream.streamCalls)
+	}
+}
+
+// ccCountBody is a count body as Claude Code's /context sends it (messages,
+// model, tools) plus a system prompt and spacing the forward must keep: the
+// body goes upstream as the client wrote it.
+const ccCountBody = `{"model":"claude-sonnet-5", "system":"be brief <ok>","messages":[{"role":"user","content":"hi & bye"}],"tools":[]}`
+
+// testClock is a clock a test moves by hand.
+type testClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *testClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// estimateOf is what server's estimator answers for body: the count a request
+// that is not forwarded gets.
+func estimateOf(t *testing.T, server *Server, session, model, body string) int {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	return server.tokens.Estimate(session, model, decoded)
+}
+
+// countSeen is one count_tokens request an upstream received.
+type countSeen struct {
+	path, query string
+	header      http.Header
+	body        string
+}
+
+// countUpstream answers every count_tokens request with one status, body and
+// header set, and records what it was sent. Other paths (OpenRouter's catalog
+// warmup) get 404 and are not recorded.
+type countUpstream struct {
+	*httptest.Server
+	mu   sync.Mutex
+	seen []countSeen
+}
+
+func newCountUpstream(t *testing.T, status int, answer string, header http.Header) *countUpstream {
+	t.Helper()
+	upstream := &countUpstream{}
+	upstream.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/count_tokens") {
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		upstream.mu.Lock()
+		upstream.seen = append(upstream.seen, countSeen{path: r.URL.Path, query: r.URL.RawQuery, header: r.Header.Clone(), body: string(body)})
+		upstream.mu.Unlock()
+		for name, values := range header {
+			w.Header()[name] = values
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, answer)
+	}))
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+func (u *countUpstream) requests() []countSeen {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]countSeen(nil), u.seen...)
+}
+
+// ccCountAccount is the OAuth pool account of the Claude Code count tests.
+var ccCountAccount = claudecode.AccountConfig{ID: "acc1", Token: "sk-ant-oat01-count", Enabled: true}
+
+func newCCCountServer(t *testing.T, upstreamURL string, now func() time.Time) (*Server, config.Config) {
+	t.Helper()
+	cfg := config.DefaultConfig()
+	cfg.ClaudeCode = ccPoolConfig(upstreamURL, ccCountAccount)
+	return newCountServer(t, cfg, now), cfg
+}
+
+// ccCountAccountState is the pool's view of ccCountAccount.
+func ccCountAccountState(t *testing.T, server *Server, cfg config.Config) claudecode.AccountSnapshot {
+	t.Helper()
+	pool, _ := server.getOrCreateCCPool(cfg.ClaudeCode)
+	acc, ok := pool.GetAccount(ccCountAccount.ID)
+	if !ok {
+		t.Fatalf("pool has no account %q", ccCountAccount.ID)
+	}
+	return acc.Snapshot()
+}
+
+// The Claude Code count goes out with the count identity and the client's own
+// bytes, and its answer is the client's answer. Its account is released, and
+// the pool's rate-limit state is not read from a count, even one that carried
+// unified headers.
+func TestCountTokens_ClaudeCodeForwardsTheClientsBody(t *testing.T) {
+	upstream := newCountUpstream(t, http.StatusOK, `{"input_tokens":4242}`, http.Header{
+		"Anthropic-Ratelimit-Unified-Status": {"rejected"},
+		"Anthropic-Ratelimit-Unified-Reset":  {strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
+	})
+	server, cfg := newCCCountServer(t, upstream.URL, time.Now)
+
+	got := countOf(t, sendInSession(server.Handler(), countPath, "test-proxy-key", "sess-cc", ccCountBody,
+		http.Header{"User-Agent": {"foreign/1.0"}, "Anthropic-Beta": {"foreign-beta"}}))
+	if got != 4242 {
+		t.Errorf("count = %d, want the upstream's 4242", got)
+	}
+	seen := upstream.requests()
+	if len(seen) != 1 {
+		t.Fatalf("upstream got %d count requests, want 1", len(seen))
+	}
+	r := seen[0]
+	if r.path != "/v1/messages/count_tokens" || r.query != "beta=true" {
+		t.Errorf("upstream target = %s?%s, want /v1/messages/count_tokens?beta=true", r.path, r.query)
+	}
+	if r.body != ccCountBody {
+		t.Errorf("forwarded body:\n%s\nwant the client's bytes:\n%s", r.body, ccCountBody)
+	}
+	for name, want := range map[string]string{
+		"Authorization":               "Bearer sk-ant-oat01-count",
+		"x-api-key":                   "",
+		"x-claude-code-request-class": "auxiliary",
+		"anthropic-beta":              strings.Join(ccidentity.CountTokensBetas, ","),
+		"User-Agent":                  ccidentity.MessagesUserAgent,
+		"X-Stainless-Timeout":         "",
+		"x-claude-code-prompt-id":     "",
+	} {
+		if got := r.header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	state := ccCountAccountState(t, server, cfg)
+	if state.Status != "healthy" || state.RateLimits.Unified != nil {
+		t.Errorf("account status %q, unified %+v: a count must not set rate-limit state", state.Status, state.RateLimits.Unified)
+	}
+	if state.InFlight != 0 {
+		t.Errorf("account in flight = %d, want 0: the count did not release it", state.InFlight)
+	}
+}
+
+// /context sends about 34 counts at once on one session, so on one account.
+// The upstream answers none until all 34 have arrived: a forward that
+// serialized them would leave the first waiting, and it gives up after 5 s so
+// a failure costs one wait, not 34.
+func TestCountTokens_ClaudeCodeBurstIsNotSerialized(t *testing.T) {
+	const burst = 34
+	var arrived atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if arrived.Add(1) == burst {
+			releaseOnce.Do(func() { close(release) })
+		}
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+			releaseOnce.Do(func() { close(release) })
+			http.Error(w, "the burst arrived serialized", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"input_tokens":777}`)
+	}))
+	t.Cleanup(upstream.Close)
+	server, cfg := newCCCountServer(t, upstream.URL, time.Now)
+	handler := server.Handler()
+
+	recorders := make([]*httptest.ResponseRecorder, burst)
+	var wg sync.WaitGroup
+	for i := range burst {
+		wg.Go(func() {
+			recorders[i] = sendInSession(handler, countPath, "test-proxy-key", "sess-burst", ccCountBody, nil)
+		})
+	}
+	wg.Wait()
+	for i, recorder := range recorders {
+		if got := countOf(t, recorder); got != 777 {
+			t.Errorf("count %d = %d, want the upstream's 777: the burst was serialized", i, got)
+		}
+	}
+	if n := arrived.Load(); n != burst {
+		t.Errorf("upstream saw %d counts, want %d", n, burst)
+	}
+	if state := ccCountAccountState(t, server, cfg); state.InFlight != 0 {
+		t.Errorf("account in flight = %d after the burst, want 0", state.InFlight)
+	}
+}
+
+// A 429 on a count cools the account down as one on /v1/messages does; the
+// count itself is estimated, and so is the next, without asking again.
+func TestCountTokens_ClaudeCode429CoolsTheAccountDown(t *testing.T) {
+	upstream := newCountUpstream(t, http.StatusTooManyRequests,
+		`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`, http.Header{"Retry-After": {"120"}})
+	server, cfg := newCCCountServer(t, upstream.URL, time.Now)
+	handler := server.Handler()
+	want := estimateOf(t, server, "sess-cc", "claude-sonnet-5", ccCountBody)
+
+	for i := range 2 {
+		if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "sess-cc", ccCountBody, nil)); got != want {
+			t.Errorf("count %d = %d, want the estimate %d", i, got, want)
+		}
+	}
+	if n := len(upstream.requests()); n != 1 {
+		t.Errorf("upstream asked %d times, want 1: a cooled-down account was asked again", n)
+	}
+	state := ccCountAccountState(t, server, cfg)
+	if state.Status != "cooldown" {
+		t.Errorf("account status = %q, want cooldown", state.Status)
+	}
+	if left := time.Until(state.CooldownUntil); left < 100*time.Second {
+		t.Errorf("cooldown ends in %v, want the 120 s Retry-After", left)
+	}
+}
+
+// 404, 405 and 501 say the upstream does not count tokens: the count is
+// estimated, and the gateway is not asked again for an hour.
+func TestCountTokens_UnsupportedUpstreamIsEstimatedForAnHour(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			upstream := newCountUpstream(t, status, `{"type":"error"}`, nil)
+			clock := &testClock{now: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)}
+			server, _ := newCCCountServer(t, upstream.URL, clock.Now)
+			handler := server.Handler()
+			want := estimateOf(t, server, "", "claude-sonnet-5", ccCountBody)
+			for i, step := range []struct {
+				advance time.Duration
+				asked   int
+			}{
+				{0, 1},                // asked, answered unsupported, marked
+				{59 * time.Minute, 1}, // still marked: estimated without a call
+				{time.Minute, 2},      // the hour is over: asked again
+			} {
+				clock.Advance(step.advance)
+				if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "", ccCountBody, nil)); got != want {
+					t.Errorf("step %d: count = %d, want the estimate %d", i, got, want)
+				}
+				if n := len(upstream.requests()); n != step.asked {
+					t.Errorf("step %d: upstream asked %d times, want %d", i, n, step.asked)
+				}
+			}
+		})
+	}
+}
+
+// Any other failure is estimated for that request only: the next count asks
+// the upstream again.
+func TestCountTokens_FailedForwardEstimatesThatRequestOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		answer string
+	}{
+		{"server error", http.StatusInternalServerError, `{"type":"error"}`},
+		{"bad gateway", http.StatusBadGateway, ``},
+		{"unauthorized", http.StatusUnauthorized, `{"type":"error"}`},
+		{"bad request", http.StatusBadRequest, `{"type":"error"}`},
+		{"no count in a 200", http.StatusOK, `{"tokens":12}`},
+		{"a 200 that is not JSON", http.StatusOK, `nope`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newCountUpstream(t, tc.status, tc.answer, nil)
+			server, _ := newCCCountServer(t, upstream.URL, time.Now)
+			handler := server.Handler()
+			want := estimateOf(t, server, "", "claude-sonnet-5", ccCountBody)
+			for i := range 2 {
+				if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "", ccCountBody, nil)); got != want {
+					t.Errorf("count %d = %d, want the estimate %d", i, got, want)
+				}
+			}
+			if n := len(upstream.requests()); n != 2 {
+				t.Errorf("upstream asked %d times, want 2: this failure must not mark the gateway", n)
+			}
+		})
 	}
 }

@@ -165,6 +165,10 @@ type Server struct {
 	// count; count_tokens estimates from it.
 	tokens *tokencount.Counter
 
+	// countMarks holds the gateways that answered count_tokens 404, 405 or
+	// 501, until they are asked again. The zero value is ready.
+	countMarks countMarks
+
 	// endpointCats holds the fetched model catalogs of custom endpoints that set
 	// discoverModels. Lazily built: tests construct a bare Server.
 	endpointCatalogsOnce sync.Once

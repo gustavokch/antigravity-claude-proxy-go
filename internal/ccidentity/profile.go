@@ -104,11 +104,14 @@ type Turn struct {
 // fields per header, because the capture decides what exists: a named-field
 // struct would need editing every time the client grows or drops a header.
 //
-// The constant header set is deliberately NOT a field here. Three of its values
-// depend on the identity or on operator overrides, so it is a function of the
-// identity — see StaticFor. The metadata key order is not a field either: it is
-// fixed by the declaration order of the struct that encodes it.
+// The constant header set is a function of the identity, not a list: three of
+// its captured values depend on the identity or on operator overrides
+// (User-Agent, X-Stainless-OS, X-Stainless-Runtime-Version). The metadata key
+// order is not a field: it is fixed by the declaration order of the struct
+// that encodes it.
 type Profile struct {
+	// Static returns the constant header set for one identity.
+	Static func(Identity) []Header
 	// Dynamic headers are regenerated on every request.
 	Dynamic []DynamicHeader
 	// Omit lists header names quiet Claude Code never sends. The applier deletes

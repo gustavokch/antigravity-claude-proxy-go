@@ -34,17 +34,23 @@ class RegistryTest(unittest.TestCase):
                 self.assertEqual(drift.read_pin(ROOT, drift.PIN[hello.ja4_pin]), shipped["ja4"])
                 self.assertEqual(drift.read_pin(ROOT, drift.PIN[hello.ja3_pin]), shipped["ja3"])
 
-    def test_beta_list_survives_a_write_into_the_go_source(self):
-        tree = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tree)
+    def test_beta_lists_survive_a_write_into_the_go_source(self):
         source = "internal/ccidentity/defaults.go"
-        (tree / source).parent.mkdir(parents=True)
-        shutil.copy(ROOT / source, tree / source)
-        pin = drift.PIN["claude.betas"]
-        site_only = drift.Pin(pin.name, pin.client, pin.pattern, pin.sites, decode=pin.decode, encode=pin.encode)
-        betas = drift.read_pin(tree, site_only) + ["new-beta-2026-10-29"]
-        drift.write_pin(tree, site_only, betas)
-        self.assertEqual(drift.read_pin(tree, site_only), betas)
+        lists = ("claude.betas", "claude.count_tokens_betas")
+        for name in lists:
+            with self.subTest(pin=name):
+                tree = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, tree)
+                (tree / source).parent.mkdir(parents=True)
+                shutil.copy(ROOT / source, tree / source)
+                pin = drift.PIN[name]
+                site_only = drift.Pin(pin.name, pin.client, pin.pattern, pin.sites, decode=pin.decode, encode=pin.encode)
+                betas = drift.read_pin(tree, site_only) + ["new-beta-2026-10-29"]
+                drift.write_pin(tree, site_only, betas)
+                self.assertEqual(drift.read_pin(tree, site_only), betas)
+                # The two lists sit in one file; writing one must not touch the other.
+                other = drift.PIN[lists[1] if name == lists[0] else lists[0]]
+                self.assertEqual(drift.read_pin(tree, other), drift.read_pin(ROOT, other))
 
 
 class WritePinTest(unittest.TestCase):

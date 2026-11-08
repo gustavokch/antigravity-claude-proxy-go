@@ -672,6 +672,13 @@ PINS: tuple[Pin, ...] = (
     ), claude_betas,
         decode=lambda text: re.findall(r'"([^"]+)"', text),
         encode=lambda values: "\n".join(f'\t"{value}",' for value in values)),
+    # Claude Code sends count_tokens only from /context, which the --print
+    # capture never reaches, so no observe: a /context recapture moves it
+    # (.reference/claude-code-count-tokens-*.jsonl).
+    Pin("claude.count_tokens_betas", "claude", BETA_LIST, (
+        Site("internal/ccidentity/defaults.go", "var CountTokensBetas = []string{\n<<V>>\n}"),
+    ), decode=lambda text: re.findall(r'"([^"]+)"', text),
+        encode=lambda values: "\n".join(f'\t"{value}",' for value in values)),
     # Read from the installed binary by analyze_advisor_beta, not from the
     # capture: the capture never turns the advisor on.
     Pin("claude.advisor_beta", "claude", ADVISOR_BETA, (
