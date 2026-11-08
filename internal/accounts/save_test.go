@@ -8,9 +8,10 @@ import (
 	"testing"
 )
 
-// Every UpdateSubscription saves. Concurrent saves must neither tear the file
-// nor let an older snapshot land after a newer one: once all of them return,
-// the file holds the tier the manager holds.
+// UpdateSubscription saves when the tier changes, and each call here sets a
+// new tier. Concurrent saves must neither tear the file nor let an older
+// snapshot land after a newer one: once all of them return, the file holds
+// the tier the manager holds.
 func TestConcurrentSavesKeepTheNewestSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "accounts.json")
 	manager, err := New(Options{Accounts: []*Account{testAccount("a@example.com")}, ConfigPath: path})

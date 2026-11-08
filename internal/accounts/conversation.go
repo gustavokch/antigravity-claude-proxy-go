@@ -170,28 +170,25 @@ func (manager *Manager) setPinWait(d time.Duration) {
 }
 
 // addPinLocked stores a new pin. Idle pins are swept here, once per new
-// conversation rather than on every request. At the cap the least recently
-// used pins are evicted.
+// conversation rather than on every request, and the same pass finds the
+// least recently used pin, which is evicted at the cap. Every pin is stored
+// here, so the map never holds more than maxPins.
 func (manager *Manager) addPinLocked(session string, entry *pin) {
 	if manager.pins == nil {
 		manager.pins = make(map[string]*pin)
 	}
+	var oldest *pin
+	oldestKey := ""
 	for key, existing := range manager.pins {
-		if entry.lastSeen.Sub(existing.lastSeen) > pinIdleTTL {
+		switch {
+		case entry.lastSeen.Sub(existing.lastSeen) > pinIdleTTL:
 			delete(manager.pins, key)
+		case oldest == nil || existing.lastSeen.Before(oldest.lastSeen):
+			oldest, oldestKey = existing, key
 		}
 	}
-	if excess := len(manager.pins) + 1 - maxPins; excess > 0 {
-		keys := make([]string, 0, len(manager.pins))
-		for key := range manager.pins {
-			keys = append(keys, key)
-		}
-		slices.SortFunc(keys, func(a, b string) int {
-			return manager.pins[a].lastSeen.Compare(manager.pins[b].lastSeen)
-		})
-		for _, key := range keys[:excess] {
-			delete(manager.pins, key)
-		}
+	if len(manager.pins) >= maxPins {
+		delete(manager.pins, oldestKey)
 	}
 	manager.pins[session] = entry
 }
