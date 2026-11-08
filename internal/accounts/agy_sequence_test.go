@@ -16,7 +16,8 @@ import (
 // agyGenerationRuns reads .reference/client-drift/agy.jsonl as call names,
 // split into its generation runs: a run ends with its last agent call. A
 // generation is named by its requestType, any other call by its RPC name.
-// A recapture that changes agy's sequence fails the tests that read it.
+// A recapture that drops an endpoint the proxy sends fails the tests that
+// read it.
 func agyGenerationRuns(t *testing.T) [][]string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", ".reference", "client-drift", "agy.jsonl"))
@@ -49,32 +50,19 @@ func agyGenerationRuns(t *testing.T) [][]string {
 	return append(runs, run)
 }
 
-// containsSteps reports whether run holds steps in order, the calls of each
-// step in any order, with other calls of agy's between them.
-func containsSteps(run []string, steps [][]string) bool {
-	position := 0
+// missingCalls lists the calls of steps that run never makes. Only the set is
+// compared: runs of one agy version reorder calls beyond its concurrent
+// groups and send retrieveUserQuotaSummary a varying number of times.
+func missingCalls(run []string, steps [][]string, except ...string) []string {
+	var missing []string
 	for _, step := range steps {
-		end := position
 		for _, call := range step {
-			index := slices.Index(run[position:], call)
-			if index < 0 {
-				return false
+			if !slices.Contains(run, call) && !slices.Contains(except, call) && !slices.Contains(missing, call) {
+				missing = append(missing, call)
 			}
-			end = max(end, position+index+1)
-		}
-		position = end
-	}
-	return true
-}
-
-func withoutCall(steps [][]string, name string) [][]string {
-	var out [][]string
-	for _, step := range steps {
-		if kept := slices.DeleteFunc(slices.Clone(step), func(call string) bool { return call == name }); len(kept) > 0 {
-			out = append(out, kept)
 		}
 	}
-	return out
+	return missing
 }
 
 // promptRequest is a first prompt of Claude Code's main loop: typed text and
@@ -123,10 +111,9 @@ func sendTurn(t *testing.T, dispatcher *Dispatcher, session string, request map[
 }
 
 // A session's first prompt sends agy's start burst, the turn calls and the
-// model call, and the tool continuation after it only the model call: what
-// both generation runs of agy.jsonl show, with agy's own extra calls between
-// them (repeated startup calls, writeTrajectoryAcls, the title checkpoint).
-// cascadeNuxes is in the later run only.
+// model call, and the tool continuation after it only the model call, in
+// that order. Every endpoint of them is in both generation runs of agy.jsonl
+// (cascadeNuxes in the later run only); the capture's order is not compared.
 func TestDispatcherFollowsAgysCallSequence(t *testing.T) {
 	t.Parallel()
 	want := slices.Concat(agyStartBurst, agyTurn, [][]string{{"agent"}, {"agent"}})
@@ -134,11 +121,11 @@ func TestDispatcherFollowsAgysCallSequence(t *testing.T) {
 	if len(runs) != 2 {
 		t.Fatalf("agy.jsonl holds %d generation runs, want 2: %v", len(runs), runs)
 	}
-	if !containsSteps(runs[0], withoutCall(want, "cascadeNuxes")) {
-		t.Fatalf("agy's first run %v does not hold %v", runs[0], want)
+	if missing := missingCalls(runs[0], want, "cascadeNuxes"); len(missing) > 0 {
+		t.Fatalf("agy's first run %v never calls %v", runs[0], missing)
 	}
-	if !containsSteps(runs[1], want) {
-		t.Fatalf("agy's second run %v does not hold %v", runs[1], want)
+	if missing := missingCalls(runs[1], want); len(missing) > 0 {
+		t.Fatalf("agy's second run %v never calls %v", runs[1], missing)
 	}
 
 	const email = "a@example.com"

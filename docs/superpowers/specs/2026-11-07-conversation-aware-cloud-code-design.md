@@ -97,6 +97,8 @@ From the two generation runs in `agy.jsonl` (calls in braces were seen in both o
 
 The first turn of a session on an account gets the burst followed by the per-turn calls, as in the capture. `writeTrajectoryAcls` and the title checkpoint keep their current behaviour (`startConversation`, `dispatcher.go:573`).
 
+The proxy sends this order, the order of the agy 1.5.2 baseline. Checks against agy compare the set of endpoints, not their order: captures of the same agy version (1.5.2, 2026-11-08) reorder calls beyond the braced groups and send `retrieveUserQuotaSummary` 8 or 9 times, so only the set is stable.
+
 ### 5.3 Triggers (`internal/accounts/controlplane.go`)
 
 - `beginConversation(ctx, session, account, client, project)`: runs when `started[account]` is false for the session's pin, then sets it. Concurrent requests of one session on one account share one run (single-flight keyed by session + email).
@@ -175,14 +177,14 @@ Unit tests, deterministic (the Manager's `now` func, fake `CloudClient`, `httpte
 
 - **Affinity:** pin creation and reuse; short limit waits on the pin; long limit, quota, failure lock and 404 lock overflow; overflow kept after home recovers; invalid, disabled and removed home rebinds while healthy overflow entries stay; 1 h expiry; eviction above the cap; each strategy honours the exclusion set; no session key keeps today's selection.
 - **Control plane:** burst once per (session, account) under concurrent requests; burst again for an overflow account; per-turn calls for a new prompt with tools, none for tool continuations or tool-less requests; failures do not block generation and leave `started` unset; `settle` no longer calls `retrieveUserQuotaSummary`; responses update subscription, project and quota.
-- **Wire:** `TestRequestHeadsOnTheWireMatchAgy` extended to the four new calls (header order, body bytes). A sequence test reads `.reference/client-drift/agy.jsonl`, takes the two generation runs, and checks the calls recorded by the fake client against them, accepting any order inside the concurrent groups of 5.2.
+- **Wire:** `TestRequestHeadsOnTheWireMatchAgy` extended to the four new calls (header order, body bytes). A sequence test checks that the calls recorded by the fake client follow the 5.2 sequences in order (any order inside a braced group), and that every endpoint of them appears in each of the two generation runs of `.reference/client-drift/agy.jsonl` (`cascadeNuxes` in the later run only); it does not compare order against the capture (5.2).
 - **tokencount:** ratio converges on synthetic observations; continuing-conversation estimate; full estimate after a changed prefix; image rules per family; TTL and cap.
 - **count_tokens route:** each gateway row of 6.1; 404 → estimate plus 1 h mark; 5xx → estimate without a mark; Claude Code forward matches the 6.2 identity (header order and values compared with `.reference/claude-code-count-tokens-20261107.jsonl`, no injected body keys); a burst of 33 concurrent counts completes without serializing; `TestGateScopeIsTheManagementSurface` and `TestLoggingMiddleware` updated from the 501.
 
 ## 9. Verification
 
 - Smoke run with real accounts and a separate config dir (`ANTIGRAVITY_CONFIG_DIR`, per `.trail/learnings/2026-10-20-cc-prev-req-comes-from-the-gustavo.md`): an interactive Claude Code session with tool use, a second concurrent session, and a forced long rate limit. Check pins, overflow and rebind in the logs and `activeSessions` in `/api/accounts`.
-- Capture the proxy's Cloud Code traffic through mitmdump (`tools/clientprobe` setup used by `scripts/client_drift.py`) and compare the per-conversation sequence with `agy.jsonl`. `client_drift.py` `analyze_agy` gains an endpoint-sequence comparison next to its labels report.
+- Capture the proxy's Cloud Code traffic through mitmdump (`tools/clientprobe` setup used by `scripts/client_drift.py`) and compare it with `agy.jsonl`. `client_drift.py` `analyze_agy` compares the set of agy's Cloud Code endpoints with the baseline's and raises a manual item, naming added and removed endpoints, only when the sets differ; runs of one agy version reorder calls and vary the count of `retrieveUserQuotaSummary` (5.2).
 - JA4 gate (`AGENTS.md`): tshark on a capture of the proxy, including the new GET.
 - count_tokens: numbers instead of 501; log each estimate next to the next real input count of the same session to check accuracy.
 

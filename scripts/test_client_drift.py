@@ -190,40 +190,54 @@ class CompareTest(unittest.TestCase):
             "so its shape is unchecked",
         ])
 
-    def test_agy_sequence_ignores_order_inside_a_concurrent_group(self):
-        # agy sends fetchAdminControls, fetchUserInfo and retrieveUserQuotaSummary
-        # together; agy.jsonl shows them in both orders within one run.
-        first = [record(f"/v1internal:{name}", []) for name in (
-            "loadCodeAssist", "fetchAdminControls", "fetchUserInfo", "retrieveUserQuotaSummary", "fetchAvailableModels")]
-        second = [record(f"/v1internal:{name}", []) for name in (
-            "loadCodeAssist", "retrieveUserQuotaSummary", "fetchAdminControls", "fetchUserInfo", "fetchAvailableModels")]
-        self.assertEqual(drift.agy_call_sequence(first), drift.agy_call_sequence(second))
-        self.assertEqual(drift.agy_call_sequence(first), [
-            "loadCodeAssist", "fetchAdminControls", "fetchUserInfo", "retrieveUserQuotaSummary", "fetchAvailableModels"])
+    AGY_BASELINE = ("loadCodeAssist", "fetchUserInfo", "retrieveUserQuotaSummary", "listExperiments",
+                    "cascadeNuxes", "agent")
 
-    def test_a_changed_agy_sequence_needs_a_human(self):
-        # The baseline is rewritten only when a pin changes, so a reorder alone
-        # would leave the start-burst sequence test on agy's old order.
-        def calls(*names):
-            out = []
-            for name in names:
-                if name == "cascadeNuxes":
-                    out.append(dict(record("/v1internal/cascadeNuxes?page_size=1000", []), method="GET"))
-                else:
-                    out.append(record(f"/v1internal:{name}", []))
-            return out
-        baseline = calls("loadCodeAssist", "fetchUserInfo", "listExperiments", "cascadeNuxes")
-        moved = calls("loadCodeAssist", "listExperiments", "fetchUserInfo", "cascadeNuxes")
+    @staticmethod
+    def agy_calls(*names):
+        out = []
+        for name in names:
+            if name == "cascadeNuxes":
+                out.append(dict(record("/v1internal/cascadeNuxes?page_size=1000", []), method="GET"))
+            elif name == "agent":
+                out.append(record("/v1internal:streamGenerateContent?alt=sse", [], {"requestType": "agent"}))
+            else:
+                out.append(record(f"/v1internal:{name}", []))
+        return out
+
+    def agy_endpoint_items(self, *observed_names):
         path = Path(tempfile.mkdtemp()) / "agy.jsonl"
         self.addCleanup(shutil.rmtree, path.parent)
-        path.write_text("".join(json.dumps(item) + "\n" for item in baseline), encoding="utf-8")
-        for observed, changed in ((baseline, False), (moved, True)):
-            result = drift.Result("agy", "1.5.2", drift.Capture(observed, {}))
-            with mock.patch.object(drift, "analyze_generic"), mock.patch.object(drift, "baseline_path", return_value=path):
-                drift.analyze_agy(ROOT, result, drift.Capture(observed, {}), None, None, [])
-            found = [item for item in result.manual if item.startswith("agy's Cloud Code call sequence changed")]
-            self.assertEqual(bool(found), changed, result.manual)
-        self.assertIn("baseline loadCodeAssist → fetchUserInfo → listExperiments → cascadeNuxes", found[0])
+        path.write_text("".join(json.dumps(item) + "\n" for item in self.agy_calls(*self.AGY_BASELINE)),
+                        encoding="utf-8")
+        observed = self.agy_calls(*observed_names)
+        result = drift.Result("agy", "1.5.2", drift.Capture(observed, {}))
+        with mock.patch.object(drift, "analyze_generic"), mock.patch.object(drift, "baseline_path", return_value=path):
+            drift.analyze_agy(ROOT, result, drift.Capture(observed, {}), None, None, [])
+        return [item for item in result.manual if item.startswith("agy's Cloud Code endpoints changed")]
+
+    def test_agy_endpoints_name_calls_without_the_prefix(self):
+        self.assertEqual(drift.agy_endpoints(self.agy_calls(*self.AGY_BASELINE)), {
+            "loadCodeAssist", "fetchUserInfo", "retrieveUserQuotaSummary", "listExperiments",
+            "cascadeNuxes", "streamGenerateContent (agent)"})
+
+    def test_reordered_calls_and_another_quota_summary_are_no_change(self):
+        # Runs of the same agy (1.5.2) reorder calls beyond its concurrent
+        # groups and send retrieveUserQuotaSummary 8 or 9 times.
+        self.assertEqual(self.agy_endpoint_items(
+            "retrieveUserQuotaSummary", "listExperiments", "loadCodeAssist", "retrieveUserQuotaSummary",
+            "fetchUserInfo", "agent", "cascadeNuxes"), [])
+
+    def test_an_added_agy_endpoint_needs_a_human(self):
+        found = self.agy_endpoint_items(*self.AGY_BASELINE, "fetchAdminControls")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("added fetchAdminControls", found[0])
+        self.assertIn("internal/accounts/controlplane.go", found[0])
+
+    def test_a_removed_agy_endpoint_needs_a_human(self):
+        found = self.agy_endpoint_items(*(name for name in self.AGY_BASELINE if name != "listExperiments"))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("removed listExperiments", found[0])
 
 
 class AdvisorBetaTest(unittest.TestCase):
