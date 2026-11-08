@@ -442,3 +442,29 @@ func TestInheritKeepsStickySessions(t *testing.T) {
 		t.Errorf("on-gone after the rebuild = %q, want a (its account left the pool)", got.ID)
 	}
 }
+
+// A 401 refreshes the token only while the pool still holds the token that was
+// rejected: a request sent before another one rotated it must not rotate it
+// again, since each rotation spends a refresh token and rewrites config.json.
+func TestRefreshRejectedRotatesOncePerRejectedToken(t *testing.T) {
+	p, _ := newTestPool(t, account("a", 1))
+	var calls atomic.Int32
+	p.SetTokenRefresher(func(context.Context, string) (TokenSet, error) {
+		n := calls.Add(1)
+		return TokenSet{AccessToken: fmt.Sprintf("at-%d", n), RefreshToken: fmt.Sprintf("rt-%d", n), ExpiresAt: testStart.Add(240 * time.Hour)}, nil
+	})
+	for _, tc := range []struct {
+		rejected, want string
+		calls          int32
+	}{
+		{"at-a", "at-1", 1}, // the first 401 rotates
+		{"at-a", "at-1", 1}, // a late 401 for the same old token gets the new one
+		{"at-1", "at-2", 2}, // a 401 for the current token rotates again
+	} {
+		got, err := p.RefreshRejected(context.Background(), "a", tc.rejected)
+		if err != nil || got.Token != tc.want || calls.Load() != tc.calls {
+			t.Errorf("RefreshRejected(%q) = %q, %v after %d refreshes; want %q after %d",
+				tc.rejected, got.Token, err, calls.Load(), tc.want, tc.calls)
+		}
+	}
+}

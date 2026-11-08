@@ -303,22 +303,38 @@ func (p *AccountPool) pin(key, id string) {
 // has not expired, so a token endpoint hiccup a day before expiry costs no
 // request. An account whose grant is gone returns ErrNeedsLogin.
 func (p *AccountPool) EnsureFresh(ctx context.Context, id string) (Account, error) {
-	return p.refresh(ctx, id, false)
+	return p.refresh(ctx, id, false, "")
 }
 
 // ForceRefresh exchanges the account's refresh token now, whatever its access
-// token's expiry: after an upstream 401, or on demand from the management API.
-// It joins a refresh already in progress rather than starting a second one.
+// token's expiry, on demand from the management API. It joins a refresh
+// already in progress rather than starting a second one.
 func (p *AccountPool) ForceRefresh(ctx context.Context, id string) (Account, error) {
-	return p.refresh(ctx, id, true)
+	return p.refresh(ctx, id, true, "")
 }
 
-func (p *AccountPool) refresh(ctx context.Context, id string, force bool) (Account, error) {
+// RefreshRejected refreshes the account after the backend refused the access
+// token rejected, joining a refresh in progress as ForceRefresh does. When the
+// pool already holds another token, a request sent before another one rotated
+// it, the account comes back as it is: each rotation spends a refresh token
+// and rewrites config.json.
+func (p *AccountPool) RefreshRejected(ctx context.Context, id, rejected string) (Account, error) {
+	return p.refresh(ctx, id, true, rejected)
+}
+
+// refresh serves EnsureFresh (force false), ForceRefresh (force true) and
+// RefreshRejected (force true with the rejected token).
+func (p *AccountPool) refresh(ctx context.Context, id string, force bool, rejected string) (Account, error) {
 	p.mu.Lock()
 	st, ok := p.accounts[id]
 	if !ok {
 		p.mu.Unlock()
 		return Account{}, ErrAccountNotFound
+	}
+	if rejected != "" && st.Token != "" && st.Token != rejected {
+		acc := st.Account
+		p.mu.Unlock()
+		return acc, nil
 	}
 	if !force {
 		if st.needsLogin {

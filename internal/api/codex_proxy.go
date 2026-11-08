@@ -290,7 +290,7 @@ func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.R
 			// An access token can be revoked before it expires, and a fresh
 			// one fixes that: refresh once and resend on the same account.
 			reply = readCodexReply(resp)
-			refreshed, refreshErr := pool.ForceRefresh(ctx, acc.ID)
+			refreshed, refreshErr := pool.RefreshRejected(ctx, acc.ID, acc.Token)
 			if refreshErr == nil {
 				acc, reply = refreshed, nil
 				resp, err = client.Send(ctx, call.send(acc, cfg.Identity))
