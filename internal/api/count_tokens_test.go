@@ -18,6 +18,8 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
+	"antigravity-go-proxy/internal/kimi"
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 const countPath = "/v1/messages/count_tokens"
@@ -479,5 +481,302 @@ func TestCountTokens_FailedForwardEstimatesThatRequestOnly(t *testing.T) {
 				t.Errorf("upstream asked %d times, want 2: this failure must not mark the gateway", n)
 			}
 		})
+	}
+}
+
+// OpenRouter counts with the key and attribution its messages forward sends,
+// for the model the route chose after the mapping.
+func TestCountTokens_ForwardsToOpenRouter(t *testing.T) {
+	upstream := newCountUpstream(t, http.StatusOK, `{"input_tokens":4321}`, nil)
+	cfg := config.DefaultConfig()
+	cfg.OpenRouter = config.OpenRouterConfig{
+		Enabled: true, BaseURL: upstream.URL + "/api/v1", APIKey: "k-or",
+		Allowlist: []config.OpenRouterModelConfig{{ID: "vendor/model-x", Alias: "model-x", Enabled: true}},
+	}
+	cfg.ModelMapping = map[string]any{"my-alias": "model-x"}
+	server := newCountServer(t, cfg, time.Now)
+	server.appSpoofActivated = true
+
+	body := `{"model":"my-alias","messages":[{"role":"user","content":"a < b"}]}`
+	got := countOf(t, sendInSession(server.Handler(), countPath, "test-proxy-key", "", body,
+		http.Header{"Anthropic-Version": {"2023-06-01"}, "Anthropic-Beta": {"token-counting-2024-11-01"}}))
+	if got != 4321 {
+		t.Errorf("count = %d, want the upstream's 4321", got)
+	}
+	seen := upstream.requests()
+	if len(seen) != 1 {
+		t.Fatalf("upstream got %d count requests, want 1", len(seen))
+	}
+	r := seen[0]
+	if r.path != "/api/v1/messages/count_tokens" {
+		t.Errorf("path = %q, want /api/v1/messages/count_tokens", r.path)
+	}
+	for name, want := range map[string]string{
+		"Authorization":                     "Bearer k-or",
+		"X-Api-Key":                         "k-or",
+		"Anthropic-Version":                 "2023-06-01",
+		"Anthropic-Beta":                    "token-counting-2024-11-01",
+		openrouter.SpoofAppTitleHeader:      openrouter.DefaultSpoofAppTitle,
+		openrouter.SpoofAppRefererHeader:    openrouter.DefaultSpoofAppReferer,
+		openrouter.SpoofAppCategoriesHeader: openrouter.DefaultSpoofAppCategories,
+	} {
+		if got := r.header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if want := `{"model":"vendor/model-x","messages":[{"role":"user","content":"a < b"}]}`; r.body != want {
+		t.Errorf("body = %s, want %s", r.body, want)
+	}
+}
+
+func TestCountTokens_ForwardsToKimi(t *testing.T) {
+	far := time.Now().Add(24 * time.Hour)
+	for _, tc := range []struct {
+		name               string
+		oauth              bool
+		wantPath, wantAuth string
+		wantUA, wantMsh    string
+	}{
+		{"api key", false, "/anthropic/v1/messages/count_tokens", "Bearer k-kimi", "", ""},
+		{"kimi code login", true, "/coding/v1/messages/count_tokens", "Bearer kimi-oauth-token", "KimiCLI/" + kimi.CLIVersion, "kimi_cli"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newCountUpstream(t, http.StatusOK, `{"input_tokens":1111}`, nil)
+			cfg := config.DefaultConfig()
+			cfg.Kimi = config.KimiConfig{
+				Enabled: true, BaseURL: upstream.URL + "/anthropic", APIKey: "k-kimi",
+				Allowlist: []config.KimiModelConfig{{ID: "kimi-k2", Alias: "k2", Enabled: true}},
+			}
+			if tc.oauth {
+				cfg.Kimi.OAuth = &config.KimiOAuthConfig{Token: "kimi-oauth-token", ExpiresAt: &far, BaseURL: upstream.URL + "/coding/v1"}
+			}
+			server := newCountServer(t, cfg, time.Now)
+
+			body := `{"model":"k2","messages":[{"role":"user","content":"hi"}]}`
+			got := countOf(t, sendInSession(server.Handler(), countPath, "test-proxy-key", "", body,
+				http.Header{"Anthropic-Version": {"2023-06-01"}}))
+			if got != 1111 {
+				t.Errorf("count = %d, want the upstream's 1111", got)
+			}
+			seen := upstream.requests()
+			if len(seen) != 1 {
+				t.Fatalf("upstream got %d count requests, want 1", len(seen))
+			}
+			r := seen[0]
+			if r.path != tc.wantPath {
+				t.Errorf("path = %q, want %q", r.path, tc.wantPath)
+			}
+			if got := r.header.Get("Authorization"); got != tc.wantAuth {
+				t.Errorf("Authorization = %q, want %q", got, tc.wantAuth)
+			}
+			if got := r.header.Get("X-Api-Key"); got != "" {
+				t.Errorf("x-api-key = %q: the proxy key reached Kimi", got)
+			}
+			if tc.wantUA != "" && r.header.Get("User-Agent") != tc.wantUA {
+				t.Errorf("User-Agent = %q, want %q", r.header.Get("User-Agent"), tc.wantUA)
+			}
+			if got := r.header.Get("X-Msh-Platform"); got != tc.wantMsh {
+				t.Errorf("X-Msh-Platform = %q, want %q", got, tc.wantMsh)
+			}
+			if got := r.header.Get("Anthropic-Version"); got != "2023-06-01" {
+				t.Errorf("anthropic-version = %q, want the client's", got)
+			}
+			if want := `{"model":"kimi-k2","messages":[{"role":"user","content":"hi"}]}`; r.body != want {
+				t.Errorf("body = %s, want %s", r.body, want)
+			}
+		})
+	}
+}
+
+// A custom endpoint is asked at its messages URL with /messages replaced by
+// /messages/count_tokens, with its key and the client's bytes. An endpoint
+// whose URL names no messages route has nothing to ask and is estimated.
+func TestCountTokens_ForwardsToCustomEndpoints(t *testing.T) {
+	const body = `{"model":"relay-model",  "messages":[{"role":"user","content":"a < b"}]}`
+	for _, tc := range []struct {
+		name     string
+		suffix   string // appended to the upstream URL to make the endpoint URL
+		wantPath string // "" when the endpoint has no count route
+	}{
+		{"messages URL", "/v1/messages", "/v1/messages/count_tokens"},
+		{"prefixed messages URL with a slash", "/anthropic/v1/messages/", "/anthropic/v1/messages/count_tokens"},
+		{"bare host", "", "/v1/messages/count_tokens"},
+		{"v1 base", "/v1", "/v1/messages/count_tokens"},
+		{"OpenAI-format URL", "/v1/chat/completions", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newCountUpstream(t, http.StatusOK, `{"input_tokens":2468}`, nil)
+			cfg := config.DefaultConfig()
+			cfg.CustomEndpoints = map[string]config.EndpointConfig{
+				"relay-model": {URL: upstream.URL + tc.suffix, APIKey: "ck"},
+			}
+			server := newCountServer(t, cfg, time.Now)
+
+			got := countOf(t, sendInSession(server.Handler(), countPath, "test-proxy-key", "", body, nil))
+			seen := upstream.requests()
+			if tc.wantPath == "" {
+				if want := estimateOf(t, server, "", "relay-model", body); got != want {
+					t.Errorf("count = %d, want the estimate %d", got, want)
+				}
+				if len(seen) != 0 {
+					t.Errorf("upstream got %d count requests, want none", len(seen))
+				}
+				return
+			}
+			if got != 2468 {
+				t.Errorf("count = %d, want the upstream's 2468", got)
+			}
+			if len(seen) != 1 {
+				t.Fatalf("upstream got %d count requests, want 1", len(seen))
+			}
+			r := seen[0]
+			if r.path != tc.wantPath || r.query != "" {
+				t.Errorf("target = %s?%s, want %s", r.path, r.query, tc.wantPath)
+			}
+			for name, want := range map[string]string{
+				"Authorization":     "Bearer ck",
+				"X-Api-Key":         "ck",
+				"Anthropic-Version": "2023-06-01",
+			} {
+				if got := r.header.Get(name); got != want {
+					t.Errorf("%s = %q, want %q", name, got, want)
+				}
+			}
+			if r.body != body {
+				t.Errorf("body = %s, want the client's bytes %s", r.body, body)
+			}
+		})
+	}
+}
+
+// A keyless Anthropic-shaped endpoint is one the messages forward normalizes;
+// its count carries the count identity Claude Code sends, not the caller's.
+func TestCountTokens_NormalizedCustomEndpointSendsTheCountIdentity(t *testing.T) {
+	upstream := newCountUpstream(t, http.StatusOK, `{"input_tokens":1357}`, nil)
+	cfg := config.DefaultConfig()
+	cfg.CustomEndpoints = map[string]config.EndpointConfig{"relay-model": {URL: upstream.URL + "/v1/messages"}}
+	server := newCountServer(t, cfg, time.Now)
+
+	body := `{"model":"relay-model","messages":[{"role":"user","content":"hi"}],"tools":[]}`
+	got := countOf(t, sendInSession(server.Handler(), countPath, "test-proxy-key", "sess-relay", body,
+		http.Header{"User-Agent": {"foreign/1.0"}, "X-Stainless-Timeout": {"600"}}))
+	if got != 1357 {
+		t.Errorf("count = %d, want the upstream's 1357", got)
+	}
+	seen := upstream.requests()
+	if len(seen) != 1 {
+		t.Fatalf("upstream got %d count requests, want 1", len(seen))
+	}
+	r := seen[0]
+	if r.path != "/v1/messages/count_tokens" || r.query != "beta=true" {
+		t.Errorf("target = %s?%s, want /v1/messages/count_tokens?beta=true", r.path, r.query)
+	}
+	for name, want := range map[string]string{
+		"x-claude-code-request-class": "auxiliary",
+		"anthropic-beta":              strings.Join(ccidentity.CountTokensBetas, ","),
+		"User-Agent":                  ccidentity.MessagesUserAgent,
+		"x-app":                       "cli",
+		"X-Stainless-Timeout":         "",
+		"x-claude-code-prompt-id":     "",
+		"Authorization":               "",
+		"x-api-key":                   "",
+	} {
+		if got := r.header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if r.body != body {
+		t.Errorf("body = %s, want the client's bytes %s", r.body, body)
+	}
+}
+
+// One custom endpoint's 404 marks that endpoint, not every custom endpoint.
+func TestCountTokens_UnsupportedMarkCoversOneCustomEndpoint(t *testing.T) {
+	unsupported := newCountUpstream(t, http.StatusNotFound, `{}`, nil)
+	counting := newCountUpstream(t, http.StatusOK, `{"input_tokens":4321}`, nil)
+	cfg := config.DefaultConfig()
+	cfg.CustomEndpoints = map[string]config.EndpointConfig{
+		"model-a": {URL: unsupported.URL + "/v1/messages", APIKey: "ka"},
+		"model-b": {URL: counting.URL + "/v1/messages", APIKey: "kb"},
+	}
+	server := newCountServer(t, cfg, time.Now)
+	handler := server.Handler()
+	bodyA := `{"model":"model-a","messages":[{"role":"user","content":"hi"}]}`
+	bodyB := `{"model":"model-b","messages":[{"role":"user","content":"hi"}]}`
+	wantA := estimateOf(t, server, "", "model-a", bodyA)
+
+	for i := range 2 {
+		if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "", bodyA, nil)); got != wantA {
+			t.Errorf("round %d: model-a count = %d, want the estimate %d", i, got, wantA)
+		}
+		if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "", bodyB, nil)); got != 4321 {
+			t.Errorf("round %d: model-b count = %d, want the upstream's 4321", i, got)
+		}
+	}
+	if n := len(unsupported.requests()); n != 1 {
+		t.Errorf("unsupported endpoint asked %d times, want 1: its 404 marks it", n)
+	}
+	if n := len(counting.requests()); n != 2 {
+		t.Errorf("counting endpoint asked %d times, want 2: another endpoint's mark must not cover it", n)
+	}
+}
+
+// A gateway that cannot be reached is estimated; the client still gets a 200.
+func TestCountTokens_UnreachableUpstreamIsEstimated(t *testing.T) {
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+	for _, tc := range []struct {
+		name      string
+		configure func(*config.Config)
+		model     string
+	}{
+		{"openrouter", func(c *config.Config) {
+			c.OpenRouter = config.OpenRouterConfig{Enabled: true, BaseURL: deadURL, APIKey: "k",
+				Allowlist: []config.OpenRouterModelConfig{{ID: "vendor/model-x", Enabled: true}}}
+		}, "vendor/model-x"},
+		{"kimi", func(c *config.Config) {
+			c.Kimi = config.KimiConfig{Enabled: true, BaseURL: deadURL, APIKey: "k",
+				Allowlist: []config.KimiModelConfig{{ID: "kimi-k2", Enabled: true}}}
+		}, "kimi-k2"},
+		{"custom", func(c *config.Config) {
+			c.CustomEndpoints = map[string]config.EndpointConfig{"relay-model": {URL: deadURL + "/v1/messages", APIKey: "k"}}
+		}, "relay-model"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			tc.configure(&cfg)
+			server := newCountServer(t, cfg, time.Now)
+			body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, tc.model)
+			want := estimateOf(t, server, "", tc.model, body)
+			if got := countOf(t, sendInSession(server.Handler(), countPath, "test-proxy-key", "", body, nil)); got != want {
+				t.Errorf("count = %d, want the estimate %d", got, want)
+			}
+		})
+	}
+}
+
+func TestCustomCountURL(t *testing.T) {
+	for _, tc := range []struct{ endpoint, want string }{
+		{"https://relay.example/v1/messages", "https://relay.example/v1/messages/count_tokens"},
+		{"https://relay.example/anthropic/v1/messages/", "https://relay.example/anthropic/v1/messages/count_tokens"},
+		{"https://relay.example/v1/messages?region=eu", "https://relay.example/v1/messages/count_tokens?region=eu"},
+		{"https://relay.example/v1/messages/count_tokens", "https://relay.example/v1/messages/count_tokens"},
+		{"https://api.anthropic.com", "https://api.anthropic.com/v1/messages/count_tokens"},
+		{"https://relay.example/v1", "https://relay.example/v1/messages/count_tokens"},
+		{"https://relay.example/v1/chat/completions", ""},
+		{"https://relay.example/openai", ""},
+		{"://no-scheme", ""},
+	} {
+		got, ok := customCountURL(tc.endpoint)
+		if tc.want == "" {
+			if ok {
+				t.Errorf("customCountURL(%q) = %q, want no count route", tc.endpoint, got)
+			}
+			continue
+		}
+		if !ok || got.String() != tc.want {
+			t.Errorf("customCountURL(%q) = %v, %v; want %q", tc.endpoint, got, ok, tc.want)
+		}
 	}
 }

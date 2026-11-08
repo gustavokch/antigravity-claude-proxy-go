@@ -1441,13 +1441,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 			out.Body = io.NopCloser(bytes.NewReader(outBody))
 			out.ContentLength = int64(len(outBody))
 
-			if endpoint.APIKey != "" {
-				out.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
-				out.Header.Set("x-api-key", endpoint.APIKey)
-			} else {
-				out.Header.Del("Authorization")
-				out.Header.Del("x-api-key")
-			}
+			setCustomEndpointKey(out.Header, endpoint.APIKey)
 
 			// Normalization runs LAST and only for Anthropic-shaped endpoints, so
 			// the omit list can remove the x-api-key the auth block just set: the
@@ -1461,14 +1455,7 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 				return
 			}
 
-			if v := request.Header.Get("anthropic-version"); v != "" {
-				out.Header.Set("anthropic-version", v)
-			} else if isMessagesRequest {
-				out.Header.Set("anthropic-version", "2023-06-01")
-			}
-			if b := request.Header.Get("anthropic-beta"); b != "" {
-				out.Header.Set("anthropic-beta", b)
-			}
+			setClientAnthropicHeaders(out.Header, request.Header, isMessagesRequest)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, proxyErr error) {
 			server.logger.Error("custom endpoint proxy error", "error", proxyErr, "url", targetURL.String())
@@ -2264,22 +2251,6 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 
 	httpClient := openRouterUpstreamClient()
 
-	// App identity for harness-gated models: OpenRouter 403s models restricted
-	// to agentic harnesses when the request carries no app attribution. On that
-	// error the attempt is retried once with spoofed attribution headers.
-	spoofTitle := strings.TrimSpace(openRouterCfg.AppSpoof.Title)
-	if spoofTitle == "" {
-		spoofTitle = openrouter.DefaultSpoofAppTitle
-	}
-	spoofCategories := strings.TrimSpace(openRouterCfg.AppSpoof.Categories)
-	if spoofCategories == "" {
-		spoofCategories = openrouter.DefaultSpoofAppCategories
-	}
-	spoofReferer := strings.TrimSpace(openRouterCfg.AppSpoof.Referer)
-	if spoofReferer == "" {
-		spoofReferer = openrouter.DefaultSpoofAppReferer
-	}
-
 	maxRetries := openRouterCfg.Routing.MaxRetries
 	// maxRetries bounds retry cycles over the full candidate chain; the first
 	// walk of every provider is not counted against it.
@@ -2394,36 +2365,7 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			writeAPIError(writer, http.StatusInternalServerError, "api_error", "Failed to build request: "+err.Error())
 			return
 		}
-		upReq.Header.Set("Content-Type", "application/json")
-		upReq.Header.Set("Accept", "application/json")
-		if openRouterCfg.APIKey != "" {
-			apiKey := strings.TrimSpace(openRouterCfg.APIKey)
-			upReq.Header.Set("Authorization", "Bearer "+apiKey)
-			upReq.Header.Set("x-api-key", apiKey)
-		}
-		if av := request.Header.Get("anthropic-version"); av != "" {
-			upReq.Header.Set("anthropic-version", av)
-		}
-		if ab := request.Header.Get("anthropic-beta"); ab != "" {
-			upReq.Header.Set("anthropic-beta", ab)
-		}
-		for _, h := range []string{
-			openrouter.SpoofAppRefererHeader,
-			openrouter.SpoofAppRefererLegacyHeader,
-			openrouter.SpoofAppTitleHeader,
-			openrouter.SpoofAppTitleLegacyHeader,
-			openrouter.SpoofAppCategoriesHeader,
-		} {
-			if v := request.Header.Get(h); v != "" {
-				upReq.Header.Set(h, v)
-			}
-		}
-		server.mu.Lock()
-		appSpoofed := server.appSpoofActivated
-		server.mu.Unlock()
-		if appSpoofed {
-			openrouter.ApplySpoofHeaders(upReq, spoofTitle, spoofCategories, spoofReferer)
-		}
+		appSpoofed := server.setOpenRouterHeaders(upReq, request.Header, openRouterCfg)
 		cacheCfg := openrouter.ResolveResponseCacheConfig(openRouterCfg.ResponseCache, perModel.ResponseCache)
 		openrouter.ApplyResponseCacheHeaders(upReq, request.Header, cacheCfg)
 
@@ -2670,6 +2612,47 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 // Cancellation comes from the inbound request context and the retry budget.
 func openRouterUpstreamClient() *http.Client {
 	return openRouterSharedClient
+}
+
+// setOpenRouterHeaders sets what every OpenRouter request carries: JSON in and
+// out, the key (as Bearer and as x-api-key), the client's Anthropic version and
+// betas, the client's own app attribution, and the spoofed attribution once a
+// harness gate has been seen. OpenRouter 403s models restricted to agentic
+// harnesses when a request carries no app attribution. It reports whether the
+// spoof went on: a 403 harness gate is judged against that value, not against
+// a fresh read another request may have flipped since.
+func (server *Server) setOpenRouterHeaders(upReq *http.Request, client http.Header, cfg config.OpenRouterConfig) bool {
+	upReq.Header.Set("Content-Type", "application/json")
+	upReq.Header.Set("Accept", "application/json")
+	if cfg.APIKey != "" {
+		apiKey := strings.TrimSpace(cfg.APIKey)
+		upReq.Header.Set("Authorization", "Bearer "+apiKey)
+		upReq.Header.Set("x-api-key", apiKey)
+	}
+	if av := client.Get("anthropic-version"); av != "" {
+		upReq.Header.Set("anthropic-version", av)
+	}
+	if ab := client.Get("anthropic-beta"); ab != "" {
+		upReq.Header.Set("anthropic-beta", ab)
+	}
+	for _, h := range []string{
+		openrouter.SpoofAppRefererHeader,
+		openrouter.SpoofAppRefererLegacyHeader,
+		openrouter.SpoofAppTitleHeader,
+		openrouter.SpoofAppTitleLegacyHeader,
+		openrouter.SpoofAppCategoriesHeader,
+	} {
+		if v := client.Get(h); v != "" {
+			upReq.Header.Set(h, v)
+		}
+	}
+	server.mu.Lock()
+	spoofed := server.appSpoofActivated
+	server.mu.Unlock()
+	if spoofed {
+		openrouter.ApplySpoofHeaders(upReq, cfg.AppSpoof.Title, cfg.AppSpoof.Categories, cfg.AppSpoof.Referer)
+	}
+	return spoofed
 }
 
 // openRouterSharedClient is the package-level transport for upstream calls;

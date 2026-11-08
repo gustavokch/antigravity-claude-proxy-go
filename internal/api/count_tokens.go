@@ -1,16 +1,22 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"antigravity-go-proxy/internal/ccidentity"
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/config"
+	"antigravity-go-proxy/internal/kimi"
+	"antigravity-go-proxy/internal/openrouter"
 )
 
 // countUnsupportedFor is how long a gateway that answered count_tokens with
@@ -86,6 +92,9 @@ type countCall struct {
 // a gateway: both are estimated.
 var countForwards = map[config.GatewayID]func(*Server, countCall) (*http.Response, error){
 	config.GatewayClaudeCode: (*Server).countClaudeCode,
+	config.GatewayOpenRouter: (*Server).countOpenRouter,
+	config.GatewayKimi:       (*Server).countKimi,
+	config.GatewayCustom:     (*Server).countCustomEndpoint,
 }
 
 // forwardCount asks the gateway route names for the count. ok is false when
@@ -221,4 +230,120 @@ func (server *Server) countClaudeCode(call countCall) (*http.Response, error) {
 	}
 	resp.Body = &poolReleasingBody{ReadCloser: resp.Body, releaseFn: func() { pool.Release(acc.ID) }}
 	return resp, nil
+}
+
+// countOpenRouter asks OpenRouter's Anthropic surface for the count, with the
+// headers its messages forward sends (setOpenRouterHeaders).
+func (server *Server) countOpenRouter(call countCall) (*http.Response, error) {
+	target := openrouter.NormalizeBaseURL(call.cfg.OpenRouter.BaseURL) + "/v1/messages/count_tokens"
+	upReq, err := http.NewRequestWithContext(call.request.Context(), http.MethodPost, target, bytes.NewReader(call.body))
+	if err != nil {
+		return nil, fmt.Errorf("build OpenRouter count_tokens request: %w", err)
+	}
+	server.setOpenRouterHeaders(upReq, call.request.Header, call.cfg.OpenRouter)
+	return openRouterUpstreamClient().Do(upReq)
+}
+
+// countKimi asks the Kimi gateway for the count with the credential, and for a
+// Kimi Code login the KimiCLI identity headers, its messages forward sends.
+func (server *Server) countKimi(call countCall) (*http.Response, error) {
+	cred, err := server.resolveKimiCredential(call.request.Context(), call.cfg.Kimi)
+	if err != nil {
+		return nil, err
+	}
+	var identity http.Header
+	if cred.oauth {
+		identity = server.kimiIdentityHeaders()
+	}
+	return kimi.CountTokens(call.request.Context(), cred.baseURL, cred.token, call.body, call.request.Header, identity)
+}
+
+// errNoCountRoute is a custom endpoint whose URL names no Anthropic messages
+// route, so it has no count_tokens route to ask.
+var errNoCountRoute = errors.New("custom endpoint URL names no Anthropic messages route")
+
+var (
+	// customCountClient and customIdentityCountClient carry custom-endpoint
+	// counts on the transports the messages forward uses for that endpoint.
+	customCountClient         = &http.Client{Transport: customEndpointTransport}
+	customIdentityCountClient = &http.Client{Transport: customEndpointIdentityTransport}
+)
+
+// countCustomEndpoint asks an Anthropic-format custom endpoint for the count.
+// An endpoint the messages forward normalizes (customEndpointIdentity) gets
+// the identity Claude Code sends on counts, over the same HTTP/1.1 transport;
+// any other gets its key and the client's Anthropic version and betas, as its
+// messages forward does.
+func (server *Server) countCustomEndpoint(call countCall) (*http.Response, error) {
+	endpoint := call.route.endpoint
+	target, ok := customCountURL(endpoint.URL)
+	if !ok {
+		return nil, errNoCountRoute
+	}
+	identity, normalize := customEndpointIdentity(endpoint, call.session)
+	if normalize {
+		target.RawQuery = withCapturedBetaQuery(target.RawQuery)
+	}
+	upReq, err := http.NewRequestWithContext(call.request.Context(), http.MethodPost, target.String(), bytes.NewReader(call.body))
+	if err != nil {
+		return nil, fmt.Errorf("build custom endpoint count_tokens request: %w", err)
+	}
+	if normalize {
+		ccidentity.ApplyHeaders(upReq.Header, ccidentity.CountTokensProfile(), identity, ccidentity.Turn{})
+		return customIdentityCountClient.Do(upReq)
+	}
+	upReq.Header.Set("Content-Type", "application/json")
+	upReq.Header.Set("Accept", "application/json")
+	setCustomEndpointKey(upReq.Header, endpoint.APIKey)
+	setClientAnthropicHeaders(upReq.Header, call.request.Header, true)
+	return customCountClient.Do(upReq)
+}
+
+// setCustomEndpointKey sends a custom endpoint's own key in both header forms
+// Anthropic-format servers accept. An endpoint without a key gets no
+// credential at all, never the client's.
+func setCustomEndpointKey(h http.Header, apiKey string) {
+	if apiKey == "" {
+		h.Del("Authorization")
+		h.Del("x-api-key")
+		return
+	}
+	h.Set("Authorization", "Bearer "+apiKey)
+	h.Set("x-api-key", apiKey)
+}
+
+// setClientAnthropicHeaders forwards the client's anthropic-version and
+// anthropic-beta to a custom endpoint that is not normalized. defaultVersion
+// sets 2023-06-01 when the client sent none; Messages API calls need one.
+func setClientAnthropicHeaders(h, client http.Header, defaultVersion bool) {
+	if version := client.Get("anthropic-version"); version != "" {
+		h.Set("anthropic-version", version)
+	} else if defaultVersion {
+		h.Set("anthropic-version", "2023-06-01")
+	}
+	if beta := client.Get("anthropic-beta"); beta != "" {
+		h.Set("anthropic-beta", beta)
+	}
+}
+
+// customCountURL is the count_tokens URL of an Anthropic-format endpoint: its
+// messages URL with /messages replaced by /messages/count_tokens. A URL that
+// leaves the path to the request (no path, or one ending in /v1) gets
+// /v1/messages/count_tokens, as resolveCustomEndpointURL builds a messages URL.
+// ok is false for any other URL: it names no messages route.
+func customCountURL(endpointURL string) (*url.URL, bool) {
+	target, err := resolveCustomEndpointURL(endpointURL, "/v1/messages/count_tokens")
+	if err != nil {
+		return nil, false
+	}
+	path := strings.TrimRight(target.Path, "/")
+	switch {
+	case strings.HasSuffix(path, "/messages/count_tokens"):
+		target.Path = path
+	case strings.HasSuffix(path, "/messages"):
+		target.Path = path + "/count_tokens"
+	default:
+		return nil, false
+	}
+	return target, true
 }
