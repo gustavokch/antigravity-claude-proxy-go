@@ -29,10 +29,16 @@ const (
 )
 
 // Family names the models that share one chars-per-token ratio. Every model
-// outside the Claude, Gemini and gpt-oss families learns its own.
+// outside the Claude, Gemini and gpt-oss families learns its own. Claude is
+// two families: Anthropic documents the tokenizer of Claude 4.7 as producing
+// 1.0–1.35× the tokens of the earlier one, so 4.7 and every later Claude
+// (claude-4.7) learn apart from the models before it (claude).
 func Family(model string) string {
 	switch {
 	case strings.Contains(model, "claude"):
+		if claude47OrLater(model) {
+			return "claude-4.7"
+		}
 		return "claude"
 	case strings.Contains(model, "gemini"):
 		return "gemini"

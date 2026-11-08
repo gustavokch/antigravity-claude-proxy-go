@@ -14,15 +14,21 @@ func decodeRequest(t *testing.T, body string) map[string]any {
 	return request
 }
 
+// Claude 4.7 brought a new tokenizer, so it and every later Claude learn their
+// own ratio.
 func TestFamily(t *testing.T) {
 	for model, want := range map[string]string{
-		"claude-opus-4-6-thinking": "claude",
-		"claude-sonnet-5-5":        "claude",
-		"gemini-3.8-flash-high":    "gemini",
-		"gemini-3.1-pro":           "gemini",
-		"gpt-oss-120b-medium":      "gpt-oss",
-		"mimo-v2.6-flash-free":     "mimo-v2.6-flash-free",
-		"kimi-k2.6":                "kimi-k2.6",
+		"claude-opus-4-6-thinking":   "claude",
+		"claude-sonnet-4-5":          "claude",
+		"claude-3-7-sonnet-20250219": "claude",
+		"claude-opus-4-7":            "claude-4.7",
+		"claude-sonnet-5-5":          "claude-4.7",
+		"claude-sonnet-5.5-high":     "claude-4.7",
+		"gemini-3.8-flash-high":      "gemini",
+		"gemini-3.1-pro":             "gemini",
+		"gpt-oss-120b-medium":        "gpt-oss",
+		"mimo-v2.6-flash-free":       "mimo-v2.6-flash-free",
+		"kimi-k2.6":                  "kimi-k2.6",
 	} {
 		if got := Family(model); got != want {
 			t.Errorf("Family(%q) = %q, want %q", model, got, want)

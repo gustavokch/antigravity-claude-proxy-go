@@ -46,6 +46,9 @@ func TestObserveLearnsTheRatioOfItsFamilyOnly(t *testing.T) {
 	if got := counter.Estimate("", "gemini-3.1-pro", textRequest(4000)); got != 1000 {
 		t.Errorf("gemini: 4000 chars = %d tokens, want 1000 at the starting ratio", got)
 	}
+	if got := counter.Estimate("", "claude-opus-4-7", textRequest(4000)); got != 1000 {
+		t.Errorf("claude 4.7 learned from claude 4.6: 4000 chars = %d tokens, want 1000", got)
+	}
 
 	counter.Observe("", "mimo-v2.6-flash-free", textRequest(2000), 1000)
 	if got := counter.Estimate("", "kimi-k2.6", textRequest(4000)); got != 1000 {

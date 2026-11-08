@@ -58,8 +58,8 @@ func TestClaudeResolutionTierComesFromTheModelVersion(t *testing.T) {
 		"claude-3-7-sonnet-20250219": false,
 		"claude-custom-model":        false,
 	} {
-		if got := claudeHighResolution(model); got != want {
-			t.Errorf("claudeHighResolution(%q) = %v, want %v", model, got, want)
+		if got := claude47OrLater(model); got != want {
+			t.Errorf("claude47OrLater(%q) = %v, want %v", model, got, want)
 		}
 	}
 	// Only Claude has a high-resolution tier; a version number in another

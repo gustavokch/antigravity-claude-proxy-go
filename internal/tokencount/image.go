@@ -47,22 +47,22 @@ type imagePricing struct {
 }
 
 func pricingFor(model string) imagePricing {
-	family := Family(model)
-	switch {
-	case family == "gemini":
+	switch Family(model) {
+	case "gemini":
 		return imagePricing{gemini: true}
-	case family == "claude" && claudeHighResolution(model):
+	case "claude-4.7":
 		return imagePricing{maxEdge: claudeHighResEdge, maxTokens: claudeHighResTokens}
 	}
 	return imagePricing{maxEdge: claudeStandardEdge, maxTokens: claudeStandardTokens}
 }
 
-// claudeHighResolution reports whether a Claude model id names Claude 4.7 or
-// later. The version is the first number of one or two digits in the id and
-// the one after it, so claude-opus-4-7, claude-sonnet-5.5-high and
-// claude-3-7-sonnet-20250219 read 4.7, 5.5 and 3.7; a date is not a minor
-// version, so claude-opus-4-20250514 reads 4.0.
-func claudeHighResolution(model string) bool {
+// claude47OrLater reports whether a Claude model id names Claude 4.7 or later,
+// the models with the high-resolution image tier and the newer tokenizer. The
+// version is the first number of one or two digits in the id and the one after
+// it, so claude-opus-4-7, claude-sonnet-5.5-high and claude-3-7-sonnet-20250219
+// read 4.7, 5.5 and 3.7; a date is not a minor version, so
+// claude-opus-4-20250514 reads 4.0.
+func claude47OrLater(model string) bool {
 	fields := strings.FieldsFunc(model, func(r rune) bool {
 		return r == '-' || r == '.' || r == '@' || r == '_'
 	})
