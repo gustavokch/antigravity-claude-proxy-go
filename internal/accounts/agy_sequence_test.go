@@ -173,6 +173,62 @@ func TestDispatcherSendsTurnCallsOnlyBeforeANewPrompt(t *testing.T) {
 	assertSteps(t, client.recorded(), slices.Concat([][]string{{"agent"}, {"agent"}}, agyTurn, [][]string{{"agent"}, {"agent"}}))
 }
 
+// A second prompt takes exactly one quota summary, before generation and
+// none after the stream, and the turn calls leave the per-model quota as the
+// start burst's model list set it: summary buckets are pools.
+func TestDispatcherTakesOneQuotaSummaryPerPromptAndLeavesModelQuota(t *testing.T) {
+	t.Parallel()
+	const email = "a@example.com"
+	client := &agyCallRecorder{
+		modelsBody: []byte(sequenceModelsBody),
+		quotaSummary: []byte(`{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-5h",
+			"displayName":"Five Hour Limit Remaining","remainingFraction":0.4,"resetTime":"2026-11-07T17:00:00Z","window":"5h"}]}]}`),
+	}
+	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+	first := promptRequest("Fix the login bug")
+	sendTurn(t, dispatcher, "session-1", first)
+	account := dispatcher.manager.accounts[0]
+	before, err := json.Marshal(account.Quota.Models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.reset()
+
+	sendTurn(t, dispatcher, "session-1", followUp(first, "Now add a test"))
+
+	calls := client.recorded()
+	assertSteps(t, calls, slices.Concat(agyTurn, [][]string{{"agent"}}))
+	if summaries := slices.Index(calls, "retrieveUserQuotaSummary"); summaries < 0 || summaries > slices.Index(calls, "agent") ||
+		len(slices.DeleteFunc(slices.Clone(calls), func(call string) bool { return call != "retrieveUserQuotaSummary" })) != 1 {
+		t.Fatalf("calls %v, want one retrieveUserQuotaSummary before the model call", calls)
+	}
+	after, err := json.Marshal(account.Quota.Models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("the turn calls changed the model quota from %s to %s", before, after)
+	}
+}
+
+// A prompt retried on the same account, after a 429 the session waits out
+// on its pinned account, sends the turn calls once.
+func TestDispatcherSendsTurnCallsOncePerAccountForARetriedPrompt(t *testing.T) {
+	t.Parallel()
+	const email = "a@example.com"
+	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
+	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+	first := promptRequest("Fix the login bug")
+	sendTurn(t, dispatcher, "session-1", first)
+	client.reset()
+	client.streamFailures = []error{&cloudcode.HTTPError{StatusCode: 429, Status: "429",
+		Body: `{"error":{"code":429,"message":"Quota exceeded, quotaResetDelay 30s","status":"RESOURCE_EXHAUSTED"}}`}}
+
+	sendTurn(t, dispatcher, "session-1", followUp(first, "Now add a test"))
+
+	assertSteps(t, client.recorded(), slices.Concat(agyTurn, [][]string{{"agent"}, {"agent"}}))
+}
+
 // The start burst is per session and account: a second session on the same
 // account gets its own, and so does the account a session overflows to.
 func TestDispatcherSendsTheStartBurstPerSessionAndAccount(t *testing.T) {

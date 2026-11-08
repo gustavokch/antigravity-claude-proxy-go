@@ -378,8 +378,10 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 // caller's context ended (an abandoned or out-of-budget pass is not the
 // account's fault). An account that uses its whole own budget is marked
 // failed, so recovery tries it last next time. No live-quota RPCs ride along:
-// recovery sits on a request path, and the quota summary a new prompt sends
-// before generation (beginTurn) covers them.
+// recovery sits on a request path. Per-model quota comes from catalog
+// fetches (24 h TTL), manual account refreshes and each start burst's
+// fetchAvailableModels; the quota summary a new prompt sends (beginTurn)
+// updates shared pools only.
 func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return cloudcode.Response{}, err
@@ -431,6 +433,10 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	maxAttempts := max(dispatcher.maxRetries, dispatcher.manager.Count()+1)
 	session := SessionKey(ctx)
 	var lastError error
+	// Accounts that already got this request's turn calls: a retry on one of
+	// them, after a pinned wait or a 429, sends the prompt again, not the
+	// turn calls.
+	turnSent := make(map[string]bool)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		selection := dispatcher.manager.Select(session, model)
 		if selection.Account == nil {
@@ -480,7 +486,10 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			continue
 		}
 		dispatcher.beginConversation(ctx, session, account, client, project)
-		dispatcher.beginTurn(ctx, session, account, client, project, request)
+		if !turnSent[account.Email] {
+			turnSent[account.Email] = true
+			dispatcher.beginTurn(ctx, session, account, client, project, request)
+		}
 		payload := dispatcher.builder.BuildCloudCodeRequestWithModel(request, project, credentials.Email, proxyformat.ModelOptions{
 			SupportsThinking: modelDetails.SupportsThinking, ThinkingBudget: modelDetails.ThinkingBudget,
 			MinThinkingBudget: modelDetails.MinThinkingBudget, MaxOutputTokens: modelDetails.MaxOutputTokens,
