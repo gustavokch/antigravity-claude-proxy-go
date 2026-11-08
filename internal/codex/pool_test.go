@@ -397,3 +397,27 @@ func TestInheritJoinsARefreshInProgress(t *testing.T) {
 		t.Errorf("refresher called %d times; the new pool must not spend rt-a again", n)
 	}
 }
+
+// At the cap, the session used least recently is the one forgotten: a session
+// that keeps sending requests keeps its account.
+func TestStickyForgetsTheLeastRecentlyUsedSession(t *testing.T) {
+	p, clock := newTestPool(t, account("a", 1), account("b", 2))
+	for _, key := range []string{"busy", "idle"} {
+		if got, _ := p.SelectAccount(key, map[string]bool{"a": true}); got.ID != "b" {
+			t.Fatalf("setup: %s pinned to %q, want b", key, got.ID)
+		}
+		clock.advance(time.Second)
+	}
+	for i := range maxStickyEntries - 2 {
+		p.SelectAccount(fmt.Sprintf("s-%d", i), nil)
+		clock.advance(time.Millisecond)
+	}
+	p.SelectAccount("busy", nil) // a hit refreshes busy
+	p.SelectAccount("one-more", nil)
+	if got, _ := p.SelectAccount("busy", nil); got.ID != "b" {
+		t.Errorf("busy = %q, want b (used recently)", got.ID)
+	}
+	if got, _ := p.SelectAccount("idle", nil); got.ID != "a" {
+		t.Errorf("idle = %q, want a (evicted, so it starts over by priority)", got.ID)
+	}
+}

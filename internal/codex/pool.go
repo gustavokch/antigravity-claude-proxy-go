@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -23,7 +24,8 @@ var (
 	ErrNeedsLogin = errors.New("codex account needs a new login")
 )
 
-// maxStickyEntries bounds the sticky session map.
+// maxStickyEntries bounds the sticky session map; past it the session used
+// least recently is forgotten.
 const maxStickyEntries = 10000
 
 // refreshTimeout bounds one token refresh. The refresh runs detached from the
@@ -51,17 +53,22 @@ type TokenPersister func(accountID string, ts TokenSet) error
 // cooldown and counters live only in memory; Inherit carries them across a
 // rebuild.
 type AccountPool struct {
-	mu         sync.Mutex
-	accounts   map[string]*accountState
-	sticky     map[string]string // session key -> account ID
-	stickyAt   map[string]time.Time
-	refreshing map[string]*refreshCall
-	refresher  TokenRefresher
-	persister  TokenPersister
+	mu sync.Mutex
+	// sticky maps a session key to its element in stickyOrder, which holds
+	// the sessions' accounts most recently used first.
+	sticky      map[string]*list.Element
+	stickyOrder *list.List
+	accounts    map[string]*accountState
+	refreshing  map[string]*refreshCall
+	refresher   TokenRefresher
+	persister   TokenPersister
 
 	// now is a test seam; nil means time.Now.
 	now func() time.Time
 }
+
+// stickyEntry is one session's account in AccountPool.stickyOrder.
+type stickyEntry struct{ key, id string }
 
 type accountState struct {
 	Account
@@ -94,10 +101,10 @@ type refreshCall struct {
 // an ID are skipped; of two accounts with the same ID the first is kept.
 func NewAccountPool(cfgs []AccountConfig) *AccountPool {
 	p := &AccountPool{
-		accounts:   make(map[string]*accountState, len(cfgs)),
-		sticky:     make(map[string]string),
-		stickyAt:   make(map[string]time.Time),
-		refreshing: make(map[string]*refreshCall),
+		accounts:    make(map[string]*accountState, len(cfgs)),
+		sticky:      make(map[string]*list.Element),
+		stickyOrder: list.New(),
+		refreshing:  make(map[string]*refreshCall),
 	}
 	for _, cfg := range cfgs {
 		id := strings.TrimSpace(cfg.ID)
@@ -220,9 +227,10 @@ func (p *AccountPool) SelectAccount(sessionKey string, excluded map[string]bool)
 	now := p.clock()
 
 	if sessionKey != "" {
-		if id, ok := p.sticky[sessionKey]; ok && !excluded[id] {
-			if st := p.accounts[id]; st != nil && st.selectable(now) {
-				p.stickyAt[sessionKey] = now
+		if el, ok := p.sticky[sessionKey]; ok {
+			id := el.Value.(*stickyEntry).id
+			if st := p.accounts[id]; st != nil && !excluded[id] && st.selectable(now) {
+				p.stickyOrder.MoveToFront(el)
 				return st.Account, nil
 			}
 		}
@@ -255,28 +263,25 @@ func (p *AccountPool) SelectAccount(sessionKey string, excluded map[string]bool)
 	})
 	selected := candidates[0]
 	if sessionKey != "" {
-		if len(p.sticky) >= maxStickyEntries {
-			p.evictOldestSticky(maxStickyEntries / 10)
-		}
-		p.sticky[sessionKey] = selected.ID
-		p.stickyAt[sessionKey] = now
+		p.pin(sessionKey, selected.ID)
 	}
 	return selected.Account, nil
 }
 
-func (p *AccountPool) evictOldestSticky(count int) {
-	type entry struct {
-		key string
-		at  time.Time
+// pin makes id the session's account and the session the most recently used.
+// Past maxStickyEntries the least recently used session is forgotten. The
+// caller holds p.mu.
+func (p *AccountPool) pin(key, id string) {
+	if el, ok := p.sticky[key]; ok {
+		el.Value.(*stickyEntry).id = id
+		p.stickyOrder.MoveToFront(el)
+		return
 	}
-	entries := make([]entry, 0, len(p.stickyAt))
-	for k, at := range p.stickyAt {
-		entries = append(entries, entry{k, at})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].at.Before(entries[j].at) })
-	for i := range min(count, len(entries)) {
-		delete(p.sticky, entries[i].key)
-		delete(p.stickyAt, entries[i].key)
+	p.sticky[key] = p.stickyOrder.PushFront(&stickyEntry{key, id})
+	if p.stickyOrder.Len() > maxStickyEntries {
+		oldest := p.stickyOrder.Back()
+		p.stickyOrder.Remove(oldest)
+		delete(p.sticky, oldest.Value.(*stickyEntry).key)
 	}
 }
 
