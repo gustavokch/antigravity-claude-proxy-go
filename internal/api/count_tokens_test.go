@@ -396,11 +396,49 @@ func TestCountTokens_ClaudeCodeBurstIsNotSerialized(t *testing.T) {
 	}
 }
 
-// A 429 on a count cools the account down as one on /v1/messages does; the
-// count itself is estimated, and so is the next, without asking again.
-func TestCountTokens_ClaudeCode429CoolsTheAccountDown(t *testing.T) {
-	upstream := newCountUpstream(t, http.StatusTooManyRequests,
-		`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`, http.Header{"Retry-After": {"120"}})
+// count429Body is the body of a count_tokens 429.
+const count429Body = `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`
+
+// A count 429 without the subscription (unified) headers limits counting, not
+// the account: the count is estimated, and so is every count until the
+// Retry-After is over, without asking; the account stays open to generation.
+func TestCountTokens_ClaudeCode429BacksOffCountsOnly(t *testing.T) {
+	upstream := newCountUpstream(t, http.StatusTooManyRequests, count429Body, http.Header{"Retry-After": {"120"}})
+	clock := &testClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
+	server, cfg := newCCCountServer(t, upstream.URL, clock.Now)
+	handler := server.Handler()
+	want := estimateOf(t, server, "sess-cc", "claude-sonnet-5", ccCountBody)
+
+	for i, step := range []struct {
+		advance time.Duration
+		asked   int
+	}{
+		{0, 1},                 // asked, answered 429: counts back off
+		{119 * time.Second, 1}, // still backing off: estimated without a call
+		{2 * time.Second, 2},   // the Retry-After is over: asked again
+	} {
+		clock.Advance(step.advance)
+		if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "sess-cc", ccCountBody, nil)); got != want {
+			t.Errorf("step %d: count = %d, want the estimate %d", i, got, want)
+		}
+		if n := len(upstream.requests()); n != step.asked {
+			t.Errorf("step %d: upstream asked %d times, want %d", i, n, step.asked)
+		}
+	}
+	if state := ccCountAccountState(t, server, cfg); state.Status != "healthy" {
+		t.Errorf("account status = %q, want healthy: a count 429 must not keep the account from generation", state.Status)
+	}
+}
+
+// A count 429 carrying the subscription (unified) headers says the account's
+// subscription is exhausted, for generation too: the account cools down until
+// the window's reset, as on /v1/messages, and the next count is estimated.
+func TestCountTokens_ClaudeCodeSubscription429CoolsTheAccountDown(t *testing.T) {
+	upstream := newCountUpstream(t, http.StatusTooManyRequests, count429Body, http.Header{
+		"Retry-After":                        {"120"},
+		"Anthropic-Ratelimit-Unified-Status": {"rejected"},
+		"Anthropic-Ratelimit-Unified-Reset":  {strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
+	})
 	server, cfg := newCCCountServer(t, upstream.URL, time.Now)
 	handler := server.Handler()
 	want := estimateOf(t, server, "sess-cc", "claude-sonnet-5", ccCountBody)
@@ -411,14 +449,60 @@ func TestCountTokens_ClaudeCode429CoolsTheAccountDown(t *testing.T) {
 		}
 	}
 	if n := len(upstream.requests()); n != 1 {
-		t.Errorf("upstream asked %d times, want 1: a cooled-down account was asked again", n)
+		t.Errorf("upstream asked %d times, want 1", n)
 	}
 	state := ccCountAccountState(t, server, cfg)
 	if state.Status != "cooldown" {
 		t.Errorf("account status = %q, want cooldown", state.Status)
 	}
-	if left := time.Until(state.CooldownUntil); left < 100*time.Second {
-		t.Errorf("cooldown ends in %v, want the 120 s Retry-After", left)
+	if left := time.Until(state.CooldownUntil); left < 59*time.Minute {
+		t.Errorf("cooldown ends in %v, want the subscription reset an hour away", left)
+	}
+}
+
+// Any gateway's count 429 backs counts off for its Retry-After, 10 s when it
+// names none, and never longer than an unsupported mark.
+func TestCountTokens_429BacksOffForTheRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		retryAfter string
+		backoff    time.Duration
+	}{
+		{"retry-after", "30", 30 * time.Second},
+		{"no retry-after", "", 10 * time.Second},
+		{"retry-after past the cap", "7200", countUnsupportedFor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var header http.Header
+			if tc.retryAfter != "" {
+				header = http.Header{"Retry-After": {tc.retryAfter}}
+			}
+			upstream := newCountUpstream(t, http.StatusTooManyRequests, count429Body, header)
+			cfg := config.DefaultConfig()
+			cfg.OpenRouter = config.OpenRouterConfig{Enabled: true, BaseURL: upstream.URL + "/api/v1", APIKey: "k",
+				Allowlist: []config.OpenRouterModelConfig{{ID: "vendor/model-x", Enabled: true}}}
+			clock := &testClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
+			server := newCountServer(t, cfg, clock.Now)
+			handler := server.Handler()
+			body := `{"model":"vendor/model-x","messages":[{"role":"user","content":"hi"}]}`
+			want := estimateOf(t, server, "", "vendor/model-x", body)
+			for i, step := range []struct {
+				advance time.Duration
+				asked   int
+			}{
+				{0, 1},
+				{tc.backoff - time.Second, 1},
+				{time.Second, 2},
+			} {
+				clock.Advance(step.advance)
+				if got := countOf(t, sendInSession(handler, countPath, "test-proxy-key", "", body, nil)); got != want {
+					t.Errorf("step %d: count = %d, want the estimate %d", i, got, want)
+				}
+				if n := len(upstream.requests()); n != step.asked {
+					t.Errorf("step %d: upstream asked %d times, want %d", i, n, step.asked)
+				}
+			}
+		})
 	}
 }
 

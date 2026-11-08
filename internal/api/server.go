@@ -165,8 +165,8 @@ type Server struct {
 	// count; count_tokens estimates from it.
 	tokens *tokencount.Counter
 
-	// countMarks holds the gateways that answered count_tokens 404, 405 or
-	// 501, until they are asked again. The zero value is ready.
+	// countMarks holds the gateways that answered count_tokens 404, 405, 501
+	// or 429, until they are asked again. The zero value is ready.
 	countMarks countMarks
 
 	// countTimeout bounds one count_tokens forward, its answer included; zero

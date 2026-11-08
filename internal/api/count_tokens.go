@@ -24,6 +24,10 @@ import (
 // 404, 405 or 501 is estimated without being asked.
 const countUnsupportedFor = time.Hour
 
+// countBackoffDefault is how long counts back off after a count_tokens 429
+// that names no Retry-After.
+const countBackoffDefault = 10 * time.Second
+
 // countForwardTimeout bounds a count_tokens forward, from the request to the
 // decoded answer. An estimate answers a count well enough, so a gateway that
 // takes the count and stays silent is given up on long before the transports'
@@ -112,18 +116,19 @@ var countForwards = map[config.GatewayID]func(*Server, countCall) (*http.Respons
 }
 
 // forwardCount asks the gateway route names for the count. ok is false when
-// the gateway does not count tokens, is marked as not counting, or the call
-// failed in any way; the caller then estimates, so a count never fails the
-// client for an upstream's sake. The forward, answer included, gets
-// countForwardTimeout. A 404, 405 or 501 marks the gateway (a custom
-// endpoint: that endpoint) for countUnsupportedFor.
+// the gateway does not count tokens, is marked, or the call failed in any
+// way; the caller then estimates, so a count never fails the client for an
+// upstream's sake. The forward, answer included, gets countForwardTimeout. A
+// 404, 405 or 501 marks the gateway (a custom endpoint: that endpoint) for
+// countUnsupportedFor, and a 429 marks it for countBackoff: counts back off,
+// and nothing generation uses changes.
 func (server *Server) forwardCount(request *http.Request, cfg config.Config, route gatewayRoute, session string, rawBody []byte) (int, bool) {
 	send, ok := countForwards[route.id]
 	if !ok {
 		return 0, false
 	}
 	key := countMarkKey(route)
-	if server.countMarks.unsupported(key, server.nowTime()) {
+	if server.countMarks.marked(key, server.nowTime()) {
 		return 0, false
 	}
 	body, err := countBody(rawBody, route.target)
@@ -145,8 +150,13 @@ func (server *Server) forwardCount(request *http.Request, cfg config.Config, rou
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
-		server.countMarks.mark(key, server.nowTime())
+		server.countMarks.mark(key, server.nowTime(), countUnsupportedFor)
 		server.logger.Info("count_tokens not served upstream; estimating for an hour", "gateway", key, "status", resp.StatusCode)
+		return 0, false
+	case http.StatusTooManyRequests:
+		backoff := countBackoff(resp.Header)
+		server.countMarks.mark(key, server.nowTime(), backoff)
+		server.logger.Info("count_tokens rate limited upstream; estimating", "gateway", key, "backoff", backoff)
 		return 0, false
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -161,6 +171,17 @@ func (server *Server) forwardCount(request *http.Request, cfg config.Config, rou
 		return 0, false
 	}
 	return *counted.InputTokens, true
+}
+
+// countBackoff is how long counts back off after a count_tokens 429: its
+// Retry-After (seconds or an HTTP date), countBackoffDefault when it names
+// none, and never longer than countUnsupportedFor.
+func countBackoff(header http.Header) time.Duration {
+	retryAfter := time.Duration(claudecode.ExtractRateLimits(header).RetryAfter) * time.Second
+	if retryAfter <= 0 {
+		return countBackoffDefault
+	}
+	return min(retryAfter, countUnsupportedFor)
 }
 
 // countBody is the client's count body with the gateway's model id written
@@ -183,16 +204,17 @@ func countMarkKey(route gatewayRoute) string {
 	return string(route.id)
 }
 
-// countMarks remembers the gateways that do not count tokens, and until when.
-// Keys come from the configuration, so the map stays small. The zero value is
+// countMarks remembers the gateways not to ask for counts, and until when:
+// those that do not count tokens and those that answered a count 429. Keys
+// come from the configuration, so the map stays small. The zero value is
 // ready.
 type countMarks struct {
 	mu    sync.Mutex
 	until map[string]time.Time
 }
 
-// unsupported reports whether key is marked at now; an expired mark is dropped.
-func (marks *countMarks) unsupported(key string, now time.Time) bool {
+// marked reports whether key is marked at now; an expired mark is dropped.
+func (marks *countMarks) marked(key string, now time.Time) bool {
 	marks.mu.Lock()
 	defer marks.mu.Unlock()
 	until, ok := marks.until[key]
@@ -206,13 +228,14 @@ func (marks *countMarks) unsupported(key string, now time.Time) bool {
 	return false
 }
 
-func (marks *countMarks) mark(key string, now time.Time) {
+// mark marks key from now for d.
+func (marks *countMarks) mark(key string, now time.Time, d time.Duration) {
 	marks.mu.Lock()
 	defer marks.mu.Unlock()
 	if marks.until == nil {
 		marks.until = make(map[string]time.Time)
 	}
-	marks.until[key] = now.Add(countUnsupportedFor)
+	marks.until[key] = now.Add(d)
 }
 
 // countClaudeCode sends a count through the Claude Code pool with the count
@@ -221,10 +244,12 @@ func (marks *countMarks) mark(key string, now time.Time) {
 // Counts arrive in bursts of about 34 from one /context, so nothing is held
 // across the call: SelectAccount and Acquire take the pool's locks briefly,
 // and the token is not refreshed here (a refresh writes config.json under its
-// lock; an expired token answers 401 and the count is estimated). A count
-// answer carries no unified rate-limit headers, so only a 429 changes pool
-// state, as it would on /v1/messages. The account is released when
-// forwardCount closes the body.
+// lock; an expired token answers 401 and the count is estimated). Only a 429
+// carrying the unified (subscription) rate-limit headers changes pool state,
+// as it would on /v1/messages: the subscription is exhausted for generation
+// too. Any other count 429 limits counting alone, and forwardCount backs
+// counts off (countBackoff). The account is released when forwardCount closes
+// the body.
 func (server *Server) countClaudeCode(call countCall) (*http.Response, error) {
 	pool, client := server.getOrCreateCCPool(call.cfg.ClaudeCode)
 	acc, err := pool.SelectAccount(call.session, nil)
@@ -245,9 +270,10 @@ func (server *Server) countClaudeCode(call countCall) (*http.Response, error) {
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		rl := claudecode.ExtractRateLimits(resp.Header)
-		pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
-		server.noteClaudeCodeRateLimits(acc.ID, rl)
+		if rl := claudecode.ExtractRateLimits(resp.Header); rl.Unified != nil {
+			pool.RecordRateLimit(acc.ID, rl, 10*time.Second)
+			server.noteClaudeCodeRateLimits(acc.ID, rl)
+		}
 	}
 	resp.Body = &poolReleasingBody{ReadCloser: resp.Body, releaseFn: func() { pool.Release(acc.ID) }}
 	return resp, nil
