@@ -70,10 +70,10 @@ func (dispatcher *Dispatcher) detach(ctx context.Context) (context.Context, cont
 // client's context cancels the call until the finish; after it, only Close
 // does, and a stream that hangs keeps only the transport's own timeouts. The
 // read keeps the account's in-flight count until upstream ends, because
-// upstream still serves the request, and records the credits and the quota
-// it reports at the end. consume then runs on the reader's goroutine, never
+// upstream still serves the request, and records the credits it reports at
+// the end. consume then runs on the reader's goroutine, never
 // after sendStream returns.
-func (dispatcher *Dispatcher) sendStream(ctx context.Context, account *Account, client CloudClient, project string,
+func (dispatcher *Dispatcher) sendStream(ctx context.Context, account *Account, client CloudClient,
 	payload proxyformat.CloudCodeRequest, options cloudcode.RequestOptions, guard *proxyformat.OutputGuard,
 	consume func(cloudcode.SSEEvent) error) (response cloudcode.Response, events int, err error) {
 	if guard == nil {
@@ -88,7 +88,7 @@ func (dispatcher *Dispatcher) sendStream(ctx context.Context, account *Account, 
 			})
 		}()
 		if err == nil {
-			dispatcher.settle(ctx, account, client, project, credits)
+			dispatcher.settle(account, credits)
 		}
 		return response, events, err
 	}
@@ -140,7 +140,7 @@ func (dispatcher *Dispatcher) sendStream(ctx context.Context, account *Account, 
 			})
 		}()
 		if readErr == nil {
-			dispatcher.settle(upstreamCtx, account, client, project, credits)
+			dispatcher.settle(account, credits)
 		}
 		if past {
 			if readErr != nil {
@@ -183,15 +183,16 @@ func creditsIn(event cloudcode.SSEEvent, last []cloudcode.CreditBalance) []cloud
 	return last
 }
 
-// settle records what a stream that ended cleanly reported: the remaining
-// credits, and a live quota reading taken after the generation.
-func (dispatcher *Dispatcher) settle(ctx context.Context, account *Account, client CloudClient, project string, credits []cloudcode.CreditBalance) {
-	if len(credits) > 0 {
-		balances := make(map[string]int64, len(credits))
-		for _, balance := range credits {
-			balances[balance.CreditType] = balance.Amount
-		}
-		dispatcher.manager.UpdateAccountCredits(account.Email, balances)
+// settle records the remaining credits a stream that ended cleanly reported.
+// The live quota reading is taken before a turn instead, where agy takes it
+// (beginTurn).
+func (dispatcher *Dispatcher) settle(account *Account, credits []cloudcode.CreditBalance) {
+	if len(credits) == 0 {
+		return
 	}
-	dispatcher.refreshLiveQuotaThrottled(ctx, account, client, project)
+	balances := make(map[string]int64, len(credits))
+	for _, balance := range credits {
+		balances[balance.CreditType] = balance.Amount
+	}
+	dispatcher.manager.UpdateAccountCredits(account.Email, balances)
 }

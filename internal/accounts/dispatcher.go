@@ -128,9 +128,6 @@ type Dispatcher struct {
 	// controlCalls is the in-flight start burst or turn calls per key
 	// (shareControlCall), guarded by mu; concurrent requests share one run.
 	controlCalls map[string]chan struct{}
-	// liveQuotaRefreshMS is the last live-quota refresh per account email,
-	// guarded by mu; it throttles post-request quota RPCs.
-	liveQuotaRefreshMS map[string]int64
 }
 
 // catalogSnapshot is one account's model list and when it was fetched.
@@ -202,7 +199,6 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		meter:                    newThrottleMeter(nil),
 		clients:                  make(map[string]accountClient),
 		controlCalls:             make(map[string]chan struct{}),
-		liveQuotaRefreshMS:       make(map[string]int64),
 	}, nil
 }
 
@@ -382,7 +378,8 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 // caller's context ended (an abandoned or out-of-budget pass is not the
 // account's fault). An account that uses its whole own budget is marked
 // failed, so recovery tries it last next time. No live-quota RPCs ride along:
-// recovery sits on a request path, and the post-request refresh covers them.
+// recovery sits on a request path, and the quota summary a new prompt sends
+// before generation (beginTurn) covers them.
 func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return cloudcode.Response{}, err
@@ -482,6 +479,8 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			lastError = err
 			continue
 		}
+		dispatcher.beginConversation(ctx, session, account, client, project)
+		dispatcher.beginTurn(ctx, session, account, client, project, request)
 		payload := dispatcher.builder.BuildCloudCodeRequestWithModel(request, project, credentials.Email, proxyformat.ModelOptions{
 			SupportsThinking: modelDetails.SupportsThinking, ThinkingBudget: modelDetails.ThinkingBudget,
 			MinThinkingBudget: modelDetails.MinThinkingBudget, MaxOutputTokens: modelDetails.MaxOutputTokens,
@@ -505,7 +504,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				}
 			}
 			inFlight, priorMinute := dispatcher.meter.Begin(account.Email)
-			response, eventCount, requestErr := dispatcher.sendStream(ctx, account, client, project,
+			response, eventCount, requestErr := dispatcher.sendStream(ctx, account, client,
 				dispatcher.builder.Stamp(payload), options, guard, consume)
 			if requestErr == nil {
 				if dispatcher.meter.TakeRecovery(account.Email) {
@@ -1091,46 +1090,6 @@ func (dispatcher *Dispatcher) updateAccountQuota(account *Account, body []byte) 
 	dispatcher.manager.UpdateAccountQuota(account.Email, quota, nil)
 }
 
-// liveQuotaRefreshInterval throttles the two quota RPCs issued after a
-// successful GenerateContent: upstream readings move slowly and
-// per-request refreshes would triple hot-loop request cost. The catalog
-// fetch path (fetchAvailableModels) and manual RefreshAccount stay
-// unthrottled — they call refreshLiveQuota directly.
-const liveQuotaRefreshInterval = time.Minute
-
-// recordLiveQuotaRefresh stamps the per-account throttle window. Forced
-// (unthrottled) refreshes stamp too: the post-request wrapper then skips
-// RPCs the catalog fetch path just issued.
-func (dispatcher *Dispatcher) recordLiveQuotaRefresh(email string) {
-	dispatcher.mu.Lock()
-	defer dispatcher.mu.Unlock()
-	if dispatcher.liveQuotaRefreshMS == nil {
-		dispatcher.liveQuotaRefreshMS = make(map[string]int64)
-	}
-	dispatcher.liveQuotaRefreshMS[email] = dispatcher.now().UnixMilli()
-}
-
-// refreshLiveQuotaThrottled runs refreshLiveQuota at most once per
-// liveQuotaRefreshInterval per account.
-func (dispatcher *Dispatcher) refreshLiveQuotaThrottled(ctx context.Context, account *Account, client CloudClient, project string) {
-	if account == nil {
-		return
-	}
-	dispatcher.mu.Lock()
-	now := dispatcher.now().UnixMilli()
-	last, seen := dispatcher.liveQuotaRefreshMS[account.Email]
-	if seen && now-last < liveQuotaRefreshInterval.Milliseconds() {
-		dispatcher.mu.Unlock()
-		return
-	}
-	if dispatcher.liveQuotaRefreshMS == nil {
-		dispatcher.liveQuotaRefreshMS = make(map[string]int64)
-	}
-	dispatcher.liveQuotaRefreshMS[account.Email] = now
-	dispatcher.mu.Unlock()
-	dispatcher.refreshLiveQuota(ctx, account, client, project)
-}
-
 // refreshLiveQuota best-effort merges live quota readings over the static
 // catalog fractions. RetrieveUserQuotaSummary group buckets are shared pools
 // (gemini-5h, 3p-weekly, ...) — they land in Quota.Pools, never in
@@ -1144,7 +1103,6 @@ func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Acc
 	if account == nil || client == nil {
 		return
 	}
-	dispatcher.recordLiveQuotaRefresh(account.Email)
 	if fetcher, ok := client.(quotaSummaryFetcher); ok {
 		if response, err := fetcher.RetrieveUserQuotaSummary(ctx, project); err == nil &&
 			response.StatusCode >= 200 && response.StatusCode < 300 {

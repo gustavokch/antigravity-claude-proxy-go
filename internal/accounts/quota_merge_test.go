@@ -212,13 +212,14 @@ func (c *countingSummaryClient) RetrieveUserQuotaSummary(ctx context.Context, pr
 	return quotaCapableClient{}.RetrieveUserQuotaSummary(ctx, project)
 }
 
-func TestStreamGenerateContent_RefreshesLiveQuotaThrottled(t *testing.T) {
+// The live quota reading is taken before a turn (beginTurn), where agy takes
+// it; a stream that ends takes none.
+func TestStreamGenerateContentTakesNoQuotaReadingAfterTheStream(t *testing.T) {
 	client := &countingSummaryClient{}
 	dispatcher := newDispatcherWithClient(t, client)
-	account := dispatcher.manager.accounts[0]
 
-	// Warm the catalog without touching the quota path, so the only summary
-	// fetches below can come from the post-request refresh.
+	// Warm the catalog without touching the quota path, so a summary fetch
+	// below could only come from the end of a stream.
 	response, err := client.FetchAvailableModels(context.Background(), "p")
 	if err != nil {
 		t.Fatal(err)
@@ -230,19 +231,13 @@ func TestStreamGenerateContent_RefreshesLiveQuotaThrottled(t *testing.T) {
 	dispatcher.storeCatalog("", catalog)
 
 	consume := func(cloudcode.SSEEvent) error { return nil }
-	if _, err := dispatcher.StreamGenerateContent(context.Background(),
-		map[string]any{"model": "gemini-3.8-flash-high"}, consume); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if _, err := dispatcher.StreamGenerateContent(context.Background(),
+			map[string]any{"model": "gemini-3.8-flash-high"}, consume); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := dispatcher.StreamGenerateContent(context.Background(),
-		map[string]any{"model": "gemini-3.8-flash-high"}, consume); err != nil {
-		t.Fatal(err)
-	}
-
-	if client.summaryCalls != 1 {
-		t.Fatalf("expected 1 throttled summary fetch across 2 requests, got %d", client.summaryCalls)
-	}
-	if _, ok := account.Quota.Pools["gemini-5h"]; !ok {
-		t.Fatalf("post-request refresh must record pools: %+v", account.Quota.Pools)
+	if client.summaryCalls != 0 {
+		t.Fatalf("finished streams fetched the quota summary %d times, want none", client.summaryCalls)
 	}
 }
