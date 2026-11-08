@@ -133,20 +133,22 @@ A forwarded call that answers 404, 405 or 501 marks that gateway (custom endpoin
 
 ### 6.2 Claude Code count_tokens identity
 
-Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt` (Claude Code 2.1.311, interactive, 2026-11-07). The real client calls count_tokens: `/context` sent 33 requests within 0.5 s. Its identity differs from `/v1/messages`:
+Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt` (Claude Code 2.1.311, interactive, 2026-11-07, personal account). The real client calls count_tokens only from `/context`: 34 requests within 0.7 s, all 200. A tool turn, an `@` attachment, a second turn with an edit and `/compact` sent none. Its identity differs from `/v1/messages`:
 
 | Field | count_tokens (captured) | `/v1/messages` main (same capture) |
 |---|---|---|
 | `x-claude-code-request-class` | `auxiliary` | `main` (what `ccidentity.staticHeaders` pins, `defaults.go:86`) |
-| `anthropic-beta` | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01` | 18-entry list |
+| `anthropic-beta` | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01` | longer list (18 entries on the first `main` call) |
 | Body keys | `messages`, `model`, `tools` | `context_management`, `diagnostics`, `max_tokens`, `messages`, `metadata`, `model`, `output_config`, `stream`, `system`, `thinking`, `thread`, `tools` |
 | `X-Claude-Code-Session-Id` | present | present |
 | TLS / HTTP | JA4 `t13d1713h1_5b57614c22b0_7f527383e249`, HTTP/1.1 | same |
+| Response | `200`, `application/json`, 19–22 bytes, no `anthropic-ratelimit-unified-*` headers | SSE, carries `anthropic-ratelimit-unified-*` |
 
 - `ccidentity` gains a count_tokens profile: the captured header order, `x-claude-code-request-class: auxiliary`, and the captured beta list (version-pinned like the other betas, with a `client_drift.py` `Site` entry).
 - The body is forwarded as the client sent it, with no billing header, identity block or `metadata` injected. The real client's count bodies carry only `messages`, `model` and `tools`; a caller that adds other keys (for example `system`) has them forwarded unchanged.
 - `X-Claude-Code-Session-Id` is forwarded from the client when present, as on `/v1/messages`.
-- Not yet observed: the response of a successful count (the capture's token was refused with 403 `oauth_not_allowed_for_organization`) and whether count_tokens also fires in successful turns, on attachments or before autocompact. A re-run with a token whose organization allows OAuth closes both.
+- A count response carries no unified rate-limit headers, so the Claude Code pool's rate-limit state is not updated from it; a 429 on a count still marks the account as on `/v1/messages`.
+- Load shape: counts arrive as bursts of about 34 concurrent requests per `/context`, never during turns. The Claude Code forward must not serialize them per account.
 
 ### 6.3 Estimator (`internal/tokencount`)
 
@@ -186,7 +188,8 @@ Unit tests, deterministic (the Manager's `now` func, fake `CloudClient`, `httpte
 
 ## 10. Risks
 
-- **Claude Code count_tokens is partly verified.** The request side is captured (6.2). The success response and any count_tokens traffic during successful turns are not, because the capture token's organization refuses OAuth. The same token backs `client_drift.py`'s Claude Code capture, which therefore records 403s until it is replaced.
+- **Claude Code count_tokens:** the request side, status and response headers are captured (6.2); the success body is inferred from its length (`{"input_tokens":N}`, 19–22 bytes) because the capture addon keeps success bodies out by design. A `/context` burst sends about 34 counts through one pooled account.
+- **`client_drift.py`'s Claude Code capture** used a token whose organization refused OAuth (403 `oauth_not_allowed_for_organization`) until `~/.claude-oat` was replaced on 2026-11-07; captures taken before then carry 403s.
 - **Added latency:** about six sequential round trips before the first prompt of each conversation on an account, and up to two before each new prompt.
 - **More upstream calls per turn** than today; they match agy's per-turn pattern.
 - **Pins are lost on restart:** a resumed session may start on another account.
