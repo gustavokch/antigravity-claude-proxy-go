@@ -30,6 +30,10 @@ const (
 	PathGenerateContent          = "/v1internal:generateContent"
 	PathStreamGenerate           = "/v1internal:streamGenerateContent?alt=sse"
 	PathWriteTrajectoryAcls      = "/v1internal:writeTrajectoryAcls"
+	PathFetchAdminControls       = "/v1internal:fetchAdminControls"
+	PathFetchUserInfo            = "/v1internal:fetchUserInfo"
+	PathListExperiments          = "/v1internal:listExperiments"
+	PathListCascadeNuxes         = "/v1internal/cascadeNuxes?page_size=1000"
 
 	DefaultUserAgentVersion = "1.5.2"
 	AgyBuildCL              = "1015175089"
@@ -297,22 +301,14 @@ func (c *Client) FetchAvailableModels(ctx context.Context, projectID string) (Re
 
 // FetchAvailableModelsAt is FetchAvailableModels against an explicit endpoint list.
 func (c *Client) FetchAvailableModelsAt(ctx context.Context, endpoints []string, projectID string) (Response, error) {
-	request := map[string]string{}
-	if projectID != "" {
-		request["project"] = projectID
-	}
-	return c.DoJSON(ctx, endpoints, PathFetchAvailableModels, request, RequestOptions{})
+	return c.DoJSON(ctx, endpoints, PathFetchAvailableModels, projectRequest(projectID), RequestOptions{})
 }
 
 // RetrieveUserQuotaSummary fetches the live per-bucket quota summary
 // (remaining fractions + reset times). Unlike fetchAvailableModels'
 // static quotaInfo, this RPC is the authoritative consumption signal.
 func (c *Client) RetrieveUserQuotaSummary(ctx context.Context, projectID string) (Response, error) {
-	request := map[string]string{}
-	if projectID != "" {
-		request["project"] = projectID
-	}
-	return c.DoJSON(ctx, c.contentEndpoints, PathRetrieveUserQuotaSummary, request, RequestOptions{})
+	return c.DoJSON(ctx, c.contentEndpoints, PathRetrieveUserQuotaSummary, projectRequest(projectID), RequestOptions{})
 }
 
 // WriteTrajectoryAcls is the call agy makes for a new conversation's
@@ -323,11 +319,39 @@ func (c *Client) WriteTrajectoryAcls(ctx context.Context, trajectoryID string) (
 
 // RetrieveUserQuota fetches per-model token-bucket quotas (model_id keyed).
 func (c *Client) RetrieveUserQuota(ctx context.Context, projectID string) (Response, error) {
+	return c.DoJSON(ctx, c.contentEndpoints, PathRetrieveUserQuota, projectRequest(projectID), RequestOptions{})
+}
+
+// FetchAdminControls, FetchUserInfo and ListExperiments are calls agy 1.5.2
+// sends around a conversation, each with body {"project":"<id>"}
+// (.reference/client-drift/agy.jsonl). The proxy sends them for parity and
+// reads only their status.
+func (c *Client) FetchAdminControls(ctx context.Context, projectID string) (Response, error) {
+	return c.DoJSON(ctx, c.contentEndpoints, PathFetchAdminControls, projectRequest(projectID), RequestOptions{})
+}
+
+func (c *Client) FetchUserInfo(ctx context.Context, projectID string) (Response, error) {
+	return c.DoJSON(ctx, c.contentEndpoints, PathFetchUserInfo, projectRequest(projectID), RequestOptions{})
+}
+
+func (c *Client) ListExperiments(ctx context.Context, projectID string) (Response, error) {
+	return c.DoJSON(ctx, c.contentEndpoints, PathListExperiments, projectRequest(projectID), RequestOptions{})
+}
+
+// ListCascadeNuxes is the one GET agy sends to Cloud Code, with no body
+// (.reference/client-drift/agy.jsonl).
+func (c *Client) ListCascadeNuxes(ctx context.Context) (Response, error) {
+	return c.DoGet(ctx, c.contentEndpoints, PathListCascadeNuxes)
+}
+
+// projectRequest is the body of the calls that name only the project; it is
+// {} before the project is known.
+func projectRequest(projectID string) map[string]string {
 	request := map[string]string{}
 	if projectID != "" {
 		request["project"] = projectID
 	}
-	return c.DoJSON(ctx, c.contentEndpoints, PathRetrieveUserQuota, request, RequestOptions{})
+	return request
 }
 
 func (c *Client) GenerateContent(ctx context.Context, payload any, options RequestOptions) (Response, error) {
@@ -343,9 +367,20 @@ func (c *Client) DoJSON(ctx context.Context, endpoints []string, path string, pa
 	if err != nil {
 		return Response{}, fmt.Errorf("encode Cloud Code request: %w", err)
 	}
+	return c.do(ctx, http.MethodPost, endpoints, path, body, options)
+}
+
+// DoGet sends a GET with no body. Without a body it carries no Content-Type,
+// so its head is Host, User-Agent, Authorization, Accept-Encoding, as agy's
+// GET is (.reference/client-drift/agy.jsonl).
+func (c *Client) DoGet(ctx context.Context, endpoints []string, path string) (Response, error) {
+	return c.do(ctx, http.MethodGet, endpoints, path, nil, RequestOptions{})
+}
+
+func (c *Client) do(ctx context.Context, method string, endpoints []string, path string, body []byte, options RequestOptions) (Response, error) {
 	var failures []error
 	for _, endpoint := range endpoints {
-		result, err := c.doJSONAttempt(ctx, endpoint, path, body, options)
+		result, err := c.doAttempt(ctx, method, endpoint, path, body, options)
 		if err == nil {
 			return result, nil
 		}
@@ -366,13 +401,13 @@ func (e *requestCreationError) Error() string {
 	return e.err.Error()
 }
 
-func (c *Client) doJSONAttempt(ctx context.Context, endpoint, path string, body []byte, options RequestOptions) (Response, error) {
+func (c *Client) doAttempt(ctx context.Context, method, endpoint, path string, body []byte, options RequestOptions) (Response, error) {
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
-	request, err := c.newRequest(ctx, endpoint, path, body, options)
+	request, err := c.newRequest(ctx, method, endpoint, path, body, options)
 	if err != nil {
 		return Response{}, &requestCreationError{err: err}
 	}
@@ -390,7 +425,7 @@ func (c *Client) DoSSE(ctx context.Context, endpoints []string, path string, pay
 	}
 	var failures []error
 	for _, endpoint := range endpoints {
-		request, err := c.newRequest(ctx, endpoint, path, body, options)
+		request, err := c.newRequest(ctx, http.MethodPost, endpoint, path, body, options)
 		if err != nil {
 			return Response{}, err
 		}
@@ -427,12 +462,21 @@ func (c *Client) DoSSE(ctx context.Context, endpoints []string, path string, pay
 	return Response{}, errors.Join(failures...)
 }
 
-func (c *Client) newRequest(ctx context.Context, endpoint, path string, body []byte, options RequestOptions) (*http.Request, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+path, bytes.NewReader(body))
+// newRequest builds a request with agy's headers. A nil body sends no body and
+// no Content-Type.
+func (c *Client) newRequest(ctx context.Context, method, endpoint, path string, body []byte, options RequestOptions) (*http.Request, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(endpoint, "/")+path, reader)
 	if err != nil {
 		return nil, fmt.Errorf("create Cloud Code request: %w", err)
 	}
 	request.Header = c.defaultHeader.Clone()
+	if body == nil {
+		request.Header.Del("Content-Type")
+	}
 	for name, values := range options.Headers {
 		request.Header.Del(name)
 		for _, value := range values {
