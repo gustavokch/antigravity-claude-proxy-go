@@ -32,6 +32,14 @@ func measureRequest(pricing imagePricing, request map[string]any) measurement {
 	return m
 }
 
+// measureMessages measures messages alone, for the tail of a conversation
+// whose earlier part has a real count.
+func measureMessages(pricing imagePricing, messages []any) measurement {
+	var m measurement
+	m.addMessages(pricing, messages)
+	return m
+}
+
 func (m *measurement) addSystem(system any) {
 	switch system := system.(type) {
 	case string:

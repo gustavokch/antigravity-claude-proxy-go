@@ -5,6 +5,7 @@
 package tokencount
 
 import (
+	"container/list"
 	"strings"
 	"sync"
 	"time"
@@ -40,8 +41,10 @@ func Family(model string) string {
 type Counter struct {
 	now func() time.Time
 
-	mu     sync.Mutex
-	ratios map[string]float64 // family -> chars per token
+	mu            sync.Mutex
+	ratios        map[string]float64       // family -> chars per token
+	conversations map[string]*list.Element // memoryKey -> element of order
+	order         *list.List               // conversation values, latest observation first
 }
 
 // New returns an empty Counter. now is its clock; nil means time.Now.
@@ -49,26 +52,55 @@ func New(now func() time.Time) *Counter {
 	if now == nil {
 		now = time.Now
 	}
-	return &Counter{now: now, ratios: make(map[string]float64)}
+	return &Counter{
+		now:           now,
+		ratios:        make(map[string]float64),
+		conversations: make(map[string]*list.Element),
+		order:         list.New(),
+	}
 }
 
 // Observe learns from a request an upstream answered. realInput is the input
 // the upstream reported for it, cache reads and writes included. Image tokens
-// are taken out first: they are priced per image, not by the ratio.
+// are taken out first: they are priced per image, not by the ratio. With a
+// session, the request also becomes that conversation's memory for Estimate.
 func (c *Counter) Observe(session, model string, request map[string]any, realInput int) {
+	family := Family(model)
 	measured := measureRequest(pricingFor(model), request)
+	remember := session != "" && realInput > 0
+	var memory conversation
+	if remember {
+		memory = newConversation(memoryKey(session, family), request, realInput)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.learnLocked(Family(model), measured, realInput)
+	c.learnLocked(family, measured, realInput)
+	if remember {
+		c.rememberLocked(memory, c.now())
+	}
 }
 
-// Estimate returns the input tokens request would count for model.
+// Estimate returns the input tokens request would count for model. When it
+// continues the last request observed in its session, with the same system
+// and tools, the estimate is that request's real count plus an estimate of
+// the messages after it; otherwise the whole request is estimated. Estimate
+// does not keep a conversation alive: only Observe does.
 func (c *Counter) Estimate(session, model string, request map[string]any) int {
-	measured := measureRequest(pricingFor(model), request)
+	family := Family(model)
+	pricing := pricingFor(model)
 	c.mu.Lock()
-	ratio := c.ratioLocked(Family(model))
+	ratio := c.ratioLocked(family)
+	var memory conversation
+	found := false
+	if session != "" {
+		memory, found = c.recallLocked(memoryKey(session, family), c.now())
+	}
 	c.mu.Unlock()
-	return measured.tokens(ratio)
+	messages, _ := request["messages"].([]any)
+	if found && memory.continuedBy(request, messages) {
+		return memory.realInput + measureMessages(pricing, messages[memory.messages:]).tokens(ratio)
+	}
+	return measureRequest(pricing, request).tokens(ratio)
 }
 
 func (c *Counter) ratioLocked(family string) float64 {
