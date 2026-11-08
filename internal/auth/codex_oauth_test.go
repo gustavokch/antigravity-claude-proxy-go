@@ -191,30 +191,38 @@ func TestCodexLoopbackCallbackCompletesSession(t *testing.T) {
 	ln.Close()
 }
 
+// A callback whose state is not the session's is refused without ending the
+// login: any page in the user's browser can reach localhost:1455, and must not
+// be able to abort a sign-in. The genuine redirect still completes it.
 func TestCodexLoopbackCallbackRejectsStateMismatch(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","expires_in":3600}`))
 	}))
 	t.Cleanup(srv.Close)
-
 	m := NewCodexOAuthManager()
 	m.SetEndpoints("", srv.URL)
-	m.OnComplete(func(*CodexAccountResult) { t.Error("hook fired for a rejected callback") })
+	var hooks atomic.Int32
+	m.OnComplete(func(*CodexAccountResult) { hooks.Add(1) })
 	session := &CodexAuthSession{ID: "s1", Mode: "loopback", state: "expected", status: "pending", done: make(chan struct{})}
 
-	rec := httptest.NewRecorder()
-	m.handleLoopbackCallback(session, rec, httptest.NewRequest(http.MethodGet, codexCallbackPath+"?code=c&state=forged", nil))
+	for _, query := range []string{"?code=c&state=forged", "?code=c", "?error=access_denied&state=forged"} {
+		rec := httptest.NewRecorder()
+		m.handleLoopbackCallback(session, rec, httptest.NewRequest(http.MethodGet, codexCallbackPath+query, nil))
+		if rec.Code != http.StatusBadRequest || session.Snapshot().Status != "pending" {
+			t.Errorf("%s: status %d, session %+v; want 400 and the login still pending", query, rec.Code, session.Snapshot())
+		}
+	}
+	if calls.Load() != 0 || hooks.Load() != 0 {
+		t.Fatalf("forged callbacks reached the token endpoint (%d) or the hook (%d)", calls.Load(), hooks.Load())
+	}
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", rec.Code)
-	}
-	snap := session.Snapshot()
-	if snap.Status != "failed" || !strings.Contains(snap.Error, "state") {
-		t.Errorf("snapshot = %+v, want failed with a state error", snap)
-	}
-	if calls.Load() != 0 {
-		t.Error("token endpoint called for a forged state")
+	rec := httptest.NewRecorder()
+	m.handleLoopbackCallback(session, rec, httptest.NewRequest(http.MethodGet, codexCallbackPath+"?code=c&state=expected", nil))
+	if rec.Code != http.StatusOK || session.Snapshot().Status != "completed" || hooks.Load() != 1 {
+		t.Errorf("genuine callback: status %d, session %+v, hooks %d; want 200, completed, 1", rec.Code, session.Snapshot(), hooks.Load())
 	}
 }
 
@@ -223,7 +231,7 @@ func TestCodexCallbackEscapesErrorParam(t *testing.T) {
 	session := &CodexAuthSession{ID: "s1", state: "state-1", status: "pending", done: make(chan struct{})}
 
 	rec := httptest.NewRecorder()
-	m.handleLoopbackCallback(session, rec, httptest.NewRequest(http.MethodGet, codexCallbackPath+"?error=%3Cimg+src%3Dx+onerror%3Dalert(1)%3E", nil))
+	m.handleLoopbackCallback(session, rec, httptest.NewRequest(http.MethodGet, codexCallbackPath+"?error=%3Cimg+src%3Dx+onerror%3Dalert(1)%3E&state=state-1", nil))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)

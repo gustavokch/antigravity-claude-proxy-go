@@ -452,11 +452,17 @@ func (m *CodexOAuthManager) CancelSession(id string) error {
 }
 
 // handleLoopbackCallback processes the browser redirect on the loopback
-// listener.
+// listener. Any page in the user's browser can reach the listener, so a
+// callback without the session's state is refused and the login stays pending;
+// only the genuine redirect can end it, with a code or an error.
 func (m *CodexOAuthManager) handleLoopbackCallback(session *CodexAuthSession, w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	code := query.Get("code")
-	state := query.Get("state")
+	// session.state is set before the listener starts and never changes.
+	if state := query.Get("state"); state == "" || state != session.state {
+		slog.Warn("Codex OAuth loopback callback rejected: state mismatch", "session_id", session.ID, "has_state", state != "")
+		writeCodexCallbackPage(w, http.StatusBadRequest, "Authentication Failed", "State verification failed.")
+		return
+	}
 
 	if errParam := query.Get("error"); errParam != "" {
 		msg := "OAuth error: " + errParam
@@ -470,23 +476,17 @@ func (m *CodexOAuthManager) handleLoopbackCallback(session *CodexAuthSession, w 
 		return
 	}
 
-	if code == "" || state == "" {
-		slog.Warn("Codex OAuth loopback callback rejected: missing code or state", "session_id", session.ID, "has_code", code != "", "has_state", state != "")
+	code := query.Get("code")
+	if code == "" {
+		slog.Warn("Codex OAuth loopback callback rejected: missing code", "session_id", session.ID)
 		session.mu.Lock()
-		session.finish("failed", "missing code or state parameter")
+		session.finish("failed", "missing code parameter")
 		session.mu.Unlock()
-		writeCodexCallbackPage(w, http.StatusBadRequest, "Authentication Failed", "Missing authorization code or state.")
+		writeCodexCallbackPage(w, http.StatusBadRequest, "Authentication Failed", "Missing authorization code.")
 		return
 	}
 
 	session.mu.Lock()
-	if state != session.state {
-		slog.Warn("Codex OAuth loopback callback rejected: state mismatch", "session_id", session.ID)
-		session.finish("failed", "invalid state parameter (CSRF protection)")
-		session.mu.Unlock()
-		writeCodexCallbackPage(w, http.StatusBadRequest, "Authentication Failed", "State verification failed.")
-		return
-	}
 	if err := session.claim(); err != nil {
 		session.mu.Unlock()
 		writeCodexCallbackPage(w, http.StatusConflict, "Authentication Not Completed", err.Error())
