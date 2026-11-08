@@ -5,8 +5,8 @@
  * off) derived only from real store data, and a readout naming the reason.
  *
  * Inputs: $store.data.gateways (from /api/config), $store.data accounts
- * (real rows, never placeholder rows), $store.data.openrouterCredits, and
- * $store.data.connectionStatus.
+ * (real rows, never placeholder rows), $store.data.codexAccounts (Codex pool
+ * snapshots), $store.data.openrouterCredits, and $store.data.connectionStatus.
  */
 window.Components = window.Components || {};
 
@@ -33,10 +33,19 @@ window.Components.routeMimic = () => ({
         return this.t('gateway' + id.charAt(0).toUpperCase() + id.slice(1));
     },
 
+    // Rows for one account gateway. Codex accounts are pool snapshots kept
+    // apart from /account-limits, mapped to the shared row shape.
+    accountRows(provider) {
+        if (provider === 'codex') {
+            return (this.$store.data.codexAccounts || []).map((s) => window.QuotaView.codexRow(s));
+        }
+        return this.realAccounts().filter((a) => (a.provider || 'google') === provider);
+    },
+
     // Lamps use QuotaView.accountAspect, the rule the Accounts view uses.
     // The node is clear only when every enabled account is ready and clear.
     accountGroup(provider) {
-        const rows = this.realAccounts().filter((a) => (a.provider || 'google') === provider);
+        const rows = this.accountRows(provider);
         const lamps = rows.map((a) => {
             const st = window.QuotaView.accountAspect(a);
             return { key: a.id || a.email, aspect: st.lamp, ready: st.ready, title: a.email || a.name || a.id };
@@ -92,10 +101,11 @@ window.Components.routeMimic = () => ({
                 return base;
             }
             case 'claudecode':
-                if (!g.claudecode || !g.claudecode.enabled) {
+            case 'codex':
+                if (!g[id] || !g[id].enabled) {
                     return { aspect: 'off', reason: this.t('routeDisabled'), lamps: [] };
                 }
-                return this.accountGroup('claudecode');
+                return this.accountGroup(id);
             case 'custom': {
                 const n = g.customCount || 0;
                 if (n === 0) return { aspect: 'off', reason: this.t('routeNoEndpoints'), lamps: [] };
@@ -141,11 +151,12 @@ window.Components.routeMimic = () => ({
         return this.t('routeProxyDisconnected');
     },
 
-    // Where a signal leads when pulled.
+    // Where a signal leads when pulled: account gateways open their Accounts
+    // tab, the rest open the Models settings.
     open(id) {
         const global = this.$store.global;
-        if (id === 'cloudcode' || id === 'claudecode') {
-            global.accountsTab = id === 'claudecode' ? 'claudecode' : 'google';
+        if (id === 'cloudcode' || id === 'claudecode' || id === 'codex') {
+            global.accountsTab = id === 'cloudcode' ? 'google' : id;
             global.activeTab = 'accounts';
             return;
         }

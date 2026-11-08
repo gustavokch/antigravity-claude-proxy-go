@@ -201,7 +201,7 @@ MOTION: Lamps and tracks change in 160–400 ms; nothing loops except an in-flig
 
     <!-- Add Account dialog -->
     <dialog id="add_account_modal" class="modal" x-data="addAccountModal" @close="resetState()">
-        <div class="modal-box max-w-lg w-full">
+        <div class="modal-box max-w-2xl w-full">
             <div class="modal-head">
                 <span x-text="$store.global.t('addAccount')">Add New Account</span>
                 <form method="dialog">
@@ -225,6 +225,10 @@ MOTION: Lamps and tracks change in 160–400 ms; nothing loops except an in-flig
                 <button type="button" class="sb-tab" role="tab" :aria-selected="provider === 'kimi'"
                     @click="setProvider('kimi')">
                     <span x-text="$store.global.t('providerKimiCode') || 'Kimi Code'">Kimi Code</span>
+                </button>
+                <button type="button" class="sb-tab" role="tab" :aria-selected="provider === 'codex'"
+                    @click="setProvider('codex')">
+                    <span x-text="$store.global.t('providerCodex') || 'ChatGPT Codex'">ChatGPT Codex</span>
                 </button>
             </div>
 
@@ -374,6 +378,57 @@ MOTION: Lamps and tracks change in 160–400 ms; nothing loops except an in-flig
 
                     <div class="notice notice-danger" x-show="kimiOAuth.error" role="alert">
                         <span class="lamp lamp-danger"></span><span class="mono t-sm" x-text="kimiOAuth.error"></span>
+                    </div>
+                </div>
+
+                <!-- ChatGPT Codex: PKCE sign-in in a popup; the pasted redirect URL finishes it when the callback cannot reach the proxy -->
+                <div class="stack" x-show="provider === 'codex'" role="tabpanel">
+                    <p class="t-2 t-sm"
+                        x-text="$store.global.t('connectCodexDesc') || 'Sign in with a ChatGPT account (Plus, Pro, Team or Business). The account joins the Codex gateway pool.'">
+                        Sign in with a ChatGPT account. The account joins the Codex gateway pool.</p>
+
+                    <button type="button" class="btn btn-primary btn-lg btn-block" @click="startCodexLogin()"
+                        :disabled="codexStarting || codexOAuth.status === 'pending'" :aria-busy="codexStarting ? 'true' : 'false'">
+                        <span class="spinner" x-show="codexStarting"></span>
+                        <span x-text="$store.global.t('connectCodex') || 'Connect ChatGPT Account'">Connect ChatGPT Account</span>
+                    </button>
+
+                    <template x-if="codexOAuth.status === 'pending'">
+                        <div class="panel panel-body stack-sm">
+                            <div class="cluster t-3 t-sm">
+                                <span class="spinner"></span>
+                                <span x-text="$store.global.t('codexOAuthWaiting') || 'Waiting for sign-in in the popup…'">Waiting for sign-in in the popup…</span>
+                            </div>
+                            <a class="t-sm" :href="codexOAuth.authUrl" target="_blank" rel="noopener"
+                                x-show="codexOAuth.authUrl"
+                                x-text="$store.global.t('codexOAuthOpenLink') || 'Open the sign-in page'">Open the sign-in page</a>
+                            <p class="t-caution t-sm" x-show="codexOAuth.mode === 'manual'"
+                                x-text="$store.global.t('codexOAuthManualMode') || 'The proxy could not listen on port 1455, so paste the redirected URL below to finish.'"></p>
+                        </div>
+                    </template>
+
+                    <div class="stack-sm">
+                        <label class="field-label" for="codex-redirect-url"
+                            x-text="$store.global.t('codexPasteLabel') || 'Redirected URL'">Redirected URL</label>
+                        <p class="field-help"
+                            x-text="$store.global.t('codexPasteHint') || 'After sign-in the browser goes to localhost:1455, which only reaches the proxy when this browser runs on the proxy machine. If that page does not load, paste its full URL here.'"></p>
+                        <div class="sb-input-group gap-2">
+                            <input id="codex-redirect-url" type="text" x-model="codexRedirectInput"
+                                class="input input-sm mono grow"
+                                placeholder="http://localhost:1455/auth/callback?code=…&amp;state=…"
+                                :disabled="codexOAuth.status !== 'pending'"
+                                @keydown.enter="completeCodexLogin()">
+                            <button type="button" class="btn btn-primary btn-sm" @click="completeCodexLogin()"
+                                :disabled="!codexRedirectInput.trim() || codexOAuth.status !== 'pending' || codexSubmitting"
+                                :aria-busy="codexSubmitting ? 'true' : 'false'">
+                                <span class="spinner" x-show="codexSubmitting"></span>
+                                <span x-text="$store.global.t('completeAuth')">OK</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="notice notice-danger" x-show="codexOAuth.error" role="alert">
+                        <span class="lamp lamp-danger"></span><span class="mono t-sm" x-text="codexOAuth.error"></span>
                     </div>
                 </div>
             </div>

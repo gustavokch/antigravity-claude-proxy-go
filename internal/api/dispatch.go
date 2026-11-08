@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"antigravity-go-proxy/internal/ccidentity"
+	"antigravity-go-proxy/internal/codex"
 	"antigravity-go-proxy/internal/config"
 )
 
@@ -25,13 +26,14 @@ type gatewayRequest struct {
 }
 
 // gatewayRoute is the gateway that claims a model and what its matcher found:
-// target is the model id that gateway is sent, and kimi, zen and endpoint hold
-// the matched allowlist entry or endpoint its forward reads.
+// target is the model id that gateway is sent, and kimi, zen, codex and
+// endpoint hold the matched allowlist entry or endpoint its forward reads.
 type gatewayRoute struct {
 	id       config.GatewayID
 	target   string
 	kimi     config.KimiModelConfig
 	zen      config.ZenModelConfig
+	codex    codex.ModelConfig
 	endpoint config.EndpointConfig
 }
 
@@ -52,6 +54,7 @@ var gateways = map[config.GatewayID]gateway{
 	config.GatewayKimi:       {(*Server).matchKimiGateway, (*Server).forwardKimiGateway},
 	config.GatewayZen:        {(*Server).matchZenGateway, (*Server).forwardZenGateway},
 	config.GatewayClaudeCode: {(*Server).matchClaudeCodeGateway, (*Server).forwardClaudeCodeGateway},
+	config.GatewayCodex:      {(*Server).matchCodexGateway, (*Server).forwardCodexGateway},
 	config.GatewayOpenRouter: {(*Server).matchOpenRouterGateway, (*Server).forwardOpenRouterGateway},
 	config.GatewayCustom:     {(*Server).matchCustomEndpointGateway, (*Server).forwardCustomEndpointGateway},
 }
@@ -159,6 +162,67 @@ func (server *Server) forwardClaudeCodeGateway(g *gatewayRequest, route gatewayR
 		return
 	}
 	server.forwardToClaudeCode(g.writer, g.request, g.cfg.ClaudeCode, ccBody, route.target)
+}
+
+func (server *Server) matchCodexGateway(_ context.Context, cfg config.Config, model string) (gatewayRoute, bool) {
+	if !cfg.Codex.Enabled {
+		return gatewayRoute{}, false
+	}
+	entry, ok := codex.ResolveModel(codexAllowlist(cfg.Codex), model)
+	if !ok {
+		return gatewayRoute{}, false
+	}
+	return gatewayRoute{target: entry.ID, codex: entry}, true
+}
+
+// forwardCodexGateway serves a model on the Codex allowlist from the ChatGPT
+// account pool. The Anthropic body is translated into a Codex Responses body
+// here, once, so every account the request fails over to gets the same bytes.
+// Its prompt cache key names the session and the Claude Code agent, so a
+// subagent's turns do not evict the main loop's cache.
+func (server *Server) forwardCodexGateway(g *gatewayRequest, route gatewayRoute) {
+	entry := route.codex
+	// Client values are clamped to the entry's output limit (the built-in
+	// entry's when the configured one sets none), never raised.
+	anthropicBody := g.rawBody
+	maxTokens, setMaxTokens := maxTokensValue(g.body, entry.MaxOutputTokens, codexDefaultMaxOutput(entry.ID))
+	if setMaxTokens {
+		g.body["max_tokens"] = maxTokens
+	}
+	if setMaxTokens || g.mutated {
+		var err error
+		if anthropicBody, err = json.Marshal(g.body); err != nil {
+			writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Codex request: "+err.Error())
+			return
+		}
+	}
+	sessionKey := ccExtractSessionID(g.request, g.body)
+	cacheKey := codex.PromptCacheKey(entry.ID, sessionKey, codexAgentID(g.request))
+	opts := codex.BuildOptions{
+		Model:          entry.ID,
+		Entry:          entry,
+		PromptCacheKey: cacheKey,
+		Refused:        &server.codexRefused,
+	}
+	body, toolNames, err := codex.BuildRequest(anthropicBody, opts)
+	if err != nil {
+		writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	stream, _ := g.body["stream"].(bool)
+	server.forwardToCodex(g.writer, g.request, g.cfg.Codex, codexCall{
+		model:          entry.ID,
+		body:           body,
+		toolNames:      toolNames,
+		sessionKey:     sessionKey,
+		promptCacheKey: cacheKey,
+		serviceTier:    codex.ServiceTier(g.body),
+		stream:         stream,
+		rebuild: func() ([]byte, error) {
+			b, _, err := codex.BuildRequest(anthropicBody, opts)
+			return b, err
+		},
+	})
 }
 
 // claudeCodeGatewayBody is the body the pooled Claude Code gateway sends for g,

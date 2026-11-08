@@ -715,7 +715,7 @@ func TestServer_ForwardToZen_ChatWireRouting(t *testing.T) {
 // canonicalized, translated and posted to /v1/responses, and the client must
 // receive Anthropic SSE. Regression pin for the whole Responses dispatch:
 // matchZenModelEntry → zenTargetModel → forwardToZen wire branch →
-// SendResponses → streamResponsesToAnthropic.
+// SendResponses → responses.Stream.
 func TestServer_ForwardToZen_ResponsesWireRouting(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", tmpDir)

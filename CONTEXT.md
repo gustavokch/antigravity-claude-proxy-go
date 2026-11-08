@@ -19,7 +19,7 @@ A user-configured target host URL and optional API key mapped to specific model 
 _Avoid_: Upstream target, external provider, third-party backend.
 
 **Gateway Precedence**:
-The configurable order in which the proxy tries each gateway (Kimi, Zen, Claude Code, OpenRouter, custom endpoints) when more than one would accept the same Requested Model; `cloudcode` marks the terminal account-backed route. Configured by `gatewayOrder.order`, overridden per model by `gatewayOrder.byModel`. The list is a hint: an omitted gateway is tried after the listed ones rather than disabled.
+The configurable order in which the proxy tries each gateway (Kimi, Zen, Claude Code, Codex, OpenRouter, custom endpoints) when more than one would accept the same Requested Model; `cloudcode` marks the terminal account-backed route. Configured by `gatewayOrder.order`, overridden per model by `gatewayOrder.byModel`. The list is a hint: an omitted gateway is tried after the listed ones rather than disabled.
 _Avoid_: provider priority, load order, gateway ranking, fallback chain.
 
 ### Identity & Account Management
@@ -27,6 +27,10 @@ _Avoid_: provider priority, load order, gateway ranking, fallback chain.
 **Account**:
 A configured Google identity credential with quota metrics, rate-limit state, and subscription tier used to authenticate with Google Cloud Code.
 _Avoid_: User, profile, client, credential pair.
+
+**ChatGPT Account**:
+A ChatGPT-subscription OAuth credential (access, refresh and id token, plus the `chatgpt_account_id` claim) in the Codex gateway's pool, with plan type, 5h and weekly usage windows, and cooldown state, used to authenticate with the Codex backend. Stored in `config.json` `codex.accounts[]` and added by the WebUI login, never imported from the codex CLI, because its refresh token is single-use. Distinct from an Account, which is a Google credential for Cloud Code.
+_Avoid_: OpenAI account, Codex token, API key.
 
 **Account Source**:
 The origin mechanism used to discover or supply an Account's credentials (`local_db`, `oauth`, or `manual`).
@@ -45,7 +49,7 @@ A temporary lockout duration during which an Account is ineligible for selection
 _Avoid_: Backoff window, mute period, lockout timer.
 
 **Wire Identity**:
-The header set and body shape a request presents to Anthropic, rewritten to match the committed Claude Code capture so a foreign harness is not advertised. Distinct from an Account, which is the credential a request authenticates with: a Wire Identity claims what the client is, an Account proves who the user is. Owned by `internal/ccidentity`, applied by `internal/claudecode` on the pooled path and `internal/api` on the custom-endpoint path, and scoped by ADR-0004.
+The header set and body shape a request presents to Anthropic, rewritten to match the committed Claude Code capture so a foreign harness is not advertised. Distinct from an Account, which is the credential a request authenticates with: a Wire Identity claims what the client is, an Account proves who the user is. Owned by `internal/ccidentity`, applied by `internal/claudecode` on the pooled path and `internal/api` on the custom-endpoint path, and scoped by ADR-0004. The Codex gateway presents a fixed one of its own to the Codex backend (`codex-tui` headers over a Chrome TLS hello), scoped by ADR-0005.
 _Avoid_: Spoof, spoofing, normalize, normalization, identity (bare — it collides with Account).
 
 **Start Burst**:
@@ -89,7 +93,7 @@ _Avoid_: Model mapping, nickname, shorthand.
 ### Format & Reasoning Adaptation
 
 **Thinking Adaptation**:
-The normalization of reasoning token budgets and synthesis/validation of thought signatures for reasoning-capable models.
+The normalization of reasoning token budgets and synthesis/validation of thought signatures for reasoning-capable models. On the Codex gateway the thinking block's `signature` carries the backend's encrypted reasoning (`reasoning.encrypted_content`), which returns upstream as a `reasoning` input item on the next turn; the conversation itself carries it, so no cache is involved.
 _Avoid_: Thought parsing, reasoning hook, budget patch.
 
 **Thought Signature Cache**:

@@ -11,7 +11,7 @@ window.Components = window.Components || {};
  */
 window.QuotaView = (() => {
     const FAMILY_RANK = { gemini: 0, claude: 1, '3p': 2 };
-    const FAMILY_LABEL = { gemini: 'Gemini', claude: 'Claude', '3p': '3P' };
+    const FAMILY_LABEL = { gemini: 'Gemini', claude: 'Claude', '3p': '3P', codex: 'Codex' };
     const WINDOW_RANK = { '5h': 0, weekly: 1, '7d': 1 };
 
     const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -91,6 +91,11 @@ window.QuotaView = (() => {
             const key = a.status === 'banned' ? 'accStatusBanned' : 'accStatusInvalid';
             return { lamp: 'danger', key, blocked: true, ready: false };
         }
+        // A Codex account whose refresh token was revoked or reused serves
+        // nothing until someone signs it in again.
+        if (a.status === 'needs_login') {
+            return { lamp: 'danger', key: 'accStatusNeedsLogin', blocked: true, ready: false };
+        }
         const pools = sortedPools(a.quota && a.quota.pools).map(poolPercent).filter(isNum);
         if (pools.length > 0 && pools.every((p) => p <= 0)) {
             return { lamp: 'danger', key: 'accStatusExhausted', blocked: true, ready: false };
@@ -112,6 +117,48 @@ window.QuotaView = (() => {
             return { lamp: 'caution', key: 'accStatusPartlyExhausted', blocked: false, ready: true };
         }
         return { lamp: 'clear', key: 'accStatusReady', blocked: false, ready: true };
+    }
+
+    // A Codex quota window's pool id. The gateway reads 300 minutes as the
+    // 5-hour window and 10080 as the weekly one, and names any other length by
+    // its minutes, as /v1/usage labels it.
+    function codexWindowId(win, slot) {
+        const m = win.windowMinutes;
+        if (m === 300) return '5h';
+        if (m === 10080) return 'weekly';
+        return isNum(m) && m > 0 ? `${m}m` : slot;
+    }
+
+    // Codex quota ({primary, secondary} windows of used percent) as pools of
+    // remaining fraction, so the shared bars and the aspect rule read them
+    // like any other account. A window without a used percent is unknown and
+    // left out; a Go zero reset time means no reset was reported.
+    function codexPools(quota) {
+        const pools = {};
+        for (const slot of ['primary', 'secondary']) {
+            const win = quota && quota[slot];
+            if (!win || !isNum(win.usedPercent)) continue;
+            let id = 'codex-' + codexWindowId(win, slot);
+            if (id in pools) id = 'codex-' + slot;
+            const reset = Date.parse(win.resetAt);
+            pools[id] = {
+                remainingFraction: Math.max(0, Math.min(1, 1 - win.usedPercent / 100)),
+                resetTime: reset > 0 ? win.resetAt : null,
+            };
+        }
+        return pools;
+    }
+
+    // A Codex pool snapshot (GET /api/codex/accounts) in the row shape the
+    // Accounts view and the route diagram share.
+    function codexRow(snapshot) {
+        const s = snapshot || {};
+        return {
+            ...s,
+            provider: 'codex',
+            planType: s.planType || (s.quota && s.quota.planType) || '',
+            quota: { pools: codexPools(s.quota) },
+        };
     }
 
     // Signal Box level for a remaining percent. 'off' when unknown, 'danger'
@@ -303,6 +350,7 @@ window.QuotaView = (() => {
 
     return {
         splitPoolId, poolPercent, sortedPools, poolFamilyLabel, inCooldown, accountAspect,
+        codexPools, codexRow,
         remainingLevel, balanceLevel, usedLevel, toneClass, usedTextClass,
         burnLevel, projectedLevel, usedPercent, barPosition, formatUSD, formatTokens,
         reportRows, reportPeriod, usageURL, historySince, escapeHTML, poolLabel, poolSourceLabel,
@@ -311,9 +359,9 @@ window.QuotaView = (() => {
 })();
 
 window.Components.accountManager = () => ({
-    // The tab lives in the global store so the route diagram can open the
-    // Claude Code tab directly.
-    get accountTab() { return Alpine.store('global').accountsTab; }, // 'google' | 'claudecode'
+    // The tab lives in the global store so the route diagram can open a
+    // gateway's tab directly.
+    get accountTab() { return Alpine.store('global').accountsTab; }, // 'google' | 'claudecode' | 'codex'
     set accountTab(tab) { Alpine.store('global').accountsTab = tab; },
     searchQuery: '',
     deleteTarget: '',
@@ -354,6 +402,10 @@ window.Components.accountManager = () => ({
     ccNewName: '',
     ccTesting: {},
 
+    // ChatGPT Codex: the rows are $store.data.codexAccounts (pool snapshots).
+    codexLoading: false,
+    codexBusy: {}, // account id -> 'test' | 'refresh' while that request runs
+
     // Health Inspector (Developer Mode)
     healthData: {},
     healthLoading: false,
@@ -363,6 +415,7 @@ window.Components.accountManager = () => ({
             this.fetchHealthData();
         }
         this.loadCCAccounts();
+        this.loadCodexAccounts();
         this.loadCCConfig();
         this._tickTimer = setInterval(() => { this.nowTick = Date.now(); }, 30000);
     },
@@ -389,6 +442,32 @@ window.Components.accountManager = () => ({
     get ccSummary() {
         const enabled = this.allCCAccounts.filter(acc => acc.enabled !== false);
         return { enabled: enabled.length, ready: enabled.filter(acc => this.accountStatus(acc).ready).length };
+    },
+
+    // Every Codex account as a view row. The list is the one the route
+    // diagram reads, so the tab and the diagram cannot disagree.
+    get codexAccounts() {
+        return (Alpine.store('data').codexAccounts || []).map(snap => window.QuotaView.codexRow(snap));
+    },
+
+    get filteredCodexAccounts() {
+        const accounts = this.codexAccounts;
+        const query = (this.searchQuery || '').toLowerCase().trim();
+        if (!query) return accounts;
+        return accounts.filter(acc => [acc.email, acc.name, acc.id, acc.planType]
+            .some(v => (v || '').toLowerCase().includes(query)));
+    },
+
+    // Enabled Codex accounts and how many can serve a model now.
+    get codexSummary() {
+        const enabled = this.codexAccounts.filter(acc => acc.enabled !== false);
+        return { enabled: enabled.length, ready: enabled.filter(acc => this.accountStatus(acc).ready).length };
+    },
+
+    // The header count for the tab in front.
+    get tabSummary() {
+        if (this.accountTab === 'codex') return this.codexSummary;
+        return this.accountTab === 'google' ? this.googleSummary : this.ccSummary;
     },
 
 
@@ -1308,5 +1387,134 @@ window.Components.accountManager = () => ({
         } finally {
             this.ccImporting = false;
         }
+    },
+
+    // ==========================================
+    // ChatGPT Codex Accounts
+    // ==========================================
+
+    async loadCodexAccounts() {
+        this.codexLoading = true;
+        try {
+            await Alpine.store('data').fetchCodexAccounts(true);
+        } finally {
+            this.codexLoading = false;
+        }
+    },
+
+    // Opens the add-account dialog on the ChatGPT Codex provider, so adding
+    // or re-signing a Codex account does not start on the Google tab.
+    openCodexLogin() {
+        const dialog = document.getElementById('add_account_modal');
+        if (!dialog) return;
+        Alpine.$data(dialog).setProvider('codex');
+        dialog.showModal();
+    },
+
+    // POST /api/codex/accounts merges by id, so only the changed fields are
+    // sent. The list reloads either way, to show what the server now holds.
+    async updateCodexAccount(acc, fields) {
+        const store = Alpine.store('global');
+        try {
+            const { response, newPassword } = await window.utils.request('/api/codex/accounts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: acc.id, ...fields })
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.status !== 'ok') throw new Error(data.error || `HTTP ${response.status}`);
+            store.showToast(store.t('codexAccountUpdated'), 'success');
+        } catch (e) {
+            store.showToast(store.t('codexAccountUpdateFailed', { error: e.message }), 'error');
+        }
+        await this.loadCodexAccounts();
+    },
+
+    toggleCodexAccount(acc) {
+        return this.updateCodexAccount(acc, { enabled: acc.enabled === false });
+    },
+
+    // The pool picks lower numbers first and reads whole numbers only. A
+    // rejected value reloads the list, which puts the stored one back.
+    setCodexPriority(acc, value) {
+        const raw = String(value ?? '').trim();
+        const priority = Number(raw);
+        if (raw === '' || !Number.isInteger(priority) || priority < 0) {
+            const store = Alpine.store('global');
+            store.showToast(store.t('codexPriorityInvalid'), 'error');
+            return this.loadCodexAccounts();
+        }
+        return this.updateCodexAccount(acc, { priority });
+    },
+
+    // Refresh and Test: POST /api/codex/accounts/{id}/{action}. The list
+    // reloads afterwards because either can change the account's state; a
+    // revoked grant marks it needs_login.
+    async _codexAccountAction(acc, action, okMessage, failKey) {
+        if (this.codexBusy[acc.id]) return;
+        const store = Alpine.store('global');
+        this._setCodexBusy(acc.id, action);
+        try {
+            const { response, newPassword } = await window.utils.request(
+                `/api/codex/accounts/${encodeURIComponent(acc.id)}/${action}`,
+                { method: 'POST' }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.status !== 'ok') throw new Error(data.error || `HTTP ${response.status}`);
+            store.showToast(okMessage(data), 'success');
+        } catch (e) {
+            store.showToast(store.t(failKey, { error: e.message }), 'error');
+        } finally {
+            this._setCodexBusy(acc.id, null);
+        }
+        await this.loadCodexAccounts();
+    },
+
+    refreshCodexAccount(acc) {
+        const store = Alpine.store('global');
+        return this._codexAccountAction(acc, 'refresh', () => store.t('codexTokenRefreshed'), 'codexRefreshFailed');
+    },
+
+    testCodexAccount(acc) {
+        const store = Alpine.store('global');
+        return this._codexAccountAction(acc, 'test',
+            (data) => store.t('codexTestOk', { n: data.models ?? 0 }), 'codexTestFailed');
+    },
+
+    async deleteCodexAccount(acc) {
+        const store = Alpine.store('global');
+        if (!confirm(store.t('codexDeleteConfirm'))) return;
+        try {
+            const { response, newPassword } = await window.utils.request(
+                `/api/codex/accounts/${encodeURIComponent(acc.id)}`,
+                { method: 'DELETE' }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.status !== 'ok') throw new Error(data.error || `HTTP ${response.status}`);
+            store.showToast(store.t('codexAccountDeleted'), 'success');
+        } catch (e) {
+            store.showToast(store.t('codexDeleteFailed', { error: e.message }), 'error');
+        }
+        await this.loadCodexAccounts();
+    },
+
+    _setCodexBusy(id, action) {
+        const next = { ...this.codexBusy };
+        if (action) next[id] = action;
+        else delete next[id];
+        this.codexBusy = next;
+    },
+
+    // Time left on the account's access token, or that it has expired. The
+    // gateway refreshes a token when a request finds less than a day left,
+    // so an idle account can show an expired one.
+    codexExpiry(acc) {
+        void this.nowTick;
+        const at = Date.parse(acc && acc.expiresAt);
+        if (!(at > 0)) return '';
+        const store = Alpine.store('global');
+        if (at <= Date.now()) return store.t('codexTokenExpired');
+        return store.t('codexTokenExpiresIn', { time: window.utils.formatTimeUntil(acc.expiresAt) });
     }
 });

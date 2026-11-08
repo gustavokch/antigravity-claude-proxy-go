@@ -33,7 +33,8 @@ func TestConfigSaveGatewayOrder_Accepts(t *testing.T) {
 		name string
 		blob string
 	}{
-		{"full list", `{"order":["kimi","zen","claudecode","openrouter","custom","cloudcode"]}`},
+		{"full list", `{"order":["kimi","zen","claudecode","codex","openrouter","custom","cloudcode"]}`},
+		{"codex first", `{"order":["codex"]}`},
 		{"partial order", `{"order":["openrouter"]}`},
 		{"mixed-case byModel key", `{"byModel":{"  Claude-Sonnet-5[1M] ":["openrouter"]}}`},
 		{"empty order equals unset", `{"order":[]}`},
@@ -88,7 +89,7 @@ func TestConfigSaveGatewayOrder_UnknownProviderErrorListsValidIDs(t *testing.T) 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
-	for _, id := range []string{"kimi", "zen", "claudecode", "openrouter", "custom", "cloudcode"} {
+	for _, id := range []string{"kimi", "zen", "claudecode", "codex", "openrouter", "custom", "cloudcode"} {
 		if !strings.Contains(rec.Body.String(), id) {
 			t.Errorf("error should list %q, got %s", id, rec.Body.String())
 		}
@@ -153,10 +154,10 @@ func TestConfigGet_ExposesKnownProvidersAndDefaultOrder(t *testing.T) {
 		t.Fatalf("response has no config object: %s", rec.Body.String())
 	}
 	known, ok := inner["knownProviders"].([]any)
-	if !ok || len(known) != 6 {
-		t.Fatalf("knownProviders = %v, want six IDs", inner["knownProviders"])
+	if !ok || len(known) != 7 {
+		t.Fatalf("knownProviders = %v, want seven IDs", inner["knownProviders"])
 	}
-	for _, id := range []string{"kimi", "zen", "claudecode", "openrouter", "custom", "cloudcode"} {
+	for _, id := range []string{"kimi", "zen", "claudecode", "codex", "openrouter", "custom", "cloudcode"} {
 		found := false
 		for _, k := range known {
 			if k == id {

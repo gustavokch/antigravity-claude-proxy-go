@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/codex"
 	"antigravity-go-proxy/internal/config"
 )
 
@@ -83,8 +84,8 @@ func validateJSONSection(body map[string]any, key, label string, target any) err
 }
 
 // validateIdentityOverrides checks every identity override reachable in a
-// config update: the Claude Code gateway's own, one per custom endpoint, and
-// the Zen harness.
+// config update: the Claude Code and Codex gateways' own, one per custom
+// endpoint, and the Zen harness.
 //
 // It re-marshals the raw map rather than decoding the whole config, so an update
 // that touches none of them is untouched and an unrelated decode failure
@@ -94,7 +95,12 @@ func validateIdentityOverrides(updates map[string]any) error {
 		return err
 	}
 	if raw, ok := updates["claudecode"]; ok {
-		if err := validateIdentityField(raw, "claudecode"); err != nil {
+		if err := validateIdentityField(raw, "claudecode", &claudecode.IdentityConfig{}); err != nil {
+			return err
+		}
+	}
+	if raw, ok := updates["codex"]; ok {
+		if err := validateIdentityField(raw, "codex", &codex.IdentityConfig{}); err != nil {
 			return err
 		}
 	}
@@ -103,7 +109,7 @@ func validateIdentityOverrides(updates map[string]any) error {
 		return nil
 	}
 	for model, raw := range endpoints {
-		if err := validateIdentityField(raw, "customEndpoints."+model); err != nil {
+		if err := validateIdentityField(raw, "customEndpoints."+model, &claudecode.IdentityConfig{}); err != nil {
 			return err
 		}
 	}
@@ -135,14 +141,15 @@ func validateZenHarness(section any) error {
 	return nil
 }
 
-// validateIdentityField validates the "identity" key of one config section.
+// validateIdentityField validates the "identity" key of one config section by
+// decoding it into identity, the section's own identity type.
 //
 // It is strict about a key it finds: an identity that is present but is not an
 // object is refused rather than ignored, because ignoring it would store a
 // value the gateway then reads as no overrides at all. A section without the
 // key, or one that cannot be re-marshalled, is left alone so an unrelated
 // decode failure elsewhere in the payload cannot reject a valid save.
-func validateIdentityField(section any, label string) error {
+func validateIdentityField(section any, label string, identity interface{ Validate() error }) error {
 	encoded, err := json.Marshal(section)
 	if err != nil {
 		return nil
@@ -153,8 +160,7 @@ func validateIdentityField(section any, label string) error {
 	if err := json.Unmarshal(encoded, &wrapper); err != nil || len(wrapper.Identity) == 0 {
 		return nil
 	}
-	var identity claudecode.IdentityConfig
-	if err := json.Unmarshal(wrapper.Identity, &identity); err != nil {
+	if err := json.Unmarshal(wrapper.Identity, identity); err != nil {
 		return fmt.Errorf("%s: invalid identity: %w", label, err)
 	}
 	if err := identity.Validate(); err != nil {
@@ -279,7 +285,7 @@ func (server *Server) handleClaudeCodeConfigPost(writer http.ResponseWriter, req
 	// character in one breaks every request to this gateway at the transport
 	// layer. Refuse it here, where the operator can see which field it was,
 	// through the same helper /api/config uses.
-	if err := validateIdentityField(body, "claudecode"); err != nil {
+	if err := validateIdentityField(body, "claudecode", &claudecode.IdentityConfig{}); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
 		return
 	}

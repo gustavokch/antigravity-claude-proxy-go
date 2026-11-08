@@ -1,5 +1,6 @@
 // Package tokencount estimates the input tokens of an Anthropic Messages
-// request for gateways that have no count_tokens endpoint (Cloud Code, Zen).
+// request for gateways that have no count_tokens endpoint (Cloud Code, Zen,
+// Codex).
 // It learns a chars-per-token ratio per model family from the real input
 // counts upstreams report, and prices images per image.
 package tokencount

@@ -18,6 +18,7 @@ document.addEventListener('alpine:init', () => {
         openrouterCreditsLoading: false,
         kimi: {}, // Kimi Code gateway configuration
         zen: {}, // OpenCode Zen gateway configuration
+        codexAccounts: [], // Codex pool snapshots (from /api/codex/accounts); not part of /account-limits
         headroomStats: {}, // Headroom compression & shaping metrics
         gateways: null, // Gateway precedence + enable state for the route mimic (from /api/config)
         quotaRows: [], // Filtered view
@@ -177,6 +178,8 @@ document.addEventListener('alpine:init', () => {
                 // Fetch OpenRouter balance (non-fatal; server-side cached)
                 await this.fetchOpenRouterCredits();
 
+                await this.fetchCodexAccounts();
+
                 this.saveToCache(); // Save fresh data
 
                 // Re-inject placeholder data if active
@@ -230,6 +233,24 @@ document.addEventListener('alpine:init', () => {
                 this.openrouterCredits = { status: 'error', error: e.message };
             } finally {
                 this.openrouterCreditsLoading = false;
+            }
+        },
+
+        // Codex accounts are not in /account-limits, so the route diagram and
+        // the Accounts view read these pool snapshots. A refresh skips them
+        // while the gateway is known to be off; force fetches anyway, since
+        // the Accounts tab lists accounts whether or not the gateway is on.
+        async fetchCodexAccounts(force = false) {
+            if (!force && this.gateways && !this.gateways.codex.enabled) return;
+            try {
+                const password = Alpine.store('global').webuiPassword;
+                const { response, newPassword } = await window.utils.request('/api/codex/accounts', {}, password);
+                if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+                if (!response.ok) return;
+                const data = await response.json();
+                this.codexAccounts = Array.isArray(data.accounts) ? data.accounts : [];
+            } catch (e) {
+                if (window.UILogger) window.UILogger.debug('Failed to fetch Codex accounts', e.message);
             }
         },
 
@@ -310,6 +331,7 @@ document.addEventListener('alpine:init', () => {
                 zen: pick(cfg.zen),
                 openrouter: pick(cfg.openrouter),
                 claudecode: { enabled: !!(cfg.claudecode && cfg.claudecode.enabled) },
+                codex: { enabled: !!(cfg.codex && cfg.codex.enabled) },
                 customCount: Object.keys(cfg.customEndpoints || {}).length,
             };
         },

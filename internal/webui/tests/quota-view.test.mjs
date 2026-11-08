@@ -300,10 +300,55 @@ function accountAspects() {
         ['healthy snapshot, Go zero cooldown', { enabled: true, status: 'healthy', cooldownUntil: '0001-01-01T00:00:00Z' }, 'clear', 'accStatusReady', false, true],
         ['ok with quota left', { enabled: true, status: 'ok', quota: poolsOf(0.4, 0.9) }, 'clear', 'accStatusReady', false, true],
         ['unknown status', { enabled: true, status: 'weird' }, 'caution', 'accStatusUnknown', false, false],
+        ['Codex grant revoked', { enabled: true, status: 'needs_login', quota: poolsOf(0.9) }, 'danger', 'accStatusNeedsLogin', true, false],
     ];
     for (const [name, acc, lamp, key, blocked, ready] of cases) {
         assert.deepEqual(local(qv.accountAspect(acc, now)), { lamp, key, blocked, ready }, name);
     }
+}
+
+// Codex quota arrives as used-percent windows; the rows show remaining pools
+// named by window length, as /v1/usage labels them.
+function codexPools() {
+    const future = '2026-11-08T20:00:00Z';
+    const pools = qv.codexPools({
+        primary: { usedPercent: 25, windowMinutes: 300, resetAt: future },
+        secondary: { usedPercent: 130, windowMinutes: 10080, resetAt: '0001-01-01T00:00:00Z' },
+    });
+    assert.deepEqual(local(pools), {
+        'codex-5h': { remainingFraction: 0.75, resetTime: future },
+        'codex-weekly': { remainingFraction: 0, resetTime: null },
+    }, 'a Go zero reset time is no reset, used past 100% is empty');
+
+    assert.deepEqual(Object.keys(qv.codexPools({
+        primary: { usedPercent: 10, windowMinutes: 90 },
+        secondary: { usedPercent: 10, windowMinutes: 90 },
+    })), ['codex-90m', 'codex-secondary'], 'another length is named by minutes; a repeat by its slot');
+    assert.deepEqual(local(qv.codexPools({ primary: { windowMinutes: 300 } })), {}, 'a window without used percent is unknown');
+    assert.deepEqual(local(qv.codexPools(undefined)), {});
+
+    const row = qv.codexRow({ id: 'codex-a', status: 'healthy', quota: { planType: 'pro',
+        primary: { usedPercent: 100, windowMinutes: 300 }, secondary: { usedPercent: 100, windowMinutes: 10080 } } });
+    assert.equal(row.provider, 'codex');
+    assert.equal(row.planType, 'pro', 'plan falls back to the quota headers');
+    assert.equal(qv.accountAspect(row).key, 'accStatusExhausted');
+    assert.ok(qv.renderPoolBars(row.quota.pools, { t: (k) => k }).includes('Codex · poolWindow5h'));
+}
+
+// The Codex tab counts its snapshots with the same readiness rule.
+function codexSummaryCountsReadyAccounts() {
+    const data = { codexAccounts: [
+        { id: 'a', enabled: true, status: 'healthy' },
+        { id: 'b', enabled: true, status: 'cooldown', cooldownUntil: new Date(Date.now() + 60_000).toISOString() },
+        { id: 'c', enabled: true, status: 'needs_login' },
+        { id: 'd', enabled: false, status: 'disabled' },
+    ] };
+    const { component: c, store } = loadComponent('account-manager.js', 'accountManager', { data });
+    assert.deepEqual(local(c.codexSummary), { enabled: 3, ready: 1 });
+    store.accountsTab = 'codex';
+    assert.deepEqual(local(c.tabSummary), { enabled: 3, ready: 1 }, 'the header counts the tab in front');
+    c.searchQuery = 'B';
+    assert.deepEqual(c.filteredCodexAccounts.map((a) => a.id), ['b']);
 }
 
 // Header counts use the same rule on both tabs.
@@ -362,6 +407,8 @@ const cases = [
     ['zero or past Claude Code cooldown time is no cooldown', cooldown],
     ['one account aspect rule for every view', accountAspects],
     ['header counts use the readiness rule', summariesCountReadyAccounts],
+    ['Codex quota windows become remaining pools', codexPools],
+    ['the Codex tab counts ready accounts', codexSummaryCountsReadyAccounts],
     ['OpenRouter balance level thresholds', balanceLevels],
     ['a null account threshold falls back to the global floor', thresholdFloor],
 ];

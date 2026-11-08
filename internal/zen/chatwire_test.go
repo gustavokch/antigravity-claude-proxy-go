@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/responses"
 )
 
 func TestSendChatStreamingToolCall(t *testing.T) {
@@ -190,7 +192,7 @@ func TestStreamTerminationRequiresMarker(t *testing.T) {
 		err := streamChatToAnthropic(strings.NewReader(c.in), &out, "m", nil, nil)
 		// The in-band error event and the returned sentinel are the same
 		// judgement: the client is told, and the caller can log the break.
-		if gotTruncation := errors.Is(err, ErrStreamTruncated); gotTruncation != c.wantError {
+		if gotTruncation := errors.Is(err, responses.ErrStreamTruncated); gotTruncation != c.wantError {
 			t.Fatalf("%s: truncation error = %v, wantError=%v", c.name, err, c.wantError)
 		}
 		s := out.String()

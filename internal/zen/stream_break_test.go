@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"antigravity-go-proxy/internal/responses"
 )
 
 // zenHalfReader hands out its payload, then reports the failure an upstream
@@ -86,8 +88,8 @@ func TestTranslatedStreamTruncationIsReported(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			err := forwardTranslated(rec, "chat", nil, func() (*http.Response, error) { return tc.resp(), nil })
-			if !errors.Is(err, ErrStreamTruncated) {
-				t.Fatalf("error = %v, want ErrStreamTruncated", err)
+			if !errors.Is(err, responses.ErrStreamTruncated) {
+				t.Fatalf("error = %v, want responses.ErrStreamTruncated", err)
 			}
 			if !strings.Contains(rec.Body.String(), "Zen stream ended before completion") &&
 				!strings.Contains(rec.Body.String(), "Zen stream read error") {

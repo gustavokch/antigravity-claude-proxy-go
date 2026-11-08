@@ -15,6 +15,7 @@ export function loadComponent(file, exportName, { manualTimers = false, data = {
     const closedDialogs = [];
     const timers = [];
     const downloads = [];              // { href, download } per clicked <a download>
+    const popups = [];                 // { url, name, closed } per window.open
     const dialogs = new Map();
     const store = { webuiPassword: 'pw', t: (k) => k,
         showToast: (msg, kind) => toasts.push({ msg, kind }) };
@@ -57,13 +58,18 @@ export function loadComponent(file, exportName, { manualTimers = false, data = {
             new Promise((resolve, reject) =>
                 requests.push({ url, options, resolve, reject })) },
     };
+    sandbox.window.open = (url, name) => {
+        const popup = { url, name, closed: false, close() { this.closed = true; } };
+        popups.push(popup);
+        return popup;
+    };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
     const url = new URL(file, COMPONENTS);
     vm.runInContext(fs.readFileSync(url, 'utf8'), sandbox, { filename: url.pathname });
     const flushTimers = () => timers.splice(0).forEach((fn) => fn());
     return { component: sandbox.window.Components[exportName](),
-             requests, toasts, closedDialogs, downloads, store, data, dialog, flushTimers };
+             requests, toasts, closedDialogs, downloads, popups, store, data, dialog, flushTimers };
 }
 
 export const okResponse = (data) => ({

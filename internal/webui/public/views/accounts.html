@@ -3,10 +3,10 @@
     <div class="view-head">
         <div>
             <h1 class="view-title" x-text="$store.global.t('accountManagement')">Account Management</h1>
-            <p class="view-sub" x-text="accountTab === 'google' ? $store.global.t('manageTokens') : $store.global.t('manageCCTokens')">Manage Google Account tokens and authorization states</p>
+            <p class="view-sub" x-text="accountTab === 'google' ? $store.global.t('manageTokens') : (accountTab === 'codex' ? $store.global.t('manageCodexTokens') : $store.global.t('manageCCTokens'))">Manage Google Account tokens and authorization states</p>
             <div class="acc-deciding">
-                <span class="figure tnum" x-text="accountTab === 'google' ? googleSummary.ready : ccSummary.ready">0</span>
-                <span class="t-2" x-text="$store.global.t('accReadyOf', { total: accountTab === 'google' ? googleSummary.enabled : ccSummary.enabled })">of 0 enabled ready</span>
+                <span class="figure tnum" x-text="tabSummary.ready">0</span>
+                <span class="t-2" x-text="$store.global.t('accReadyOf', { total: tabSummary.enabled })">of 0 enabled ready</span>
             </div>
         </div>
 
@@ -115,6 +115,41 @@
                     <span x-text="$store.global.t('addAccount')">Add Account</span>
                 </button>
             </div>
+
+            <!-- ChatGPT Codex actions -->
+            <div class="cluster" x-show="accountTab === 'codex'">
+                <label class="sb-search acc-search" x-show="codexAccounts.length > 0">
+                    <svg class="acc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input type="text"
+                           class="input input-sm"
+                           x-model="searchQuery"
+                           :placeholder="$store.global.t('searchAccounts')"
+                           :aria-label="$store.global.t('searchAccounts')"
+                           @keydown.escape="searchQuery = ''">
+                </label>
+
+                <button type="button" class="btn btn-sm"
+                        @click="loadCodexAccounts()"
+                        :disabled="codexLoading"
+                        :aria-busy="codexLoading">
+                    <svg class="acc-ico" :class="{ 'animate-spin': codexLoading }" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    <span x-text="$store.global.t('reload')">Reload</span>
+                </button>
+
+                <span class="tag tag-muted tnum" x-text="$store.global.t('accCount', { count: filteredCodexAccounts.length })"></span>
+
+                <button type="button" class="btn btn-primary btn-sm"
+                        @click="openCodexLogin()">
+                    <svg class="acc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                    </svg>
+                    <span x-text="$store.global.t('addAccount')">Add Account</span>
+                </button>
+            </div>
         </div>
     </div>
 
@@ -133,6 +168,13 @@
                 @click="accountTab = 'claudecode'">
             <span>Claude Code</span>
             <span class="tab-count tnum" x-text="filteredCCAccounts.length"></span>
+        </button>
+        <button type="button" class="sb-tab" role="tab" id="acc-tab-codex"
+                aria-controls="acc-panel-codex"
+                :aria-selected="accountTab === 'codex'"
+                @click="accountTab = 'codex'">
+            <span x-text="$store.global.t('providerCodex')">ChatGPT Codex</span>
+            <span class="tab-count tnum" x-text="filteredCodexAccounts.length"></span>
         </button>
     </div>
 
@@ -517,6 +559,160 @@
                        :placeholder="$store.global.t('accNameLabel')">
                 <button type="button" class="btn btn-sm" @click="addCCAccount()"
                         x-text="$store.global.t('addAccount')">Add Account</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- ChatGPT Codex -->
+    <section class="section" id="acc-panel-codex" role="tabpanel" aria-labelledby="acc-tab-codex" x-show="accountTab === 'codex'">
+        <h2 class="sr-only" x-text="$store.global.t('providerCodex')">ChatGPT Codex</h2>
+        <div class="panel">
+            <div class="table-wrap">
+                <table class="sb-table acc-table">
+                    <thead x-show="filteredCodexAccounts.length > 0">
+                        <tr>
+                            <th scope="col" class="acc-enable" x-text="$store.global.t('enabled')">Enabled</th>
+                            <th scope="col" x-text="$store.global.t('accountEmail')">Account (Email)</th>
+                            <th scope="col" class="acc-second" x-text="$store.global.t('codexPlan')">Plan</th>
+                            <th scope="col" class="acc-second" x-text="$store.global.t('accPriority')">Priority</th>
+                            <th scope="col" x-text="$store.global.t('quota')">Quota</th>
+                            <th scope="col" x-text="$store.global.t('status')">Status</th>
+                            <th scope="col" class="acc-ops-head" x-text="$store.global.t('operations')">Operations</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Empty state -->
+                        <template x-if="codexAccounts.length === 0">
+                            <tr>
+                                <td colspan="7" class="acc-empty-cell">
+                                    <div class="empty">
+                                        <p class="empty-title" x-text="$store.global.t('codexNoAccounts')">No Codex Accounts</p>
+                                        <p class="empty-desc" x-text="$store.global.t('codexNoAccountsDesc')">Sign in with a ChatGPT account to add it to the Codex gateway pool.</p>
+                                        <div class="empty-actions">
+                                            <button type="button" class="btn btn-sm" @click="openCodexLogin()"
+                                                    x-text="$store.global.t('connectCodex')">Connect ChatGPT Account</button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+
+                        <!-- Account rows -->
+                        <template x-for="acc in filteredCodexAccounts" :key="acc.id">
+                            <tr :class="{ 'is-blocked': accountStatus(acc).blocked, 'is-off': acc.enabled === false }">
+                                <td class="acc-enable">
+                                    <input type="checkbox" class="toggle"
+                                           :checked="acc.enabled !== false"
+                                           :aria-label="$store.global.t('accToggleLabel', { name: acc.name || Redact.email(acc.email) || acc.id })"
+                                           @change="toggleCodexAccount(acc)">
+                                </td>
+
+                                <!-- Account: name or email, and how long its access token lasts -->
+                                <td>
+                                    <span class="mono acc-email"
+                                          :title="Redact.email(acc.email)"
+                                          x-text="acc.name || formatEmail(Redact.email(acc.email)) || acc.id"></span>
+                                    <div class="t-3 t-xs tnum" x-show="codexExpiry(acc)" x-text="codexExpiry(acc)"></div>
+                                </td>
+
+                                <td class="acc-second">
+                                    <span class="tag"
+                                          :class="acc.planType && acc.planType !== 'free' ? 'tag-ink' : 'tag-muted'"
+                                          x-text="(acc.planType || '-').toUpperCase()"></span>
+                                </td>
+
+                                <td class="acc-second">
+                                    <input type="number" min="0" step="1"
+                                           class="input input-xs mono acc-num"
+                                           :value="acc.priority ?? 0"
+                                           :aria-label="$store.global.t('codexPriorityFor', { name: acc.name || Redact.email(acc.email) || acc.id })"
+                                           @change="setCodexPriority(acc, $event.target.value)">
+                                </td>
+
+                                <!-- Quota: the 5-hour and weekly windows (shared renderer; values are escaped there) -->
+                                <td class="acc-quota-cell">
+                                    <div class="acc-quota">
+                                        <div x-html="renderPools(acc.quota.pools, true)"></div>
+                                        <span class="t-3" x-show="accountPools(acc).length === 0">-</span>
+                                    </div>
+                                </td>
+
+                                <!-- Status: lamp and word, then why it is not serving -->
+                                <td class="acc-status-cell">
+                                    <div class="acc-status">
+                                        <div class="acc-status-head">
+                                            <span class="lamp" :class="'lamp-' + accountStatus(acc).lamp" aria-hidden="true"></span>
+                                            <span class="t-strong" :class="accountStatus(acc).tone"
+                                                  x-text="$store.global.t(accountStatus(acc).key)"></span>
+                                        </div>
+                                        <p class="acc-reason t-caution"
+                                           x-show="window.QuotaView.inCooldown(acc.cooldownUntil)"
+                                           x-text="$store.global.t('accCooldownIn', { time: window.QuotaView.inCooldown(acc.cooldownUntil) ? window.utils.formatTimeUntil(acc.cooldownUntil) : '' }) + (acc.cooldownReason ? ' · ' + acc.cooldownReason : '')"></p>
+                                        <p class="acc-reason t-danger"
+                                           x-show="acc.status === 'needs_login'"
+                                           x-text="$store.global.t('codexNeedsLoginHint')"></p>
+                                        <p class="acc-reason t-3 mono t-xs"
+                                           x-show="acc.lastError && acc.status !== 'healthy'"
+                                           x-text="acc.lastError"></p>
+                                    </div>
+                                </td>
+
+                                <!-- Operations: sign-in when needed, refresh and test, then delete apart -->
+                                <td class="acc-ops-cell">
+                                    <div class="acc-ops">
+                                        <button type="button" class="btn btn-sm"
+                                                x-show="acc.status === 'needs_login'"
+                                                @click="openCodexLogin()"
+                                                x-text="$store.global.t('codexSignInAgain')">Sign in again</button>
+                                        <button type="button" class="btn btn-ghost btn-sm"
+                                                @click="refreshCodexAccount(acc)"
+                                                :disabled="!!codexBusy[acc.id]"
+                                                :aria-busy="codexBusy[acc.id] === 'refresh'">
+                                            <svg class="acc-ico" :class="{ 'animate-spin': codexBusy[acc.id] === 'refresh' }" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                            </svg>
+                                            <span x-text="$store.global.t('codexRefreshToken')">Refresh token</span>
+                                        </button>
+                                        <button type="button" class="btn btn-sm"
+                                                @click="testCodexAccount(acc)"
+                                                :disabled="!!codexBusy[acc.id]"
+                                                :aria-busy="codexBusy[acc.id] === 'test'">
+                                            <svg class="acc-ico" :class="{ 'animate-spin': codexBusy[acc.id] === 'test' }" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                            </svg>
+                                            <span x-text="codexBusy[acc.id] === 'test' ? $store.global.t('accTesting') : $store.global.t('accTest')">Test</span>
+                                        </button>
+                                        <span class="acc-ops-danger">
+                                            <button type="button" class="btn btn-danger-quiet btn-sm"
+                                                    @click="deleteCodexAccount(acc)">
+                                                <svg class="acc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                </svg>
+                                                <span x-text="$store.global.t('delete')">Delete</span>
+                                            </button>
+                                        </span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+
+                        <!-- No search results -->
+                        <template x-if="codexAccounts.length > 0 && filteredCodexAccounts.length === 0">
+                            <tr>
+                                <td colspan="7" class="acc-empty-cell">
+                                    <div class="empty">
+                                        <p class="empty-desc" x-text="$store.global.t('noSearchResults')">No accounts match your search</p>
+                                        <div class="empty-actions">
+                                            <button type="button" class="btn btn-sm btn-ghost"
+                                                    @click="searchQuery = ''"
+                                                    x-text="$store.global.t('clearSearch')">Clear Search</button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
             </div>
         </div>
     </section>

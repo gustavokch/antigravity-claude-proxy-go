@@ -16,6 +16,7 @@ const (
 	GatewayKimi       GatewayID = "kimi"
 	GatewayZen        GatewayID = "zen"
 	GatewayClaudeCode GatewayID = "claudecode"
+	GatewayCodex      GatewayID = "codex"
 	GatewayOpenRouter GatewayID = "openrouter"
 	GatewayCustom     GatewayID = "custom"
 	GatewayCloudCode  GatewayID = "cloudcode"
@@ -23,13 +24,16 @@ const (
 
 // DefaultGatewayOrder returns the precedence used when config.json says
 // nothing, and the order in which providers omitted from a configured list
-// are appended. It reproduces the historical dispatch if-chain exactly
-// (Kimi, Zen, ClaudeCode, OpenRouter, custom endpoints; Cloud Code terminal).
+// are appended. It reproduces the historical dispatch if-chain (Kimi, Zen,
+// ClaudeCode, OpenRouter, custom endpoints; Cloud Code terminal), with the
+// Codex gateway after Claude Code: both serve subscription pools, and the
+// models they own do not overlap by default.
 func DefaultGatewayOrder() []GatewayID {
 	return []GatewayID{
 		GatewayKimi,
 		GatewayZen,
 		GatewayClaudeCode,
+		GatewayCodex,
 		GatewayOpenRouter,
 		GatewayCustom,
 		GatewayCloudCode,
@@ -45,7 +49,7 @@ func KnownGatewayIDs() []GatewayID {
 // IsKnownGatewayID reports whether id is a gateway this build recognises.
 func IsKnownGatewayID(id GatewayID) bool {
 	switch normalizeGatewayID(id) {
-	case GatewayKimi, GatewayZen, GatewayClaudeCode, GatewayOpenRouter, GatewayCustom, GatewayCloudCode:
+	case GatewayKimi, GatewayZen, GatewayClaudeCode, GatewayCodex, GatewayOpenRouter, GatewayCustom, GatewayCloudCode:
 		return true
 	}
 	return false
