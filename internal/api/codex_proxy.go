@@ -44,9 +44,9 @@ type codexCall struct {
 	promptCacheKey string            // Session-Id header and prompt_cache_key
 	serviceTier    string
 	stream         bool // the client asked for an event stream
-	// withoutReasoning rebuilds body with codex.BuildOptions.DropReasoning;
-	// nil once used.
-	withoutReasoning func() ([]byte, error)
+	// rebuild builds body again; after a refusal it leaves out the
+	// signatures recorded in Server.codexRefused. Nil once used.
+	rebuild func() ([]byte, error)
 }
 
 // send builds the upstream request of the call for one account.
@@ -214,13 +214,12 @@ func readCodexReply(resp *http.Response) *codexUpstreamReply {
 }
 
 // peekCodexReply holds back the start of a 2xx stream until its first output
-// event. A failure the backend reports before any output comes back as a reply,
-// accounted for like the HTTP status it stands for; otherwise the response
-// replays what was read. The bufio.Reader may hold bytes past the prefix, so it,
-// not resp.Body, continues the stream.
+// event, for at most codex.PeekWait. A failure the backend reports before any
+// output comes back as a reply, accounted for like the HTTP status it stands
+// for; otherwise the response replays what was read and continues from where
+// the peek stopped.
 func peekCodexReply(resp *http.Response) (*http.Response, *codexUpstreamReply, error) {
-	buffered := bufio.NewReader(resp.Body)
-	prefix, failure, err := codex.Peek(buffered, codex.PeekLimit)
+	prefix, failure, rest, err := codex.Peek(bufio.NewReader(resp.Body), codex.PeekLimit, codex.PeekWait)
 	if err != nil {
 		_ = resp.Body.Close()
 		return nil, nil, err
@@ -232,7 +231,7 @@ func peekCodexReply(resp *http.Response) (*http.Response, *codexUpstreamReply, e
 	resp.Body = struct {
 		io.Reader
 		io.Closer
-	}{io.MultiReader(bytes.NewReader(prefix), buffered), resp.Body}
+	}{io.MultiReader(bytes.NewReader(prefix), rest), resp.Body}
 	return resp, nil, nil
 }
 
@@ -245,10 +244,11 @@ func peekCodexReply(resp *http.Response) (*http.Response, *codexUpstreamReply, e
 // when no account is left the last 429 reaches the client as a
 // rate_limit_error. A server or transport error rests the account and fails
 // over. A 400 invalid_encrypted_content is sent once more, on the same account,
-// without the conversation's reasoning. Any other 4xx is the request's own fault
-// and goes to the client as an Anthropic error envelope. A failure the backend
-// reports inside a 2xx stream before any output is handled like the status it
-// stands for; once output has started, a failure stays in the stream. A 2xx
+// without the reasoning it carried, which the conversation's later turns leave
+// out too. Any other 4xx is the request's own fault and goes to the client as
+// an Anthropic error envelope. A failure the backend reports inside a 2xx
+// stream before any output (within codex.PeekWait) is handled like the status
+// it stands for; once output has started, a failure stays in the stream. A 2xx
 // stream is translated into the Anthropic shape the client asked for.
 func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.Request, cfg codex.Config, call codexCall) {
 	pool, client := server.codexPoolFor(cfg)
@@ -326,14 +326,20 @@ func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.R
 			server.warnCodex("codex: upstream server error, failing over", "account", acc.ID, "status", reply.status)
 			lastFailure = reply
 		default:
-			if reply.status == http.StatusBadRequest && call.withoutReasoning != nil && codex.IsInvalidEncryptedContent(reply.body) {
-				rebuilt, err := call.withoutReasoning()
-				call.withoutReasoning = nil
-				if err == nil {
-					server.warnCodex("codex: backend refused the replayed reasoning; resending without it", "account", acc.ID)
-					call.body = rebuilt
-					attempt-- // the resend is not a new account; it happens at most once
-					continue
+			if reply.status == http.StatusBadRequest && call.rebuild != nil && codex.IsInvalidEncryptedContent(reply.body) {
+				// The refusal does not say which signature failed, so every
+				// one the request carried is left out of the resend and of
+				// the conversation's later turns.
+				if sigs := codex.ReasoningSignatures(call.body); len(sigs) > 0 {
+					server.codexRefused.Add(sigs...)
+					rebuilt, err := call.rebuild()
+					call.rebuild = nil
+					if err == nil {
+						server.warnCodex("codex: backend refused the replayed reasoning; resending without it", "account", acc.ID, "signatures", len(sigs))
+						call.body = rebuilt
+						attempt-- // the resend is not a new account; it happens at most once
+						continue
+					}
 				}
 			}
 			writeCodexUpstreamError(writer, reply)

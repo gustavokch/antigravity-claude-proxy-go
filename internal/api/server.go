@@ -190,6 +190,9 @@ type Server struct {
 	codexClient   *codex.Client
 	codexBaseURL  string
 	codexUpstream http.RoundTripper // nil means transport.Codex(); tests set a plain one
+	// codexRefused holds the reasoning signatures the Codex backend refused,
+	// so later turns of the conversation leave them out.
+	codexRefused codex.RefusedSignatures
 
 	// endpointCats holds the fetched model catalogs of custom endpoints that set
 	// discoverModels. Lazily built: tests construct a bare Server.

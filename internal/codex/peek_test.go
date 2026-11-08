@@ -2,9 +2,11 @@ package codex
 
 import (
 	"bufio"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPeek(t *testing.T) {
@@ -23,11 +25,51 @@ func TestPeek(t *testing.T) {
 			"", "response.output_item.added"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			prefix, failure, err := Peek(bufio.NewReader(strings.NewReader(tc.in)), PeekLimit)
+			prefix, failure, _, err := Peek(bufio.NewReader(strings.NewReader(tc.in)), PeekLimit, 0)
 			if err != nil || string(failure) != tc.wantFailure || !strings.Contains(string(prefix), tc.wantPrefixHas) {
 				t.Errorf("Peek = %q, %q, %v; want failure %q and a prefix holding %q", prefix, failure, err, tc.wantFailure, tc.wantPrefixHas)
 			}
 		})
+	}
+}
+
+// A preamble that outlasts the wait releases the stream: Peek returns what it
+// read with no failure, and rest carries on from there, the line Peek was still
+// reading included, so no byte is lost or repeated.
+func TestPeekReleasesTheStreamOnceTheWaitPasses(t *testing.T) {
+	created := "data: {\"type\":\"response.created\"}\n\n"
+	cut := "data: {\"type\":\"response.outp"
+	tail := "ut_item.added\"}\n\ndata: [DONE]\n\n"
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pr.Close() })
+
+	type peeked struct {
+		prefix, failure []byte
+		rest            io.Reader
+		err             error
+	}
+	done := make(chan peeked, 1)
+	go func() {
+		prefix, failure, rest, err := Peek(bufio.NewReader(io.MultiReader(strings.NewReader(created+cut), pr)), PeekLimit, 100*time.Millisecond)
+		done <- peeked{prefix, failure, rest, err}
+	}()
+	var got peeked
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Peek held the stream back past its wait")
+	}
+	if got.err != nil || got.failure != nil || string(got.prefix) != created {
+		t.Fatalf("Peek = %q, %q, %v; want the preamble read so far and no failure", got.prefix, got.failure, got.err)
+	}
+
+	go func() {
+		_, _ = io.WriteString(pw, tail)
+		_ = pw.Close()
+	}()
+	rest, err := io.ReadAll(got.rest)
+	if err != nil || string(rest) != cut+tail {
+		t.Errorf("rest = %q, %v; want %q", rest, err, cut+tail)
 	}
 }
 

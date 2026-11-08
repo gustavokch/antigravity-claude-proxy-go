@@ -22,9 +22,9 @@ type BuildOptions struct {
 	Model          string      // upstream model id
 	Entry          ModelConfig // effort clamping
 	PromptCacheKey string
-	// DropReasoning leaves the conversation's reasoning items out: the
-	// backend refused one it could not decrypt (IsInvalidEncryptedContent).
-	DropReasoning bool
+	// Refused holds the reasoning signatures the backend refused; their
+	// reasoning items are left out. Nil leaves none out.
+	Refused *RefusedSignatures
 }
 
 // IsInvalidEncryptedContent reports whether an error body is the backend's
@@ -166,7 +166,7 @@ func BuildRequest(anthropicBody []byte, opts BuildOptions) (body []byte, toolNam
 	clientTools, _ := req["tools"].([]any)
 	names := shortNames(clientTools)
 
-	b := inputBuilder{names: names, dropReasoning: opts.DropReasoning, items: make([]any, 0, len(asSlice(req["messages"]))+1)}
+	b := inputBuilder{names: names, refused: opts.Refused, items: make([]any, 0, len(asSlice(req["messages"]))+1)}
 	if texts := systemTexts(req["system"]); len(texts) > 0 {
 		parts := make([]any, 0, len(texts))
 		for _, t := range texts {
@@ -264,8 +264,9 @@ func uuidV5(namespace [16]byte, name string) string {
 type inputBuilder struct {
 	items []any
 	names map[string]string // client tool name -> upstream name
-	// dropReasoning skips thinking blocks (BuildOptions.DropReasoning).
-	dropReasoning bool
+	// refused holds the signatures whose reasoning items are left out
+	// (BuildOptions.Refused).
+	refused *RefusedSignatures
 
 	// pendingToolUseIDs are the tool_use ids of the last assistant turn,
 	// used to order the tool results of the turn that answers it.
@@ -398,15 +399,15 @@ func (t *turn) block(block map[string]any) {
 			t.drop(blockType)
 		}
 	case "thinking":
-		if t.role != "assistant" || b.dropReasoning {
+		if t.role != "assistant" {
 			return
 		}
 		sig, _ := block["signature"].(string)
 		sig = strings.TrimSpace(sig)
-		if !isCodexSignature(sig) {
+		if !isCodexSignature(sig) || b.refused.Has(sig) {
 			// A thinking block signed by another backend (Anthropic, Gemini)
-			// cannot be replayed here; the block is dropped, as Codex would
-			// reject the request otherwise.
+			// cannot be replayed here, nor can one the backend refused; the
+			// block is dropped, as Codex would reject the request otherwise.
 			return
 		}
 		t.flush()

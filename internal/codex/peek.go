@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // PeekLimit bounds how much of a reply is held back looking for an early
@@ -15,32 +16,96 @@ import (
 // the request's instructions and tools, which alone can run past 64 KiB.
 const PeekLimit = 1 << 20
 
+// PeekWait bounds how long a reply is held back looking for an early failure.
+// A failure the backend smuggles into a 200 arrives at once, so a preamble that
+// lasts longer is let through rather than left silent, which a client or a
+// reverse proxy in front of the proxy could take for a dead connection (nginx
+// gives up after 60 s). CLIProxyAPI's stream-bootstrap-timeout does the same;
+// 20 s is the value its documentation suggests.
+const PeekWait = 20 * time.Second
+
 // Peek reads the start of a Codex event stream up to its first output event,
 // looking for a failure the backend reports before any output: a spent usage
 // window or an overload arrives as a 200 whose stream fails at once.
 //
-// prefix holds every byte read, for the caller to replay ahead of the rest of
-// r. Reading stops at the first event that is not part of the preamble
-// (response.created, response.in_progress, response.queued and the metadata
-// events), at [DONE], at the end of the stream, or once limit bytes are held.
-// failure is the failure as an error body, {"error": {...}}, and nil when the
-// stream got past the preamble without one. The end of the stream is not an
-// error: the translator reports a truncation when it replays the prefix.
-func Peek(r *bufio.Reader, limit int) (prefix, failure []byte, err error) {
-	for len(prefix) < limit {
-		line, readErr := r.ReadBytes('\n')
-		prefix = append(prefix, line...)
-		if done, f := peekLine(line); done {
-			return prefix, f, nil
+// prefix holds every byte read, and rest continues the stream after it: the
+// caller replays prefix and then reads rest. Reading stops at the first event
+// that is not part of the preamble (response.created, response.in_progress,
+// response.queued and the metadata events), at [DONE], at the end of the
+// stream, once limit bytes are held, or once wait has passed (zero means no
+// time limit). failure is the failure as an error body, {"error": {...}}, and
+// nil when the stream got past the preamble without one. The end of the
+// stream is not an error: the translator reports a truncation when it replays
+// the prefix.
+func Peek(r *bufio.Reader, limit int, wait time.Duration) (prefix, failure []byte, rest io.Reader, err error) {
+	// The lines are read on another goroutine so that the wait can end a read
+	// the backend is slow to finish. It reads one line per request on next, so
+	// it never reads past what Peek consumes, and exits once next is closed.
+	next := make(chan struct{})
+	lines := make(chan peekedLine, 1)
+	go func() {
+		for range next {
+			line, err := r.ReadBytes('\n')
+			lines <- peekedLine{line, err}
 		}
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				return prefix, nil, nil
+	}()
+	defer close(next)
+	var timeout <-chan time.Time
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	for len(prefix) < limit {
+		next <- struct{}{}
+		select {
+		case l := <-lines:
+			prefix = append(prefix, l.line...)
+			if done, f := peekLine(l.line); done {
+				return prefix, f, r, nil
 			}
-			return prefix, nil, readErr
+			if l.err != nil {
+				if errors.Is(l.err, io.EOF) {
+					return prefix, nil, r, nil
+				}
+				return prefix, nil, nil, l.err
+			}
+		case <-timeout:
+			return prefix, nil, &pendingLineReader{lines: lines, r: r}, nil
 		}
 	}
-	return prefix, nil, nil
+	return prefix, nil, r, nil
+}
+
+type peekedLine struct {
+	line []byte
+	err  error
+}
+
+// pendingLineReader continues a stream whose Peek ran out of time in the
+// middle of reading a line: that line first, once its read ends, then r.
+type pendingLineReader struct {
+	lines <-chan peekedLine
+	r     io.Reader
+	got   bool
+	line  []byte
+	err   error
+}
+
+func (p *pendingLineReader) Read(b []byte) (int, error) {
+	if !p.got {
+		l := <-p.lines
+		p.got, p.line, p.err = true, l.line, l.err
+	}
+	if len(p.line) > 0 {
+		n := copy(b, p.line)
+		p.line = p.line[n:]
+		return n, nil
+	}
+	if p.err != nil {
+		return 0, p.err
+	}
+	return p.r.Read(b)
 }
 
 // peekLine reports whether a stream line ends the preamble, and the failure

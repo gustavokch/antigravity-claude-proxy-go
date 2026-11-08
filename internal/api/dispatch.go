@@ -202,6 +202,7 @@ func (server *Server) forwardCodexGateway(g *gatewayRequest, route gatewayRoute)
 		Model:          entry.ID,
 		Entry:          entry,
 		PromptCacheKey: cacheKey,
+		Refused:        &server.codexRefused,
 	}
 	body, toolNames, err := codex.BuildRequest(anthropicBody, opts)
 	if err != nil {
@@ -217,10 +218,8 @@ func (server *Server) forwardCodexGateway(g *gatewayRequest, route gatewayRoute)
 		promptCacheKey: cacheKey,
 		serviceTier:    codex.ServiceTier(g.body),
 		stream:         stream,
-		withoutReasoning: func() ([]byte, error) {
-			o := opts
-			o.DropReasoning = true
-			b, _, err := codex.BuildRequest(anthropicBody, o)
+		rebuild: func() ([]byte, error) {
+			b, _, err := codex.BuildRequest(anthropicBody, opts)
 			return b, err
 		},
 	})

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -780,9 +781,7 @@ func TestCodexGateway_InvalidEncryptedContentResendsWithoutReasoning(t *testing.
 	srv := newCodexTestServer(t, upstream,
 		codex.AccountConfig{ID: "codex-a", Token: "tok-a", Priority: 1, Enabled: true},
 		codex.AccountConfig{ID: "codex-b", Token: "tok-b", Priority: 2, Enabled: true})
-	raw := make([]byte, 1+8+16+16+32) // a Fernet-shaped token: version, time, IV, one block, HMAC
-	raw[0] = 0x80
-	sig := base64.URLEncoding.EncodeToString(raw)
+	sig := codexTestSignature(1)
 	body := `{"model":"gpt-5.5","max_tokens":64,"messages":[` +
 		`{"role":"user","content":"hi"},` +
 		`{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"` + sig + `"},{"type":"text","text":"ok"}]},` +
@@ -801,14 +800,69 @@ func TestCodexGateway_InvalidEncryptedContentResendsWithoutReasoning(t *testing.
 	requireNoCodexInFlight(t, srv)
 }
 
+// A refused signature stays in the client's history, so the next turn carries
+// it again. The gateway leaves it out from then on: the turn reaches the
+// backend once, with the reasoning issued since and without the refused one.
+func TestCodexGateway_RefusedSignatureIsNotSentAgain(t *testing.T) {
+	refused, issued := codexTestSignature(1), codexTestSignature(2)
+	var backend *fakeCodexBackend
+	backend, upstream := newFakeCodexBackend(t, func(w http.ResponseWriter, r *http.Request, _ string) {
+		if slices.Contains(codexInputSignatures(backend.last(t).body), refused) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"The encrypted content could not be verified.","type":"invalid_request_error","code":"invalid_encrypted_content"}}`)
+			return
+		}
+		writeCodexSSE(w, nil)
+	})
+	srv := newCodexTestServer(t, upstream, codex.AccountConfig{ID: "codex-a", Token: "tok-a", Enabled: true})
+	first := `{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"` + refused + `"},{"type":"text","text":"ok"}]},` +
+		`{"role":"user","content":"again"}`
+	second := first + `,{"role":"assistant","content":[{"type":"thinking","thinking":"u","signature":"` + issued + `"},{"type":"text","text":"sure"}]},` +
+		`{"role":"user","content":"more"}`
+
+	for i, messages := range []string{first, second} {
+		rec := postCodexMessages(t, srv, `{"model":"gpt-5.5","max_tokens":64,"messages":[`+messages+`]}`, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("turn %d: status = %d, body = %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	if n := len(backend.tokens()); n != 3 {
+		t.Errorf("upstream calls = %d, want 3 (the first turn and its resend, then the second turn once)", n)
+	}
+	if got := codexInputSignatures(backend.last(t).body); !slices.Equal(got, []string{issued}) {
+		t.Errorf("second turn's reasoning = %d signatures (issued %t), want only the one issued since",
+			len(got), slices.Contains(got, issued))
+	}
+	requireNoCodexInFlight(t, srv)
+}
+
+// codexTestSignature returns a Codex encrypted_content in the shape the
+// gateway replays (a Fernet token: version, time, IV, one block, HMAC), made
+// distinct by n.
+func codexTestSignature(n byte) string {
+	raw := make([]byte, 1+8+16+16+32)
+	raw[0] = 0x80
+	raw[8] = n
+	return base64.URLEncoding.EncodeToString(raw)
+}
+
 func codexInputHasReasoning(body map[string]any) bool {
+	return len(codexInputSignatures(body)) > 0
+}
+
+// codexInputSignatures lists the encrypted_content of the reasoning items in
+// an upstream request body.
+func codexInputSignatures(body map[string]any) []string {
+	var sigs []string
 	items, _ := body["input"].([]any)
 	for _, raw := range items {
 		if item, _ := raw.(map[string]any); item["type"] == "reasoning" {
-			return true
+			sig, _ := item["encrypted_content"].(string)
+			sigs = append(sigs, sig)
 		}
 	}
-	return false
+	return sigs
 }
 
 // When every account is resting after a spent usage window, the client is
