@@ -138,26 +138,47 @@ func promptMessage(request map[string]any) map[string]any {
 	return nil
 }
 
+// controlCall is one in-flight run of shareControlCall.
+type controlCall struct {
+	done      chan struct{}
+	abandoned bool // set before done closes: the leader's request ended mid-run
+}
+
 // shareControlCall runs work once for key among the requests that ask for it
 // at the same time; the others wait for it to end, or for their own context.
+// A run whose leader's request ended before work returned was cut short for
+// that request's sake only, so a waiter whose own request is still there
+// takes the leader's place and runs work itself. A run that ended any other
+// way, at its deadline too, stands for every request that waited on it.
 func (dispatcher *Dispatcher) shareControlCall(ctx context.Context, key string, work func()) {
 	dispatcher.mu.Lock()
-	if done, running := dispatcher.controlCalls[key]; running {
+	for {
+		call, running := dispatcher.controlCalls[key]
+		if !running {
+			break
+		}
 		dispatcher.mu.Unlock()
 		select {
-		case <-done:
+		case <-call.done:
 		case <-ctx.Done():
+			return
 		}
-		return
+		// abandoned is written before done closes, so it is settled here.
+		if !call.abandoned || ctx.Err() != nil {
+			return
+		}
+		dispatcher.mu.Lock()
 	}
-	done := make(chan struct{})
-	dispatcher.controlCalls[key] = done
+	call := &controlCall{done: make(chan struct{})}
+	dispatcher.controlCalls[key] = call
 	dispatcher.mu.Unlock()
+	// Deferred, so that a panic in work still releases the waiters.
 	defer func() {
+		call.abandoned = ctx.Err() != nil
 		dispatcher.mu.Lock()
 		delete(dispatcher.controlCalls, key)
 		dispatcher.mu.Unlock()
-		close(done)
+		close(call.done)
 	}()
 	work()
 }

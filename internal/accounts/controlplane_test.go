@@ -431,6 +431,65 @@ func TestBeginConversationIsBoundedAsAWhole(t *testing.T) {
 	})
 }
 
+// A burst whose leader's client leaves mid-run is abandoned: a request still
+// waiting on it runs the whole burst itself and starts the account. A run
+// that stops at its deadline with the leader still there is not abandoned,
+// and its waiters do not send it again.
+func TestBeginConversationWaiterTakesOverWhenTheLeaderLeaves(t *testing.T) {
+	t.Run("leader leaves", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			const email = "a@example.com"
+			client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hold: make(chan struct{})}
+			dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+			account := dispatcher.manager.accounts[0]
+			dispatcher.manager.Select("session-1", sequenceModel)
+
+			leaderCtx, leave := context.WithCancel(context.Background())
+			var requests sync.WaitGroup
+			requests.Go(func() { dispatcher.beginConversation(leaderCtx, "session-1", account, client, "p") })
+			// The leader is held in the burst's first loadCodeAssist.
+			synctest.Wait()
+			requests.Go(func() { dispatcher.beginConversation(context.Background(), "session-1", account, client, "p") })
+			// The waiter is queued on the leader's run.
+			synctest.Wait()
+			leave()
+			client.reset()
+			close(client.hold)
+			requests.Wait()
+
+			assertSteps(t, client.recorded(), agyStartBurst)
+			if !dispatcher.manager.conversationStarted("session-1", email) {
+				t.Fatal("the waiter's burst got every answer and left the account unstarted")
+			}
+		})
+	})
+
+	t.Run("run past its deadline", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			const email = "a@example.com"
+			client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hang: true}
+			dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+			account := dispatcher.manager.accounts[0]
+			dispatcher.manager.Select("session-1", sequenceModel)
+
+			start := time.Now()
+			var requests sync.WaitGroup
+			requests.Go(func() { dispatcher.beginConversation(context.Background(), "session-1", account, client, "p") })
+			synctest.Wait()
+			var waited time.Duration
+			requests.Go(func() {
+				dispatcher.beginConversation(context.Background(), "session-1", account, client, "p")
+				waited = time.Since(start)
+			})
+			requests.Wait()
+
+			if waited > controlPlaneRunTimeout {
+				t.Fatalf("the waiter was held for %s, want at most %s: a run that stopped at its deadline must not run again", waited, controlPlaneRunTimeout)
+			}
+		})
+	})
+}
+
 // Only a new prompt in a session's main loop sends the turn calls: tool
 // continuations, tool-less side calls and requests without a session send
 // none.

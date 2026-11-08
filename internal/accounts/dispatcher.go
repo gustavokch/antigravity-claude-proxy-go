@@ -127,7 +127,7 @@ type Dispatcher struct {
 	modelsFetch *modelFetchCall
 	// controlCalls is the in-flight start burst or turn calls per key
 	// (shareControlCall), guarded by mu; concurrent requests share one run.
-	controlCalls map[string]chan struct{}
+	controlCalls map[string]*controlCall
 }
 
 // catalogSnapshot is one account's model list and when it was fetched.
@@ -198,7 +198,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		forensics429:             options.Forensics429,
 		meter:                    newThrottleMeter(nil),
 		clients:                  make(map[string]accountClient),
-		controlCalls:             make(map[string]chan struct{}),
+		controlCalls:             make(map[string]*controlCall),
 	}, nil
 }
 
