@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -386,13 +387,14 @@ func TestCodexGateway_RateLimitWithoutAccountLeftSurfaces429(t *testing.T) {
 		t.Errorf("cooldown = %v (%s), want about 17s, rate_limited", snap.CooldownUntil, snap.CooldownReason)
 	}
 
-	// The account is resting now, so the next request has none to use.
+	// The account is resting now, so the next request has none to use and is
+	// told to come back when it wakes.
 	again := postCodexMessages(t, srv, `{"model":"gpt-5.5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
-	if again.Code != http.StatusServiceUnavailable {
-		t.Fatalf("second status = %d, want 503; body = %s", again.Code, again.Body.String())
+	if again.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want 429; body = %s", again.Code, again.Body.String())
 	}
-	if kind, _ := decodeAnthropicError(t, again); kind != "overloaded_error" {
-		t.Errorf("second error type = %s, want overloaded_error", kind)
+	if s, err := strconv.Atoi(again.Header().Get("Retry-After")); err != nil || s < 1 || s > 17 {
+		t.Errorf("second Retry-After = %q, want the rest of the 17s cooldown", again.Header().Get("Retry-After"))
 	}
 }
 
@@ -761,4 +763,29 @@ func codexInputHasReasoning(body map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// When every account is resting after a spent usage window, the client is
+// told it is rate limited and until when, not that the backend is overloaded.
+func TestCodexGateway_AllAccountsCoolingDownReplies429(t *testing.T) {
+	backend, upstream := newFakeCodexBackend(t, func(w http.ResponseWriter, r *http.Request, _ string) {
+		writeCodexSSE(w, nil)
+	})
+	srv := newCodexTestServer(t, upstream, codex.AccountConfig{ID: "codex-a", Token: "tok-a", Enabled: true})
+	pool, _ := srv.codexPoolFor(config.Get().Codex)
+	pool.RecordCooldown("codex-a", time.Now().Add(3*time.Hour), "usage_limit_reached")
+
+	rec := postCodexMessages(t, srv, `{"model":"gpt-5.5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body = %s", rec.Code, rec.Body.String())
+	}
+	if kind, _ := decodeAnthropicError(t, rec); kind != "rate_limit_error" {
+		t.Errorf("error type = %s, want rate_limit_error", kind)
+	}
+	if s, err := strconv.Atoi(rec.Header().Get("Retry-After")); err != nil || s < 3*3600-60 || s > 3*3600 {
+		t.Errorf("Retry-After = %q, want about 10800", rec.Header().Get("Retry-After"))
+	}
+	if n := len(backend.tokens()); n != 0 {
+		t.Errorf("upstream calls = %d, want 0", n)
+	}
 }

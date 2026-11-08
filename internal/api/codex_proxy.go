@@ -352,11 +352,24 @@ func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.R
 		excluded[acc.ID] = true
 	}
 
+	// Every account resting after a rate limit is a 429 the client can wait
+	// out, not an outage: it learns when the first account comes back.
+	var coolingUntil time.Time
+	cooling := false
+	if selectErr != nil && len(excluded) == 0 {
+		coolingUntil, cooling = pool.CooldownEnd()
+	}
 	switch {
 	case last429 != nil:
 		writeCodexUpstreamError(writer, last429)
 	case lastFailure != nil:
 		writeCodexUpstreamError(writer, lastFailure)
+	case cooling:
+		wait := max(time.Until(coolingUntil), time.Second)
+		writer.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+		server.warnCodex("codex: every account is cooling down, replying 429", "until", coolingUntil, "accounts", codexAccountStates(pool))
+		writeAPIError(writer, http.StatusTooManyRequests, "rate_limit_error",
+			"Codex: every account is rate-limited until "+coolingUntil.UTC().Format(time.RFC3339))
 	default:
 		// The 503 body alone never reaches the operator: log each account's
 		// state so the log shows why no account could serve the request.

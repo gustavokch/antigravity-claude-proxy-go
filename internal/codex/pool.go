@@ -542,6 +542,28 @@ func (st *accountState) extendCooldown(until time.Time, reason string) {
 	}
 }
 
+// CooldownEnd returns when the first account comes back from its cooldown,
+// when cooldowns are all that keep every account out: no account is
+// selectable, and an enabled, signed-in account with a credential is cooling
+// down. ok is false otherwise, for a pool with nothing to wait for.
+func (p *AccountPool) CooldownEnd() (until time.Time, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clock()
+	for _, st := range p.accounts {
+		if st.selectable(now) {
+			return time.Time{}, false
+		}
+		// Not selectable, yet enabled, signed in and holding a credential:
+		// only its cooldown keeps it out.
+		if st.Enabled && !st.needsLogin && (st.Token != "" || st.RefreshToken != "") &&
+			(until.IsZero() || st.cooldownUntil.Before(until)) {
+			until = st.cooldownUntil
+		}
+	}
+	return until, !until.IsZero()
+}
+
 // UpdateQuota stores the account's latest usage reading.
 func (p *AccountPool) UpdateQuota(id string, q Quota) {
 	p.mu.Lock()
