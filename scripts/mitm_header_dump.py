@@ -14,6 +14,10 @@ and length of the credential token only. Matching is a substring,
 case-insensitive match on the header name so variants like
 x-goog-iam-authorization-list are over-redacted on purpose.
 
+Response headers that name the account (Anthropic's organization and
+workspace ids and the x-claude-code-signature JWS) keep only the shape of
+their value: <uuid>, wrkspc_<redacted>, <jws>.
+
 Response bodies are kept for error statuses ONLY. A 200 on
 streamGenerateContent is the user's own generated text and must never land
 in a capture file; the 4xx body is what carries the throttle dimension this
@@ -95,6 +99,18 @@ _UUID_RE = re.compile(
 # 16+ hex characters is longer than any English word that is also pure hex
 # ("decade", "accede"), so the separators in metadata.user_id survive.
 _HEX_RUN_RE = re.compile(r"[0-9a-fA-F]{16,}")
+
+# Anthropic names the account each response was served for: the organization
+# id (a UUID), the workspace id ("wrkspc_" and an opaque token) and a JWS whose
+# payload repeats them next to the account UUID. The capture keeps the header
+# and the shape of its value, never the value.
+ACCOUNT_RESPONSE_HEADERS = frozenset({
+    "anthropic-organization-id",
+    "anthropic-workspace-id",
+    "x-claude-code-signature",
+})
+_JWS_RE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+_PREFIXED_ID_RE = re.compile(r"([a-z]+_)[A-Za-z0-9]+")
 
 # Scalar fields whose exact value IS the fingerprint the capture exists to
 # record: the wire contract, not the caller's content.
@@ -189,6 +205,22 @@ def redact_identifier(value: str) -> str:
     if not isinstance(value, str):
         return value
     return _HEX_RUN_RE.sub("<hex>", _UUID_RE.sub("<uuid>", value))
+
+
+def redact_account_value(value: str) -> str:
+    """Reduce an account-naming response header value to its shape.
+
+    A value of no known shape is replaced whole, so a new id format never
+    lands in the capture.
+    """
+    if _UUID_RE.fullmatch(value):
+        return "<uuid>"
+    prefixed = _PREFIXED_ID_RE.fullmatch(value)
+    if prefixed:
+        return prefixed.group(1) + "<redacted>"
+    if _JWS_RE.fullmatch(value):
+        return "<jws>"
+    return "[redacted]"
 
 
 def _shape(value, depth: int = 0):
@@ -309,10 +341,14 @@ def build_record(flow, capture_request_body: bool = False, tls: dict | None = No
     record["status"] = res.status_code
     # Response headers carry no credential of ours, but a Set-Cookie could
     # start a session; redact by the same rule rather than reason about it.
-    record["response_headers"] = [
-        [name, "[redacted]" if SENSITIVE_NAME.search(name) else value]
-        for name, value in res.headers.items()
-    ]
+    response_headers = []
+    for name, value in res.headers.items():
+        if SENSITIVE_NAME.search(name):
+            value = "[redacted]"
+        elif name.lower() in ACCOUNT_RESPONSE_HEADERS:
+            value = redact_account_value(value)
+        response_headers.append([name, value])
+    record["response_headers"] = response_headers
     if res.status_code >= 400:
         body = (res.content or b"").decode("utf-8", "replace")
         record["response_body"] = body[:MAX_RESPONSE_BODY]
