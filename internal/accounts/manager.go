@@ -802,31 +802,42 @@ func normalizeTier(current rawTier, paid *rawTier, g1Tier string) string {
 	return "free"
 }
 
+// CacheProject records account's Cloud Code project and saves the pool only
+// when the project changed.
 func (manager *Manager) CacheProject(account *Account, project string) {
 	manager.mu.Lock()
 	manager.projects[account.Email] = project
+	changed := false
 	for _, acc := range manager.accounts {
 		if acc.Email == account.Email {
+			changed = acc.ProjectID != project || acc.Subscription.ProjectID != project
 			acc.ProjectID = project
 			acc.Subscription.ProjectID = project
 			break
 		}
 	}
 	manager.mu.Unlock()
-	_ = manager.SaveToDisk()
+	if changed {
+		_ = manager.SaveToDisk()
+	}
 }
 
+// UpdateSubscription records a detected subscription. It saves the pool only
+// when the tier or project changed: every new prompt's loadCodeAssist answer
+// repeats them, with a new DetectedAt that is kept in memory alone.
 func (manager *Manager) UpdateSubscription(email string, subscription Subscription) error {
 	manager.mu.Lock()
-	found := false
+	found, changed := false, false
 	for _, acc := range manager.accounts {
 		if acc.Email == email {
-			if subscription.Tier != "" {
+			if subscription.Tier != "" && subscription.Tier != acc.Subscription.Tier {
 				acc.Subscription.Tier = subscription.Tier
+				changed = true
 			}
-			if subscription.ProjectID != "" {
+			if subscription.ProjectID != "" && (subscription.ProjectID != acc.Subscription.ProjectID || subscription.ProjectID != acc.ProjectID) {
 				acc.Subscription.ProjectID = subscription.ProjectID
 				acc.ProjectID = subscription.ProjectID
+				changed = true
 			}
 			if subscription.DetectedAt != "" {
 				acc.Subscription.DetectedAt = subscription.DetectedAt
@@ -838,6 +849,9 @@ func (manager *Manager) UpdateSubscription(email string, subscription Subscripti
 	manager.mu.Unlock()
 	if !found {
 		return fmt.Errorf("account %s not found", email)
+	}
+	if !changed {
+		return nil
 	}
 	return manager.SaveToDisk()
 }
