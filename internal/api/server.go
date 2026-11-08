@@ -629,6 +629,10 @@ const defaultDiscoveryContextWindow = 200000
 // advertises the same, conservative number.
 const defaultDiscoveryMaxOutputTokens = 32768
 
+// defaultRequestModel is the model of a /v1/messages or count_tokens request
+// that names none.
+const defaultRequestModel = "gemini-3.5-flash-low"
+
 func (server *Server) models(writer http.ResponseWriter, request *http.Request) {
 	catalog, err := server.fetchModelCatalog(request.Context())
 	if err != nil {
@@ -903,7 +907,7 @@ func (server *Server) messages(writer http.ResponseWriter, request *http.Request
 	// same session id the request metrics use.
 	request = request.WithContext(accounts.WithSessionKey(request.Context(), ccExtractSessionID(request, anthropicRequest)))
 	if model, _ := anthropicRequest["model"].(string); model == "" {
-		anthropicRequest["model"] = "gemini-3.5-flash-low"
+		anthropicRequest["model"] = defaultRequestModel
 		bodyMutated = true
 	}
 	reqModel := stringFrom(anthropicRequest["model"])

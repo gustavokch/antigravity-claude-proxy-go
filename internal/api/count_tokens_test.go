@@ -529,6 +529,25 @@ func TestCountTokens_ForwardsToOpenRouter(t *testing.T) {
 	}
 }
 
+// A count without a model takes the model /v1/messages defaults to, so it
+// routes where that request would: here a mapping sends the default model to
+// OpenRouter.
+func TestCountTokens_EmptyModelTakesTheMessagesDefault(t *testing.T) {
+	upstream := newCountUpstream(t, http.StatusOK, `{"input_tokens":4321}`, nil)
+	cfg := config.DefaultConfig()
+	cfg.OpenRouter = config.OpenRouterConfig{
+		Enabled: true, BaseURL: upstream.URL + "/api/v1", APIKey: "k-or",
+		Allowlist: []config.OpenRouterModelConfig{{ID: "vendor/model-x", Alias: "model-x", Enabled: true}},
+	}
+	cfg.ModelMapping = map[string]any{defaultRequestModel: "model-x"}
+	server := newCountServer(t, cfg, time.Now)
+
+	body := `{"messages":[{"role":"user","content":"hello"}]}`
+	if got := countOf(t, sendInSession(server.Handler(), countPath, "test-proxy-key", "", body, nil)); got != 4321 {
+		t.Errorf("count = %d, want the upstream's 4321 for the default model's route", got)
+	}
+}
+
 func TestCountTokens_ForwardsToKimi(t *testing.T) {
 	far := time.Now().Add(24 * time.Hour)
 	for _, tc := range []struct {

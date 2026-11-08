@@ -51,7 +51,11 @@ func (server *Server) countTokens(writer http.ResponseWriter, request *http.Requ
 		writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", "messages is required and must be an array")
 		return
 	}
-	model := server.resolveModelMapping(stringFrom(body["model"]))
+	model := stringFrom(body["model"])
+	if model == "" {
+		model = defaultRequestModel
+	}
+	model = server.resolveModelMapping(model)
 	session := ccExtractSessionID(request, body)
 	cfg := config.Get()
 	if route, routed := server.routeGateway(request.Context(), cfg, model); routed {
