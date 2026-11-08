@@ -177,8 +177,9 @@ func TestClient_CountTokensSendsTheCapturedIdentity(t *testing.T) {
 	}
 	// Values that vary per request (credential, ids, body length), per machine
 	// (Host, X-Stainless-OS and -Arch) or per Claude Code release, which the
-	// client-drift pins move from the messages capture (User-Agent,
-	// X-Stainless-Package-Version, X-Stainless-Runtime-Version).
+	// client-drift pins move from the messages capture (X-Stainless-Package-Version,
+	// X-Stainless-Runtime-Version). The User-Agent carries the release too and is
+	// checked below with only its version moved.
 	varying := map[string]bool{
 		"Authorization": true, "Host": true, "Content-Length": true,
 		"X-Claude-Code-Session-Id": true, "x-client-request-id": true,
@@ -201,14 +202,63 @@ func TestClient_CountTokensSendsTheCapturedIdentity(t *testing.T) {
 			t.Errorf("%s = %q, want a UUID", name, got.values[name])
 		}
 	}
-	if got.values["User-Agent"] != ccidentity.MessagesUserAgent {
-		t.Errorf("User-Agent = %q, want the messages path's %q", got.values["User-Agent"], ccidentity.MessagesUserAgent)
+	if want := capturedCountUserAgent(values); got.values["User-Agent"] != want {
+		t.Errorf("User-Agent = %q, want the captured %q", got.values["User-Agent"], want)
 	}
 	if got.values["Content-Length"] != strconv.Itoa(len(body)) {
 		t.Errorf("Content-Length = %q, want %d", got.values["Content-Length"], len(body))
 	}
 	if got.body != body {
 		t.Errorf("body = %s, want the caller's bytes %s", got.body, body)
+	}
+}
+
+// capturedCountUserAgent is the captured count User-Agent with its version
+// replaced by the one the proxy claims, which client-drift moves each release.
+func capturedCountUserAgent(values map[string]string) string {
+	product, mode, _ := strings.Cut(values["User-Agent"], " ")
+	name, _, _ := strings.Cut(product, "/")
+	return name + "/" + ccidentity.ClientVersion + " " + mode
+}
+
+// Claude Code counts only from /context, which only an interactive session
+// has, so a count carries the interactive User-Agent whatever entrypoint the
+// messages path claims. An explicit User-Agent override still wins.
+func TestClient_CountTokensUserAgentIsTheInteractiveOne(t *testing.T) {
+	_, _, values := capturedCount(t)
+	captured := capturedCountUserAgent(values)
+	for _, tc := range []struct {
+		name   string
+		config IdentityConfig
+		want   string
+	}{
+		{"default entrypoint", IdentityConfig{}, captured},
+		{"sdk-cli entrypoint", IdentityConfig{Entrypoint: ccidentity.EntrypointSDKCLI}, captured},
+		{"cli entrypoint", IdentityConfig{Entrypoint: ccidentity.EntrypointInteractive}, captured},
+		{"user agent override", IdentityConfig{Entrypoint: ccidentity.EntrypointSDKCLI, UserAgent: "custom/1.0"}, "custom/1.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotUA string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotUA = r.Header.Get("User-Agent")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"input_tokens":5}`)
+			}))
+			defer server.Close()
+
+			identity, normalize := tc.config.WireIdentity("", "session-count")
+			resp, err := NewClient(server.URL, nil).CountTokens(context.Background(), CountTokensRequest{
+				Token: "sk-ant-oat01-count", Body: []byte(`{"model":"claude-sonnet-5","messages":[]}`),
+				Normalize: normalize, Identity: identity,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if gotUA != tc.want {
+				t.Errorf("User-Agent = %q, want %q", gotUA, tc.want)
+			}
+		})
 	}
 }
 

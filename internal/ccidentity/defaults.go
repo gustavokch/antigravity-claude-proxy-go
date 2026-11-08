@@ -27,10 +27,9 @@ const (
 	DiscoveryUserAgent = "claude-code/2.1.311"
 
 	// EntrypointSDKCLI and EntrypointInteractive are the two cc_entrypoint values
-	// known to exist. The capture only ever produced sdk-cli (because every run
-	// used --print); cli comes from docs/classifier-fallback-notes.md, which
-	// recorded it from an interactive session. The cli header set itself is
-	// still uncaptured.
+	// known to exist. The --print captures only ever produced sdk-cli; the
+	// interactive count capture (.reference/claude-code-count-tokens-20261107.jsonl,
+	// 2.1.311) shows cli, on messages and counts alike.
 	EntrypointSDKCLI      = "sdk-cli"
 	EntrypointInteractive = "cli"
 
@@ -91,11 +90,10 @@ func staticHeaders(id Identity) []Header {
 // messagesUserAgent returns the captured literal, or a constructed one when the
 // caller changed the entrypoint.
 //
-// The construction is INFERRED, not captured: the sample shows the entrypoint
-// appears inside the parentheses, so substituting cli yields
-// "claude-cli/2.1.311 (external, cli)". No capture has confirmed that exact
-// string. It is used only when the operator explicitly sets a non-default
-// entrypoint, and it is the reason a cli capture is still wanted.
+// The construction puts the entrypoint inside the parentheses. For cli it
+// yields "claude-cli/2.1.311 (external, cli)", the string the interactive count
+// capture shows on both messages and counts. Any other entrypoint is an
+// extrapolation of that shape; no capture shows one.
 func messagesUserAgent(id Identity) string {
 	if id.UserAgent != "" {
 		return id.UserAgent
@@ -341,10 +339,15 @@ var CountTokensBetas = []string{
 }
 
 // countTokensStaticHeaders is the constant set as the count capture differs
-// from the messages one: no X-Stainless-Timeout, and request class auxiliary.
-// Every other name and value is the messages one, sent by the same SDK.
-// staticHeaders returns a fresh slice, so it is filtered in place.
+// from the messages one: no X-Stainless-Timeout, request class auxiliary, and
+// the User-Agent of the interactive entrypoint. Claude Code counts only from
+// /context, which only an interactive session has, so a count claims cli
+// whatever entrypoint the messages path claims; an explicit Identity.UserAgent
+// override still wins, as it does there. Every other name and value is the
+// messages one, sent by the same SDK. staticHeaders returns a fresh slice, so
+// it is filtered in place.
 func countTokensStaticHeaders(id Identity) []Header {
+	id.Entrypoint = EntrypointInteractive
 	static := staticHeaders(id)
 	out := static[:0]
 	for _, header := range static {

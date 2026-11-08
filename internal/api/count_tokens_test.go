@@ -331,7 +331,7 @@ func TestCountTokens_ClaudeCodeForwardsTheClientsBody(t *testing.T) {
 		"x-api-key":                   "",
 		"x-claude-code-request-class": "auxiliary",
 		"anthropic-beta":              strings.Join(ccidentity.CountTokensBetas, ","),
-		"User-Agent":                  ccidentity.MessagesUserAgent,
+		"User-Agent":                  "claude-cli/" + ccidentity.ClientVersion + " (external, cli)",
 		"X-Stainless-Timeout":         "",
 		"x-claude-code-prompt-id":     "",
 	} {
@@ -777,7 +777,7 @@ func TestCountTokens_NormalizedCustomEndpointSendsTheCountIdentity(t *testing.T)
 	for name, want := range map[string]string{
 		"x-claude-code-request-class": "auxiliary",
 		"anthropic-beta":              strings.Join(ccidentity.CountTokensBetas, ","),
-		"User-Agent":                  ccidentity.MessagesUserAgent,
+		"User-Agent":                  "claude-cli/" + ccidentity.ClientVersion + " (external, cli)",
 		"x-app":                       "cli",
 		"X-Stainless-Timeout":         "",
 		"x-claude-code-prompt-id":     "",
