@@ -269,8 +269,10 @@ func TestUsage_CacheReadsAndWrites(t *testing.T) {
 			`{"cache_creation_input_tokens":25,"cache_read_input_tokens":0,"input_tokens":75,"output_tokens":7}`},
 		{"write count wins over the older spelling", map[string]any{"cache_write_tokens": 30, "cache_creation_tokens": 25},
 			`{"cache_creation_input_tokens":30,"cache_read_input_tokens":0,"input_tokens":70,"output_tokens":7}`},
-		{"input floors at zero", map[string]any{"cached_tokens": 90, "cache_write_tokens": 30},
-			`{"cache_creation_input_tokens":30,"cache_read_input_tokens":90,"input_tokens":0,"output_tokens":7}`},
+		{"reads clamp to the input", map[string]any{"cached_tokens": 150},
+			`{"cache_creation_input_tokens":0,"cache_read_input_tokens":100,"input_tokens":0,"output_tokens":7}`},
+		{"writes clamp to what the reads leave", map[string]any{"cached_tokens": 90, "cache_write_tokens": 30},
+			`{"cache_creation_input_tokens":10,"cache_read_input_tokens":90,"input_tokens":0,"output_tokens":7}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u := map[string]any{"input_tokens": float64(100), "output_tokens": float64(7)}

@@ -176,9 +176,11 @@ func stopReason(resp map[string]any, toolCalls, refusals int) string {
 // Usage converts Responses usage into the Anthropic accounting convention:
 // input_tokens counts only the uncached input, the cached prefix is reported
 // as cache reads and the tokens written to the cache as cache creation. The
-// Responses input_tokens includes both, so both are taken out of it.
+// Responses input_tokens includes both, so both are taken out of it, each
+// capped at what is left, and the three Anthropic counts sum to the Responses
+// input_tokens.
 func Usage(u map[string]any) map[string]any {
-	input := toInt(u["input_tokens"])
+	input := max(toInt(u["input_tokens"]), 0)
 	output := toInt(u["output_tokens"])
 	cached, written := 0, 0
 	if details, ok := u["input_tokens_details"].(map[string]any); ok {
@@ -188,8 +190,10 @@ func Usage(u map[string]any) map[string]any {
 			written = max(toInt(details["cache_creation_tokens"]), 0)
 		}
 	}
+	cached = min(cached, input)
+	written = min(written, input-cached)
 	return map[string]any{
-		"input_tokens":                max(input-cached-written, 0),
+		"input_tokens":                input - cached - written,
 		"output_tokens":               output,
 		"cache_read_input_tokens":     cached,
 		"cache_creation_input_tokens": written,
