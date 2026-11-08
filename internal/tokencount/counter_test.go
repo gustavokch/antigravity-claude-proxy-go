@@ -57,6 +57,9 @@ func TestObserveSkipsRequestsThatCannotTeachTheRatio(t *testing.T) {
 	counter := New(nil)
 	counter.Observe("", "claude-sonnet-4-6", textRequest(999), 100)
 	counter.Observe("", "claude-sonnet-4-6", withImage(t, textRequest(2000)), 64)
+	// The 64-token image is half of the 128: an error in its price would be
+	// most of what is left for the text.
+	counter.Observe("", "claude-sonnet-4-6", withImage(t, textRequest(2000)), 128)
 	counter.Observe("", "claude-sonnet-4-6", textRequest(2000), 0)
 	if got := counter.Estimate("", "claude-sonnet-4-6", textRequest(4000)); got != 1000 {
 		t.Fatalf("after skipped observations: 4000 chars = %d tokens, want 1000", got)
@@ -67,6 +70,41 @@ func TestObserveSkipsRequestsThatCannotTeachTheRatio(t *testing.T) {
 	counter.Observe("", "claude-sonnet-4-6", textRequest(1000), 1000)
 	if got := counter.Estimate("", "claude-sonnet-4-6", textRequest(3401)); got != 1001 {
 		t.Fatalf("after a 1000-char observation: 3401 chars = %d tokens, want 1001", got)
+	}
+}
+
+// A PDF inside a tool_result costs tokens the measure does not see, so the
+// request says nothing about the text's ratio: 20,000 chars answered with
+// 65,000 tokens would drag it towards 0.3.
+func TestObserveSkipsUnpricedContent(t *testing.T) {
+	counter := New(nil)
+	request := map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": []any{
+				map[string]any{"type": "text", "text": strings.Repeat("a", 20000)},
+				map[string]any{"type": "document", "source": map[string]any{
+					"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK",
+				}},
+			}},
+		}},
+	}}
+	for range 20 {
+		counter.Observe("", "claude-sonnet-4-6", request, 65000)
+	}
+	if got := counter.Estimate("", "claude-sonnet-4-6", textRequest(4000)); got != 1000 {
+		t.Errorf("after 20 requests with a document: 4000 chars = %d tokens, want 1000 at the starting ratio", got)
+	}
+}
+
+// An image the upstream bills at less than its price makes the text look
+// cheaper than it is. 2,000 chars and a 64-token image answered with 200 tokens
+// leave 136 for the text, 14.7 chars per token; the observation counts as 8.0,
+// so the ratio moves from 4.0 to at most 0.8×4.0 + 0.2×8.0 = 4.8.
+func TestObserveClampsTheObservedRatio(t *testing.T) {
+	counter := New(nil)
+	counter.Observe("", "claude-sonnet-4-6", withImage(t, textRequest(2000)), 200)
+	if got := counter.Estimate("", "claude-sonnet-4-6", textRequest(4801)); got != 1001 {
+		t.Errorf("after a mispriced image: 4801 chars = %d tokens, want 1001 at a ratio of 4.8", got)
 	}
 }
 

@@ -20,6 +20,12 @@ const (
 	// is mostly overhead the proxy and the upstream add (system prompt,
 	// tool framing), which says little about the text's own ratio.
 	minLearnChars = 1000
+	// minObservedRatio and maxObservedRatio bound what one request may claim
+	// the ratio is: a value outside them says more about tokens the measure
+	// mispriced than about the text, and one such request must not move the
+	// ratio far.
+	minObservedRatio = 0.5
+	maxObservedRatio = 8.0
 )
 
 // Family names the models that share one chars-per-token ratio. Every model
@@ -110,11 +116,16 @@ func (c *Counter) ratioLocked(family string) float64 {
 	return startCharsPerToken
 }
 
+// learnLocked moves family's ratio towards the one measured observed. A
+// request teaches nothing when it holds content the measure does not price,
+// when it is short, or when images are half of realInput or more: an error in
+// their price would then be most of what is left for the text.
 func (c *Counter) learnLocked(family string, measured measurement, realInput int) {
-	textTokens := realInput - measured.imageTokens
-	if measured.chars < minLearnChars || textTokens <= 0 {
+	if measured.unpriced || measured.chars < minLearnChars || measured.imageTokens*2 >= realInput {
 		return
 	}
+	textTokens := realInput - measured.imageTokens
 	observed := float64(measured.chars) / float64(textTokens)
+	observed = min(max(observed, minObservedRatio), maxObservedRatio)
 	c.ratios[family] = (1-ratioAlpha)*c.ratioLocked(family) + ratioAlpha*observed
 }

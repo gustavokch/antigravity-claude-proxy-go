@@ -8,9 +8,12 @@ import (
 
 // measurement is what an estimate is made of: characters that the family's
 // ratio turns into tokens, and image tokens that are priced per image.
+// unpriced records content it prices neither way, such as a document: an
+// estimate leaves that content out, and the request cannot teach the ratio.
 type measurement struct {
 	chars       int
 	imageTokens int
+	unpriced    bool
 }
 
 // tokens converts a measurement at the given chars-per-token ratio.
@@ -64,7 +67,9 @@ func (m *measurement) addMessages(pricing imagePricing, messages []any) {
 // addContent measures a message's content or a tool_result's content: a
 // string, or a list of blocks. Thinking signatures, redacted thinking and
 // cache_control markers are not text the model reads as tokens of the
-// conversation, so they are left out.
+// conversation, so they are left out. Any other block type (a document, a
+// server tool's result) costs tokens this does not price, and marks the
+// measurement unpriced.
 func (m *measurement) addContent(pricing imagePricing, content any) {
 	switch content := content.(type) {
 	case string:
@@ -88,6 +93,9 @@ func (m *measurement) addContent(pricing imagePricing, content any) {
 				m.addContent(pricing, block["content"])
 			case "image":
 				m.imageTokens += pricing.sourceTokens(block["source"])
+			case "redacted_thinking": // known, and left out
+			default:
+				m.unpriced = true
 			}
 		}
 	}
