@@ -1143,3 +1143,147 @@ func TestStreamGenerateContentPinnedSessionLeavesAnAccountWhoseCredentialsFail(t
 		t.Fatalf("home %s marked invalid by a transient credential error", home)
 	}
 }
+
+// retryAfterClient answers a model call with a 429 carrying Retry-After: 30
+// while it has rejections left, a negative count never running out, and with
+// an empty success otherwise. It counts model calls.
+type retryAfterClient struct {
+	blockingModelsClient
+
+	mu          sync.Mutex
+	rejections  int
+	generations int
+}
+
+func (c *retryAfterClient) StreamGenerateContent(context.Context, any, cloudcode.RequestOptions, func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generations++
+	if c.rejections == 0 {
+		return cloudcode.Response{}, nil
+	}
+	if c.rejections > 0 {
+		c.rejections--
+	}
+	return cloudcode.Response{}, &cloudcode.HTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Status:     "429 Too Many Requests",
+		Header:     http.Header{"Retry-After": []string{"30"}},
+		Body:       `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`,
+	}
+}
+
+// reject sets the 429s still to come and restarts the call count.
+func (c *retryAfterClient) reject(rejections int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rejections, c.generations = rejections, 0
+}
+
+func (c *retryAfterClient) calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.generations
+}
+
+// pinnedRetryAfterDispatcher builds a round-robin pool of two accounts, each
+// served by its retryAfterClient, on a clock that moves only when the
+// dispatcher sleeps, and pins session s1 with a first request. It returns the
+// clients by email and the email of s1's home account.
+func pinnedRetryAfterDispatcher(t *testing.T) (*Dispatcher, map[string]*retryAfterClient, string) {
+	t.Helper()
+	release := make(chan struct{})
+	close(release)
+	clients := map[string]*retryAfterClient{
+		"acc1@example.com": {blockingModelsClient: blockingModelsClient{release: release}},
+		"acc2@example.com": {blockingModelsClient: blockingModelsClient{release: release}},
+	}
+	var clock sync.Mutex
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	readClock := func() time.Time {
+		clock.Lock()
+		defer clock.Unlock()
+		return now
+	}
+	manager, err := New(Options{
+		Accounts: []*Account{
+			{Email: "acc1@example.com", Enabled: true},
+			{Email: "acc2@example.com", Enabled: true},
+		},
+		Strategy: StrategyRoundRobin,
+		Now:      readClock,
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	dispatcher, err := NewDispatcher(DispatcherOptions{
+		Manager:   manager,
+		Resolver:  accountTokenResolver{},
+		NewClient: func(email string) CloudClient { return clients[email] },
+		ProjectID: "test-proj-affinity",
+		Now:       readClock,
+		Sleep: func(_ context.Context, wait time.Duration) error {
+			clock.Lock()
+			now = now.Add(wait)
+			clock.Unlock()
+			return nil
+		},
+		Random: func() float64 { return 0 },
+	})
+	if err != nil {
+		t.Fatalf("new dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Close)
+	dispatcher.cacheCatalog("acc1@example.com", []byte(testCatalogBody))
+	home, err := serveSession(dispatcher, "s1")
+	if err != nil {
+		t.Fatalf("first request of s1: %v", err)
+	}
+	return dispatcher, clients, home
+}
+
+// serveSession sends one request of session and returns the account that
+// served it.
+func serveSession(dispatcher *Dispatcher, session string) (string, error) {
+	ctx, meta := cloudcode.WithExecutionMetadata(WithSessionKey(context.Background(), session))
+	_, err := dispatcher.StreamGenerateContent(ctx, map[string]any{"model": "gemini-2.5-pro"}, func(cloudcode.SSEEvent) error { return nil })
+	return meta.Account, err
+}
+
+// A pinned request waits out one 429 on its account. When the account
+// answers 429 again, with no success between, the session moves to the
+// other account, which serves the request.
+func TestStreamGenerateContentPinnedSessionMovesAfterARepeatedLimit(t *testing.T) {
+	t.Parallel()
+	dispatcher, clients, home := pinnedRetryAfterDispatcher(t)
+	clients[home].reject(-1)
+
+	got, err := serveSession(dispatcher, "s1")
+	if err != nil || got == "" || got == home {
+		t.Fatalf("home %s answering 429 Retry-After: 30 on every call: served by %q (error %v), want the other account", home, got, err)
+	}
+	if calls := clients[home].calls(); calls > 2 {
+		t.Fatalf("home %s got %d model calls, want at most 2: one wait, then the move", home, calls)
+	}
+}
+
+// A single 429 on the pinned account is waited out: the request is served
+// there after the wait, and the other account gets nothing.
+func TestStreamGenerateContentPinnedSessionWaitsOutOneLimit(t *testing.T) {
+	t.Parallel()
+	dispatcher, clients, home := pinnedRetryAfterDispatcher(t)
+	clients[home].reject(1)
+
+	got, err := serveSession(dispatcher, "s1")
+	if err != nil || got != home {
+		t.Fatalf("home %s answering one 429: served by %q (error %v), want the home after one wait", home, got, err)
+	}
+	if calls := clients[home].calls(); calls != 2 {
+		t.Fatalf("home %s got %d model calls, want 2: the 429 and the call after the wait", home, calls)
+	}
+	for email, client := range clients {
+		if email != home && client.calls() != 0 {
+			t.Fatalf("%s got %d model calls; the session must not move for one limit", email, client.calls())
+		}
+	}
+}

@@ -27,11 +27,13 @@ type targetState int
 
 const (
 	targetUsable targetState = iota
-	// targetWait: a plain rate limit that lifts within manager.pinWait.
+	// targetWait: a plain rate limit that lifts within manager.pinWait, with
+	// no other failure since the account's last success.
 	targetWait
 	// targetGone: removed, disabled or invalid. The pin rebinds.
 	targetGone
-	// targetBlocked: anything longer. The model moves to an overflow account.
+	// targetBlocked: anything longer, or a repeat limit. The model moves to
+	// an overflow account.
 	targetBlocked
 )
 
@@ -104,8 +106,12 @@ func (manager *Manager) selectPinnedLocked(session, model string) Selection {
 
 // pinTargetLocked classifies the pinned account for model. Only a plain rate
 // limit (MarkRateLimited) that lifts within manager.pinWait is worth waiting
-// for. A failure lock, an exhausted quota, the 404 lock, a cooldown, or a
-// model the account does not list moves the model to another account.
+// for, and only once: each upstream 429 adds one to ConsecutiveFailure, which
+// only a success clears, so a count of two or more means the account failed
+// before this limit, typically with a limit the session already waited out.
+// A repeat limit, a longer one, a failure lock, an exhausted quota, the 404
+// lock, a cooldown, or a model the account does not list moves the model to
+// another account.
 func (manager *Manager) pinTargetLocked(email, model string) pinTarget {
 	account := manager.accountLocked(email)
 	switch {
@@ -137,10 +143,14 @@ func (manager *Manager) pinTargetLocked(email, model string) pinTarget {
 		blocked.reason = "failure lock"
 	default:
 		wait := time.Duration(limit.ResetTimeMS-nowMS) * time.Millisecond
-		if wait <= manager.pinWait {
+		switch {
+		case wait > manager.pinWait:
+			blocked.reason = "rate limited " + wait.Round(time.Second).String()
+		case account.ConsecutiveFailure >= 2:
+			blocked.reason = "rate limited again"
+		default:
 			return pinTarget{account: account, state: targetWait, wait: max(wait, time.Millisecond)}
 		}
-		blocked.reason = "rate limited " + wait.Round(time.Second).String()
 	}
 	return blocked
 }

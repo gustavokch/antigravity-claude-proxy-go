@@ -209,6 +209,54 @@ func TestPinWaitsOutAShortLimit(t *testing.T) {
 	}
 }
 
+// A pinned session waits out one short limit, not a streak: a second limit
+// with no success since the first moves the model to another account. A
+// success ends the streak, so the next short limit is waited out again.
+func TestSelectPinnedRepeatShortLimitOverflows(t *testing.T) {
+	var logBuffer bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	start := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	// pinnedAfterOneLimit pins s1 to b, limits b for 30 s, checks the wait,
+	// and moves the clock past the reset.
+	pinnedAfterOneLimit := func(t *testing.T) (*Manager, *Account) {
+		t.Helper()
+		clock := start
+		manager, pool := pinTestManager(t, &clock, StrategyRoundRobin, "a@example.com", "b@example.com")
+		home := pool[1]
+		if got := selected(manager, "s1", pinModel); got != home.Email {
+			t.Fatalf("new pin = %q, want %s", got, home.Email)
+		}
+		manager.MarkRateLimited(home, pinModel, 30*time.Second)
+		if got := manager.Select("s1", pinModel); got != (Selection{Wait: 30 * time.Second}) {
+			t.Fatalf("first short limit: %+v, want a 30s wait for the pinned account", got)
+		}
+		clock = clock.Add(31 * time.Second)
+		if got := selected(manager, "s1", pinModel); got != home.Email {
+			t.Fatalf("after the first limit lifted the session got %q, want its home %s", got, home.Email)
+		}
+		return manager, home
+	}
+
+	manager, home := pinnedAfterOneLimit(t)
+	manager.MarkRateLimited(home, pinModel, 30*time.Second)
+	if got := selected(manager, "s1", pinModel); got != "a@example.com" {
+		t.Fatalf("second short limit with no success between: session got %q, want the overflow a@example.com", got)
+	}
+	want := `msg="session overflow" session=s1 model=claude-sonnet-4-6 from=b@example.com to=a@example.com reason="rate limited again"`
+	if out := logBuffer.String(); !strings.Contains(out, want) {
+		t.Errorf("log lacks %q; got:\n%s", want, out)
+	}
+
+	manager, home = pinnedAfterOneLimit(t)
+	manager.MarkSuccess(home, pinModel)
+	manager.MarkRateLimited(home, pinModel, 30*time.Second)
+	if got := manager.Select("s1", pinModel); got != (Selection{Wait: 30 * time.Second}) {
+		t.Fatalf("short limit after a success: %+v, want a 30s wait for the pinned account", got)
+	}
+}
+
 func TestPinOverflowsAndDoesNotFlipBack(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
