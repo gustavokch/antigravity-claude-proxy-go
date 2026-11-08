@@ -7,9 +7,10 @@
 //     rewrites the Authorization header and preserves the Anthropic
 //     version/beta headers the client sent.
 //   - Chat Completions wire (chatwire.go) and Responses wire
-//     (responseswire.go, responsesstream.go): the Anthropic request is
-//     translated to ChatPath or ResponsesPath and the answer translated back,
-//     so the caller still sees an Anthropic-shaped reply.
+//     (responseswire.go, answers translated by internal/responses): the
+//     Anthropic request is translated to ChatPath or ResponsesPath and the
+//     answer translated back, so the caller still sees an Anthropic-shaped
+//     reply.
 //
 // ForwardSystemOne additionally passes a Jev systemone body through unchanged,
 // because that contract has no Anthropic Messages mapping.

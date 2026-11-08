@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/format"
+	"antigravity-go-proxy/internal/responses"
 	"antigravity-go-proxy/internal/transport"
 )
 
@@ -58,11 +59,6 @@ func SendChat(ctx context.Context, client *http.Client, baseURL, apiKey string, 
 	model, _ := chatReq["model"].(string)
 	return translateChatResponse(resp, model, clientStream, toolNames, injected), nil
 }
-
-// ErrStreamTruncated marks a translated stream that ended before its terminal
-// event. The client already received an in-band error event; the error exists
-// so the caller can log the break.
-var ErrStreamTruncated = errors.New("zen stream ended before its terminal event")
 
 // ForwardChat is the forwarding entry point: SendChat, then copy the translated
 // response to w (flushing per write so SSE stays incremental). modify runs on
@@ -1017,14 +1013,14 @@ func streamChatToAnthropic(r io.Reader, w io.Writer, model string, toolNames map
 	}
 	if err := scanner.Err(); err != nil {
 		s.emitError("api_error", "Zen stream read error: "+err.Error())
-		return fmt.Errorf("%w: %v", ErrStreamTruncated, err)
+		return fmt.Errorf("%w: %v", responses.ErrStreamTruncated, err)
 	}
 	// Clean EOF with neither [DONE] nor a finish_reason is a truncated
 	// stream (dropped connection, proxy timeout); finishing it as end_turn
 	// would pass a partial answer off as complete.
 	if !done && s.stop == "" {
 		s.emitError("api_error", "Zen stream ended before completion")
-		return ErrStreamTruncated
+		return responses.ErrStreamTruncated
 	}
 	return s.finish()
 }
