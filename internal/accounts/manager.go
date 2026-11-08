@@ -250,6 +250,10 @@ type Manager struct {
 	projects             map[string]string
 	sharedThrottleWindow time.Duration
 	modelThrottles       map[string]*sharedThrottle
+	// saveMu serializes SaveToDisk from snapshot to rename: saves run on
+	// request goroutines, and interleaved writes to path+".tmp" can persist a
+	// torn file or let an older snapshot replace a newer one.
+	saveMu sync.Mutex
 	// pins maps a session id to the account its conversation is pinned to;
 	// see conversation.go. Created on first use.
 	pins map[string]*pin
@@ -1367,6 +1371,8 @@ func cloneAccount(acc *Account) *Account {
 }
 
 func (manager *Manager) SaveToDisk() error {
+	manager.saveMu.Lock()
+	defer manager.saveMu.Unlock()
 	manager.mu.RLock()
 	path := manager.configPath
 	if path == "" {
