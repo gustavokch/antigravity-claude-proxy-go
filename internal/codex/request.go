@@ -22,6 +22,16 @@ type BuildOptions struct {
 	Model          string      // upstream model id
 	Entry          ModelConfig // effort clamping
 	PromptCacheKey string
+	// DropReasoning leaves the conversation's reasoning items out: the
+	// backend refused one it could not decrypt (IsInvalidEncryptedContent).
+	DropReasoning bool
+}
+
+// IsInvalidEncryptedContent reports whether an error body is the backend's
+// refusal of a replayed reasoning item it cannot decrypt: one issued to
+// another account or workspace, or for another model.
+func IsInvalidEncryptedContent(body []byte) bool {
+	return bytes.Contains(bytes.ToLower(body), []byte("invalid_encrypted_content"))
 }
 
 // requestBody is the Codex Responses request. A struct rather than a map keeps
@@ -156,7 +166,7 @@ func BuildRequest(anthropicBody []byte, opts BuildOptions) (body []byte, toolNam
 	clientTools, _ := req["tools"].([]any)
 	names := shortNames(clientTools)
 
-	b := inputBuilder{names: names, items: make([]any, 0, len(asSlice(req["messages"]))+1)}
+	b := inputBuilder{names: names, dropReasoning: opts.DropReasoning, items: make([]any, 0, len(asSlice(req["messages"]))+1)}
 	if texts := systemTexts(req["system"]); len(texts) > 0 {
 		parts := make([]any, 0, len(texts))
 		for _, t := range texts {
@@ -254,6 +264,8 @@ func uuidV5(namespace [16]byte, name string) string {
 type inputBuilder struct {
 	items []any
 	names map[string]string // client tool name -> upstream name
+	// dropReasoning skips thinking blocks (BuildOptions.DropReasoning).
+	dropReasoning bool
 
 	// pendingToolUseIDs are the tool_use ids of the last assistant turn,
 	// used to order the tool results of the turn that answers it.
@@ -386,7 +398,7 @@ func (t *turn) block(block map[string]any) {
 			t.drop(blockType)
 		}
 	case "thinking":
-		if t.role != "assistant" {
+		if t.role != "assistant" || b.dropReasoning {
 			return
 		}
 		sig, _ := block["signature"].(string)

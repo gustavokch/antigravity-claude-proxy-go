@@ -715,3 +715,50 @@ func TestCodexGateway_InStreamFailureAfterOutputIsReported(t *testing.T) {
 	}
 	requireNoCodexInFlight(t, srv)
 }
+
+// A backend that cannot read a replayed reasoning item refuses the whole
+// request. The gateway resends it once without reasoning, on the same account,
+// so the conversation does not stay stuck on a signature that can never work.
+func TestCodexGateway_InvalidEncryptedContentResendsWithoutReasoning(t *testing.T) {
+	var backend *fakeCodexBackend
+	backend, upstream := newFakeCodexBackend(t, func(w http.ResponseWriter, r *http.Request, _ string) {
+		if codexInputHasReasoning(backend.last(t).body) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"The encrypted content could not be verified.","type":"invalid_request_error","code":"invalid_encrypted_content"}}`)
+			return
+		}
+		writeCodexSSE(w, nil)
+	})
+	srv := newCodexTestServer(t, upstream,
+		codex.AccountConfig{ID: "codex-a", Token: "tok-a", Priority: 1, Enabled: true},
+		codex.AccountConfig{ID: "codex-b", Token: "tok-b", Priority: 2, Enabled: true})
+	raw := make([]byte, 1+8+16+16+32) // a Fernet-shaped token: version, time, IV, one block, HMAC
+	raw[0] = 0x80
+	sig := base64.URLEncoding.EncodeToString(raw)
+	body := `{"model":"gpt-5.5","max_tokens":64,"messages":[` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"` + sig + `"},{"type":"text","text":"ok"}]},` +
+		`{"role":"user","content":"again"}]}`
+
+	rec := postCodexMessages(t, srv, body, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := backend.tokens(); len(got) != 2 || got[0] != "tok-a" || got[1] != "tok-a" {
+		t.Errorf("upstream calls = %v, want tok-a twice (same account)", got)
+	}
+	if codexInputHasReasoning(backend.last(t).body) {
+		t.Error("the resend still carries a reasoning item")
+	}
+	requireNoCodexInFlight(t, srv)
+}
+
+func codexInputHasReasoning(body map[string]any) bool {
+	items, _ := body["input"].([]any)
+	for _, raw := range items {
+		if item, _ := raw.(map[string]any); item["type"] == "reasoning" {
+			return true
+		}
+	}
+	return false
+}

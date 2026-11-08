@@ -44,6 +44,9 @@ type codexCall struct {
 	promptCacheKey string            // Session-Id header and prompt_cache_key
 	serviceTier    string
 	stream         bool // the client asked for an event stream
+	// withoutReasoning rebuilds body with codex.BuildOptions.DropReasoning;
+	// nil once used.
+	withoutReasoning func() ([]byte, error)
 }
 
 // send builds the upstream request of the call for one account.
@@ -251,11 +254,12 @@ func peekCodexReply(resp *http.Response) (*http.Response, *codexUpstreamReply, e
 // usage_limit_reached body), or for Retry-After, or a minute, and fails over;
 // when no account is left the last 429 reaches the client as a
 // rate_limit_error. A server or transport error rests the account and fails
-// over. Any other 4xx is the request's own fault and goes to the client as an
-// Anthropic error envelope. A failure the backend reports inside a 2xx stream
-// before any output is handled like the status it stands for; once output has
-// started, a failure stays in the stream. A 2xx stream is translated into the
-// Anthropic shape the client asked for.
+// over. A 400 invalid_encrypted_content is sent once more, on the same account,
+// without the conversation's reasoning. Any other 4xx is the request's own fault
+// and goes to the client as an Anthropic error envelope. A failure the backend
+// reports inside a 2xx stream before any output is handled like the status it
+// stands for; once output has started, a failure stays in the stream. A 2xx
+// stream is translated into the Anthropic shape the client asked for.
 func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.Request, cfg codex.Config, call codexCall) {
 	pool, client := server.codexPoolFor(cfg)
 	ctx := request.Context()
@@ -263,7 +267,7 @@ func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.R
 	var last429, lastFailure *codexUpstreamReply
 	var selectErr error
 
-	for range codexMaxAttempts {
+	for attempt := 0; attempt < codexMaxAttempts; attempt++ {
 		selected, err := pool.SelectAccount(call.sessionKey, excluded)
 		if err != nil {
 			selectErr = err
@@ -332,6 +336,16 @@ func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.R
 			server.warnCodex("codex: upstream server error, failing over", "account", acc.ID, "status", reply.status)
 			lastFailure = reply
 		default:
+			if reply.status == http.StatusBadRequest && call.withoutReasoning != nil && codex.IsInvalidEncryptedContent(reply.body) {
+				rebuilt, err := call.withoutReasoning()
+				call.withoutReasoning = nil
+				if err == nil {
+					server.warnCodex("codex: backend refused the replayed reasoning; resending without it", "account", acc.ID)
+					call.body = rebuilt
+					attempt-- // the resend is not a new account; it happens at most once
+					continue
+				}
+			}
 			writeCodexUpstreamError(writer, reply)
 			return
 		}

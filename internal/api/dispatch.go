@@ -198,11 +198,12 @@ func (server *Server) forwardCodexGateway(g *gatewayRequest, route gatewayRoute)
 	}
 	sessionKey := ccExtractSessionID(g.request, g.body)
 	cacheKey := codex.PromptCacheKey(entry.ID, sessionKey, codexAgentID(g.request))
-	body, toolNames, err := codex.BuildRequest(anthropicBody, codex.BuildOptions{
+	opts := codex.BuildOptions{
 		Model:          entry.ID,
 		Entry:          entry,
 		PromptCacheKey: cacheKey,
-	})
+	}
+	body, toolNames, err := codex.BuildRequest(anthropicBody, opts)
 	if err != nil {
 		writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -216,6 +217,12 @@ func (server *Server) forwardCodexGateway(g *gatewayRequest, route gatewayRoute)
 		promptCacheKey: cacheKey,
 		serviceTier:    codexServiceTier(body),
 		stream:         stream,
+		withoutReasoning: func() ([]byte, error) {
+			o := opts
+			o.DropReasoning = true
+			b, _, err := codex.BuildRequest(anthropicBody, o)
+			return b, err
+		},
 	})
 }
 
