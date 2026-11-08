@@ -61,7 +61,7 @@ The binding of one client session to the Account that serves all of its models, 
 _Avoid_: Sticky session (collides with the `sticky` strategy), affinity entry, session lock.
 
 **Overflow Pin**:
-A per-model exception to a Session Pin: the Account one model of the session moved to when its pinned Account hit a long rate limit, exhausted quota or a failure lock. It stays for the rest of the session, even after the pinned Account recovers.
+A per-model exception to a Session Pin: the Account one model of the session moved to when its pinned Account hit a long rate limit, a second short one with no success in between, exhausted quota or a failure lock. It stays until its own Account becomes unusable, even after the pinned Account recovers.
 _Avoid_: Fallback account, spillover, failover pin.
 
 ### Models & Catalog

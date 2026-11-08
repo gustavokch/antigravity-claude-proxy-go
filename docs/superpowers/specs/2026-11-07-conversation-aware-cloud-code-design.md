@@ -21,8 +21,8 @@ Out of scope here (separate specs, in this order): hot reload of `config.json`/`
 | Pin key | Session id; one pin per session for all models. |
 | Strategies | Affinity sits on top of `hybrid`, `sticky`, `round-robin`, always on, no setting. The strategy chooses only when a pin is created, rebound or overflowed. Requests without a session id keep today's per-request choice. |
 | Pin lifetime | In memory; dropped after 1 h without a request; cap 10,000 pins, oldest evicted. Lost on restart. |
-| Wait vs move | A per-model rate limit (`MarkRateLimited`, not a failure lock) that resets within the pin wait bound makes the request wait for the pinned account. The bound is `maxStickyWait` (2 m, `manager.go:24`) lowered to the Dispatcher's `maxWait` (`maxWaitBeforeErrorMs`) when that is smaller, so a pinned wait never turns into a rate-limit error while another account is free. A longer limit, quota exhaustion (`ExhaustedUntilMS`), a failure lock or the 404 model lock moves that model to an overflow account. |
-| Overflow | `(session, model) → account B`, chosen once by the strategy, kept until B itself fails long or the session expires. No flip-back when the home account recovers. |
+| Wait vs move | A per-model rate limit (`MarkRateLimited`, not a failure lock) that resets within the pin wait bound makes the request wait for the pinned account, once: a second limit on that account with no success in between (`ConsecutiveFailure` ≥ 2) moves the model, so repeated short limits cannot use up the request's attempts. The bound is `maxStickyWait` (2 m, `manager.go:24`) lowered to the Dispatcher's `maxWait` (`maxWaitBeforeErrorMs`) when that is smaller, so a pinned wait never turns into a rate-limit error while another account is free. A longer limit, quota exhaustion (`ExhaustedUntilMS`), a failure lock (credential failures count toward it) or the 404 model lock moves that model to an overflow account. |
+| Overflow | `(session, model) → account B`, chosen by the strategy, kept until B itself becomes unusable or the session expires. No flip-back when the home account recovers. |
 | Control-plane cadence | Start burst when a session first uses an account; per-turn calls before each new user prompt; both in agy's order before generation. |
 | Control-plane responses | Per-turn `loadCodeAssist` and `retrieveUserQuotaSummary` feed tier/project and quota; the post-stream quota call is removed. The other new calls are sent for parity and only their status is logged. |
 | count_tokens | Forward to Claude Code, OpenRouter, Kimi and Anthropic-format custom endpoints; estimate for Cloud Code and Zen. |
@@ -101,7 +101,7 @@ The proxy sends this order, the order of the agy 1.5.2 baseline. Checks against 
 
 ### 5.3 Triggers (`internal/accounts/controlplane.go`)
 
-- `beginConversation(ctx, session, account, client, project)`: runs when `started[account]` is false for the session's pin, then sets it. Concurrent requests of one session on one account share one run (single-flight keyed by session + email).
+- `beginConversation(ctx, session, account, client, project)`: runs when `started[account]` is false for the session's pin, then sets it. Concurrent requests of one session on one account share one run (single-flight keyed by session + email). When the request that leads the run ends before the run does, a waiting request whose context is alive takes it over; a run that ends on its own deadline is not taken over.
 - `beginTurn(ctx, session, account, client, project, request)`: runs when the request is a new user prompt, using the rule `ccidentity.promptOf` already applies to the Claude Code captures (`internal/ccidentity/turn.go:168-219`): the request declares tools, and its last message has role `user` with a non-empty `text` block that does not start with `<system-reminder>`, or an `image` or `document` block. Claude Code appends `<system-reminder>` text to tool-result messages, so a plain "has a text block" rule would fire on tool continuations. Tool continuations and tool-less side calls (titles, topic checks) get nothing; agy's own side call, the checkpoint, gets nothing either. Identical concurrent prompts share one run (single-flight keyed by session + SHA-256 of the last user message).
 - Both are called in `StreamGenerateContent` after `resolveProject` and before `startConversation`, and block the generation until they finish. Requests without a session key trigger neither.
 
@@ -115,7 +115,7 @@ The proxy sends this order, the order of the agy 1.5.2 baseline. Checks against 
 
 ### 5.5 Failures
 
-Each call has a 10 s timeout and runs on the request context (a client that disconnects stops the burst). An error, timeout or non-2xx is logged at debug and generation proceeds. A burst sets `started` once every call got an HTTP answer, whatever its status: a call that always answers 4xx for an account must not make every later request resend the whole burst. Only a transport error, a timeout or an ended request context leaves `started` unset, so the next request retries the burst.
+Each call has a 10 s timeout, and a burst or a turn's calls have a 15 s deadline in all; both run on the request context (a client that disconnects stops the burst). An error, timeout or non-2xx is logged at debug and generation proceeds. A burst sets `started` once every call got an HTTP answer, whatever its status: a call that always answers 4xx for an account must not make every later request resend the whole burst. Only a transport error, a timeout or an ended request context leaves `started` unset, so the next request retries the burst.
 
 ## 6. count_tokens
 
@@ -131,7 +131,7 @@ Each call has a 10 s timeout and runs on the request context (a client that disc
 | Custom (Anthropic format) | Forward to the endpoint URL with `/messages` replaced by `/messages/count_tokens`. |
 | Zen, Cloud Code | Estimate (6.3). |
 
-A forwarded call that answers 404, 405 or 501 marks that gateway (custom endpoints: that endpoint) as not counting for 1 h and returns the estimate. Any other failure (network, auth, 429, 5xx) returns the estimate for that request. count_tokens never returns an error status for an upstream failure.
+A forwarded call that answers 404, 405 or 501 marks that gateway and model (custom endpoints: that endpoint and model) as not counting for 1 h and returns the estimate: gateways answer 404 for one model they do not serve. A 429 returns the estimate and marks the gateway's counts for its Retry-After (10 s without one, at most 1 h). Each forward has a 10 s deadline. Any other failure (network, auth, timeout, 5xx) returns the estimate for that request. count_tokens never returns an error status for an upstream failure.
 
 ### 6.2 Claude Code count_tokens identity
 
@@ -140,6 +140,7 @@ Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt`
 | Field | count_tokens (captured) | `/v1/messages` main (same capture) |
 |---|---|---|
 | `x-claude-code-request-class` | `auxiliary` | `main` (what `ccidentity.staticHeaders` pins, `defaults.go:86`) |
+| `User-Agent` | `claude-cli/2.1.311 (external, cli)` on all 34 counts | the same; the proxy's normalized `/v1/messages` sends `(external, sdk-cli)` by default, but a normalized count sends the captured `cli` form, since the real client counts only from interactive `/context` |
 | `anthropic-beta` | `claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,token-counting-2024-11-01` | longer list (18 entries on the first `main` call) |
 | Body keys | `messages`, `model`, `tools` | `context_management`, `diagnostics`, `max_tokens`, `messages`, `metadata`, `model`, `output_config`, `stream`, `system`, `thinking`, `thread`, `tools` |
 | `X-Claude-Code-Session-Id` | present | present |
@@ -149,13 +150,13 @@ Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt`
 - `ccidentity` gains a count_tokens profile: the captured header order, `x-claude-code-request-class: auxiliary`, and the captured beta list (version-pinned like the other betas, with a `client_drift.py` `Site` entry).
 - The body is forwarded as the client sent it, with no billing header, identity block or `metadata` injected. The one change is the `model` value, which becomes the gateway's model id after model mapping (6.1), exactly as on `/v1/messages`; with the identity mapping the bytes are unchanged. The real client's count bodies carry only `messages`, `model` and `tools`; a caller that adds other keys (for example `system`) has them forwarded unchanged.
 - `X-Claude-Code-Session-Id` is forwarded from the client when present, as on `/v1/messages`.
-- A count response carries no unified rate-limit headers, so the Claude Code pool's rate-limit state is not updated from it; a 429 on a count still marks the account as on `/v1/messages`.
+- A count response carries no unified rate-limit headers, so the Claude Code pool's rate-limit state is not updated from it. A 429 on a count marks the account as on `/v1/messages` only when it carries the unified headers (the subscription limiter); otherwise it backs off counts alone (6.1), because Anthropic documents count and message limits as separate.
 - Load shape: counts arrive as bursts of about 34 concurrent requests per `/context`, never during turns. The Claude Code forward must not serialize them per account.
 
 ### 6.3 Estimator (`internal/tokencount`)
 
 - **Characters measured:** text of `system`, every message's `text` and `thinking` blocks, `tool_use` input as compact JSON, `tool_result` content text, and each tool definition as compact JSON.
-- **Ratio:** one chars-per-token value per family. `tokencount.Family(model)` returns `claude` when the model id contains `claude`, `gemini` when it contains `gemini`, `gpt-oss` when it contains `gpt-oss`, and otherwise the model id itself (so each other model, Zen ones included, learns its own ratio). Start value 4.0. Each observation of a request with at least 1,000 measured characters updates the ratio as an exponential moving average with α = 0.2.
+- **Ratio:** one chars-per-token value per family. `tokencount.Family(model)` returns `claude-4.7` for Claude 4.7 and later (a new tokenizer, read from the model id as for the image tier), `claude` for other ids containing `claude`, `gemini` when it contains `gemini`, `gpt-oss` when it contains `gpt-oss`, and otherwise the model id itself (so each other model, Zen ones included, learns its own ratio). Start value 4.0. Each observation of a request with at least 1,000 measured characters updates the ratio as an exponential moving average with α = 0.2, from an observed ratio held between 0.5 and 8. A request with content the measure does not price (any block but text, thinking, redacted thinking, tool use, tool result and image) or whose image tokens are half its real count or more is not learned from.
 - **Images:** not part of the ratio. Claude and other non-Gemini families follow Anthropic's current rule (https://platform.claude.com/docs/en/build-with-claude/vision, "Resolution and token cost"): downscale to the tier's long-edge limit, then `ceil(w/28) × ceil(h/28)` tokens; standard tier 1,568 px long edge and at most 1,568 tokens, high-resolution tier (Claude 4.7 and later, read from the model id) 2,576 px and at most 4,784 tokens. Gemini family: 258 tokens per 768 × 768 tile, 258 for an image of 384 × 384 or less (https://ai.google.dev/gemini-api/docs/tokens). Dimensions come from `image.DecodeConfig` on base64 PNG, JPEG or GIF data; any other source (URL, file id, WebP, bad data) counts as the tier's maximum for the Anthropic rule and 1,600 for Gemini.
 - **Conversation memory:** keyed by session + family; holds the real input count, the message count `n`, the SHA-256 of the first `n` messages as compact JSON, and the SHA-256 of `system` plus the tool list. Digests ignore `cache_control` at any depth, because Claude Code moves its cache marker to the newest message every turn (the same reason `ccidentity.digestPrompt` strips them). If a count request has the same `system` and tools digest and its first `n` messages digest the same, the estimate is the stored count plus the ratio estimate of the messages after `n`. Otherwise the whole request is estimated. Only `Observe` refreshes the 1 h idle TTL; a usage count of 0 or less is ignored. Cap 10,000 entries. Claude Code's own `/context` counts carry no `system` and come per component, so they always take the full-estimate path.
 - **Real input count** = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of the converted Anthropic usage.
@@ -167,7 +168,7 @@ Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt`
 |---|---|
 | Pinned account removed, disabled or invalid | Rebind through the strategy; logged. |
 | Control-plane call fails or times out | Logged at debug; generation proceeds; a failed burst retries next request. |
-| count_tokens upstream unsupported | Estimate; gateway marked for 1 h. |
+| count_tokens upstream unsupported | Estimate; gateway and model marked for 1 h. |
 | count_tokens upstream error | Estimate for that request. |
 | No session key | No pin, no burst, no per-turn calls, ratio-only estimate. |
 
