@@ -48,6 +48,7 @@ import (
 	"antigravity-go-proxy/internal/modelcatalog"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/stats"
+	"antigravity-go-proxy/internal/tokencount"
 	"antigravity-go-proxy/internal/transport"
 	"antigravity-go-proxy/internal/zen"
 )
@@ -159,6 +160,11 @@ type Server struct {
 	// Server has none and sends no cc_prev_req.
 	ccReplies *ccidentity.ReplyLog
 
+	// tokens learns, from completed Cloud Code and Zen requests, each model
+	// family's chars-per-token ratio and each conversation's last real input
+	// count; count_tokens estimates from it.
+	tokens *tokencount.Counter
+
 	// endpointCats holds the fetched model catalogs of custom endpoints that set
 	// discoverModels. Lazily built: tests construct a bare Server.
 	endpointCatalogsOnce sync.Once
@@ -221,6 +227,7 @@ func New(options Options) (*Server, error) {
 		mitm:               options.Mitm,
 		projects:           make(map[string]string),
 		ccReplies:          ccidentity.NewReplyLog(),
+		tokens:             tokencount.New(options.Now),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
 	srv.strictManagementHost = options.StrictManagementHost
@@ -521,7 +528,7 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 		case path == "/v1/chat/completions" && request.Method == http.MethodPost:
 			server.chatCompletions(writer, request)
 		case path == "/v1/messages/count_tokens" && request.Method == http.MethodPost:
-			writeAPIError(writer, http.StatusNotImplemented, "not_implemented", "Token counting is not implemented. Use /v1/messages with max_tokens or configure your client to skip token counting.")
+			server.countTokens(writer, request)
 		case path == "/v1/systemone" && request.Method == http.MethodPost:
 			server.systemone(writer, request)
 		default:
@@ -1812,7 +1819,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 		}
 		if err := forward(writer, request, zenCfg.BaseURL, key, body, func(resp *http.Response) error {
 			if resp.StatusCode < 400 {
-				server.zenInstrumentResponse(resp, model, sessionKey, startTime)
+				server.zenInstrumentResponse(resp, model, sessionKey, startTime, anthropicRequest)
 			}
 			return nil
 		}); err != nil {
@@ -1825,7 +1832,7 @@ func (server *Server) forwardToZen(writer http.ResponseWriter, request *http.Req
 		zen.ObserveFreeTierGate(resp, model)
 		if resp.StatusCode < 400 {
 			server.maybeRecordCacheBump(cachebump.RouteZen, request, body, sessionKey, model, "", "", minMaxTokensFloor)
-			server.zenInstrumentResponse(resp, model, sessionKey, startTime)
+			server.zenInstrumentResponse(resp, model, sessionKey, startTime, anthropicRequest)
 		}
 		return nil
 	}
@@ -1849,8 +1856,8 @@ func zenConversation(sessionKey string, body []byte) string {
 }
 
 // zenUsageRecorder returns the usage callback shared by every Zen path:
-// observability log plus tracker accounting.
-func (server *Server) zenUsageRecorder(model, sessionID string, startTime time.Time) func(in, out, cr, cw int) {
+// observability log, tracker accounting, and the count_tokens estimator.
+func (server *Server) zenUsageRecorder(model, sessionID string, startTime time.Time, anthropicRequest map[string]any) func(in, out, cr, cw int) {
 	return func(in, out, cr, cw int) {
 		latency := server.nowTime().Sub(startTime)
 		metrics := zen.RequestMetrics{
@@ -1867,11 +1874,12 @@ func (server *Server) zenUsageRecorder(model, sessionID string, startTime time.T
 		if server.tracker != nil {
 			server.tracker.TrackRequest(model, latency, in, out, cr)
 		}
+		server.observeTokens(sessionID, model, anthropicRequest, in+cr+cw)
 	}
 }
 
-func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionID string, startTime time.Time) {
-	onComplete := server.zenUsageRecorder(model, sessionID, startTime)
+func (server *Server) zenInstrumentResponse(resp *http.Response, model, sessionID string, startTime time.Time, anthropicRequest map[string]any) {
+	onComplete := server.zenUsageRecorder(model, sessionID, startTime, anthropicRequest)
 	if ccIsSSEResponse(resp.Header) {
 		resp.Body = openrouter.NewSSEInterceptor(resp.Body, onComplete)
 		return
@@ -3105,6 +3113,7 @@ func (server *Server) unaryMessage(writer http.ResponseWriter, request *http.Req
 		server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
 	}
 	sessionID := ccExtractSessionID(request, anthropicRequest)
+	server.observeTokens(sessionID, model, anthropicRequest, totalInput+totalCacheRead)
 	metrics := cloudcode.RequestMetrics{
 		Model:           model,
 		Account:         meta.Account,
@@ -3200,6 +3209,7 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 		server.tracker.TrackRequest(model, latency, totalInput, totalOutput, totalCacheRead)
 	}
 	sessionID := ccExtractSessionID(request, anthropicRequest)
+	server.observeTokens(sessionID, model, anthropicRequest, totalInput+totalCacheRead)
 	metrics := cloudcode.RequestMetrics{
 		Model:           model,
 		Account:         meta.Account,
