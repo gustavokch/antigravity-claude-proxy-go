@@ -125,9 +125,9 @@ type Dispatcher struct {
 	modelRecoveries map[string]*modelRecoveryCall
 	// modelsFetch is the shared in-flight catalog fetch; guarded by mu.
 	modelsFetch *modelFetchCall
-	// liveQuotaRefreshMS is the last live-quota refresh per account email,
-	// guarded by mu; it throttles post-request quota RPCs.
-	liveQuotaRefreshMS map[string]int64
+	// controlCalls is the in-flight start burst or turn calls per key
+	// (shareControlCall), guarded by mu; concurrent requests share one run.
+	controlCalls map[string]*controlCall
 }
 
 // catalogSnapshot is one account's model list and when it was fetched.
@@ -171,6 +171,9 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 	if options.Random == nil {
 		options.Random = rand.Float64
 	}
+	// A pinned session waits for its account only as long as this
+	// Dispatcher waits before answering with a RateLimitError.
+	options.Manager.setPinWait(options.MaxWait)
 	lifetime, endLifetime := context.WithCancel(context.Background())
 	return &Dispatcher{
 		lifetime:                 lifetime,
@@ -195,7 +198,7 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		forensics429:             options.Forensics429,
 		meter:                    newThrottleMeter(nil),
 		clients:                  make(map[string]accountClient),
-		liveQuotaRefreshMS:       make(map[string]int64),
+		controlCalls:             make(map[string]*controlCall),
 	}, nil
 }
 
@@ -208,6 +211,7 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 	}
 	if cfg.MaxWaitBeforeErrorMs > 0 {
 		dispatcher.maxWait = time.Duration(cfg.MaxWaitBeforeErrorMs) * time.Millisecond
+		dispatcher.manager.setPinWait(dispatcher.maxWait)
 	}
 	if cfg.MaxCapacityRetries > 0 {
 		dispatcher.maxCapacityRetries = cfg.MaxCapacityRetries
@@ -335,7 +339,7 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 				}
 			}
 		}
-		selection := dispatcher.manager.Select("")
+		selection := dispatcher.manager.Select("", "")
 		if selection.Account == nil {
 			return cloudcode.Response{}, errors.New("no accounts available")
 		}
@@ -374,7 +378,10 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 // caller's context ended (an abandoned or out-of-budget pass is not the
 // account's fault). An account that uses its whole own budget is marked
 // failed, so recovery tries it last next time. No live-quota RPCs ride along:
-// recovery sits on a request path, and the post-request refresh covers them.
+// recovery sits on a request path. Per-model quota comes from catalog
+// fetches (24 h TTL), manual account refreshes and each start burst's
+// fetchAvailableModels; the quota summary a new prompt sends (beginTurn)
+// updates shared pools only.
 func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return cloudcode.Response{}, err
@@ -424,9 +431,14 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	request["model"] = modelDetails.GetUpstreamID()
 	model := modelDetails.ID
 	maxAttempts := max(dispatcher.maxRetries, dispatcher.manager.Count()+1)
+	session := SessionKey(ctx)
 	var lastError error
+	// Accounts that already got this request's turn calls: a retry on one of
+	// them, after a pinned wait or a 429, sends the prompt again, not the
+	// turn calls.
+	turnSent := make(map[string]bool)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		selection := dispatcher.manager.Select(model)
+		selection := dispatcher.manager.Select(session, model)
 		if selection.Account == nil {
 			if dispatcher.manager.AllInvalid() {
 				return cloudcode.Response{}, errors.New("all accounts are invalid and require user intervention")
@@ -462,7 +474,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 		account := selection.Account
 		credentials, err := dispatcher.resolver.Resolve(ctx, account)
 		if err != nil {
-			dispatcher.handleCredentialError(account, err)
+			dispatcher.handleCredentialError(account, model, err)
 			lastError = err
 			continue
 		}
@@ -472,6 +484,11 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			dispatcher.manager.MarkFailure(account, model)
 			lastError = err
 			continue
+		}
+		dispatcher.beginConversation(ctx, session, account, client, project)
+		if !turnSent[account.Email] {
+			turnSent[account.Email] = true
+			dispatcher.beginTurn(ctx, session, account, client, project, request)
 		}
 		payload := dispatcher.builder.BuildCloudCodeRequestWithModel(request, project, credentials.Email, proxyformat.ModelOptions{
 			SupportsThinking: modelDetails.SupportsThinking, ThinkingBudget: modelDetails.ThinkingBudget,
@@ -496,7 +513,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				}
 			}
 			inFlight, priorMinute := dispatcher.meter.Begin(account.Email)
-			response, eventCount, requestErr := dispatcher.sendStream(ctx, account, client, project,
+			response, eventCount, requestErr := dispatcher.sendStream(ctx, account, client,
 				dispatcher.builder.Stamp(payload), options, guard, consume)
 			if requestErr == nil {
 				if dispatcher.meter.TakeRecovery(account.Email) {
@@ -913,11 +930,7 @@ func (dispatcher *Dispatcher) RefreshAccount(ctx context.Context, email string) 
 		return nil, fmt.Errorf("load code assist for %s: %w", email, err)
 	}
 
-	sub := ExtractSubscription(response.Body, dispatcher.now())
-	if sub.ProjectID != "" {
-		dispatcher.manager.CacheProject(targetAccount, sub.ProjectID)
-	}
-	_ = dispatcher.manager.UpdateSubscription(email, sub)
+	sub := dispatcher.applyCodeAssist(targetAccount, response.Body)
 
 	project := sub.ProjectID
 	if project == "" {
@@ -970,12 +983,16 @@ func (dispatcher *Dispatcher) project(account *Account) string {
 	return dispatcher.manager.Project(account)
 }
 
-func (dispatcher *Dispatcher) handleCredentialError(account *Account, err error) {
+// handleCredentialError marks account invalid for a revoked or rejected token.
+// Any other credential error is a failure for model: three in a row set the
+// failure lock, so a pinned session moves the model to another account
+// instead of retrying one that cannot get a token.
+func (dispatcher *Dispatcher) handleCredentialError(account *Account, model string, err error) {
 	if IsPermanentAuthFailure(err.Error()) || containsAny(strings.ToLower(err.Error()), "auth_invalid", "invalid_grant") {
 		dispatcher.manager.MarkInvalid(account, "Credentials are invalid - re-authentication required", "")
 	} else {
 		slog.Warn("credential error — marking account as failed", "email", account.Email, "error", err)
-		dispatcher.manager.MarkFailure(account, "")
+		dispatcher.manager.MarkFailure(account, model)
 	}
 }
 
@@ -1086,46 +1103,6 @@ func (dispatcher *Dispatcher) updateAccountQuota(account *Account, body []byte) 
 	dispatcher.manager.UpdateAccountQuota(account.Email, quota, nil)
 }
 
-// liveQuotaRefreshInterval throttles the two quota RPCs issued after a
-// successful GenerateContent: upstream readings move slowly and
-// per-request refreshes would triple hot-loop request cost. The catalog
-// fetch path (fetchAvailableModels) and manual RefreshAccount stay
-// unthrottled — they call refreshLiveQuota directly.
-const liveQuotaRefreshInterval = time.Minute
-
-// recordLiveQuotaRefresh stamps the per-account throttle window. Forced
-// (unthrottled) refreshes stamp too: the post-request wrapper then skips
-// RPCs the catalog fetch path just issued.
-func (dispatcher *Dispatcher) recordLiveQuotaRefresh(email string) {
-	dispatcher.mu.Lock()
-	defer dispatcher.mu.Unlock()
-	if dispatcher.liveQuotaRefreshMS == nil {
-		dispatcher.liveQuotaRefreshMS = make(map[string]int64)
-	}
-	dispatcher.liveQuotaRefreshMS[email] = dispatcher.now().UnixMilli()
-}
-
-// refreshLiveQuotaThrottled runs refreshLiveQuota at most once per
-// liveQuotaRefreshInterval per account.
-func (dispatcher *Dispatcher) refreshLiveQuotaThrottled(ctx context.Context, account *Account, client CloudClient, project string) {
-	if account == nil {
-		return
-	}
-	dispatcher.mu.Lock()
-	now := dispatcher.now().UnixMilli()
-	last, seen := dispatcher.liveQuotaRefreshMS[account.Email]
-	if seen && now-last < liveQuotaRefreshInterval.Milliseconds() {
-		dispatcher.mu.Unlock()
-		return
-	}
-	if dispatcher.liveQuotaRefreshMS == nil {
-		dispatcher.liveQuotaRefreshMS = make(map[string]int64)
-	}
-	dispatcher.liveQuotaRefreshMS[account.Email] = now
-	dispatcher.mu.Unlock()
-	dispatcher.refreshLiveQuota(ctx, account, client, project)
-}
-
 // refreshLiveQuota best-effort merges live quota readings over the static
 // catalog fractions. RetrieveUserQuotaSummary group buckets are shared pools
 // (gemini-5h, 3p-weekly, ...) — they land in Quota.Pools, never in
@@ -1139,15 +1116,10 @@ func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Acc
 	if account == nil || client == nil {
 		return
 	}
-	dispatcher.recordLiveQuotaRefresh(account.Email)
 	if fetcher, ok := client.(quotaSummaryFetcher); ok {
 		if response, err := fetcher.RetrieveUserQuotaSummary(ctx, project); err == nil &&
 			response.StatusCode >= 200 && response.StatusCode < 300 {
-			for _, bucket := range cloudcode.ParseQuotaSummary(response.Body) {
-				dispatcher.mergeQuotaReading(account.Email,
-					strings.ToLower(strings.TrimSpace(bucket.ID)),
-					bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime, true)
-			}
+			dispatcher.applyQuotaSummary(account.Email, response.Body)
 		}
 	}
 	if fetcher, ok := client.(userQuotaFetcher); ok {

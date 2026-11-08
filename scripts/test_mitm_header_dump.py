@@ -101,6 +101,25 @@ class BuildRecordTest(unittest.TestCase):
         self.assertIn(["set-cookie", "[redacted]"], record["response_headers"])
         self.assertNotIn("abc123", repr(record))
 
+    def test_response_account_identifiers_keep_only_their_shape(self):
+        record = build_record(flow(200, [
+            ("anthropic-organization-id", "11111111-2222-3333-4444-555555555555"),
+            ("Anthropic-Workspace-Id", "wrkspc_01AbCdEfGhIjKlMnOpQrStUv"),
+            ("x-claude-code-signature", "eyJhbGciOiJFUzI1NiJ9.eyJ3cyI6IjY2NjYifQ.c2lnbmF0dXJl"),
+            ("request-id", "req_011CgpfyayQusNJWiaHWn8ur"),
+        ]))
+        self.assertEqual(record["response_headers"], [
+            ["anthropic-organization-id", "<uuid>"],
+            ["Anthropic-Workspace-Id", "wrkspc_<redacted>"],
+            ["x-claude-code-signature", "<jws>"],
+            ["request-id", "req_011CgpfyayQusNJWiaHWn8ur"],
+        ])
+
+    def test_response_account_identifier_of_unknown_shape_is_replaced_whole(self):
+        record = build_record(flow(200, [("anthropic-organization-id", "org 1234 SECRET")]))
+        self.assertIn(["anthropic-organization-id", "[redacted]"], record["response_headers"])
+        self.assertNotIn("SECRET", repr(record))
+
     def test_request_bytes_recorded(self):
         f = flow(429)
         f.request.content = b"12345"

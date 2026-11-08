@@ -1,0 +1,305 @@
+package accounts
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"log/slog"
+	"strings"
+	"sync"
+	"time"
+
+	"antigravity-go-proxy/internal/ccidentity"
+	"antigravity-go-proxy/internal/cloudcode"
+)
+
+// controlPlaneCallTimeout bounds each control-plane call on its own. A call
+// that times out goes unanswered and the run sends its next call; generation
+// waits for the whole run, which controlPlaneRunTimeout bounds.
+const controlPlaneCallTimeout = 10 * time.Second
+
+// controlPlaneRunTimeout bounds one start burst or one turn's calls as a
+// whole. Their steps run one after another, so the per-call bound alone would
+// let a burst of seven slow steps hold a request for 70 s.
+const controlPlaneRunTimeout = 15 * time.Second
+
+// controlPlaneClient is the optional CloudClient capability for the calls agy
+// 1.5.2 sends around a conversation whose answers the proxy does not read
+// (.reference/client-drift/agy.jsonl). A client without it, such as a test
+// fake, sends no control-plane calls.
+type controlPlaneClient interface {
+	FetchAdminControls(context.Context, string) (cloudcode.Response, error)
+	FetchUserInfo(context.Context, string) (cloudcode.Response, error)
+	ListExperiments(context.Context, string) (cloudcode.Response, error)
+	ListCascadeNuxes(context.Context) (cloudcode.Response, error)
+}
+
+// The production client must have both capabilities: without one, the
+// capability checks would skip those calls on every request, silently.
+var (
+	_ controlPlaneClient  = (*cloudcode.Client)(nil)
+	_ quotaSummaryFetcher = (*cloudcode.Client)(nil)
+)
+
+// beginConversation sends agy's start burst the first time session uses
+// account: loadCodeAssist; fetchAdminControls, fetchUserInfo and
+// retrieveUserQuotaSummary at once; fetchAvailableModels;
+// retrieveUserQuotaSummary; listExperiments; loadCodeAssist; cascadeNuxes
+// (.reference/client-drift/agy.jsonl; cascadeNuxes is in its later run only).
+// Concurrent requests of the session on the account share one burst. Once
+// every call has an HTTP answer, whatever its status, the account is started
+// for the session; a call without one (a transport error, a timeout, a client
+// that has gone) leaves it unstarted, and the session's next request sends
+// the burst again. The burst stops after controlPlaneRunTimeout, and a call
+// without an answer by then, or not yet sent, counts as unanswered.
+func (dispatcher *Dispatcher) beginConversation(ctx context.Context, session string, account *Account, client CloudClient, project string) {
+	plane, capable := client.(controlPlaneClient)
+	if session == "" || !capable || dispatcher.manager.conversationStarted(session, account.Email) {
+		return
+	}
+	dispatcher.shareControlCall(ctx, "start\x00"+session+"\x00"+account.Email, func() {
+		// A burst that ended between the check above and this run has
+		// already marked the account.
+		if dispatcher.manager.conversationStarted(session, account.Email) {
+			return
+		}
+		runCtx, cancel := context.WithTimeout(ctx, controlPlaneRunTimeout)
+		defer cancel()
+		run := &controlRun{dispatcher: dispatcher, ctx: runCtx, account: account, client: client, project: project}
+		run.loadCodeAssist()
+		together(
+			func() { run.withProject("fetchAdminControls", plane.FetchAdminControls) },
+			func() { run.withProject("fetchUserInfo", plane.FetchUserInfo) },
+			run.quotaSummary,
+		)
+		run.models()
+		run.quotaSummary()
+		run.withProject("listExperiments", plane.ListExperiments)
+		run.loadCodeAssist()
+		run.send("cascadeNuxes", plane.ListCascadeNuxes)
+		if run.completed() {
+			dispatcher.manager.markConversationStarted(session, account.Email)
+		}
+	})
+}
+
+// beginTurn sends what agy sends before each new prompt: loadCodeAssist, then
+// fetchUserInfo and retrieveUserQuotaSummary at once
+// (.reference/client-drift/agy.jsonl). Tool continuations and tool-less side
+// calls (titles, topic checks) send nothing. Identical prompts of the session
+// that arrive together on one account share one run, which stops after
+// controlPlaneRunTimeout.
+func (dispatcher *Dispatcher) beginTurn(ctx context.Context, session string, account *Account, client CloudClient, project string, request map[string]any) {
+	plane, capable := client.(controlPlaneClient)
+	if session == "" || !capable || !isNewUserPrompt(request) {
+		return
+	}
+	// A decoded JSON body always encodes again.
+	prompt, _ := json.Marshal(promptMessage(request))
+	digest := sha256.Sum256(prompt)
+	dispatcher.shareControlCall(ctx, "turn\x00"+session+"\x00"+account.Email+"\x00"+hex.EncodeToString(digest[:]), func() {
+		runCtx, cancel := context.WithTimeout(ctx, controlPlaneRunTimeout)
+		defer cancel()
+		run := &controlRun{dispatcher: dispatcher, ctx: runCtx, account: account, client: client, project: project}
+		run.loadCodeAssist()
+		together(
+			func() { run.withProject("fetchUserInfo", plane.FetchUserInfo) },
+			run.quotaSummary,
+		)
+	})
+}
+
+// isNewUserPrompt reports whether request carries something a person sent to
+// a main loop: it declares tools, which title and topic side calls do not,
+// and its last non-system message is a user message with more than tool results and
+// injected <system-reminder> text, by ccidentity's prompt rule.
+func isNewUserPrompt(request map[string]any) bool {
+	if tools, _ := request["tools"].([]any); len(tools) == 0 {
+		return false
+	}
+	last := promptMessage(request)
+	if role, _ := last["role"].(string); role != "user" {
+		return false
+	}
+	return ccidentity.HasPromptContent(last["content"])
+}
+
+// promptMessage returns the last message of request that is not a system
+// message (Claude Code ends its main request with one), or nil.
+func promptMessage(request map[string]any) map[string]any {
+	messages, _ := request["messages"].([]any)
+	for index := len(messages) - 1; index >= 0; index-- {
+		message, _ := messages[index].(map[string]any)
+		if role, _ := message["role"].(string); role != "system" {
+			return message
+		}
+	}
+	return nil
+}
+
+// controlCall is one in-flight run of shareControlCall.
+type controlCall struct {
+	done      chan struct{}
+	abandoned bool // set before done closes: the leader's request ended mid-run
+}
+
+// shareControlCall runs work once for key among the requests that ask for it
+// at the same time; the others wait for it to end, or for their own context.
+// A run whose leader's request ended before work returned was cut short for
+// that request's sake only, so a waiter whose own request is still there
+// takes the leader's place and runs work itself. A run that ended any other
+// way, at its deadline too, stands for every request that waited on it.
+func (dispatcher *Dispatcher) shareControlCall(ctx context.Context, key string, work func()) {
+	dispatcher.mu.Lock()
+	for {
+		call, running := dispatcher.controlCalls[key]
+		if !running {
+			break
+		}
+		dispatcher.mu.Unlock()
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			return
+		}
+		// abandoned is written before done closes, so it is settled here.
+		if !call.abandoned || ctx.Err() != nil {
+			return
+		}
+		dispatcher.mu.Lock()
+	}
+	call := &controlCall{done: make(chan struct{})}
+	dispatcher.controlCalls[key] = call
+	dispatcher.mu.Unlock()
+	// Deferred, so that a panic in work still releases the waiters.
+	defer func() {
+		call.abandoned = ctx.Err() != nil
+		dispatcher.mu.Lock()
+		delete(dispatcher.controlCalls, key)
+		dispatcher.mu.Unlock()
+		close(call.done)
+	}()
+	work()
+}
+
+// controlRun sends one burst's or one turn's calls for an account and notes
+// whether any of them went without an answer.
+type controlRun struct {
+	dispatcher *Dispatcher
+	ctx        context.Context
+	account    *Account
+	client     CloudClient
+	project    string
+
+	mu         sync.Mutex
+	unanswered bool
+}
+
+// send makes one call under its own timeout, counted by the throttle meter,
+// and returns the body of a 2xx answer. Any HTTP answer, an error status too,
+// counts as answered: a call that always answers 4xx for an account must not
+// make each of its requests resend the burst. A call without an answer (a
+// transport error, a timeout, or a run whose client has gone or whose
+// deadline has passed, after which nothing is sent) marks the run
+// unanswered. Each outcome is logged at debug.
+func (run *controlRun) send(name string, call func(context.Context) (cloudcode.Response, error)) ([]byte, bool) {
+	if run.ctx.Err() != nil {
+		run.markUnanswered()
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(run.ctx, controlPlaneCallTimeout)
+	defer cancel()
+	response, err := run.dispatcher.metered(run.account.Email, func() (cloudcode.Response, error) {
+		return call(ctx)
+	})
+	if err != nil {
+		// DoJSON returns no Response with a non-2xx answer; its status is
+		// on the HTTPError.
+		if upstream := cloudcode.FindHTTPError(err); upstream != nil {
+			slog.Debug("control-plane call", "call", name, "account", run.account.Email, "status", upstream.StatusCode)
+			return nil, false
+		}
+		slog.Debug("control-plane call got no answer", "call", name, "account", run.account.Email, "error", err)
+		run.markUnanswered()
+		return nil, false
+	}
+	slog.Debug("control-plane call", "call", name, "account", run.account.Email, "status", response.StatusCode)
+	return response.Body, response.StatusCode >= 200 && response.StatusCode < 300
+}
+
+// withProject sends a call that names the account's project.
+func (run *controlRun) withProject(name string, call func(context.Context, string) (cloudcode.Response, error)) ([]byte, bool) {
+	return run.send(name, func(ctx context.Context) (cloudcode.Response, error) {
+		return call(ctx, run.project)
+	})
+}
+
+func (run *controlRun) loadCodeAssist() {
+	if body, ok := run.send("loadCodeAssist", run.client.LoadCodeAssist); ok {
+		run.dispatcher.applyCodeAssist(run.account, body)
+	}
+}
+
+func (run *controlRun) quotaSummary() {
+	fetcher, ok := run.client.(quotaSummaryFetcher)
+	if !ok {
+		return
+	}
+	if body, ok := run.withProject("retrieveUserQuotaSummary", fetcher.RetrieveUserQuotaSummary); ok {
+		run.dispatcher.applyQuotaSummary(run.account.Email, body)
+	}
+}
+
+func (run *controlRun) models() {
+	if body, ok := run.withProject("fetchAvailableModels", run.client.FetchAvailableModels); ok {
+		run.dispatcher.cacheCatalog(run.account.Email, body)
+		run.dispatcher.updateAccountQuota(run.account, body)
+	}
+}
+
+func (run *controlRun) markUnanswered() {
+	run.mu.Lock()
+	run.unanswered = true
+	run.mu.Unlock()
+}
+
+// completed reports whether every call of the run got an HTTP answer.
+func (run *controlRun) completed() bool {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return !run.unanswered
+}
+
+// together sends calls at once and waits for all of them: agy sends these
+// calls concurrently, the capture holds them in both orders.
+func together(calls ...func()) {
+	var group sync.WaitGroup
+	for _, call := range calls {
+		group.Go(call)
+	}
+	group.Wait()
+}
+
+// applyCodeAssist records what a loadCodeAssist answer says about account:
+// its tier and, when the answer names one, its Cloud Code project.
+func (dispatcher *Dispatcher) applyCodeAssist(account *Account, body []byte) Subscription {
+	sub := ExtractSubscription(body, dispatcher.now())
+	if sub.ProjectID != "" {
+		dispatcher.manager.CacheProject(account, sub.ProjectID)
+	}
+	if err := dispatcher.manager.UpdateSubscription(account.Email, sub); err != nil {
+		slog.Debug("saving the account's subscription failed", "account", account.Email, "error", err)
+	}
+	return sub
+}
+
+// applyQuotaSummary merges a retrieveUserQuotaSummary answer. Its buckets are
+// shared pools (gemini-5h, 3p-weekly, ...), so they land in Quota.Pools and
+// never surface as model rows.
+func (dispatcher *Dispatcher) applyQuotaSummary(email string, body []byte) {
+	for _, bucket := range cloudcode.ParseQuotaSummary(body) {
+		dispatcher.mergeQuotaReading(email, strings.ToLower(strings.TrimSpace(bucket.ID)),
+			bucket.RemainingFraction, bucket.RemainingAmount, bucket.ResetTime, true)
+	}
+}

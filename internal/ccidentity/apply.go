@@ -40,7 +40,7 @@ func ApplyHeaders(h map[string][]string, p Profile, id Identity, turn Turn) {
 		return
 	}
 
-	static := StaticFor(id)
+	static := p.Static(id)
 
 	// Names this call will write, compared case-insensitively.
 	claimed := make(map[string]bool, len(p.Omit)+len(static)+len(p.Dynamic)+1)

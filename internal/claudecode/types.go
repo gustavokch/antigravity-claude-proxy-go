@@ -175,11 +175,12 @@ func DefaultRoutingConfig() RoutingConfig {
 // value must mean "normalize", because the feature exists so a foreign harness
 // is not gated, and a zero-value-means-off bool would ship it silently inert.
 //
-// The overrides exist because some defaults are environment-specific or still
-// unverified: X-Stainless-OS and X-Stainless-Arch default to the host the proxy
-// runs on, X-Stainless-Runtime-Version came from a Linux container, and
-// Entrypoint is unverified (only sdk-cli has ever been captured). Empty means
-// use the default.
+// The overrides exist because some defaults are environment-specific or a
+// choice between captured values: X-Stainless-OS and X-Stainless-Arch default
+// to the host the proxy runs on, X-Stainless-Runtime-Version came from a Linux
+// container, and Entrypoint defaults to the --print captures' sdk-cli where an
+// interactive session sends cli (.reference/claude-code-count-tokens-20261107.jsonl).
+// Counts claim cli either way. Empty means use the default.
 type IdentityConfig struct {
 	Disabled                bool   `json:"disabled,omitempty"`
 	ClientVersion           string `json:"clientVersion,omitempty"`

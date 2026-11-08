@@ -34,17 +34,23 @@ class RegistryTest(unittest.TestCase):
                 self.assertEqual(drift.read_pin(ROOT, drift.PIN[hello.ja4_pin]), shipped["ja4"])
                 self.assertEqual(drift.read_pin(ROOT, drift.PIN[hello.ja3_pin]), shipped["ja3"])
 
-    def test_beta_list_survives_a_write_into_the_go_source(self):
-        tree = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tree)
+    def test_beta_lists_survive_a_write_into_the_go_source(self):
         source = "internal/ccidentity/defaults.go"
-        (tree / source).parent.mkdir(parents=True)
-        shutil.copy(ROOT / source, tree / source)
-        pin = drift.PIN["claude.betas"]
-        site_only = drift.Pin(pin.name, pin.client, pin.pattern, pin.sites, decode=pin.decode, encode=pin.encode)
-        betas = drift.read_pin(tree, site_only) + ["new-beta-2026-10-29"]
-        drift.write_pin(tree, site_only, betas)
-        self.assertEqual(drift.read_pin(tree, site_only), betas)
+        lists = ("claude.betas", "claude.count_tokens_betas")
+        for name in lists:
+            with self.subTest(pin=name):
+                tree = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, tree)
+                (tree / source).parent.mkdir(parents=True)
+                shutil.copy(ROOT / source, tree / source)
+                pin = drift.PIN[name]
+                site_only = drift.Pin(pin.name, pin.client, pin.pattern, pin.sites, decode=pin.decode, encode=pin.encode)
+                betas = drift.read_pin(tree, site_only) + ["new-beta-2026-10-29"]
+                drift.write_pin(tree, site_only, betas)
+                self.assertEqual(drift.read_pin(tree, site_only), betas)
+                # The two lists sit in one file; writing one must not touch the other.
+                other = drift.PIN[lists[1] if name == lists[0] else lists[0]]
+                self.assertEqual(drift.read_pin(tree, other), drift.read_pin(ROOT, other))
 
 
 class WritePinTest(unittest.TestCase):
@@ -116,6 +122,17 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(drifts, [])
         self.assertEqual(len(notes), 2)
 
+    def test_a_changed_query_is_drift(self):
+        # Requests are paired by the path without its query, so only the
+        # record comparison can see the query change.
+        base = record("/v1internal/cascadeNuxes?page_size=1000", [])
+        seen = record("/v1internal/cascadeNuxes?page_size=500", [])
+        drifts, notes = drift.compare_captures([base], [seen], frozenset(), [])
+        self.assertEqual(len(drifts), 1, drifts)
+        self.assertIn("?page_size=1000", drifts[0])
+        self.assertIn("?page_size=500", drifts[0])
+        self.assertEqual(notes, [])
+
     def test_generation_request_keys_are_compared_per_request_type(self):
         path = "/v1internal:streamGenerateContent?alt=sse"
 
@@ -175,12 +192,63 @@ class CompareTest(unittest.TestCase):
         build = drift.Capture([record("/v1internal:loadCodeAssist", []), record(path, [], {"requestType": "checkpoint"}),
                                record(path, [], {"requestType": "agent"})], {})
         result = drift.Result("agy", "1.5.2", agy)
-        with mock.patch.object(drift, "analyze_generic"):
+        # The sequence check reads the committed baseline; this test is about one-sided requests.
+        no_baseline = ROOT / "no-baseline.jsonl"
+        with mock.patch.object(drift, "analyze_generic"), mock.patch.object(drift, "baseline_path", return_value=no_baseline):
             drift.analyze_agy(ROOT, result, agy, build, None, [])
         self.assertEqual(result.manual, [
             "this build sends POST /v1internal:streamGenerateContent (checkpoint), which agy did not send this run, "
             "so its shape is unchecked",
         ])
+
+    AGY_BASELINE = ("loadCodeAssist", "fetchUserInfo", "retrieveUserQuotaSummary", "listExperiments",
+                    "cascadeNuxes", "agent")
+
+    @staticmethod
+    def agy_calls(*names):
+        out = []
+        for name in names:
+            if name == "cascadeNuxes":
+                out.append(dict(record("/v1internal/cascadeNuxes?page_size=1000", []), method="GET"))
+            elif name == "agent":
+                out.append(record("/v1internal:streamGenerateContent?alt=sse", [], {"requestType": "agent"}))
+            else:
+                out.append(record(f"/v1internal:{name}", []))
+        return out
+
+    def agy_endpoint_items(self, *observed_names):
+        path = Path(tempfile.mkdtemp()) / "agy.jsonl"
+        self.addCleanup(shutil.rmtree, path.parent)
+        path.write_text("".join(json.dumps(item) + "\n" for item in self.agy_calls(*self.AGY_BASELINE)),
+                        encoding="utf-8")
+        observed = self.agy_calls(*observed_names)
+        result = drift.Result("agy", "1.5.2", drift.Capture(observed, {}))
+        with mock.patch.object(drift, "analyze_generic"), mock.patch.object(drift, "baseline_path", return_value=path):
+            drift.analyze_agy(ROOT, result, drift.Capture(observed, {}), None, None, [])
+        return [item for item in result.manual if item.startswith("agy's Cloud Code endpoints changed")]
+
+    def test_agy_endpoints_name_calls_without_the_prefix(self):
+        self.assertEqual(drift.agy_endpoints(self.agy_calls(*self.AGY_BASELINE)), {
+            "loadCodeAssist", "fetchUserInfo", "retrieveUserQuotaSummary", "listExperiments",
+            "cascadeNuxes", "streamGenerateContent (agent)"})
+
+    def test_reordered_calls_and_another_quota_summary_are_no_change(self):
+        # Runs of the same agy (1.5.2) reorder calls beyond its concurrent
+        # groups and send retrieveUserQuotaSummary 8 or 9 times.
+        self.assertEqual(self.agy_endpoint_items(
+            "retrieveUserQuotaSummary", "listExperiments", "loadCodeAssist", "retrieveUserQuotaSummary",
+            "fetchUserInfo", "agent", "cascadeNuxes"), [])
+
+    def test_an_added_agy_endpoint_needs_a_human(self):
+        found = self.agy_endpoint_items(*self.AGY_BASELINE, "fetchAdminControls")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("added fetchAdminControls", found[0])
+        self.assertIn("internal/accounts/controlplane.go", found[0])
+
+    def test_a_removed_agy_endpoint_needs_a_human(self):
+        found = self.agy_endpoint_items(*(name for name in self.AGY_BASELINE if name != "listExperiments"))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("removed listExperiments", found[0])
 
 
 class AdvisorBetaTest(unittest.TestCase):

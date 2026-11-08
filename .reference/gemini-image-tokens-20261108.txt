@@ -1,0 +1,38 @@
+Gemini image token cost on Cloud Code, measured 2026-11-08
+==========================================================
+
+Method: non-streaming /v1/messages through the live proxy (port 8080) to
+daily-cloudcode-pa.googleapis.com, one user turn of a base64 PNG plus the text
+"Reply with the single word OK.", max_tokens 512, no mediaResolution set.
+The image cost is the request's input tokens (input + cache read + cache write)
+minus the same request without the image (gemini-3.8-flash: 215;
+gemini-4-argon: 249). Images are synthetic RGB gradients.
+
+gemini-3.8-flash
+
+  size (w x h)   tokens   floor(sqrt(1120*w/h)) * floor(sqrt(1120*h/w))
+  64 x 64         1089    33 * 33 = 1089
+  384 x 384       1089    1089
+  768 x 768       1089    1089
+  1536 x 1536     1089    1089
+  1000 x 999      1089    33 * 33 = 1089
+  1000 x 500      1081    47 * 23 = 1081
+  1920 x 1080     1100    44 * 25 = 1100
+  3000 x 1000     1083    57 * 19 = 1083
+  300 x 100       1083    57 * 19 = 1083
+  2000 x 200      1050    105 * 10 = 1050
+  200 x 1000      1036    14 * 74 = 1036
+  64x64 + 3000x1000 in one request: 2172 = 1089 + 1083
+
+gemini-4-argon: the same grid plus 2 tokens per image
+
+  64 x 64         1091
+  1536 x 1536     1091
+  3000 x 1000     1085
+  1920 x 1080     1102
+  64x64 + 3000x1000 in one request: 2176 = 1091 + 1085
+
+Reading: the image is resized to a grid of at most 1,120 patches with its
+aspect ratio kept, whatever its pixel size. Neither model follows the
+Gemini API's documented 258-per-768x768-tile rule (that rule predicts 258
+for 768x768 and 2,064 for 3000x1000).

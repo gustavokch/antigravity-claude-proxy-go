@@ -532,12 +532,12 @@ func TestUserAgentDefaultsToTheCapturedLiteral(t *testing.T) {
 	}
 }
 
-func TestUserAgentConstructionForOtherEntrypointsIsInferred(t *testing.T) {
-	// No capture confirms this string; the test pins the construction so a
-	// change is deliberate rather than accidental.
+func TestUserAgentForTheInteractiveEntrypointIsTheCapturedOne(t *testing.T) {
+	// .reference/claude-code-count-tokens-20261107.jsonl records this string
+	// on an interactive session's messages and counts.
 	got := messagesUserAgent(Identity{Entrypoint: EntrypointInteractive})
 	if got != "claude-cli/2.1.311 (external, cli)" {
-		t.Errorf("User-Agent = %q, want the constructed form", got)
+		t.Errorf("User-Agent = %q, want the captured interactive form", got)
 	}
 }
 

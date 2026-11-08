@@ -260,10 +260,12 @@ func TestEndpointsMatchAgyHost(t *testing.T) {
 
 // TestRequestHeadsOnTheWireMatchAgy reads the request head as the production
 // transport writes it, before a server could reorder or canonicalise it, and
-// compares the header order with agy 1.4.10's: a unary call carries
-// Content-Length and a streaming call is chunked, and Accept-Encoding comes
-// last because net/http, not the client, adds it
-// (.reference/agy-1.4.10-wire-20261030.txt).
+// compares it with agy's. A unary call carries Content-Length and a streaming
+// call is chunked, and Accept-Encoding comes last because net/http, not the
+// client, adds it (.reference/agy-1.4.10-wire-20261030.txt). The control-plane
+// calls agy 1.5.2 sends around a conversation are unary POSTs with body
+// {"project":...}, except cascadeNuxes: a GET with no body and no Content-Type
+// (.reference/client-drift/agy.jsonl).
 func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -273,6 +275,7 @@ func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 	// The server reports through the channel, never through t: its goroutine
 	// can outlive the test.
 	type captured struct {
+		line string
 		head []string
 		body string
 		err  error
@@ -294,7 +297,8 @@ func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 				}
 				body, _ := io.ReadAll(request.Body)
 				head, _, _ := strings.Cut(raw.String(), "\r\n\r\n")
-				requests <- captured{head: strings.Split(head, "\r\n")[1:], body: string(body)}
+				lines := strings.Split(head, "\r\n")
+				requests <- captured{line: lines[0], head: lines[1:], body: string(body)}
 				_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
 			}(conn)
 		}
@@ -307,19 +311,6 @@ func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 		}
 		return got
 	}
-
-	client := New(Options{AccessToken: "token"})
-	client.provisioningEndpoints = []string{"http://" + listener.Addr().String()}
-	client.generationEndpoints = client.provisioningEndpoints
-	if _, err := client.LoadCodeAssist(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	unary := receive()
-	if _, err := client.StreamGenerateContent(context.Background(), map[string]string{"x": "y"}, RequestOptions{}, func(SSEEvent) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	stream := receive()
-
 	names := func(head []string) []string {
 		var out []string
 		for _, line := range head {
@@ -328,22 +319,69 @@ func TestRequestHeadsOnTheWireMatchAgy(t *testing.T) {
 		}
 		return out
 	}
-	if got, want := names(unary.head), []string{"Host", "User-Agent", "Content-Length", "Authorization", "Content-Type", "Accept-Encoding"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("unary header order = %v, want %v", got, want)
+
+	ctx := context.Background()
+	client := New(Options{AccessToken: "token"})
+	client.provisioningEndpoints = []string{"http://" + listener.Addr().String()}
+	client.generationEndpoints = client.provisioningEndpoints
+	client.contentEndpoints = client.provisioningEndpoints
+	if _, err := client.LoadCodeAssist(ctx); err != nil {
+		t.Fatal(err)
+	}
+	unary := receive()
+	if _, err := client.StreamGenerateContent(ctx, map[string]string{"x": "y"}, RequestOptions{}, func(SSEEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	stream := receive()
+
+	unaryOrder := []string{"Host", "User-Agent", "Content-Length", "Authorization", "Content-Type", "Accept-Encoding"}
+	if got := names(unary.head); !reflect.DeepEqual(got, unaryOrder) {
+		t.Errorf("unary header order = %v, want %v", got, unaryOrder)
 	}
 	if got, want := names(stream.head), []string{"Host", "User-Agent", "Transfer-Encoding", "Authorization", "Content-Type", "Accept-Encoding"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("streaming header order = %v, want %v", got, want)
-	}
-	if t.Failed() {
-		// The values below are read by position, which only holds once the
-		// order matched.
-		return
-	}
-	if stream.head[2] != "Transfer-Encoding: chunked" || stream.head[5] != "Accept-Encoding: gzip" {
+	} else if stream.head[2] != "Transfer-Encoding: chunked" || stream.head[5] != "Accept-Encoding: gzip" {
 		t.Errorf("streaming head = %q", stream.head)
 	}
 	if stream.body != `{"x":"y"}` {
 		t.Errorf("streaming body = %q", stream.body)
+	}
+
+	for _, call := range []struct {
+		line string
+		send func() (Response, error)
+	}{
+		{"POST /v1internal:fetchAdminControls HTTP/1.1", func() (Response, error) { return client.FetchAdminControls(ctx, "p") }},
+		{"POST /v1internal:fetchUserInfo HTTP/1.1", func() (Response, error) { return client.FetchUserInfo(ctx, "p") }},
+		{"POST /v1internal:listExperiments HTTP/1.1", func() (Response, error) { return client.ListExperiments(ctx, "p") }},
+	} {
+		if _, err := call.send(); err != nil {
+			t.Fatalf("%s: %v", call.line, err)
+		}
+		got := receive()
+		if got.line != call.line {
+			t.Errorf("request line = %q, want %q", got.line, call.line)
+		}
+		if order := names(got.head); !reflect.DeepEqual(order, unaryOrder) {
+			t.Errorf("%s header order = %v, want %v", call.line, order, unaryOrder)
+		}
+		if want := `{"project":"p"}`; got.body != want {
+			t.Errorf("%s body = %q, want %q", call.line, got.body, want)
+		}
+	}
+
+	if _, err := client.ListCascadeNuxes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	nuxes := receive()
+	if want := "GET /v1internal/cascadeNuxes?page_size=1000 HTTP/1.1"; nuxes.line != want {
+		t.Errorf("request line = %q, want %q", nuxes.line, want)
+	}
+	if got, want := names(nuxes.head), []string{"Host", "User-Agent", "Authorization", "Accept-Encoding"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("cascadeNuxes header order = %v, want %v", got, want)
+	}
+	if nuxes.body != "" {
+		t.Errorf("cascadeNuxes body = %q, want none", nuxes.body)
 	}
 }
 

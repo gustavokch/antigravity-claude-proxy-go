@@ -672,6 +672,13 @@ PINS: tuple[Pin, ...] = (
     ), claude_betas,
         decode=lambda text: re.findall(r'"([^"]+)"', text),
         encode=lambda values: "\n".join(f'\t"{value}",' for value in values)),
+    # Claude Code sends count_tokens only from /context, which the --print
+    # capture never reaches, so no observe: a /context recapture moves it
+    # (.reference/claude-code-count-tokens-*.jsonl).
+    Pin("claude.count_tokens_betas", "claude", BETA_LIST, (
+        Site("internal/ccidentity/defaults.go", "var CountTokensBetas = []string{\n<<V>>\n}"),
+    ), decode=lambda text: re.findall(r'"([^"]+)"', text),
+        encode=lambda values: "\n".join(f'\t"{value}",' for value in values)),
     # Read from the installed binary by analyze_advisor_beta, not from the
     # capture: the capture never turns the advisor on.
     Pin("claude.advisor_beta", "claude", ADVISOR_BETA, (
@@ -802,6 +809,14 @@ def request_key(record: dict) -> tuple[str, str]:
     return record.get("method", ""), f"{path} ({request_type})" if request_type else path
 
 
+def agy_endpoints(records: list[dict]) -> set[str]:
+    """The Cloud Code endpoints agy called, named without the /v1internal
+    prefix. Only this set is compared: runs of one agy version reorder calls
+    and send retrieveUserQuotaSummary a varying number of times."""
+    return {request_key(record)[1].removeprefix("/v1internal:").removeprefix("/v1internal/")
+            for record in records}
+
+
 # Keys of a generation request's inner `request` that the caller decides.
 CALLER_REQUEST_KEYS = frozenset({"tools"})
 
@@ -812,6 +827,10 @@ def compare_records(label: str, base: dict, seen: dict, dynamic: frozenset[str],
     drifts = []
     if base.get("host") != seen.get("host"):
         drifts.append(f"{label}: host {base.get('host')} -> {seen.get('host')}")
+    # request_key pairs records by the path without its query, so a changed
+    # query shows only here.
+    if base.get("path") != seen.get("path"):
+        drifts.append(f"{label}: path {base.get('path')} -> {seen.get('path')}")
     if base.get("http_version") != seen.get("http_version"):
         drifts.append(f"{label}: {base.get('http_version')} -> {seen.get('http_version')}")
     base_headers = [(name.lower(), value) for name, value in base.get("headers", [])]
@@ -984,6 +1003,16 @@ def analyze_agy(root: Path, result: Result, capture: Capture, proxy: Capture | N
         result.manual.extend(
             f"this build sends {' '.join(key)}, which agy did not send this run, so its shape is unchecked"
             for key in sorted({request_key(record) for record in proxy.records} - sent_by_agy))
+    baseline_file = baseline_path(root, "agy")
+    if baseline_file.exists():
+        before = agy_endpoints(load_capture_file(baseline_file))
+        now = agy_endpoints(capture.records)
+        if before != now:
+            added = ", ".join(sorted(now - before)) or "none"
+            removed = ", ".join(sorted(before - now)) or "none"
+            result.manual.append(
+                f"agy's Cloud Code endpoints changed: added {added}; removed {removed}. Update the start burst "
+                "and per-turn calls (internal/accounts/controlplane.go) and their sequence test, then the baseline")
     analyze_generic(root, result, capture, pairs)
     if oauth is None:
         return

@@ -2,6 +2,7 @@ package ccidentity
 
 import (
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -26,10 +27,9 @@ const (
 	DiscoveryUserAgent = "claude-code/2.1.311"
 
 	// EntrypointSDKCLI and EntrypointInteractive are the two cc_entrypoint values
-	// known to exist. The capture only ever produced sdk-cli (because every run
-	// used --print); cli comes from docs/classifier-fallback-notes.md, which
-	// recorded it from an interactive session. The cli header set itself is
-	// still uncaptured.
+	// known to exist. The --print captures only ever produced sdk-cli; the
+	// interactive count capture (.reference/claude-code-count-tokens-20261107.jsonl,
+	// 2.1.311) shows cli, on messages and counts alike.
 	EntrypointSDKCLI      = "sdk-cli"
 	EntrypointInteractive = "cli"
 
@@ -90,11 +90,10 @@ func staticHeaders(id Identity) []Header {
 // messagesUserAgent returns the captured literal, or a constructed one when the
 // caller changed the entrypoint.
 //
-// The construction is INFERRED, not captured: the sample shows the entrypoint
-// appears inside the parentheses, so substituting cli yields
-// "claude-cli/2.1.311 (external, cli)". No capture has confirmed that exact
-// string. It is used only when the operator explicitly sets a non-default
-// entrypoint, and it is the reason a cli capture is still wanted.
+// The construction puts the entrypoint inside the parentheses. For cli it
+// yields "claude-cli/2.1.311 (external, cli)", the string the interactive count
+// capture shows on both messages and counts. Any other entrypoint is an
+// extrapolation of that shape; no capture shows one.
 func messagesUserAgent(id Identity) string {
 	if id.UserAgent != "" {
 		return id.UserAgent
@@ -303,7 +302,7 @@ func dynamicHeaders() []DynamicHeader {
 }
 
 // defaultProfile is the captured profile. Nothing in it varies per call:
-// dynamicHeaders holds three closures that take the identity as an argument
+// Static and the dynamicHeaders closures take the identity as an argument
 // rather than closing over one, and Omit, Path and Betas are constants. It is
 // therefore built once instead of on every request.
 //
@@ -311,6 +310,7 @@ func dynamicHeaders() []DynamicHeader {
 // was a constructor. Neither is mutated anywhere; defaults_test.go pins the
 // sharing, so a caller that started to mutate one would be caught.
 var defaultProfile = Profile{
+	Static:  staticHeaders,
 	Dynamic: dynamicHeaders(),
 	Omit:    omittedHeaders,
 	Path:    MessagesPath,
@@ -322,12 +322,68 @@ func DefaultProfile() Profile {
 	return defaultProfile
 }
 
-// StaticFor returns the captured constant header set for one identity.
-//
-// Separate from DefaultProfile because three captured values depend on the
-// identity or on operator overrides (User-Agent, X-Stainless-OS,
-// X-Stainless-Runtime-Version), so the static set is a function of the identity
-// rather than a package-level value.
-func StaticFor(id Identity) []Header {
-	return staticHeaders(id)
+// CountTokensPath is the count_tokens path with the query string the capture
+// shows (.reference/claude-code-count-tokens-20261107.jsonl).
+const CountTokensPath = "/v1/messages/count_tokens?beta=true"
+
+// CountTokensBetas is the anthropic-beta list Claude Code sends on
+// POST /v1/messages/count_tokens, in captured order. It is its own list, not a
+// rule over Betas: the count capture carries five betas, the last of them
+// token-counting, which the messages list does not have.
+var CountTokensBetas = []string{
+	"claude-code-20250219",
+	"oauth-2025-04-20",
+	"interleaved-thinking-2025-05-14",
+	"context-management-2025-06-27",
+	"token-counting-2024-11-01",
+}
+
+// countTokensStaticHeaders is the constant set as the count capture differs
+// from the messages one: no X-Stainless-Timeout, request class auxiliary, and
+// the User-Agent of the interactive entrypoint. Claude Code counts only from
+// /context, which only an interactive session has, so a count claims cli
+// whatever entrypoint the messages path claims; an explicit Identity.UserAgent
+// override still wins, as it does there. Every other name and value is the
+// messages one, sent by the same SDK. staticHeaders returns a fresh slice, so
+// it is filtered in place.
+func countTokensStaticHeaders(id Identity) []Header {
+	id.Entrypoint = EntrypointInteractive
+	static := staticHeaders(id)
+	out := static[:0]
+	for _, header := range static {
+		switch header.Name {
+		case "X-Stainless-Timeout":
+			continue
+		case "x-claude-code-request-class":
+			header.Value = "auxiliary"
+		}
+		out = append(out, header)
+	}
+	return out
+}
+
+// countTokensDynamicHeaders is the messages dynamic set without
+// x-claude-code-prompt-id: a count belongs to /context, not to a prompt, and
+// the capture carries none.
+func countTokensDynamicHeaders() []DynamicHeader {
+	return slices.DeleteFunc(dynamicHeaders(), func(header DynamicHeader) bool {
+		return header.Name == "x-claude-code-prompt-id"
+	})
+}
+
+// countTokensProfile is the captured count_tokens identity, built once like
+// defaultProfile.
+var countTokensProfile = Profile{
+	Static:  countTokensStaticHeaders,
+	Dynamic: countTokensDynamicHeaders(),
+	Omit:    omittedHeaders,
+	Path:    CountTokensPath,
+	Betas:   CountTokensBetas,
+}
+
+// CountTokensProfile returns the identity Claude Code sends on
+// POST /v1/messages/count_tokens. It is applied with ApplyHeaders; a count
+// body is never rewritten, so it has no ApplyBody counterpart.
+func CountTokensProfile() Profile {
+	return countTokensProfile
 }

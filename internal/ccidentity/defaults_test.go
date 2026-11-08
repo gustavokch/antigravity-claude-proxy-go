@@ -10,7 +10,7 @@ import "testing"
 // two closures. internal/claudecode/client.go calls DefaultProfile three times
 // per request and internal/api/server.go twice, so the allocation was on the
 // hot path for no gain: nothing in the profile varies per call. The values that
-// do vary with the identity live in StaticFor, which stays a function.
+// do vary with the identity come from Profile.Static, which is a function.
 func TestDefaultProfileIsBuiltOnce(t *testing.T) {
 	first, second := DefaultProfile(), DefaultProfile()
 

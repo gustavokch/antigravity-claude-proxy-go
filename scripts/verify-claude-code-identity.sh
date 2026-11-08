@@ -149,7 +149,7 @@ echo "=== [2/9] Writing a stub configuration ==="
 mkdir -p "${CONFIG_DIR}" "${MITM_CONFDIR}"
 # gatewayOrder is narrowed to claudecode and custom alone so no request can be
 # answered by another gateway and leave this gate asserting nothing. The two
-# custom models are not in the Claude Code allowlist, and tryCustomEndpointGateway
+# custom models are not in the Claude Code allowlist, and matchCustomEndpointGateway
 # keys on the exact model name, so the pooled phase and the custom phases cannot
 # answer each other's requests.
 cat > "${CONFIG_DIR}/config.json" <<JSON

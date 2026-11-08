@@ -408,7 +408,7 @@ func appendZenDiscovery(server *Server, cfg config.Config, models *[]any, seen m
 }
 
 // appendCustomDiscovery advertises every custom endpoint that has a url — the
-// same condition tryCustomEndpointGateway uses to route — and, for endpoints
+// same condition matchCustomEndpointGateway uses to route — and, for endpoints
 // that set discoverModels, every model their fetched catalog lists. The
 // operator already wrote the entry; no second opt-in flag. The limits are
 // discovery-only: the forward path stays byte-transparent (ADR-0001).

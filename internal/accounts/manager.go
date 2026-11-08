@@ -28,6 +28,10 @@ type RateLimit struct {
 	IsRateLimited bool  `json:"isRateLimited"`
 	ResetTimeMS   int64 `json:"-"`
 	ActualResetMS int64 `json:"actualResetMs,omitempty"`
+	// failure marks MarkFailure's lock: a session pin moves the model to
+	// another account instead of waiting it out. Not persisted, so a reloaded
+	// lock reads as a plain rate limit.
+	failure bool
 }
 
 func (limit *RateLimit) UnmarshalJSON(data []byte) error {
@@ -246,6 +250,16 @@ type Manager struct {
 	projects             map[string]string
 	sharedThrottleWindow time.Duration
 	modelThrottles       map[string]*sharedThrottle
+	// saveMu serializes SaveToDisk from snapshot to rename: saves run on
+	// request goroutines, and interleaved writes to path+".tmp" can persist a
+	// torn file or let an older snapshot replace a newer one.
+	saveMu sync.Mutex
+	// pins maps a session id to the account its conversation is pinned to;
+	// see conversation.go. Created on first use.
+	pins map[string]*pin
+	// pinWait is the longest rate limit a pinned session waits out before
+	// its model moves to another account; see setPinWait.
+	pinWait time.Duration
 }
 
 func mapFloat(m map[string]any, key string, fallback float64) float64 {
@@ -328,6 +342,7 @@ func New(options Options) (*Manager, error) {
 		projects:             make(map[string]string),
 		sharedThrottleWindow: sharedThrottleWindow,
 		modelThrottles:       make(map[string]*sharedThrottle),
+		pinWait:              maxStickyWait,
 	}, nil
 }
 
@@ -369,20 +384,32 @@ func (manager *Manager) Count() int {
 	return len(manager.accounts)
 }
 
-func (manager *Manager) Select(model string) Selection {
+// Select picks an account for model. A request with a session stays on the
+// session's pinned account (selectPinnedLocked); one without keeps the
+// per-request strategy choice.
+func (manager *Manager) Select(session, model string) Selection {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.clearExpiredLocked()
 	if wait := manager.sharedThrottleWaitLocked(rateLimitModelKey(model)); wait > 0 {
 		return Selection{Wait: wait}
 	}
+	if session == "" {
+		return manager.pickLocked(model, nil)
+	}
+	return manager.selectPinnedLocked(session, model)
+}
+
+// pickLocked runs the configured strategy. Accounts in exclude are treated as
+// unusable; a nil or empty set is the plain strategy.
+func (manager *Manager) pickLocked(model string, exclude map[string]bool) Selection {
 	switch manager.strategy {
 	case StrategySticky:
-		return manager.selectStickyLocked(model)
+		return manager.selectStickyLocked(model, exclude)
 	case StrategyRoundRobin:
-		return manager.selectRoundRobinLocked(model)
+		return manager.selectRoundRobinLocked(model, exclude)
 	default:
-		return manager.selectHybridLocked(model)
+		return manager.selectHybridLocked(model, exclude)
 	}
 }
 
@@ -594,6 +621,7 @@ func (manager *Manager) MarkFailure(account *Account, model string) {
 	if key != "" && account.ConsecutiveFailure >= 3 {
 		account.ModelRateLimits[key] = &RateLimit{
 			IsRateLimited: true, ResetTimeMS: manager.now().Add(time.Minute).UnixMilli(), ActualResetMS: time.Minute.Milliseconds(),
+			failure: true,
 		}
 	}
 }
@@ -774,31 +802,42 @@ func normalizeTier(current rawTier, paid *rawTier, g1Tier string) string {
 	return "free"
 }
 
+// CacheProject records account's Cloud Code project and saves the pool only
+// when the project changed.
 func (manager *Manager) CacheProject(account *Account, project string) {
 	manager.mu.Lock()
 	manager.projects[account.Email] = project
+	changed := false
 	for _, acc := range manager.accounts {
 		if acc.Email == account.Email {
+			changed = acc.ProjectID != project || acc.Subscription.ProjectID != project
 			acc.ProjectID = project
 			acc.Subscription.ProjectID = project
 			break
 		}
 	}
 	manager.mu.Unlock()
-	_ = manager.SaveToDisk()
+	if changed {
+		_ = manager.SaveToDisk()
+	}
 }
 
+// UpdateSubscription records a detected subscription. It saves the pool only
+// when the tier or project changed: every new prompt's loadCodeAssist answer
+// repeats them, with a new DetectedAt that is kept in memory alone.
 func (manager *Manager) UpdateSubscription(email string, subscription Subscription) error {
 	manager.mu.Lock()
-	found := false
+	found, changed := false, false
 	for _, acc := range manager.accounts {
 		if acc.Email == email {
-			if subscription.Tier != "" {
+			if subscription.Tier != "" && subscription.Tier != acc.Subscription.Tier {
 				acc.Subscription.Tier = subscription.Tier
+				changed = true
 			}
-			if subscription.ProjectID != "" {
+			if subscription.ProjectID != "" && (subscription.ProjectID != acc.Subscription.ProjectID || subscription.ProjectID != acc.ProjectID) {
 				acc.Subscription.ProjectID = subscription.ProjectID
 				acc.ProjectID = subscription.ProjectID
+				changed = true
 			}
 			if subscription.DetectedAt != "" {
 				acc.Subscription.DetectedAt = subscription.DetectedAt
@@ -810,6 +849,9 @@ func (manager *Manager) UpdateSubscription(email string, subscription Subscripti
 	manager.mu.Unlock()
 	if !found {
 		return fmt.Errorf("account %s not found", email)
+	}
+	if !changed {
+		return nil
 	}
 	return manager.SaveToDisk()
 }
@@ -842,7 +884,7 @@ func (manager *Manager) Snapshot() []Snapshot {
 	return result
 }
 
-func (manager *Manager) selectStickyLocked(model string) Selection {
+func (manager *Manager) selectStickyLocked(model string, exclude map[string]bool) Selection {
 	if len(manager.accounts) == 0 {
 		return Selection{} // No accounts available
 	}
@@ -851,19 +893,21 @@ func (manager *Manager) selectStickyLocked(model string) Selection {
 		manager.currentIndex = 0
 	}
 	current := manager.accounts[manager.currentIndex]
-	if manager.usableLocked(current, model, poolSupports) {
+	if manager.usableLocked(current, model, poolSupports) && !exclude[current.Email] {
 		current.LastUsedMS = manager.now().UnixMilli()
 		return Selection{Account: current}
 	}
 	for offset := 1; offset <= len(manager.accounts); offset++ {
 		index := (manager.currentIndex + offset) % len(manager.accounts)
-		if manager.usableLocked(manager.accounts[index], model, poolSupports) {
+		account := manager.accounts[index]
+		if manager.usableLocked(account, model, poolSupports) && !exclude[account.Email] {
 			manager.currentIndex = index
-			manager.accounts[index].LastUsedMS = manager.now().UnixMilli()
-			return Selection{Account: manager.accounts[index]}
+			account.LastUsedMS = manager.now().UnixMilli()
+			return Selection{Account: account}
 		}
 	}
-	if limit := current.ModelRateLimits[rateLimitModelKey(model)]; current.Enabled && !current.IsInvalid && limit != nil {
+	// Only a current account that may be picked at all is worth waiting for.
+	if limit := current.ModelRateLimits[rateLimitModelKey(model)]; current.Enabled && !current.IsInvalid && !exclude[current.Email] && limit != nil {
 		wait := time.Duration(limit.ResetTimeMS-manager.now().UnixMilli()) * time.Millisecond
 		if wait > 0 && wait <= maxStickyWait {
 			return Selection{Wait: wait}
@@ -872,7 +916,7 @@ func (manager *Manager) selectStickyLocked(model string) Selection {
 	return Selection{}
 }
 
-func (manager *Manager) selectRoundRobinLocked(model string) Selection {
+func (manager *Manager) selectRoundRobinLocked(model string, exclude map[string]bool) Selection {
 	if len(manager.accounts) == 0 {
 		return Selection{} // No accounts available
 	}
@@ -884,7 +928,7 @@ func (manager *Manager) selectRoundRobinLocked(model string) Selection {
 	for offset := range len(manager.accounts) {
 		index := (start + offset) % len(manager.accounts)
 		account := manager.accounts[index]
-		if manager.usableLocked(account, model, poolSupports) {
+		if manager.usableLocked(account, model, poolSupports) && !exclude[account.Email] {
 			manager.cursor = index
 			manager.currentIndex = index
 			account.LastUsedMS = manager.now().UnixMilli()
@@ -894,7 +938,7 @@ func (manager *Manager) selectRoundRobinLocked(model string) Selection {
 	return Selection{}
 }
 
-func (manager *Manager) selectHybridLocked(model string) Selection {
+func (manager *Manager) selectHybridLocked(model string, exclude map[string]bool) Selection {
 	type candidate struct {
 		account *Account
 		index   int
@@ -904,7 +948,7 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	minUsable := mapFloat(manager.selectionConfig.HealthScore, "minUsable", 50)
 	poolSupports := manager.poolSupportsModelLocked(model)
 	for index, account := range manager.accounts {
-		if !manager.usableLocked(account, model, poolSupports) || manager.healthScoreLocked(account.Email) < minUsable || manager.tokensLocked(account.Email) < 1 {
+		if !manager.usableLocked(account, model, poolSupports) || exclude[account.Email] || manager.healthScoreLocked(account.Email) < minUsable || manager.tokensLocked(account.Email) < 1 {
 			continue
 		}
 		if manager.quotaCriticalLocked(account, model) {
@@ -914,7 +958,7 @@ func (manager *Manager) selectHybridLocked(model string) Selection {
 	}
 	if len(candidates) == 0 {
 		for index, account := range manager.accounts {
-			if manager.usableLocked(account, model, poolSupports) {
+			if manager.usableLocked(account, model, poolSupports) && !exclude[account.Email] {
 				candidates = append(candidates, candidate{account: account, index: index, score: manager.scoreLocked(account, model)})
 			}
 		}
@@ -958,15 +1002,15 @@ func (manager *Manager) usableLocked(account *Account, model string, poolSupport
 	if limit := account.ModelRateLimits[rateLimitModelKey(model)]; limit != nil && limit.IsRateLimited && limit.ResetTimeMS > now {
 		return false
 	}
-	// In a heterogeneous pool where at least one account explicitly supports
-	// model, filter out accounts whose non-empty quota models do not support it.
-	// Accounts with uninitialized quota (len == 0) remain usable to allow initial discovery.
-	if poolSupports && len(account.Quota.Models) > 0 {
-		if !accountSupportsQuotaModel(account, model) {
-			return false
-		}
-	}
-	return true
+	return servesModel(account, model, poolSupports)
+}
+
+// servesModel applies the heterogeneous-pool filter: when some account in the
+// pool lists model, an account whose non-empty quota cache does not is
+// skipped. Accounts with uninitialized quota (len == 0) stay usable to allow
+// initial discovery.
+func servesModel(account *Account, model string, poolSupports bool) bool {
+	return !poolSupports || len(account.Quota.Models) == 0 || accountSupportsQuotaModel(account, model)
 }
 
 func (manager *Manager) clearExpiredLocked() {
@@ -1341,6 +1385,8 @@ func cloneAccount(acc *Account) *Account {
 }
 
 func (manager *Manager) SaveToDisk() error {
+	manager.saveMu.Lock()
+	defer manager.saveMu.Unlock()
 	manager.mu.RLock()
 	path := manager.configPath
 	if path == "" {

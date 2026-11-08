@@ -438,41 +438,7 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 		ccidentity.ApplyHeaders(httpReq.Header, profile.WithClientBetas(req.ClientHeaders), req.Identity, turn)
 		httpReq.ContentLength = int64(len(body))
 	} else {
-		httpReq.Header.Set("Content-Type", "application/json")
-
-		// Set the captured User-Agent here too. Go's transport writes
-		// Go-http-client/1.1 when none is set, which announces the standard
-		// library — the fingerprint this package exists to remove, and a worse
-		// one than the value below. It does not make the claim the normalized
-		// branch makes: a version string carries no session, and the headers
-		// that do assert an OAuth Claude Code identity (x-app, the cc_* system
-		// block, the captured beta order) are not set on this branch.
-		httpReq.Header.Set("User-Agent", ccidentity.MessagesUserAgent)
-
-		// Set or forward anthropic-version
-		version := DefaultAnthropicVersion
-		if req.ClientHeaders != nil {
-			if v := req.ClientHeaders.Get("anthropic-version"); v != "" {
-				version = v
-			}
-		}
-		httpReq.Header.Set("anthropic-version", version)
-
-		// Forward beta headers if present
-		if req.ClientHeaders != nil {
-			if betas := req.ClientHeaders.Values("anthropic-beta"); len(betas) > 0 {
-				for _, b := range betas {
-					httpReq.Header.Add("anthropic-beta", b)
-				}
-			} else if beta := req.ClientHeaders.Get("anthropic-beta"); beta != "" {
-				httpReq.Header.Set("anthropic-beta", beta)
-			}
-
-			// Forward Accept header
-			if accept := req.ClientHeaders.Get("Accept"); accept != "" {
-				httpReq.Header.Set("Accept", accept)
-			}
-		}
+		setForwardedHeaders(httpReq.Header, req.ClientHeaders)
 	}
 
 	// Apply authentication headers (x-api-key vs Authorization: Bearer + anthropic-beta).
@@ -481,6 +447,77 @@ func (c *Client) SendMessage(ctx context.Context, req MessageRequest) (*http.Res
 	// order intact.
 	ApplyAuthHeaders(httpReq, req.Token)
 
+	return c.httpClient.Do(httpReq)
+}
+
+// setForwardedHeaders sets what a request that is not normalized carries:
+// JSON content, the captured User-Agent, and the caller's anthropic-version
+// (or the default), anthropic-beta and Accept.
+//
+// The User-Agent is set here too. Go's transport writes Go-http-client/1.1
+// when none is set, which announces the standard library — the fingerprint
+// this package exists to remove, and a worse one than the captured value. It
+// does not make the claim the normalized branch makes: a version string
+// carries no session, and the headers that do assert an OAuth Claude Code
+// identity (x-app, the cc_* system block, the captured beta order) are not set.
+func setForwardedHeaders(h, client http.Header) {
+	h.Set("Content-Type", "application/json")
+	h.Set("User-Agent", ccidentity.MessagesUserAgent)
+	version := DefaultAnthropicVersion
+	if v := client.Get("anthropic-version"); v != "" {
+		version = v
+	}
+	h.Set("anthropic-version", version)
+	for _, beta := range client.Values("anthropic-beta") {
+		h.Add("anthropic-beta", beta)
+	}
+	if accept := client.Get("Accept"); accept != "" {
+		h.Set("Accept", accept)
+	}
+}
+
+// CountTokensRequest carries one /v1/messages/count_tokens send.
+type CountTokensRequest struct {
+	// Token authenticates the request, as on MessageRequest.
+	Token string
+	// Body is sent as given. Claude Code's count body is messages, model and
+	// tools, with no billing block or metadata, so normalization adds nothing.
+	Body []byte
+	// ClientHeaders are the inbound headers. A request that does not normalize
+	// copies anthropic-version, anthropic-beta and Accept from them.
+	ClientHeaders http.Header
+	// Normalize and Identity are MessageRequest's.
+	Normalize bool
+	Identity  ccidentity.Identity
+}
+
+// Normalizes is MessageRequest.Normalizes for a count: an API key never
+// claims the captured OAuth identity.
+func (r CountTokensRequest) Normalizes() bool {
+	return r.Normalize && IsOAuthToken(r.Token)
+}
+
+// CountTokens sends a count_tokens request. When req.Normalizes() it carries
+// the identity Claude Code sends on counts (ccidentity.CountTokensProfile),
+// which is not the messages one. It goes out on the messages transport: the
+// capture shows counts on the same TLS stack as /v1/messages.
+func (c *Client) CountTokens(ctx context.Context, req CountTokensRequest) (*http.Response, error) {
+	normalize := req.Normalizes()
+	profile := ccidentity.CountTokensProfile()
+	path := "/v1/messages/count_tokens"
+	if normalize {
+		path = profile.Path
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(req.Body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create count_tokens request: %w", err)
+	}
+	if normalize {
+		ccidentity.ApplyHeaders(httpReq.Header, profile, req.Identity, ccidentity.Turn{})
+	} else {
+		setForwardedHeaders(httpReq.Header, req.ClientHeaders)
+	}
+	ApplyAuthHeaders(httpReq, req.Token)
 	return c.httpClient.Do(httpReq)
 }
 

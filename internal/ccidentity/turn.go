@@ -173,6 +173,10 @@ func dropCacheControl(value any) {
 // first text block of its first user message that is not injected context. In
 // the request body that context arrives as <system-reminder> blocks in the same
 // message, so they are skipped. A string content is the text itself.
+//
+// A list of blocks is decoded into each block's type and text alone, so a
+// tool_result's output and an image's data are scanned but never decoded:
+// TurnOf runs on every request, and those are most of a long conversation.
 func promptOf(content json.RawMessage) (text string, isPrompt bool) {
 	content = bytes.TrimSpace(content)
 	if len(content) == 0 {
@@ -186,31 +190,103 @@ func promptOf(content json.RawMessage) (text string, isPrompt bool) {
 		return text, isPromptText(text)
 	case '[':
 		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type any `json:"type"`
+			Text any `json:"text"`
 		}
 		if json.Unmarshal(content, &blocks) != nil {
 			return "", false
 		}
-		found := false
+		var rule promptRule
 		for _, block := range blocks {
-			switch block.Type {
-			case "tool_result":
-			case "text":
-				if isPromptText(block.Text) {
-					if !found {
-						text = block.Text
-					}
-					found = true
-				}
-			default:
-				// An image or a document is something a person attached.
-				isPrompt = true
+			if !rule.add(block.Type, block.Text) {
+				return "", false
 			}
 		}
-		return text, isPrompt || found
+		return rule.result()
 	}
 	return "", false
+}
+
+// HasPromptContent reports whether a user message's decoded content (a string
+// or a []any of blocks) holds something a person sent: the rule promptOf
+// applies. Text that is empty or starts with <system-reminder> and tool
+// results do not count; an image or a document does.
+func HasPromptContent(content any) bool {
+	_, isPrompt := promptContent(content)
+	return isPrompt
+}
+
+// promptContent is the rule behind HasPromptContent, over decoded content. A
+// block that is no object makes the content no prompt, as a typed decode of it
+// would fail; a null block is one with neither type nor text.
+func promptContent(content any) (text string, isPrompt bool) {
+	switch content := content.(type) {
+	case string:
+		return content, isPromptText(content)
+	case []any:
+		var rule promptRule
+		for _, raw := range content {
+			var block map[string]any
+			if raw != nil {
+				var ok bool
+				if block, ok = raw.(map[string]any); !ok {
+					return "", false
+				}
+			}
+			if !rule.add(block["type"], block["text"]) {
+				return "", false
+			}
+		}
+		return rule.result()
+	}
+	return "", false
+}
+
+// promptRule is the per-block rule promptOf and promptContent share, applied
+// to a message's blocks in order.
+type promptRule struct {
+	text     string // the first typed text
+	found    bool   // a text block holds typed text
+	attached bool   // a block is neither text nor a tool_result
+}
+
+// add applies the rule to one block's type and text members, each as decoded
+// into an any: nil when absent or null. It reports false when either is
+// present and not a string, which makes the whole content no prompt.
+func (r *promptRule) add(kind, text any) bool {
+	kindString, kindOK := stringOrNull(kind)
+	textString, textOK := stringOrNull(text)
+	if !kindOK || !textOK {
+		return false
+	}
+	switch kindString {
+	case "tool_result":
+	case "text":
+		if isPromptText(textString) {
+			if !r.found {
+				r.text = textString
+			}
+			r.found = true
+		}
+	default:
+		// An image or a document is something a person attached.
+		r.attached = true
+	}
+	return true
+}
+
+func (r promptRule) result() (text string, isPrompt bool) {
+	return r.text, r.found || r.attached
+}
+
+// stringOrNull reads a decoded member as a string; nil reads as "", a value of
+// another type as not ok.
+func stringOrNull(value any) (string, bool) {
+	if value == nil {
+		return "", true
+	}
+	text, ok := value.(string)
+	return text, ok
 }
 
 func isPromptText(text string) bool {

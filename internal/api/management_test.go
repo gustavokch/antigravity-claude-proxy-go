@@ -574,6 +574,45 @@ func TestManagement_AccountsCRUD(t *testing.T) {
 	})
 }
 
+// /api/accounts reports, per account, how many live session pins use it.
+func TestAccountsListReportsActiveSessions(t *testing.T) {
+	server, mgr, _ := newTestServerWithManager(t)
+	handler := server.Handler()
+	activeSessions := func() int {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/accounts", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/accounts = %d: %s", rec.Code, rec.Body.String())
+		}
+		var res struct {
+			Accounts []struct {
+				Email          string `json:"email"`
+				ActiveSessions *int   `json:"activeSessions"`
+			} `json:"accounts"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Accounts) != 1 || res.Accounts[0].ActiveSessions == nil {
+			t.Fatalf("accounts carry no activeSessions: %s", rec.Body.String())
+		}
+		return *res.Accounts[0].ActiveSessions
+	}
+
+	if got := activeSessions(); got != 0 {
+		t.Fatalf("activeSessions before any session = %d, want 0", got)
+	}
+	for _, session := range []string{"session-a", "session-b", "session-a"} {
+		if mgr.Select(session, "gemini-3.8-flash-high").Account == nil {
+			t.Fatalf("Select(%q) picked no account", session)
+		}
+	}
+	if got := activeSessions(); got != 2 {
+		t.Fatalf("activeSessions = %d, want 2: two sessions pinned to the only account", got)
+	}
+}
+
 func TestManagement_LogsAndStreaming(t *testing.T) {
 	server, _, broadcaster := newTestServerWithManager(t)
 	handler := server.Handler()
@@ -1525,7 +1564,7 @@ func TestManagement_AccountLimits_GoogleModelActive429NotStaleQuota(t *testing.T
 		},
 	}, nil)
 
-	sel := mgr.Select("gemini-3.8-flash-high")
+	sel := mgr.Select("", "gemini-3.8-flash-high")
 	if sel.Account == nil {
 		t.Fatalf("expected an account to be selected")
 	}
@@ -1736,7 +1775,7 @@ func TestManagement_AccountLimits_GoogleActive429Normalizes1m(t *testing.T) {
 		},
 	}, nil)
 
-	sel := mgr.Select("gemini-3.8-flash-high")
+	sel := mgr.Select("", "gemini-3.8-flash-high")
 	if sel.Account == nil {
 		t.Fatalf("expected an account to be selected")
 	}
@@ -1897,7 +1936,7 @@ func TestManagement_AccountLimits_GoogleAccountRateLimitedStatus(t *testing.T) {
 		},
 	}, nil)
 
-	sel := mgr.Select("gemini-3.8-flash-high")
+	sel := mgr.Select("", "gemini-3.8-flash-high")
 	if sel.Account == nil {
 		t.Fatalf("expected an account to be selected")
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -477,21 +478,26 @@ func TestDispatch_ZenNonWireEntryFallsThrough(t *testing.T) {
 	requireDispatchWinner(t, probe, backend, rec, "kimi")
 }
 
-func TestGatewayHandlers_CoverEveryKnownGateway(t *testing.T) {
-	if _, ok := gatewayHandlers[config.GatewayCloudCode]; ok {
-		t.Error("cloudcode must have no handler: it is the terminal account-backed path")
+func TestGateways_CoverEveryKnownGateway(t *testing.T) {
+	if _, ok := gateways[config.GatewayCloudCode]; ok {
+		t.Error("cloudcode must have no gateway entry: it is the terminal account-backed path")
 	}
 	for _, id := range config.KnownGatewayIDs() {
 		if id == config.GatewayCloudCode {
 			continue
 		}
-		if _, ok := gatewayHandlers[id]; !ok {
-			t.Errorf("known gateway %q has no handler", id)
+		gw, ok := gateways[id]
+		if !ok {
+			t.Errorf("known gateway %q has no entry", id)
+			continue
+		}
+		if gw.match == nil || gw.forward == nil {
+			t.Errorf("gateway %q lacks a matcher or a forward", id)
 		}
 	}
-	for id := range gatewayHandlers {
+	for id := range gateways {
 		if !config.IsKnownGatewayID(id) {
-			t.Errorf("handler for unknown gateway %q", id)
+			t.Errorf("entry for unknown gateway %q", id)
 		}
 	}
 }
@@ -629,4 +635,46 @@ func TestDispatch_HotReload(t *testing.T) {
 	before := probe.snapshot()
 	rec2 := postDispatchMessages(t, server, dispatchModel)
 	requireDispatchWinnerDelta(t, probe, before, backend, rec2, "openrouter")
+}
+
+// routeGateway answers which gateway /v1/messages would use without sending
+// anything: count_tokens asks the same question.
+func TestRouteGateway_NamesTheClaimingGatewayAndSendsNothing(t *testing.T) {
+	probe := newDispatchProbe()
+	kimi, zen, cc, or, custom, backend := dispatchUpstreams(t, probe)
+	cfg := dispatchBaseConfig(kimi.URL, zen.URL, cc.URL, or.URL, custom.URL)
+	server := newDispatchServer(t, cfg, backend)
+	for _, tc := range []struct {
+		name   string
+		order  []config.GatewayID
+		model  string
+		wantOK bool
+		wantID config.GatewayID
+		target string
+	}{
+		{"default order puts kimi first", nil, dispatchModel, true, config.GatewayKimi, dispatchModel},
+		{"kimi strips the 1m suffix", nil, dispatchModel + "[1m]", true, config.GatewayKimi, dispatchModel},
+		{"openrouter hoisted", []config.GatewayID{"openrouter", "kimi"}, dispatchModel, true, config.GatewayOpenRouter, dispatchModel},
+		{"zen sends its canonical spelling", []config.GatewayID{"zen", "kimi"}, "opencode/" + dispatchModel, true, config.GatewayZen, dispatchModel},
+		{"custom keeps the requested model", []config.GatewayID{"custom", "kimi"}, dispatchModel, true, config.GatewayCustom, dispatchModel},
+		{"cloudcode first ends the walk", []config.GatewayID{"cloudcode", "kimi"}, dispatchModel, false, "", ""},
+		{"nothing claims an unknown model", nil, "gemini-3.5-flash", false, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := cfg
+			if tc.order != nil {
+				c.GatewayOrder.Order = tc.order
+			}
+			route, ok := server.routeGateway(context.Background(), c, tc.model)
+			if ok != tc.wantOK || route.id != tc.wantID || route.target != tc.target {
+				t.Fatalf("routeGateway(%q) = (%q, %q, %v), want (%q, %q, %v)", tc.model, route.id, route.target, ok, tc.wantID, tc.target, tc.wantOK)
+			}
+			if tc.wantID == config.GatewayCustom && route.endpoint.URL != custom.URL {
+				t.Errorf("custom route endpoint = %q, want %q", route.endpoint.URL, custom.URL)
+			}
+		})
+	}
+	if total := probe.total(); total != 0 {
+		t.Errorf("gateway hits = %d, want 0: routing sends nothing", total)
+	}
 }

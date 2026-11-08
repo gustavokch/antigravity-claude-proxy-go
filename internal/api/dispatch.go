@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"maps"
 	"net/http"
@@ -11,10 +12,8 @@ import (
 	"antigravity-go-proxy/internal/config"
 )
 
-// gatewayRequest carries what one alternate-backend dispatch pass needs. A
-// gateway that accepts the request writes its response and returns true. A
-// gateway that declines must leave every field untouched, so the next gateway
-// sees the request exactly as the previous one did.
+// gatewayRequest carries what one /v1/messages forward needs. The forward of
+// the gateway routeGateway picked writes the response.
 type gatewayRequest struct {
 	writer  http.ResponseWriter
 	request *http.Request
@@ -25,106 +24,141 @@ type gatewayRequest struct {
 	model   string
 }
 
-// gatewayHandlers maps every gateway this build can dispatch to onto its
-// handler. cloudcode is deliberately absent: it is the terminal account-backed
-// path, not a gateway. TestGatewayHandlers_CoverEveryKnownGateway pins that this
-// table covers exactly config.KnownGatewayIDs() minus cloudcode.
-var gatewayHandlers = map[config.GatewayID]func(*Server, *gatewayRequest) bool{
-	config.GatewayKimi:       (*Server).tryKimiGateway,
-	config.GatewayZen:        (*Server).tryZenGateway,
-	config.GatewayClaudeCode: (*Server).tryClaudeCodeGateway,
-	config.GatewayOpenRouter: (*Server).tryOpenRouterGateway,
-	config.GatewayCustom:     (*Server).tryCustomEndpointGateway,
+// gatewayRoute is the gateway that claims a model and what its matcher found:
+// target is the model id that gateway is sent, and kimi, zen and endpoint hold
+// the matched allowlist entry or endpoint its forward reads.
+type gatewayRoute struct {
+	id       config.GatewayID
+	target   string
+	kimi     config.KimiModelConfig
+	zen      config.ZenModelConfig
+	endpoint config.EndpointConfig
 }
 
-// dispatchAlternateBackend walks the configured precedence and hands the request
-// to the first gateway that accepts it. It returns true when a gateway wrote the
-// response, and false when no gateway handled the request: cloudcode was
-// reached, or every listed gateway declined.
+// gateway is one gateway this build can dispatch to. match decides whether the
+// gateway claims a model and writes nothing, so count_tokens asks the same
+// question /v1/messages does; forward sends a /v1/messages request to the
+// gateway match claimed it for.
+type gateway struct {
+	match   func(server *Server, ctx context.Context, cfg config.Config, model string) (gatewayRoute, bool)
+	forward func(server *Server, g *gatewayRequest, route gatewayRoute)
+}
+
+// gateways maps every gateway this build can dispatch to onto its matcher and
+// forward. cloudcode is deliberately absent: it is the terminal account-backed
+// path, not a gateway. TestGateways_CoverEveryKnownGateway pins that this table
+// covers exactly config.KnownGatewayIDs() minus cloudcode.
+var gateways = map[config.GatewayID]gateway{
+	config.GatewayKimi:       {(*Server).matchKimiGateway, (*Server).forwardKimiGateway},
+	config.GatewayZen:        {(*Server).matchZenGateway, (*Server).forwardZenGateway},
+	config.GatewayClaudeCode: {(*Server).matchClaudeCodeGateway, (*Server).forwardClaudeCodeGateway},
+	config.GatewayOpenRouter: {(*Server).matchOpenRouterGateway, (*Server).forwardOpenRouterGateway},
+	config.GatewayCustom:     {(*Server).matchCustomEndpointGateway, (*Server).forwardCustomEndpointGateway},
+}
+
+// routeGateway walks the configured precedence and returns the first gateway
+// that claims model. ok is false when cloudcode is reached or every listed
+// gateway declines: the request then belongs to the account-backed path.
+// Nothing is sent or written.
 //
-// Each handler re-checks its own enabled flag, its own matcher, and (for Zen)
-// its own key resolution. The walk is responsible for order only. Keeping those
-// conditions inside the handlers is deliberate: they are the exact conditions
-// the pre-refactor if-chain used.
-//
-// An operator who hoists `cloudcode` ahead of a gateway is choosing to have the
+// Each matcher re-checks its own enabled flag, its own allowlist and (for Zen)
+// its own key resolution; the walk is responsible for order only. An operator
+// who hoists `cloudcode` ahead of a gateway is choosing to have the
 // classifier-fallback gate consulted first: the walk stops at cloudcode and the
-// caller falls through to the account-backed path (and its gate) below.
-func (server *Server) dispatchAlternateBackend(g *gatewayRequest) bool {
-	for _, id := range g.cfg.GatewayOrder.Effective(g.model) {
+// caller falls through to the account-backed path (and its gate).
+func (server *Server) routeGateway(ctx context.Context, cfg config.Config, model string) (gatewayRoute, bool) {
+	for _, id := range cfg.GatewayOrder.Effective(model) {
 		if id == config.GatewayCloudCode {
-			return false
+			return gatewayRoute{}, false
 		}
-		handler, ok := gatewayHandlers[id]
+		gw, ok := gateways[id]
 		if !ok {
 			continue
 		}
-		if handler(server, g) {
-			return true
+		if route, ok := gw.match(server, ctx, cfg, model); ok {
+			route.id = id
+			return route, true
 		}
 	}
-	return false
+	return gatewayRoute{}, false
 }
 
-func (server *Server) tryKimiGateway(g *gatewayRequest) bool {
-	if !g.cfg.Kimi.Enabled {
-		return false
-	}
-	kimiEntry, ok := matchKimiModelEntry(g.cfg.Kimi, g.model)
+// dispatchAlternateBackend hands a /v1/messages request to the gateway
+// routeGateway picks and returns true once that gateway wrote the response. It
+// returns false, having written nothing, when the request belongs to the
+// account-backed path.
+func (server *Server) dispatchAlternateBackend(g *gatewayRequest) bool {
+	route, ok := server.routeGateway(g.request.Context(), g.cfg, g.model)
 	if !ok {
 		return false
 	}
-	targetModel := stripKimi1mSuffix(kimiEntry.ID)
-	g.body["model"] = targetModel
-	reqBody, err := json.Marshal(g.body)
-	if err != nil {
-		writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Kimi request: "+err.Error())
-		return true
-	}
-	reqBody = applyMaxTokensPolicy(reqBody, g.body, kimiEntry.MaxOutputTokens, 0)
-	server.forwardToKimi(g.writer, g.request, g.cfg.Kimi, reqBody, targetModel)
+	gateways[route.id].forward(server, g, route)
 	return true
 }
 
-func (server *Server) tryZenGateway(g *gatewayRequest) bool {
-	if !g.cfg.Zen.Enabled {
-		return false
+func (server *Server) matchKimiGateway(_ context.Context, cfg config.Config, model string) (gatewayRoute, bool) {
+	if !cfg.Kimi.Enabled {
+		return gatewayRoute{}, false
 	}
-	zenEntry, ok := matchZenModelEntry(g.cfg.Zen, g.model)
+	entry, ok := matchKimiModelEntry(cfg.Kimi, model)
 	if !ok {
-		return false
+		return gatewayRoute{}, false
 	}
-	target := zenTargetModel(zenEntry)
-	g.body["model"] = target
+	return gatewayRoute{target: stripKimi1mSuffix(entry.ID), kimi: entry}, true
+}
+
+func (server *Server) forwardKimiGateway(g *gatewayRequest, route gatewayRoute) {
+	g.body["model"] = route.target
+	reqBody, err := json.Marshal(g.body)
+	if err != nil {
+		writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal Kimi request: "+err.Error())
+		return
+	}
+	reqBody = applyMaxTokensPolicy(reqBody, g.body, route.kimi.MaxOutputTokens, 0)
+	server.forwardToKimi(g.writer, g.request, g.cfg.Kimi, reqBody, route.target)
+}
+
+func (server *Server) matchZenGateway(_ context.Context, cfg config.Config, model string) (gatewayRoute, bool) {
+	if !cfg.Zen.Enabled {
+		return gatewayRoute{}, false
+	}
+	entry, ok := matchZenModelEntry(cfg.Zen, model)
+	if !ok {
+		return gatewayRoute{}, false
+	}
+	return gatewayRoute{target: zenTargetModel(entry), zen: entry}, true
+}
+
+func (server *Server) forwardZenGateway(g *gatewayRequest, route gatewayRoute) {
+	g.body["model"] = route.target
 	reqBody, err := json.Marshal(g.body)
 	if err != nil {
 		writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error",
 			"Failed to marshal Zen request: "+err.Error())
-		return true
+		return
 	}
-	server.forwardToZen(g.writer, g.request, g.cfg.Zen, reqBody, g.body, target, zenEntry)
-	return true
+	server.forwardToZen(g.writer, g.request, g.cfg.Zen, reqBody, g.body, route.target, route.zen)
 }
 
-func (server *Server) tryClaudeCodeGateway(g *gatewayRequest) bool {
-	if !g.cfg.ClaudeCode.Enabled {
-		return false
+func (server *Server) matchClaudeCodeGateway(_ context.Context, cfg config.Config, model string) (gatewayRoute, bool) {
+	if !cfg.ClaudeCode.Enabled {
+		return gatewayRoute{}, false
 	}
-	ccMatch := matchClaudeCodeModel(g.cfg.ClaudeCode, g.model)
-	if ccMatch == "" {
-		return false
-	}
-	g.body["model"] = ccMatch
+	target := matchClaudeCodeModel(cfg.ClaudeCode, model)
+	return gatewayRoute{target: target}, target != ""
+}
+
+func (server *Server) forwardClaudeCodeGateway(g *gatewayRequest, route gatewayRoute) {
+	g.body["model"] = route.target
 	// The Anthropic gateway requires max_tokens; derive it from the
 	// allowlist entry (defaults carry each model's max output) when
 	// the client omitted it. Client values are clamped down, never up.
-	ccBody, err := claudeCodeGatewayBody(g, ccMatch, claudeCodeEntryMaxOutput(g.cfg.ClaudeCode, ccMatch))
+	ccBody, err := claudeCodeGatewayBody(g, route.target, claudeCodeEntryMaxOutput(g.cfg.ClaudeCode, route.target))
 	if err != nil {
 		writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal ClaudeCode request: "+err.Error())
-		return true
+		return
 	}
-	server.forwardToClaudeCode(g.writer, g.request, g.cfg.ClaudeCode, ccBody, ccMatch)
-	return true
+	server.forwardToClaudeCode(g.writer, g.request, g.cfg.ClaudeCode, ccBody, route.target)
 }
 
 // claudeCodeGatewayBody is the body the pooled Claude Code gateway sends for g,
@@ -217,42 +251,45 @@ func withSummarizedDisplay(raw []byte) []byte {
 	return out
 }
 
-func (server *Server) tryOpenRouterGateway(g *gatewayRequest) bool {
-	if !g.cfg.OpenRouter.Enabled {
-		return false
+func (server *Server) matchOpenRouterGateway(_ context.Context, cfg config.Config, model string) (gatewayRoute, bool) {
+	if !cfg.OpenRouter.Enabled {
+		return gatewayRoute{}, false
 	}
-	for _, item := range g.cfg.OpenRouter.Allowlist {
-		if !item.Enabled {
-			continue
-		}
-		if item.ID == g.model || (item.Alias != "" && item.Alias == g.model) {
-			g.body["model"] = item.ID
-			reqBody, err := json.Marshal(g.body)
-			if err != nil {
-				writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request: "+err.Error())
-				return true
-			}
-			server.forwardToOpenRouter(g.writer, g.request, g.cfg.OpenRouter, reqBody, g.body)
-			return true
+	for _, item := range cfg.OpenRouter.Allowlist {
+		if item.Enabled && (item.ID == model || (item.Alias != "" && item.Alias == model)) {
+			return gatewayRoute{target: item.ID}, true
 		}
 	}
-	return false
+	return gatewayRoute{}, false
 }
 
-func (server *Server) tryCustomEndpointGateway(g *gatewayRequest) bool {
-	endpoint, exists := server.resolveCustomEndpoint(g.request.Context(), g.cfg, g.model)
-	if !exists {
-		return false
-	}
+func (server *Server) forwardOpenRouterGateway(g *gatewayRequest, route gatewayRoute) {
+	g.body["model"] = route.target
 	reqBody, err := json.Marshal(g.body)
 	if err != nil {
 		writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request: "+err.Error())
-		return true
+		return
 	}
-	if !g.mutated {
-		// Nothing rewrote the request — forward the client's exact bytes.
-		reqBody = g.rawBody
+	server.forwardToOpenRouter(g.writer, g.request, g.cfg.OpenRouter, reqBody, g.body)
+}
+
+func (server *Server) matchCustomEndpointGateway(ctx context.Context, cfg config.Config, model string) (gatewayRoute, bool) {
+	endpoint, ok := server.resolveCustomEndpoint(ctx, cfg, model)
+	if !ok {
+		return gatewayRoute{}, false
 	}
-	server.forwardToCustomEndpoint(g.writer, g.request, endpoint, g.model, reqBody)
-	return true
+	return gatewayRoute{target: model, endpoint: endpoint}, true
+}
+
+func (server *Server) forwardCustomEndpointGateway(g *gatewayRequest, route gatewayRoute) {
+	// Nothing rewrote the request: forward the client's exact bytes.
+	reqBody := g.rawBody
+	if g.mutated {
+		var err error
+		if reqBody, err = json.Marshal(g.body); err != nil {
+			writeAPIError(g.writer, http.StatusBadRequest, "invalid_request_error", "Failed to marshal request: "+err.Error())
+			return
+		}
+	}
+	server.forwardToCustomEndpoint(g.writer, g.request, route.endpoint, g.model, reqBody)
 }
