@@ -74,6 +74,22 @@ func gatewayOwnedModelIDs(cfg config.Config) map[string]bool {
 			}
 		}
 	}
+	if cfg.Codex.Enabled {
+		// codex.ResolveModel falls back to a case-insensitive match, so
+		// every case variant of an id or alias is owned.
+		for _, item := range codexAllowlist(cfg.Codex) {
+			if !item.Enabled {
+				continue
+			}
+			for _, spelling := range append([]string{item.ID}, item.ExpandAliases()...) {
+				if strings.TrimSpace(spelling) == "" {
+					continue
+				}
+				owned[spelling] = true
+				owned[strings.ToLower(spelling)] = true
+			}
+		}
+	}
 	if cfg.OpenRouter.Enabled {
 		for _, item := range cfg.OpenRouter.Allowlist {
 			if !item.Enabled {
@@ -106,6 +122,7 @@ var gatewayModelAppenders = map[config.GatewayID]func(*Server, config.Config, *[
 	config.GatewayKimi:       appendKimiDiscovery,
 	config.GatewayZen:        appendZenDiscovery,
 	config.GatewayClaudeCode: appendClaudeCodeDiscovery,
+	config.GatewayCodex:      appendCodexDiscovery,
 	config.GatewayOpenRouter: appendOpenRouterDiscovery,
 	config.GatewayCustom:     appendCustomDiscovery,
 	config.GatewayCloudCode:  func(*Server, config.Config, *[]any, map[string]bool) {},
@@ -179,6 +196,65 @@ func appendClaudeCodeDiscovery(server *Server, cfg config.Config, models *[]any,
 					"max_output_tokens": maxOutput,
 					"supports_thinking": item.Thinking,
 				})
+				seen[alias] = true
+			}
+		}
+	}
+}
+
+// appendCodexDiscovery advertises the Codex allowlist, each alias as its own
+// entry. Every model the Codex backend serves reasons, and the gateway always
+// asks for a reasoning summary when the client enables thinking, so all of
+// them support thinking.
+func appendCodexDiscovery(server *Server, cfg config.Config, models *[]any, seen map[string]bool) {
+	if !cfg.Codex.Enabled {
+		return
+	}
+	for _, item := range codexAllowlist(cfg.Codex) {
+		if !item.Enabled || item.ID == "" {
+			continue
+		}
+		desc := item.DisplayName
+		if desc == "" {
+			desc = item.ID
+		}
+		contextLen := item.ContextLength
+		if contextLen <= 0 {
+			contextLen = defaultDiscoveryContextWindow
+		}
+		maxOutput := item.MaxOutputTokens
+		if maxOutput <= 0 {
+			maxOutput = codexDefaultMaxOutput(item.ID)
+		}
+		aliases := item.ExpandAliases()
+		entry := func(id, description string) map[string]any {
+			m := map[string]any{
+				"id":                id,
+				"object":            "model",
+				"created":           server.now().Unix(),
+				"owned_by":          "openai",
+				"description":       description,
+				"display_name":      description,
+				"context_window":    contextLen,
+				"supports_thinking": true,
+			}
+			if maxOutput > 0 {
+				m["max_output_tokens"] = maxOutput
+			}
+			return m
+		}
+
+		if !seen[item.ID] {
+			m := entry(item.ID, desc)
+			if len(aliases) > 0 {
+				m["aliases"] = aliases
+			}
+			*models = append(*models, m)
+			seen[item.ID] = true
+		}
+		for _, alias := range aliases {
+			if alias != item.ID && !seen[alias] {
+				*models = append(*models, entry(alias, desc+" (Alias)"))
 				seen[alias] = true
 			}
 		}

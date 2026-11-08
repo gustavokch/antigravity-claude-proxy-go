@@ -9,7 +9,8 @@ import (
 )
 
 func TestGatewayOrder_Effective(t *testing.T) {
-	full := []GatewayID{"kimi", "zen", "claudecode", "openrouter", "custom", "cloudcode"}
+	full := []GatewayID{"kimi", "zen", "claudecode", "codex", "openrouter", "custom", "cloudcode"}
+	orFirst := []GatewayID{"openrouter", "kimi", "zen", "claudecode", "codex", "custom", "cloudcode"}
 	tests := []struct {
 		name  string
 		cfg   GatewayOrderConfig
@@ -17,9 +18,10 @@ func TestGatewayOrder_Effective(t *testing.T) {
 		want  []GatewayID
 	}{
 		{"zero value yields default", GatewayOrderConfig{}, "anything", full},
-		{"empty model selects global order", GatewayOrderConfig{Order: []GatewayID{GatewayOpenRouter}}, "", []GatewayID{"openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"}},
+		{"empty model selects global order", GatewayOrderConfig{Order: []GatewayID{GatewayOpenRouter}}, "", orFirst},
 		{"partial order appends rest in default order", GatewayOrderConfig{Order: []GatewayID{GatewayKimi}}, "m", full},
-		{"openrouter first appends rest", GatewayOrderConfig{Order: []GatewayID{GatewayOpenRouter}}, "m", []GatewayID{"openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"}},
+		{"openrouter first appends rest", GatewayOrderConfig{Order: []GatewayID{GatewayOpenRouter}}, "m", orFirst},
+		{"codex first appends rest", GatewayOrderConfig{Order: []GatewayID{GatewayCodex}}, "m", []GatewayID{"codex", "kimi", "zen", "claudecode", "openrouter", "custom", "cloudcode"}},
 		{"duplicates deduped first-wins", GatewayOrderConfig{Order: []GatewayID{GatewayKimi, GatewayKimi, GatewayZen}}, "m", full},
 		{"unknown IDs dropped", GatewayOrderConfig{Order: []GatewayID{"nope", GatewayKimi}}, "m", full},
 		{"empty order yields default", GatewayOrderConfig{Order: []GatewayID{}}, "m", full},
@@ -30,7 +32,7 @@ func TestGatewayOrder_Effective(t *testing.T) {
 				ByModel: map[string][]GatewayID{"claude-sonnet-5": {GatewayOpenRouter}},
 			},
 			"claude-sonnet-5",
-			[]GatewayID{"openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"},
+			orFirst,
 		},
 		{
 			"non-matching model falls back to order",
@@ -39,7 +41,7 @@ func TestGatewayOrder_Effective(t *testing.T) {
 				ByModel: map[string][]GatewayID{"claude-sonnet-5": {GatewayKimi}},
 			},
 			"other-model",
-			[]GatewayID{"openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"},
+			orFirst,
 		},
 		{
 			"byModel key matches 1m request",
@@ -47,7 +49,7 @@ func TestGatewayOrder_Effective(t *testing.T) {
 				ByModel: map[string][]GatewayID{"claude-sonnet-5": {GatewayOpenRouter}},
 			},
 			"claude-sonnet-5[1m]",
-			[]GatewayID{"openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"},
+			orFirst,
 		},
 		{
 			"hand-edited unnormalised key still matches",
@@ -55,7 +57,7 @@ func TestGatewayOrder_Effective(t *testing.T) {
 				ByModel: map[string][]GatewayID{"  Claude-Sonnet-5[1M] ": {GatewayOpenRouter}},
 			},
 			"claude-sonnet-5",
-			[]GatewayID{"openrouter", "kimi", "zen", "claudecode", "custom", "cloudcode"},
+			orFirst,
 		},
 		{
 			"empty key matches nothing",
@@ -72,7 +74,7 @@ func TestGatewayOrder_Effective(t *testing.T) {
 				ByModel: map[string][]GatewayID{"m": {GatewayCustom}},
 			},
 			"m",
-			[]GatewayID{"custom", "kimi", "zen", "claudecode", "openrouter", "cloudcode"},
+			[]GatewayID{"custom", "kimi", "zen", "claudecode", "codex", "openrouter", "cloudcode"},
 		},
 	}
 	for _, tt := range tests {

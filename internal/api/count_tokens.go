@@ -42,11 +42,13 @@ const maxCountResponse = 64 << 10
 // A count takes the /v1/messages route: model mapping, then the gateway
 // precedence. Headroom and the classifier do not run: a count measures the
 // request as the client wrote it. A gateway with a count endpoint is asked
-// (forwardCount). Zen and Cloud Code have none, so their counts are estimated
-// from what the conversation really cost so far (internal/tokencount), and so
-// is any count a gateway fails to answer: an upstream failure never gives the
-// client an error status. A body that cannot be read, is not JSON or has no
-// messages array is refused with 400.
+// (forwardCount). Zen, Codex and Cloud Code have none, so their counts are
+// estimated (internal/tokencount): for Zen and Cloud Code from what the
+// conversation really cost so far, for Codex from its model family's ratio
+// alone, since Codex replies are not observed. So is any count a gateway fails
+// to answer: an upstream failure never gives the client an error status. A
+// body that cannot be read, is not JSON or has no messages array is refused
+// with 400.
 func (server *Server) countTokens(writer http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
 	rawBody, err := io.ReadAll(request.Body)
@@ -107,8 +109,8 @@ type countCall struct {
 }
 
 // countForwards maps the gateways that count tokens themselves onto the call
-// that asks them. Zen has no count endpoint and the account-backed path is not
-// a gateway: both are estimated.
+// that asks them. Zen and Codex have no count endpoint and the account-backed
+// path is not a gateway: all are estimated.
 var countForwards = map[config.GatewayID]func(*Server, countCall) (*http.Response, error){
 	config.GatewayClaudeCode: (*Server).countClaudeCode,
 	config.GatewayOpenRouter: (*Server).countOpenRouter,

@@ -35,6 +35,7 @@ import (
 	"antigravity-go-proxy/internal/claudecode"
 	"antigravity-go-proxy/internal/claudecode/ccusage"
 	"antigravity-go-proxy/internal/cloudcode"
+	"antigravity-go-proxy/internal/codex"
 	"antigravity-go-proxy/internal/config"
 	proxyformat "antigravity-go-proxy/internal/format"
 	"antigravity-go-proxy/internal/headroom"
@@ -114,6 +115,9 @@ type Options struct {
 	OAuthHandler       http.Handler
 	Tracker            *stats.Tracker
 	ClaudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
+	// CodexOAuthMgr runs the ChatGPT logins of the Codex gateway; nil makes New
+	// create one. A test passes its own to point the token endpoint at a fake.
+	CodexOAuthMgr *auth.CodexOAuthManager
 	// CCUsage is the Claude Code usage engine; nil turns usage tracking off.
 	CCUsage *ccusage.Engine
 	// Mitm is the running observe-only forward proxy; nil when disabled.
@@ -140,6 +144,7 @@ type Server struct {
 	webUI              http.Handler
 	oauthHandler       http.Handler
 	claudeCodeOAuthMgr *auth.ClaudeCodeOAuthManager
+	codexOAuthMgr      *auth.CodexOAuthManager
 	tracker            *stats.Tracker
 	ccUsage            *ccusage.Engine
 	mitm               *mitm.Runtime
@@ -172,6 +177,19 @@ type Server struct {
 	// countTimeout bounds one count_tokens forward, its answer included; zero
 	// is countForwardTimeout. Tests shorten it.
 	countTimeout time.Duration
+
+	// The Codex gateway's account pool and client, built from config.json's
+	// codex section by codexPoolFor and rebuilt when it changes. They live on
+	// the Server rather than in package state so every pool, whoever builds it,
+	// carries the refresher and persister of this server. codexMu guards them
+	// and also serializes every read-modify-write of codex.accounts, so a token
+	// rotation and a management edit cannot overwrite each other.
+	codexMu       sync.Mutex
+	codexPool     *codex.AccountPool
+	codexPoolCfg  []codex.AccountConfig // the accounts codexPool reflects
+	codexClient   *codex.Client
+	codexBaseURL  string
+	codexUpstream http.RoundTripper // nil means transport.Codex(); tests set a plain one
 
 	// endpointCats holds the fetched model catalogs of custom endpoints that set
 	// discoverModels. Lazily built: tests construct a bare Server.
@@ -224,6 +242,9 @@ func New(options Options) (*Server, error) {
 	if options.ClaudeCodeOAuthMgr == nil {
 		options.ClaudeCodeOAuthMgr = auth.NewClaudeCodeOAuthManager()
 	}
+	if options.CodexOAuthMgr == nil {
+		options.CodexOAuthMgr = auth.NewCodexOAuthManager()
+	}
 	srv := &Server{
 		apiKey: options.APIKey, projectID: options.ProjectID,
 		credentials: options.Credentials, newUpstream: options.NewUpstream, backend: options.Backend,
@@ -231,6 +252,7 @@ func New(options Options) (*Server, error) {
 		accountManager: options.AccountManager, broadcaster: options.Broadcaster,
 		webUI: options.WebUI, oauthHandler: options.OAuthHandler, tracker: options.Tracker,
 		claudeCodeOAuthMgr: options.ClaudeCodeOAuthMgr,
+		codexOAuthMgr:      options.CodexOAuthMgr,
 		ccUsage:            options.CCUsage,
 		mitm:               options.Mitm,
 		projects:           make(map[string]string),
@@ -238,6 +260,10 @@ func New(options Options) (*Server, error) {
 		tokens:             tokencount.New(options.Now),
 	}
 	srv.kimiOAuthMgr = auth.NewKimiOAuthManager(srv.kimiIdentityHeaders)
+	// A loopback login completes in the OAuth manager's callback listener,
+	// with no API request to hang the registration on; the hook saves the
+	// account before the session reports "completed".
+	srv.codexOAuthMgr.OnComplete(srv.registerCodexLogin)
 	srv.strictManagementHost = options.StrictManagementHost
 	cfg := config.Get()
 	srv.classifierAudit = classifier.NewRecorder(200)
@@ -704,22 +730,23 @@ func (server *Server) models(writer http.ResponseWriter, request *http.Request) 
 	writeJSON(writer, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
-// usage reports the Cloud Code quota windows followed by the Claude Code
-// subscription windows. The two are independent: when the catalog fetch
-// fails but Claude windows exist, the Claude windows are served with an
-// empty models list, and only a failure with no Claude windows fails the
+// usage reports the Cloud Code quota windows followed by the subscription
+// windows of the Claude Code and Codex gateways. They are independent: when
+// the catalog fetch fails but gateway windows exist, those are served with an
+// empty models list, and only a failure with no gateway windows fails the
 // call.
 func (server *Server) usage(writer http.ResponseWriter, request *http.Request) {
 	catalog, err := server.fetchModelCatalog(request.Context())
-	claudeWindows := server.claudeCodeUsageWindows(server.now())
-	if err != nil && len(claudeWindows) == 0 {
+	now := server.now()
+	gatewayWindows := append(server.claudeCodeUsageWindows(now), server.codexUsageWindows(now)...)
+	if err != nil && len(gatewayWindows) == 0 {
 		server.writeError(writer, err)
 		return
 	}
 	var selectable []modelcatalog.Model
 	if err != nil {
 		if server.logger != nil {
-			server.logger.Warn("usage: Cloud Code catalog fetch failed; serving Claude Code windows only", "error", err)
+			server.logger.Warn("usage: Cloud Code catalog fetch failed; serving gateway windows only", "error", err)
 		}
 	} else {
 		selectable = catalog.Selectable()
@@ -742,8 +769,8 @@ func (server *Server) usage(writer http.ResponseWriter, request *http.Request) {
 		"object":     "account_usage",
 		"provider":   "antigravity-proxy",
 		"source":     "cloudcode.fetchAvailableModels",
-		"fetched_at": server.now().UTC().Format(time.RFC3339Nano),
-		"windows":    append(groupQuotaWindows(selectable), claudeWindows...),
+		"fetched_at": now.UTC().Format(time.RFC3339Nano),
+		"windows":    append(groupQuotaWindows(selectable), gatewayWindows...),
 		"models":     models,
 	})
 }

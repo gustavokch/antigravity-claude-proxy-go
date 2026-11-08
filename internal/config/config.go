@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/claudecode"
+	"antigravity-go-proxy/internal/codex"
 	"antigravity-go-proxy/internal/headroom"
 	"antigravity-go-proxy/internal/openrouter"
 	"antigravity-go-proxy/internal/zen"
@@ -259,6 +260,7 @@ type Config struct {
 	AccountSelection            AccountSelectionConfig    `json:"accountSelection,omitempty"`
 	Headroom                    HeadroomConfig            `json:"headroom,omitempty"`
 	ClaudeCode                  claudecode.Config         `json:"claudecode,omitempty"`
+	Codex                       codex.Config              `json:"codex,omitempty"`
 	CacheBump                   CacheBumpConfig           `json:"cacheBump,omitempty"`
 	GatewayOrder                GatewayOrderConfig        `json:"gatewayOrder"`
 	Classifier                  ClassifierConfig          `json:"classifier"`
@@ -794,6 +796,12 @@ func DefaultConfig() Config {
 			Allowlist:  claudecode.DefaultAllowlist(),
 			Routing:    claudecode.DefaultRoutingConfig(),
 		},
+		Codex: codex.Config{
+			Enabled:   false,
+			BaseURL:   codex.DefaultBaseURL,
+			Accounts:  []codex.AccountConfig{},
+			Allowlist: codex.DefaultAllowlist(),
+		},
 		Classifier: DefaultClassifierConfig(),
 		Mitm:       DefaultMitmConfig(),
 	}
@@ -1102,49 +1110,10 @@ func Save(updates map[string]any) (Config, error) {
 			}
 			continue
 		}
-		if k == "claudecode" {
+		if k == "claudecode" || k == "codex" {
 			if vMap, ok := v.(map[string]any); ok {
-				// Start from the persisted section so keys absent from the
-				// update (e.g. accounts on a settings-only save) survive.
-				ccCopy := make(map[string]any)
-				if exCC, ok := currentMap[k].(map[string]any); ok {
-					for ck, cv := range exCC {
-						ccCopy[ck] = cv
-					}
-				}
-				for ck, cv := range vMap {
-					if ck == "accounts" {
-						newAccs, okNew := cv.([]any)
-						var existingAccs []any
-						if exMap, ok := currentMap["claudecode"].(map[string]any); ok {
-							existingAccs, _ = exMap["accounts"].([]any)
-						}
-						if okNew {
-							mergedAccs := make([]any, 0, len(newAccs))
-							for _, a := range newAccs {
-								if aMap, ok := a.(map[string]any); ok {
-									aCopy := make(map[string]any)
-									for ak, av := range aMap {
-										aCopy[ak] = av
-									}
-									restoreRedactedCreds(aCopy, existingAccs)
-									delete(aCopy, "hasToken")
-									delete(aCopy, "hasRefreshToken")
-									delete(aCopy, "maskedToken")
-									mergedAccs = append(mergedAccs, aCopy)
-								} else {
-									mergedAccs = append(mergedAccs, a)
-								}
-							}
-							ccCopy["accounts"] = mergedAccs
-						} else {
-							ccCopy[ck] = cv
-						}
-					} else {
-						ccCopy[ck] = cv
-					}
-				}
-				currentMap[k] = ccCopy
+				existing, _ := currentMap[k].(map[string]any)
+				currentMap[k] = mergeAccountSection(existing, vMap)
 			} else {
 				currentMap[k] = v
 			}
@@ -1302,6 +1271,45 @@ func maskToken(tok string) string {
 	return "******"
 }
 
+// mergeAccountSection merges an update into the persisted section of a gateway
+// that keeps an accounts list (claudecode, codex). It starts from the persisted
+// section so keys absent from the update (e.g. accounts on a settings-only
+// save) survive, and every posted account gets back the credentials the public
+// view redacted, so a client that posts that view back does not erase them.
+func mergeAccountSection(existing, update map[string]any) map[string]any {
+	merged := make(map[string]any, len(existing)+len(update))
+	for k, v := range existing {
+		merged[k] = v
+	}
+	existingAccs, _ := existing["accounts"].([]any)
+	for k, v := range update {
+		posted, isList := v.([]any)
+		if k != "accounts" || !isList {
+			merged[k] = v
+			continue
+		}
+		accs := make([]any, 0, len(posted))
+		for _, a := range posted {
+			aMap, ok := a.(map[string]any)
+			if !ok {
+				accs = append(accs, a)
+				continue
+			}
+			aCopy := make(map[string]any, len(aMap))
+			for ak, av := range aMap {
+				aCopy[ak] = av
+			}
+			restoreRedactedCreds(aCopy, existingAccs)
+			delete(aCopy, "hasToken")
+			delete(aCopy, "hasRefreshToken")
+			delete(aCopy, "maskedToken")
+			accs = append(accs, aCopy)
+		}
+		merged["accounts"] = accs
+	}
+	return merged
+}
+
 // restoreRedactedCreds puts back the credential values GetPublicConfig replaced
 // with hasToken / hasRefreshToken markers, so a client that posts the public
 // view straight back does not erase them. An OAuth refresh token is not
@@ -1329,6 +1337,13 @@ func restoreRedactedCreds(posted map[string]any, existing []any) {
 		}
 		if value, _ := persisted[cred.key].(string); value != "" {
 			posted[cred.key] = value
+		}
+	}
+	// The public view drops a Codex account's idToken without leaving a
+	// marker, so an account posted without the key keeps the persisted one.
+	if _, sent := posted["idToken"]; !sent {
+		if value, _ := persisted["idToken"].(string); value != "" {
+			posted["idToken"] = value
 		}
 	}
 }
@@ -1515,48 +1530,58 @@ func GetPublicConfig() map[string]any {
 		result["zen"] = zenCopy
 	}
 
-	if ccMap, ok := result["claudecode"].(map[string]any); ok {
-		ccCopy := make(map[string]any)
-		for ck, cv := range ccMap {
-			if ck == "accounts" {
-				if accs, ok := cv.([]any); ok {
-					redactedAccs := make([]any, 0, len(accs))
-					for _, a := range accs {
-						if aMap, ok := a.(map[string]any); ok {
-							aCopy := make(map[string]any)
-							for ak, av := range aMap {
-								if ak == "token" {
-									if strTok, isStr := av.(string); isStr && strTok != "" {
-										aCopy["hasToken"] = true
-										aCopy["maskedToken"] = maskToken(strTok)
-									}
-								} else if ak == "refreshToken" {
-									if strTok, isStr := av.(string); isStr && strTok != "" {
-										aCopy["hasRefreshToken"] = true
-									}
-								} else {
-									aCopy[ak] = av
-								}
-							}
-							delete(aCopy, "token")
-							delete(aCopy, "refreshToken")
-							redactedAccs = append(redactedAccs, aCopy)
-						} else {
-							redactedAccs = append(redactedAccs, a)
-						}
-					}
-					ccCopy[ck] = redactedAccs
-				} else {
-					ccCopy[ck] = cv
-				}
-			} else {
-				ccCopy[ck] = cv
-			}
+	for _, section := range []string{"claudecode", "codex"} {
+		if sectionMap, ok := result[section].(map[string]any); ok {
+			result[section] = redactAccountSection(sectionMap)
 		}
-		result["claudecode"] = ccCopy
 	}
 
 	return result
+}
+
+// redactAccountSection returns a copy of a gateway section whose accounts carry
+// secrets (claudecode, codex) with each account's token replaced by hasToken
+// and maskedToken, its refreshToken by hasRefreshToken, and a Codex idToken
+// dropped: the id token is only a signed copy of claims the account already
+// shows, and the public config has no use for it.
+func redactAccountSection(section map[string]any) map[string]any {
+	out := make(map[string]any, len(section))
+	for k, v := range section {
+		accs, isList := v.([]any)
+		if k != "accounts" || !isList {
+			out[k] = v
+			continue
+		}
+		redacted := make([]any, 0, len(accs))
+		for _, a := range accs {
+			aMap, ok := a.(map[string]any)
+			if !ok {
+				redacted = append(redacted, a)
+				continue
+			}
+			aCopy := make(map[string]any, len(aMap))
+			for ak, av := range aMap {
+				switch ak {
+				case "token":
+					if tok, isStr := av.(string); isStr && tok != "" {
+						aCopy["hasToken"] = true
+						aCopy["maskedToken"] = maskToken(tok)
+					}
+				case "refreshToken":
+					if tok, isStr := av.(string); isStr && tok != "" {
+						aCopy["hasRefreshToken"] = true
+					}
+				case "idToken":
+					// Dropped, with no marker: see above.
+				default:
+					aCopy[ak] = av
+				}
+			}
+			redacted = append(redacted, aCopy)
+		}
+		out[k] = redacted
+	}
+	return out
 }
 
 // redactProxyURL returns a proxy URL with its password replaced the way

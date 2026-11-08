@@ -322,6 +322,9 @@ func (server *Server) handleManagement(writer http.ResponseWriter, request *http
 	if server.routeClaudeCodeManagement(writer, request, path, method) {
 		return true
 	}
+	if server.routeCodexManagement(writer, request, path, method) {
+		return true
+	}
 
 	return false
 }
@@ -1638,6 +1641,14 @@ func (server *Server) handleConfigSave(writer http.ResponseWriter, request *http
 	if err := validateIdentityOverrides(updates); err != nil {
 		writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
 		return
+	}
+	// A codex section posted here is checked as /api/codex/config checks it:
+	// a bad allowlist or base URL would save fine and then break routing.
+	if section, ok := updates["codex"].(map[string]any); ok {
+		if err := validateCodexSection(section); err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"status": "error", "error": err.Error()})
+			return
+		}
 	}
 
 	// The advertised limits on custom endpoints flow straight into /v1/models,
