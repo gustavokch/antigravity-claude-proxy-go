@@ -1675,6 +1675,240 @@
                     </div>
                 </section>
 
+                <!-- ChatGPT Codex: pooled ChatGPT accounts, the wire identity, and the model allowlist -->
+                <section class="section" aria-labelledby="setm-codex-title">
+                    <div class="section-head">
+                        <div class="cluster">
+                            <h2 class="section-title" id="setm-codex-title" x-text="$store.global.t('codexGatewayTitle') || 'ChatGPT Codex Gateway'">ChatGPT Codex Gateway</h2>
+                            <span class="plate">CODEX</span>
+                        </div>
+                        <p class="section-desc" x-text="$store.global.t('codexGatewayDesc') || 'Serve allowlisted GPT models to Anthropic clients from a pool of ChatGPT subscription accounts, with sticky sessions and 429 failover.'">Serve allowlisted GPT models to Anthropic clients from a pool of ChatGPT subscription accounts, with sticky sessions and 429 failover.</p>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-head">
+                            <div class="cluster">
+                                <span class="lamp" aria-hidden="true"
+                                    :class="codexConfig.enabled ? ((codexConfig.accounts || []).length > 0 ? 'lamp-clear' : 'lamp-danger') : 'lamp-off'"></span>
+                                <span class="t-strong" x-text="!codexConfig.enabled ? ($store.global.t('setmStateOff') || 'Disabled') : ((codexConfig.accounts || []).length > 0 ? ($store.global.t('setmStateReady') || 'Ready') : ($store.global.t('setmStateNoAccount') || 'Enabled, no account'))">Disabled</span>
+                            </div>
+                            <label class="cluster">
+                                <span class="label" x-text="$store.global.t('setmEnabled') || 'Enabled'">Enabled</span>
+                                <input type="checkbox" class="toggle"
+                                    x-model="codexConfig.enabled"
+                                    @change="saveCodexConfig()"
+                                    aria-label="Codex Gateway enabled toggle">
+                            </label>
+                        </div>
+                        <div class="rows">
+                            <div class="panel-body stack">
+                                <div class="setm-grid">
+                                    <div class="field">
+                                        <label class="field-label" for="setm-codex-base" x-text="$store.global.t('ccBaseUrl') || 'Base URL'">Base URL</label>
+                                        <input id="setm-codex-base" type="text" class="input input-sm mono"
+                                            x-model="codexConfig.baseUrl"
+                                            aria-label="Codex Base URL"
+                                            placeholder="https://chatgpt.com/backend-api/codex">
+                                    </div>
+                                    <div class="field">
+                                        <span class="field-label" x-text="$store.global.t('ccAccountsTitle') || 'Configured Accounts'">Configured Accounts</span>
+                                        <div class="cluster">
+                                            <span class="t-sm tnum" x-text="$store.global.t('accCount', { count: (codexConfig.accounts || []).length })">0 accounts</span>
+                                            <button type="button" class="btn btn-sm"
+                                                @click="$store.global.accountsTab = 'codex'; $store.global.activeTab = 'accounts'"
+                                                x-text="$store.global.t('codexManageAccounts') || 'Manage accounts'">Manage accounts</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Codex wire identity (User-Agent and Originator headers) -->
+                                <details class="disclosure" :open="codexIdentityIsCustom || null">
+                                    <summary class="cluster">
+                                        <span class="label" x-text="$store.global.t('codexIdentityTitle') || 'Codex Wire Identity'">Codex Wire Identity</span>
+                                        <span class="tag mono"
+                                            :class="codexIdentityIsCustom ? 'tag-ok' : 'tag-muted'"
+                                            x-text="codexIdentityIsCustom ? ($store.global.t('ccIdentityCustom') || 'CUSTOM') : ($store.global.t('ccIdentityDefault') || 'DEFAULT')">DEFAULT</span>
+                                    </summary>
+                                    <div class="disclosure-body stack">
+                                        <p class="field-help" x-text="$store.global.t('codexIdentityDesc') || 'Requests carry the Codex CLI User-Agent and Originator shown below. Leave a field blank to use that default.'">Requests carry the Codex CLI User-Agent and Originator shown below. Leave a field blank to use that default.</p>
+                                        <div class="setm-grid">
+                                            <div class="field setm-wide">
+                                                <label class="field-label" for="setm-codex-id-ua" x-text="$store.global.t('ccIdentityFieldUserAgent') || 'User Agent'">User Agent</label>
+                                                <input id="setm-codex-id-ua" type="text" class="input input-sm mono"
+                                                    x-model="codexConfig.identity.userAgent"
+                                                    placeholder="codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)">
+                                            </div>
+                                            <div class="field">
+                                                <label class="field-label" for="setm-codex-id-originator" x-text="$store.global.t('codexIdentityOriginator') || 'Originator'">Originator</label>
+                                                <input id="setm-codex-id-originator" type="text" class="input input-sm mono"
+                                                    x-model="codexConfig.identity.originator"
+                                                    placeholder="codex-tui">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </details>
+                            </div>
+
+                            <!-- Codex model allowlist: aliases, limits and reasoning efforts -->
+                            <div class="panel-body stack">
+                                <div class="split">
+                                    <div class="stack-sm">
+                                        <span class="label" x-text="$store.global.t('ccModelsTitle') || 'Model Allowlist & Aliasing'">Model Allowlist & Aliasing</span>
+                                        <span class="field-help" x-text="$store.global.t('codexModelsDesc') || 'GPT models this gateway serves, with optional aliases. Expand a model to set its limits and the reasoning efforts it accepts.'">GPT models this gateway serves, with optional aliases. Expand a model to set its limits and the reasoning efforts it accepts.</span>
+                                    </div>
+                                    <div class="cluster">
+                                        <button type="button" class="btn btn-sm"
+                                            @click="openCodexDiscoverModal()"
+                                            aria-label="Discover Codex models">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                                            <span x-text="$store.global.t('ccDiscoverModels') || 'Discover Models'">Discover Models</span>
+                                        </button>
+                                        <button type="button" class="btn btn-sm"
+                                            @click="importCodexDefaults()"
+                                            aria-label="Import Codex default models">
+                                            <span x-text="$store.global.t('importDefaults') || 'Import Defaults'">Import Defaults</span>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="table-wrap setm-scroll">
+                                    <table class="sb-table">
+                                        <thead>
+                                            <tr>
+                                                <th x-text="$store.global.t('status') || 'Status'">Status</th>
+                                                <th x-text="$store.global.t('ccColModelId') || 'Model ID'">Model ID</th>
+                                                <th x-text="$store.global.t('ccColDisplay') || 'Display Name'">Display Name</th>
+                                                <th x-text="$store.global.t('ccColAliasList') || 'Aliases (comma-separated)'">Aliases (comma-separated)</th>
+                                                <th class="setm-col-actions" x-text="$store.global.t('actions') || 'Actions'">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <!-- One <tbody> per model so the limits row travels with its model row (x-for renders one root). -->
+                                        <template x-for="(m, idx) in (codexConfig.allowlist || [])" :key="m.id">
+                                            <tbody>
+                                                <tr :class="m.enabled ? '' : 'is-off'">
+                                                    <td>
+                                                        <input type="checkbox" class="toggle"
+                                                            x-model="m.enabled"
+                                                            @change="saveCodexConfig()"
+                                                            :aria-label="'Toggle ' + m.id + ' allowlist status'">
+                                                    </td>
+                                                    <td class="mono t-strong t-break" x-text="m.id"></td>
+                                                    <td>
+                                                        <input type="text" class="input input-sm"
+                                                            x-model="m.displayName"
+                                                            @change="saveCodexConfig()"
+                                                            :aria-label="'Display name for ' + m.id">
+                                                    </td>
+                                                    <td>
+                                                        <input type="text" class="input input-sm mono"
+                                                            x-model="m.alias"
+                                                            @change="normalizeCCAliases(m); saveCodexConfig()"
+                                                            :aria-label="'Aliases for ' + m.id"
+                                                            placeholder="e.g. sol, gpt-6.1">
+                                                    </td>
+                                                    <td class="setm-col-actions">
+                                                        <div class="setm-actions">
+                                                            <button type="button" class="btn btn-sm btn-icon btn-ghost"
+                                                                @click="toggleCodexExpanded(m.id)"
+                                                                :aria-expanded="isCodexExpanded(m.id)"
+                                                                :aria-label="(isCodexExpanded(m.id) ? 'Collapse' : 'Expand') + ' limits for ' + m.id"
+                                                                :title="$store.global.t('openRouterLimits') || 'Limits'">
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" :class="isCodexExpanded(m.id) && 'setm-rot'"><path d="M9 5l7 7-7 7" /></svg>
+                                                            </button>
+                                                            <button type="button" class="btn btn-sm btn-icon btn-danger-quiet"
+                                                                @click="codexConfig.allowlist.splice(idx, 1); saveCodexConfig()"
+                                                                :aria-label="'Remove ' + m.id + ' from allowlist'"
+                                                                :title="$store.global.t('remove') || 'Remove'">
+                                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                                <!-- Per-model limits and reasoning efforts -->
+                                                <tr x-show="isCodexExpanded(m.id)" class="setm-sub-row">
+                                                    <td colspan="5" class="setm-sub-cell">
+                                                        <div class="setm-grid">
+                                                            <div class="field">
+                                                                <label class="field-label" :for="'codex-ctx-' + m.id" x-text="$store.global.t('contextLength') || 'Context'">Context</label>
+                                                                <input type="number" min="0" :id="'codex-ctx-' + m.id" :value="m.contextLength || ''"
+                                                                    @change="updateCodexLimit(m, 'contextLength', $event.target.value)"
+                                                                    class="input input-sm mono"
+                                                                    :placeholder="$store.global.t('maxOutputAuto') || 'auto (model limit)'">
+                                                            </div>
+                                                            <div class="field">
+                                                                <label class="field-label" :for="'codex-maxout-' + m.id" x-text="$store.global.t('kimiMaxOutput') || 'Max Output'">Max Output</label>
+                                                                <input type="number" min="0" :id="'codex-maxout-' + m.id" :value="m.maxOutputTokens || ''"
+                                                                    @change="updateCodexLimit(m, 'maxOutputTokens', $event.target.value)"
+                                                                    class="input input-sm mono"
+                                                                    :placeholder="$store.global.t('maxOutputAuto') || 'auto (model limit)'">
+                                                            </div>
+                                                            <div class="field">
+                                                                <label class="field-label" :for="'codex-efforts-' + m.id" x-text="$store.global.t('codexEfforts') || 'Reasoning Efforts'">Reasoning Efforts</label>
+                                                                <input type="text" :id="'codex-efforts-' + m.id" :value="(m.efforts || []).join(', ')"
+                                                                    @change="setCodexEfforts(m, $event.target.value)"
+                                                                    class="input input-sm mono"
+                                                                    placeholder="low, medium, high, xhigh">
+                                                                <span class="field-help" x-text="$store.global.t('codexEffortsHelp') || 'Levels the model accepts. A request asking for more is lowered to the highest one listed.'">Levels the model accepts. A request asking for more is lowered to the highest one listed.</span>
+                                                            </div>
+                                                            <div class="field">
+                                                                <label class="field-label" :for="'codex-default-effort-' + m.id" x-text="$store.global.t('codexDefaultEffort') || 'Default Effort'">Default Effort</label>
+                                                                <select :id="'codex-default-effort-' + m.id" class="select select-sm"
+                                                                    @change="m.defaultEffort = $event.target.value; saveCodexConfig()">
+                                                                    <option value="" :selected="!m.defaultEffort" x-text="$store.global.t('codexEffortGatewayDefault') || 'Gateway default (medium)'">Gateway default (medium)</option>
+                                                                    <template x-for="level in (m.efforts || [])" :key="level">
+                                                                        <option :value="level" :selected="level === m.defaultEffort" x-text="level"></option>
+                                                                    </template>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </template>
+                                        <tbody>
+                                            <tr x-show="!codexConfig.allowlist || codexConfig.allowlist.length === 0">
+                                                <td colspan="5">
+                                                    <div class="empty">
+                                                        <p class="empty-desc" x-text="$store.global.t('codexAllowlistEmpty') || 'No Codex models are allowlisted yet. Use Discover Models or Import Defaults to add some.'">No Codex models are allowlisted yet. Use Discover Models or Import Defaults to add some.</p>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <!-- Add new allowlist entry -->
+                                <div class="setm-add">
+                                    <input type="text" class="input input-sm mono"
+                                        x-model="codexNewModelId"
+                                        aria-label="New Codex Model ID"
+                                        placeholder="Model ID (e.g. gpt-6.1-sol)">
+                                    <input type="text" class="input input-sm"
+                                        x-model="codexNewModelDisplay"
+                                        aria-label="New Codex Display Name"
+                                        placeholder="Display Name">
+                                    <input type="text" class="input input-sm mono"
+                                        x-model="codexNewModelAlias"
+                                        aria-label="New Codex Aliases"
+                                        placeholder="Aliases (comma-separated)">
+                                    <button type="button" class="btn btn-sm"
+                                        @click="addCodexAllowlistRow()"
+                                        aria-label="Add Codex model to allowlist"
+                                        x-text="$store.global.t('setmAdd') || 'Add'">Add</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="panel-foot">
+                            <span class="field-error" role="alert" x-show="codexError" x-text="codexError"></span>
+                            <span class="t-ok t-sm" role="status" x-show="codexSuccess" x-text="codexSuccess"></span>
+                            <button type="button" class="btn btn-primary btn-sm"
+                                @click="saveCodexConfig()" :disabled="codexSaving"
+                                :aria-busy="codexSaving"
+                                aria-label="Save Codex settings">
+                                <span class="spinner" x-show="codexSaving" aria-hidden="true"></span>
+                                <span x-show="!codexSaving" x-text="$store.global.t('save') || 'Save'">Save</span>
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- Custom endpoints: one model, one Anthropic-compatible target -->
                 <section class="section" aria-labelledby="setm-custom-title">
                     <div class="section-head">
@@ -2518,6 +2752,90 @@
                                     <span x-text="$store.global.t('ccDiscoverImportSelected') || 'Import Selected'">Import Selected</span>
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                </dialog>
+
+                <!-- Discover Codex Models Modal -->
+                <dialog id="codex_discover_modal" class="modal" aria-labelledby="setm-codex-discover-title">
+                    <div class="modal-box max-w-2xl">
+                        <div class="modal-head">
+                            <h3 id="setm-codex-discover-title" class="setm-modal-title" x-text="$store.global.t('codexDiscoverTitle') || 'Discover Codex Models'">Discover Codex Models</h3>
+                            <button type="button" class="btn btn-ghost btn-sm btn-icon" @click="closeCodexDiscoverModal()" aria-label="Close discover dialog">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                        </div>
+                        <div class="modal-body stack">
+                            <div class="split">
+                                <p class="field-help" x-text="$store.global.t('codexDiscoverDesc') || 'Fetch the models the Codex backend offers your accounts. Pick which ones to allow.'">Fetch the models the Codex backend offers your accounts. Pick which ones to allow.</p>
+                                <button type="button" class="btn btn-sm btn-icon"
+                                    @click="fetchCodexModels()"
+                                    :disabled="codexDiscoverLoading"
+                                    :aria-busy="codexDiscoverLoading"
+                                    :aria-label="$store.global.t('refresh') || 'Refresh'"
+                                    :title="$store.global.t('refresh') || 'Refresh'">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" :class="codexDiscoverLoading && 'animate-spin'"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                                </button>
+                            </div>
+
+                            <div class="notice notice-danger" x-show="codexDiscoverError" role="alert">
+                                <span class="lamp lamp-danger" aria-hidden="true"></span>
+                                <div><p x-text="codexDiscoverError"></p></div>
+                            </div>
+
+                            <div class="table-wrap setm-scroll">
+                                <table class="sb-table sb-table-dense">
+                                    <thead>
+                                        <tr>
+                                            <th x-text="$store.global.t('kimiDiscoverImport') || 'Import'">Import</th>
+                                            <th class="mono" x-text="$store.global.t('ccColModelId') || 'Model ID'">Model ID</th>
+                                            <th x-text="$store.global.t('ccColDisplayName') || 'Display Name'">Display Name</th>
+                                            <th class="num" x-text="$store.global.t('contextLength') || 'Context'">Context</th>
+                                            <th x-text="$store.global.t('codexEfforts') || 'Reasoning Efforts'">Reasoning Efforts</th>
+                                            <th class="num" x-text="$store.global.t('status') || 'Status'">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="m in codexDiscovered" :key="m.id">
+                                            <tr :class="m.selected && 'setm-picked'">
+                                                <td>
+                                                    <input type="checkbox" class="checkbox" x-model="m.selected"
+                                                        :disabled="m.listed" :aria-label="'Import ' + m.id">
+                                                </td>
+                                                <td class="mono t-strong t-break" x-text="m.id"></td>
+                                                <td x-text="m.displayName"></td>
+                                                <td class="num tnum" x-text="formatDiscoverTokens(m.contextLength)"></td>
+                                                <td class="mono t-sm" x-text="(m.efforts || []).join(', ') || '-'"></td>
+                                                <td class="num">
+                                                    <span class="tag tag-ok" x-show="m.listed" x-text="$store.global.t('ccDiscoverImportedBadge') || 'Imported'">Imported</span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="!codexDiscoverLoading && !codexDiscoverError && codexDiscovered.length === 0">
+                                            <td colspan="6">
+                                                <div class="empty">
+                                                    <p class="empty-desc" x-text="$store.global.t('noModels') || 'No models discovered yet.'">No models discovered yet.</p>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <tr x-show="codexDiscoverLoading">
+                                            <td colspan="6">
+                                                <div class="cluster t-3 t-sm" role="status">
+                                                    <span class="spinner" aria-hidden="true"></span>
+                                                    <span x-text="$store.global.t('loading') || 'Loading...'">Loading...</span>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="modal-action">
+                            <button type="button" class="btn" @click="closeCodexDiscoverModal()" x-text="$store.global.t('cancel') || 'Cancel'">Cancel</button>
+                            <button type="button" class="btn btn-primary"
+                                @click="importCodexDiscovered()"
+                                :disabled="!codexDiscovered.some(m => m.selected && !m.listed)"
+                                x-text="$store.global.t('ccDiscoverImportSelected') || 'Import Selected'">Import Selected</button>
                         </div>
                     </div>
                 </dialog>

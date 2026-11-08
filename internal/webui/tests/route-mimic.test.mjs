@@ -19,7 +19,7 @@ function loadMimic(data) {
 }
 
 const local = (v) => JSON.parse(JSON.stringify(v));
-const KNOWN = ['kimi', 'zen', 'claudecode', 'openrouter', 'custom', 'cloudcode'];
+const KNOWN = ['kimi', 'zen', 'claudecode', 'codex', 'openrouter', 'custom', 'cloudcode'];
 
 function gatewayStates() {
     const base = { accounts: [], gateways: {
@@ -28,6 +28,7 @@ function gatewayStates() {
         zen: { enabled: true, hasApiKey: false },
         openrouter: { enabled: true, hasApiKey: true },
         claudecode: { enabled: false },
+        codex: { enabled: false },
         customCount: 2,
     } };
     const cases = [
@@ -40,6 +41,8 @@ function gatewayStates() {
         ['openrouter: under $5', { openrouterCredits: { credits: { balance: 4 } } }, 'openrouter', 'caution', 'routeBalanceLow'],
         ['openrouter: healthy balance', { openrouterCredits: { credits: { balance: 20 } } }, 'openrouter', 'clear', 'routeReady'],
         ['claude code: disabled', {}, 'claudecode', 'off', 'routeDisabled'],
+        ['codex: disabled', {}, 'codex', 'off', 'routeDisabled'],
+        ['codex: enabled, no account', { gateways: { codex: { enabled: true } } }, 'codex', 'danger', 'routeNoEnabledAccounts'],
         ['custom: endpoints', {}, 'custom', 'clear', 'routeEndpoints'],
         ['custom: none', { gateways: { customCount: 0 } }, 'custom', 'off', 'routeNoEndpoints'],
     ];
@@ -54,8 +57,8 @@ function gatewayStates() {
 // Same result as config.GatewayOrderConfig.Effective("") for the global order.
 function effectiveOrderMatchesTheServer() {
     const order = (o) => local(loadMimic({ accounts: [], gateways: { order: o, known: KNOWN } }).effectiveOrder());
-    assert.deepEqual(order([' OpenRouter', 'kimi']), ['openrouter', 'kimi', 'zen', 'claudecode', 'custom', 'cloudcode']);
-    assert.deepEqual(order(['openrouter', 'openrouter', 'bogus']), ['openrouter', 'kimi', 'zen', 'claudecode', 'custom', 'cloudcode']);
+    assert.deepEqual(order([' OpenRouter', 'kimi']), ['openrouter', 'kimi', 'zen', 'claudecode', 'codex', 'custom', 'cloudcode']);
+    assert.deepEqual(order(['openrouter', 'openrouter', 'bogus']), ['openrouter', 'kimi', 'zen', 'claudecode', 'codex', 'custom', 'cloudcode']);
     assert.deepEqual(order([]), KNOWN);
 }
 
@@ -107,11 +110,35 @@ function exhaustedClaudeCodeAccountIsNotReady() {
     assert.equal(st.reason, 'routeNoAccountReady');
 }
 
+// Codex lamps come from the pool snapshots ($store.data.codexAccounts), read
+// with the Accounts view's rule: a used-up window blocks, a lost grant needs
+// a sign-in, a healthy account with quota left is ready.
+function codexLampsFollowTheSnapshots() {
+    const win = (usedPercent, windowMinutes) => ({ usedPercent, windowMinutes, resetAt: '0001-01-01T00:00:00Z' });
+    const c = loadMimic({
+        accounts: [{ email: 'g@x', provider: 'google', enabled: true, status: 'ok' }],
+        codexAccounts: [
+            { id: 'a', email: 'a@x', enabled: true, status: 'healthy', quota: { primary: win(20, 300), secondary: win(40, 10080) } },
+            { id: 'b', email: 'b@x', enabled: true, status: 'healthy', quota: { primary: win(100, 300), secondary: win(100, 10080) } },
+            { id: 'c', email: 'c@x', enabled: true, status: 'needs_login' },
+            { id: 'd', email: 'd@x', enabled: false, status: 'disabled' },
+        ],
+        gateways: { codex: { enabled: true } },
+    });
+    const st = c.gatewayState('codex');
+    assert.deepEqual(st.lamps.map((l) => [l.key, l.aspect]),
+        [['a', 'clear'], ['b', 'danger'], ['c', 'danger'], ['d', 'off']]);
+    assert.equal(st.aspect, 'caution', 'one of three enabled accounts serves');
+    assert.equal(st.reason, 'routeAccountsReady');
+}
+
 function signalsOpenTheMatchingAccountsTab() {
     const c = loadMimic({ accounts: [] });
     c.open('claudecode');
     assert.equal(c.$store.global.activeTab, 'accounts');
     assert.equal(c.$store.global.accountsTab, 'claudecode');
+    c.open('codex');
+    assert.equal(c.$store.global.accountsTab, 'codex');
     c.open('cloudcode');
     assert.equal(c.$store.global.accountsTab, 'google');
     c.open('zen');
@@ -124,6 +151,7 @@ const cases = [
     ['an account with one pool exhausted is caution', partlyExhaustedAccountIsCaution],
     ['a partly exhausted account still serves', partlyExhaustedAccountStillServes],
     ['an exhausted Claude Code account is not ready', exhaustedClaudeCodeAccountIsNotReady],
+    ['Codex lamps follow the pool snapshots', codexLampsFollowTheSnapshots],
     ['gateway signals open the matching accounts tab', signalsOpenTheMatchingAccountsTab],
     ['gateway aspects and reasons', gatewayStates],
     ['effective order matches the server', effectiveOrderMatchesTheServer],

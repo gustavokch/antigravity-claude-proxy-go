@@ -35,6 +35,43 @@ function ccIdentityFrom(source, transform) {
     return out;
 }
 
+const CODEX_DEFAULT_BASE_URL = 'https://chatgpt.com/backend-api/codex';
+
+// Codex reasoning levels, lowest first. An allowlist entry keeps its efforts
+// in this order because the gateway clamps a request to the highest listed
+// level at or below the one asked for.
+const CODEX_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+
+// codexEfforts reads the efforts field ("high, low") as known levels in
+// ascending order, and returns the words it did not recognise.
+function codexEfforts(text) {
+    const words = String(text || '').split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+    return {
+        levels: CODEX_EFFORT_LEVELS.filter(level => words.includes(level)),
+        unknown: words.filter(w => !CODEX_EFFORT_LEVELS.includes(w))
+    };
+}
+
+// The built-in Codex allowlist (internal/codex DefaultAllowlist: the listed
+// models of CLIProxyAPI's codex_client_models.json), for Import Defaults.
+const CODEX_DEFAULT_MODELS = (() => {
+    const toUltra = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    const toMax = toUltra.slice(0, -1);
+    const entry = (id, displayName, contextLength, defaultEffort, efforts) =>
+        ({ id, displayName, contextLength, maxOutputTokens: 128000, efforts, defaultEffort });
+    return [
+        entry('gpt-6.1-sol', 'GPT-6.1-Sol', 500000, 'low', toUltra),
+        entry('gpt-6.1-terra', 'GPT-6.1 Terra', 500000, 'low', toUltra),
+        entry('gpt-6-astra', 'GPT-6-Astra', 272000, 'medium', toUltra),
+        entry('gpt-6-sol', 'GPT-6-Sol', 272000, 'medium', toUltra),
+        entry('gpt-6-luna', 'GPT-6-Luna', 272000, 'medium', toMax),
+        entry('gpt-5.6-sol', 'GPT-5.6-Sol', 272000, 'low', toUltra),
+        entry('gpt-5.6-terra', 'GPT-5.6-Terra', 272000, 'medium', toUltra),
+        entry('gpt-5.6-luna', 'GPT-5.6-Luna', 272000, 'medium', toMax),
+        entry('gpt-5.5', 'GPT-5.5', 500000, 'low', toUltra)
+    ];
+})();
+
 window.Components.models = () => ({
     // Drag state for threshold markers
     dragging: {
@@ -302,6 +339,7 @@ window.Components.models = () => ({
                 this.fetchKimiConfig();
                 this.fetchZenConfig();
                 this.loadCCConfig();
+                this.loadCodexConfig();
             }
         });
 
@@ -316,6 +354,7 @@ window.Components.models = () => ({
             this.fetchKimiConfig();
             this.fetchZenConfig();
             this.loadCCConfig();
+            this.loadCodexConfig();
         }
     },
 
@@ -1531,6 +1570,255 @@ window.Components.models = () => ({
         } finally {
             this.ccImporting = false;
         }
+    },
+
+    // ChatGPT Codex Gateway State & Methods. Accounts are signed in and
+    // managed on the Accounts view; this section holds the gateway settings
+    // and the model allowlist.
+    codexConfig: {
+        enabled: false,
+        baseUrl: CODEX_DEFAULT_BASE_URL,
+        accounts: [],
+        allowlist: [],
+        identity: { userAgent: '', originator: '' }
+    },
+    codexSaving: false,
+    codexError: '',
+    codexSuccess: '',
+    codexNewModelId: '',
+    codexNewModelAlias: '',
+    codexNewModelDisplay: '',
+    expandedCodex: new Set(),
+    codexDiscoverLoading: false,
+    codexDiscoverError: '',
+    codexDiscovered: [],
+
+    get codexIdentityIsCustom() {
+        const identity = this.codexConfig.identity || {};
+        return !!((identity.userAgent || '').trim() || (identity.originator || '').trim());
+    },
+
+    isCodexExpanded(modelId) {
+        return this.expandedCodex.has(modelId);
+    },
+
+    toggleCodexExpanded(modelId) {
+        if (this.expandedCodex.has(modelId)) {
+            this.expandedCodex.delete(modelId);
+        } else {
+            this.expandedCodex.add(modelId);
+        }
+        this.expandedCodex = new Set(this.expandedCodex);
+    },
+
+    // An allowlist entry with every field the editor binds. The server keeps
+    // aliases both as a comma list and as an array; the row edits the comma
+    // list, so both are folded into it. Fields the editor does not know are
+    // kept, so a save never drops them.
+    codexEntry(m) {
+        const item = {
+            ...m,
+            alias: [m.alias, ...(m.aliases || [])].filter(Boolean).join(', '),
+            displayName: m.displayName || '',
+            contextLength: m.contextLength || 0,
+            maxOutputTokens: m.maxOutputTokens || 0,
+            efforts: [...(m.efforts || [])],
+            defaultEffort: m.defaultEffort || '',
+            enabled: m.enabled !== false
+        };
+        this.normalizeCCAliases(item);
+        return item;
+    },
+
+    async loadCodexConfig() {
+        const password = Alpine.store('global').webuiPassword;
+        try {
+            const { response, newPassword } = await window.utils.request('/api/codex/config', {}, password);
+            if (newPassword) Alpine.store('global').webuiPassword = newPassword;
+            if (!response.ok) return;
+            const data = await response.json();
+            const cfg = data.config;
+            if (!cfg) return;
+            const identity = cfg.identity || {};
+            this.codexConfig = {
+                enabled: !!cfg.enabled,
+                baseUrl: cfg.baseUrl || CODEX_DEFAULT_BASE_URL,
+                accounts: cfg.accounts || [],
+                allowlist: (cfg.allowlist || []).map(m => this.codexEntry(m)),
+                identity: { userAgent: identity.userAgent || '', originator: identity.originator || '' }
+            };
+        } catch (_) {}
+    },
+
+    async saveCodexConfig() {
+        const store = Alpine.store('global');
+        this.codexSaving = true;
+        this.codexError = '';
+        this.codexSuccess = '';
+        try {
+            const identity = this.codexConfig.identity || {};
+            // Accounts are not sent: logins and the Accounts view own them.
+            // Blank identity strings are sent as-is: blank means the built-in
+            // value, and omitting them would leave a stale override in place.
+            const { response, newPassword } = await window.utils.request('/api/codex/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enabled: this.codexConfig.enabled,
+                    baseUrl: (this.codexConfig.baseUrl || '').trim(),
+                    allowlist: this.codexConfig.allowlist || [],
+                    identity: {
+                        userAgent: (identity.userAgent || '').trim(),
+                        originator: (identity.originator || '').trim()
+                    }
+                })
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${response.status}`);
+            }
+            this.codexSuccess = store.t('codexSaved');
+            setTimeout(() => { this.codexSuccess = ''; }, 3000);
+            // The route diagram skips Codex accounts while the gateway is off,
+            // so turning it on needs them loaded now, not at the next refresh.
+            const data = Alpine.store('data');
+            data.performHealthCheck();
+            data.fetchCodexAccounts(true);
+        } catch (e) {
+            this.codexError = e.message || store.t('codexSaveFailed');
+        } finally {
+            this.codexSaving = false;
+        }
+    },
+
+    // Same trailing debounce as Kimi's for the per-model limit inputs.
+    saveCodexConfigDebounced() {
+        clearTimeout(this._codexSaveTimer);
+        this._codexSaveTimer = setTimeout(() => {
+            this._codexSaveTimer = null;
+            this.saveCodexConfig();
+        }, 500);
+    },
+
+    updateCodexLimit(m, field, value) {
+        m[field] = this.asInt(value);
+        this.saveCodexConfigDebounced();
+    },
+
+    // Keeps the known levels in ascending order and reports the rest, which
+    // are dropped. A default effort the list no longer has falls back to the
+    // gateway's default.
+    setCodexEfforts(m, text) {
+        const { levels, unknown } = codexEfforts(text);
+        if (unknown.length > 0) {
+            const store = Alpine.store('global');
+            store.showToast(store.t('codexEffortsUnknown', { levels: unknown.join(', ') }), 'error');
+        }
+        m.efforts = levels;
+        if (m.defaultEffort && !levels.includes(m.defaultEffort)) m.defaultEffort = '';
+        this.saveCodexConfigDebounced();
+    },
+
+    addCodexAllowlistRow() {
+        const id = (this.codexNewModelId || '').trim();
+        if (!id) return;
+        const store = Alpine.store('global');
+        if (this.codexConfig.allowlist.some(m => m.id === id)) {
+            store.showToast(store.t('codexModelListed', { id }), 'error');
+            return;
+        }
+        this.codexConfig.allowlist.push(this.codexEntry({
+            id,
+            alias: this.codexNewModelAlias || '',
+            displayName: this.codexNewModelDisplay || '',
+            enabled: true
+        }));
+        this.codexNewModelId = '';
+        this.codexNewModelAlias = '';
+        this.codexNewModelDisplay = '';
+        this.saveCodexConfig();
+    },
+
+    // Adds the built-in models the allowlist lacks; listed ones keep their edits.
+    importCodexDefaults() {
+        const store = Alpine.store('global');
+        const listed = new Set(this.codexConfig.allowlist.map(m => m.id));
+        const added = CODEX_DEFAULT_MODELS.filter(d => !listed.has(d.id));
+        if (added.length === 0) {
+            store.showToast(store.t('codexDefaultsPresent'), 'info');
+            return;
+        }
+        added.forEach(d => this.codexConfig.allowlist.push(this.codexEntry({ ...d, enabled: true })));
+        this.saveCodexConfig();
+        store.showToast(store.t('codexModelsImported', { n: added.length }), 'success');
+    },
+
+    async openCodexDiscoverModal() {
+        const dialog = document.getElementById('codex_discover_modal');
+        if (dialog && typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        }
+        await this.fetchCodexModels();
+    },
+
+    closeCodexDiscoverModal() {
+        const dialog = document.getElementById('codex_discover_modal');
+        if (dialog && typeof dialog.close === 'function') {
+            dialog.close();
+        }
+    },
+
+    // The server reads the model list from the Codex backend. Models already
+    // on the allowlist start unticked.
+    async fetchCodexModels() {
+        const store = Alpine.store('global');
+        this.codexDiscoverLoading = true;
+        this.codexDiscoverError = '';
+        try {
+            const { response, newPassword } = await window.utils.request('/api/codex/models/fetch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            }, store.webuiPassword);
+            if (newPassword) store.webuiPassword = newPassword;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.status !== 'ok') throw new Error(data.error || `HTTP ${response.status}`);
+            const listed = new Set(this.codexConfig.allowlist.map(m => m.id));
+            this.codexDiscovered = (data.models || []).map(m => ({
+                id: m.id,
+                displayName: m.displayName || m.id,
+                contextLength: m.contextLength || 0,
+                efforts: m.efforts || [],
+                defaultEffort: m.defaultEffort || '',
+                listed: listed.has(m.id),
+                selected: !listed.has(m.id)
+            }));
+        } catch (e) {
+            this.codexDiscovered = [];
+            this.codexDiscoverError = e.message || store.t('codexDiscoverFailed');
+        } finally {
+            this.codexDiscoverLoading = false;
+        }
+    },
+
+    importCodexDiscovered() {
+        const store = Alpine.store('global');
+        const listed = new Set(this.codexConfig.allowlist.map(m => m.id));
+        const picked = this.codexDiscovered.filter(m => m.selected && !listed.has(m.id));
+        picked.forEach(m => this.codexConfig.allowlist.push(this.codexEntry({
+            id: m.id,
+            displayName: m.displayName,
+            contextLength: m.contextLength,
+            efforts: m.efforts,
+            defaultEffort: m.defaultEffort,
+            enabled: true
+        })));
+        if (picked.length > 0) {
+            this.saveCodexConfig();
+            store.showToast(store.t('codexModelsImported', { n: picked.length }), 'success');
+        }
+        this.closeCodexDiscoverModal();
     },
 
         async openDiscoverModal() {
