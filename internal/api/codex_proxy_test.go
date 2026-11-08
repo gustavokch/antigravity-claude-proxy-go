@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -649,4 +650,68 @@ func TestDispatch_CodexFollowsGatewayOrder(t *testing.T) {
 	config.SetForTest(cfg)
 	before = probe.snapshot()
 	requireDispatchWinnerDelta(t, probe, before, backend, postDispatchMessages(t, server, dispatchModel), "kimi")
+}
+
+// A failure the backend reports inside a 200 stream before any output is
+// handled like the HTTP status it stands for: a spent usage window cools the
+// account down and the request moves to the next account, for streaming and
+// non-streaming clients alike. The session's next request skips the account.
+func TestCodexGateway_InStreamFailureBeforeOutputFailsOver(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			backend, upstream := newFakeCodexBackend(t, func(w http.ResponseWriter, r *http.Request, token string) {
+				if token == "tok-a" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.WriteHeader(http.StatusOK)
+					_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_a\"}}\n\n"+
+						"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_a\",\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"limit\",\"resets_in_seconds\":3600}}}\n\n")
+					return
+				}
+				writeCodexSSE(w, nil)
+			})
+			srv := newCodexTestServer(t, upstream,
+				codex.AccountConfig{ID: "codex-a", Token: "tok-a", Priority: 1, Enabled: true},
+				codex.AccountConfig{ID: "codex-b", Token: "tok-b", Priority: 2, Enabled: true})
+			body := fmt.Sprintf(`{"model":"gpt-5.5","max_tokens":64,"stream":%v,"messages":[{"role":"user","content":"hi"}]}`, stream)
+			session := map[string]string{"X-Claude-Code-Session-Id": "s1"}
+
+			rec := postCodexMessages(t, srv, body, session)
+			if out := rec.Body.String(); rec.Code != http.StatusOK || !strings.Contains(out, `"hi"`) || strings.Contains(out, "Codex: limit") {
+				t.Fatalf("status = %d, body = %s; want codex-b's answer", rec.Code, out)
+			}
+			snap := codexSnapshot(t, srv, "codex-a")
+			if snap.Status != "cooldown" || snap.CooldownReason != "usage_limit_reached" {
+				t.Errorf("codex-a = %s/%s, want cooldown/usage_limit_reached", snap.Status, snap.CooldownReason)
+			}
+			postCodexMessages(t, srv, body, session)
+			if got := backend.tokens(); len(got) != 3 || got[0] != "tok-a" || got[1] != "tok-b" || got[2] != "tok-b" {
+				t.Errorf("upstream calls = %v, want tok-a, tok-b, then tok-b", got)
+			}
+			requireNoCodexInFlight(t, srv)
+		})
+	}
+}
+
+// Once output reached the client, a failure stays in the stream: the reply
+// cannot be taken back, so the request is not sent again.
+func TestCodexGateway_InStreamFailureAfterOutputIsReported(t *testing.T) {
+	backend, upstream := newFakeCodexBackend(t, func(w http.ResponseWriter, r *http.Request, _ string) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"+
+			"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"par\"}\n\n"+
+			"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"type\":\"server_error\",\"message\":\"boom\"}}}\n\n")
+	})
+	srv := newCodexTestServer(t, upstream,
+		codex.AccountConfig{ID: "codex-a", Token: "tok-a", Priority: 1, Enabled: true},
+		codex.AccountConfig{ID: "codex-b", Token: "tok-b", Priority: 2, Enabled: true})
+
+	rec := postCodexMessages(t, srv, `{"model":"gpt-5.5","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	if out := rec.Body.String(); !strings.Contains(out, `"text":"par"`) || !strings.Contains(out, "Codex: boom") {
+		t.Errorf("stream = %s, want the partial text, then the error event", out)
+	}
+	if n := len(backend.tokens()); n != 1 {
+		t.Errorf("upstream calls = %d, want 1", n)
+	}
+	requireNoCodexInFlight(t, srv)
 }

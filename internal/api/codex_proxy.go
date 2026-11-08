@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -218,6 +220,29 @@ func readCodexReply(resp *http.Response) *codexUpstreamReply {
 	return &codexUpstreamReply{status: resp.StatusCode, header: resp.Header, body: body}
 }
 
+// peekCodexReply holds back the start of a 2xx stream until its first output
+// event. A failure the backend reports before any output comes back as a reply,
+// accounted for like the HTTP status it stands for; otherwise the response
+// replays what was read. The bufio.Reader may hold bytes past the prefix, so it,
+// not resp.Body, continues the stream.
+func peekCodexReply(resp *http.Response) (*http.Response, *codexUpstreamReply, error) {
+	buffered := bufio.NewReader(resp.Body)
+	prefix, failure, err := codex.Peek(buffered, codex.PeekLimit)
+	if err != nil {
+		_ = resp.Body.Close()
+		return nil, nil, err
+	}
+	if failure != nil {
+		_ = resp.Body.Close()
+		return nil, &codexUpstreamReply{status: codex.FailureStatus(failure), header: resp.Header, body: failure}, nil
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(prefix), buffered), resp.Body}
+	return resp, nil, nil
+}
+
 // forwardToCodex serves an Anthropic Messages request from the Codex account
 // pool: a sticky account first, then up to codexMaxAttempts accounts in all.
 //
@@ -227,8 +252,10 @@ func readCodexReply(resp *http.Response) *codexUpstreamReply {
 // when no account is left the last 429 reaches the client as a
 // rate_limit_error. A server or transport error rests the account and fails
 // over. Any other 4xx is the request's own fault and goes to the client as an
-// Anthropic error envelope. A 2xx stream is translated into the Anthropic
-// shape the client asked for.
+// Anthropic error envelope. A failure the backend reports inside a 2xx stream
+// before any output is handled like the status it stands for; once output has
+// started, a failure stays in the stream. A 2xx stream is translated into the
+// Anthropic shape the client asked for.
 func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.Request, cfg codex.Config, call codexCall) {
 	pool, client := server.codexPoolFor(cfg)
 	ctx := request.Context()
@@ -270,6 +297,9 @@ func (server *Server) forwardToCodex(writer http.ResponseWriter, request *http.R
 				}
 				server.warnCodex("codex: token refresh after 401 failed", "account", acc.ID, "error", refreshErr)
 			}
+		}
+		if err == nil && reply == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			resp, reply, err = peekCodexReply(resp)
 		}
 		if err != nil {
 			pool.Release(acc.ID)
@@ -357,10 +387,10 @@ func codexRetryAfter(h http.Header, now time.Time) time.Duration {
 	return codexRateLimitCooldown
 }
 
-// serveCodexResponse translates a 2xx Codex event stream into the client's
-// Anthropic shape and releases the account when done. The usage windows in
-// the response headers are recorded first, so a request that later breaks
-// still updates them.
+// serveCodexResponse translates a 2xx Codex event stream, whose start
+// peekCodexReply found free of a failure, into the client's Anthropic shape and
+// releases the account when done. The usage windows in the response headers
+// are recorded first, so a request that later breaks still updates them.
 func (server *Server) serveCodexResponse(writer http.ResponseWriter, request *http.Request, pool *codex.AccountPool, acc codex.Account, call codexCall, resp *http.Response) {
 	defer pool.Release(acc.ID)
 	defer resp.Body.Close()
