@@ -2,6 +2,7 @@ package ccidentity
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"runtime"
@@ -394,6 +395,57 @@ func TestApplyBodyRejectsMalformedJSON(t *testing.T) {
 	}
 	if _, err := ApplyBody([]byte(`[1,2]`), DefaultProfile(), testIdentity(), Turn{}); err == nil {
 		t.Error("non-object body returned no error")
+	}
+}
+
+// A Message Threads body cannot be normalized. A continuation carries only the
+// messages after thread.previous_message_id (every continuation in
+// .reference/claude-code-count-tokens-20261107.jsonl), so TurnOf would read a
+// later prompt as the first one, and the captured beta list has no
+// message-threads beta for the field to go upstream with. The create form still
+// holds the whole conversation, but it carries the same field.
+func TestApplyBodyRefusesAMessageThread(t *testing.T) {
+	for name, thread := range map[string]string{
+		"create":   `{"type":"create"}`,
+		"continue": `{"type":"continue","previous_message_id":"msg_01"}`,
+	} {
+		body := []byte(`{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"}],"thread":` + thread + `}`)
+		if _, err := ApplyBody(body, DefaultProfile(), testIdentity(), TurnOf(body)); !errors.Is(err, ErrMessageThread) {
+			t.Errorf("%s: err = %v, want ErrMessageThread", name, err)
+		}
+	}
+}
+
+// Claude Code adds "thread" only when it threads (2.1.311 builds the body with
+// ...thread!==null&&{thread:...}), so a null thread asks for nothing and the real
+// client never sends one. It is dropped rather than refused: a client whose SDK
+// writes every optional field could never resend without it.
+func TestApplyBodyDropsANullThread(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"}],"thread":null}`)
+	out, err := ApplyBody(body, DefaultProfile(), testIdentity(), TurnOf(body))
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(out, &fields); err != nil {
+		t.Fatalf("normalized body is not JSON: %v", err)
+	}
+	if _, ok := fields["thread"]; ok {
+		t.Errorf("normalized body = %s, want no thread", out)
+	}
+}
+
+// Claude Code 2.1.311 gives up threading for the session, and resends the turn
+// with the whole conversation, on a 400 whose message carries both its
+// message-threads beta and "anthropic-beta". The beta named is the client's own,
+// so a later dated beta still matches.
+func TestMessageThreadRefusalNamesTheClientsBeta(t *testing.T) {
+	got := MessageThreadRefusal(http.Header{"Anthropic-Beta": {"claude-code-20250219,message-threads-2026-08-12"}})
+	if !strings.Contains(got, "message-threads-2026-08-12") || !strings.Contains(got, "anthropic-beta") {
+		t.Errorf("refusal = %q, want it to name message-threads-2026-08-12 and anthropic-beta", got)
+	}
+	if got := MessageThreadRefusal(http.Header{"Anthropic-Beta": {"claude-code-20250219"}}); strings.Contains(got, "message-threads") {
+		t.Errorf("refusal = %q names a beta the client did not send", got)
 	}
 }
 

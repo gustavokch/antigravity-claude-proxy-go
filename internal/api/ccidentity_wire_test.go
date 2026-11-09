@@ -197,12 +197,14 @@ func TestCustomEndpoint_NormalizedRequestSpeaksHTTP11(t *testing.T) {
 var billingPrevRE = regexp.MustCompile(`cc_prev_req=([^;]*);`)
 
 // replyUpstream answers request n with a reply holding tool call toolu_up_n
-// under request id req_up_n, and remembers the cc_prev_req each request sent.
+// under request id req_up_n, and remembers each request's body and the
+// cc_prev_req it sent.
 type replyUpstream struct {
 	*httptest.Server
 	mu     sync.Mutex
 	served int
 	prev   []string
+	bodies [][]byte
 }
 
 func newReplyUpstream(t *testing.T, stream bool) *replyUpstream {
@@ -218,6 +220,7 @@ func newReplyUpstream(t *testing.T, stream bool) *replyUpstream {
 			prev = string(m[1])
 		}
 		upstream.prev = append(upstream.prev, prev)
+		upstream.bodies = append(upstream.bodies, body)
 		upstream.mu.Unlock()
 
 		w.Header().Set("request-id", fmt.Sprintf("req_up_%d", n))
@@ -241,6 +244,12 @@ func (u *replyUpstream) prevSent() []string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]string(nil), u.prev...)
+}
+
+func (u *replyUpstream) bodiesSent() [][]byte {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([][]byte(nil), u.bodies...)
 }
 
 // toolFollowUp is a conversation whose latest assistant message echoes the tool
@@ -384,6 +393,54 @@ func TestForwardToClaudeCode_OnlyNormalizedRepliesAreRecorded(t *testing.T) {
 			})
 		}
 	}
+}
+
+// A normalized pooled request refuses a Message Threads body with the 400 Claude
+// Code recovers from. Nothing goes upstream, and the account is not charged a
+// failure for the client's request: failing over would only refuse it again on
+// the next account. An API-key account forwards the body as the client wrote
+// it, so the thread still reaches upstream.
+func TestForwardToClaudeCode_MessageThreadIsRefusedOnlyWhenNormalized(t *testing.T) {
+	const model = "claude-custom-model"
+	t.Run("oauth account", func(t *testing.T) {
+		upstream := newReplyUpstream(t, false)
+		cfg := ccPoolConfig(upstream.URL, claudecode.AccountConfig{ID: "acc1", Token: "sk-ant-oat01-test-token", Enabled: true})
+		srv, serve := newCCForwarder(t, cfg, model)
+
+		rec := httptest.NewRecorder()
+		serve(rec, threadRequest())
+
+		assertThreadRefusal(t, rec)
+		if sent := len(upstream.prevSent()); sent != 0 {
+			t.Errorf("upstream received %d requests; a refused body must not be sent", sent)
+		}
+		pool, _ := srv.getOrCreateCCPool(cfg)
+		for _, account := range pool.Snapshots() {
+			if account.TotalErrors != 0 || account.ConsecutiveFailures != 0 {
+				t.Errorf("account %s: errors = %d, consecutive failures = %d; the client's request is not the account's failure",
+					account.ID, account.TotalErrors, account.ConsecutiveFailures)
+			}
+			if account.InFlight != 0 {
+				t.Errorf("account %s in flight = %d after the refusal, want 0", account.ID, account.InFlight)
+			}
+		}
+	})
+	t.Run("api-key account", func(t *testing.T) {
+		upstream := newReplyUpstream(t, false)
+		_, serve := newCCForwarder(t, ccPoolConfig(upstream.URL,
+			claudecode.AccountConfig{ID: "acc1", Token: "sk-ant-api03-test-key", Enabled: true}), model)
+
+		rec := httptest.NewRecorder()
+		serve(rec, threadRequest())
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		bodies := upstream.bodiesSent()
+		if len(bodies) != 1 || !strings.Contains(string(bodies[0]), `"previous_message_id":"msg_01"`) {
+			t.Errorf("upstream received %q, want the client's one request with its thread", bodies)
+		}
+	})
 }
 
 // A request that fails over to another account is sent no request id the first
