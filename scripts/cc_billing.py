@@ -15,7 +15,9 @@ and both hashed values can be recomputed from the request alone:
           one adjacent comma.
 
 Both rules reproduce every body captured from the real client
-(internal/ccidentity/testdata/claude-code-2.1.304-bodies.jsonl.gz). The Go
+(internal/ccidentity/testdata/claude-code-2.1.304-bodies.jsonl.gz). A 2.1.311
+thread continuation (thread.previous_message_id) omits the first prompt, so its
+suffix cannot be derived from the body and is left unchecked. The Go
 implementation is internal/ccidentity/cch.go; this copy lets a capture of ANY
 client be checked, so a new Claude Code release that changes the seed or the
 salt shows up as a mismatch in its own capture.
@@ -156,10 +158,23 @@ def version_suffix(prompt: str, version: str) -> str:
 
 _VERSION = re.compile(r"cc_version=(\d+\.\d+\.\d+)\.([0-9a-f]{3});")
 
+# Claude Code 2.1.311 main follow-ups name the previous reply in
+# thread.previous_message_id and send only the messages after it, so the
+# conversation's first prompt, which the suffix hashes, is not in the body.
+THREAD_CONTINUATION = "thread continuation: the body omits the first prompt"
+
+
+def _continues_thread(body: dict) -> bool:
+    thread = body.get("thread")
+    return isinstance(thread, dict) and bool(thread.get("previous_message_id"))
+
+
 
 def billing_verdict(content: bytes) -> dict | None:
     """Sent and expected values of both hashed fields, or None when the body
-    carries no billing header. A value that cannot be located is None."""
+    carries no billing header. A value that cannot be located is None. A thread
+    continuation's suffix is left None with version_suffix_unchecked naming
+    why."""
     try:
         body = json.loads(content.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
@@ -178,8 +193,11 @@ def billing_verdict(content: bytes) -> dict | None:
     version = _VERSION.search(header)
     if version:
         verdict["version_suffix"] = version.group(2)
-        verdict["version_suffix_expected"] = version_suffix(
-            first_prompt_text(body), version.group(1))
+        if _continues_thread(body):
+            verdict["version_suffix_unchecked"] = THREAD_CONTINUATION
+        else:
+            verdict["version_suffix_expected"] = version_suffix(
+                first_prompt_text(body), version.group(1))
 
     span = _header_cch_span(content, header)
     if span is not None:
