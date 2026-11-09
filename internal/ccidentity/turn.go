@@ -44,6 +44,14 @@ const systemReminderPrefix = "<system-reminder>"
 // ReplyLog maps to the request id sent as cc_prev_req, the first text of the
 // first prompt, which the cc_version suffix hashes, and a digest of the whole
 // first prompt, which names the conversation to ReplyScope.
+//
+// All of this assumes the body holds the whole conversation. A Message Threads
+// continuation does not: it sends only the messages after
+// thread.previous_message_id. ApplyBody therefore refuses any body that
+// carries "thread" (ErrMessageThread), so these values never reach the wire
+// for one. Claude Code 2.1.311 threads only when ANTHROPIC_BASE_URL is unset
+// or api.anthropic.com, so a client pointed at this proxy sends whole
+// conversations (ADR-0004 §8).
 func TurnOf(body []byte) Turn {
 	var parsed struct {
 		Messages []struct {

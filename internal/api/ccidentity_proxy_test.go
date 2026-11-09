@@ -257,6 +257,78 @@ func TestCustomEndpoint_NormalizationFailureFailsClosed(t *testing.T) {
 	}
 }
 
+// threadContinuation is a Claude Code 2.1.311 Message Threads continuation: the
+// messages after thread.previous_message_id and nothing before them.
+const threadContinuation = `{"model":"claude-custom-model","max_tokens":16,` +
+	`"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"a.go"}]}],` +
+	`"thread":{"type":"continue","previous_message_id":"msg_01"}}`
+
+// threadRequest posts threadContinuation with the message-threads beta Claude
+// Code sends beside it.
+func threadRequest() *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(threadContinuation))
+	req.Header.Set("x-api-key", "local-key")
+	req.Header.Set("anthropic-beta", "claude-code-20250219,message-threads-2026-08-12")
+	return req
+}
+
+// assertThreadRefusal checks the 400 Claude Code reads as "this server has no
+// Message Threads": the error message must name its beta and anthropic-beta
+// (ccidentity.MessageThreadRefusal).
+func assertThreadRefusal(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	var reply struct {
+		Error struct{ Type, Message string } `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &reply); err != nil {
+		t.Fatalf("error body is not JSON: %v: %s", err, rec.Body.String())
+	}
+	if reply.Error.Type != "invalid_request_error" ||
+		!strings.Contains(reply.Error.Message, "message-threads-2026-08-12") ||
+		!strings.Contains(reply.Error.Message, "anthropic-beta") {
+		t.Errorf("error = %+v, want an invalid_request_error naming the client's message-threads beta", reply.Error)
+	}
+}
+
+// A normalized endpoint refuses a Message Threads body with the 400 Claude Code
+// recovers from, and sends nothing upstream. An endpoint that is not normalized
+// still forwards it as the client wrote it (ADR-0001).
+func TestCustomEndpoint_MessageThreadIsRefusedOnlyWhenNormalized(t *testing.T) {
+	t.Run("normalized", func(t *testing.T) {
+		withConfigDir(t)
+		target, got := customEndpointUpstream(t)
+		saveCustomEndpoint(t, target.URL+"/v1/messages", nil)
+
+		h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, threadRequest())
+
+		assertThreadRefusal(t, rec)
+		if got.body != nil {
+			t.Errorf("upstream received %s; a refused body must not be sent", got.body)
+		}
+	})
+	t.Run("forwarded as written", func(t *testing.T) {
+		withConfigDir(t)
+		target, got := customEndpointUpstream(t)
+		saveCustomEndpoint(t, target.URL+"/v1/messages", map[string]any{"apiKey": "endpoint-key"})
+
+		h := newTestHandler(t, &fakeUpstream{streamData: standardStream()}, "test-proj")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, threadRequest())
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(string(got.body), `"previous_message_id":"msg_01"`) {
+			t.Errorf("upstream body = %s, want the client's thread", got.body)
+		}
+	})
+}
+
 // TestClaudeCodeConfigPost_RejectsControlCharsInIdentityOverrides pins that a
 // bad override is refused at save time.
 //

@@ -386,6 +386,50 @@ func TestForwardToClaudeCode_OnlyNormalizedRepliesAreRecorded(t *testing.T) {
 	}
 }
 
+// A normalized pooled request refuses a Message Threads body with the 400 Claude
+// Code recovers from. Nothing goes upstream, and the account is not charged a
+// failure for the client's request: failing over would only refuse it again on
+// the next account. An API-key account forwards the body as the client wrote
+// it, so the thread still reaches upstream.
+func TestForwardToClaudeCode_MessageThreadIsRefusedOnlyWhenNormalized(t *testing.T) {
+	const model = "claude-custom-model"
+	t.Run("oauth account", func(t *testing.T) {
+		upstream := newReplyUpstream(t, false)
+		cfg := ccPoolConfig(upstream.URL, claudecode.AccountConfig{ID: "acc1", Token: "sk-ant-oat01-test-token", Enabled: true})
+		srv, serve := newCCForwarder(t, cfg, model)
+
+		rec := httptest.NewRecorder()
+		serve(rec, threadRequest())
+
+		assertThreadRefusal(t, rec)
+		if sent := len(upstream.prevSent()); sent != 0 {
+			t.Errorf("upstream received %d requests; a refused body must not be sent", sent)
+		}
+		pool, _ := srv.getOrCreateCCPool(cfg)
+		for _, account := range pool.Snapshots() {
+			if account.TotalErrors != 0 || account.ConsecutiveFailures != 0 {
+				t.Errorf("account %s: errors = %d, consecutive failures = %d; the client's request is not the account's failure",
+					account.ID, account.TotalErrors, account.ConsecutiveFailures)
+			}
+		}
+	})
+	t.Run("api-key account", func(t *testing.T) {
+		upstream := newReplyUpstream(t, false)
+		_, serve := newCCForwarder(t, ccPoolConfig(upstream.URL,
+			claudecode.AccountConfig{ID: "acc1", Token: "sk-ant-api03-test-key", Enabled: true}), model)
+
+		rec := httptest.NewRecorder()
+		serve(rec, threadRequest())
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		if sent := len(upstream.prevSent()); sent != 1 {
+			t.Errorf("upstream received %d requests, want the client's one", sent)
+		}
+	})
+}
+
 // A request that fails over to another account is sent no request id the first
 // account issued: the second account never saw that request, and naming it
 // would claim a continuity that account's records do not have. The first

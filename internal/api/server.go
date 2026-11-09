@@ -1420,6 +1420,18 @@ func (server *Server) forwardToCustomEndpoint(writer http.ResponseWriter, reques
 		turn.PrevRequestID = server.ccReplies.PrevRequestID(replyScope, turn)
 		normalized, err := ccidentity.ApplyBody(reqBody, ccDefaultProfile, identity, turn)
 		if err != nil {
+			if errors.Is(err, ccidentity.ErrMessageThread) {
+				// The client's request, not the gateway, is at fault. Claude
+				// Code answers this 400 by dropping threading for the session
+				// and resending the whole conversation (ADR-0004 §8).
+				message := ccidentity.MessageThreadRefusal(request.Header)
+				if !isMessagesRequest {
+					writeOpenAIError(writer, http.StatusBadRequest, "invalid_request_error", message)
+					return
+				}
+				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", message)
+				return
+			}
 			if server.logger != nil {
 				server.logger.Error("custom endpoint identity normalization failed; refusing to forward",
 					"error", err, "url", targetURL.String())

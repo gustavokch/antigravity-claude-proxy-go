@@ -20,6 +20,35 @@ import (
 // to remove, so silently forwarding it would be worse than refusing.
 var ErrNotAnObject = errors.New("ccidentity: request body is not a JSON object")
 
+// ErrMessageThread is returned by ApplyBody for a body that carries "thread",
+// the Message Threads field: the request creates or continues a conversation
+// whose earlier messages the server keeps. A continuation sends only the
+// messages after thread.previous_message_id, so TurnOf would read a later
+// prompt as the conversation's first and restart cc_turn_index. Both forms
+// would also reach upstream without the message-threads beta, which the
+// captured list does not carry and the real client always sends with the
+// field. The caller answers 400 with MessageThreadRefusal (ADR-0004 §8).
+var ErrMessageThread = errors.New("ccidentity: request body carries a Message Threads thread")
+
+// messageThreadsBetaPrefix starts the beta Claude Code sends with "thread"
+// (message-threads-2026-08-12 in 2.1.311).
+const messageThreadsBetaPrefix = "message-threads-"
+
+// MessageThreadRefusal is the message of the 400 that answers ErrMessageThread.
+// When the client sent a message-threads beta, the message names it next to
+// "anthropic-beta". Claude Code 2.1.311 checks a 400 for both strings. On a
+// match it drops the beta and threading for the rest of the session ("[tether]
+// server rejected the message-threads beta header") and resends the turn with
+// the whole conversation. The client's own beta is named, so a newer dated
+// beta still matches.
+func MessageThreadRefusal(client map[string][]string) string {
+	const refusal = "thread: this proxy sends the request as Claude Code without Message Threads, so it cannot create or continue a thread; resend the whole conversation without thread"
+	if beta := clientBeta(client, func(name string) bool { return strings.HasPrefix(name, messageThreadsBetaPrefix) }); beta != "" {
+		return refusal + " and without " + beta + " in anthropic-beta"
+	}
+	return refusal
+}
+
 // ApplyHeaders rewrites h into the captured Claude Code header set.
 //
 // Deletion happens before assignment, and it is case-insensitive, because
@@ -111,19 +140,25 @@ func (p Profile) WithClientBetas(client map[string][]string) Profile {
 
 // clientSentBeta reports whether the anthropic-beta header in h names beta.
 func clientSentBeta(h map[string][]string, beta string) bool {
+	return clientBeta(h, func(name string) bool { return name == beta }) != ""
+}
+
+// clientBeta returns the first beta in the anthropic-beta header of h that
+// match accepts, or "" when none does.
+func clientBeta(h map[string][]string, match func(string) bool) string {
 	for key, values := range h {
 		if !strings.EqualFold(key, OAuthBetaKey) {
 			continue
 		}
 		for _, value := range values {
 			for name := range strings.SplitSeq(value, ",") {
-				if strings.TrimSpace(name) == beta {
-					return true
+				if name = strings.TrimSpace(name); match(name) {
+					return name
 				}
 			}
 		}
 	}
-	return false
+	return ""
 }
 
 // ApplyBody rewrites a /v1/messages body into the captured Claude Code shape:
@@ -141,6 +176,8 @@ func clientSentBeta(h map[string][]string, beta string) bool {
 //     compacted, so nested key order and string escapes are not re-encoded.
 //   - Values it writes are encoded without HTML escaping, as JSON.stringify
 //     does: Go's default turns "<" into \u003c, which no JavaScript client sends.
+//
+// A body that carries "thread" is refused with ErrMessageThread.
 func ApplyBody(body []byte, p Profile, id Identity, turn Turn) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
@@ -148,6 +185,9 @@ func ApplyBody(body []byte, p Profile, id Identity, turn Turn) ([]byte, error) {
 	fields, err := objectFields(body)
 	if err != nil {
 		return nil, err
+	}
+	if _, ok := fields.values["thread"]; ok {
+		return nil, ErrMessageThread
 	}
 	for _, name := range omittedBodyFields {
 		delete(fields.values, name)

@@ -466,6 +466,15 @@ func (server *Server) forwardToClaudeCode(
 		msg := send.request(acc.ID, acc.Token, identity, normalize)
 		resp, err := client.SendMessage(request.Context(), msg)
 		if err != nil {
+			if errors.Is(err, ccidentity.ErrMessageThread) {
+				// The client's request, not the account, is at fault, and the
+				// next account would refuse it the same way. Claude Code answers
+				// this 400 by dropping threading for the session and resending
+				// the whole conversation (ADR-0004 §8).
+				pool.Release(acc.ID)
+				writeAPIError(writer, http.StatusBadRequest, "invalid_request_error", ccidentity.MessageThreadRefusal(request.Header))
+				return
+			}
 			pool.Release(acc.ID)
 			pool.RecordFailure(acc.ID, false, 10*time.Second)
 			if server.logger != nil {
