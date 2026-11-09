@@ -1,12 +1,14 @@
 Claude Code wire capture — count_tokens probe (interactive, oauth auth)
 ========================================================================
 
-Captured: 2026-11-08T02:28:55.266774+00:00
+Captured: 2026-11-09T00:37:13.078473+00:00 (re-run; replaces the 2026-11-08T02:28Z run)
 Client:   2.1.311 (Claude Code), macOS arm64, interactive TUI driven through tmux
 Script:   none (manual spike); mitmdump with scripts/mitm_header_dump.py,
           MITM_DUMP_HOSTS=api.anthropic.com, MITM_DUMP_REQUEST_BODY=1
-Env:      throwaway CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-oat
-          (personal account), DISABLE_AUTOUPDATER=1; telemetry and
+Env:      env -i; throwaway CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-oat
+          (personal account), ANTHROPIC_BASE_URL=https://api.anthropic.com set
+          explicitly so no local proxy endpoint applies, ANTHROPIC_API_KEY and
+          ANTHROPIC_AUTH_TOKEN unset, DISABLE_AUTOUPDATER=1; telemetry and
           nonessential traffic left on; default permission mode (auto)
 Hosts:    api.anthropic.com
 Records:  62
@@ -35,7 +37,7 @@ Headline requests observed (path only; bodies are fingerprinted, never dumped):
 
 Findings:
 - count_tokens is sent only by /context: 34 POST /v1/messages/count_tokens
-  within 0.7 s, all 200. Steps 1, 2, 4 and 5 sent none.
+  in one burst, all 200. Steps 1, 2, 4 and 5 sent none.
 - count_tokens bodies carry only messages, model and tools.
 - count_tokens request headers: x-claude-code-request-class auxiliary;
   anthropic-beta claude-code-20250219,oauth-2025-04-20,
@@ -49,7 +51,14 @@ Findings:
 - /v1/messages request classes seen: main (turns), auxiliary (titles,
   suggestions, auto-mode checks), compaction (/compact).
 
-An earlier run the same evening with a token whose organization refuses OAuth
+Routing check: all 62 records go to api.anthropic.com over HTTP/1.1; the file
+has no 127.0.0.1/localhost/:8080/:8091 reference. The re-run matches the
+replaced run in record counts per path, header names and order per request,
+the identity header values per request class, and both JA4s
+(t13d1713h1_5b57614c22b0_7f527383e249 on /v1/messages*, t13d181000_5d04281c6031_25d8bb11352d
+on the api/ and mcp-registry calls).
+
+An earlier run on 2026-11-07 with a token whose organization refuses OAuth
 (403 oauth_not_allowed_for_organization) sent the same 33-34 count_tokens burst
 on /context with an identical header set and order.
 
