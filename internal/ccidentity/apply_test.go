@@ -416,6 +416,25 @@ func TestApplyBodyRefusesAMessageThread(t *testing.T) {
 	}
 }
 
+// Claude Code adds "thread" only when it threads (2.1.311 builds the body with
+// ...thread!==null&&{thread:...}), so a null thread asks for nothing and the real
+// client never sends one. It is dropped rather than refused: a client whose SDK
+// writes every optional field could never resend without it.
+func TestApplyBodyDropsANullThread(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"}],"thread":null}`)
+	out, err := ApplyBody(body, DefaultProfile(), testIdentity(), TurnOf(body))
+	if err != nil {
+		t.Fatalf("ApplyBody: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(out, &fields); err != nil {
+		t.Fatalf("normalized body is not JSON: %v", err)
+	}
+	if _, ok := fields["thread"]; ok {
+		t.Errorf("normalized body = %s, want no thread", out)
+	}
+}
+
 // Claude Code 2.1.311 gives up threading for the session, and resends the turn
 // with the whole conversation, on a 400 whose message carries both its
 // message-threads beta and "anthropic-beta". The beta named is the client's own,

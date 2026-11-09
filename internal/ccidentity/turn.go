@@ -48,7 +48,7 @@ const systemReminderPrefix = "<system-reminder>"
 // All of this assumes the body holds the whole conversation. A Message Threads
 // continuation does not: it sends only the messages after
 // thread.previous_message_id. ApplyBody therefore refuses any body that
-// carries "thread" (ErrMessageThread), so these values never reach the wire
+// carries a thread (ErrMessageThread), so these values never reach the wire
 // for one. Claude Code 2.1.311 threads only when ANTHROPIC_BASE_URL is unset
 // or api.anthropic.com, so a client pointed at this proxy sends whole
 // conversations (ADR-0004 §8).

@@ -20,14 +20,15 @@ import (
 // to remove, so silently forwarding it would be worse than refusing.
 var ErrNotAnObject = errors.New("ccidentity: request body is not a JSON object")
 
-// ErrMessageThread is returned by ApplyBody for a body that carries "thread",
-// the Message Threads field: the request creates or continues a conversation
-// whose earlier messages the server keeps. A continuation sends only the
-// messages after thread.previous_message_id, so TurnOf would read a later
-// prompt as the conversation's first and restart cc_turn_index. Both forms
-// would also reach upstream without the message-threads beta, which the
+// ErrMessageThread is returned by ApplyBody for a body that carries a non-null
+// "thread", the Message Threads field: the request creates or continues a
+// conversation whose earlier messages the server keeps. A continuation sends
+// only the messages after thread.previous_message_id, so TurnOf would read a
+// later prompt as the conversation's first and restart cc_turn_index. Both
+// forms would also reach upstream without the message-threads beta, which the
 // captured list does not carry and the real client always sends with the
-// field. The caller answers 400 with MessageThreadRefusal (ADR-0004 §8).
+// field. A null "thread" asks for nothing, so ApplyBody drops it instead. The
+// caller answers 400 with MessageThreadRefusal (ADR-0004 §8).
 var ErrMessageThread = errors.New("ccidentity: request body carries a Message Threads thread")
 
 // messageThreadsBetaPrefix starts the beta Claude Code sends with "thread"
@@ -177,7 +178,8 @@ func clientBeta(h map[string][]string, match func(string) bool) string {
 //   - Values it writes are encoded without HTML escaping, as JSON.stringify
 //     does: Go's default turns "<" into \u003c, which no JavaScript client sends.
 //
-// A body that carries "thread" is refused with ErrMessageThread.
+// A body that carries a non-null "thread" is refused with ErrMessageThread. A
+// null one is dropped: Claude Code leaves the key out when it does not thread.
 func ApplyBody(body []byte, p Profile, id Identity, turn Turn) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
@@ -186,8 +188,11 @@ func ApplyBody(body []byte, p Profile, id Identity, turn Turn) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := fields.values["thread"]; ok {
-		return nil, ErrMessageThread
+	if raw, ok := fields.values["thread"]; ok {
+		if string(raw) != "null" {
+			return nil, ErrMessageThread
+		}
+		delete(fields.values, "thread")
 	}
 	for _, name := range omittedBodyFields {
 		delete(fields.values, name)
