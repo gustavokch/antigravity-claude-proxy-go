@@ -197,12 +197,14 @@ func TestCustomEndpoint_NormalizedRequestSpeaksHTTP11(t *testing.T) {
 var billingPrevRE = regexp.MustCompile(`cc_prev_req=([^;]*);`)
 
 // replyUpstream answers request n with a reply holding tool call toolu_up_n
-// under request id req_up_n, and remembers the cc_prev_req each request sent.
+// under request id req_up_n, and remembers each request's body and the
+// cc_prev_req it sent.
 type replyUpstream struct {
 	*httptest.Server
 	mu     sync.Mutex
 	served int
 	prev   []string
+	bodies [][]byte
 }
 
 func newReplyUpstream(t *testing.T, stream bool) *replyUpstream {
@@ -218,6 +220,7 @@ func newReplyUpstream(t *testing.T, stream bool) *replyUpstream {
 			prev = string(m[1])
 		}
 		upstream.prev = append(upstream.prev, prev)
+		upstream.bodies = append(upstream.bodies, body)
 		upstream.mu.Unlock()
 
 		w.Header().Set("request-id", fmt.Sprintf("req_up_%d", n))
@@ -241,6 +244,12 @@ func (u *replyUpstream) prevSent() []string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]string(nil), u.prev...)
+}
+
+func (u *replyUpstream) bodiesSent() [][]byte {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([][]byte(nil), u.bodies...)
 }
 
 // toolFollowUp is a conversation whose latest assistant message echoes the tool
@@ -411,6 +420,9 @@ func TestForwardToClaudeCode_MessageThreadIsRefusedOnlyWhenNormalized(t *testing
 				t.Errorf("account %s: errors = %d, consecutive failures = %d; the client's request is not the account's failure",
 					account.ID, account.TotalErrors, account.ConsecutiveFailures)
 			}
+			if account.InFlight != 0 {
+				t.Errorf("account %s in flight = %d after the refusal, want 0", account.ID, account.InFlight)
+			}
 		}
 	})
 	t.Run("api-key account", func(t *testing.T) {
@@ -424,8 +436,9 @@ func TestForwardToClaudeCode_MessageThreadIsRefusedOnlyWhenNormalized(t *testing
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 		}
-		if sent := len(upstream.prevSent()); sent != 1 {
-			t.Errorf("upstream received %d requests, want the client's one", sent)
+		bodies := upstream.bodiesSent()
+		if len(bodies) != 1 || !strings.Contains(string(bodies[0]), `"previous_message_id":"msg_01"`) {
+			t.Errorf("upstream received %q, want the client's one request with its thread", bodies)
 		}
 	})
 }
