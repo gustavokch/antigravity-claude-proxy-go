@@ -135,7 +135,7 @@ A forwarded call that answers 404, 405 or 501 marks that gateway and model (cust
 
 ### 6.2 Claude Code count_tokens identity
 
-Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt` (Claude Code 2.1.311, interactive, 2026-11-07, personal account). The real client calls count_tokens only from `/context`: 34 requests within 0.7 s, all 200. A tool turn, an `@` attachment, a second turn with an edit and `/compact` sent none. Its identity differs from `/v1/messages`:
+Source: `.reference/claude-code-count-tokens-20261107.jsonl` and its `.meta.txt` (Claude Code 2.1.311, interactive, re-captured 2026-11-09T00:37Z with the endpoint pinned to api.anthropic.com, personal account). The real client calls count_tokens only from `/context`: 34 requests within 0.5 s, all 200. A tool turn, an `@` attachment, a second turn with an edit and `/compact` sent none. Its identity differs from `/v1/messages`:
 
 | Field | count_tokens (captured) | `/v1/messages` main (same capture) |
 |---|---|---|

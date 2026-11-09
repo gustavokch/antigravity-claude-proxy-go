@@ -1,12 +1,17 @@
 Claude Code wire capture — count_tokens probe (interactive, oauth auth)
 ========================================================================
 
-Captured: 2026-11-08T02:28:55.266774+00:00
+Captured: 2026-11-09T00:37:13.078473+00:00 (re-run; replaces the 2026-11-08T02:28Z run)
+          The file name keeps 20261107, the local date of the first run,
+          because ADR 0004 §7, internal/claudecode/count_tokens_test.go and
+          internal/ccidentity cite it.
 Client:   2.1.311 (Claude Code), macOS arm64, interactive TUI driven through tmux
 Script:   none (manual spike); mitmdump with scripts/mitm_header_dump.py,
           MITM_DUMP_HOSTS=api.anthropic.com, MITM_DUMP_REQUEST_BODY=1
-Env:      throwaway CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-oat
-          (personal account), DISABLE_AUTOUPDATER=1; telemetry and
+Env:      env -i; throwaway CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN from ~/.claude-oat
+          (personal account), ANTHROPIC_BASE_URL=https://api.anthropic.com set
+          explicitly so no local proxy endpoint applies, ANTHROPIC_API_KEY and
+          ANTHROPIC_AUTH_TOKEN unset, DISABLE_AUTOUPDATER=1; telemetry and
           nonessential traffic left on; default permission mode (auto)
 Hosts:    api.anthropic.com
 Records:  62
@@ -35,7 +40,7 @@ Headline requests observed (path only; bodies are fingerprinted, never dumped):
 
 Findings:
 - count_tokens is sent only by /context: 34 POST /v1/messages/count_tokens
-  within 0.7 s, all 200. Steps 1, 2, 4 and 5 sent none.
+  within 0.47 s, all 200. Steps 1, 2, 4 and 5 sent none.
 - count_tokens bodies carry only messages, model and tools.
 - count_tokens request headers: x-claude-code-request-class auxiliary;
   anthropic-beta claude-code-20250219,oauth-2025-04-20,
@@ -48,11 +53,29 @@ Findings:
   {"input_tokens":N} with 2-5 digit N (not confirmed byte-for-byte).
 - /v1/messages request classes seen: main (turns), auxiliary (titles,
   suggestions, auto-mode checks), compaction (/compact).
+- Main follow-ups (lines 16, 18, 55, 56) carry thread.previous_message_id
+  and send only the messages after that reply, so the body no longer holds
+  the first prompt the cc_version suffix hashes. The client still sends the
+  session's first-prompt suffix (c6a). Their billing verdicts mark the
+  suffix unchecked (version_suffix_unchecked) instead of deriving one. cch
+  matches on all 10 billed requests.
 
-An earlier run the same evening with a token whose organization refuses OAuth
+Routing check: all 62 records go to api.anthropic.com over HTTP/1.1; the file
+has no 127.0.0.1/localhost/:8080/:8091 reference. The re-run matches the
+replaced run in record counts per path, header names and order per request,
+the identity header values per request class, and both JA4s
+(t13d1713h1_5b57614c22b0_7f527383e249 on /v1/messages*, t13d181000_5d04281c6031_25d8bb11352d
+on the api/ and mcp-registry calls).
+
+An earlier run on 2026-11-07 with a token whose organization refuses OAuth
 (403 oauth_not_allowed_for_organization) sent the same 33-34 count_tokens burst
 on /context with an identical header set and order.
 
-Provenance note: every value in this capture is a verbatim quote from observed
-traffic. Credential values are redacted before writing. Anything not confirmed
+Provenance note: every header value, path, status and TLS fingerprint in this
+capture is a verbatim quote from observed traffic. request_body is a shape
+fingerprint, not the body. Its billing.*_expected values are derived by
+scripts/cc_billing.py from the body as sent, and the four
+version_suffix_unchecked verdicts were re-derived from the recorded thread
+shape after the addon learned the thread-continuation rule. Credential and
+account values are redacted before writing. Anything not confirmed
 byte-for-byte is marked unknown rather than inferred.

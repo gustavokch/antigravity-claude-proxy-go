@@ -421,6 +421,9 @@ def compare_billing(observed: dict) -> list[str]:
     from the same bytes, and the derivation reproduces every body captured from
     Claude Code 2.1.304. A record without that verdict is a drift, not a pass:
     it means the capture was taken with an older addon and nothing was checked.
+    A field the verdict marks unchecked (version_suffix_unchecked, a thread
+    continuation without its first prompt) is skipped, because the body cannot
+    show what the real client hashed.
     """
     verdict = observed.get("request_body", {})
     verdict = verdict.get("billing") if isinstance(verdict, dict) else None
@@ -432,6 +435,8 @@ def compare_billing(observed: dict) -> list[str]:
     drifts: list[str] = []
     for field, what in (("cch", "the hash of the body as sent"),
                         ("version_suffix", "the hash of the first prompt")):
+        if verdict.get(field + "_unchecked"):
+            continue
         sent, expected = verdict.get(field), verdict.get(field + "_expected")
         if sent is None or expected is None:
             drifts.append(f"billing {field} could not be located in the body")

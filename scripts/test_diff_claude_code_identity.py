@@ -419,6 +419,33 @@ class BodyDriftTest(unittest.TestCase):
         self.assertTrue(any("request_body" in d for d in drifts))
 
 
+CONTINUATION_BILLING = {
+    "cch": "75a04", "cch_expected": "75a04",
+    "version_suffix": "c6a", "version_suffix_expected": None,
+    "version_suffix_unchecked": "thread continuation: the body omits the first prompt",
+}
+
+
+def billed(billing):
+    return record(BASELINE_HEADERS, dict(BASELINE_BODY, billing=billing))
+
+
+class BillingDriftTest(unittest.TestCase):
+    def test_an_unchecked_suffix_is_not_drift(self):
+        self.assertEqual(differ.compare_billing(billed(CONTINUATION_BILLING)), [])
+
+    def test_an_unchecked_suffix_still_checks_the_cch(self):
+        drifts = differ.compare_billing(billed(dict(CONTINUATION_BILLING, cch="abcde")))
+        self.assertEqual(len(drifts), 1, drifts)
+        self.assertIn("billing cch is abcde", drifts[0])
+
+    def test_a_missing_suffix_without_a_reason_is_drift(self):
+        billing = dict(CONTINUATION_BILLING)
+        del billing["version_suffix_unchecked"]
+        drifts = differ.compare_billing(billed(billing))
+        self.assertTrue(any("version_suffix could not be located" in d for d in drifts), drifts)
+
+
 class RecordSelectionTest(unittest.TestCase):
     def test_only_post_messages_records_are_loaded(self):
         lines = [
