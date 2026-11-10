@@ -85,6 +85,11 @@ func staticHeaders(id Identity) []Header {
 		{"anthropic-version", "2023-06-01"},
 		{"x-app", "cli"},
 		{"x-claude-code-request-class", "main"},
+		// New in 2.1.322: sent on every POST /v1/messages with the value "[]"
+		// (.reference/claude-code-headers-20261110.jsonl). Not on the
+		// discovery GETs, so it belongs here and not in the discovery
+		// hand-built header set.
+		{"x-claude-code-sandy-plover", "[]"},
 	}
 }
 
@@ -344,16 +349,20 @@ var CountTokensBetas = []string{
 // the User-Agent of the interactive entrypoint. Claude Code counts only from
 // /context, which only an interactive session has, so a count claims cli
 // whatever entrypoint the messages path claims; an explicit Identity.UserAgent
-// override still wins, as it does there. Every other name and value is the
-// messages one, sent by the same SDK. staticHeaders returns a fresh slice, so
-// it is filtered in place.
+// override still wins, as it does there. x-claude-code-sandy-plover is
+// filtered out: no count capture shows it (2.1.311,
+// .reference/claude-code-count-tokens-20261107.jsonl), 2.1.322 sent it only
+// on the messages path (.reference/claude-code-headers-20261110.jsonl), and a
+// header no capture shows is not invented here. Every other name and value is
+// the messages one, sent by the same SDK. staticHeaders returns a fresh
+// slice, so it is filtered in place.
 func countTokensStaticHeaders(id Identity) []Header {
 	id.Entrypoint = EntrypointInteractive
 	static := staticHeaders(id)
 	out := static[:0]
 	for _, header := range static {
 		switch header.Name {
-		case "X-Stainless-Timeout":
+		case "X-Stainless-Timeout", "x-claude-code-sandy-plover":
 			continue
 		case "x-claude-code-request-class":
 			header.Value = "auxiliary"

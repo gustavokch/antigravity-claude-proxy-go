@@ -31,11 +31,13 @@ func testIdentity() Identity {
 	}
 }
 
-// capturedHeaders is the constant header set read out of
-// .reference/claude-code-headers-20261020.txt. It is duplicated here on purpose:
-// a test that reads the artifact at run time would pass even if both the
-// artifact and the implementation were changed together, and this test's job is
-// to fail when the implementation drifts from the recorded bytes.
+// capturedHeaders is the constant header set, read out of
+// .reference/claude-code-headers-20261020.txt and refreshed from
+// .reference/claude-code-headers-20261110.jsonl (2.1.322) which adds
+// x-claude-code-sandy-plover on POST /v1/messages. It is duplicated here on
+// purpose: a test that reads the artifact at run time would pass even if both
+// the artifact and the implementation were changed together, and this test's
+// job is to fail when the implementation drifts from the recorded bytes.
 var capturedHeaders = map[string]string{
 	"Accept":                                    "application/json",
 	"Content-Type":                              "application/json",
@@ -51,6 +53,7 @@ var capturedHeaders = map[string]string{
 	"anthropic-version":                         "2023-06-01",
 	"x-app":                                     "cli",
 	"x-claude-code-request-class":               "main",
+	"x-claude-code-sandy-plover":                "[]",
 }
 
 func TestApplyHeadersSendsTheCapturedSet(t *testing.T) {
