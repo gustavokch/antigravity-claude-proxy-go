@@ -11,7 +11,7 @@ The proxy listens by default on `127.0.0.1:8080` (configurable) and includes an 
 
 ## Key Features
 
-- **Exact `agy` Transport & Fingerprint Matching**: Matches the JA4 fingerprint (`t13d131100_f57a46bbacb6_f50d94e863eb`), cipher suite order, ALPN state, and header behavior of the official `agy` CLI.
+- **Exact `agy` Transport & Fingerprint Matching**: Targets agy 1.5.5's JA4 fingerprint (`t13d1312h2_f57a46bbacb6_f50d94e863eb`) and HTTP/2 transport using Go's standard library. Run the packet gate below to verify the build on your host.
 - **Embedded Web UI Console**: A route diagram in the top bar shows the request path (client → proxy → each gateway in precedence order) with a lamp per gateway and account: clear, caution, blocked, or off, with the reason on hover or focus. Views are switched with keys `1`–`5`. Manage accounts, monitor quota and rate limits, inspect request volume history, stream live logs via SSE, configure server/Claude CLI presets, manage model mappings, discover OpenRouter models, and manage Claude Code OAuth credentials. Day and night themes (Settings → Interface, or follow the OS).
 - **Multi-Account Pool & Selection Strategies**:
   - Auto-discovers local `agy` login credentials at `~/.gemini/antigravity-cli/antigravity-oauth-token`.
@@ -112,28 +112,30 @@ is `kimi`, `zen`, `claudecode`, `codex`, `openrouter`, `custom`, `cloudcode`:
 
 ## What “Matching agy” Means
 
-Fresh packet captures from `agy 1.1.2` were taken with both Gemini and Claude models. Both used:
+The [agy 1.5.5 Cloud Code capture](.reference/client-drift/agy.jsonl) uses:
 
 - `POST https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`
 - SNI `daily-cloudcode-pa.googleapis.com`
-- No ALPN extension
-- JA4 `t13d131100_f57a46bbacb6_f50d94e863eb`
-- Go-style `gl-go/...` and Antigravity client identity headers
+- HTTP/2, with ALPN advertising `h2` and `http/1.1`
+- JA4 `t13d1312h2_f57a46bbacb6_f50d94e863eb`
+- `Authorization`, `Content-Type` and the Antigravity `User-Agent`; net/http adds `Accept-Encoding`
 
-The Go proxy matches the complete JA4, SNI, ALPN state, cipher list, and signature algorithms. Evidence is checked in at:
+The transport enables `ForceAttemptHTTP2` while keeping the initial `tls.Config{}` empty. net/http configures ALPN itself. Header names and values remain part of the drift check; HTTP/2 header order is not fixed, as agy's own requests vary. The current target is enforced by [the live packet gate](scripts/verify-ja4.sh); a build or unit test alone does not prove packet parity.
+
+The older agy 1.1.2 packet captures below have no ALPN extension and JA4 `t13d131100_f57a46bbacb6_f50d94e863eb`. They are historical evidence, not the HTTP/2 baseline:
 
 - [agy Gemini baseline](.reference/agy-current-baseline.txt)
 - [agy Claude baseline](.reference/agy-claude-current-baseline.txt)
-- [Go proxy fingerprint gate](.reference/go-current-baseline.txt)
+- [historical Go proxy fingerprint](.reference/go-current-baseline.txt)
 - [live agy/proxy recheck](.reference/fingerprint-recheck-20260715.txt)
 - [current model catalog](.reference/agy-current-models.txt)
 
 
-Around a conversation the proxy also sends the control-plane calls agy 1.5.2 sends ([agy capture](.reference/client-drift/agy.jsonl)), over the same transport to the same host. The first request of a Claude Code session on an account sends agy's start burst: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET /v1internal/cascadeNuxes`. Each new prompt then sends `loadCodeAssist`, followed by `fetchUserInfo` and `retrieveUserQuotaSummary`, before generation, once per account even when the prompt is retried. Tool continuations, tool-less side calls (titles) and requests without a session id send none of these. The `loadCodeAssist` answers update the account's tier and project, the burst's `fetchAvailableModels` its per-model quota, and the `retrieveUserQuotaSummary` answers its shared quota pools only; the other calls are sent for parity, and only their status is logged at debug. Each call has a 10 s timeout, a start burst or a prompt's calls get 15 s in all, and none of them fails the request. Concurrent requests of a session share one run; when the request that started it goes away, a waiting request takes the run over. A start burst in which a call got no HTTP answer (a network error or a timeout) is sent again on the session's next request; an error status counts as an answer.
+Around a conversation the proxy also sends the control-plane calls agy 1.5.5 sends ([agy capture](.reference/client-drift/agy.jsonl)), over the same transport to the same host. The first request of a Claude Code session on an account sends agy's start burst: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET /v1internal/cascadeNuxes`. Each new prompt then sends `loadCodeAssist`, followed by `fetchUserInfo` and `retrieveUserQuotaSummary`, before generation, once per account even when the prompt is retried. Tool continuations, tool-less side calls (titles) and requests without a session id send none of these. The `loadCodeAssist` answers update the account's tier and project, the burst's `fetchAvailableModels` its per-model quota, and the `retrieveUserQuotaSummary` answers its shared quota pools only; the other calls are sent for parity, and only their status is logged at debug. Each call has a 10 s timeout, a start burst or a prompt's calls get 15 s in all, and none of them fails the request. Concurrent requests of a session share one run; when the request that started it goes away, a waiting request takes the run over. A start burst in which a call got no HTTP answer (a network error or a timeout) is sent again on the session's next request; an error status counts as an answer.
 
 The proxy sends no per-model quota call after a stream or before a prompt, as agy does not. One call agy never sends remains on the request path: a request that finds the model catalog missing or older than its 24 h TTL waits for the catalog fetch, and that fetch also sends `retrieveUserQuota`. Per-model quota (the hybrid strategy's quota score, the `quotaThreshold` filter and the dashboard's model rows) is refreshed by the catalog fetch, a manual account refresh and each start burst's `fetchAvailableModels`. Those catalog fractions stay at 1 until a model is exhausted, so between fetches a model's fraction stays near 1 until it runs out. Each new prompt's quota summary refreshes the shared pools (`gemini-5h`, `3p-weekly`, ...) only.
 
-TLS transport intentionally uses Go's standard library with an empty `tls.Config{}`. Never set custom cipher suites, curves, ALPN, or TLS versions, as doing so alters the fingerprint.
+TLS transport intentionally uses Go's standard library with an empty `tls.Config{}` and `ForceAttemptHTTP2: true`. Never set custom cipher suites, curves, ALPN lists, or TLS versions, as doing so alters the fingerprint.
 
 ---
 
@@ -1153,7 +1155,7 @@ tshark -r /tmp/antigravity-go.pcap \
 
 Expected row output:
 ```text
-daily-cloudcode-pa.googleapis.com    t13d131100_f57a46bbacb6_f50d94e863eb
+daily-cloudcode-pa.googleapis.com    h2,http/1.1    t13d1312h2_f57a46bbacb6_f50d94e863eb
 ```
 
 ---

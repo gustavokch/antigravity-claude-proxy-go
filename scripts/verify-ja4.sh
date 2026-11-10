@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Boots the proxy, captures the upstream ClientHello to Cloud Code,
 # and asserts the JA4 fingerprint matches the upstream agy baseline:
-#   t13d131100_f57a46bbacb6_f50d94e863eb
+#   t13d1312h2_f57a46bbacb6_f50d94e863eb
 #
 # Runs by default. Exits non-zero on an actual fingerprint mismatch.
 # Environments without tcpdump/tshark or capture privileges (no sudo,
@@ -16,7 +16,7 @@ set -euo pipefail
 # skip intentionally without attempting a capture at all.
 
 PCAP_FILE="/tmp/antigravity-go.pcap"
-EXPECTED_JA4="t13d131100_f57a46bbacb6_f50d94e863eb"
+EXPECTED_JA4="t13d1312h2_f57a46bbacb6_f50d94e863eb"
 PROXY_PORT="8099"
 PROXY_KEY="${ANTIGRAVITY_PROXY_API_KEY:-test-verification-key}"
 PROXY_LOG="/tmp/proxy-verification.log"
