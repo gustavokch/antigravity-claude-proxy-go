@@ -21,7 +21,12 @@ import (
 	"time"
 )
 
-func TestTransportKeepsTLSZeroValueAndHTTP2Disabled(t *testing.T) {
+// agy 1.5.5 negotiates HTTP/2 on every Cloud Code call (runs/20261110-184155
+// report.md; JA4 t13d1312h2...). With TLSClientConfig and DialContext set by
+// hand, net/http needs ForceAttemptHTTP2 to offer the h2 ALPN; the TLS config
+// itself stays empty, per AGENTS.md, so the ClientHello cipher section is
+// untouched and only the ALPN extension appears.
+func TestTransportKeepsTLSZeroValueAndAttemptsHTTP2(t *testing.T) {
 	t.Parallel()
 	client := New(Options{})
 	if client.transport == nil {
@@ -30,8 +35,8 @@ func TestTransportKeepsTLSZeroValueAndHTTP2Disabled(t *testing.T) {
 	if !reflect.DeepEqual(client.transport.TLSClientConfig, &tls.Config{}) {
 		t.Fatalf("TLS config is not empty: %#v", client.transport.TLSClientConfig)
 	}
-	if client.transport.ForceAttemptHTTP2 {
-		t.Fatal("ForceAttemptHTTP2 must remain false for current-agy ALPN")
+	if !client.transport.ForceAttemptHTTP2 {
+		t.Fatal("ForceAttemptHTTP2 must be true to negotiate h2 like agy 1.5.5")
 	}
 	if client.transport.TLSNextProto != nil {
 		t.Fatalf("TLSNextProto must remain nil: %#v", client.transport.TLSNextProto)
