@@ -101,6 +101,7 @@ type Account struct {
 	VerifyURL          string
 	ModelRateLimits    map[string]*RateLimit
 	ConsecutiveFailure int
+	LastFailureMS      int64
 	CoolingDownUntilMS int64
 	CooldownReason     string
 }
@@ -575,6 +576,36 @@ func (manager *Manager) SharedThrottles() map[string]time.Duration {
 	return active
 }
 
+// failureDecay is how long a rejection streak stays meaningful. An upstream
+// 429 wave lasts about a minute; a streak only measures one incident while
+// rejections keep arriving during it, because every rejection restarts the
+// clock. Ten quiet minutes mean the next rejection belongs to a different
+// outage and must start at the first cooldown tier instead of inheriting the
+// top one. The counter also spans models and only a generation resets it, so
+// without this a burst on one model promoted the next 429 on another model:
+// at 2026-11-10 17:57:13 gemini-3.8-flash-high inherited four argon-high
+// rejections from 17:21 and was locked for 12m19s, while the upstream wave it
+// answered had lasted about a minute and was already over.
+const failureDecay = 10 * time.Minute
+
+// failuresLocked is the account's rejection streak with a quiet streak
+// dropped. Read-only, so a status snapshot under the read lock sees the same
+// value a decision does.
+func (manager *Manager) failuresLocked(account *Account) int {
+	if account.ConsecutiveFailure > 0 &&
+		manager.now().UnixMilli()-account.LastFailureMS >= failureDecay.Milliseconds() {
+		return 0
+	}
+	return account.ConsecutiveFailure
+}
+
+// noteFailureLocked continues the streak, restarting its clock.
+func (manager *Manager) noteFailureLocked(account *Account) int {
+	account.ConsecutiveFailure = manager.failuresLocked(account) + 1
+	account.LastFailureMS = manager.now().UnixMilli()
+	return account.ConsecutiveFailure
+}
+
 func (manager *Manager) MarkRateLimited(account *Account, model string, wait time.Duration) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -587,7 +618,7 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 	// An actual "" caller means the listing namespace and must be recorded.
 	key := rateLimitModelKey(model)
 	if key == "" && strings.TrimSpace(model) != "" {
-		account.ConsecutiveFailure++
+		manager.noteFailureLocked(account)
 		manager.recordRateLimitLocked(account.Email)
 		return
 	}
@@ -595,7 +626,7 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 		IsRateLimited: true, ResetTimeMS: manager.now().Add(wait).UnixMilli(), ActualResetMS: wait.Milliseconds(),
 	}
 	manager.recordSharedThrottleLocked(key, account.Email, wait)
-	account.ConsecutiveFailure++
+	manager.noteFailureLocked(account)
 	manager.recordRateLimitLocked(account.Email)
 }
 
@@ -612,13 +643,13 @@ func (manager *Manager) MarkInvalid(account *Account, reason, verifyURL string) 
 func (manager *Manager) MarkFailure(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	account.ConsecutiveFailure++
+	failures := manager.noteFailureLocked(account)
 	manager.recordFailureLocked(account.Email)
 	// Guard on the normalized key, not the raw argument: "[1m]" or whitespace
 	// passes a raw != "" check but normalizes to "", which would collide with
 	// the empty-model namespace model listing uses.
 	key := rateLimitModelKey(model)
-	if key != "" && account.ConsecutiveFailure >= 3 {
+	if key != "" && failures >= 3 {
 		account.ModelRateLimits[key] = &RateLimit{
 			IsRateLimited: true, ResetTimeMS: manager.now().Add(time.Minute).UnixMilli(), ActualResetMS: time.Minute.Milliseconds(),
 			failure: true,
@@ -669,6 +700,7 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	account.ConsecutiveFailure = 0
+	account.LastFailureMS = 0
 	// Delete the namespace only for a real key or an actual "" caller (the
 	// listing namespace): a suffix-only success like "[1m]" normalizes to ""
 	// and must not clear a legitimate empty-model entry.
@@ -682,14 +714,13 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 func (manager *Manager) IncrementFailure(account *Account) int {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	account.ConsecutiveFailure++
-	return account.ConsecutiveFailure
+	return manager.noteFailureLocked(account)
 }
 
 func (manager *Manager) FailureCount(account *Account) int {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return account.ConsecutiveFailure
+	return manager.failuresLocked(account)
 }
 
 func (manager *Manager) Project(account *Account) string {
@@ -1512,7 +1543,7 @@ func (manager *Manager) AccountsWithQuotaModel(model string) []*Account {
 		result = append(result, account)
 	}
 	sort.SliceStable(result, func(i, j int) bool {
-		return result[i].ConsecutiveFailure < result[j].ConsecutiveFailure
+		return manager.failuresLocked(result[i]) < manager.failuresLocked(result[j])
 	})
 	return result
 }
@@ -2028,7 +2059,7 @@ func (manager *Manager) GetStrategyHealthData() map[string]any {
 			"email":       acc.Email,
 			"healthScore": manager.healthScoreLocked(acc.Email),
 			"tokens":      manager.tokensLocked(acc.Email),
-			"failures":    acc.ConsecutiveFailure,
+			"failures":    manager.failuresLocked(acc),
 			"isInvalid":   acc.IsInvalid,
 			"enabled":     acc.Enabled,
 			"lastUsed":    acc.LastUsedMS,
