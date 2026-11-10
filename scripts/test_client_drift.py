@@ -117,6 +117,38 @@ class CompareTest(unittest.TestCase):
         self.assertNotIn("content-length '10'", text)
         self.assertEqual(notes, [])
 
+    def test_http2_header_order_is_not_drift(self):
+        base = record("/v1:load", [["User-Agent", "agy/1.5.5"], ["Content-Type", "application/json"]])
+        seen = record("/v1:load", [["Content-Type", "application/json"], ["User-Agent", "agy/1.5.5"]])
+        base["http_version"] = seen["http_version"] = "HTTP/2.0"
+        self.assertEqual(drift.compare_captures([base], [seen], frozenset(), []), ([], []))
+
+    def test_http2_header_presence_and_values_still_report_drift(self):
+        base = record("/v1:load", [["User-Agent", "agy/1.5.5"], ["X-Old", "1"],
+                                   ["Content-Type", "application/json"]])
+        seen = record("/v1:load", [["Content-Type", "application/json"], ["X-New", "1"],
+                                   ["User-Agent", "other"]])
+        base["http_version"] = seen["http_version"] = "HTTP/2.0"
+        drifts, notes = drift.compare_captures([base], [seen], frozenset(), [])
+        self.assertEqual(drifts, ["POST /v1:load: headers no longer sent: x-old",
+                                  "POST /v1:load: new headers: x-new",
+                                  "POST /v1:load: user-agent 'agy/1.5.5' -> 'other'"])
+        self.assertEqual(notes, [])
+
+    def test_header_order_is_checked_when_either_record_is_http1(self):
+        for before, after in (("HTTP/1.1", "HTTP/1.1"), ("HTTP/1.1", "HTTP/2.0"),
+                              ("HTTP/2.0", "HTTP/1.1")):
+            with self.subTest(before=before, after=after):
+                base = record("/v1:load", [["User-Agent", "agy/1.5.5"], ["Content-Type", "application/json"]])
+                seen = record("/v1:load", [["Content-Type", "application/json"], ["User-Agent", "agy/1.5.5"]])
+                base["http_version"], seen["http_version"] = before, after
+                drifts, notes = drift.compare_captures([base], [seen], frozenset(), [])
+                expected = [] if before == after else [f"POST /v1:load: {before} -> {after}"]
+                expected.append("POST /v1:load: header order ['user-agent', 'content-type'] -> "
+                                "['content-type', 'user-agent']")
+                self.assertEqual(drifts, expected)
+                self.assertEqual(notes, [])
+
     def test_requests_seen_on_one_side_are_notes_not_drift(self):
         drifts, notes = drift.compare_captures([record("/a", [])], [record("/b", [])], frozenset(), [])
         self.assertEqual(drifts, [])
@@ -152,7 +184,9 @@ class CompareTest(unittest.TestCase):
             body = {"requestType": "agent"}
             if order is not None:
                 body["request_key_order"] = order
-            return record(path, [], body)
+            item = record(path, [], body)
+            item["http_version"] = "HTTP/2.0"
+            return item
 
         agy = [stream(["contents", "systemInstruction", "tools", "labels", "generationConfig", "sessionId"])]
         sorted_proxy = [stream(["contents", "generationConfig", "labels", "sessionId", "systemInstruction"])]
