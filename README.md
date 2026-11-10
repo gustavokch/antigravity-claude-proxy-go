@@ -1131,16 +1131,18 @@ journalctl -u antigravity-go-proxy.service -f
 
 ## Fingerprint Re-verification Gate
 
-To verify TLS ClientHello matches `agy`:
+Run `scripts/verify-ja4.sh` to capture and compare the production Cloud Code transport's ClientHello with agy. The gate sends one request with a deliberately invalid token: a 401 still completes TLS, so no working account, OAuth refresh or running proxy is needed. Set `ANTIGRAVITY_CAPTURE_IFACE` to the egress interface when necessary. A skipped capture is not a pass.
+
+To capture manually:
 
 1. Start packet capture:
 ```sh
 tcpdump -i any -w /tmp/antigravity-go.pcap 'host daily-cloudcode-pa.googleapis.com and tcp port 443'
 ```
 
-2. Trigger request:
+2. Trigger a credential-free request using the production Cloud Code client:
 ```sh
-curl -sS -H "x-api-key: $ANTIGRAVITY_PROXY_API_KEY" http://127.0.0.1:8080/v1/usage >/dev/null
+go run ./tools/clientprobe ja4
 ```
 
 3. Verify JA4 with `tshark`:

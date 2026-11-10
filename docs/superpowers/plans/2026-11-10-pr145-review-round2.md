@@ -84,3 +84,17 @@ Commit: `git add scripts/verify-ja4.sh README.md .reference/client-drift/agy.jso
 - Final review: self-review inline, as explicitly requested; no reviewer subagent was used. No further code defect found in the changed ranges. The packet gate and interactive Claude capture remain unverified prerequisites, not a completed definition of done.
 - Delivery: commits `41d074e` and `0699bf9` pushed to `fork/chore/client-identity-drift`; round-two review and remediation comments published on PR #145. The final remaining task is blocked on user-run live evidence.
 - User handoff from this worktree: run `scripts/verify-ja4.sh`, then `CLAUDE_CAPTURE_TAG=20261110-pr145-interactive scripts/capture-claude-code-headers.sh interactive`; the capture must report Claude Code 2.1.322. Return the gate output and the generated redacted JSONL/meta paths. A missing prerequisite or a skipped gate leaves validation blocked.
+
+## Task 4: Make packet verification independent of OAuth refresh
+
+**Evidence:** The user-run packet gate skipped on 2026-11-10. `/tmp/proxy-verification.log` shows the usage trigger reached the proxy, then account refresh failed with `401 unauthorized_client` before any Cloud Code request. This is not a JA4 mismatch.
+
+**Files:** Modify `tools/clientprobe/main.go`, `scripts/verify-ja4.sh` and the README gate instructions; create `tools/clientprobe/main_test.go`.
+
+**Interface:** `clientprobe ja4` sends one `loadCodeAssist` request to the fixed daily endpoint through the production Cloud Code client using a deliberately invalid bearer token. It prints the HTTP status, accepting 401 as proof the request reached the server, while transport/context failures remain errors. It never loads accounts or changes TLS settings. `probeJA4(ctx context.Context, endpoint string) (int, error)` provides the request seam for a local HTTP server test.
+
+- [x] Write `TestJA4ProbeReachesCloudCodeWithoutAccountCredentials`: empty HOME, local server denies authentication, request must reach `loadCodeAssist`, returned status must equal 401 with no transport error. Write `TestJA4ProbePreservesTransportFailure`: a cancelled context must propagate `context.Canceled`.
+- [x] Run `go test ./tools/clientprobe -run TestJA4Probe`; failed with `undefined: probeJA4` before implementation.
+- [x] Implement the single-request probe, expose the CLI subcommand, and have the packet gate build/run it instead of launching the proxy and calling `/v1/usage`. Remove obsolete proxy-process state. Keep packet capture, tshark and exact JA4 comparison authoritative.
+- [x] `go test -race ./tools/clientprobe ./internal/cloudcode`: 42 tests passed across both packages. Built the actual CLI and checked its no-argument usage (exit 2) and unknown-command error (exit 1), without external network access. `bash -n verify-ja4.sh` and all 3 registry tests passed. Live capture remains user-run.
+- Commit and push `fix(verification): probe JA4 without account credentials`; request a fresh user-run packet capture. OAuth credentials are intentionally unchanged.
