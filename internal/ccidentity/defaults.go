@@ -15,16 +15,16 @@ import (
 const (
 	// ClientVersion is the version literal in cc_version, minus the suffix that
 	// versionSuffix derives from the conversation's first prompt.
-	ClientVersion = "2.1.311"
+	ClientVersion = "2.1.322"
 
 	// MessagesUserAgent is the User-Agent on POST /v1/messages. The capture
 	// records claude-cli/, lowercase, with a parenthesised mode.
-	MessagesUserAgent = "claude-cli/2.1.311 (external, sdk-cli)"
+	MessagesUserAgent = "claude-cli/2.1.322 (external, sdk-cli)"
 
 	// DiscoveryUserAgent is the User-Agent on GET /api/claude_code/*. It is a
 	// DIFFERENT family from the messages path: claude-code/ not claude-cli/, and
 	// no parenthesised mode. Two spellings, two families.
-	DiscoveryUserAgent = "claude-code/2.1.311"
+	DiscoveryUserAgent = "claude-code/2.1.322"
 
 	// EntrypointSDKCLI and EntrypointInteractive are the two cc_entrypoint values
 	// known to exist. The --print captures only ever produced sdk-cli; the
@@ -55,6 +55,7 @@ var Betas = []string{
 	"prompt-caching-scope-2026-01-05",
 	"per-turn-control-2026-07-01",
 	"mid-conversation-tool-changes-2026-07-01",
+	"tool-provenance-2026-10-26",
 	"thinking-token-count-2026-05-13",
 	"advanced-tool-use-2025-11-20",
 	"mid-conversation-system-clear-at-2026-08-21",
@@ -84,6 +85,11 @@ func staticHeaders(id Identity) []Header {
 		{"anthropic-version", "2023-06-01"},
 		{"x-app", "cli"},
 		{"x-claude-code-request-class", "main"},
+		// New in 2.1.322: sent on every POST /v1/messages with the value "[]"
+		// (.reference/claude-code-headers-20261110.jsonl). Not on the
+		// discovery GETs, so it belongs here and not in the discovery
+		// hand-built header set.
+		{"x-claude-code-sandy-plover", "[]"},
 	}
 }
 
@@ -91,7 +97,7 @@ func staticHeaders(id Identity) []Header {
 // caller changed the entrypoint.
 //
 // The construction puts the entrypoint inside the parentheses. For cli it
-// yields "claude-cli/2.1.311 (external, cli)", the string the interactive count
+// yields "claude-cli/2.1.322 (external, cli)", the string the interactive count
 // capture shows on both messages and counts. Any other entrypoint is an
 // extrapolation of that shape; no capture shows one.
 func messagesUserAgent(id Identity) string {
@@ -343,16 +349,20 @@ var CountTokensBetas = []string{
 // the User-Agent of the interactive entrypoint. Claude Code counts only from
 // /context, which only an interactive session has, so a count claims cli
 // whatever entrypoint the messages path claims; an explicit Identity.UserAgent
-// override still wins, as it does there. Every other name and value is the
-// messages one, sent by the same SDK. staticHeaders returns a fresh slice, so
-// it is filtered in place.
+// override still wins, as it does there. x-claude-code-sandy-plover is
+// filtered out: no count capture shows it (2.1.311,
+// .reference/claude-code-count-tokens-20261107.jsonl), 2.1.322 sent it only
+// on the messages path (.reference/claude-code-headers-20261110.jsonl), and a
+// header no capture shows is not invented here. Every other name and value is
+// the messages one, sent by the same SDK. staticHeaders returns a fresh
+// slice, so it is filtered in place.
 func countTokensStaticHeaders(id Identity) []Header {
 	id.Entrypoint = EntrypointInteractive
 	static := staticHeaders(id)
 	out := static[:0]
 	for _, header := range static {
 		switch header.Name {
-		case "X-Stainless-Timeout":
+		case "X-Stainless-Timeout", "x-claude-code-sandy-plover":
 			continue
 		case "x-claude-code-request-class":
 			header.Value = "auxiliary"

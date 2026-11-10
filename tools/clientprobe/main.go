@@ -1,5 +1,4 @@
-// clientprobe answers two questions the client drift hook
-// (scripts/client_drift.py) cannot answer from outside the proxy's own code:
+// clientprobe records the proxy's wire identity and checks OAuth registration.
 //
 //	clientprobe cloudcode -proxy http://127.0.0.1:PORT
 //	    Sends loadCodeAssist, fetchAvailableModels, the control-plane calls
@@ -13,12 +12,17 @@
 //	    and body this build sends, so the hook can diff them against what agy
 //	    sent through the same interceptor. No account is used.
 //
+//	clientprobe ja4
+//	    Sends one loadCodeAssist request directly through the production Cloud
+//	    Code client with an invalid token. No account or OAuth refresh is used;
+//	    any HTTP response is enough to capture the TLS ClientHello.
+//
 //	clientprobe oauth
 //	    Builds the sign-in URL the WebUI would open (auth.GetAuthorizationURL)
 //	    and asks Google whether it accepts that client and loopback redirect,
 //	    without following the redirect to a sign-in page.
 //
-// Both print one JSON object on stdout.
+// Each command prints one JSON value on stdout.
 package main
 
 import (
@@ -42,7 +46,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: clientprobe cloudcode -proxy URL | clientprobe oauth")
+		fmt.Fprintln(os.Stderr, "usage: clientprobe cloudcode -proxy URL | clientprobe ja4 | clientprobe oauth")
 		os.Exit(2)
 	}
 	var result any
@@ -50,6 +54,10 @@ func main() {
 	switch os.Args[1] {
 	case "cloudcode":
 		result, err = probeCloudCode(os.Args[2:])
+	case "ja4":
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		result, err = probeJA4(ctx, cloudcode.DailyEndpoint)
 	case "oauth":
 		result, err = oauth(os.Args[2:])
 	default:
@@ -60,6 +68,19 @@ func main() {
 		os.Exit(1)
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(result)
+}
+
+func probeJA4(ctx context.Context, endpoint string) (int, error) {
+	client := cloudcode.New(cloudcode.Options{AccessToken: "clientprobe-not-a-token"})
+	response, err := client.LoadCodeAssistAt(ctx, []string{endpoint})
+	if err != nil {
+		var httpErr *cloudcode.HTTPError
+		if !errors.As(err, &httpErr) {
+			return 0, err
+		}
+		return httpErr.StatusCode, nil
+	}
+	return response.StatusCode, nil
 }
 
 // cloudCodeResult maps each request to the status Google answered or the
@@ -78,8 +99,8 @@ func probeCloudCode(args []string) (cloudCodeResult, error) {
 		return nil, fmt.Errorf("-proxy %q is not a proxy URL", *proxy)
 	}
 
-	// Clone keeps the empty tls.Config and the HTTP/2 opt-out, so the hello and
-	// the request bytes are the ones the proxy sends; only the route changes.
+	// Clone preserves the production TLS configuration and HTTP/2 negotiation;
+	// only the route changes.
 	transport := cloudcode.SharedTransport().Clone()
 	transport.Proxy = http.ProxyURL(proxyURL)
 	client := cloudcode.New(cloudcode.Options{

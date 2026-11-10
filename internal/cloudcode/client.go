@@ -35,8 +35,8 @@ const (
 	PathListExperiments          = "/v1internal:listExperiments"
 	PathListCascadeNuxes         = "/v1internal/cascadeNuxes?page_size=1000"
 
-	DefaultUserAgentVersion = "1.5.2"
-	AgyBuildCL              = "1015175089"
+	DefaultUserAgentVersion = "1.5.5"
+	AgyBuildCL              = "1017970541"
 	AgyAuthMethod           = "consumer"
 )
 
@@ -185,7 +185,15 @@ type SSEEvent struct {
 
 func newTransport(responseHeaderTimeout time.Duration) *http.Transport {
 	return &http.Transport{
-		TLSClientConfig:       &tls.Config{},
+		TLSClientConfig: &tls.Config{},
+		// The ClientHello is built from the empty tls.Config alone — no
+		// CipherSuites, CurvePreferences or NextProtos of our own, per
+		// AGENTS.md. ForceAttemptHTTP2 is required because DialContext and
+		// TLSClientConfig disable net/http's automatic h2 upgrade: without
+		// it the ClientHello carries no ALPN and every Cloud Code call goes
+		// out on HTTP/1.1, while agy 1.5.5 negotiates h2 on all of them
+		// (runs/20261110-184155/report.md, JA4 t13d1312h2…).
+		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          1000,
 		MaxIdleConnsPerHost:   500,
 		IdleConnTimeout:       90 * time.Second,

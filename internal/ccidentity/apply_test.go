@@ -31,11 +31,13 @@ func testIdentity() Identity {
 	}
 }
 
-// capturedHeaders is the constant header set read out of
-// .reference/claude-code-headers-20261020.txt. It is duplicated here on purpose:
-// a test that reads the artifact at run time would pass even if both the
-// artifact and the implementation were changed together, and this test's job is
-// to fail when the implementation drifts from the recorded bytes.
+// capturedHeaders is the constant header set, read out of
+// .reference/claude-code-headers-20261020.txt and refreshed from
+// .reference/claude-code-headers-20261110.jsonl (2.1.322) which adds
+// x-claude-code-sandy-plover on POST /v1/messages. It is duplicated here on
+// purpose: a test that reads the artifact at run time would pass even if both
+// the artifact and the implementation were changed together, and this test's
+// job is to fail when the implementation drifts from the recorded bytes.
 var capturedHeaders = map[string]string{
 	"Accept":                                    "application/json",
 	"Content-Type":                              "application/json",
@@ -51,6 +53,7 @@ var capturedHeaders = map[string]string{
 	"anthropic-version":                         "2023-06-01",
 	"x-app":                                     "cli",
 	"x-claude-code-request-class":               "main",
+	"x-claude-code-sandy-plover":                "[]",
 }
 
 func TestApplyHeadersSendsTheCapturedSet(t *testing.T) {
@@ -588,7 +591,7 @@ func TestUserAgentForTheInteractiveEntrypointIsTheCapturedOne(t *testing.T) {
 	// .reference/claude-code-count-tokens-20261107.jsonl records this string
 	// on an interactive session's messages and counts.
 	got := messagesUserAgent(Identity{Entrypoint: EntrypointInteractive})
-	if got != "claude-cli/2.1.311 (external, cli)" {
+	if got != "claude-cli/2.1.322 (external, cli)" {
 		t.Errorf("User-Agent = %q, want the captured interactive form", got)
 	}
 }
@@ -617,8 +620,11 @@ func TestDefaultProfilePinsTheCapturedPathAndBetas(t *testing.T) {
 	if p.Path != "/v1/messages?beta=true" {
 		t.Errorf("Path = %q, want the captured path with its query string", p.Path)
 	}
-	if len(p.Betas) != 14 {
-		t.Fatalf("Betas has %d entries, want the captured 14", len(p.Betas))
+	// 2.1.322 adds tool-provenance-2026-10-26 to the 2.1.311 list
+	// (.reference/claude-code-headers capture of 2026-11-10; see
+	// Betas in defaults.go, which lists it in the captured order).
+	if len(p.Betas) != 15 {
+		t.Fatalf("Betas has %d entries, want the captured 15", len(p.Betas))
 	}
 	if p.Betas[0] != "claude-code-20250219" || p.Betas[1] != "oauth-2025-04-20" {
 		t.Errorf("first betas = %q, %q; the capture puts claude-code-20250219 first", p.Betas[0], p.Betas[1])

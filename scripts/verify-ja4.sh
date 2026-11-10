@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Live JA4 fingerprint re-verification gate.
 #
-# Boots the proxy, captures the upstream ClientHello to Cloud Code,
-# and asserts the JA4 fingerprint matches the upstream agy baseline:
-#   t13d131100_f57a46bbacb6_f50d94e863eb
+# Sends one request using the production Cloud Code client with an invalid
+# token, captures its ClientHello, and asserts the upstream agy baseline:
+#   t13d1312h2_f57a46bbacb6_f50d94e863eb
 #
 # Runs by default. Exits non-zero on an actual fingerprint mismatch.
 # Environments without tcpdump/tshark or capture privileges (no sudo,
@@ -16,10 +16,8 @@ set -euo pipefail
 # skip intentionally without attempting a capture at all.
 
 PCAP_FILE="/tmp/antigravity-go.pcap"
-EXPECTED_JA4="t13d131100_f57a46bbacb6_f50d94e863eb"
-PROXY_PORT="8099"
-PROXY_KEY="${ANTIGRAVITY_PROXY_API_KEY:-test-verification-key}"
-PROXY_LOG="/tmp/proxy-verification.log"
+EXPECTED_JA4="t13d1312h2_f57a46bbacb6_f50d94e863eb"
+PROBE_LOG="/tmp/clientprobe-ja4.log"
 
 skip() {
   echo "SKIPPED: $1" >&2
@@ -38,25 +36,16 @@ if ! command -v tshark >/dev/null 2>&1; then
   skip "tshark not found in PATH"
 fi
 
-echo "=== 1. Building Proxy Binary ==="
+echo "=== 1. Building Production Transport Probe ==="
 mkdir -p bin
-go build -o bin/antigravity-proxy ./cmd/proxy
+go build -o bin/clientprobe ./tools/clientprobe
 
 echo "=== 2. Cleaning Previous PCAP ==="
 rm -f "$PCAP_FILE"
 
-echo "=== 3. Starting Proxy on port $PROXY_PORT ==="
-ANTIGRAVITY_PROXY_LISTEN="127.0.0.1:$PROXY_PORT" \
-ANTIGRAVITY_PROXY_API_KEY="$PROXY_KEY" \
-./bin/antigravity-proxy > "$PROXY_LOG" 2>&1 &
-PROXY_PID=$!
 
 cleanup() {
   echo "=== Stopping processes ==="
-  if kill -0 "$PROXY_PID" 2>/dev/null; then
-    kill "$PROXY_PID" 2>/dev/null || true
-    wait "$PROXY_PID" 2>/dev/null || true
-  fi
   if [ -n "${TCPDUMP_PID:-}" ] && kill -0 "$TCPDUMP_PID" 2>/dev/null; then
     kill "$TCPDUMP_PID" 2>/dev/null || true
     wait "$TCPDUMP_PID" 2>/dev/null || true
@@ -64,10 +53,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Wait for proxy readiness
-sleep 1
 
-echo "=== 4. Starting Packet Capture ==="
+echo "=== 3. Starting Packet Capture ==="
 # macOS rejects -i any for unprivileged users; pick the egress interface for
 # Cloud Code. Default to en0 (Wi-Fi) and let ANTIGRAVITY_CAPTURE_IFACE override.
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -81,10 +68,12 @@ tcpdump -i "$CAP_IFACE" -w "$PCAP_FILE" \
 TCPDUMP_PID=$!
 sleep 1
 
-echo "=== 5. Triggering Usage Request ==="
-# Hit usage endpoint to trigger upstream fetchAvailableModels call
-curl -sS -H "x-api-key: $PROXY_KEY" \
-  "http://127.0.0.1:$PROXY_PORT/v1/usage" >/dev/null || true
+echo "=== 4. Triggering Credential-Free Cloud Code Request ==="
+# An HTTP rejection still completes the handshake. Never load accounts here:
+# a failed OAuth refresh prevents /v1/usage from reaching Cloud Code at all.
+if ! ./bin/clientprobe ja4 > "$PROBE_LOG" 2>&1; then
+  cat "$PROBE_LOG" >&2
+fi
 
 # Allow packets to flush to disk
 sleep 2
@@ -95,7 +84,7 @@ if kill -0 "$TCPDUMP_PID" 2>/dev/null; then
   wait "$TCPDUMP_PID" 2>/dev/null || true
 fi
 
-echo "=== 6. Extracting JA4 with tshark ==="
+echo "=== 5. Extracting JA4 with tshark ==="
 if [ ! -s "$PCAP_FILE" ]; then
   skip "packet capture file $PCAP_FILE is empty or missing (likely no capture privileges — tcpdump needs root/BPF access)"
 fi
@@ -110,7 +99,7 @@ OUTPUT=$(tshark -r "$PCAP_FILE" \
   -e tls.handshake.sig_hash_alg | head -n 1)
 
 if [ -z "$OUTPUT" ]; then
-  skip "no TLS ClientHello matching cloudcode found in capture (check ANTIGRAVITY_CAPTURE_IFACE, or see proxy log at $PROXY_LOG)"
+  skip "no TLS ClientHello matching cloudcode found in capture (check ANTIGRAVITY_CAPTURE_IFACE, or see probe log at $PROBE_LOG)"
 fi
 
 echo "Observed ClientHello Row:"
@@ -120,7 +109,7 @@ SNI=$(echo "$OUTPUT" | awk -F'\t' '{print $1}')
 ALPN=$(echo "$OUTPUT" | awk -F'\t' '{print $2}')
 JA4=$(echo "$OUTPUT" | awk -F'\t' '{print $3}')
 
-echo "=== 7. Asserting JA4 Fingerprint ==="
+echo "=== 6. Asserting JA4 Fingerprint ==="
 echo "Observed SNI: $SNI"
 echo "Observed JA4: $JA4"
 echo "Expected JA4: $EXPECTED_JA4"

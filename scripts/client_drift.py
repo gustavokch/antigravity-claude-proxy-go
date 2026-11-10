@@ -568,7 +568,10 @@ AGY_USER_AGENT = re.compile(
 
 
 def agy_user_agent(capture: Capture, part: str) -> str | None:
-    for record in capture.records:
+    # agy can self-update mid-capture (run 20261110-175757 pinned 1.5.3 from
+    # the first records while the client was already 1.5.5). The pin names the
+    # client that is installed now, so the newest record wins.
+    for record in reversed(capture.records):
         match = AGY_USER_AGENT.match(header(record, "user-agent") or "")
         if match:
             return match.group(part)
@@ -844,7 +847,9 @@ def compare_records(label: str, base: dict, seen: dict, dynamic: frozenset[str],
     if extra:
         drifts.append(f"{label}: new headers: {', '.join(extra)}")
     shared = [name for name in base_names if name in seen_names]
-    if shared != [name for name in seen_names if name in base_names]:
+    # Go's HTTP/2 writer ranges over a map; agy's own requests vary in order.
+    both_http2 = base.get("http_version") == seen.get("http_version") == "HTTP/2.0"
+    if not both_http2 and shared != [name for name in seen_names if name in base_names]:
         drifts.append(f"{label}: header order {shared} -> {[n for n in seen_names if n in base_names]}")
     base_values, seen_values = dict(base_headers), dict(seen_headers)
     for name in shared:
