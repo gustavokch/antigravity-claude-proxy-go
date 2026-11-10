@@ -25,21 +25,28 @@ import (
 // report.md; JA4 t13d1312h2...). With TLSClientConfig and DialContext set by
 // hand, net/http needs ForceAttemptHTTP2 to offer the h2 ALPN; the TLS config
 // itself stays empty, per AGENTS.md, so the ClientHello cipher section is
-// untouched and only the ALPN extension appears.
+// untouched and only the ALPN extension appears. The pin reads a fresh
+// newTransport: the shared one is mutated by net/http the first time it
+// connects (the stdlib adds its own NextProtos), so comparing it to the zero
+// value races with whichever test dialed first.
 func TestTransportKeepsTLSZeroValueAndAttemptsHTTP2(t *testing.T) {
 	t.Parallel()
-	client := New(Options{})
-	if client.transport == nil {
-		t.Fatal("dedicated transport was not created")
+	transport := newTransport(0)
+	if !reflect.DeepEqual(transport.TLSClientConfig, &tls.Config{}) {
+		t.Fatalf("TLS config is not empty: %#v", transport.TLSClientConfig)
 	}
-	if !reflect.DeepEqual(client.transport.TLSClientConfig, &tls.Config{}) {
-		t.Fatalf("TLS config is not empty: %#v", client.transport.TLSClientConfig)
-	}
-	if !client.transport.ForceAttemptHTTP2 {
+	if !transport.ForceAttemptHTTP2 {
 		t.Fatal("ForceAttemptHTTP2 must be true to negotiate h2 like agy 1.5.5")
 	}
-	if client.transport.TLSNextProto != nil {
-		t.Fatalf("TLSNextProto must remain nil: %#v", client.transport.TLSNextProto)
+	if transport.TLSNextProto != nil {
+		t.Fatalf("TLSNextProto must remain nil: %#v", transport.TLSNextProto)
+	}
+	client := New(Options{})
+	if client.transport != transportForTimeout(0) {
+		t.Fatal("New did not take the shared default transport")
+	}
+	if client.transport.ForceAttemptHTTP2 != transport.ForceAttemptHTTP2 {
+		t.Fatal("the shared transport must carry the same h2 attempt state")
 	}
 }
 
@@ -477,8 +484,14 @@ func TestStreamHasNoTotalTimeout(t *testing.T) {
 	if client.httpClient.Timeout != 0 {
 		t.Errorf("httpClient.Timeout = %v, want 0 (kills long SSE streams)", client.httpClient.Timeout)
 	}
-	if !reflect.DeepEqual(client.transport.TLSClientConfig, &tls.Config{}) {
-		t.Errorf("TLS config must stay empty for agy JA3 parity: %#v", client.transport.TLSClientConfig)
+	if client.transport.ResponseHeaderTimeout != 5*time.Minute {
+		t.Errorf("ResponseHeaderTimeout = %v, want the configured timeout", client.transport.ResponseHeaderTimeout)
+	}
+	// The TLS config emptiness is a construction property; on the shared
+	// cached transport it is contradicted by net/http's own first-dial
+	// mutation (see TestTransportKeepsTLSZeroValueAndAttemptsHTTP2).
+	if !reflect.DeepEqual(newTransport(5*time.Minute).TLSClientConfig, &tls.Config{}) {
+		t.Errorf("TLS config must stay empty for agy JA3 parity")
 	}
 }
 
