@@ -617,8 +617,11 @@ func TestDefaultProfilePinsTheCapturedPathAndBetas(t *testing.T) {
 	if p.Path != "/v1/messages?beta=true" {
 		t.Errorf("Path = %q, want the captured path with its query string", p.Path)
 	}
-	if len(p.Betas) != 14 {
-		t.Fatalf("Betas has %d entries, want the captured 14", len(p.Betas))
+	// 2.1.322 adds tool-provenance-2026-10-26 to the 2.1.311 list
+	// (.reference/claude-code-headers capture of 2026-11-10; see
+	// Betas in defaults.go, which lists it in the captured order).
+	if len(p.Betas) != 15 {
+		t.Fatalf("Betas has %d entries, want the captured 15", len(p.Betas))
 	}
 	if p.Betas[0] != "claude-code-20250219" || p.Betas[1] != "oauth-2025-04-20" {
 		t.Errorf("first betas = %q, %q; the capture puts claude-code-20250219 first", p.Betas[0], p.Betas[1])
