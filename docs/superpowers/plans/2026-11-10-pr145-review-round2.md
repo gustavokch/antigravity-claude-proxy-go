@@ -69,7 +69,7 @@ Commit: `git add scripts/verify-ja4.sh README.md .reference/client-drift/agy.jso
 - [x] Run `go build ./...` and `go test -json ./...` once for the final Go build/test gate, counting test outcomes from JSON.
 - [x] Run all six identity script test modules listed in `IDENTITY_TESTS`.
 - [x] Review the final changed ranges inline. Run `trail check` before committing/pushing; if the installed trail lacks that command, record the limitation rather than inventing a pass.
-- [ ] Push `git push fork HEAD:chore/client-identity-drift` and post resolved findings plus any live-validation blockers to PR #145.
+- [x] Push `git push fork HEAD:chore/client-identity-drift` and post resolved findings plus any live-validation blockers to PR #145.
 
 ## Execution record
 
@@ -82,3 +82,5 @@ Commit: `git add scripts/verify-ja4.sh README.md .reference/client-drift/agy.jso
 - Final local verification: `go build ./...` passed; `go test -json ./...` passed 3,256 tests, skipped 3 tests, and failed 0 (40 tested packages; 30 packages without tests). The six identity script modules passed 203/203 tests. `bash -n scripts/verify-ja4.sh` and the JA4 registry assertion passed.
 - Baseline proof: the 39 committed agy requests exactly equal the real capture after `baseline_records` removes per-run/response data; the refreshed baseline compares without drift. All 10 request classes preserve stable header values, body shapes and endpoints across the reviewed protocol migration.
 - Final review: self-review inline, as explicitly requested; no reviewer subagent was used. No further code defect found in the changed ranges. The packet gate and interactive Claude capture remain unverified prerequisites, not a completed definition of done.
+- Delivery: commits `41d074e` and `0699bf9` pushed to `fork/chore/client-identity-drift`; round-two review and remediation comments published on PR #145. The final remaining task is blocked on user-run live evidence.
+- User handoff from this worktree: run `scripts/verify-ja4.sh`, then `CLAUDE_CAPTURE_TAG=20261110-pr145-interactive scripts/capture-claude-code-headers.sh interactive`; the capture must report Claude Code 2.1.322. Return the gate output and the generated redacted JSONL/meta paths. A missing prerequisite or a skipped gate leaves validation blocked.
