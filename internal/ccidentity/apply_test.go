@@ -588,7 +588,7 @@ func TestUserAgentForTheInteractiveEntrypointIsTheCapturedOne(t *testing.T) {
 	// .reference/claude-code-count-tokens-20261107.jsonl records this string
 	// on an interactive session's messages and counts.
 	got := messagesUserAgent(Identity{Entrypoint: EntrypointInteractive})
-	if got != "claude-cli/2.1.311 (external, cli)" {
+	if got != "claude-cli/2.1.322 (external, cli)" {
 		t.Errorf("User-Agent = %q, want the captured interactive form", got)
 	}
 }

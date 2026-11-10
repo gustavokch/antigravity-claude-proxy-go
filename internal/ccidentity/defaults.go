@@ -15,16 +15,16 @@ import (
 const (
 	// ClientVersion is the version literal in cc_version, minus the suffix that
 	// versionSuffix derives from the conversation's first prompt.
-	ClientVersion = "2.1.311"
+	ClientVersion = "2.1.322"
 
 	// MessagesUserAgent is the User-Agent on POST /v1/messages. The capture
 	// records claude-cli/, lowercase, with a parenthesised mode.
-	MessagesUserAgent = "claude-cli/2.1.311 (external, sdk-cli)"
+	MessagesUserAgent = "claude-cli/2.1.322 (external, sdk-cli)"
 
 	// DiscoveryUserAgent is the User-Agent on GET /api/claude_code/*. It is a
 	// DIFFERENT family from the messages path: claude-code/ not claude-cli/, and
 	// no parenthesised mode. Two spellings, two families.
-	DiscoveryUserAgent = "claude-code/2.1.311"
+	DiscoveryUserAgent = "claude-code/2.1.322"
 
 	// EntrypointSDKCLI and EntrypointInteractive are the two cc_entrypoint values
 	// known to exist. The --print captures only ever produced sdk-cli; the
@@ -55,6 +55,7 @@ var Betas = []string{
 	"prompt-caching-scope-2026-01-05",
 	"per-turn-control-2026-07-01",
 	"mid-conversation-tool-changes-2026-07-01",
+	"tool-provenance-2026-10-26",
 	"thinking-token-count-2026-05-13",
 	"advanced-tool-use-2025-11-20",
 	"mid-conversation-system-clear-at-2026-08-21",
@@ -91,7 +92,7 @@ func staticHeaders(id Identity) []Header {
 // caller changed the entrypoint.
 //
 // The construction puts the entrypoint inside the parentheses. For cli it
-// yields "claude-cli/2.1.311 (external, cli)", the string the interactive count
+// yields "claude-cli/2.1.322 (external, cli)", the string the interactive count
 // capture shows on both messages and counts. Any other entrypoint is an
 // extrapolation of that shape; no capture shows one.
 func messagesUserAgent(id Identity) string {
