@@ -568,7 +568,10 @@ AGY_USER_AGENT = re.compile(
 
 
 def agy_user_agent(capture: Capture, part: str) -> str | None:
-    for record in capture.records:
+    # agy can self-update mid-capture (run 20261110-175757 pinned 1.5.3 from
+    # the first records while the client was already 1.5.5). The pin names the
+    # client that is installed now, so the newest record wins.
+    for record in reversed(capture.records):
         match = AGY_USER_AGENT.match(header(record, "user-agent") or "")
         if match:
             return match.group(part)

@@ -172,6 +172,23 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(drift.agy_user_agent(capture, "cl"), "1009308193")
         self.assertEqual(drift.agy_user_agent(capture, "auth"), "consumer")
 
+    def test_agy_user_agent_takes_the_newest_record(self):
+        # agy self-updated mid-capture (run 20261110-175757: of 39 requests, 21
+        # said 1.5.3 and the later 18 said 1.5.5). The pin must name the
+        # client that is installed now, so the newest record wins, not the
+        # first the capture happened to see.
+        older = record("/v1:load", [[
+            "User-Agent",
+            "antigravity/cli/1.5.3 (aidev_client; os_type=darwin; arch=arm64; cl=1016078699; auth_method=consumer)",
+        ]])
+        newer = record("/v1:load", [[
+            "User-Agent",
+            "antigravity/cli/1.5.5 (aidev_client; os_type=darwin; arch=arm64; cl=1017970541; auth_method=consumer)",
+        ]])
+        capture = drift.Capture([older, newer], {})
+        self.assertEqual(drift.agy_user_agent(capture, "version"), "1.5.5")
+        self.assertEqual(drift.agy_user_agent(capture, "cl"), "1017970541")
+
     def test_opencode_is_read_from_either_zen_route(self):
         # 2.2.3 left /zen/v1 for /inference/<family>/v1; reading only the old
         # route left its version and ClientHello unchecked.
