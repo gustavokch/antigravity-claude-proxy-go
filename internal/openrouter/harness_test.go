@@ -125,6 +125,33 @@ func TestIsHarnessGateError(t *testing.T) {
 	}
 }
 
+// toolCompatibility404 is OpenRouter's live answer (2026-11-11) to a forced
+// tool_choice with provider.require_parameters on
+// thinkingmachines/inkling-2-small:free, whose only endpoint lists no
+// tool_choice support.
+const toolCompatibility404 = `{"type":"error","error":{"type":"not_found_error","message":"No endpoints found that support the provided 'tool_choice' value. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection","error_type":"not_found"},"request_id":"gen-1794429803-FG4hFa2urv6hxO7wYh6V","metadata":{"routing_funnel":[{"step":"Initial Endpoints","endpoint_count":1}],"failed_routing_step":"Filter by Tool Compatibility"}}`
+
+func TestIsToolCompatibilityRejection(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       bool
+	}{
+		{"404 tool compatibility", http.StatusNotFound, toolCompatibility404, true},
+		{"404 no endpoints for model", http.StatusNotFound,
+			`{"error":{"message":"No endpoints found for minimax/minimax-m3."},"metadata":{"routing_funnel":[{"step":"Initial Endpoints","endpoint_count":0}]}}`, false},
+		{"502 with the same body", http.StatusBadGateway, toolCompatibility404, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsToolCompatibilityRejection(tc.statusCode, []byte(tc.body)); got != tc.want {
+				t.Errorf("IsToolCompatibilityRejection(%d, %s) = %v, want %v", tc.statusCode, tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsOpenRouterTransientError(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -142,6 +169,12 @@ func TestIsOpenRouterTransientError(t *testing.T) {
 			name:       "404 plain model not found",
 			statusCode: http.StatusNotFound,
 			body:       `{"error":{"message":"Model not found: bad-model-id"}}`,
+			want:       false,
+		},
+		{
+			name:       "404 tool compatibility rejection",
+			statusCode: http.StatusNotFound,
+			body:       toolCompatibility404,
 			want:       false,
 		},
 		{

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
@@ -153,5 +154,83 @@ func TestTruncateCutsOnRuneBoundary(t *testing.T) {
 	}
 	if plain := truncate("abc", 5); plain != "abc" {
 		t.Errorf("short strings pass through unchanged, got %q", plain)
+	}
+}
+
+// toolCompatibility404 is OpenRouter's live answer (2026-11-11) when no
+// endpoint of the model supports the forced tool_choice.
+const toolCompatibility404 = `{"type":"error","error":{"type":"not_found_error","message":"No endpoints found that support the provided 'tool_choice' value. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection","error_type":"not_found"},"request_id":"gen-1794429803-FG4hFa2urv6hxO7wYh6V","metadata":{"routing_funnel":[{"step":"Initial Endpoints","endpoint_count":1}],"failed_routing_step":"Filter by Tool Compatibility"}}`
+
+// toolCompatibilityMock answers every upstream message call with the
+// tool-compatibility 404 and counts the calls.
+func toolCompatibilityMock(attempts *int32) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(attempts, 1)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(toolCompatibility404))
+	}))
+}
+
+// The 2026-11-11 inkling-2-small:free incident: the only endpoint lists tools
+// but no forced tool_choice, the capability filter empties the chain, and the
+// request goes out unpinned with require_parameters. OpenRouter's 404 is a
+// catalog verdict, so the proxy must return it after one attempt.
+func TestOpenRouterRouting_ForcedToolWithoutCapableEndpointFailsOnce(t *testing.T) {
+	var attempts int32
+	mockOR := toolCompatibilityMock(&attempts)
+	defer mockOR.Close()
+
+	env := setupRoutingTestEnv(t, mockOR.URL, []openrouter.ProviderEndpoint{
+		{ProviderName: "Thinking Machines", UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99,
+			SupportedParameters: []string{"max_tokens", "tools"},
+			SupportsToolChoice:  &openrouter.ToolChoiceSupport{}},
+	})
+	env.saveConfig(t, nil, map[string]any{"maxRetries": 3})
+	server := env.newServer(t)
+
+	rec := doToolsRequest(t, server, "any")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("upstream attempts = %d, want 1: a tool-compatibility rejection is deterministic", got)
+	}
+}
+
+// The catalog claims both providers serve forced choice, but OpenRouter's live
+// routing refuses each one. Each pinned candidate is tried once, and the
+// refusal must not trip their breakers: a tripped breaker also removes the
+// provider from requests that use no tools.
+func TestOpenRouterRouting_ToolCompatibilityRejectionSkipsHealthPenalty(t *testing.T) {
+	var attempts int32
+	mockOR := toolCompatibilityMock(&attempts)
+	defer mockOR.Close()
+
+	capable := &openrouter.ToolChoiceSupport{Auto: true, Required: true, Function: true}
+	env := setupRoutingTestEnv(t, mockOR.URL, []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99,
+			SupportedParameters: []string{"tools", "tool_choice"}, SupportsToolChoice: capable},
+		{ProviderName: "p2", ContextLength: 100000, UptimeLast5m: 0.90, UptimeLast30m: 0.90, UptimeLast1d: 0.90,
+			SupportedParameters: []string{"tools", "tool_choice"}, SupportsToolChoice: capable},
+	})
+	env.saveConfig(t, nil, map[string]any{"maxRetries": 3})
+	server := env.newServer(t)
+
+	rec := doToolsRequest(t, server, "any")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Errorf("upstream attempts = %d, want 2: each pinned candidate once, no retry cycle", got)
+	}
+	stats := openrouter.DefaultRouter.Stats("anthropic/claude-3.7-sonnet")
+	for _, p := range []string{"p1", "p2"} {
+		if got := stats[p].FailureCount; got != 0 {
+			t.Errorf("%s failureCount = %d, want 0 for a tool-compatibility rejection", p, got)
+		}
 	}
 }

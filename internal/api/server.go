@@ -2368,9 +2368,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		// on a provider that silently ignores it — the model answers in prose
 		// and the tool is bypassed with no error anywhere. require_parameters
 		// hands that decision to OpenRouter's live catalog, which drops
-		// endpoints that cannot honour the parameters in the body; a request
-		// left with no endpoint 404s, which the failover loop classifies and
-		// retries. That is a visible failure instead of a silent one.
+		// endpoints that cannot honour the parameters in the body. A request
+		// left with no endpoint gets a 404 ("Filter by Tool Compatibility").
+		// That rejection is deterministic: the loop tries each remaining
+		// candidate once and returns it without a retry cycle. That is a
+		// visible failure instead of a silent one.
 		//
 		// Requests that merely carry tools with "auto" (the common agentic
 		// case) are left alone: an endpoint that ignores tool_choice there
@@ -2583,8 +2585,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		action, backoff := classify(resp.StatusCode, nil)
 		// 429 is a transient rate limit, not provider death: recording it as a
 		// failure would let a rate-limit storm trip the breaker on a healthy
-		// provider. All other non-2xx responses count toward the threshold.
-		if provider != "" && resp.StatusCode != http.StatusTooManyRequests {
+		// provider. A tool-compatibility rejection is a catalog verdict about
+		// the request, not about the provider. All other non-2xx responses
+		// count toward the threshold.
+		if provider != "" && resp.StatusCode != http.StatusTooManyRequests &&
+			!openrouter.IsToolCompatibilityRejection(resp.StatusCode, bodyBytes) {
 			openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 		}
 
