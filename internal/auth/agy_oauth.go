@@ -92,9 +92,9 @@ func agyOAuthCredentialCandidates(loginClientID string) ([]oauthClientCredential
 	// redirect_uri_mismatch). Their order in the string table is a linker
 	// artifact, so the client that issued agy's own login goes first. Without
 	// that login the older observation stands: last ID, first secret. Every other
-	// unique pair follows, tried only if Google rejects the one before it as
-	// invalid_client. A refresh token remains scoped to the issuing client, so
-	// this resolves the exact pair for the active login.
+	// unique pair follows, tried until Google stops rejecting the client as
+	// invalid_client or unauthorized_client. A refresh token remains scoped to
+	// the issuing client, so this resolves the exact pair for the active login.
 	orderedIDs := append([][]byte{clientIDs[len(clientIDs)-1]}, clientIDs[:len(clientIDs)-1]...)
 	if loginClientID != "" {
 		if i := slices.IndexFunc(orderedIDs, func(id []byte) bool { return string(id) == loginClientID }); i > 0 {

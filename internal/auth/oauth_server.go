@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -65,26 +66,177 @@ func GenerateState() string {
 	return hex.EncodeToString(bytes)
 }
 
-// GetAuthorizationURL builds the Google OAuth authorization URL.
+// GetAuthorizationURL builds the Google OAuth authorization URL and returns the
+// client whose loopback registration Google accepts for it.
 func GetAuthorizationURL(customRedirectURI string) (authURL, verifier, state string, err error) {
+	authURL, _, verifier, state, err = prepareSignIn(customRedirectURI)
+	return authURL, verifier, state, err
+}
+
+func defaultRedirectURI() string {
+	return fmt.Sprintf("http://localhost:%d/oauth-callback", DefaultCallbackPort)
+}
+
+// probeAuthorizationURL reports whether Google accepts the client and redirect
+// named in an authorization URL. It is a variable so a test can answer without
+// reaching accounts.google.com.
+var probeAuthorizationURL = googleAcceptsAuthorizationURL
+
+// googleAcceptsAuthorizationURL asks the authorization endpoint whether it
+// accepts the URL's client and redirect_uri, without following the redirect.
+// Google validates both before it authenticates anyone: a registration it
+// rejects lands on its own error page, while an accepted one redirects to the
+// sign-in page (no session is carried here) or to the client's redirect_uri.
+func googleAcceptsAuthorizationURL(authURL string) (accepted bool, reason string, err error) {
+	client := &http.Client{
+		Timeout:       15 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	response, err := client.Get(authURL)
+	if err != nil {
+		return false, "", fmt.Errorf("ask Google about the redirect registration: %w", err)
+	}
+	defer response.Body.Close()
+	location, err := response.Location()
+	if err != nil {
+		return false, "", fmt.Errorf("authorization endpoint answered %d without a redirect", response.StatusCode)
+	}
+	if !strings.Contains(location.Path, "/oauth/error") {
+		return true, "", nil
+	}
+	return false, DecodeAuthError(location.Query().Get("authError")), nil
+}
+
+var oauthErrorCode = regexp.MustCompile(`[a-z]+(?:_[a-z]+)+`)
+
+// DecodeAuthError returns the error code Google puts first in an authError
+// query parameter, a base64 protobuf whose field 1 is the code
+// ("redirect_uri_mismatch", "invalid_client", ...).
+func DecodeAuthError(value string) string {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(value, "="))
+	if err != nil {
+		if raw, err = base64.StdEncoding.DecodeString(value); err != nil {
+			return "undecodable authError"
+		}
+	}
+	if len(raw) > 2 && raw[0] == 0x0a && int(raw[1]) <= len(raw)-2 {
+		return string(raw[2 : 2+int(raw[1])])
+	}
+	if code := oauthErrorCode.Find(raw); code != nil {
+		return string(code)
+	}
+	return "unrecognised authError"
+}
+
+// prepareSignIn builds the authorization URL for redirectURI along with the
+// credentials to redeem its code.
+func prepareSignIn(customRedirectURI string) (authURL string, credentials []oauthClientCredentials, verifier, state string, err error) {
+	redirectURI := customRedirectURI
+	if redirectURI == "" {
+		redirectURI = defaultRedirectURI()
+	}
+	candidates, err := (Manager{}).oauthCredentialCandidates(agyLoginClientID)
+	if err != nil {
+		return "", nil, "", "", fmt.Errorf("resolve OAuth client credentials: %w", err)
+	}
+	return signInURL(candidates, redirectURI)
+}
+
+// agyCLIClientID is the OAuth client the installed agy signs in with. Cloud
+// Code ties an account's entitlement to the client that issued its token: a
+// token from this client resolves to the consumer tier with the managed
+// "aicode-consumers" project, while another embedded client that also accepts a
+// loopback redirect resolves to standard-tier with no project, which leaves the
+// account unable to generate. agy 1.5.5's own stored token names this client in
+// its `aud` claim, and its loadCodeAssist answer carries the project.
+const agyCLIClientID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+
+// preferSignInClient moves the agy CLI client to the front. The credentials of
+// an agy login go first already; this covers a machine without one.
+func preferSignInClient(candidates []oauthClientCredentials) []oauthClientCredentials {
+	for index, candidate := range candidates {
+		if candidate.clientID != agyCLIClientID {
+			continue
+		}
+		if index == 0 {
+			return candidates
+		}
+		ordered := make([]oauthClientCredentials, 0, len(candidates))
+		ordered = append(ordered, candidate)
+		ordered = append(ordered, candidates[:index]...)
+		return append(ordered, candidates[index+1:]...)
+	}
+	return candidates
+}
+
+// signInURL picks the first candidate client Google accepts for a loopback
+// redirect and builds the authorization URL for it, returning that client's
+// credential pairs first so the token exchange runs as the same client.
+//
+// A client's redirect registration is not knowable locally: agy 1.4.10 added a
+// client registered only for https://antigravity.google/oauth-callback, which
+// answers a loopback redirect with redirect_uri_mismatch, and ordering by the
+// login claim puts that client first when agy's own login issued it. Sign-in
+// therefore asks Google once per distinct client; an installed-app client
+// accepts any loopback port, so the ephemeral port StartFlow binds is fine.
+// Accepting the redirect is necessary but not sufficient: only the agy CLI
+// client's tokens reach the consumer tier, so that client goes first.
+func signInURL(candidates []oauthClientCredentials, redirectURI string) (authURL string, credentials []oauthClientCredentials, verifier, state string, err error) {
+	if len(candidates) == 0 {
+		return "", nil, "", "", errors.New("no OAuth client credentials found in the installed agy")
+	}
+	candidates = preferSignInClient(candidates)
+	var reason string
+	tried := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if _, seen := tried[candidate.clientID]; seen {
+			continue
+		}
+		tried[candidate.clientID] = struct{}{}
+
+		authURL, verifier, state, err = authorizationURL(candidate.clientID, redirectURI)
+		if err != nil {
+			return "", nil, "", "", err
+		}
+		accepted, why, err := probeAuthorizationURL(authURL)
+		if err != nil {
+			return "", nil, "", "", err
+		}
+		if accepted {
+			return authURL, credentialsForClient(candidates, candidate.clientID), verifier, state, nil
+		}
+		reason = why
+	}
+	if len(tried) == 1 {
+		for clientID := range tried {
+			prefix, _, _ := strings.Cut(clientID, "-")
+			return "", nil, "", "", fmt.Errorf("OAuth client %s-… rejects the loopback redirect %s (%s); register that redirect for the client", prefix, redirectURI, reason)
+		}
+	}
+	return "", nil, "", "", fmt.Errorf("none of the %d embedded agy OAuth clients accepts the loopback redirect %s (last answer: %s)", len(tried), redirectURI, reason)
+}
+
+// credentialsForClient returns the pairs of the client that authorized, keeping
+// their tried-secret order.
+func credentialsForClient(candidates []oauthClientCredentials, clientID string) []oauthClientCredentials {
+	pairs := make([]oauthClientCredentials, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.clientID == clientID {
+			pairs = append(pairs, candidate)
+		}
+	}
+	return pairs
+}
+
+func authorizationURL(clientID, redirectURI string) (authURL, verifier, state string, err error) {
 	verifier, challenge, err := GeneratePKCE()
 	if err != nil {
 		return "", "", "", err
 	}
 	state = GenerateState()
 
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", DefaultCallbackPort)
-	if customRedirectURI != "" {
-		redirectURI = customRedirectURI
-	}
-
-	candidates, err := (Manager{}).oauthCredentialCandidates(agyLoginClientID)
-	if err != nil {
-		return "", "", "", fmt.Errorf("resolve OAuth client credentials: %w", err)
-	}
-
 	params := url.Values{}
-	params.Set("client_id", candidates[0].clientID)
+	params.Set("client_id", clientID)
 	params.Set("redirect_uri", redirectURI)
 	params.Set("response_type", "code")
 	params.Set("scope", strings.Join(OAuthScopes, " "))
@@ -103,6 +255,7 @@ type PendingFlow struct {
 	State       string
 	Port        int
 	RedirectURI string
+	Credentials []oauthClientCredentials
 	Server      *http.Server
 	CreatedAt   time.Time
 }
@@ -131,6 +284,22 @@ func NewOAuthManager(accountSaver AccountSaver) *OAuthManager {
 
 // StartFlow starts an ephemeral callback server and returns the authorization URL.
 func (om *OAuthManager) StartFlow() (string, string, error) {
+	// Bind an ephemeral port: an installed-app client accepts any loopback
+	// port, and a fixed one collides with a running proxy that already has a
+	// flow open (its own listener), which used to push sign-in onto a port the
+	// OAuth client did not register.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", "", fmt.Errorf("bind OAuth callback listener: %w", err)
+	}
+	boundPort := listener.Addr().(*net.TCPAddr).Port
+
+	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", boundPort)
+	authURL, credentials, verifier, state, err := prepareSignIn(redirectURI)
+	if err != nil {
+		_ = listener.Close()
+		return "", "", err
+	}
 	om.mu.Lock()
 	defer om.mu.Unlock()
 
@@ -142,28 +311,6 @@ func (om *OAuthManager) StartFlow() (string, string, error) {
 		delete(om.flows, state)
 	}
 
-	portsToTry := []int{DefaultCallbackPort, 51122, 51123, 51124, 51125, 51126}
-	var listener net.Listener
-	var boundPort int
-	for _, port := range portsToTry {
-		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-		if err == nil {
-			listener = l
-			boundPort = port
-			break
-		}
-	}
-	if listener == nil {
-		return "", "", errors.New("could not bind to any OAuth callback port (51121-51126)")
-	}
-
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", boundPort)
-	authURL, verifier, state, err := GetAuthorizationURL(redirectURI)
-	if err != nil {
-		_ = listener.Close()
-		return "", "", err
-	}
-
 	mux := http.NewServeMux()
 	srv := &http.Server{Handler: mux}
 
@@ -172,6 +319,7 @@ func (om *OAuthManager) StartFlow() (string, string, error) {
 		State:       state,
 		Port:        boundPort,
 		RedirectURI: redirectURI,
+		Credentials: credentials,
 		Server:      srv,
 		CreatedAt:   time.Now(),
 	}
@@ -219,6 +367,7 @@ func (om *OAuthManager) callbackHandler(srv *http.Server) http.HandlerFunc {
 		}
 		flowVerifier := activeFlow.Verifier
 		flowRedirectURI := activeFlow.RedirectURI
+		flowCredentials := activeFlow.Credentials
 		if flowRedirectURI == "" && activeFlow.Port > 0 {
 			flowRedirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", activeFlow.Port)
 		}
@@ -236,7 +385,7 @@ func (om *OAuthManager) callbackHandler(srv *http.Server) http.HandlerFunc {
 		// Complete flow in background
 		go func() {
 			defer func() { _ = srv.Close() }()
-			_, _ = om.CompleteFlow(code, flowVerifier, flowRedirectURI)
+			_, _ = om.completeFlow(code, flowVerifier, flowRedirectURI, flowCredentials)
 		}()
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -245,18 +394,18 @@ func (om *OAuthManager) callbackHandler(srv *http.Server) http.HandlerFunc {
 	}
 }
 
-// CompleteFlow exchanges code for tokens, gets user info, and saves account.
-func (om *OAuthManager) CompleteFlow(code, verifier, redirectURI string) (*AuthResult, error) {
-	candidates, err := (Manager{}).oauthCredentialCandidates(agyLoginClientID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve OAuth client credentials: %w", err)
+// completeFlow exchanges code for tokens, gets user info, and saves account. It
+// redeems as credentials[0]'s client, the one the authorization URL named.
+func (om *OAuthManager) completeFlow(code, verifier, redirectURI string, credentials []oauthClientCredentials) (*AuthResult, error) {
+	if len(credentials) == 0 {
+		return nil, errors.New("complete OAuth flow without client credentials")
 	}
 
 	if redirectURI == "" {
-		redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", DefaultCallbackPort)
+		redirectURI = defaultRedirectURI()
 	}
 
-	tokenRes, err := redeemAuthorizationCode(OAuthTokenURL, candidates, code, verifier, redirectURI)
+	tokenRes, err := redeemAuthorizationCode(OAuthTokenURL, credentials, code, verifier, redirectURI)
 	if err != nil {
 		return nil, err
 	}
@@ -430,7 +579,7 @@ func (om *OAuthManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if flowRedirectURI == "" && flow.Port > 0 {
 			flowRedirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", flow.Port)
 		}
-		acc, err := om.CompleteFlow(code, flow.Verifier, flowRedirectURI)
+		acc, err := om.completeFlow(code, flow.Verifier, flowRedirectURI, flow.Credentials)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "error", "error": err.Error()})

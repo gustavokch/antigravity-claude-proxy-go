@@ -27,7 +27,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -35,7 +34,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -178,8 +176,6 @@ type oauthResult struct {
 	Error          string `json:"error,omitempty"`
 }
 
-var oauthErrorCode = regexp.MustCompile(`[a-z]+(?:_[a-z]+)+`)
-
 func oauth(args []string) (oauthResult, error) {
 	flags := flag.NewFlagSet("oauth", flag.ContinueOnError)
 	redirectURI := flags.String("redirect-uri", fmt.Sprintf("http://localhost:%d/oauth-callback", auth.DefaultCallbackPort), "loopback redirect to test")
@@ -215,25 +211,6 @@ func oauth(args []string) (oauthResult, error) {
 		result.Accepted = true
 		return result, nil
 	}
-	result.Error = decodeAuthError(location.Query().Get("authError"))
+	result.Error = auth.DecodeAuthError(location.Query().Get("authError"))
 	return result, nil
-}
-
-// decodeAuthError returns the error code Google puts first in the authError
-// parameter, a base64 protobuf whose field 1 is the code
-// ("redirect_uri_mismatch", "invalid_client", ...).
-func decodeAuthError(value string) string {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(value, "="))
-	if err != nil {
-		if raw, err = base64.StdEncoding.DecodeString(value); err != nil {
-			return "undecodable authError"
-		}
-	}
-	if len(raw) > 2 && raw[0] == 0x0a && int(raw[1]) <= len(raw)-2 {
-		return string(raw[2 : 2+int(raw[1])])
-	}
-	if code := oauthErrorCode.Find(raw); code != nil {
-		return string(code)
-	}
-	return "unrecognised authError"
 }

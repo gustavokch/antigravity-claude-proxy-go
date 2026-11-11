@@ -792,6 +792,44 @@ func ExtractSubscription(body []byte, now time.Time) Subscription {
 	return sub
 }
 
+// UnentitledClientError advises reauthentication only when Google explicitly
+// rejects the OAuth client and no usable managed project is available.
+func UnentitledClientError(body []byte) error {
+	var document struct {
+		Project      any `json:"cloudaicompanionProject"`
+		AllowedTiers []struct {
+			UserDefinedCloudaicompanionProject bool `json:"userDefinedCloudaicompanionProject"`
+		} `json:"allowedTiers"`
+		IneligibleTiers []struct {
+			ReasonCode string `json:"reasonCode"`
+		} `json:"ineligibleTiers"`
+	}
+	if err := json.Unmarshal(body, &document); err != nil || len(document.AllowedTiers) == 0 {
+		return nil
+	}
+	switch project := document.Project.(type) {
+	case string:
+		if project != "" {
+			return nil
+		}
+	case map[string]any:
+		if id, ok := project["id"].(string); ok && id != "" {
+			return nil
+		}
+	}
+	for _, tier := range document.AllowedTiers {
+		if !tier.UserDefinedCloudaicompanionProject {
+			return nil
+		}
+	}
+	for _, tier := range document.IneligibleTiers {
+		if tier.ReasonCode == "GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT" {
+			return errors.New("the account's OAuth token came from a client other than the agy CLI, which has no managed Cloud Code project; remove the account and add it again so sign-in uses the CLI client")
+		}
+	}
+	return nil
+}
+
 func normalizeTier(current rawTier, paid *rawTier, g1Tier string) string {
 	g1Upper := strings.ToUpper(g1Tier)
 	currIDLower := strings.ToLower(current.ID)

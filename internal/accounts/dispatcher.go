@@ -893,6 +893,9 @@ func (dispatcher *Dispatcher) resolveProject(ctx context.Context, account *Accou
 		}
 	}
 	if project == "" {
+		if hint := UnentitledClientError(response.Body); hint != nil {
+			return "", fmt.Errorf("account %s: %w", account.Email, hint)
+		}
 		return "", fmt.Errorf("loadCodeAssist response for %s did not include a Cloud Code project", account.Email)
 	}
 	sub.ProjectID = project

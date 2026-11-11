@@ -3309,6 +3309,9 @@ func (server *Server) resolveProject(ctx context.Context, credentials auth.Crede
 		projectID = stringFrom(project["id"])
 	}
 	if projectID == "" {
+		if hint := accounts.UnentitledClientError(response.Body); hint != nil {
+			return "", hint
+		}
 		return "", errors.New("loadCodeAssist response did not include a Cloud Code project")
 	}
 	server.mu.Lock()
