@@ -146,3 +146,6 @@ if !slices.Equal(calls, []string{"agent", "retrieveUserQuotaSummary"}) {
 - [ ] Step 5: `git add internal/format/agyrequest.go internal/accounts/agy_sequence_test.go docs/superpowers/plans/2026-11-11-pr155-remediation.md && git commit -m 'fix(accounts): refresh unlabelled first turns'`.
 
 Ruling: this is the same account-refresh bug's metadata boundary, so complete it rather than retaining a partial title-independence fix. If the boundary is wrong, an unlabelled first model call can send at most one additional bounded account refresh per five minutes; ACL/checkpoint eligibility is unchanged.
+
+- Task 2 committed as `5c9086f`.
+- Task 3 proof: the unlabelled first-turn case failed with no `fetchUserInfo`, then the focused accounts/format gate passed (7 top-level tests) after separating position from label availability. All three modified Go files are gofmt-clean.

@@ -40,10 +40,9 @@ type CloudCodeRequest struct {
 	conversation conversation
 }
 
-// IsFirstTurn reports whether a labelled request starts a derived conversation.
+// IsFirstTurn reports whether a request starts a derived conversation.
 func (request *CloudCodeRequest) IsFirstTurn() bool {
-	_, labelled := request.Request["labels"]
-	return labelled && request.conversation.cascadeID != "" && request.conversation.modelCalls == 0
+	return request.conversation.cascadeID != "" && request.conversation.modelCalls == 0
 }
 
 // GenerateRequest is the inner request object. It marshals the keys agy sends
@@ -315,7 +314,7 @@ const titleSystemPrompt = "You are a conversation title generator. The message p
 // labels carry.
 func (builder *Builder) ConversationStart(agent CloudCodeRequest, request map[string]any, titleModel string) (trajectoryID string, checkpoint CloudCodeRequest, ok bool) {
 	c := agent.conversation
-	if !agent.IsFirstTurn() || titleModel == "" {
+	if _, labelled := agent.Request["labels"]; !labelled || !agent.IsFirstTurn() || titleModel == "" {
 		return "", CloudCodeRequest{}, false
 	}
 	prompt := promptText(asSlice(request["messages"]))

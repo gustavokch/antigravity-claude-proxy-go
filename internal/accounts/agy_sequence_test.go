@@ -262,6 +262,7 @@ func TestDispatcherRefreshesAccountInfoWithoutATitle(t *testing.T) {
 	}{
 		{name: "no flash-lite model", modelsBody: sequenceModelsBody},
 		{name: "image-only prompt", modelsBody: agyModelsBody, imageOnly: true},
+		{name: "no model labels", modelsBody: strings.Replace(sequenceModelsBody, `"MODEL_PLACEHOLDER_M320"`, `""`, 1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
