@@ -141,6 +141,8 @@ func TestIsToolCompatibilityRejection(t *testing.T) {
 		{"404 tool compatibility", http.StatusNotFound, toolCompatibility404, true},
 		{"404 no endpoints for model", http.StatusNotFound,
 			`{"error":{"message":"No endpoints found for minimax/minimax-m3."},"metadata":{"routing_funnel":[{"step":"Initial Endpoints","endpoint_count":0}]}}`, false},
+		{"404 failed after passing tool compatibility", http.StatusNotFound,
+			`{"error":{"message":"No endpoints found matching your data policy."},"metadata":{"routing_funnel":[{"step":"Initial Endpoints","endpoint_count":3},{"step":"Filter by Tool Compatibility","endpoint_count":2}],"failed_routing_step":"Filter by Data Policy"}}`, false},
 		{"502 with the same body", http.StatusBadGateway, toolCompatibility404, false},
 	}
 	for _, tc := range cases {
