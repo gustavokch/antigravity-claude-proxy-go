@@ -41,6 +41,10 @@ id token, or the login file) still wins, because that is the same client. The
 registration probe stays as a guard: a client registered only for the hosted
 callback is still skipped.
 
+The registration probe runs before locking the active flow registry. Only a
+successfully prepared replacement closes the old listener and replaces its
+state; a slow or failed probe leaves the active callback usable.
+
 Refresh is unchanged: a refresh token is scoped to its issuing client, so the
 candidate list still tries every embedded pair and continues on both
 `invalid_client` (unknown secret) and `unauthorized_client` (valid client, token

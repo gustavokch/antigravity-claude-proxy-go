@@ -284,17 +284,6 @@ func NewOAuthManager(accountSaver AccountSaver) *OAuthManager {
 
 // StartFlow starts an ephemeral callback server and returns the authorization URL.
 func (om *OAuthManager) StartFlow() (string, string, error) {
-	om.mu.Lock()
-	defer om.mu.Unlock()
-
-	// Clean up any existing active flows and close any open listeners
-	for state, f := range om.flows {
-		if f.Server != nil {
-			_ = f.Server.Close()
-		}
-		delete(om.flows, state)
-	}
-
 	// Bind an ephemeral port: an installed-app client accepts any loopback
 	// port, and a fixed one collides with a running proxy that already has a
 	// flow open (its own listener), which used to push sign-in onto a port the
@@ -310,6 +299,16 @@ func (om *OAuthManager) StartFlow() (string, string, error) {
 	if err != nil {
 		_ = listener.Close()
 		return "", "", err
+	}
+	om.mu.Lock()
+	defer om.mu.Unlock()
+
+	// Clean up any existing active flows and close any open listeners
+	for state, f := range om.flows {
+		if f.Server != nil {
+			_ = f.Server.Close()
+		}
+		delete(om.flows, state)
 	}
 
 	mux := http.NewServeMux()

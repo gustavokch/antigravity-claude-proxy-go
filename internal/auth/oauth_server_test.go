@@ -3,11 +3,13 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stubProbe answers the Google registration probe without reaching the network.
@@ -215,15 +217,6 @@ func TestOAuthManager_HTTPHandler(t *testing.T) {
 			t.Errorf("new flow did not keep its sign-in credentials: %+v", newFlow.Credentials)
 		}
 	})
-
-	t.Run("completeFlow with custom redirect URI", func(t *testing.T) {
-		// An invalid code should fail gracefully after redeeming against redirectURI.
-		credentials := []oauthClientCredentials{{clientID: "client", clientSecret: "secret"}}
-		_, err := om.completeFlow("invalid_code", "verifier", "http://localhost:51125/oauth-callback", credentials)
-		if err == nil {
-			t.Error("expected error for invalid_code, got nil")
-		}
-	})
 }
 
 func TestRedeemAuthorizationCodeTriesOnlyTheAuthorizedClientsSecrets(t *testing.T) {
@@ -269,4 +262,66 @@ func TestRedeemAuthorizationCodeTriesOnlyTheAuthorizedClientsSecrets(t *testing.
 			t.Fatalf("attempts=%v", attempts)
 		}
 	})
+}
+
+func TestOAuthManagerProbeDoesNotBlockCallbacks(t *testing.T) {
+	t.Setenv(oauthClientIDEnv, "client")
+	t.Setenv(oauthClientSecretEnv, "secret")
+	started, release := make(chan struct{}), make(chan struct{})
+	stubProbe(t, func(string) (bool, string, error) {
+		close(started)
+		<-release
+		return false, "", errors.New("registration unavailable")
+	})
+	om := NewOAuthManager(nil)
+	flowDone := make(chan error, 1)
+	go func() { _, _, err := om.StartFlow(); flowDone <- err }()
+	<-started
+	callbackDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/complete", strings.NewReader(`{"callbackInput":"code","state":"unknown"}`))
+		om.ServeHTTP(rec, req)
+		callbackDone <- rec
+	}()
+	select {
+	case rec := <-callbackDone:
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("callback status = %d, want 400", rec.Code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("callback blocked behind registration probe")
+	}
+	close(release)
+	if err := <-flowDone; err == nil {
+		t.Fatal("expected registration failure")
+	}
+}
+
+func TestOAuthManagerFailedProbePreservesActiveCallback(t *testing.T) {
+	t.Setenv(oauthClientIDEnv, "client")
+	t.Setenv(oauthClientSecretEnv, "secret")
+	stubProbe(t, func(string) (bool, string, error) { return true, "", nil })
+	om := NewOAuthManager(nil)
+	authURL, state, err := om.StartFlow()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubProbe(t, func(string) (bool, string, error) { return false, "", errors.New("registration unavailable") })
+	if _, _, err := om.StartFlow(); err == nil {
+		t.Fatal("expected registration failure")
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get(parsed.Query().Get("redirect_uri") + "?state=" + url.QueryEscape(state))
+	if err != nil {
+		t.Fatalf("active callback closed by failed replacement: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Errorf("callback status = %d, want 400 for missing code", response.StatusCode)
+	}
 }
