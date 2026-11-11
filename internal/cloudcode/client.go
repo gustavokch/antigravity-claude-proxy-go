@@ -35,8 +35,8 @@ const (
 	PathListExperiments          = "/v1internal:listExperiments"
 	PathListCascadeNuxes         = "/v1internal/cascadeNuxes?page_size=1000"
 
-	DefaultUserAgentVersion = "1.5.5"
-	AgyBuildCL              = "1017970541"
+	DefaultUserAgentVersion = "1.5.6"
+	AgyBuildCL              = "1018951551"
 	AgyAuthMethod           = "consumer"
 )
 
