@@ -792,29 +792,42 @@ func ExtractSubscription(body []byte, now time.Time) Subscription {
 	return sub
 }
 
-// UnentitledClientError explains a loadCodeAssist answer that names no project
-// and offers only tiers that require a user-defined one. Google issues such an
-// answer when the access token came from an OAuth client other than the agy CLI:
-// the client is not entitled to the managed consumer project, so onboarding
-// returns no project and generation cannot run. It returns nil when the answer
-// does not have that shape.
+// UnentitledClientError advises reauthentication only when Google explicitly
+// rejects the OAuth client and no usable managed project is available.
 func UnentitledClientError(body []byte) error {
 	var document struct {
 		Project      any `json:"cloudaicompanionProject"`
 		AllowedTiers []struct {
-			ID                                 string `json:"id"`
-			UserDefinedCloudaicompanionProject bool   `json:"userDefinedCloudaicompanionProject"`
+			UserDefinedCloudaicompanionProject bool `json:"userDefinedCloudaicompanionProject"`
 		} `json:"allowedTiers"`
+		IneligibleTiers []struct {
+			ReasonCode string `json:"reasonCode"`
+		} `json:"ineligibleTiers"`
 	}
-	if err := json.Unmarshal(body, &document); err != nil || document.Project != nil || len(document.AllowedTiers) == 0 {
+	if err := json.Unmarshal(body, &document); err != nil || len(document.AllowedTiers) == 0 {
 		return nil
+	}
+	switch project := document.Project.(type) {
+	case string:
+		if project != "" {
+			return nil
+		}
+	case map[string]any:
+		if id, ok := project["id"].(string); ok && id != "" {
+			return nil
+		}
 	}
 	for _, tier := range document.AllowedTiers {
 		if !tier.UserDefinedCloudaicompanionProject {
 			return nil
 		}
 	}
-	return errors.New("the account's OAuth token came from a client other than the agy CLI, which has no managed Cloud Code project; remove the account and add it again so sign-in uses the CLI client")
+	for _, tier := range document.IneligibleTiers {
+		if tier.ReasonCode == "GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT" {
+			return errors.New("the account's OAuth token came from a client other than the agy CLI, which has no managed Cloud Code project; remove the account and add it again so sign-in uses the CLI client")
+		}
+	}
+	return nil
 }
 
 func normalizeTier(current rawTier, paid *rawTier, g1Tier string) string {

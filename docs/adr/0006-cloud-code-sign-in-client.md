@@ -55,7 +55,11 @@ issued elsewhere).
 - Accounts signed in before this decision hold tokens from `884354919052` and
   must be removed and added again; their refresh tokens cannot move clients.
 - Replacements are visible only at first use: `accounts.UnentitledClientError`
-  turns the missing-project answer into an instruction to re-add the account.
+  advises re-adding an account only when no usable project ID is present, all
+  allowed tiers require a user-defined project, and `ineligibleTiers` explicitly
+  reports `GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT`. An empty string or project
+  object without an ID does not count as a usable project; missing projects
+  without that client-rejection evidence keep the generic discovery error.
 - The client ID is a pin that no capture can refresh (wire captures redact
   tokens). `scripts/client_drift.py` should keep reporting the pinned values in
   `internal/cloudcode/client.go`; a future `agy` that changes its login client

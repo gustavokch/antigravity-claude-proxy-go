@@ -1364,3 +1364,29 @@ func TestUnentitledClientError(t *testing.T) {
 		t.Fatalf("free-tier answer reported as %v", err)
 	}
 }
+
+func TestUnentitledClientErrorRequiresClientRejection(t *testing.T) {
+	t.Parallel()
+	const tiers = `"allowedTiers":[{"id":"standard-tier","userDefinedCloudaicompanionProject":true}]`
+	const rejection = `"ineligibleTiers":[{"reasonCode":"GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT","tierId":"free-tier"}]`
+	for _, tc := range []struct {
+		name, body string
+		wantHint   bool
+	}{
+		{"no rejection evidence", `{` + tiers + `}`, false},
+		{"other eligibility reason", `{` + tiers + `,"ineligibleTiers":[{"reasonCode":"OTHER_REASON"}]}`, false},
+		{"missing project", `{` + tiers + `,` + rejection + `}`, true},
+		{"null project", `{` + tiers + `,` + rejection + `,"cloudaicompanionProject":null}`, true},
+		{"empty string project", `{` + tiers + `,` + rejection + `,"cloudaicompanionProject":""}`, true},
+		{"empty object project", `{` + tiers + `,` + rejection + `,"cloudaicompanionProject":{}}`, true},
+		{"empty project id", `{` + tiers + `,` + rejection + `,"cloudaicompanionProject":{"id":""}}`, true},
+		{"string project", `{` + tiers + `,` + rejection + `,"cloudaicompanionProject":"managed"}`, false},
+		{"object project", `{` + tiers + `,` + rejection + `,"cloudaicompanionProject":{"id":"managed"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := UnentitledClientError([]byte(tc.body)); (err != nil) != tc.wantHint {
+				t.Errorf("migration hint = %v, want present %v", err, tc.wantHint)
+			}
+		})
+	}
+}
