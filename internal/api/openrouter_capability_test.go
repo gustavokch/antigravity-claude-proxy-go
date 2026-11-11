@@ -234,3 +234,74 @@ func TestOpenRouterRouting_ToolCompatibilityRejectionSkipsHealthPenalty(t *testi
 		}
 	}
 }
+
+// mixedFailureMock answers each pinned provider with its scripted failure and
+// records the order of upstream calls.
+func mixedFailureMock(t *testing.T, orders *[]string, replies map[string]struct {
+	status int
+	body   string
+}) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		prov, _ := body["provider"].(map[string]any)
+		order, _ := prov["order"].([]any)
+		name := ""
+		if len(order) > 0 {
+			name, _ = order[0].(string)
+		}
+		*orders = append(*orders, name)
+		reply := replies[name]
+		w.WriteHeader(reply.status)
+		_, _ = w.Write([]byte(reply.body))
+	}))
+}
+
+// A retry cycle is owed to a transiently failing candidate whatever position
+// it holds, and a tool-compatibility rejection is never resent: with maxRetries
+// 2, the 503 candidate gets three attempts and the rejected one exactly one.
+func TestOpenRouterRouting_ToolCompatibilityRejectionPerCandidate(t *testing.T) {
+	capable := &openrouter.ToolChoiceSupport{Auto: true, Required: true, Function: true}
+	endpoints := []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99,
+			SupportedParameters: []string{"tools", "tool_choice"}, SupportsToolChoice: capable},
+		{ProviderName: "p2", ContextLength: 100000, UptimeLast5m: 0.90, UptimeLast30m: 0.90, UptimeLast1d: 0.90,
+			SupportedParameters: []string{"tools", "tool_choice"}, SupportsToolChoice: capable},
+	}
+	type reply = struct {
+		status int
+		body   string
+	}
+	unavailable := reply{http.StatusServiceUnavailable, `{"error":{"message":"temporarily unavailable"}}`}
+	rejection := reply{http.StatusNotFound, toolCompatibility404}
+
+	for _, tc := range []struct {
+		name    string
+		replies map[string]reply
+		want    string
+	}{
+		{"transient first", map[string]reply{"p1": unavailable, "p2": rejection}, "p1,p2,p1,p1"},
+		{"rejection first", map[string]reply{"p1": rejection, "p2": unavailable}, "p1,p2,p2,p2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var orders []string
+			mockOR := mixedFailureMock(t, &orders, tc.replies)
+			defer mockOR.Close()
+
+			env := setupRoutingTestEnv(t, mockOR.URL, endpoints)
+			env.saveConfig(t, nil, map[string]any{"maxRetries": 2, "failureThreshold": 100, "backoffBaseMs": 1, "backoffCapMs": 2})
+			server := env.newServer(t)
+
+			doToolsRequest(t, server, "any")
+			if got := strings.Join(orders, ","); got != tc.want {
+				t.Errorf("upstream order = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}

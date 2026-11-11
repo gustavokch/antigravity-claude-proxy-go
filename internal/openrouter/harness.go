@@ -1,6 +1,7 @@
 package openrouter
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -67,13 +68,32 @@ func IsHarnessGateError(body []byte) bool {
 // gets under provider.require_parameters when no endpoint of the model
 // supports forced choice. The verdict comes from OpenRouter's catalog before
 // any provider is called, so resending the same body cannot succeed.
+//
+// Only the failed step and the error message decide. The routing funnel lists
+// steps a request passed, so a 404 that failed later must not match on it.
 func IsToolCompatibilityRejection(statusCode int, body []byte) bool {
 	if statusCode != http.StatusNotFound {
 		return false
 	}
-	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, "filter by tool compatibility") ||
-		strings.Contains(lower, "support the provided 'tool_choice' value")
+	type routingMetadata struct {
+		FailedRoutingStep string `json:"failed_routing_step"`
+	}
+	var parsed struct {
+		Error struct {
+			Message  string          `json:"message"`
+			Metadata routingMetadata `json:"metadata"`
+		} `json:"error"`
+		Metadata routingMetadata `json:"metadata"`
+	}
+	if json.Unmarshal(body, &parsed) != nil {
+		return false
+	}
+	for _, step := range []string{parsed.Metadata.FailedRoutingStep, parsed.Error.Metadata.FailedRoutingStep} {
+		if strings.EqualFold(strings.TrimSpace(step), "Filter by Tool Compatibility") {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(parsed.Error.Message), "support the provided 'tool_choice' value")
 }
 
 // IsOpenRouterTransientError reports whether an upstream error is temporary and retryable.

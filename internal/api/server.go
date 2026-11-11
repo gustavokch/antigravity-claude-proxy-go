@@ -2324,7 +2324,37 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		tried       = make(map[string]bool)
 		attempts    int
 		retryCycle  int
+		// rejected holds candidates refused by the tool-compatibility filter.
+		// The refusal is deterministic, so it survives retry cycles.
+		rejected = make(map[string]bool)
+		// cycleTransient records a transient failure anywhere in the current
+		// cycle: a retry cycle is owed to that candidate even when a later
+		// one failed deterministically.
+		cycleTransient bool
 	)
+
+	// restartCycle begins the next walk of the candidate chain, skipping
+	// candidates already rejected for tool compatibility.
+	restartCycle := func() {
+		retryCycle++
+		providerIdx = 0
+		cycleTransient = false
+		tried = make(map[string]bool, len(rejected))
+		for p := range rejected {
+			tried[p] = true
+		}
+	}
+
+	// chainDone reports whether the current cycle has no untried candidate
+	// left; rejected candidates past providerIdx are already marked tried.
+	chainDone := func() bool {
+		for _, p := range candidates[min(providerIdx, len(candidates)):] {
+			if !tried[p] {
+				return false
+			}
+		}
+		return true
+	}
 
 	// No ranked/pinned/custom provider available — single unpinned attempt
 	// (equivalent to the pre-routing passthrough behavior).
@@ -2370,9 +2400,9 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		// hands that decision to OpenRouter's live catalog, which drops
 		// endpoints that cannot honour the parameters in the body. A request
 		// left with no endpoint gets a 404 ("Filter by Tool Compatibility").
-		// That rejection is deterministic: the loop tries each remaining
-		// candidate once and returns it without a retry cycle. That is a
-		// visible failure instead of a silent one.
+		// That rejection is deterministic: the candidate is marked rejected,
+		// skipped by later retry cycles, and never owed a cycle itself. That
+		// is a visible failure instead of a silent one.
 		//
 		// Requests that merely carry tools with "auto" (the common agentic
 		// case) are left alone: an endpoint that ignores tool_choice there
@@ -2436,11 +2466,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			if backoff > 0 && server.now().Before(deadline) && !sleepOrDone(request.Context(), backoff) {
 				return
 			}
+			cycleTransient = true
 			providerIdx++
-			if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
-				retryCycle++
-				providerIdx = 0
-				tried = make(map[string]bool)
+			if chainDone() && retryCycle < maxRetries && server.now().Before(deadline) {
+				restartCycle()
 				d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 				if server.now().Add(d).After(deadline) {
 					break
@@ -2473,11 +2502,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 					if provider != "" {
 						openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 					}
+					cycleTransient = true
 					providerIdx++
-					if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
-						retryCycle++
-						providerIdx = 0
-						tried = make(map[string]bool)
+					if chainDone() && retryCycle < maxRetries && server.now().Before(deadline) {
+						restartCycle()
 						d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 						if server.now().Add(d).After(deadline) {
 							break
@@ -2506,11 +2534,10 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				if provider != "" {
 					openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 				}
+				cycleTransient = true
 				providerIdx++
-				if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
-					retryCycle++
-					providerIdx = 0
-					tried = make(map[string]bool)
+				if chainDone() && retryCycle < maxRetries && server.now().Before(deadline) {
+					restartCycle()
 					d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 					if server.now().Add(d).After(deadline) {
 						break
@@ -2582,14 +2609,19 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		}
 
 		isTransient := openrouter.IsOpenRouterTransientError(resp.StatusCode, bodyBytes)
+		toolRejected := openrouter.IsToolCompatibilityRejection(resp.StatusCode, bodyBytes)
+		if toolRejected {
+			rejected[provider] = true
+		} else if isTransient {
+			cycleTransient = true
+		}
 		action, backoff := classify(resp.StatusCode, nil)
 		// 429 is a transient rate limit, not provider death: recording it as a
 		// failure would let a rate-limit storm trip the breaker on a healthy
 		// provider. A tool-compatibility rejection is a catalog verdict about
 		// the request, not about the provider. All other non-2xx responses
 		// count toward the threshold.
-		if provider != "" && resp.StatusCode != http.StatusTooManyRequests &&
-			!openrouter.IsToolCompatibilityRejection(resp.StatusCode, bodyBytes) {
+		if provider != "" && resp.StatusCode != http.StatusTooManyRequests && !toolRejected {
 			openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 		}
 
@@ -2603,10 +2635,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 			if consec429 > max429 {
 				providerIdx++
 				consec429 = 0
-				if providerIdx >= len(candidates) && retryCycle < maxRetries && server.now().Before(deadline) {
-					retryCycle++
-					providerIdx = 0
-					tried = make(map[string]bool)
+				if chainDone() && retryCycle < maxRetries && server.now().Before(deadline) {
+					restartCycle()
 					// Record the cooldown instead of sleeping here: the
 					// loop-top RateLimiter.Wait enforces it, which also
 					// paces concurrent requests to the same model.
@@ -2632,10 +2662,8 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 				return
 			}
 			providerIdx++
-			if providerIdx >= len(candidates) && isTransient && retryCycle < maxRetries && server.now().Before(deadline) {
-				retryCycle++
-				providerIdx = 0
-				tried = make(map[string]bool)
+			if chainDone() && cycleTransient && retryCycle < maxRetries && server.now().Before(deadline) {
+				restartCycle()
 				d := computeBackoff(retryCycle, time.Duration(base)*time.Millisecond, time.Duration(cap)*time.Millisecond)
 				if server.now().Add(d).After(deadline) {
 					break
