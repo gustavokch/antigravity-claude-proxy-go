@@ -121,3 +121,28 @@ if !slices.Equal(calls, []string{"agent", "retrieveUserQuotaSummary"}) {
 - Initial review published on PR #155. Plan execution is inline as requested.
 - The initial review also checks standards and captured behavior independently; only evidence-backed consumer-visible findings enter remediation.
 - Task 1 proof: both missing-title subtests failed with no `fetchUserInfo` call before the fix. The focused accounts/format gate then passed (7 top-level tests); checkpoint/ACL gates retain their prior behavior.
+- Task 1 committed as `75ea63b`.
+- Task 2 RED: account and catalog refresh cases both sent an immediate redundant summary before the fix. The new test also checks suppression at 59 seconds and resumption at exactly 60 seconds.
+- Review ruling: retain the PR's explicit nine-call startup contract rather than adding a new sequence from the later capture tail; endpoint order/repetition are already documented as variable. Do not refactor `sendBeside` merely for stylistic duplication: no consumer-visible failure was identified there.
+- Task 2 GREEN: focused cadence/quota gate passed (5 top-level tests). README and CONTEXT now describe the account-level cadence and explicit refresh timer.
+
+## Task 3: Recognize first turns without model labels
+
+**Goal:** Finish separating account-info eligibility from checkpoint-specific metadata. The independent review identified that absent model enum/provider labels are another title precondition, not an account-refresh requirement.
+
+**Files:** `internal/format/agyrequest.go`, `internal/accounts/agy_sequence_test.go`.
+
+**Interfaces:** `(*CloudCodeRequest).IsFirstTurn()` reports derived conversation position, not title/ACL label availability. `Builder.ConversationStart` continues to require labels separately.
+
+- [ ] Step 1: Add this case to `TestDispatcherRefreshesAccountInfoWithoutATitle`:
+
+```go
+{name: "no model labels", modelsBody: strings.Replace(sequenceModelsBody, `"MODEL_PLACEHOLDER_M320"`, `""`, 1)},
+```
+
+- [ ] Step 2: Run `go test ./internal/accounts -run '^TestDispatcherRefreshesAccountInfoWithoutATitle/no_model_labels$' -count=1`; expect absent `fetchUserInfo` (RED).
+- [ ] Step 3: Remove the label check from `IsFirstTurn`; retain it explicitly in `Builder.ConversationStart`. No change to title/ACL behavior.
+- [ ] Step 4: Run `go test ./internal/accounts ./internal/format -run 'TestDispatcherRefreshesAccountInfoWithoutATitle|TestDispatcherSpacesTheCallsAgyRepeats|TestConversationStart' -count=1`; expect PASS.
+- [ ] Step 5: `git add internal/format/agyrequest.go internal/accounts/agy_sequence_test.go docs/superpowers/plans/2026-11-11-pr155-remediation.md && git commit -m 'fix(accounts): refresh unlabelled first turns'`.
+
+Ruling: this is the same account-refresh bug's metadata boundary, so complete it rather than retaining a partial title-independence fix. If the boundary is wrong, an unlabelled first model call can send at most one additional bounded account refresh per five minutes; ACL/checkpoint eligibility is unchanged.

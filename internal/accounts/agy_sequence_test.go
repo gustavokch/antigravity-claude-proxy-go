@@ -302,3 +302,55 @@ func TestDispatcherRefreshesAccountInfoWithoutATitle(t *testing.T) {
 		})
 	}
 }
+
+func TestDispatcherSpacesSummaryAfterExplicitRefresh(t *testing.T) {
+	for _, refresh := range []string{"account", "catalog"} {
+		t.Run(refresh, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const email = "a@example.com"
+				client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
+				dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+				first := promptRequest("Fix the login bug")
+				sendTurn(t, dispatcher, "session-1", first)
+				synctest.Wait()
+				if err := dispatcher.sleep(context.Background(), time.Minute); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if refresh == "account" {
+					_, err = dispatcher.RefreshAccount(context.Background(), email)
+				} else {
+					_, err = dispatcher.FetchAvailableModels(context.Background())
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				client.reset()
+
+				second := followUp(first, "Add a test")
+				sendTurn(t, dispatcher, "session-1", second)
+				synctest.Wait()
+				assertSteps(t, client.recorded(), [][]string{{"agent"}})
+				client.reset()
+				if err := dispatcher.sleep(context.Background(), 59*time.Second); err != nil {
+					t.Fatal(err)
+				}
+				third := followUp(second, "Review the change")
+				sendTurn(t, dispatcher, "session-1", third)
+				synctest.Wait()
+				assertSteps(t, client.recorded(), [][]string{{"agent"}})
+				client.reset()
+				if err := dispatcher.sleep(context.Background(), time.Second); err != nil {
+					t.Fatal(err)
+				}
+				sendTurn(t, dispatcher, "session-1", followUp(third, "Explain the result"))
+				synctest.Wait()
+				calls := client.recorded()
+				slices.Sort(calls)
+				if !slices.Equal(calls, []string{"agent", "retrieveUserQuotaSummary"}) {
+					t.Fatalf("calls at 60 seconds = %v", calls)
+				}
+			})
+		})
+	}
+}

@@ -1129,6 +1129,7 @@ func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Acc
 		return
 	}
 	if fetcher, ok := client.(quotaSummaryFetcher); ok {
+		dispatcher.sentNow(dispatcher.quotaSummaryAt, account.Email)
 		if response, err := fetcher.RetrieveUserQuotaSummary(ctx, project); err == nil &&
 			response.StatusCode >= 200 && response.StatusCode < 300 {
 			dispatcher.applyQuotaSummary(account.Email, response.Body)
