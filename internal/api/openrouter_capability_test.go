@@ -200,3 +200,37 @@ func TestOpenRouterRouting_ForcedToolWithoutCapableEndpointFailsOnce(t *testing.
 		t.Errorf("upstream attempts = %d, want 1: a tool-compatibility rejection is deterministic", got)
 	}
 }
+
+// The catalog claims both providers serve forced choice, but OpenRouter's live
+// routing refuses each one. Each pinned candidate is tried once, and the
+// refusal must not trip their breakers: a tripped breaker also removes the
+// provider from requests that use no tools.
+func TestOpenRouterRouting_ToolCompatibilityRejectionSkipsHealthPenalty(t *testing.T) {
+	var attempts int32
+	mockOR := toolCompatibilityMock(&attempts)
+	defer mockOR.Close()
+
+	capable := &openrouter.ToolChoiceSupport{Auto: true, Required: true, Function: true}
+	env := setupRoutingTestEnv(t, mockOR.URL, []openrouter.ProviderEndpoint{
+		{ProviderName: "p1", ContextLength: 200000, UptimeLast5m: 0.99, UptimeLast30m: 0.99, UptimeLast1d: 0.99,
+			SupportedParameters: []string{"tools", "tool_choice"}, SupportsToolChoice: capable},
+		{ProviderName: "p2", ContextLength: 100000, UptimeLast5m: 0.90, UptimeLast30m: 0.90, UptimeLast1d: 0.90,
+			SupportedParameters: []string{"tools", "tool_choice"}, SupportsToolChoice: capable},
+	})
+	env.saveConfig(t, nil, map[string]any{"maxRetries": 3})
+	server := env.newServer(t)
+
+	rec := doToolsRequest(t, server, "any")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Errorf("upstream attempts = %d, want 2: each pinned candidate once, no retry cycle", got)
+	}
+	stats := openrouter.DefaultRouter.Stats("anthropic/claude-3.7-sonnet")
+	for _, p := range []string{"p1", "p2"} {
+		if got := stats[p].FailureCount; got != 0 {
+			t.Errorf("%s failureCount = %d, want 0 for a tool-compatibility rejection", p, got)
+		}
+	}
+}

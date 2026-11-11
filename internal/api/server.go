@@ -2585,8 +2585,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		action, backoff := classify(resp.StatusCode, nil)
 		// 429 is a transient rate limit, not provider death: recording it as a
 		// failure would let a rate-limit storm trip the breaker on a healthy
-		// provider. All other non-2xx responses count toward the threshold.
-		if provider != "" && resp.StatusCode != http.StatusTooManyRequests {
+		// provider. A tool-compatibility rejection is a catalog verdict about
+		// the request, not about the provider. All other non-2xx responses
+		// count toward the threshold.
+		if provider != "" && resp.StatusCode != http.StatusTooManyRequests &&
+			!openrouter.IsToolCompatibilityRejection(resp.StatusCode, bodyBytes) {
 			openrouter.DefaultRouter.RecordResult(model, provider, false, server.now().Sub(attemptStart), 0)
 		}
 
