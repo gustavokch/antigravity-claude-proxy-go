@@ -594,6 +594,9 @@ const conversationStartTimeout = time.Minute
 // agy starts them before the model call and does not wait for them, so none
 // delays the request or changes its outcome; a failure is only logged.
 func (dispatcher *Dispatcher) startConversation(ctx context.Context, account *Account, client CloudClient, request map[string]any, payload proxyformat.CloudCodeRequest) {
+	if payload.IsFirstTurn() {
+		dispatcher.refreshAccountInfo(ctx, account, client, payload.Project)
+	}
 	trajectoryID, checkpoint, ok := dispatcher.builder.ConversationStart(payload, request, dispatcher.currentCatalog().FlashLiteID())
 	if !ok {
 		return
@@ -615,7 +618,6 @@ func (dispatcher *Dispatcher) startConversation(ctx context.Context, account *Ac
 			}
 		})
 	}
-	dispatcher.refreshAccountInfo(ctx, account, client, payload.Project)
 	dispatcher.goBackground(func() {
 		ctx, cancel := start(ctx)
 		defer cancel()

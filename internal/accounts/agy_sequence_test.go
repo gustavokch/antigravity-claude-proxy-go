@@ -253,3 +253,52 @@ func TestDispatcherSendsTheStartBurstOncePerAccount(t *testing.T) {
 	}
 	assertSteps(t, overflow.recorded(), firstTurn)
 }
+
+func TestDispatcherRefreshesAccountInfoWithoutATitle(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		modelsBody string
+		imageOnly  bool
+	}{
+		{name: "no flash-lite model", modelsBody: sequenceModelsBody},
+		{name: "image-only prompt", modelsBody: agyModelsBody, imageOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const email = "a@example.com"
+				client := &agyCallRecorder{modelsBody: []byte(test.modelsBody)}
+				dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+				withoutAgent := func(calls []string) []string {
+					return slices.DeleteFunc(calls, func(call string) bool { return call == "agent" })
+				}
+				first := promptRequest("Fix the login bug")
+				sendTurn(t, dispatcher, "session-1", first)
+				synctest.Wait()
+				client.reset()
+				if err := dispatcher.sleep(context.Background(), 5*time.Minute); err != nil {
+					t.Fatal(err)
+				}
+				sendTurn(t, dispatcher, "session-1", followUp(first, "Add a test"))
+				synctest.Wait()
+				assertSteps(t, withoutAgent(client.recorded()), [][]string{{"retrieveUserQuotaSummary"}})
+				client.reset()
+
+				next := promptRequest("Explain the build")
+				if test.imageOnly {
+					next["messages"] = []any{map[string]any{"role": "user", "content": []any{
+						map[string]any{"type": "image", "source": map[string]any{
+							"type": "base64", "media_type": "image/png", "data": "aW1hZ2U=",
+						}},
+					}}}
+				}
+				sendTurn(t, dispatcher, "session-2", next)
+				synctest.Wait()
+				assertSteps(t, withoutAgent(client.recorded()), [][]string{{"fetchUserInfo"}, {"fetchAvailableModels"}, {"loadCodeAssist"}})
+				client.reset()
+				sendTurn(t, dispatcher, "session-3", next)
+				synctest.Wait()
+				assertSteps(t, withoutAgent(client.recorded()), nil)
+			})
+		})
+	}
+}
