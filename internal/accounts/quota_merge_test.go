@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"antigravity-go-proxy/internal/cloudcode"
-	"antigravity-go-proxy/internal/modelcatalog"
 )
 
 func quotaTestManager(t *testing.T, now time.Time, account *Account) *Manager {
@@ -199,45 +198,5 @@ func TestStreamGenerateContentRecordsRemainingCredits(t *testing.T) {
 	}
 	if got := dispatcher.manager.accounts[0].Credits["GOOGLE_ONE_AI"]; got != 777 {
 		t.Fatalf("remaining credits must be recorded, got %+v", dispatcher.manager.accounts[0].Credits)
-	}
-}
-
-type countingSummaryClient struct {
-	quotaCapableClient
-	summaryCalls int
-}
-
-func (c *countingSummaryClient) RetrieveUserQuotaSummary(ctx context.Context, project string) (cloudcode.Response, error) {
-	c.summaryCalls++
-	return quotaCapableClient{}.RetrieveUserQuotaSummary(ctx, project)
-}
-
-// The live quota reading is taken before a turn (beginTurn), where agy takes
-// it; a stream that ends takes none.
-func TestStreamGenerateContentTakesNoQuotaReadingAfterTheStream(t *testing.T) {
-	client := &countingSummaryClient{}
-	dispatcher := newDispatcherWithClient(t, client)
-
-	// Warm the catalog without touching the quota path, so a summary fetch
-	// below could only come from the end of a stream.
-	response, err := client.FetchAvailableModels(context.Background(), "p")
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := modelcatalog.Parse(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dispatcher.storeCatalog("", catalog)
-
-	consume := func(cloudcode.SSEEvent) error { return nil }
-	for range 2 {
-		if _, err := dispatcher.StreamGenerateContent(context.Background(),
-			map[string]any{"model": "gemini-3.8-flash-high"}, consume); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if client.summaryCalls != 0 {
-		t.Fatalf("finished streams fetched the quota summary %d times, want none", client.summaryCalls)
 	}
 }

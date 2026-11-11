@@ -3,14 +3,17 @@ package accounts
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"antigravity-go-proxy/internal/cloudcode"
+	"antigravity-go-proxy/internal/modelcatalog"
 )
 
 // agyGenerationRuns reads .reference/client-drift/agy.jsonl as call names,
@@ -110,13 +113,13 @@ func sendTurn(t *testing.T, dispatcher *Dispatcher, session string, request map[
 	}
 }
 
-// A session's first prompt sends agy's start burst, the turn calls and the
-// model call, and the tool continuation after it only the model call, in
-// that order. Every endpoint of them is in both generation runs of agy.jsonl
-// (cascadeNuxes in the later run only); the capture's order is not compared.
+// A session's first prompt sends agy's start burst and the model call, and
+// the tool continuation after it only the model call, in that order. Every
+// endpoint of them is in both generation runs of agy.jsonl (cascadeNuxes in
+// the later run only); the capture's order is not compared.
 func TestDispatcherFollowsAgysCallSequence(t *testing.T) {
 	t.Parallel()
-	want := slices.Concat(agyStartBurst, agyTurn, [][]string{{"agent"}, {"agent"}})
+	want := slices.Concat(agyStartBurst, [][]string{{"agent"}, {"agent"}})
 	runs := agyGenerationRuns(t)
 	if len(runs) != 2 {
 		t.Fatalf("agy.jsonl holds %d generation runs, want 2: %v", len(runs), runs)
@@ -137,10 +140,10 @@ func TestDispatcherFollowsAgysCallSequence(t *testing.T) {
 	assertSteps(t, client.recorded(), want)
 }
 
-// After the first turn, only a new prompt sends the turn calls: a tool-less
-// side call, a tool continuation and a request without a session send only
-// the model call.
-func TestDispatcherSendsTurnCallsOnlyBeforeANewPrompt(t *testing.T) {
+// agy sends no control-plane call before a prompt: after the start burst, a
+// tool-less side call, a tool continuation, a new prompt and a request
+// without a session send only the model call.
+func TestDispatcherSendsOnlyTheModelCallAfterTheStartBurst(t *testing.T) {
 	t.Parallel()
 	const email = "a@example.com"
 	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
@@ -157,79 +160,88 @@ func TestDispatcherSendsTurnCallsOnlyBeforeANewPrompt(t *testing.T) {
 	sendTurn(t, dispatcher, "session-1", second)
 	sendTurn(t, dispatcher, "", followUp(second, "And a changelog entry"))
 
-	assertSteps(t, client.recorded(), slices.Concat([][]string{{"agent"}, {"agent"}}, agyTurn, [][]string{{"agent"}, {"agent"}}))
+	assertSteps(t, client.recorded(), [][]string{{"agent"}, {"agent"}, {"agent"}, {"agent"}})
 }
 
-// A second prompt takes exactly one quota summary, before generation and
-// none after the stream, and the turn calls leave the per-model quota as the
-// start burst's model list set it: summary buckets are pools.
-func TestDispatcherTakesOneQuotaSummaryPerPromptAndLeavesModelQuota(t *testing.T) {
-	t.Parallel()
-	const email = "a@example.com"
-	client := &agyCallRecorder{
-		modelsBody: []byte(sequenceModelsBody),
-		quotaSummary: []byte(`{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-5h",
-			"displayName":"Five Hour Limit Remaining","remainingFraction":0.4,"resetTime":"2026-11-07T17:00:00Z","window":"5h"}]}]}`),
-	}
-	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
-	first := promptRequest("Fix the login bug")
-	sendTurn(t, dispatcher, "session-1", first)
-	account := dispatcher.manager.accounts[0]
-	before, err := json.Marshal(account.Quota.Models)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.reset()
+// Outside its start burst agy sends retrieveUserQuotaSummary beside a model
+// call once the last one is a minute old, and fetchUserInfo,
+// fetchAvailableModels and loadCodeAssist when a conversation starts once the
+// last fetchUserInfo is five minutes old.
+func TestDispatcherSpacesTheCallsAgyRepeats(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const email = "a@example.com"
+		// agyModelsBody names a flash-lite tier, so a conversation's first
+		// turn sends its title checkpoint, as agy's does.
+		client := &agyCallRecorder{modelsBody: []byte(agyModelsBody)}
+		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
+		catalog, err := modelcatalog.Parse([]byte(agyModelsBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatcher.storeCatalog("", catalog)
+		wait := func(d time.Duration) {
+			if err := dispatcher.sleep(context.Background(), d); err != nil {
+				t.Fatal(err)
+			}
+		}
+		expect := func(step string, want map[string]int) {
+			t.Helper()
+			// The calls beside the model call run on their own goroutines.
+			synctest.Wait()
+			got := map[string]int{}
+			for _, call := range client.recorded() {
+				got[call]++
+			}
+			client.reset()
+			if !maps.Equal(got, want) {
+				t.Fatalf("%s: calls %v, want %v", step, got, want)
+			}
+		}
 
-	sendTurn(t, dispatcher, "session-1", followUp(first, "Now add a test"))
+		first := promptRequest("Fix the login bug")
+		sendTurn(t, dispatcher, "session-1", first)
+		expect("first prompt", map[string]int{
+			"loadCodeAssist": 2, "fetchAdminControls": 1, "fetchUserInfo": 1, "retrieveUserQuotaSummary": 2,
+			"fetchAvailableModels": 1, "listExperiments": 1, "cascadeNuxes": 1, "checkpoint": 1, "agent": 1,
+		})
 
-	calls := client.recorded()
-	assertSteps(t, calls, slices.Concat(agyTurn, [][]string{{"agent"}}))
-	if summaries := slices.Index(calls, "retrieveUserQuotaSummary"); summaries < 0 || summaries > slices.Index(calls, "agent") ||
-		len(slices.DeleteFunc(slices.Clone(calls), func(call string) bool { return call != "retrieveUserQuotaSummary" })) != 1 {
-		t.Fatalf("calls %v, want one retrieveUserQuotaSummary before the model call", calls)
-	}
-	after, err := json.Marshal(account.Quota.Models)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Fatalf("the turn calls changed the model quota from %s to %s", before, after)
-	}
+		wait(59 * time.Second)
+		second := followUp(first, "Now add a test")
+		sendTurn(t, dispatcher, "session-1", second)
+		expect("59 s after the burst", map[string]int{"agent": 1})
+
+		wait(2 * time.Second)
+		sendTurn(t, dispatcher, "session-1", followUp(second, "And a changelog entry"))
+		expect("61 s after the burst", map[string]int{"agent": 1, "retrieveUserQuotaSummary": 1})
+
+		wait(5 * time.Minute)
+		sendTurn(t, dispatcher, "session-2", promptRequest("Explain the build"))
+		expect("a conversation five minutes on", map[string]int{
+			"checkpoint": 1, "agent": 1, "retrieveUserQuotaSummary": 1,
+			"fetchUserInfo": 1, "fetchAvailableModels": 1, "loadCodeAssist": 1,
+		})
+
+		sendTurn(t, dispatcher, "session-3", promptRequest("Review the diff"))
+		expect("a conversation right after", map[string]int{"checkpoint": 1, "agent": 1})
+	})
 }
 
-// A prompt retried on the same account, after a 429 the session waits out
-// on its pinned account, sends the turn calls once.
-func TestDispatcherSendsTurnCallsOncePerAccountForARetriedPrompt(t *testing.T) {
-	t.Parallel()
-	const email = "a@example.com"
-	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
-	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
-	first := promptRequest("Fix the login bug")
-	sendTurn(t, dispatcher, "session-1", first)
-	client.reset()
-	client.streamFailures = []error{&cloudcode.HTTPError{StatusCode: 429, Status: "429",
-		Body: `{"error":{"code":429,"message":"Quota exceeded, quotaResetDelay 30s","status":"RESOURCE_EXHAUSTED"}}`}}
-
-	sendTurn(t, dispatcher, "session-1", followUp(first, "Now add a test"))
-
-	assertSteps(t, client.recorded(), slices.Concat(agyTurn, [][]string{{"agent"}, {"agent"}}))
-}
-
-// The start burst is per session and account: a second session on the same
-// account gets its own, and so does the account a session overflows to.
-func TestDispatcherSendsTheStartBurstPerSessionAndAccount(t *testing.T) {
+// The start burst is per account: a request without a session sends it, a
+// later session on the same account does not, and the account a session
+// overflows to gets its own.
+func TestDispatcherSendsTheStartBurstOncePerAccount(t *testing.T) {
 	t.Parallel()
 	home := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
 	overflow := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
 	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{"a@example.com": home, "b@example.com": overflow},
 		"a@example.com", "b@example.com")
-	firstTurn := slices.Concat(agyStartBurst, agyTurn, [][]string{{"agent"}})
+	firstTurn := slices.Concat(agyStartBurst, [][]string{{"agent"}})
 
 	first := promptRequest("Fix the login bug")
+	sendTurn(t, dispatcher, "", promptRequest("Summarize the diff"))
 	sendTurn(t, dispatcher, "session-1", first)
 	sendTurn(t, dispatcher, "session-2", promptRequest("Explain the build"))
-	assertSteps(t, home.recorded(), slices.Concat(firstTurn, firstTurn))
+	assertSteps(t, home.recorded(), slices.Concat(firstTurn, [][]string{{"agent"}, {"agent"}}))
 
 	// A limit longer than maxStickyWait moves the session's model to the
 	// other account.

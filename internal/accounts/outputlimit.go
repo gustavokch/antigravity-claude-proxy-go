@@ -184,8 +184,8 @@ func creditsIn(event cloudcode.SSEEvent, last []cloudcode.CreditBalance) []cloud
 }
 
 // settle records the remaining credits a stream that ended cleanly reported.
-// The live quota reading is taken before a turn instead, where agy takes it
-// (beginTurn).
+// The live quota reading is taken beside model calls instead, where agy
+// takes it (refreshQuotaSummary).
 func (dispatcher *Dispatcher) settle(account *Account, credits []cloudcode.CreditBalance) {
 	if len(credits) == 0 {
 		return

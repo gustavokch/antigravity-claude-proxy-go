@@ -18,7 +18,6 @@ const (
 type pin struct {
 	home     string            // account email
 	overflow map[string]string // rateLimitModelKey(model) -> account email
-	started  map[string]bool   // account emails whose start burst ran for this session
 	lastSeen time.Time
 }
 
@@ -201,36 +200,6 @@ func (manager *Manager) accountLocked(email string) *Account {
 		}
 	}
 	return nil
-}
-
-// conversationStarted reports whether the start burst already ran for session
-// on the account email.
-func (manager *Manager) conversationStarted(session, email string) bool {
-	if session == "" {
-		return false
-	}
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	entry := manager.pins[session]
-	return entry != nil && entry.started[email]
-}
-
-// markConversationStarted records a completed start burst. A session without
-// a pin has nothing to record on.
-func (manager *Manager) markConversationStarted(session, email string) {
-	if session == "" {
-		return
-	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	entry := manager.pins[session]
-	if entry == nil {
-		return
-	}
-	if entry.started == nil {
-		entry.started = make(map[string]bool)
-	}
-	entry.started[email] = true
 }
 
 // ActiveSessions returns, per account email, how many live session pins use

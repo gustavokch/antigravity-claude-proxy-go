@@ -215,43 +215,8 @@ func promptOf(content json.RawMessage) (text string, isPrompt bool) {
 	return "", false
 }
 
-// HasPromptContent reports whether a user message's decoded content (a string
-// or a []any of blocks) holds something a person sent: the rule promptOf
-// applies. Text that is empty or starts with <system-reminder> and tool
-// results do not count; an image or a document does.
-func HasPromptContent(content any) bool {
-	_, isPrompt := promptContent(content)
-	return isPrompt
-}
-
-// promptContent is the rule behind HasPromptContent, over decoded content. A
-// block that is no object makes the content no prompt, as a typed decode of it
-// would fail; a null block is one with neither type nor text.
-func promptContent(content any) (text string, isPrompt bool) {
-	switch content := content.(type) {
-	case string:
-		return content, isPromptText(content)
-	case []any:
-		var rule promptRule
-		for _, raw := range content {
-			var block map[string]any
-			if raw != nil {
-				var ok bool
-				if block, ok = raw.(map[string]any); !ok {
-					return "", false
-				}
-			}
-			if !rule.add(block["type"], block["text"]) {
-				return "", false
-			}
-		}
-		return rule.result()
-	}
-	return "", false
-}
-
-// promptRule is the per-block rule promptOf and promptContent share, applied
-// to a message's blocks in order.
+// promptRule is promptOf's per-block rule, applied to a message's blocks in
+// order.
 type promptRule struct {
 	text     string // the first typed text
 	found    bool   // a text block holds typed text
