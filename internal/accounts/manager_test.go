@@ -1242,3 +1242,108 @@ func TestCountsMatchGetStatus(t *testing.T) {
 		t.Errorf("summary = %q, want %q", status["summary"], got.Summary())
 	}
 }
+
+// A rejection streak measures one wave: while 429s keep arriving it grows, so
+// escalation still protects a long throttle, but ten quiet minutes drop it.
+// Without the drop, the streak from one model's burst promoted a later 429 on
+// a different model to the top cooldown tier (2026-11-10 17:57:13: four
+// argon-high rejections from 17:21 became a 12m19s lock on flash-high).
+func TestFailureStreakDecaysAfterAQuietWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 17, 21, 0, 0, time.UTC)
+	account := testAccount("streak@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rejection := range 4 {
+		if rejection > 0 {
+			now = now.Add(time.Second)
+		}
+		manager.MarkRateLimited(account, "gemini-4-argon-high", 30*time.Second)
+	}
+	if got := manager.FailureCount(account); got != 4 {
+		t.Fatalf("streak during the wave = %d, want 4", got)
+	}
+	// A rejection just short of the decay window still belongs to the wave.
+	now = now.Add(30*time.Second + failureDecay - time.Second)
+	if got := manager.FailureCount(account); got != 4 {
+		t.Fatalf("streak before the quiet window = %d, want 4", got)
+	}
+	// The next model's 429 after the wave still climbs one tier from four.
+	manager.MarkRateLimited(account, "gemini-3.8-flash-high", 5*time.Minute)
+	if got := manager.FailureCount(account); got != 5 {
+		t.Fatalf("streak across a rejection = %d, want 5", got)
+	}
+	// Ten quiet minutes later the wave is over: the next 429 starts at the
+	// first tier instead of inheriting the top one.
+	now = now.Add(5*time.Minute + failureDecay)
+	if got := manager.FailureCount(account); got != 0 {
+		t.Fatalf("streak after a quiet window = %d, want 0", got)
+	}
+	if wait := SmartBackoff(ReasonRateLimit, 0, manager.FailureCount(account)); wait != rateLimitTiers[0] {
+		t.Errorf("fresh 429 cooldown = %s, want first tier %s", wait, rateLimitTiers[0])
+	}
+}
+
+// A success ends the streak and its clock, so the next rejection is the first
+// of a new one.
+func TestMarkSuccessClearsTheFailureStreakClock(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 17, 21, 0, 0, time.UTC)
+	account := testAccount("streak@example.com")
+	manager, err := New(Options{Accounts: []*Account{account}, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkRateLimited(account, "model", time.Second)
+	manager.MarkSuccess(account, "model")
+	manager.MarkRateLimited(account, "model", time.Second)
+	if got := manager.FailureCount(account); got != 1 {
+		t.Errorf("streak after success = %d, want 1", got)
+	}
+}
+
+func TestFailureStreakSurvivesImposedCooldown(t *testing.T) {
+	t.Parallel()
+	for _, wait := range []time.Duration{30 * time.Second, 10 * time.Minute, 12*time.Minute + 30*time.Second, time.Hour} {
+		t.Run(wait.String(), func(t *testing.T) {
+			now := time.Date(2026, 11, 10, 17, 21, 0, 0, time.UTC)
+			account := testAccount("cooldown@example.com")
+			manager, err := New(Options{Accounts: []*Account{account}, Now: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 4 {
+				manager.IncrementFailure(account)
+			}
+			manager.MarkRateLimited(account, "gemini-3.8-flash-high", wait)
+			for _, want := range []int{5, 6} {
+				now = now.Add(wait)
+				if selected := manager.Select("", "gemini-3.8-flash-high").Account; selected != account {
+					t.Fatal("account did not become selectable after its cooldown")
+				}
+				if got := manager.FailureCount(account); got != want {
+					t.Fatalf("streak at cooldown expiry = %d, want %d", got, want)
+				}
+				if got := SmartBackoff(ReasonRateLimit, 0, manager.FailureCount(account)); got != 10*time.Minute {
+					t.Fatalf("repeated 429 wait = %s, want 10m", got)
+				}
+				if want == 5 {
+					manager.MarkRateLimited(account, "gemini-3.8-flash-high", wait)
+				}
+			}
+			now = now.Add(10*time.Minute - time.Millisecond)
+			if got := manager.FailureCount(account); got != 6 {
+				t.Fatalf("streak before quiet expiry = %d, want 6", got)
+			}
+			now = now.Add(time.Millisecond)
+			if got := manager.FailureCount(account); got != 0 {
+				t.Fatalf("streak at quiet expiry = %d, want 0", got)
+			}
+			if got := SmartBackoff(ReasonRateLimit, 0, manager.FailureCount(account)); got != 30*time.Second {
+				t.Fatalf("fresh 429 wait = %s, want 30s", got)
+			}
+		})
+	}
+}

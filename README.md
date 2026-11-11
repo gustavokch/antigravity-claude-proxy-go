@@ -436,6 +436,8 @@ To manage multiple accounts, create `~/.config/antigravity-proxy/accounts.json` 
 
 On `429` rate limits, cooldowns are scoped to the specific model and account so other models on that account remain usable. Stream responses that have already begun emitting data are never replayed to prevent output duplication.
 
+Rejection streaks are account-wide. A successful generation resets the streak immediately; otherwise it expires after ten quiet minutes, measured from the last rejection or the end of its imposed cooldown. Waiting out a cooldown does not itself reset escalation.
+
 #### Conversation affinity
 
 A request that carries a session id (`X-Claude-Code-Session-Id` or another session header, else `metadata.session_id` or the session inside `metadata.user_id`) is pinned to one account for all of its models, so a conversation keeps its cascade and its prompt cache. The strategy chooses only when a pin is made, rebound or overflowed: `sticky` gives a new pin the current account, `round-robin` rotates per new pin or overflow, `hybrid` scores. A request without a session id is still chosen per request.

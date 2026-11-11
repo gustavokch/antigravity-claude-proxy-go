@@ -95,14 +95,15 @@ type Account struct {
 	// these decrease with use and are the visible consumption signal.
 	Credits map[string]int64
 
-	LastUsedMS         int64
-	IsInvalid          bool
-	InvalidReason      string
-	VerifyURL          string
-	ModelRateLimits    map[string]*RateLimit
-	ConsecutiveFailure int
-	CoolingDownUntilMS int64
-	CooldownReason     string
+	LastUsedMS          int64
+	IsInvalid           bool
+	InvalidReason       string
+	VerifyURL           string
+	ModelRateLimits     map[string]*RateLimit
+	ConsecutiveFailure  int
+	FailureDecayStartMS int64
+	CoolingDownUntilMS  int64
+	CooldownReason      string
 }
 
 type diskAccount struct {
@@ -575,6 +576,30 @@ func (manager *Manager) SharedThrottles() map[string]time.Duration {
 	return active
 }
 
+// failureDecay expires a rejection streak after ten quiet minutes. An imposed
+// cooldown is not quiet time: retries cannot show whether the throttle has
+// lifted until it ends. Without expiry, failures on one model can promote a
+// later, unrelated rejection on another model to the top cooldown tier.
+const failureDecay = 10 * time.Minute
+
+// failuresLocked is the account's rejection streak with a quiet streak
+// dropped. Read-only, so a status snapshot under the read lock sees the same
+// value a decision does.
+func (manager *Manager) failuresLocked(account *Account) int {
+	if account.ConsecutiveFailure > 0 &&
+		manager.now().UnixMilli()-account.FailureDecayStartMS >= failureDecay.Milliseconds() {
+		return 0
+	}
+	return account.ConsecutiveFailure
+}
+
+// noteFailureLocked continues the streak, restarting its clock.
+func (manager *Manager) noteFailureLocked(account *Account) int {
+	account.ConsecutiveFailure = manager.failuresLocked(account) + 1
+	account.FailureDecayStartMS = manager.now().UnixMilli()
+	return account.ConsecutiveFailure
+}
+
 func (manager *Manager) MarkRateLimited(account *Account, model string, wait time.Duration) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
@@ -587,7 +612,7 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 	// An actual "" caller means the listing namespace and must be recorded.
 	key := rateLimitModelKey(model)
 	if key == "" && strings.TrimSpace(model) != "" {
-		account.ConsecutiveFailure++
+		manager.noteFailureLocked(account)
 		manager.recordRateLimitLocked(account.Email)
 		return
 	}
@@ -595,7 +620,8 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 		IsRateLimited: true, ResetTimeMS: manager.now().Add(wait).UnixMilli(), ActualResetMS: wait.Milliseconds(),
 	}
 	manager.recordSharedThrottleLocked(key, account.Email, wait)
-	account.ConsecutiveFailure++
+	manager.noteFailureLocked(account)
+	account.FailureDecayStartMS = account.ModelRateLimits[key].ResetTimeMS
 	manager.recordRateLimitLocked(account.Email)
 }
 
@@ -612,13 +638,13 @@ func (manager *Manager) MarkInvalid(account *Account, reason, verifyURL string) 
 func (manager *Manager) MarkFailure(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	account.ConsecutiveFailure++
+	failures := manager.noteFailureLocked(account)
 	manager.recordFailureLocked(account.Email)
 	// Guard on the normalized key, not the raw argument: "[1m]" or whitespace
 	// passes a raw != "" check but normalizes to "", which would collide with
 	// the empty-model namespace model listing uses.
 	key := rateLimitModelKey(model)
-	if key != "" && account.ConsecutiveFailure >= 3 {
+	if key != "" && failures >= 3 {
 		account.ModelRateLimits[key] = &RateLimit{
 			IsRateLimited: true, ResetTimeMS: manager.now().Add(time.Minute).UnixMilli(), ActualResetMS: time.Minute.Milliseconds(),
 			failure: true,
@@ -669,6 +695,7 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	account.ConsecutiveFailure = 0
+	account.FailureDecayStartMS = 0
 	// Delete the namespace only for a real key or an actual "" caller (the
 	// listing namespace): a suffix-only success like "[1m]" normalizes to ""
 	// and must not clear a legitimate empty-model entry.
@@ -682,14 +709,13 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 func (manager *Manager) IncrementFailure(account *Account) int {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	account.ConsecutiveFailure++
-	return account.ConsecutiveFailure
+	return manager.noteFailureLocked(account)
 }
 
 func (manager *Manager) FailureCount(account *Account) int {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return account.ConsecutiveFailure
+	return manager.failuresLocked(account)
 }
 
 func (manager *Manager) Project(account *Account) string {
@@ -1512,7 +1538,7 @@ func (manager *Manager) AccountsWithQuotaModel(model string) []*Account {
 		result = append(result, account)
 	}
 	sort.SliceStable(result, func(i, j int) bool {
-		return result[i].ConsecutiveFailure < result[j].ConsecutiveFailure
+		return manager.failuresLocked(result[i]) < manager.failuresLocked(result[j])
 	})
 	return result
 }
@@ -2028,7 +2054,7 @@ func (manager *Manager) GetStrategyHealthData() map[string]any {
 			"email":       acc.Email,
 			"healthScore": manager.healthScoreLocked(acc.Email),
 			"tokens":      manager.tokensLocked(acc.Email),
-			"failures":    acc.ConsecutiveFailure,
+			"failures":    manager.failuresLocked(acc),
 			"isInvalid":   acc.IsInvalid,
 			"enabled":     acc.Enabled,
 			"lastUsed":    acc.LastUsedMS,
