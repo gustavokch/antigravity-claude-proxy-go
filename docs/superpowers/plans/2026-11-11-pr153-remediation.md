@@ -70,7 +70,7 @@ Executed on the PR head before the documentation-only remediation:
 - Focused Cloud Code zero-value TLS/HTTP2 and request identity tests: 2 passed.
 - Recorded evidence from run `20261111-190049`: all 42 agy requests returned 200 over HTTP/2 to `daily-cloudcode-pa.googleapis.com`, with the same 1.5.6/1018951551 User-Agent. All 42 authorization fields are redacted, and per-run/response fields are excluded from the committed baseline.
 - The committed baseline exactly matches the sanitized real capture. Baseline/proxy wire comparisons found no unexplained differences after accounting for the two pending pins; endpoint sets are unchanged.
-- Stored agy and proxy ClientHello bytes both fingerprint as JA4 `t13d1312h2_f57a46bbacb6_f50d94e863eb`, JA3 `03117a8ed39ef02427ebbc39f121275c`, ALPN `h2`, `http/1.1`. The proxy capture predates the pin update. No fresh live packet capture was run; do not claim a new live packet gate pass.
+- Stored agy and proxy ClientHello bytes both fingerprint as JA4 `t13d1312h2_f57a46bbacb6_f50d94e863eb`, JA3 `03117a8ed39ef02427ebbc39f121275c`, ALPN `h2`, `http/1.1`. That recorded proxy capture predates the pin update; the subsequent fresh post-update proxy packet gate is recorded below.
 
 ## Execution Record
 
@@ -78,3 +78,21 @@ Executed on the PR head before the documentation-only remediation:
 - The staged learning gate exited successfully with no conflicts or overlapping branch changes. Its non-blocking lexical leads were unrelated to these version-only edits.
 - No production code, TLS settings, historical fixtures, or captured evidence changed during remediation. No permanent test or throwaway script file was added.
 - Delivery uses the atomic commit and `fork` push commands in Step 5; the commit and PR history record their result.
+
+## Fresh Live Packet Gate
+
+After the documentation fix, the user ran the existing credential-free production transport probe from the PR worktree with packet-capture privileges:
+
+```bash
+sudo env PATH="$PATH" ANTIGRAVITY_CAPTURE_IFACE=pktap,all bash scripts/verify-ja4.sh
+```
+
+The user supplied the complete successful output. The gate rebuilt `tools/clientprobe`, captured a fresh ClientHello, and reported:
+
+- SNI: `daily-cloudcode-pa.googleapis.com`.
+- ALPN: `h2,http/1.1`.
+- Observed JA4: `t13d1312h2_f57a46bbacb6_f50d94e863eb`.
+- Expected JA4: `t13d1312h2_f57a46bbacb6_f50d94e863eb`.
+- Result: `Fingerprint verification SUCCESS! JA4 matches agy baseline exact.`
+
+This proves fresh post-update proxy JA4 parity against the recorded agy baseline. It is not a new agy capture or an authenticated application-header/body capture. No rerun was needed to confirm the user's result.
