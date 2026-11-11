@@ -532,34 +532,6 @@ func TestPinActiveSessionsCountsHomeAndOverflow(t *testing.T) {
 	}
 }
 
-func TestPinConversationStarted(t *testing.T) {
-	t.Parallel()
-	clock := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
-	manager, _ := pinTestManager(t, &clock, StrategyRoundRobin, "a@example.com", "b@example.com")
-
-	if manager.conversationStarted("s1", "b@example.com") {
-		t.Fatal("conversationStarted = true for a session with no pin")
-	}
-	manager.markConversationStarted("s1", "b@example.com")
-	if len(manager.pins) != 0 {
-		t.Fatal("markConversationStarted created a pin")
-	}
-	home := selected(manager, "s1", pinModel)
-	if manager.conversationStarted("s1", home) {
-		t.Fatal("conversationStarted = true before any start burst")
-	}
-	manager.markConversationStarted("s1", home)
-	if !manager.conversationStarted("s1", home) {
-		t.Fatalf("conversationStarted(s1, %s) = false after marking it", home)
-	}
-	if manager.conversationStarted("s1", "a@example.com") {
-		t.Fatal("a start on one account marked another account started")
-	}
-	if manager.conversationStarted("", home) || manager.conversationStarted("s2", home) {
-		t.Fatal("conversationStarted = true for an empty or unknown session")
-	}
-}
-
 // Pin changes are logged at info so a smoke run can follow them. Only the
 // first 8 characters of the session id appear in the log.
 func TestPinChangesAreLogged(t *testing.T) {

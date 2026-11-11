@@ -16,24 +16,18 @@ import (
 	"antigravity-go-proxy/internal/modelcatalog"
 )
 
-// agyStartBurst and agyTurn are agy's control-plane calls, named as
-// .reference/client-drift/agy.jsonl names them. Each step holds calls agy
-// sends together, which may arrive in any order.
-var (
-	agyStartBurst = [][]string{
-		{"loadCodeAssist"},
-		{"fetchAdminControls", "fetchUserInfo", "retrieveUserQuotaSummary"},
-		{"fetchAvailableModels"},
-		{"retrieveUserQuotaSummary"},
-		{"listExperiments"},
-		{"loadCodeAssist"},
-		{"cascadeNuxes"},
-	}
-	agyTurn = [][]string{
-		{"loadCodeAssist"},
-		{"fetchUserInfo", "retrieveUserQuotaSummary"},
-	}
-)
+// agyStartBurst is agy's start burst, named as .reference/client-drift/agy.jsonl
+// names its calls. Each step holds calls agy sends together, which may arrive
+// in any order.
+var agyStartBurst = [][]string{
+	{"loadCodeAssist"},
+	{"fetchAdminControls", "fetchUserInfo", "retrieveUserQuotaSummary"},
+	{"fetchAvailableModels"},
+	{"retrieveUserQuotaSummary"},
+	{"listExperiments"},
+	{"loadCodeAssist"},
+	{"cascadeNuxes"},
+}
 
 // sequenceModelsBody is a catalog without a flash-lite tier, so a first turn
 // sends no title checkpoint and the calls a client records are the control
@@ -254,60 +248,20 @@ func toolList() []any {
 	return []any{map[string]any{"name": "Read", "input_schema": map[string]any{"type": "object"}}}
 }
 
-func TestIsNewUserPrompt(t *testing.T) {
-	t.Parallel()
-	user := func(content any) map[string]any { return map[string]any{"role": "user", "content": content} }
-	block := func(kind, text string) map[string]any { return map[string]any{"type": kind, "text": text} }
-	toolResult := map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "package login"}
-	reminder := block("text", "<system-reminder>\nlogin.go is short.\n</system-reminder>")
-	system := map[string]any{"role": "system", "content": []any{block("text", "# Environment\nYou have been invoked in the following environment: ...")}}
-	for _, test := range []struct {
-		name     string
-		tools    []any
-		messages []any
-		want     bool
-	}{
-		{"typed string", toolList(), []any{user("Fix the login bug")}, true},
-		{"text block", toolList(), []any{user([]any{block("text", "Fix the login bug")})}, true},
-		{"image block", toolList(), []any{user([]any{map[string]any{"type": "image", "source": map[string]any{}}})}, true},
-		{"tool result with typed text", toolList(), []any{user([]any{toolResult, block("text", "stop, use the other file")})}, true},
-		{"tool result", toolList(), []any{user([]any{toolResult})}, false},
-		{"tool result with reminder", toolList(), []any{user([]any{toolResult, reminder})}, false},
-		{"document block", toolList(), []any{user([]any{toolResult, map[string]any{"type": "document", "source": map[string]any{}}})}, true},
-		{"tool result with empty text", toolList(), []any{user([]any{toolResult, block("text", "")})}, false},
-		{"blank string", toolList(), []any{user("  ")}, false},
-		{"no tools", nil, []any{user("Write a five-word title")}, false},
-		{"assistant last", toolList(), []any{user("hi"), map[string]any{"role": "assistant", "content": "hello"}}, false},
-		{"no messages", toolList(), nil, false},
-		{"prompt before trailing system message", toolList(), []any{user([]any{reminder, block("text", "Read calc.py and tell me in one sentence what add does.")}), system}, true},
-		{"tool continuation before trailing system message", toolList(), []any{user([]any{toolResult}), system}, false},
-		{"only system messages", toolList(), []any{system, system}, false},
-	} {
-		request := map[string]any{"messages": test.messages}
-		if test.tools != nil {
-			request["tools"] = test.tools
-		}
-		if got := isNewUserPrompt(request); got != test.want {
-			t.Errorf("%s: isNewUserPrompt = %v, want %v", test.name, got, test.want)
-		}
-	}
-}
-
-// Concurrent requests of one session on one account share one start burst,
-// sent in agy's order with a 10 s deadline on each call; the session's later
-// requests send none, and another session gets its own.
-func TestBeginConversationSendsTheStartBurstOncePerSessionAndAccount(t *testing.T) {
+// Concurrent requests on one account share one start burst, sent in agy's
+// order with a 10 s deadline on each call; the account's later requests send
+// none.
+func TestStartAccountSendsTheStartBurstOncePerAccount(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const email = "a@example.com"
 		client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hold: make(chan struct{})}
 		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
 		account := dispatcher.manager.accounts[0]
-		dispatcher.manager.Select("session-1", sequenceModel)
 
 		var requests sync.WaitGroup
 		for range 8 {
 			requests.Go(func() {
-				dispatcher.beginConversation(context.Background(), "session-1", account, client, "p")
+				dispatcher.startAccount(context.Background(), account, client, "p")
 			})
 		}
 		// Every request is blocked: one in the burst's first loadCodeAssist,
@@ -322,25 +276,22 @@ func TestBeginConversationSendsTheStartBurstOncePerSessionAndAccount(t *testing.
 				t.Errorf("call %d had %s before its deadline, want %s", index, budget, controlPlaneCallTimeout)
 			}
 		}
-		if !dispatcher.manager.conversationStarted("session-1", email) {
+		if !dispatcher.accountStarted(email) {
 			t.Fatal("a burst whose calls all answered 2xx left the account unstarted")
 		}
 
 		client.reset()
-		dispatcher.beginConversation(context.Background(), "session-1", account, client, "p")
+		dispatcher.startAccount(context.Background(), account, client, "p")
 		if calls := client.recorded(); len(calls) != 0 {
-			t.Fatalf("a started session sent %v", calls)
+			t.Fatalf("a started account sent %v", calls)
 		}
-		dispatcher.manager.Select("session-2", sequenceModel)
-		dispatcher.beginConversation(context.Background(), "session-2", account, client, "p")
-		assertSteps(t, client.recorded(), agyStartBurst)
 	})
 }
 
 // An error status is an answer: the burst completes and the account is
 // started, so an account whose listExperiments always answers 403 does not
-// resend all nine calls on each of the session's requests.
-func TestBeginConversationCountsAnErrorStatusAsAnAnswer(t *testing.T) {
+// resend all nine calls on each of its requests.
+func TestStartAccountCountsAnErrorStatusAsAnAnswer(t *testing.T) {
 	t.Parallel()
 	const email = "a@example.com"
 	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
@@ -348,64 +299,61 @@ func TestBeginConversationCountsAnErrorStatusAsAnAnswer(t *testing.T) {
 		StatusCode: http.StatusForbidden, Status: "403 Forbidden", Body: `{"error":{"code":403,"status":"PERMISSION_DENIED"}}`}))
 	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
 	account := dispatcher.manager.accounts[0]
-	dispatcher.manager.Select("session-1", sequenceModel)
 
-	dispatcher.beginConversation(context.Background(), "session-1", account, client, "p")
+	dispatcher.startAccount(context.Background(), account, client, "p")
 	assertSteps(t, client.recorded(), agyStartBurst)
-	if !dispatcher.manager.conversationStarted("session-1", email) {
+	if !dispatcher.accountStarted(email) {
 		t.Fatal("a burst whose calls all got an HTTP answer left the account unstarted")
 	}
 
 	client.reset()
-	dispatcher.beginConversation(context.Background(), "session-1", account, client, "p")
+	dispatcher.startAccount(context.Background(), account, client, "p")
 	if calls := client.recorded(); len(calls) != 0 {
-		t.Fatalf("the session's next request sent %v", calls)
+		t.Fatalf("the account's next request sent %v", calls)
 	}
 }
 
 // A call without an answer does not cut the burst short, but it leaves the
-// account unstarted, so the session's next request sends the whole burst
+// account unstarted, so the account's next request sends the whole burst
 // again.
-func TestBeginConversationRetriesABurstWithAnUnansweredCall(t *testing.T) {
+func TestStartAccountRetriesABurstWithAnUnansweredCall(t *testing.T) {
 	t.Parallel()
 	const email = "a@example.com"
 	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
 	client.setFailure("listExperiments", errors.New("Cloud Code request to https://daily-cloudcode-pa.googleapis.com: read: connection reset by peer"))
 	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
 	account := dispatcher.manager.accounts[0]
-	dispatcher.manager.Select("session-1", sequenceModel)
 
-	dispatcher.beginConversation(context.Background(), "session-1", account, client, "p")
+	dispatcher.startAccount(context.Background(), account, client, "p")
 	assertSteps(t, client.recorded(), agyStartBurst)
-	if dispatcher.manager.conversationStarted("session-1", email) {
+	if dispatcher.accountStarted(email) {
 		t.Fatal("a burst with an unanswered call marked the account started")
 	}
 
 	client.reset()
 	client.setFailure("listExperiments", nil)
-	dispatcher.beginConversation(context.Background(), "session-1", account, client, "p")
+	dispatcher.startAccount(context.Background(), account, client, "p")
 	assertSteps(t, client.recorded(), agyStartBurst)
-	if !dispatcher.manager.conversationStarted("session-1", email) {
+	if !dispatcher.accountStarted(email) {
 		t.Fatal("the resent burst got every answer and left the account unstarted")
 	}
 }
 
 // The burst runs on the request's context: a client that has gone sends
 // nothing, and the account stays unstarted.
-func TestBeginConversationStopsWithTheClient(t *testing.T) {
+func TestStartAccountStopsWithTheClient(t *testing.T) {
 	t.Parallel()
 	const email = "a@example.com"
 	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
 	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
-	dispatcher.manager.Select("session-1", sequenceModel)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	dispatcher.beginConversation(ctx, "session-1", dispatcher.manager.accounts[0], client, "p")
+	dispatcher.startAccount(ctx, dispatcher.manager.accounts[0], client, "p")
 	if calls := client.recorded(); len(calls) != 0 {
 		t.Fatalf("a request whose client left sent %v", calls)
 	}
-	if dispatcher.manager.conversationStarted("session-1", email) {
+	if dispatcher.accountStarted(email) {
 		t.Fatal("a burst that sent nothing marked the account started")
 	}
 }
@@ -413,19 +361,18 @@ func TestBeginConversationStopsWithTheClient(t *testing.T) {
 // A burst whose calls never answer holds the request until the run's
 // deadline, not until each of its seven steps used up its own call timeout,
 // and leaves the account unstarted.
-func TestBeginConversationIsBoundedAsAWhole(t *testing.T) {
+func TestStartAccountIsBoundedAsAWhole(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const email = "a@example.com"
 		client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hang: true}
 		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
-		dispatcher.manager.Select("session-1", sequenceModel)
 
 		start := time.Now()
-		dispatcher.beginConversation(context.Background(), "session-1", dispatcher.manager.accounts[0], client, "p")
+		dispatcher.startAccount(context.Background(), dispatcher.manager.accounts[0], client, "p")
 		if took := time.Since(start); took > controlPlaneRunTimeout {
 			t.Fatalf("a burst whose calls never answer held the request for %s, want at most %s", took, controlPlaneRunTimeout)
 		}
-		if dispatcher.manager.conversationStarted("session-1", email) {
+		if dispatcher.accountStarted(email) {
 			t.Fatal("a burst cut short by its deadline marked the account started")
 		}
 	})
@@ -435,21 +382,20 @@ func TestBeginConversationIsBoundedAsAWhole(t *testing.T) {
 // waiting on it runs the whole burst itself and starts the account. A run
 // that stops at its deadline with the leader still there is not abandoned,
 // and its waiters do not send it again.
-func TestBeginConversationWaiterTakesOverWhenTheLeaderLeaves(t *testing.T) {
+func TestStartAccountWaiterTakesOverWhenTheLeaderLeaves(t *testing.T) {
 	t.Run("leader leaves", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			const email = "a@example.com"
 			client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hold: make(chan struct{})}
 			dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
 			account := dispatcher.manager.accounts[0]
-			dispatcher.manager.Select("session-1", sequenceModel)
 
 			leaderCtx, leave := context.WithCancel(context.Background())
 			var requests sync.WaitGroup
-			requests.Go(func() { dispatcher.beginConversation(leaderCtx, "session-1", account, client, "p") })
+			requests.Go(func() { dispatcher.startAccount(leaderCtx, account, client, "p") })
 			// The leader is held in the burst's first loadCodeAssist.
 			synctest.Wait()
-			requests.Go(func() { dispatcher.beginConversation(context.Background(), "session-1", account, client, "p") })
+			requests.Go(func() { dispatcher.startAccount(context.Background(), account, client, "p") })
 			// The waiter is queued on the leader's run.
 			synctest.Wait()
 			leave()
@@ -458,7 +404,7 @@ func TestBeginConversationWaiterTakesOverWhenTheLeaderLeaves(t *testing.T) {
 			requests.Wait()
 
 			assertSteps(t, client.recorded(), agyStartBurst)
-			if !dispatcher.manager.conversationStarted("session-1", email) {
+			if !dispatcher.accountStarted(email) {
 				t.Fatal("the waiter's burst got every answer and left the account unstarted")
 			}
 		})
@@ -470,15 +416,14 @@ func TestBeginConversationWaiterTakesOverWhenTheLeaderLeaves(t *testing.T) {
 			client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hang: true}
 			dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
 			account := dispatcher.manager.accounts[0]
-			dispatcher.manager.Select("session-1", sequenceModel)
 
 			start := time.Now()
 			var requests sync.WaitGroup
-			requests.Go(func() { dispatcher.beginConversation(context.Background(), "session-1", account, client, "p") })
+			requests.Go(func() { dispatcher.startAccount(context.Background(), account, client, "p") })
 			synctest.Wait()
 			var waited time.Duration
 			requests.Go(func() {
-				dispatcher.beginConversation(context.Background(), "session-1", account, client, "p")
+				dispatcher.startAccount(context.Background(), account, client, "p")
 				waited = time.Since(start)
 			})
 			requests.Wait()
@@ -487,118 +432,6 @@ func TestBeginConversationWaiterTakesOverWhenTheLeaderLeaves(t *testing.T) {
 				t.Fatalf("the waiter was held for %s, want at most %s: a run that stopped at its deadline must not run again", waited, controlPlaneRunTimeout)
 			}
 		})
-	})
-}
-
-// Only a new prompt in a session's main loop sends the turn calls: tool
-// continuations, tool-less side calls and requests without a session send
-// none.
-func TestBeginTurnSendsTheTurnCallsBeforeANewPromptOnly(t *testing.T) {
-	t.Parallel()
-	const email = "a@example.com"
-	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
-	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
-	account := dispatcher.manager.accounts[0]
-	prompt := map[string]any{"tools": toolList(), "messages": []any{map[string]any{"role": "user", "content": "Fix the login bug"}}}
-	continuation := map[string]any{"tools": toolList(), "messages": []any{
-		map[string]any{"role": "user", "content": "Fix the login bug"},
-		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": map[string]any{}}}},
-		map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_1", "content": "package login"}}},
-	}}
-	title := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "Write a five-word title for: Fix the login bug"}}}
-
-	for _, request := range []map[string]any{continuation, title} {
-		dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", request)
-	}
-	dispatcher.beginTurn(context.Background(), "", account, client, "p", prompt)
-	if calls := client.recorded(); len(calls) != 0 {
-		t.Fatalf("requests that are no new prompt in a session sent %v", calls)
-	}
-	dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", prompt)
-	assertSteps(t, client.recorded(), agyTurn)
-}
-
-// Turn calls that never answer hold the request until the run's deadline,
-// not until each step used up its own call timeout.
-func TestBeginTurnIsBoundedAsAWhole(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		const email = "a@example.com"
-		client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hang: true}
-		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
-		prompt := map[string]any{"tools": toolList(), "messages": []any{map[string]any{"role": "user", "content": "Fix the login bug"}}}
-
-		start := time.Now()
-		dispatcher.beginTurn(context.Background(), "session-1", dispatcher.manager.accounts[0], client, "p", prompt)
-		if took := time.Since(start); took > controlPlaneRunTimeout {
-			t.Fatalf("turn calls that never answer held the request for %s, want at most %s", took, controlPlaneRunTimeout)
-		}
-	})
-}
-
-// Identical prompts of one session that arrive together share one run of
-// the turn calls.
-func TestBeginTurnSharesOneRunAmongIdenticalPrompts(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		const email = "a@example.com"
-		client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hold: make(chan struct{})}
-		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
-		account := dispatcher.manager.accounts[0]
-		prompt := map[string]any{"tools": toolList(), "messages": []any{map[string]any{"role": "user", "content": "Fix the login bug"}}}
-
-		var requests sync.WaitGroup
-		for range 4 {
-			requests.Go(func() {
-				dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", prompt)
-			})
-		}
-		synctest.Wait()
-		close(client.hold)
-		requests.Wait()
-		assertSteps(t, client.recorded(), agyTurn)
-	})
-}
-
-// Claude Code ends every main request with the same system message: two
-// different prompts behind it are two runs, not one.
-func TestBeginTurnKeysOnThePromptNotTheTrailingSystemMessage(t *testing.T) {
-	t.Parallel()
-	const email = "a@example.com"
-	client := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody)}
-	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
-	account := dispatcher.manager.accounts[0]
-	system := map[string]any{"role": "system", "content": []any{map[string]any{"type": "text", "text": "# Environment"}}}
-	request := func(text string) map[string]any {
-		return map[string]any{"tools": toolList(), "messages": []any{map[string]any{"role": "user", "content": text}, system}}
-	}
-
-	dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", request("Fix the login bug"))
-	dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", request("Now fix logout"))
-	assertSteps(t, client.recorded(), slices.Concat(agyTurn, agyTurn))
-}
-
-// Identical prompts of one session on different accounts are separate runs:
-// each account gets its own turn calls.
-func TestBeginTurnRunsPerAccount(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		hold := make(chan struct{})
-		first := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hold: hold}
-		second := &agyCallRecorder{modelsBody: []byte(sequenceModelsBody), hold: hold}
-		dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{"a@example.com": first, "b@example.com": second},
-			"a@example.com", "b@example.com")
-		prompt := map[string]any{"tools": toolList(), "messages": []any{map[string]any{"role": "user", "content": "Fix the login bug"}}}
-
-		var requests sync.WaitGroup
-		for index, client := range []*agyCallRecorder{first, second} {
-			account := dispatcher.manager.accounts[index]
-			requests.Go(func() {
-				dispatcher.beginTurn(context.Background(), "session-1", account, client, "p", prompt)
-			})
-		}
-		synctest.Wait()
-		close(hold)
-		requests.Wait()
-		assertSteps(t, first.recorded(), agyTurn)
-		assertSteps(t, second.recorded(), agyTurn)
 	})
 }
 
@@ -615,9 +448,8 @@ func TestControlPlaneAnswersUpdateTheAccount(t *testing.T) {
 	}
 	dispatcher := newControlPlaneDispatcher(t, map[string]*agyCallRecorder{email: client}, email)
 	account := dispatcher.manager.accounts[0]
-	dispatcher.manager.Select("session-1", sequenceModel)
 
-	dispatcher.beginConversation(context.Background(), "session-1", account, client, "project-a@example.com")
+	dispatcher.startAccount(context.Background(), account, client, "project-a@example.com")
 
 	if got := dispatcher.manager.Project(account); got != "proj-live" {
 		t.Errorf("project = %q, want the one loadCodeAssist named", got)

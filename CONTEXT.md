@@ -53,12 +53,12 @@ The header set and body shape a request presents to Anthropic, rewritten to matc
 _Avoid_: Spoof, spoofing, normalize, normalization, identity (bare — it collides with Account).
 
 **Start Burst**:
-The control-plane calls sent, in the order of the agy 1.5.2 baseline, the first time a session uses an Account: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET cascadeNuxes`. Sent again for each Account the session overflows to, and on the session's next request after a burst in which a call got no HTTP answer. Its `fetchAvailableModels` refreshes the Account's per-model quota. Checks against agy compare only the set of endpoints: runs of one agy version reorder calls and vary the count of `retrieveUserQuotaSummary`.
+The control-plane calls sent the first time this proxy uses an Account, with or without a client session: `loadCodeAssist`; `fetchAdminControls`, `fetchUserInfo` and `retrieveUserQuotaSummary` together; `fetchAvailableModels`; `retrieveUserQuotaSummary`; `listExperiments`; `loadCodeAssist`; `GET cascadeNuxes`. Concurrent requests share one burst. Any HTTP answer counts as answered; an unanswered call leaves the Account unstarted and its next request retries the burst. Later sessions on the same Account do not repeat it. Its model list refreshes per-model quota, and its summary and user-info calls restart the recurring refresh timers. Based on the agy 1.5.6 cadence capture; endpoint order and repetition vary between real-client startup captures.
 _Avoid_: Warmup, handshake, init calls.
 
-**Per-Turn Calls**:
-The calls sent before each new prompt of a session, once per Account even when the prompt is retried: `loadCodeAssist`, then `fetchUserInfo` and `retrieveUserQuotaSummary` together. Tool continuations and tool-less side calls send none. Their answers keep the Account's tier, project and shared quota pools current, not its per-model quota; no quota call follows a stream.
-_Avoid_: Pre-flight, quota poll, post-request refresh.
+**Recurring Control-Plane Calls**:
+The calls sent beside generation while an Account is in use: `retrieveUserQuotaSummary` once its last summary is at least one minute old, and `fetchUserInfo` → `fetchAvailableModels` → `loadCodeAssist` at a conversation's first model call once its last user-info call is at least five minutes old. The latter does not require a title checkpoint. Summaries update shared quota pools; model lists update per-model quota; `loadCodeAssist` updates tier and project. Summaries from explicit catalog and account refreshes restart the same timer. Recurring calls do not delay generation and are bounded by their own timeouts and dispatcher shutdown.
+_Avoid_: Per-turn calls, pre-flight, post-request refresh.
 
 **Session Pin**:
 The binding of one client session to the Account that serves all of its models, so a conversation keeps one cascade and one prompt cache. Made by the Selection Strategy on the session's first request; dropped after an hour without a request.
@@ -111,7 +111,7 @@ A temporary request rate limit error (HTTP 429) carrying retry duration headers 
 _Avoid_: Throttling, 429 error, rate block.
 
 **Quota Exhausted**:
-A depletion of model quota capacity (`remainingFraction` below threshold) that suspends an Account for that model until the quota reset timestamp. Per-model fractions come from the catalog fetch (24 h TTL), a manual account refresh and each Start Burst, and stay near 1 until the model is exhausted.
+A depletion of model quota capacity (`remainingFraction` below threshold) that suspends an Account for that model until the quota reset timestamp. Per-model fractions come from the catalog fetch (24 h TTL), a manual account refresh, each Start Burst, and the five-minute account refresh, and stay near 1 until the model is exhausted.
 _Avoid_: Usage limit, out of credits, quota burn.
 
 **Model Capacity Exhausted**:

@@ -125,9 +125,17 @@ type Dispatcher struct {
 	modelRecoveries map[string]*modelRecoveryCall
 	// modelsFetch is the shared in-flight catalog fetch; guarded by mu.
 	modelsFetch *modelFetchCall
-	// controlCalls is the in-flight start burst or turn calls per key
+	// controlCalls is the in-flight start burst per account
 	// (shareControlCall), guarded by mu; concurrent requests share one run.
 	controlCalls map[string]*controlCall
+	// started holds the emails whose start burst got every answer
+	// (startAccount), guarded by mu.
+	started map[string]bool
+	// quotaSummaryAt and userInfoAt hold when each account last sent
+	// retrieveUserQuotaSummary and fetchUserInfo, guarded by mu; due spaces
+	// the ones agy repeats while it runs.
+	quotaSummaryAt map[string]time.Time
+	userInfoAt     map[string]time.Time
 }
 
 // catalogSnapshot is one account's model list and when it was fetched.
@@ -199,6 +207,9 @@ func NewDispatcher(options DispatcherOptions) (*Dispatcher, error) {
 		meter:                    newThrottleMeter(nil),
 		clients:                  make(map[string]accountClient),
 		controlCalls:             make(map[string]*controlCall),
+		started:                  make(map[string]bool),
+		quotaSummaryAt:           make(map[string]time.Time),
+		userInfoAt:               make(map[string]time.Time),
 	}, nil
 }
 
@@ -380,8 +391,8 @@ func (dispatcher *Dispatcher) fetchAvailableModels(ctx context.Context) (cloudco
 // failed, so recovery tries it last next time. No live-quota RPCs ride along:
 // recovery sits on a request path. Per-model quota comes from catalog
 // fetches (24 h TTL), manual account refreshes and each start burst's
-// fetchAvailableModels; the quota summary a new prompt sends (beginTurn)
-// updates shared pools only.
+// fetchAvailableModels; the quota summary sent beside model calls
+// (refreshQuotaSummary) updates shared pools only.
 func (dispatcher *Dispatcher) fetchAvailableModelsForAccount(ctx context.Context, account *Account) (cloudcode.Response, error) {
 	if err := ctx.Err(); err != nil {
 		return cloudcode.Response{}, err
@@ -433,10 +444,6 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	maxAttempts := max(dispatcher.maxRetries, dispatcher.manager.Count()+1)
 	session := SessionKey(ctx)
 	var lastError error
-	// Accounts that already got this request's turn calls: a retry on one of
-	// them, after a pinned wait or a 429, sends the prompt again, not the
-	// turn calls.
-	turnSent := make(map[string]bool)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		selection := dispatcher.manager.Select(session, model)
 		if selection.Account == nil {
@@ -485,11 +492,7 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			lastError = err
 			continue
 		}
-		dispatcher.beginConversation(ctx, session, account, client, project)
-		if !turnSent[account.Email] {
-			turnSent[account.Email] = true
-			dispatcher.beginTurn(ctx, session, account, client, project, request)
-		}
+		dispatcher.startAccount(ctx, account, client, project)
 		payload := dispatcher.builder.BuildCloudCodeRequestWithModel(request, project, credentials.Email, proxyformat.ModelOptions{
 			SupportsThinking: modelDetails.SupportsThinking, ThinkingBudget: modelDetails.ThinkingBudget,
 			MinThinkingBudget: modelDetails.MinThinkingBudget, MaxOutputTokens: modelDetails.MaxOutputTokens,
@@ -498,7 +501,8 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 		// agy sends no anthropic-beta on Claude calls, and Claude still thinks
 		// after tool results without it (.reference/agy-1.4.11-generation-20261030.txt).
 		options := cloudcode.RequestOptions{}
-		dispatcher.startConversation(ctx, client, request, payload)
+		dispatcher.startConversation(ctx, account, client, request, payload)
+		dispatcher.refreshQuotaSummary(ctx, account, client, project)
 		guard := proxyformat.NewOutputGuard(payload.OutputLimit)
 
 		capacityAttempt := 0
@@ -583,11 +587,16 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 const conversationStartTimeout = time.Minute
 
 // startConversation sends what agy sends when a conversation starts, next to
-// its first model call: writeTrajectoryAcls for the trajectory and the title
-// checkpoint on the catalog's flash-lite model. agy starts both a few ms
-// before the model call and does not wait for them, so neither delays the
-// request or changes its outcome; a failure is only logged.
-func (dispatcher *Dispatcher) startConversation(ctx context.Context, client CloudClient, request map[string]any, payload proxyformat.CloudCodeRequest) {
+// its first model call: writeTrajectoryAcls for the trajectory, the account
+// calls of refreshAccountInfo when the last fetchUserInfo is userInfoEvery
+// old, and the title checkpoint on the catalog's flash-lite model
+// (.reference/agy-1.5.6-control-plane-20261111.txt).
+// agy starts them before the model call and does not wait for them, so none
+// delays the request or changes its outcome; a failure is only logged.
+func (dispatcher *Dispatcher) startConversation(ctx context.Context, account *Account, client CloudClient, request map[string]any, payload proxyformat.CloudCodeRequest) {
+	if payload.IsFirstTurn() {
+		dispatcher.refreshAccountInfo(ctx, account, client, payload.Project)
+	}
 	trajectoryID, checkpoint, ok := dispatcher.builder.ConversationStart(payload, request, dispatcher.currentCatalog().FlashLiteID())
 	if !ok {
 		return
@@ -1120,6 +1129,7 @@ func (dispatcher *Dispatcher) refreshLiveQuota(ctx context.Context, account *Acc
 		return
 	}
 	if fetcher, ok := client.(quotaSummaryFetcher); ok {
+		dispatcher.sentNow(dispatcher.quotaSummaryAt, account.Email)
 		if response, err := fetcher.RetrieveUserQuotaSummary(ctx, project); err == nil &&
 			response.StatusCode >= 200 && response.StatusCode < 300 {
 			dispatcher.applyQuotaSummary(account.Email, response.Body)

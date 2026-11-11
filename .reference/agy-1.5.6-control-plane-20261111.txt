@@ -1,0 +1,113 @@
+agy 1.5.6 control-plane cadence within one process, 2026-11-11
+================================================================
+
+Two interactive agy 1.5.6 sessions, each one process, driven through a pty and
+recorded through mitmdump against daily-cloudcode-pa.googleapis.com. Times are
+seconds from process start. REQ = request agy sent (all answered 200); EV = input
+sent to agy. "clear" is the /clear command, which starts a new conversation.
+streamGenerateContent is split into the title checkpoint (flash-lite) and the
+agent call.
+
+Run 1: a new conversation (/clear) before every prompt, about 60 s apart
+------------------------------------------------------------------------
+  0.83 REQ loadCodeAssist
+  1.06 REQ fetchAdminControls
+  1.24 REQ retrieveUserQuotaSummary
+  1.59 REQ fetchUserInfo
+  1.78 REQ fetchAvailableModels
+  2.12 REQ retrieveUserQuotaSummary
+  2.29 REQ loadCodeAssist
+  2.60 REQ listExperiments
+  2.82 REQ cascadeNuxes
+  2.86 REQ loadCodeAssist
+  3.12 REQ fetchUserInfo
+  3.47 REQ loadCodeAssist
+  3.48 REQ retrieveUserQuotaSummary
+  3.87 REQ retrieveUserQuotaSummary
+ 10.01 EV  prompt 0
+ 10.29 REQ writeTrajectoryAcls
+ 10.85 REQ streamGenerateContent checkpoint
+ 13.14 REQ streamGenerateContent agent
+ 16.45 REQ streamGenerateContent agent
+ 70.35 EV  clear, prompt 1
+ 71.63 REQ writeTrajectoryAcls
+ 71.67 REQ retrieveUserQuotaSummary            67.8 s after the last one
+137.82 EV  clear, prompt 2
+139.69 REQ streamGenerateContent checkpoint
+142.81 REQ streamGenerateContent agent
+145.64 REQ streamGenerateContent agent
+145.97 REQ retrieveUserQuotaSummary            74.3 s after
+190.11 EV  clear, prompt 3
+194.48 REQ streamGenerateContent agent         no summary, 48.5 s after
+250.00 EV  clear, prompt 4
+253.42 REQ streamGenerateContent agent
+253.64 REQ retrieveUserQuotaSummary            107.7 s after
+310.26 EV  clear, prompt 5
+311.48 REQ fetchUserInfo                       308.4 s after the last one
+311.62 REQ fetchAvailableModels
+311.73 REQ loadCodeAssist
+313.33 REQ streamGenerateContent agent         no summary, 59.7 s after
+370.44 EV  clear, prompt 6
+373.83 REQ streamGenerateContent agent
+374.04 REQ retrieveUserQuotaSummary            120.4 s after
+430.09 EV  clear, prompt 7
+433.83 REQ streamGenerateContent agent         no summary, 59.8 s after
+
+Run 2: follow-up prompts in one conversation, then new conversations
+--------------------------------------------------------------------
+  0.90 REQ loadCodeAssist
+  1.11 REQ fetchAdminControls
+  1.16 REQ fetchUserInfo
+  1.32 REQ retrieveUserQuotaSummary
+  1.33 REQ fetchAvailableModels
+  1.56 REQ listExperiments
+  1.69 REQ retrieveUserQuotaSummary
+  1.84 REQ cascadeNuxes
+  1.86 REQ loadCodeAssist
+  2.41 REQ loadCodeAssist
+  2.67 REQ fetchUserInfo
+  3.06 REQ retrieveUserQuotaSummary
+  3.13 REQ loadCodeAssist
+  3.41 REQ retrieveUserQuotaSummary
+ 15.07 EV  prompt
+ 15.35 REQ writeTrajectoryAcls
+ 16.01 REQ streamGenerateContent checkpoint
+ 18.90 REQ streamGenerateContent agent
+ 22.11 REQ streamGenerateContent agent
+ 50.12 EV  prompt (follow-up)
+ 54.15 REQ streamGenerateContent agent         no summary, 50.7 s after
+ 80.07 EV  prompt (follow-up)
+ 82.88 REQ streamGenerateContent agent
+ 83.10 REQ retrieveUserQuotaSummary            79.7 s after
+110.13 EV  prompt (follow-up)
+112.37 REQ streamGenerateContent agent         no summary
+150.16 EV  prompt (follow-up)
+152.62 REQ streamGenerateContent agent
+153.00 REQ retrieveUserQuotaSummary            69.9 s after
+180.08 EV  clear
+181.48 REQ writeTrajectoryAcls                 no summary, 28.5 s after
+190.17 EV  prompt
+191.33 REQ streamGenerateContent checkpoint
+194.78 REQ streamGenerateContent agent
+198.04 REQ streamGenerateContent agent
+260.14 EV  clear
+261.41 REQ writeTrajectoryAcls                 no fetchUserInfo, 258.5 s after
+261.52 REQ retrieveUserQuotaSummary            108.5 s after
+270.06 EV  prompt
+271.00 REQ streamGenerateContent checkpoint
+273.49 REQ streamGenerateContent agent
+276.73 REQ streamGenerateContent agent
+300.17 EV  ctrl-c (exit)
+
+Findings
+--------
+- The start burst (loadCodeAssist ... cascadeNuxes) is sent once per process,
+  never again for a new conversation or a follow-up prompt.
+- retrieveUserQuotaSummary is sent beside a model call or a conversation start
+  only when the last one is at least about 60 s old (skipped at 59.7 s and
+  59.8 s, sent at 67.8 s and later).
+- fetchUserInfo, fetchAvailableModels and loadCodeAssist are sent together at
+  a conversation start when the last fetchUserInfo is at least about 5 min old
+  (skipped at 258.5 s, sent at 308.4 s).
+- writeTrajectoryAcls and the title checkpoint appear at most once per
+  conversation; agy does not send both for every conversation.
