@@ -792,6 +792,31 @@ func ExtractSubscription(body []byte, now time.Time) Subscription {
 	return sub
 }
 
+// UnentitledClientError explains a loadCodeAssist answer that names no project
+// and offers only tiers that require a user-defined one. Google issues such an
+// answer when the access token came from an OAuth client other than the agy CLI:
+// the client is not entitled to the managed consumer project, so onboarding
+// returns no project and generation cannot run. It returns nil when the answer
+// does not have that shape.
+func UnentitledClientError(body []byte) error {
+	var document struct {
+		Project      any `json:"cloudaicompanionProject"`
+		AllowedTiers []struct {
+			ID                                 string `json:"id"`
+			UserDefinedCloudaicompanionProject bool   `json:"userDefinedCloudaicompanionProject"`
+		} `json:"allowedTiers"`
+	}
+	if err := json.Unmarshal(body, &document); err != nil || document.Project != nil || len(document.AllowedTiers) == 0 {
+		return nil
+	}
+	for _, tier := range document.AllowedTiers {
+		if !tier.UserDefinedCloudaicompanionProject {
+			return nil
+		}
+	}
+	return errors.New("the account's OAuth token came from a client other than the agy CLI, which has no managed Cloud Code project; remove the account and add it again so sign-in uses the CLI client")
+}
+
 func normalizeTier(current rawTier, paid *rawTier, g1Tier string) string {
 	g1Upper := strings.ToUpper(g1Tier)
 	currIDLower := strings.ToLower(current.ID)

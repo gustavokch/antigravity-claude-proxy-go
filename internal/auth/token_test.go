@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -205,5 +207,77 @@ func assertFormValue(t *testing.T, form url.Values, key, want string) {
 	t.Helper()
 	if got := form.Get(key); got != want {
 		t.Errorf("%s = %q, want %q", key, got, want)
+	}
+}
+
+func TestManagerRefreshSwitchesClientAfterUnauthorizedClient(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := request.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		clientID := request.Form.Get("client_id")
+		mu.Lock()
+		seen = append(seen, clientID)
+		mu.Unlock()
+		if clientID == "wrong" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = writer.Write([]byte(`{"error":"unauthorized_client","error_description":"Unauthorized"}`))
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(tokenResponse{AccessToken: "fresh", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	manager := Manager{TokenURL: server.URL, HTTPClient: server.Client()}
+	candidates := []oauthClientCredentials{
+		{clientID: "wrong", clientSecret: "a"},
+		{clientID: "right", clientSecret: "b"},
+	}
+	response, err := manager.refreshWithCandidates(context.Background(), "rtoken", candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.AccessToken != "fresh" || response.ExpiresIn != 3600 {
+		t.Fatalf("response = %#v", response)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 || seen[0] != "wrong" || seen[1] != "right" {
+		t.Fatalf("clients tried = %v, want [wrong right]", seen)
+	}
+}
+
+func TestManagerRefreshStopsOnInvalidGrant(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := request.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		mu.Lock()
+		seen = append(seen, request.Form.Get("client_id"))
+		mu.Unlock()
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write([]byte(`{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`))
+	}))
+	defer server.Close()
+
+	manager := Manager{TokenURL: server.URL, HTTPClient: server.Client()}
+	candidates := []oauthClientCredentials{
+		{clientID: "first", clientSecret: "a"},
+		{clientID: "second", clientSecret: "b"},
+	}
+	_, err := manager.refreshWithCandidates(context.Background(), "rtoken", candidates)
+	if err == nil || !strings.Contains(err.Error(), "invalid_grant") {
+		t.Fatalf("err = %v, want invalid_grant", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 {
+		t.Fatalf("clients tried = %v, want a single attempt", seen)
 	}
 }

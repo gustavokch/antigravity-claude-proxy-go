@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -119,7 +120,13 @@ func cmdAccountsAdd() error {
 	fmt.Println("Opening browser for Google OAuth sign-in...")
 	fmt.Println("If the browser does not open automatically, visit:")
 	fmt.Println(authURL)
-	fmt.Println("\nWaiting for authentication callback on port 51121...")
+	callback := "Waiting for authentication callback"
+	if parsed, err := url.Parse(authURL); err == nil {
+		if redirect := parsed.Query().Get("redirect_uri"); redirect != "" {
+			callback += " on " + redirect
+		}
+	}
+	fmt.Printf("\n%s...\n", callback)
 
 	_ = auth.OpenBrowser(authURL)
 

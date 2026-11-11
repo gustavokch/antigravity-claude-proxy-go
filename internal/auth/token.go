@@ -258,18 +258,37 @@ func (m Manager) refresh(ctx context.Context, refreshToken string, loginClientID
 	if err != nil {
 		return tokenResponse{}, err
 	}
+	return m.refreshWithCandidates(ctx, refreshToken, candidates)
+}
+
+// refreshWithCandidates tries each client pair until one issued the grant.
+// Google answers invalid_client when the client secret is unknown and
+// unauthorized_client when the client is valid but the refresh token belongs to
+// a different client, so both mean the next candidate should be tried.
+func (m Manager) refreshWithCandidates(ctx context.Context, refreshToken string, candidates []oauthClientCredentials) (tokenResponse, error) {
 	var lastError error
 	for _, candidate := range candidates {
-		response, invalidClient, err := m.refreshWithCredentials(ctx, refreshToken, candidate)
+		response, retryNext, err := m.refreshWithCredentials(ctx, refreshToken, candidate)
 		if err == nil {
 			return response, nil
 		}
 		lastError = err
-		if !invalidClient {
+		if !retryNext {
 			return tokenResponse{}, err
 		}
 	}
 	return tokenResponse{}, lastError
+}
+
+// oauthTokenErrorCode returns the RFC 6749 error code from a token endpoint body.
+func oauthTokenErrorCode(body []byte) string {
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	return payload.Error
 }
 
 func (m Manager) refreshWithCredentials(ctx context.Context, refreshToken string, credentials oauthClientCredentials) (tokenResponse, bool, error) {
@@ -298,7 +317,8 @@ func (m Manager) refreshWithCredentials(ctx context.Context, refreshToken string
 		return tokenResponse{}, false, fmt.Errorf("read token refresh response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return tokenResponse{}, response.StatusCode == http.StatusUnauthorized && strings.Contains(string(body), "invalid_client"), fmt.Errorf("token refresh failed (%s): %s", response.Status, strings.TrimSpace(string(body)))
+		code := oauthTokenErrorCode(body)
+		return tokenResponse{}, code == "invalid_client" || code == "unauthorized_client", fmt.Errorf("token refresh failed (%s): %s", response.Status, strings.TrimSpace(string(body)))
 	}
 	var refreshed tokenResponse
 	if err := json.Unmarshal(body, &refreshed); err != nil {
