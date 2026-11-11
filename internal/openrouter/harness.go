@@ -61,6 +61,21 @@ func IsHarnessGateError(body []byte) bool {
 	return strings.Contains(lower, "agentic harness")
 }
 
+// IsToolCompatibilityRejection reports whether OpenRouter refused to route a
+// request because no endpoint can serve its tool parameters: the 404 with
+// failed_routing_step "Filter by Tool Compatibility" that a forced tool_choice
+// gets under provider.require_parameters when no endpoint of the model
+// supports forced choice. The verdict comes from OpenRouter's catalog before
+// any provider is called, so resending the same body cannot succeed.
+func IsToolCompatibilityRejection(statusCode int, body []byte) bool {
+	if statusCode != http.StatusNotFound {
+		return false
+	}
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "filter by tool compatibility") ||
+		strings.Contains(lower, "support the provided 'tool_choice' value")
+}
+
 // IsOpenRouterTransientError reports whether an upstream error is temporary and retryable.
 func IsOpenRouterTransientError(statusCode int, body []byte) bool {
 	if statusCode == http.StatusTooManyRequests || statusCode == http.StatusRequestTimeout || statusCode == 529 {
@@ -68,6 +83,11 @@ func IsOpenRouterTransientError(statusCode int, body []byte) bool {
 	}
 	if statusCode >= 500 {
 		return true
+	}
+	// This rejection also says "no endpoints found" and carries a
+	// routing_funnel, but it is a catalog verdict, not a temporary state.
+	if IsToolCompatibilityRejection(statusCode, body) {
+		return false
 	}
 	lower := strings.ToLower(string(body))
 	transientPhrases := []string{

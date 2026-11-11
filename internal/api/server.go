@@ -2368,9 +2368,11 @@ func (server *Server) forwardToOpenRouter(writer http.ResponseWriter, request *h
 		// on a provider that silently ignores it — the model answers in prose
 		// and the tool is bypassed with no error anywhere. require_parameters
 		// hands that decision to OpenRouter's live catalog, which drops
-		// endpoints that cannot honour the parameters in the body; a request
-		// left with no endpoint 404s, which the failover loop classifies and
-		// retries. That is a visible failure instead of a silent one.
+		// endpoints that cannot honour the parameters in the body. A request
+		// left with no endpoint gets a 404 ("Filter by Tool Compatibility").
+		// That rejection is deterministic: the loop tries each remaining
+		// candidate once and returns it without a retry cycle. That is a
+		// visible failure instead of a silent one.
 		//
 		// Requests that merely carry tools with "auto" (the common agentic
 		// case) are left alone: an endpoint that ignores tool_choice there
