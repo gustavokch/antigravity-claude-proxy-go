@@ -106,10 +106,10 @@ func (manager *Manager) selectPinnedLocked(session, model string) Selection {
 
 // pinTargetLocked classifies the pinned account for model. Only a plain rate
 // limit (MarkRateLimited) that lifts within manager.pinWait is worth waiting
-// for, and only once: each upstream 429 adds one to ConsecutiveFailure, which
-// only a success clears — or a quiet failureDecay drops, so a streak cannot
-// outlive its wave — so a count of two or more means the account failed
-// before this limit, typically with a limit the session already waited out.
+// for, and only once: each upstream 429 adds one to ConsecutiveFailure. A
+// success or failureDecay of quiet time after the cooldown clears the streak,
+// so a count of two or more means the account failed before this limit,
+// typically with a limit the session already waited out.
 // A repeat limit, a longer one, a failure lock, an exhausted quota, the 404
 // lock, a cooldown, or a model the account does not list moves the model to
 // another account.

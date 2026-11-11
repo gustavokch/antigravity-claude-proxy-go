@@ -95,15 +95,15 @@ type Account struct {
 	// these decrease with use and are the visible consumption signal.
 	Credits map[string]int64
 
-	LastUsedMS         int64
-	IsInvalid          bool
-	InvalidReason      string
-	VerifyURL          string
-	ModelRateLimits    map[string]*RateLimit
-	ConsecutiveFailure int
-	LastFailureMS      int64
-	CoolingDownUntilMS int64
-	CooldownReason     string
+	LastUsedMS          int64
+	IsInvalid           bool
+	InvalidReason       string
+	VerifyURL           string
+	ModelRateLimits     map[string]*RateLimit
+	ConsecutiveFailure  int
+	FailureDecayStartMS int64
+	CoolingDownUntilMS  int64
+	CooldownReason      string
 }
 
 type diskAccount struct {
@@ -576,16 +576,10 @@ func (manager *Manager) SharedThrottles() map[string]time.Duration {
 	return active
 }
 
-// failureDecay is how long a rejection streak stays meaningful. An upstream
-// 429 wave lasts about a minute; a streak only measures one incident while
-// rejections keep arriving during it, because every rejection restarts the
-// clock. Ten quiet minutes mean the next rejection belongs to a different
-// outage and must start at the first cooldown tier instead of inheriting the
-// top one. The counter also spans models and only a generation resets it, so
-// without this a burst on one model promoted the next 429 on another model:
-// at 2026-11-10 17:57:13 gemini-3.8-flash-high inherited four argon-high
-// rejections from 17:21 and was locked for 12m19s, while the upstream wave it
-// answered had lasted about a minute and was already over.
+// failureDecay expires a rejection streak after ten quiet minutes. An imposed
+// cooldown is not quiet time: retries cannot show whether the throttle has
+// lifted until it ends. Without expiry, failures on one model can promote a
+// later, unrelated rejection on another model to the top cooldown tier.
 const failureDecay = 10 * time.Minute
 
 // failuresLocked is the account's rejection streak with a quiet streak
@@ -593,7 +587,7 @@ const failureDecay = 10 * time.Minute
 // value a decision does.
 func (manager *Manager) failuresLocked(account *Account) int {
 	if account.ConsecutiveFailure > 0 &&
-		manager.now().UnixMilli()-account.LastFailureMS >= failureDecay.Milliseconds() {
+		manager.now().UnixMilli()-account.FailureDecayStartMS >= failureDecay.Milliseconds() {
 		return 0
 	}
 	return account.ConsecutiveFailure
@@ -602,7 +596,7 @@ func (manager *Manager) failuresLocked(account *Account) int {
 // noteFailureLocked continues the streak, restarting its clock.
 func (manager *Manager) noteFailureLocked(account *Account) int {
 	account.ConsecutiveFailure = manager.failuresLocked(account) + 1
-	account.LastFailureMS = manager.now().UnixMilli()
+	account.FailureDecayStartMS = manager.now().UnixMilli()
 	return account.ConsecutiveFailure
 }
 
@@ -627,6 +621,7 @@ func (manager *Manager) MarkRateLimited(account *Account, model string, wait tim
 	}
 	manager.recordSharedThrottleLocked(key, account.Email, wait)
 	manager.noteFailureLocked(account)
+	account.FailureDecayStartMS = account.ModelRateLimits[key].ResetTimeMS
 	manager.recordRateLimitLocked(account.Email)
 }
 
@@ -700,7 +695,7 @@ func (manager *Manager) MarkSuccess(account *Account, model string) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	account.ConsecutiveFailure = 0
-	account.LastFailureMS = 0
+	account.FailureDecayStartMS = 0
 	// Delete the namespace only for a real key or an actual "" caller (the
 	// listing namespace): a suffix-only success like "[1m]" normalizes to ""
 	// and must not clear a legitimate empty-model entry.
