@@ -3205,6 +3205,7 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 	startTime := server.nowTime()
 	reqCtx, meta := cloudcode.WithExecutionMetadata(request.Context())
 	started := false
+	writeFailed := false
 	flusher, hasFlusher := writer.(http.Flusher)
 	bw := bufio.NewWriterSize(writer, 4096)
 
@@ -3237,7 +3238,10 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 				return err
 			}
 		}
-		bw.Flush()
+		if err := bw.Flush(); err != nil {
+			writeFailed = true
+			return err
+		}
 		if hasFlusher {
 			flusher.Flush()
 		}
@@ -3255,17 +3259,25 @@ func (server *Server) streamMessage(writer http.ResponseWriter, request *http.Re
 	})
 	if err == nil {
 		finishEvents, fErr := converter.Finish()
-		if fErr == nil {
-			_ = writeEvents(finishEvents)
+		err = fErr
+		if err == nil {
+			err = writeEvents(finishEvents)
 		}
 	}
 	if err != nil {
+		if writeFailed {
+			server.logStreamBreak(request, err)
+			return
+		}
 		if !started {
 			server.writeError(writer, err)
 			return
 		}
-		errorEvent := map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": err.Error()}}
-		_ = writeEvents([]map[string]any{errorEvent})
+		_, kind, message := classifyError(err)
+		errorEvent := map[string]any{"type": "error", "error": map[string]any{"type": kind, "message": message}}
+		if deliveryErr := writeEvents([]map[string]any{errorEvent}); deliveryErr != nil {
+			server.logStreamBreak(request, deliveryErr)
+		}
 		return
 	}
 

@@ -1153,6 +1153,7 @@ type retryAfterClient struct {
 	mu          sync.Mutex
 	rejections  int
 	generations int
+	retryAfter  string
 }
 
 func (c *retryAfterClient) StreamGenerateContent(context.Context, any, cloudcode.RequestOptions, func(cloudcode.SSEEvent) error) (cloudcode.Response, error) {
@@ -1165,10 +1166,14 @@ func (c *retryAfterClient) StreamGenerateContent(context.Context, any, cloudcode
 	if c.rejections > 0 {
 		c.rejections--
 	}
+	retryAfter := c.retryAfter
+	if retryAfter == "" {
+		retryAfter = "30"
+	}
 	return cloudcode.Response{}, &cloudcode.HTTPError{
 		StatusCode: http.StatusTooManyRequests,
 		Status:     "429 Too Many Requests",
-		Header:     http.Header{"Retry-After": []string{"30"}},
+		Header:     http.Header{"Retry-After": []string{retryAfter}},
 		Body:       `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`,
 	}
 }
@@ -1257,10 +1262,11 @@ func TestStreamGenerateContentPinnedSessionMovesAfterARepeatedLimit(t *testing.T
 	t.Parallel()
 	dispatcher, clients, home := pinnedRetryAfterDispatcher(t)
 	clients[home].reject(-1)
+	clients[home].retryAfter = "2"
 
 	got, err := serveSession(dispatcher, "s1")
 	if err != nil || got == "" || got == home {
-		t.Fatalf("home %s answering 429 Retry-After: 30 on every call: served by %q (error %v), want the other account", home, got, err)
+		t.Fatalf("home %s answering repeated short 429s: served by %q (error %v), want the other account", home, got, err)
 	}
 	if calls := clients[home].calls(); calls > 2 {
 		t.Fatalf("home %s got %d model calls, want at most 2: one wait, then the move", home, calls)
@@ -1273,6 +1279,7 @@ func TestStreamGenerateContentPinnedSessionWaitsOutOneLimit(t *testing.T) {
 	t.Parallel()
 	dispatcher, clients, home := pinnedRetryAfterDispatcher(t)
 	clients[home].reject(1)
+	clients[home].retryAfter = "2"
 
 	got, err := serveSession(dispatcher, "s1")
 	if err != nil || got != home {
@@ -1284,6 +1291,25 @@ func TestStreamGenerateContentPinnedSessionWaitsOutOneLimit(t *testing.T) {
 	for email, client := range clients {
 		if email != home && client.calls() != 0 {
 			t.Fatalf("%s got %d model calls; the session must not move for one limit", email, client.calls())
+		}
+	}
+}
+
+func TestPinnedRecoveryReturnsBeforeLongWaitWithAnotherAccount(t *testing.T) {
+	dispatcher, clients, home := pinnedRetryAfterDispatcher(t)
+	clients[home].reject(1)
+	_, err := serveSession(dispatcher, "s1")
+	var limited *RateLimitError
+	if !errors.As(err, &limited) || limited.RetryAfter != 30*time.Second {
+		t.Fatalf("want the pinned account's applied 30s cooldown, got %v", err)
+	}
+	for email, client := range clients {
+		want := 0
+		if email == home {
+			want = 1
+		}
+		if client.calls() != want {
+			t.Fatalf("%s sends=%d want %d", email, client.calls(), want)
 		}
 	}
 }

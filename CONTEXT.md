@@ -107,7 +107,7 @@ _Avoid_: Stream conversion, event mapping, chunk forwarding.
 ### Error & Quota State
 
 **Rate Limit Exceeded**:
-A temporary request rate limit error (HTTP 429) carrying retry duration headers that triggers short account cooldown.
+A temporary upstream rejection (HTTP 429), with or without retry hints, that imposes an Account/model eligibility delay. Without a hint, the escalating cooldown is inferred policy, not a measured Google reset or evidence of daily quota exhaustion. Hidden recovery is limited to one cumulative 10-second window (or a smaller positive `maxWaitBeforeErrorMs`), starting at the first retryable failure or blocked selection; it ends at the first forwarded upstream event and never caps an established stream. Terminal retry advice reflects the actual applicable cooldown, including escalation and additive jitter.
 _Avoid_: Throttling, 429 error, rate block.
 
 **Quota Exhausted**:

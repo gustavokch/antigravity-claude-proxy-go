@@ -228,10 +228,9 @@ type Cooldown struct {
 	Wait   time.Duration // SmartBackoff(Reason, Reset, failures), before jitter
 }
 
-// UpstreamCooldown classifies a 429 once for every consumer. The dispatcher
-// decorrelates Wait before locking the account; the API layer sends the
-// failures=0 Wait as Retry-After so the client never retries before the
-// account's first lock expires.
+// UpstreamCooldown classifies a 429 before the dispatcher applies additive
+// jitter and records the account's eligibility. Retry advice uses that applied
+// state, not a reconstructed first-failure cooldown.
 func UpstreamCooldown(upstreamError *cloudcode.HTTPError, failures int, now time.Time) Cooldown {
 	reason := ClassifyError(upstreamError.Body, upstreamError.StatusCode)
 	reset := ParseResetTime(upstreamError.Header, upstreamError.Body, now)
@@ -257,14 +256,13 @@ func containsAny(value string, candidates ...string) bool {
 	return false
 }
 
-// RateLimitError reports that the pool cannot serve a model right now and
-// cannot wait the throttle out inside maxWait. It carries the reset so the
-// API layer can answer 429 + Retry-After: a bare 400 tells Claude Code the
-// request is permanently invalid and it never retries.
+// RateLimitError reports a model that cannot recover inside the request's
+// hidden recovery window. RetryAfter is the applicable remaining eligibility.
 type RateLimitError struct {
 	Model      string
 	RetryAfter time.Duration
 	Shared     bool
+	Cause      error
 }
 
 func (err *RateLimitError) Error() string {
@@ -275,3 +273,5 @@ func (err *RateLimitError) Error() string {
 	return fmt.Sprintf("RESOURCE_EXHAUSTED: %s rate limit on %s; retry after %s",
 		scope, err.Model, err.RetryAfter.Round(time.Second))
 }
+
+func (err *RateLimitError) Unwrap() error { return err.Cause }

@@ -1,0 +1,150 @@
+Gemini 429 repair — evidence and acceptance status
+Date: 2026-11-11
+Worktree: .worktrees/gemini-429-repair
+Branch: fix/gemini-429-repair
+Source baseline: 9d1a301
+
+Read-only local inventory
+The installed ~/.local/bin/antigravity-proxy reports Go 1.27.3, revision
+9d1a301578d5e08b28c338852dab509c5d5d6f23, vcs.modified=true. This identifies
+the installed artifact, not proof of the currently serving process or exact
+dirty source. agy --version reports 1.5.6. mitmdump, tshark, tcpdump, Claude
+Code and omp are installed. No generation or live listener was contacted.
+
+Causal verdict
+No matched live comparison has been performed during implementation. The
+thinkingBudget/thinkingLevel divergence remains a diagnostic lead, not an
+established cause. No catalog, reasoning, authentication, project, endpoint,
+control-plane cadence, or TLS change has been selected.
+
+Live verification ownership
+The repository's standing learning assigns live proxy/MITM verification to
+Gustavo in his terminal. Production accounts/configuration, credentials,
+listener, and installed binary remain unchanged. Deployment is not approved
+until the plan's success, actual-client visibility and packet gates pass.
+
+Deterministic evidence
+The new dispatcher regressions initially reached a one-minute watchdog after
+bare 429s, repeated/pinned waits, capacity backoff and a stalled retry.
+A retry could also send after concurrent work extended its account cooldown.
+The protocol regressions initially observed an empty HTTP 200, api_error in
+place of a committed rate_limit_error, and swallowed writes. The OpenAI
+adapter specifically swallowed a disconnect and continued all three upstream
+callbacks with six failed writes. These are synthetic, local-only fixtures.
+
+Integration verification
+go test -race ./internal/accounts ./internal/api -count=1
+Result: 1303 tests passed across the two affected packages.
+go build -o bin/proxy ./cmd/proxy
+Result: passed; the isolated build was not installed.
+trail check --base fork/main
+Result: no conflicts; lexical advisory matches did not identify a conflicting
+change (no client-thinking disable, per-session counter, or identity rewrite).
+
+Implemented boundary
+One lazy request-local recovery window, min(10 seconds, positive maxWait),
+starts on the first retryable failure or blocked selection. It accounts for
+all retry waits and pre-event retries, records applied 429 cooldowns before
+waiting, preserves the upstream cause and applied eligibility, and stops its
+timer before forwarding the first upstream event. Healthy first attempts and
+established streams remain uncapped by this window. HTTP/SSE completion and
+write failures are propagated. OpenAI errors remain visible; the [DONE]
+sentinel is unchanged because the consumer regression observes the error.
+
+Release gates (current acceptance is recorded below; local tests alone do not pass live gates)
+1. Live catalog fields and matched account subject/auth provenance/project,
+   exact model/effort, egress and time window; agy/proxy alternating direct
+   comparisons with the actual dispatcher for direct ID, alias, original
+   request shape and a tool-result continuation.
+2. Causal upstream verdict, attributable success, and production model-option
+   regression only if a concrete correction is demonstrated.
+3. Actual requesting-client success and visible controlled-429 failure/retry.
+4. Packet gate: PASS from the user's sudo bash scripts/verify-ja4.sh output;
+   observed JA4 t13d1312h2_f57a46bbacb6_f50d94e863eb matches exactly.
+5. Install/restart with preserved listener/flags and rollback binary, then
+   one production Gemini smoke request, only after all preceding gates pass.
+
+Never use the dummy-token clientprobe's expected 401 as evidence of
+successful authenticated generation. Do not run debug429's raw/builder mode
+as a substitute for the production HTTP dispatcher comparison.
+
+Post-review verification
+Independent recovery and protocol reviews identified boundary edges, which
+were reproduced before correction: retry advice mutating round-robin state,
+generation starting after recovery expiry during account startup, a transient
+credential failure hiding blocked-pool eligibility, and a retry-only quota
+marker rule inconsistent with the manager's existing selection policy.
+The four regressions now pass; retry advice is read-only, startup expiry is
+checked before conversation/generation work, and eligibility/outcomes agree.
+
+Final command: go test -race ./internal/accounts ./internal/api -count=1
+Final result: 1307 tests passed across the two affected packages.
+Final command: go build -o bin/proxy ./cmd/proxy
+Final result: passed. No live gate or deployment result is implied.
+
+Scope clarification: empty-content HTTP 502 is verified for streaming client
+requests through StreamConverter.Finish. Unary accumulator empty-content
+validation is unchanged and is not claimed repaired.
+
+Continuation: credential-free packet gate attempt
+Command: bash scripts/verify-ja4.sh
+The production transport probe built. Its deliberately invalid-token request
+to daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist ended with
+context deadline exceeded. The script then reported the capture file empty
+or missing and explicitly SKIPPED the JA4 gate. No ClientHello or JA4 value
+was observed. Exit status 0 is not acceptance. The missing capture does not
+establish whether capture privileges, interface selection, or network access
+caused the failure. No TLS change, privilege escalation, alternate-interface
+retry, authenticated request, production listener call, or deployment was
+attempted. Packet, authenticated upstream, and actual-client gates remain
+unaccepted and require the user's terminal results.
+
+User-terminal packet gate: PASS
+The user supplied the output of sudo bash scripts/verify-ja4.sh run in this
+worktree. It observed daily-cloudcode-pa.googleapis.com with ALPN h2,http/1.1
+and JA4 t13d1312h2_f57a46bbacb6_f50d94e863eb, exactly matching the expected
+baseline, followed by Fingerprint verification SUCCESS. This supersedes the
+agent-shell SKIP for packet acceptance; the capture was not rerun. It proves
+the production transport fingerprint, not authenticated generation.
+The user's subsequent request explicitly authorizes an authenticated
+generation call. Keep it isolated from the installed proxy and production
+account/config files; no broader deployment or MITM permission is inferred.
+
+Authenticated generation through the worktree build: PASS
+The user explicitly requested this live generation check. Ran bin/proxy on
+an ephemeral loopback listener with ANTIGRAVITY_CONFIG_DIR and the account
+pool pointing to a private temporary directory (0700; JSON files 0600).
+Used one enabled existing OAuth account (email SHA-256 prefix 09c6a4920ff1),
+its existing refresh credential and project, and the production model/retry
+settings. Disabled unrelated gateways/workers and used a random local API
+key without putting credentials on the command line or in this evidence.
+
+Authenticated GET /v1/models returned 200. Its public discovery list exposes
+gemini-3.8-flash rather than the tiered ID; absence from that discovery list
+does not mean the exact tier is unsupported. An initial discovery-only run
+stopped before generation on that mistaken diagnostic guard. Removed the
+guard from the throwaway probe; no production code was changed.
+
+The one generation request was POST /v1/messages with:
+  model: gemini-3.8-flash-high
+  stream: false
+  max_tokens: 128
+  user content: Reply with exactly AUTH_OK and nothing else.
+Observed 2026-11-11 23:58:47–23:58:56 -03:00:
+  HTTP 200 in 8.900 seconds
+  response model: gemini-3.8-flash-high
+  generated text: AUTH_OK
+  stop_reason: end_turn
+  usage: 218 input tokens, 3 output tokens
+  dispatcher success log: 109 thinking tokens; gateway antigravity
+No sibling model was substituted. No 429 occurred in this check. The
+isolated process exited cleanly, private diagnostic files were removed,
+and before/after SHA-256 checks confirmed the production config.json and
+accounts.json contents were unchanged. No install or restart was performed.
+
+This proves an authenticated synthetic unary Gemini generation succeeds
+through the repaired worktree's production HTTP/dispatcher route now.
+It is not a matched agy comparison, a causal explanation for the historical
+429s, the original tool-bearing request shape, a continuation, or proof of
+success/error visibility in the actual requesting client. Those broader
+release gates remain unaccepted.
