@@ -238,6 +238,7 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 		dispatcher.capacityBackoffs = backoffs
 	}
 	dispatcher.requestThrottlingEnabled = cfg.RequestThrottlingEnabled
+	dispatcher.builder.SetSystemMask(cfg.Antigravity.SystemMask())
 	if cfg.RequestDelayMs > 0 {
 		dispatcher.requestDelay = time.Duration(cfg.RequestDelayMs) * time.Millisecond
 	} else {

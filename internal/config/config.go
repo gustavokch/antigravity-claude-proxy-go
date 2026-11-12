@@ -262,6 +262,7 @@ type Config struct {
 	ClaudeCode                  claudecode.Config         `json:"claudecode,omitempty"`
 	Codex                       codex.Config              `json:"codex,omitempty"`
 	CacheBump                   CacheBumpConfig           `json:"cacheBump,omitempty"`
+	Antigravity                 AntigravityConfig         `json:"antigravity"`
 	GatewayOrder                GatewayOrderConfig        `json:"gatewayOrder"`
 	Classifier                  ClassifierConfig          `json:"classifier"`
 	Mitm                        MitmConfig                `json:"mitm"`

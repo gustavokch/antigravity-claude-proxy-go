@@ -343,6 +343,18 @@ Additional environment controls:
 - `id` and `key` must be non-empty and unique, and the labels `open` and `default` are reserved. `POST /api/config` rejects violations; hand edits are not validated.
 - `GET /api/config` never returns key material, only `hasApiKey` / `hasApiKeys`.
 
+#### Cloud Code system-prompt masking
+
+Cloud Code answers some client system prompts with a false `429 RESOURCE_EXHAUSTED` that carries no error details while quota remains. The same prompt is rejected every time, so cooldowns, retries and account rotation cannot clear it. Known triggers are omp's `RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.` preamble and the Hermes Agent identity. Before a Cloud Code request, the proxy inserts an invisible U+034F (combining grapheme joiner) after the first rune of each word of these phrases in the client's system text. agy's own identity block is sent unchanged.
+
+```json
+{ "antigravity": { "sensitiveWords": ["RFC 2119", "Hermes Agent"] } }
+```
+
+- Absent or `null` uses the built-in list (`DefaultSensitiveWords`, `internal/format/system_mask.go`). `[]` turns masking off; a list replaces the built-in one. Matching ignores case.
+- This deliberately evades a Google content rule aimed at third-party clients, ported from CLIProxyAPI's `antigravity.sensitive-words`. Google can change the rule (it already defeated U+200B splits) and may act against accounts that bypass it.
+- `POST /api/config` applies changes on the next request; edits to `config.json` by hand need a restart.
+
 ---
 
 ## Headroom Native Context Compression & Output Shaping
@@ -1172,6 +1184,6 @@ daily-cloudcode-pa.googleapis.com    h2,http/1.1    t13d1312h2_f57a46bbacb6_f50d
 
 - **`401 Unauthorized`**: Check that local `x-api-key` or Bearer token matches an enabled `apiKeys` entry, `ANTIGRAVITY_PROXY_API_KEY`, or the legacy `apiKey` in `config.json` (ignored while `apiKeys` has entries).
 - **`400 Bad Request`**: Verify requested model ID is valid in `/v1/models`, mapped via `modelMapping`, allowlisted under `openrouter`, or configured in `customEndpoints`.
-- **`429 Rate Limit Exceeded`**: Recovery is bounded to one cumulative 10-second window (or a smaller positive `maxWaitBeforeErrorMs`). Follow the returned `Retry-After`; `/v1/usage`, `/account-limits`, and the Web UI expose cooldown state. A bare `RESOURCE_EXHAUSTED` does not establish a ban, exhausted daily quota, or the limiting dimension.
+- **`429 Rate Limit Exceeded`**: Recovery is bounded to one cumulative 10-second window (or a smaller positive `maxWaitBeforeErrorMs`). Follow the returned `Retry-After`; `/v1/usage`, `/account-limits`, and the Web UI expose cooldown state. A bare `RESOURCE_EXHAUSTED` does not establish a ban, exhausted daily quota, or the limiting dimension. If one client's prompt always gets it while a short prompt on the same account succeeds, it is a content-rule rejection; see [Cloud Code system-prompt masking](#cloud-code-system-prompt-masking).
 - **`403 Verification Required`**: Account requires manual verification or re-authentication.
 - **JA4 Mismatch**: Ensure proxy is built with standard Go toolchain and no custom TLS configurations are applied.
