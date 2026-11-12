@@ -1,0 +1,384 @@
+Gemini 429 repair — evidence and acceptance status
+Date: 2026-11-11
+Worktree: .worktrees/gemini-429-repair
+Branch: fix/gemini-429-repair
+Source baseline: 9d1a301
+
+Read-only local inventory
+The installed ~/.local/bin/antigravity-proxy reports Go 1.27.3, revision
+9d1a301578d5e08b28c338852dab509c5d5d6f23, vcs.modified=true. This identifies
+the installed artifact, not proof of the currently serving process or exact
+dirty source. agy --version reports 1.5.6. mitmdump, tshark, tcpdump, Claude
+Code and omp are installed. No generation or live listener was contacted.
+
+Causal verdict
+No matched live comparison has been performed during implementation. The
+thinkingBudget/thinkingLevel divergence remains a diagnostic lead, not an
+established cause. No catalog, reasoning, authentication, project, endpoint,
+control-plane cadence, or TLS change has been selected.
+
+Live verification ownership
+The repository's standing learning assigns live proxy/MITM verification to
+Gustavo in his terminal. Production accounts/configuration, credentials,
+listener, and installed binary remain unchanged. Deployment is not approved
+until the plan's success, actual-client visibility and packet gates pass.
+
+Deterministic evidence
+The new dispatcher regressions initially reached a one-minute watchdog after
+bare 429s, repeated/pinned waits, capacity backoff and a stalled retry.
+A retry could also send after concurrent work extended its account cooldown.
+The protocol regressions initially observed an empty HTTP 200, api_error in
+place of a committed rate_limit_error, and swallowed writes. The OpenAI
+adapter specifically swallowed a disconnect and continued all three upstream
+callbacks with six failed writes. These are synthetic, local-only fixtures.
+
+Integration verification
+go test -race ./internal/accounts ./internal/api -count=1
+Result: 1303 tests passed across the two affected packages.
+go build -o bin/proxy ./cmd/proxy
+Result: passed; the isolated build was not installed.
+trail check --base fork/main
+Result: no conflicts; lexical advisory matches did not identify a conflicting
+change (no client-thinking disable, per-session counter, or identity rewrite).
+
+Implemented boundary
+One lazy request-local recovery window, min(10 seconds, positive maxWait),
+starts on the first retryable failure or blocked selection. It accounts for
+all retry waits and pre-event retries, records applied 429 cooldowns before
+waiting, preserves the upstream cause and applied eligibility, and stops its
+timer before forwarding the first upstream event. Healthy first attempts and
+established streams remain uncapped by this window. HTTP/SSE completion and
+write failures are propagated. OpenAI errors remain visible; the [DONE]
+sentinel is unchanged because the consumer regression observes the error.
+
+Release gates (current acceptance is recorded below; local tests alone do not pass live gates)
+1. Live catalog fields and matched account subject/auth provenance/project,
+   exact model/effort, egress and time window; agy/proxy alternating direct
+   comparisons with the actual dispatcher for direct ID, alias, original
+   request shape and a tool-result continuation.
+2. Causal upstream verdict, attributable success, and production model-option
+   regression only if a concrete correction is demonstrated.
+3. Actual requesting-client success and visible controlled-429 failure/retry.
+4. Packet gate: PASS from the user's sudo bash scripts/verify-ja4.sh output;
+   observed JA4 t13d1312h2_f57a46bbacb6_f50d94e863eb matches exactly.
+5. Install/restart with preserved listener/flags and rollback binary, then
+   one production Gemini smoke request, only after all preceding gates pass.
+
+Never use the dummy-token clientprobe's expected 401 as evidence of
+successful authenticated generation. Do not run debug429's raw/builder mode
+as a substitute for the production HTTP dispatcher comparison.
+
+Post-review verification
+Independent recovery and protocol reviews identified boundary edges, which
+were reproduced before correction: retry advice mutating round-robin state,
+generation starting after recovery expiry during account startup, a transient
+credential failure hiding blocked-pool eligibility, and a retry-only quota
+marker rule inconsistent with the manager's existing selection policy.
+The four regressions now pass; retry advice is read-only, startup expiry is
+checked before conversation/generation work, and eligibility/outcomes agree.
+
+Final command: go test -race ./internal/accounts ./internal/api -count=1
+Final result: 1307 tests passed across the two affected packages.
+Final command: go build -o bin/proxy ./cmd/proxy
+Final result: passed. No live gate or deployment result is implied.
+
+Scope clarification: empty-content HTTP 502 is verified for streaming client
+requests through StreamConverter.Finish. Unary accumulator empty-content
+validation is unchanged and is not claimed repaired.
+
+Continuation: credential-free packet gate attempt
+Command: bash scripts/verify-ja4.sh
+The production transport probe built. Its deliberately invalid-token request
+to daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist ended with
+context deadline exceeded. The script then reported the capture file empty
+or missing and explicitly SKIPPED the JA4 gate. No ClientHello or JA4 value
+was observed. Exit status 0 is not acceptance. The missing capture does not
+establish whether capture privileges, interface selection, or network access
+caused the failure. No TLS change, privilege escalation, alternate-interface
+retry, authenticated request, production listener call, or deployment was
+attempted. Packet, authenticated upstream, and actual-client gates remain
+unaccepted and require the user's terminal results.
+
+User-terminal packet gate: PASS
+The user supplied the output of sudo bash scripts/verify-ja4.sh run in this
+worktree. It observed daily-cloudcode-pa.googleapis.com with ALPN h2,http/1.1
+and JA4 t13d1312h2_f57a46bbacb6_f50d94e863eb, exactly matching the expected
+baseline, followed by Fingerprint verification SUCCESS. This supersedes the
+agent-shell SKIP for packet acceptance; the capture was not rerun. It proves
+the production transport fingerprint, not authenticated generation.
+The user's subsequent request explicitly authorizes an authenticated
+generation call. Keep it isolated from the installed proxy and production
+account/config files; no broader deployment or MITM permission is inferred.
+
+Authenticated generation through the worktree build: PASS
+The user explicitly requested this live generation check. Ran bin/proxy on
+an ephemeral loopback listener with ANTIGRAVITY_CONFIG_DIR and the account
+pool pointing to a private temporary directory (0700; JSON files 0600).
+Used one enabled existing OAuth account (email SHA-256 prefix 09c6a4920ff1),
+its existing refresh credential and project, and the production model/retry
+settings. Disabled unrelated gateways/workers and used a random local API
+key without putting credentials on the command line or in this evidence.
+
+Authenticated GET /v1/models returned 200. Its public discovery list exposes
+gemini-3.8-flash rather than the tiered ID; absence from that discovery list
+does not mean the exact tier is unsupported. An initial discovery-only run
+stopped before generation on that mistaken diagnostic guard. Removed the
+guard from the throwaway probe; no production code was changed.
+
+The one generation request was POST /v1/messages with:
+  model: gemini-3.8-flash-high
+  stream: false
+  max_tokens: 128
+  user content: Reply with exactly AUTH_OK and nothing else.
+Observed 2026-11-11 23:58:47–23:58:56 -03:00:
+  HTTP 200 in 8.900 seconds
+  response model: gemini-3.8-flash-high
+  generated text: AUTH_OK
+  stop_reason: end_turn
+  usage: 218 input tokens, 3 output tokens
+  dispatcher success log: 109 thinking tokens; gateway antigravity
+No sibling model was substituted. No 429 occurred in this check. The
+isolated process exited cleanly, private diagnostic files were removed,
+and before/after SHA-256 checks confirmed the production config.json and
+accounts.json contents were unchanged. No install or restart was performed.
+
+This proves an authenticated synthetic unary Gemini generation succeeds
+through the repaired worktree's production HTTP/dispatcher route now.
+It is not a matched agy comparison, a causal explanation for the historical
+429s, the original tool-bearing request shape, a continuation, or proof of
+success/error visibility in the actual requesting client. Those broader
+release gates remain unaccepted.
+
+2026-11-12 continuation: native-token comparison and actual omp failure
+The user's completed direct comparison on account B (SHA-256 prefix
+1e25614671bd), project 218f87bcebbc, returned the expected synthetic marker
+from both proxy (HTTP 200, 10.756s) and agy (exit 0, 8.840s). It used the
+same native agy access token for both clients, not B's configured OAuth
+loader. No thinking override was supplied. The user-run capture observed
+agy sending thinkingLevel HIGH and maxOutputTokens 65536; the proxy's
+Cloud Code wire was not captured. Neither request reproduced the failure.
+
+The subsequent user-run omp capture requested anthropic/gemini-3.8-flash.
+The actual JSON body was 48192 bytes, with one user message, 12 tools,
+max_tokens 65536 and enabled thinking with budget_tokens 16384. The deployed
+proxy resolved the model to gemini-3.8-flash-high and pinned account A
+(09c6a4920ff1), on the same project. It returned typed HTTP 429 after
+6.474s with Retry-After 31. The correlated upstream rejection was bare
+RESOURCE_EXHAUSTED, with no structured error details. omp's recorded
+assistant/turn events retained the rate_limit_error and retry-after-ms=31000.
+This proves protocol error delivery for this print-mode request, not
+interactive-client visibility or successful Gemini generation.
+
+The user confirmed that the Haiku request was a fallback. The diagnostic
+retry/modelFallback settings did not prevent that attempt. The capture
+guard rejected it locally with HTTP 409, so it did not supply a substitute
+success. Neither its record_deltas tool nor near-simultaneous start time
+justifies ruling out a fallback. The final harness STOP reports the blocked
+non-target request; it does not invalidate the captured primary HTTP 429.
+
+The server log records only A's generation attempt in this capture. The
+"All accounts rate-limited" log is also reached by a pinned-account wait;
+it does not prove that B was attempted or available. The unchanged pin
+policy can preserve a pin longer than the new cumulative recovery budget.
+Do not change pin policy or call this the upstream 429 cause without a
+separate causal result.
+
+Next diagnostic prepared, not run live: replay the unchanged captured omp
+JSON body once on isolated B through its configured OAuth loader, without
+native-token injection, model substitution, production state changes or
+Cloud Code MITM. Offline fixtures verified byte-exact forwarding of the
+48192-byte body, successful completion, truncated SSE rejection, committed
+stream-error rejection, HTTP 429/Retry-After handling, substitute-model
+rejection and temporary-state cleanup. The real-input preflight passed
+without generation or native Keychain access. A pass would establish this
+captured shape works through B's configured loader at that time; a failure
+alone would not distinguish credentials, workload and changing upstream
+conditions. The original deployed-workload repair remains unproven.
+
+The installed omp release is 18.19.0. Its tagged source confirms that
+resolveSharpshooterModel falls back to the smol role when its dedicated
+selector is absent or unresolved, independently of retry.modelFallback.
+Source: https://github.com/can1357/oh-my-pi/blob/v18.19.0/packages/coding-agent/src/sharpshooter/extract.ts#L166-L184
+The capture's retry overlay does not configure that separate selector.
+Thus disabling the retry fallback chain does not guarantee that no fallback
+model is requested anywhere in the session. Keep the non-target guard.
+
+User-run configured-OAuth replay on B: FAIL, not rerun
+The unchanged 48192-byte omp body (SHA-256
+a6a4ea5f46db27b867b73eb158b312801d0eeb7c02bb63223e3f00d68e9e15ef)
+returned HTTP 429 after 9.464s on isolated B (1e25614671bd), project
+218f87bcebbc, through its configured OAuth loader. Retry-After was 34;
+curl exited 0, no marker or message_stop was received, and response_model
+was null. stream_error=false here means no SSE error event was parsed;
+the HTTP 429 still denotes failure. Temporary diagnostics were removed and
+the reported production config/accounts snapshots matched.
+
+This excludes a failure confined to A or its session pin. It does not yet
+separate configured-grant provenance, request shape or changing upstream
+conditions. No pin or cooldown change is justified. Next discriminating
+check: the same captured body, B, project, configuration and transport,
+changing only authentication to B's current native agy access token.
+
+Credential-only replay variant prepared, not run live
+/tmp/gemini-causal-check.py --replay-omp now accepts --replay-native-token.
+It checks native B identity/expiry using the existing native_login helper,
+then supplies that access token only to the isolated account copy. The
+normal configured-OAuth replay remains the default. Local HTTP fixtures
+verified both paths forwarded the exact captured body and used identical
+configuration; only isolated credentials changed. Identity/project guards,
+CLI preflight with a fixture token, invalid-flag rejection, private cleanup
+and omission of the raw token from output passed. No real Keychain read or
+Cloud Code request was made in this verification. A native-token success
+would favor credential/grant provenance, but a time-separated single result
+would not by itself prove causality; another 429 would show the normal
+refresh loader is not required for this captured request to fail.
+
+User-run native-token captured-body replay on B: FAIL, not rerun
+The same 48192-byte body and project returned HTTP 429 in 8.198s with
+Retry-After 33, even with native access token hash 9fb617969a6a. No marker
+or message_stop was received. Private diagnostics were removed and the
+reported production config/accounts snapshots matched. The configured
+OAuth refresh loader is therefore not necessary for this failure.
+
+The current native token differs from c75d9143e860 in the earlier successful
+minimal proxy/agy comparison. Request shape and changing upstream conditions
+remain unresolved. A new current agy control is needed before attributing
+the difference to the captured omp system prompt, tool schemas or size.
+Do not rerun the full failing body merely to confirm the user report.
+
+Request-shape isolation prepared, not run live
+The existing /tmp harness now supports --isolate-omp together with
+--replay-omp and --replay-native-token. It first runs one current agy
+synthetic control, then up to three proxy requests derived from the capture:
+no client system/tools, client system only, and client tools only. Model,
+explicit thinking, max_tokens, messages, metadata and context_management
+are held unchanged across the proxy cases. The original failing full body
+is not resent. Native-token changes, a failed native/reduced control,
+unexpected errors, unbounded cooldown advice or insufficient diagnostic
+time stop the run. Rate-limited factor cases wait their reported
+Retry-After plus one second before another case, without changing production
+recovery. The run has a four-client-request cap and a 300-second diagnostic
+budget with a 120-second admission reserve for each remaining proxy case.
+
+Offline local-HTTP fixtures passed: all factors accepted, system-only 429
+with tools-only acceptance, reduced-control 429/non-429 failures, native
+control failure, token change, and deadline stop. The 33-second cooldown
+fixture waited 34 seconds via the fake clock/sleeper. Assertions verified
+only the designated client fields were removed, credentials/configuration
+were fixed, the failed full body was never sent, and private cleanup passed.
+A separate boundary check stopped before sending with only 105 seconds
+remaining. No real native Keychain read or Cloud Code request was performed.
+An accepted stream may request a tool rather than emit the marker; this
+diagnostic distinguishes upstream acceptance from repaired omp completion.
+
+The factor cases share one isolated proxy process, including cooldown waits,
+so repeated process startup/control-plane bursts do not confound the cases.
+The warm-process local fixture passed the system-only 429/tools-only
+acceptance sequence, native/reduced-control early exits and cleanup, exact
+field-removal checks, and the full CLI preflight with a fixture native token.
+No live generation or real Keychain access occurred in these checks.
+
+Request-shape isolation result (user terminal, 2026-11-12)
+Native token hash 126c3abd3706 on B, project 218f87bcebbc, one warm proxy.
+  agy-current-control          marker, 8.523s
+  no_client_system_or_tools    HTTP 200, marker, gemini-3.8-flash, 8.020s
+  client_system_only           HTTP 429, Retry-After 33, 3.419s
+  (diagnostic wait 34s)
+  client_tools_only            HTTP 200, marker, gemini-3.8-flash, 5.046s
+Private cleanup and production snapshot checks passed. Client tools are not
+needed for the rejection; the client system prompt is sufficient in this run.
+One sample per case, so time variation is not excluded.
+
+Proxy system composition: buildCloudCodeRequest sends one role-"user" part:
+agy <identity>, an [ignore] copy of it, then every client system text.
+Captured omp blocks: 34634 chars (base prompt, cache_control) + 7819 chars
+(project context). Joined client text 42455 chars, versus agy 1.4.10/1.4.11
+systemInstruction captures of about 20.9K chars.
+
+Next split prepared, not run live: --isolate-system (with --isolate-omp)
+keeps tools removed and messages/model/thinking/limits fixed, then sends
+no client system, project-context block only, neutral filler of the joined
+42455-char size, and omp base block only. Neutral-filler 429 points to size;
+neutral 200 with a block 429 points to that block's content. Tokenization of
+the filler differs from the prompt, so a size verdict stays approximate.
+Offline fixtures passed case bodies, shape rejection, waits, early stops,
+cleanup, prompt-text redaction and CLI preflight; no live request was sent.
+
+System split result (user terminal, 2026-11-12, native token 6a91cbd5f9a1)
+  agy-current-control          marker, 7.198s
+  no_client_system_or_tools    HTTP 200, marker, 8.218s
+  project_context_only         HTTP 200, marker, 5.701s (7819 chars)
+  neutral_same_size            HTTP 200, marker, 4.750s (42455 chars)
+  omp_base_only                HTTP 429, Retry-After 35, 3.177s (34634 chars)
+Size is not the trigger (approximate: filler tokenization differs); content
+of the omp base prompt is. Cleanup and snapshot checks passed.
+
+omp 18.19.0 source: inlineToolDescriptors defaults to auto, which for Gemini
+models renders the full tool catalog into the system prompt as OpenAI-Harmony
+"## functions / namespace functions { // description ... type X = (...) }"
+(packages/ai/src/dialect/inventory.ts renderToolInventory;
+packages/coding-agent/src/config/inline-tool-descriptors-mode.ts) and strips
+descriptions from the provider tool schemas. In the capture that catalog is
+18744 of the base block's 34634 chars (12 tools). Claude requests through
+omp do not carry it. Candidate, not yet proven as the trigger.
+
+Next split prepared, not run live: --bisect-system (with --isolate-omp)
+sends tool-free cases: no-system control, catalog only, base without the
+catalog, then narrows the rejected partition by halving (tool declarations
+inside the catalog wrapper, or the 22 heading sections). A single rejected
+tool is retried without the wrapper; if that passes, the empty wrapper is
+sent. Cap 15 proxy requests plus one agy control, 900-second budget,
+reported cooldown + 1s between rejected cases. Offline fixtures passed five
+trigger scenarios (specific tool, wrapper, base section, two-tool
+interaction, cross-partition), lossless split, fixed fields, waits, and no
+prompt text in output. No live request sent.
+
+Bisection result (user terminal, 2026-11-12, native token 6a91cbd5f9a1)
+  agy control 200; no system 200; tool catalog only (18743) 200;
+  base without catalog (15891) 429; sections RFC..Tool Policy (11508) 429;
+  sections RFC..Tone (1191) 429; then stopped: proxy advice 150s > 90s cap.
+The inline tool catalog is not the trigger. The rejected 1191-char prefix is
+the omp preamble "RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED,
+MAY, OPTIONAL. ..." plus Role/Engineering/Personality/Tone. The escalating
+35/73/150 Retry-After is the proxy's SmartBackoff rateLimitTiers
+(30s/1m/2m) over consecutive failures, not upstream advice (bare body).
+
+Public corroboration (not reproduced here beyond the runs above):
+- omp #11699/#11689/#11730: Cloud Code applies an additive content rule to
+  systemInstruction on requestType "agent"; omp's RFC 2119 line trips it;
+  lowercasing it or splitting "RFC 2119" returned 200. omp maintainer
+  declined to ship a bypass (#11809) citing escalation risk.
+- CLIProxyAPI #4696: same bare 429 for "Hermes Agent ... Nous Research"
+  identity, reproduced directly against daily-cloudcode-pa; neutral A-B-A 200.
+  CLIProxyAPI ships antigravity.sensitive-words, obfuscating each matched
+  subword with U+034F because U+200B splits were later rejected
+  (internal/runtime/executor/helps/cloak_obfuscate.go).
+- antigravity-claude-proxy PR #364 (closed): caller-identity scrub map.
+Conclusion: deterministic upstream content rejection presented as quota;
+account rotation, backoff and credentials cannot fix it. Any repair that
+keeps the omp prompt working evades a Google abuse rule.
+
+Decision (user, 2026-11-12): mask by default with the known harness phrases.
+Implementation: format.SystemMask (port of CLIProxyAPI's Antigravity
+sensitive-words: case-insensitive, longest first, U+034F after the first
+rune of each subword) applied to client system texts in
+buildCloudCodeRequest; agy's identity block stays byte-exact. Config
+antigravity.sensitiveWords: absent/null = format.DefaultSensitiveWords,
+[] = off, list = replacement; startup and Dispatcher.UpdateConfig install it.
+Offline: unit tests for the builder, mask edges and config semantics pass;
+full suite 3333 tests in 70 packages passed. Translating the captured omp
+body with the real Builder left no default phrase unmasked and inserted
+8 joiners, all on the RFC 2119 preamble line; removing them restores the
+client text exactly. No live Cloud Code request has run against this build.
+
+Live replay through the masking build (user terminal, 2026-11-12)
+Same captured 48192-byte omp body (sha256 a6a4ea5f...e15ef), account B,
+configured OAuth loader, isolated instance of
+.worktrees/gemini-429-repair/bin/proxy with default sensitiveWords:
+  HTTP 200, marker received, message_stop, response model gemini-3.8-flash,
+  first byte 11.843s, total 11.881s. No 429.
+The identical body previously returned 429 through the deployed build with
+configured OAuth (Retry-After 34) and with the native token (Retry-After
+33). Production accounts.json/config.json unchanged; private files removed.
+Scope: one captured first turn, not yet an interactive omp session on the
+deployed proxy.

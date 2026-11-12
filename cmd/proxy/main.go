@@ -215,6 +215,7 @@ func runServer(args []string) {
 	}
 
 	builder := proxyformat.NewBuilder()
+	builder.SetSystemMask(cfg.Antigravity.SystemMask())
 	var forensics429 *accounts.Forensics429Recorder
 	if cfg.Upstream429ForensicsEnabled {
 		forensicsPath := filepath.Join(config.GetConfigDir(), "forensics", "upstream-429.jsonl")

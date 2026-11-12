@@ -113,6 +113,7 @@ type openAIResponseWriter struct {
 	stream         *openAIStreamState
 	parser         sseLineParser
 	doneSent       bool
+	writeErr       error
 	usageRequested bool
 	// structuredToolName is the synthetic tool injected to emulate
 	// response_format. Non-empty means its output is the client's message
@@ -159,6 +160,9 @@ func (w *openAIResponseWriter) Write(p []byte) (int, error) {
 	}
 	if w.mode == responseModeSSE {
 		w.parser.feed(p, w.handleStreamEvent)
+		if w.writeErr != nil {
+			return 0, w.writeErr
+		}
 		return len(p), nil
 	}
 	w.buf.Write(p)
@@ -196,7 +200,15 @@ func (w *openAIResponseWriter) beginStream(statusCode int) {
 
 // writeSSEFrame frames and writes one SSE payload as "data: <payload>\n\n".
 func (w *openAIResponseWriter) writeSSEFrame(payload []byte) {
-	_, _ = w.inner.Write(append(append([]byte("data: "), payload...), '\n', '\n'))
+	if w.writeErr != nil {
+		return
+	}
+	frame := append(append([]byte("data: "), payload...), '\n', '\n')
+	n, err := w.inner.Write(frame)
+	if err == nil && n != len(frame) {
+		err = io.ErrShortWrite
+	}
+	w.writeErr = err
 }
 
 // writeChunk marshals and emits one OpenAI chunk.

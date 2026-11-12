@@ -238,6 +238,7 @@ func (dispatcher *Dispatcher) UpdateConfig(cfg config.Config) {
 		dispatcher.capacityBackoffs = backoffs
 	}
 	dispatcher.requestThrottlingEnabled = cfg.RequestThrottlingEnabled
+	dispatcher.builder.SetSystemMask(cfg.Antigravity.SystemMask())
 	if cfg.RequestDelayMs > 0 {
 		dispatcher.requestDelay = time.Duration(cfg.RequestDelayMs) * time.Millisecond
 	} else {
@@ -441,10 +442,39 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 	request = cloneRequest(request)
 	request["model"] = modelDetails.GetUpstreamID()
 	model := modelDetails.ID
+	dispatcher.mu.RLock()
 	maxAttempts := max(dispatcher.maxRetries, dispatcher.manager.Count()+1)
+	window := recoveryWindow{ctx: ctx, limit: min(10*time.Second, dispatcher.maxWait), now: dispatcher.now}
+	maxCapacityRetries, switchDelay := dispatcher.maxCapacityRetries, dispatcher.switchDelay
+	backoffs := dispatcher.capacityBackoffs
+	throttling, delay := dispatcher.requestThrottlingEnabled, dispatcher.requestDelay
+	dispatcher.mu.RUnlock()
+	defer window.close()
 	session := SessionKey(ctx)
 	var lastError error
+	blocked := false
+	terminal := func(fallback error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if dispatcher.lifetime.Err() != nil {
+			return errDispatcherClosed
+		}
+		upstream := cloudcode.FindHTTPError(lastError)
+		if (upstream != nil && upstream.StatusCode == http.StatusTooManyRequests) || (blocked && upstream == nil) {
+			wait, shared := dispatcher.manager.retryEligibility(session, model)
+			return &RateLimitError{Model: model, RetryAfter: max(wait, time.Millisecond), Shared: shared, Cause: lastError}
+		}
+		if errors.Is(fallback, errRecoveryWindow) {
+			return lastError
+		}
+		return fallback
+	}
+	switchPending := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := context.Cause(window.ctx); err != nil {
+			return cloudcode.Response{}, terminal(err)
+		}
 		selection := dispatcher.manager.Select(session, model)
 		if selection.Account == nil {
 			if dispatcher.manager.AllInvalid() {
@@ -457,42 +487,54 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 			if wait > 0 {
 				slog.Warn(fmt.Sprintf("[Server] All accounts rate-limited for %s. Wait %s", model, wait.Round(time.Second)))
 			}
-			if wait > 0 && wait <= dispatcher.maxWait {
-				if err := dispatcher.sleep(ctx, wait+500*time.Millisecond); err != nil {
-					return cloudcode.Response{}, err
+			if wait > 0 {
+				blocked = true
+				window.arm(dispatcher.lifetime)
+				if err := window.sleep(wait+500*time.Millisecond, dispatcher.sleep); err != nil {
+					return cloudcode.Response{}, terminal(err)
 				}
 				attempt--
 				continue
 			}
-			if wait > dispatcher.maxWait {
-				return cloudcode.Response{}, &RateLimitError{
-					Model:      model,
-					RetryAfter: wait,
-					Shared:     dispatcher.manager.SharedThrottleWait(model) > 0,
-				}
-			}
 			return cloudcode.Response{}, errors.New("no accounts available")
 		}
 		if selection.Wait > 0 {
-			if err := dispatcher.sleep(ctx, selection.Wait); err != nil {
-				return cloudcode.Response{}, err
+			blocked = true
+			window.arm(dispatcher.lifetime)
+			if err := window.sleep(selection.Wait, dispatcher.sleep); err != nil {
+				return cloudcode.Response{}, terminal(err)
 			}
 		}
+		if switchPending && switchDelay > 0 {
+			if err := window.sleep(switchDelay, dispatcher.sleep); err != nil {
+				return cloudcode.Response{}, terminal(err)
+			}
+		}
+		switchPending = false
 		account := selection.Account
-		credentials, err := dispatcher.resolver.Resolve(ctx, account)
+		credentials, err := dispatcher.resolver.Resolve(window.ctx, account)
+		if cause := context.Cause(window.ctx); cause != nil {
+			return cloudcode.Response{}, terminal(cause)
+		}
 		if err != nil {
 			dispatcher.handleCredentialError(account, model, err)
 			lastError = err
 			continue
 		}
 		client := dispatcher.client(account, credentials.AccessToken)
-		project, err := dispatcher.resolveProject(ctx, account, client)
+		project, err := dispatcher.resolveProject(window.ctx, account, client)
+		if cause := context.Cause(window.ctx); cause != nil {
+			return cloudcode.Response{}, terminal(cause)
+		}
 		if err != nil {
 			dispatcher.manager.MarkFailure(account, model)
 			lastError = err
 			continue
 		}
-		dispatcher.startAccount(ctx, account, client, project)
+		dispatcher.startAccount(window.ctx, account, client, project)
+		if cause := context.Cause(window.ctx); cause != nil {
+			return cloudcode.Response{}, terminal(cause)
+		}
 		payload := dispatcher.builder.BuildCloudCodeRequestWithModel(request, project, credentials.Email, proxyformat.ModelOptions{
 			SupportsThinking: modelDetails.SupportsThinking, ThinkingBudget: modelDetails.ThinkingBudget,
 			MinThinkingBudget: modelDetails.MinThinkingBudget, MaxOutputTokens: modelDetails.MaxOutputTokens,
@@ -501,24 +543,35 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 		// agy sends no anthropic-beta on Claude calls, and Claude still thinks
 		// after tool results without it (.reference/agy-1.4.11-generation-20261030.txt).
 		options := cloudcode.RequestOptions{}
-		dispatcher.startConversation(ctx, account, client, request, payload)
-		dispatcher.refreshQuotaSummary(ctx, account, client, project)
+		dispatcher.startConversation(window.ctx, account, client, request, payload)
+		dispatcher.refreshQuotaSummary(window.ctx, account, client, project)
 		guard := proxyformat.NewOutputGuard(payload.OutputLimit)
 
 		capacityAttempt := 0
 		for {
-			dispatcher.mu.RLock()
-			throttling := dispatcher.requestThrottlingEnabled
-			delay := dispatcher.requestDelay
-			dispatcher.mu.RUnlock()
 			if throttling && delay > 0 {
-				if err := dispatcher.sleep(ctx, delay); err != nil {
-					return cloudcode.Response{}, err
+				if err := window.sleep(delay, dispatcher.sleep); err != nil {
+					return cloudcode.Response{}, terminal(err)
+				}
+			}
+			if window.cancel != nil {
+				for wait := dispatcher.manager.recoveryWait(account, model); wait > 0; wait = dispatcher.manager.recoveryWait(account, model) {
+					if err := window.sleep(wait, dispatcher.sleep); err != nil {
+						return cloudcode.Response{}, terminal(err)
+					}
 				}
 			}
 			inFlight, priorMinute := dispatcher.meter.Begin(account.Email)
-			response, eventCount, requestErr := dispatcher.sendStream(ctx, account, client,
-				dispatcher.builder.Stamp(payload), options, guard, consume)
+			response, eventCount, requestErr := dispatcher.sendStream(window.ctx, account, client,
+				dispatcher.builder.Stamp(payload), options, guard, func(event cloudcode.SSEEvent) error {
+					if err := window.firstEvent(); err != nil {
+						return err
+					}
+					return consume(event)
+				})
+			if cause := context.Cause(window.ctx); cause != nil {
+				return response, terminal(cause)
+			}
 			if requestErr == nil {
 				if dispatcher.meter.TakeRecovery(account.Email) {
 					dispatcher.recordRecovery(account, project, model, inFlight, priorMinute)
@@ -536,52 +589,56 @@ func (dispatcher *Dispatcher) StreamGenerateContent(ctx context.Context, request
 				return response, requestErr
 			}
 			upstreamError := cloudcode.FindHTTPError(requestErr)
-			if upstreamError != nil && isCapacityHTTPError(upstreamError) && capacityAttempt < dispatcher.maxCapacityRetries {
-				wait := ParseResetTime(upstreamError.Header, upstreamError.Body, dispatcher.now())
-				if wait == 0 {
-					wait = dispatcher.capacityBackoffs[min(capacityAttempt, len(dispatcher.capacityBackoffs)-1)]
-				}
-				capacityAttempt++
-				dispatcher.manager.IncrementFailure(account)
-				if err := dispatcher.sleep(ctx, wait); err != nil {
-					return cloudcode.Response{}, err
-				}
-				continue
-			}
+			capacityRetry := upstreamError != nil && isCapacityHTTPError(upstreamError) && capacityAttempt < maxCapacityRetries
 			if upstreamError != nil && upstreamError.StatusCode == http.StatusTooManyRequests {
+				window.arm(dispatcher.lifetime)
 				failures := dispatcher.manager.FailureCount(account)
 				cooldown := UpstreamCooldown(upstreamError, failures, dispatcher.now())
-				reason, reset := cooldown.Reason, cooldown.Reset
-				wait := Decorrelate(cooldown.Wait, dispatcher.random)
-				if reason == ReasonCapacity && capacityAttempt >= dispatcher.maxCapacityRetries {
-					dispatcher.manager.MarkRateLimited(account, model, 15*time.Second)
-					break
-				}
-				if wait <= 10*time.Second && failures == 0 {
-					dispatcher.manager.IncrementFailure(account)
-					if err := dispatcher.sleep(ctx, max(reset, time.Second)); err != nil {
-						return cloudcode.Response{}, err
-					}
-					continue
-				}
-				if wait > 10*time.Second && dispatcher.switchDelay > 0 {
-					if err := dispatcher.sleep(ctx, dispatcher.switchDelay); err != nil {
-						return cloudcode.Response{}, err
+				wait := cooldown.Wait
+				if capacityRetry {
+					wait = cooldown.Reset
+					if wait == 0 {
+						wait = backoffs[min(capacityAttempt, len(backoffs)-1)]
 					}
 				}
-				slog.Warn("upstream 429", "model", model, "reason", reason, "wait", wait.Round(time.Second), "serverReset", reset, "failures", failures, "body", truncateBodyForLog(upstreamError.Body))
+				wait = Decorrelate(wait, dispatcher.random)
+				slog.Warn("upstream 429", "model", model, "reason", cooldown.Reason, "wait", wait.Round(time.Second), "serverReset", cooldown.Reset, "failures", failures, "body", truncateBodyForLog(upstreamError.Body))
 				dispatcher.record429(account, project, model, upstreamError, wait, failures, inFlight, priorMinute)
 				dispatcher.recordQuotaExhaustion(account, model, upstreamError.Body)
 				dispatcher.manager.MarkRateLimited(account, model, wait)
+				if capacityRetry || (wait <= 10*time.Second && failures == 0) {
+					if capacityRetry {
+						capacityAttempt++
+					}
+					if err := window.sleep(wait, dispatcher.sleep); err != nil {
+						return cloudcode.Response{}, terminal(err)
+					}
+					continue
+				}
+				switchPending = wait > 10*time.Second
 				break
 			}
+			if capacityRetry {
+				window.arm(dispatcher.lifetime)
+				wait := ParseResetTime(upstreamError.Header, upstreamError.Body, dispatcher.now())
+				if wait == 0 {
+					wait = backoffs[min(capacityAttempt, len(backoffs)-1)]
+				}
+				capacityAttempt++
+				dispatcher.manager.IncrementFailure(account)
+				if err := window.sleep(wait, dispatcher.sleep); err != nil {
+					return cloudcode.Response{}, terminal(err)
+				}
+				continue
+			}
 			if dispatcher.rotateForError(account, model, requestErr) {
+				window.arm(dispatcher.lifetime)
 				break
 			}
 			return cloudcode.Response{}, requestErr
 		}
 	}
-	return cloudcode.Response{}, fmt.Errorf("max retries exceeded: %w", lastError)
+	return cloudcode.Response{}, terminal(fmt.Errorf("max retries exceeded: %w", lastError))
 }
 
 const conversationStartTimeout = time.Minute

@@ -327,8 +327,10 @@ func TestForcedQuota429CoolsDownAndRotates(t *testing.T) {
 func TestCapacityRetriesSameAccountWithTieredBackoff(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	var clock sync.Mutex
+	readClock := func() time.Time { clock.Lock(); defer clock.Unlock(); return now }
 	account := testAccount("capacity@example.com")
-	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: func() time.Time { return now }})
+	manager, err := New(Options{Accounts: []*Account{account}, Strategy: StrategySticky, Now: readClock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,8 +340,12 @@ func TestCapacityRetriesSameAccountWithTieredBackoff(t *testing.T) {
 	var sleeps []time.Duration
 	dispatcher := newTestDispatcher(t, manager, resolver, map[string]*scriptedClient{"token": client}, now, func(_ context.Context, duration time.Duration) error {
 		sleeps = append(sleeps, duration)
+		clock.Lock()
+		now = now.Add(duration)
+		clock.Unlock()
 		return nil
 	})
+	dispatcher.now = readClock
 	dispatcher.capacityBackoffs = []time.Duration{time.Second, 2 * time.Second}
 	if _, err := dispatcher.StreamGenerateContent(context.Background(), testRequest(), func(cloudcode.SSEEvent) error { return nil }); err != nil {
 		t.Fatal(err)

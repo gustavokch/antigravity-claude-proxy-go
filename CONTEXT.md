@@ -107,8 +107,12 @@ _Avoid_: Stream conversion, event mapping, chunk forwarding.
 ### Error & Quota State
 
 **Rate Limit Exceeded**:
-A temporary request rate limit error (HTTP 429) carrying retry duration headers that triggers short account cooldown.
+A temporary upstream rejection (HTTP 429), with or without retry hints, that imposes an Account/model eligibility delay. Without a hint, the escalating cooldown is inferred policy, not a measured Google reset or evidence of daily quota exhaustion. Hidden recovery is limited to one cumulative 10-second window (or a smaller positive `maxWaitBeforeErrorMs`), starting at the first retryable failure or blocked selection; it ends at the first forwarded upstream event and never caps an established stream. Terminal retry advice reflects the actual applicable cooldown, including escalation and additive jitter.
 _Avoid_: Throttling, 429 error, rate block.
+
+**Content-Rule Rejection**:
+A false HTTP 429 `RESOURCE_EXHAUSTED`, with no error details, that Cloud Code returns when the client's system prompt matches a content rule aimed at third-party clients. Quota is unaffected and the same prompt is rejected every time, so cooldowns, retries and Account rotation cannot clear it; only a change to the prompt's text does.
+_Avoid_: Quota exhaustion, rate limit, ban.
 
 **Quota Exhausted**:
 A depletion of model quota capacity (`remainingFraction` below threshold) that suspends an Account for that model until the quota reset timestamp. Per-model fractions come from the catalog fetch (24 h TTL), a manual account refresh, each Start Burst, and the five-minute account refresh, and stay near 1 until the model is exhausted.

@@ -343,6 +343,18 @@ Additional environment controls:
 - `id` and `key` must be non-empty and unique, and the labels `open` and `default` are reserved. `POST /api/config` rejects violations; hand edits are not validated.
 - `GET /api/config` never returns key material, only `hasApiKey` / `hasApiKeys`.
 
+#### Cloud Code system-prompt masking
+
+Cloud Code answers some client system prompts with a false `429 RESOURCE_EXHAUSTED` that carries no error details while quota remains. The same prompt is rejected every time, so cooldowns, retries and account rotation cannot clear it. Known triggers are omp's `RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.` preamble and the Hermes Agent identity. Before a Cloud Code request, the proxy inserts an invisible U+034F (combining grapheme joiner) after the first rune of each word of these phrases in the client's system text. agy's own identity block is sent unchanged.
+
+```json
+{ "antigravity": { "sensitiveWords": ["RFC 2119", "Hermes Agent"] } }
+```
+
+- Absent or `null` uses the built-in list (`DefaultSensitiveWords`, `internal/format/system_mask.go`). `[]` turns masking off; a list replaces the built-in one. Matching ignores case.
+- This deliberately evades a Google content rule aimed at third-party clients, ported from CLIProxyAPI's `antigravity.sensitive-words`. Google can change the rule (it already defeated U+200B splits) and may act against accounts that bypass it.
+- `POST /api/config` applies changes on the next request; edits to `config.json` by hand need a restart.
+
 ---
 
 ## Headroom Native Context Compression & Output Shaping
@@ -434,7 +446,11 @@ To manage multiple accounts, create `~/.config/antigravity-proxy/accounts.json` 
 - `sticky`: Uses current active account until it encounters a cooldown or rate limit, then rotates to another account.
 - `round-robin`: Cycles sequentially through usable accounts for every request.
 
-On `429` rate limits, cooldowns are scoped to the specific model and account so other models on that account remain usable. Stream responses that have already begun emitting data are never replayed to prevent output duplication.
+On `429` rate limits, cooldowns are scoped to the specific model and account so other models on that account remain usable. After the first retryable failure or blocked account selection, hidden recovery has one cumulative window: **10 seconds**, or the configured positive `maxWaitBeforeErrorMs` when smaller. Pool/pinned waits, account-switch delays, retry pacing, capacity backoff and retries waiting for their first upstream event all consume that same window. If the next delay cannot fit, the proxy returns immediately without shortening the account's cooldown. Healthy initial attempts and established streams do not inherit this deadline. No request is replayed after its first forwarded upstream event, including metadata that emits no client bytes.
+
+Before stream commitment, an unrecoverable rate limit returns HTTP **429**, an Anthropic `rate_limit_error` envelope, the model, and a rounded-up `Retry-After` based on applied account/pool eligibility, including escalation and additive jitter. After commitment, it emits a terminal SSE error of the same kind instead of a successful `message_stop`; the OpenAI-compatible endpoint preserves the equivalent error. For streaming client requests, an upstream that ends without content returns HTTP **502**, not an empty HTTP 200. A real 503 remains a capacity/API error, and client cancellation remains cancellation.
+
+Google may omit retry hints. A bare `RESOURCE_EXHAUSTED` does not prove daily quota exhaustion: the inferred escalating cooldown is a local retry policy, not a measured Google reset.
 
 Rejection streaks are account-wide. A successful generation resets the streak immediately; otherwise it expires after ten quiet minutes, measured from the last rejection or the end of its imposed cooldown. Waiting out a cooldown does not itself reset escalation.
 
@@ -442,7 +458,7 @@ Rejection streaks are account-wide. A successful generation resets the streak im
 
 A request that carries a session id (`X-Claude-Code-Session-Id` or another session header, else `metadata.session_id` or the session inside `metadata.user_id`) is pinned to one account for all of its models, so a conversation keeps its cascade and its prompt cache. The strategy chooses only when a pin is made, rebound or overflowed: `sticky` gives a new pin the current account, `round-robin` rotates per new pin or overflow, `hybrid` scores. A request without a session id is still chosen per request.
 
-- A model rate limit on the pinned account that resets within 2 minutes makes the request wait for that account (or within `maxWaitBeforeErrorMs`, when that is above 0 and shorter; 0 keeps the 2-minute bound). It waits once: a second limit on that account with no success in between moves the model to an overflow account.
+- A model rate limit on the pinned account that resets within 2 minutes retains that pin (or within `maxWaitBeforeErrorMs`, when positive and shorter; 0 keeps the 2-minute selection threshold). The request waits only when the delay fits its remaining recovery window; otherwise it returns 429 without dropping the pin. A second limit on that account with no success in between moves the model to an overflow account.
 - A longer limit, exhausted quota, a failure lock (three failures in a row, credential failures included) or the 404 model lock moves only that model to an **overflow** account, chosen by the strategy and kept until that account itself becomes unusable; the model does not move back when the pinned account recovers.
 - A pinned account that is removed, disabled or invalid is replaced through the strategy; overflow entries on healthy accounts stay.
 
@@ -1168,6 +1184,6 @@ daily-cloudcode-pa.googleapis.com    h2,http/1.1    t13d1312h2_f57a46bbacb6_f50d
 
 - **`401 Unauthorized`**: Check that local `x-api-key` or Bearer token matches an enabled `apiKeys` entry, `ANTIGRAVITY_PROXY_API_KEY`, or the legacy `apiKey` in `config.json` (ignored while `apiKeys` has entries).
 - **`400 Bad Request`**: Verify requested model ID is valid in `/v1/models`, mapped via `modelMapping`, allowlisted under `openrouter`, or configured in `customEndpoints`.
-- **`429 Rate Limit Exceeded`**: Handled via automatic account rotation and model cooldowns. Use `/v1/usage`, `/account-limits`, or Web UI to inspect cooldown status.
+- **`429 Rate Limit Exceeded`**: Recovery is bounded to one cumulative 10-second window (or a smaller positive `maxWaitBeforeErrorMs`). Follow the returned `Retry-After`; `/v1/usage`, `/account-limits`, and the Web UI expose cooldown state. A bare `RESOURCE_EXHAUSTED` does not establish a ban, exhausted daily quota, or the limiting dimension. If one client's prompt always gets it while a short prompt on the same account succeeds, it is a content-rule rejection; see [Cloud Code system-prompt masking](#cloud-code-system-prompt-masking).
 - **`403 Verification Required`**: Account requires manual verification or re-authentication.
 - **JA4 Mismatch**: Ensure proxy is built with standard Go toolchain and no custom TLS configurations are applied.
